@@ -2,103 +2,160 @@
 
 ## Project
 
-We are building an AI ecom manager for Shopify merchants.
+We are building **Jefe**, an accountable AI ecom manager for founder-run Shopify brands.
 
-The product is not a generic analytics dashboard, chatbot, or Shopify Sidekick clone. It is an accountable ecommerce operator that reads merchant data, produces a daily verdict, recommends money-making or protective actions, executes approved actions, and learns from outcomes.
+The product is not:
+- a generic analytics dashboard
+- a chatbot
+- a Shopify Sidekick clone
+- a broad autonomous agent
+- a feature factory
+
+It is an accountable ecommerce operator that reads the merchant's commerce stack, opens every day with a verdict and money at stake, executes bounded actions only with approval, obeys the merchant's written House Rules, and proves incremental margin using holdouts.
 
 ## North star
 
-Deliver holdout-verified incremental margin per merchant per month.
+Holdout-verified incremental margin delivered per merchant per month.
 
-The product must prove value through:
-- verified revenue/margin created
-- prevented losses such as stockouts or silent breakages
-- merchant-approved actions with traceable outcomes
+Separate verified and estimated value:
+- **Verified lift** = holdout-measured or network-verified incremental revenue/margin.
+- **Estimated prevention** = Watchdog/stockout counterfactuals.
+- These must never be blended into one merchant-facing total.
+
+## ICP
+
+Founder-run Shopify brands doing roughly **£30k–£250k/month GMV**.
+
+Ideal early customer:
+- founder/operator feels the pain directly
+- no dedicated ecommerce manager
+- enough volume for operational mistakes to matter
+- likely using Klaviyo and/or Gorgias
+- willing to grant read access and test a managed pilot
+
+## Product identity
+
+Ambient assistants wait to be asked.
+A manager summons the merchant with a verdict.
+
+The embedded Shopify App Bridge app is the home base. The daily brief travels by email/Slack/WhatsApp at 7am and deep-links back into the app for evidence, previews and approvals.
 
 ## MVP
 
-Build a Shopify embedded app with:
+The MVP is broad on reads and narrow on writes.
+
+Build:
 
 1. Daily Verdict
-   - contribution margin by SKU/channel
-   - revenue, refunds, COGS, shipping, spend where available
+   - true contribution margin by SKU/channel where possible
+   - confidence ranges where COGS is missing
+   - evidence links
    - plain-English conclusion, not just charts
 
 2. Inventory Guardian
-   - stockout prediction
-   - reorder recommendation
+   - stockout/reorder radar
+   - velocity maths v0
    - £ at risk
-   - PO/email draft
+   - PO/email draft later
 
 3. Watchdog
-   - anomaly detection
-   - conversion drops
-   - refund spikes
-   - stock/sales anomalies
-   - obvious operational breakages
+   - threshold/rules-based silent breakage detection
+   - conversion anomalies
+   - ad sets beyond CPA thresholds
+   - discount stacking
+   - refund/return spikes
+   - metric regressions
 
-4. One measured write loop
-   - Klaviyo winback campaign
-   - approval required
+4. Klaviyo winback write loop
+   - merchant private key for pilot
+   - dormant customer segment
    - randomised holdout
+   - staged send 10% → 90%
    - blast-radius caps
-   - weekly result: “we made you £X, verified”
+   - approve-in-app
+   - weekly verified P&L line
 
 5. Feedback Engine
-   - merchant can give feedback in-app
-   - feedback is distilled into Linear/product tasks
-   - feature requests are weighted by customer value and churn risk
+   - capture screen/voice/text feedback
+   - LLM distils
+   - merchant confirms
+   - route to Linear
+   - £-weighted ordering
+   - changelog close-the-loop
 
-## What not to build yet
+6. House Rules + goals
+   - 3/6/12-month goals
+   - merchant constitution
+   - max discounts
+   - email frequency limits
+   - brand voice
+   - protected hero products
+   - margin vs volume priorities
+   - rules cited in every proposal
 
-Do not build:
-- full autopilot
-- ad write actions
-- theme widgets
-- product copy automation
-- complex RBAC
-- multi-language support
-- fine-tuning
+## Explicit MVP non-goals
+
+Do not build in MVP:
+- ad-budget write paths
+- generic product-copy automation
+- generic merchandising/theme widgets
+- full internationalisation
+- full agency/multi-store RBAC
+- unbounded autopilot
+- online learning / online model weight updates
+- foundational model fine-tuning
 - dedicated vector DB
-- generic multi-agent system
-- generic chatbot interface
+- dedicated graph DB
+- Kubernetes
+- Redis unless proven necessary
+- broad MCP-based production writes
+- any LLM direct access to external APIs with broad tokens
 
 ## Architecture principles
 
 - Event-first immutable ledger
-- Postgres as primary database
-- TypeScript-first stack
-- Shopify App Bridge embedded app
-- Shopify Polaris UI
-- Typed connectors, no god-agent
+- Postgres-first
+- JSONB for connector payloads
+- pgvector only if needed later
+- Point-in-time rebuilds from ledger + snapshots
 - HMAC-verified webhooks
-- Idempotent execution jobs
-- Evidence-first recommendations
-- Human approval before writes
-- Holdout-based attribution where possible
-- Batch learning, no online self-modifying model behaviour
+- Dedupe keys
+- Queue-backed execution
+- Typed connector adapters
+- Idempotency keys on every write path
+- Dry-run previews where possible
+- Approval gates
+- Blast-radius caps
+- House Rules enforced by construction
+- Provenance links for every recommendation
+- Batch ranking/calibration updates only
+- No LLM may directly mutate Shopify, Klaviyo, Meta, Google or any third-party system
 
-## Agent behaviour rules
+## AI coding rules
 
 Before coding:
-1. Read this file.
-2. Read relevant `/docs/context` files.
-3. Restate the task in your own words.
-4. Identify files you will change.
-5. Confirm assumptions if unclear.
+1. Read AGENTS.md.
+2. Read CLAUDE.md.
+3. Read relevant files in `/docs/context`.
+4. Restate the task.
+5. List files you expect to change.
+6. State assumptions and blockers.
 
 When coding:
 - Keep changes small.
+- Stay inside the ticket.
 - Add tests.
 - Use TypeScript types properly.
 - Avoid unnecessary dependencies.
 - Never add production secrets.
-- Never request broad Shopify scopes without justification.
-- Never let LLM output directly mutate external systems.
-- All external API writes must go through typed adapters with idempotency keys.
+- Never request broad Shopify scopes without a written reason.
+- Never expose production customer data to AI tools.
+- Never implement unapproved external write actions.
 
 Before finishing:
-- Run tests/typecheck/lint.
+- Run typecheck.
+- Run lint.
+- Run tests.
 - Summarise changes.
 - List risks.
-- List follow-up tasks.
+- List follow-up tickets.

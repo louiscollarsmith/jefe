@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# Local context and generated workspace files
+.context/
+.conductor/
+
+# Dependencies
+node_modules/
+apps/*/node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!apps/*/.env.example
+
+# Build artifacts
+.cache/
+build/
+.react-router/
+apps/*/.cache/
+apps/*/build/
+apps/*/.react-router/
+apps/*/app/build/
+apps/*/app/public/build/
+apps/*/public/build/
+apps/*/public/_dev/
+
+# Local databases
+database.sqlite
+apps/shopify/prisma/dev.sqlite
+apps/shopify/prisma/dev.sqlite-journal
+
+# Shopify local dev state
+apps/shopify/.shopify/*
+!apps/shopify/.shopify/.gitignore
+apps/shopify/.shopify.lock
+
+# Extension builds
+apps/*/extensions/*/dist/
+
+# Non-npm lockfiles
+yarn.lock
+pnpm-lock.yaml

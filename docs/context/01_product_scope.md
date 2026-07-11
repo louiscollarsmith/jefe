@@ -1,41 +1,98 @@
-# Product Scope
+# 01 — Product Scope
 
-## Product identity
+## Product name
 
-Working name: Jefe / AI Ecom Manager.
+Working name: **Jefe**.
 
-The product is a destination inside Shopify admin with its own agenda. It should also send a daily brief by email/Slack/WhatsApp, but the embedded Shopify app is the home base for evidence, approvals, diffs and previews.
+Naming is timeboxed to one day:
+- trademark check
+- `.com` / `.ai`
+- pronunciation outside Spanish-speaking markets
+- then stop thinking about it
 
 ## ICP
 
-Founder-led Shopify merchants:
-- £30k–£250k/month GMV
-- no dedicated ecommerce manager
-- likely using Klaviyo and/or Gorgias
-- enough order volume for insights to matter
-- not sophisticated enough to already use data properly
+Founder-run Shopify brands doing **£30k–£250k/month GMV**.
 
-## Core jobs
+### £30k–£100k/month GMV
 
-1. Tell the merchant what is really happening in the business.
-2. Identify money-making or loss-preventing actions.
-3. Show clear evidence.
-4. Execute safe approved actions.
-5. Measure whether those actions worked.
-6. Learn from outcomes and merchant feedback.
+Why it works:
+- enough revenue for operational mistakes to matter
+- founder feels pain directly
 
-## Differentiation
+Risk:
+- budget-sensitive
+- needs fast proof and low-friction pilot
 
-Not another analytics tool.
-Not another AI assistant.
-Not another Shopify Sidekick clone.
+### £100k–£250k/month GMV
 
-We are an accountable operator.
+Why it works:
+- inventory, retention, margin and channel decisions are valuable
 
-Moat stack:
-- independent holdout attribution
-- cross-tool write depth
-- verified action → outcome dataset
-- per-merchant earned trust state
-- agency multi-store operations
-- later multi-platform expansion
+Risk:
+- may already use agencies or analytics tools
+- must prove verified lift
+
+### Agency-managed stores
+
+Why it works:
+- one agency can install across many merchants
+- multi-store workflow later matters
+
+Risk:
+- needs RBAC/reporting earlier
+- enters via agency track, not MVP
+
+## Commercial ladder
+
+### Free AI teardown
+
+- £0
+- read-only
+- 48 hours
+- built from COGS-free computables only
+
+Purpose:
+- first trust moment
+- show defensible £ opportunity without requiring COGS
+
+### Pilot
+
+- £299/month
+- 90 days
+- case-study rights
+- holdouts mandatory and disclosed upfront
+
+Purpose:
+- prove verified lift and daily-brief habit
+- design partners grandfathered on preferential year-one terms
+
+### Operator
+
+- £499–£699/month
+
+Purpose:
+- bridge tier
+- full read layer
+- first write loop with verified lift
+- prevents pilot-to-manager cliff
+
+### Manager mode
+
+- £999–£1,999/month
+
+Gate:
+- second verified action type live for that merchant
+- first Quarterly Board Meeting delivered
+
+Positioning:
+- priced against £3–4k/month hire or £1.5–3k/month agency retainer
+
+## MVP non-goals
+
+- no ad-budget write paths
+- no generic product-copy features
+- no theme widgets unless tied to verified margin
+- no internationalisation at launch
+- no full agency RBAC
+- no unbounded autonomy

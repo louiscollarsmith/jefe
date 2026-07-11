@@ -1,0 +1,147 @@
+.page {
+  min-height: 100vh;
+  color: #161614;
+  background:
+    linear-gradient(180deg, rgba(246, 246, 241, 0.92), rgba(246, 246, 241, 1)),
+    #f6f6f1;
+  padding: 72px 24px;
+}
+
+.hero,
+.grid,
+.section,
+.footerNote {
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.hero {
+  padding: 36px 0 44px;
+}
+
+.eyebrow {
+  margin-bottom: 18px;
+  color: #4c6f5a;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.heading {
+  max-width: 780px;
+  margin: 0;
+  font-size: clamp(3rem, 7vw, 5.8rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+}
+
+.lede {
+  max-width: 700px;
+  margin: 28px 0 0;
+  color: #43423c;
+  font-size: 1.35rem;
+  line-height: 1.5;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.panel {
+  min-height: 150px;
+  padding: 22px;
+  border: 1px solid #d8d5ca;
+  background: #ffffff;
+}
+
+.panel p {
+  margin: 0;
+  color: #282722;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
+.section {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 56px;
+  padding: 56px 0 36px;
+}
+
+.section h2 {
+  margin: 0 0 14px;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.section p {
+  margin: 0;
+  color: #4a4942;
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.moduleList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.moduleList li {
+  padding: 12px 14px;
+  border-left: 3px solid #4c6f5a;
+  background: #ffffff;
+  color: #24231f;
+  font-weight: 650;
+}
+
+.footerNote {
+  max-width: 980px;
+  padding-top: 28px;
+  border-top: 1px solid #d8d5ca;
+}
+
+.footerNote p {
+  max-width: 760px;
+  margin: 0;
+  color: #55534b;
+  font-size: 0.98rem;
+  line-height: 1.5;
+}
+
+@media only screen and (max-width: 760px) {
+  .page {
+    padding: 40px 18px;
+  }
+
+  .hero {
+    padding: 20px 0 34px;
+  }
+
+  .heading {
+    font-size: 3rem;
+    line-height: 1;
+  }
+
+  .lede {
+    font-size: 1.12rem;
+  }
+
+  .grid,
+  .section,
+  .moduleList {
+    grid-template-columns: 1fr;
+  }
+
+  .section {
+    gap: 32px;
+    padding-top: 40px;
+  }
+}

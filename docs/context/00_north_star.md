@@ -1,31 +1,51 @@
-# North Star
+# 00 — North Star
 
-We are building the operating system for AI-managed commerce, starting with Shopify.
+## What we are building
 
-The first product is an AI ecom manager for founder-led Shopify stores doing roughly £30k–£250k/month GMV, with no dedicated ecommerce manager and at least one of Klaviyo or Gorgias installed.
+We are building **Jefe**, an accountable AI ecom manager for Shopify.
 
-The product should behave like a manager, not a chatbot.
+This is the first wedge toward autonomous, accountable commerce operations.
 
-A chatbot waits to be asked.
-A manager opens with a verdict.
+The product reads the merchant's commerce stack, opens every day with a verdict and money at stake, recommends actions, executes bounded actions with approval, obeys the merchant's House Rules, and proves incremental margin with holdouts.
 
-Every morning, the merchant should see:
+## North star metric
+
+**Holdout-verified incremental margin delivered per merchant per month.**
+
+## Value hierarchy
+
+Build only things that make the daily brief:
+
+1. More true — “made you £X, verified”
+2. More protective — “caught Y before it cost you”
+3. More effortless — “already handled Z”
+
+Never lead with time-saving. Time-saving is the free native-AI tier. We compete on accountable outcomes.
+
+## Identity
+
+Ambient assistants wait to be asked.
+A manager summons the merchant.
+
+Jefe is a destination with its own agenda. It tells the merchant:
 - what happened
 - what matters
 - how much money is at stake
-- what action we recommend
-- what evidence supports it
-- what we can do after approval
-- whether previous actions worked
+- what action it wants approved
+- what rules it obeyed
+- what previous actions earned
 
-The core belief:
+## Trust principle
 
-Merchants do not need more dashboards. They need an operator.
+Trust is the product.
 
-The value hierarchy is:
+Every proposal must include:
+- evidence
+- conservative expected value
+- confidence
+- preview
+- blast-radius cap
+- House Rules consulted
+- verification class
 
-1. Made you money we can verify
-2. Caught something before it cost you
-3. Saved you time
-
-Never lead with time-saving. Shopify Sidekick can compete on free assistance. We compete on accountable outcomes.
+Verified lift and estimated prevention must never be blended.
