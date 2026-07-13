@@ -3,7 +3,24 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import {
+  Form,
+  useActionData,
+  useLoaderData,
+  useNavigate,
+  useNavigation,
+} from "react-router";
+import {
+  Banner,
+  BlockStack,
+  Button,
+  Card,
+  InlineGrid,
+  Layout,
+  Link,
+  Page,
+  Text,
+} from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
@@ -76,6 +93,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function Index() {
   const { shop, dummyData } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const navigate = useNavigate();
   const navigation = useNavigation();
   const isSubmitting =
     navigation.state === "submitting" &&
@@ -114,110 +132,132 @@ export default function Index() {
   ];
 
   return (
-    <s-page heading="Today's Verdict">
-      <s-section>
-        <s-stack gap="base">
-          <s-paragraph>
-            AI Ecom Manager will open each day with what happened, what matters,
-            the money at stake, the recommended action, and the evidence behind
-            it.
-          </s-paragraph>
-          <s-grid
-            gridTemplateColumns="repeat(auto-fit, minmax(240px, 1fr))"
-            gap="base"
-          >
-            {sections.map((section) => (
-              <s-box
-                key={section.heading}
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <s-stack gap="small">
-                  <s-heading>{section.heading}</s-heading>
-                  <s-paragraph>{section.body}</s-paragraph>
-                </s-stack>
-              </s-box>
-            ))}
-          </s-grid>
-        </s-stack>
-      </s-section>
+    <Page title="Today's Verdict">
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            <Card>
+              <BlockStack gap="400">
+              <Text as="p" variant="bodyMd">
+                AI Ecom Manager will open each day with what happened, what
+                matters, the money at stake, the recommended action, and the
+                evidence behind it.
+              </Text>
+              <Link onClick={() => navigate("/app/onboarding")}>
+                Open founder onboarding for goals, House Rules, and COGS
+              </Link>
+              </BlockStack>
+            </Card>
+            <InlineGrid columns={{ xs: 1, sm: 2, md: 3 }} gap="400">
+              {sections.map((section) => (
+                <Card key={section.heading} background="bg-surface-secondary">
+                  <BlockStack gap="200">
+                    <Text as="h2" variant="headingMd">
+                      {section.heading}
+                    </Text>
+                    <Text as="p" variant="bodyMd" tone="subdued">
+                      {section.body}
+                    </Text>
+                  </BlockStack>
+                </Card>
+              ))}
+            </InlineGrid>
+          </BlockStack>
+        </Layout.Section>
 
-      <s-section slot="aside" heading="MVP status">
-        <s-paragraph>
-          This scaffold is intentionally read-only. Shopify data sync,
-          recommendations, approvals, and measured write loops will be added in
-          later tickets.
-        </s-paragraph>
-      </s-section>
+        <Layout.Section variant="oneThird">
+          <BlockStack gap="400">
+            <Card>
+              <BlockStack gap="200">
+                <Text as="h2" variant="headingMd">
+                  MVP status
+                </Text>
+                <Text as="p" variant="bodyMd">
+                  This scaffold is intentionally read-only. Shopify data sync,
+                  recommendations, approvals, and measured write loops will be
+                  added in later tickets.
+                </Text>
+              </BlockStack>
+            </Card>
 
-      <s-section slot="aside" heading="Dummy store data">
-        <s-stack gap="base">
-          <s-paragraph>
-            Load Ticket 03 seed data into {shop}: {dummyData.fixture.productCount}{" "}
-            products, {dummyData.fixture.variantCount} variants,{" "}
-            {dummyData.fixture.orderCount} test orders, and{" "}
-            {dummyData.fixture.refundCount} refund.
-          </s-paragraph>
+            <Card>
+              <BlockStack gap="400">
+                <Text as="h2" variant="headingMd">
+                  Dummy store data
+                </Text>
+                <Text as="p" variant="bodyMd">
+                  Load Ticket 03 seed data into {shop}:{" "}
+                  {dummyData.fixture.productCount} products,{" "}
+                  {dummyData.fixture.variantCount} variants,{" "}
+                  {dummyData.fixture.orderCount} test orders, and{" "}
+                  {dummyData.fixture.refundCount} refund.
+                </Text>
 
-          {dummyData.status.seeded ? (
-            <s-paragraph>
-              Dummy data exists from {dummyData.status.seededAt}. The loader is
-              disabled for this store to avoid duplicate fixture data.
-            </s-paragraph>
-          ) : null}
+                {dummyData.status.seeded ? (
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Dummy data exists from {dummyData.status.seededAt}. The
+                    loader is disabled for this store to avoid duplicate fixture
+                    data.
+                  </Text>
+                ) : null}
 
-          {!dummyData.enabled ? (
-            <s-paragraph>
-              Set ENABLE_DUMMY_STORE_LOADER=true in the app environment to enable
-              this dev-only write path.
-            </s-paragraph>
-          ) : null}
+                {!dummyData.enabled ? (
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Set ENABLE_DUMMY_STORE_LOADER=true in the app environment to
+                    enable this dev-only write path.
+                  </Text>
+                ) : null}
 
-          {dummyData.missingScopes.length > 0 ? (
-            <s-banner tone="critical">
-              <s-paragraph>
-                Missing Shopify scopes: {dummyData.missingScopes.join(", ")}.
-                Update the app scopes and reinstall this store.
-              </s-paragraph>
-            </s-banner>
-          ) : null}
+                {dummyData.missingScopes.length > 0 ? (
+                  <Banner tone="critical">
+                    <Text as="p" variant="bodyMd">
+                      Missing Shopify scopes:{" "}
+                      {dummyData.missingScopes.join(", ")}. Update the app
+                      scopes and reinstall this store.
+                    </Text>
+                  </Banner>
+                ) : null}
 
-          {actionData && !actionData.ok ? (
-            <s-banner tone="critical">
-              <s-paragraph>{actionData.error}</s-paragraph>
-            </s-banner>
-          ) : null}
+                {actionData && !actionData.ok ? (
+                  <Banner tone="critical">
+                    <Text as="p" variant="bodyMd">
+                      {actionData.error}
+                    </Text>
+                  </Banner>
+                ) : null}
 
-          {seedResult ? (
-            <s-banner tone="success">
-              <s-paragraph>
-                Loaded {seedResult.productsCreated} products,{" "}
-                {seedResult.variantsCreated} variants,{" "}
-                {seedResult.ordersCreated} orders, and{" "}
-                {seedResult.refundsCreated} refund.
-              </s-paragraph>
-            </s-banner>
-          ) : null}
+                {seedResult ? (
+                  <Banner tone="success">
+                    <Text as="p" variant="bodyMd">
+                      Loaded {seedResult.productsCreated} products,{" "}
+                      {seedResult.variantsCreated} variants,{" "}
+                      {seedResult.ordersCreated} orders, and{" "}
+                      {seedResult.refundsCreated} refund.
+                    </Text>
+                  </Banner>
+                ) : null}
 
-          <Form method="post">
-            <input
-              type="hidden"
-              name="intent"
-              value="seed-dummy-store-data"
-            />
-            <s-button
-              type="submit"
-              variant="primary"
-              disabled={seedButtonDisabled}
-            >
-              {isSubmitting ? "Loading data" : "Load dummy store data"}
-            </s-button>
-          </Form>
-        </s-stack>
-      </s-section>
-    </s-page>
+                <Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="seed-dummy-store-data"
+                  />
+                  <Button
+                    submit
+                    variant="primary"
+                    disabled={seedButtonDisabled}
+                    loading={isSubmitting}
+                  >
+                    {isSubmitting ? "Loading data" : "Load dummy store data"}
+                  </Button>
+                </Form>
+              </BlockStack>
+            </Card>
+          </BlockStack>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }
 

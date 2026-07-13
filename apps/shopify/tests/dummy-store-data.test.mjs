@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fixture from "../app/fixtures/dummy-store-data.json" with { type: "json" };
+import { getMissingShopifyScopes } from "../app/services/shopify-scopes.server.js";
 
 test("dummy store fixture covers Ticket 003 ingestion and downstream scenarios", () => {
   const variants = fixture.products.flatMap((product) =>
@@ -65,4 +66,21 @@ test("dummy store fixture covers Ticket 003 ingestion and downstream scenarios",
   assert.ok(discountedOrders.length >= 2);
   assert.equal(refundOrders.length, 1);
   assert.ok(skus.has(refundOrders[0].refundSku));
+});
+
+test("dummy store scope check treats Shopify write scopes as read scopes", () => {
+  const missingScopes = getMissingShopifyScopes(
+    [
+      "read_locations",
+      "read_products",
+      "write_products",
+      "read_inventory",
+      "write_inventory",
+      "read_orders",
+      "write_orders",
+    ],
+    "read_locations,write_inventory,write_orders,write_products",
+  );
+
+  assert.deepEqual(missingScopes, []);
 });

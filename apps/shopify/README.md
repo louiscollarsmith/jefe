@@ -62,6 +62,12 @@ Backfill uses the existing offline Shopify session token, writes raw source reco
 
 Webhook endpoints verify Shopify HMAC signatures before parsing payloads, dedupe by Shopify delivery/event ID where available, write raw payloads to `ledger_events`, and process canonical upserts inline.
 
+## Onboarding
+
+Open `/app/onboarding` inside the embedded Shopify app to complete the founder-assisted setup flow. The flow captures 3/6/12 month goals, structured House Rules and manual COGS inputs for ingested Shopify variants.
+
+COGS can be saved as missing, estimated or confirmed. Missing COGS does not block onboarding; the shop stores a COGS completion percentage and confidence level so later verdicts can show lower-confidence margin ranges when cost data is incomplete.
+
 ## Verification
 
 ```shell
@@ -80,6 +86,7 @@ Implemented:
 - Placeholder `Today's Verdict` page
 - Placeholder cards for Daily Verdict, Inventory Guardian, Watchdog, Klaviyo Winback, Feedback Engine, and House Rules + Goals
 - Postgres-backed Prisma schema for Shopify sessions, tenant data, House Rules, goals, ledger events, commerce state, actions, executions, feedback, attribution, connectors, and cost metering
+- Founder-assisted onboarding for goals, House Rules, COGS inputs and completion state
 - Dev-only Shopify dummy store data loader for Ticket 003 seed data
 - Shopify ingestion for products, variants, inventory levels, orders, line items and refunds
 - HMAC-verified Shopify webhook ingestion with ledger dedupe

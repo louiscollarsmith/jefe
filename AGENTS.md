@@ -147,6 +147,7 @@ When coding:
 - Add tests.
 - Use TypeScript types properly.
 - Avoid unnecessary dependencies.
+- Shopify embedded app UI must use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions. Do not build merchant-facing Shopify UI with App Bridge web components, raw HTML controls, or ad hoc CSS unless there is a written exception in the ticket.
 - Never add production secrets.
 - Never request broad Shopify scopes without a written reason.
 - Never expose production customer data to AI tools.

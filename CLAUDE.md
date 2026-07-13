@@ -61,6 +61,10 @@ A feature is not done unless it is:
 - safe around merchant/customer data
 - compatible with the event-ledger architecture
 
+## Shopify UI
+
+Merchant-facing embedded Shopify app UI should use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions. Avoid App Bridge web components, raw HTML controls and ad hoc CSS unless the ticket explicitly approves an exception.
+
 ## Product truth
 
 The merchant should never have to trust “AI magic”.

@@ -12,13 +12,17 @@ Jefe uses Postgres as the source of truth. Prisma owns the initial schema and Sh
 
 ## House Rules And Goals
 
-`house_rules` and `goals` are first-class data. House Rules include structured JSON fields for enforceable constraints plus free-text rules for explanation and generation context. Actions persist `rules_consulted` and `rule_constraints_applied` so each proposal can cite the constraints it obeyed.
+`house_rules` and `goals` are first-class data. House Rules include structured JSON fields for enforceable constraints plus free-text rules for explanation and generation context. The winback-ready caps also have first-class columns for default/winback discount depth, audience size approval threshold, email cooldown, email frequency scope and BFCM freeze mode. Onboarding exposes these as a structured merchant policy context for future recommendation and approval code. Actions persist `rules_consulted` and `rule_constraints_applied` so each proposal can cite the constraints it obeyed.
+
+`shops` tracks onboarding state for the connected store: started/completed timestamps, goals completion, House Rules completion, COGS completion percentage and the overall COGS confidence level. This is shop-scoped because the Shopify install and commerce catalogue are shop-scoped, while each row still belongs to a merchant tenant.
 
 ## Commerce State
 
 `products`, `variants`, `orders`, `order_line_items`, `refunds`, `inventory_levels` and `cogs_inputs` store canonical commerce state. Connector payloads are retained in JSONB `raw_payload` fields for traceability.
 
 Shopify ingestion normalises source IDs, source timestamps, order financial/fulfillment status, variant inventory item IDs and inventory quantities needed by Daily Verdict and Inventory Guardian. Rich connector-specific shapes remain in `raw_payload`.
+
+Manual onboarding COGS rows use `source = manual_onboarding`, keep raw entry metadata in `raw_payload`, and mark each cost as `missing`, `estimated` or `confirmed` through `confidence_level`. Missing COGS is intentionally non-blocking; Daily Verdict should display lower confidence ranges until enough variant costs are estimated or confirmed.
 
 ## Actions And Verification
 
