@@ -23,8 +23,16 @@ export default function Index() {
       body: "Refund spikes, conversion drops, stock anomalies, and suspicious operational changes will appear here.",
     },
     {
-      heading: "Feedback",
+      heading: "Klaviyo Winback",
+      body: "Dormant customer segments, holdout plans, campaign drafts, approval gates, and verified results will appear here.",
+    },
+    {
+      heading: "Feedback Engine",
       body: "Merchant feedback on recommendations, briefs, and outcomes will be captured here.",
+    },
+    {
+      heading: "House Rules + Goals",
+      body: "Merchant goals, discount limits, brand rules, protected products, and rules consulted by proposals will appear here.",
     },
   ];
 
