@@ -18,6 +18,8 @@ Jefe uses Postgres as the source of truth. Prisma owns the initial schema and Sh
 
 `products`, `variants`, `orders`, `order_line_items`, `refunds`, `inventory_levels` and `cogs_inputs` store canonical commerce state. Connector payloads are retained in JSONB `raw_payload` fields for traceability.
 
+Shopify ingestion normalises source IDs, source timestamps, order financial/fulfillment status, variant inventory item IDs and inventory quantities needed by Daily Verdict and Inventory Guardian. Rich connector-specific shapes remain in `raw_payload`.
+
 ## Actions And Verification
 
 `actions` stores expected value, confidence, risk level, evidence, rules consulted, preview and verification class. `verification_class` is a Postgres enum with only `verified` and `estimated`; verified lift and estimated prevention should be queried and displayed separately.

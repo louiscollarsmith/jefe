@@ -28,7 +28,7 @@ SCOPES=read_locations,read_products,write_products,read_inventory,write_inventor
 ENABLE_DUMMY_STORE_LOADER=true
 ```
 
-## Dummy store data
+## Dummy Store Data
 
 For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. Set `ENABLE_DUMMY_STORE_LOADER=true` and install the app with:
 
@@ -38,10 +38,7 @@ SCOPES=read_locations,read_products,write_products,read_inventory,write_inventor
 
 The loader uses the authenticated Shopify Admin token to create fixture products, variants, inventory levels, test orders and one refund. After a successful run it writes an app-installation metafield marker in Shopify, so the button is disabled for that store.
 
-If the app shows every dummy-loader scope as missing after install, check
-`shopify.app.toml` first. The Shopify CLI install flow reads app scopes from
-that config, so `.env` alone is not enough. After changing scopes, reinstall the
-app or run the Shopify CLI scope update flow for the store.
+If the app shows every dummy-loader scope as missing after install, check `shopify.app.toml` first. The Shopify CLI install flow reads app scopes from that config, so `.env` alone is not enough. After changing scopes, reinstall the app or run the Shopify CLI scope update flow for the store.
 
 Scope reasons:
 
@@ -51,10 +48,19 @@ Scope reasons:
 - `read_locations`: place inventory at the store's primary location.
 - `read_products`, `read_inventory`, `read_orders`: support Ticket 003 ingestion/backfill reads.
 
-Order and refund fixture creation also requires protected customer data access
-for the app in the Shopify Partner Dashboard. For development stores, select
-protected customer data for this app before loading dummy data; a full review
-submission is not required for apps installed only on development stores.
+Order and refund fixture creation also requires protected customer data access for the app in the Shopify Partner Dashboard. For development stores, select protected customer data for this app before loading dummy data; a full review submission is not required for apps installed only on development stores.
+
+## Shopify Ingestion
+
+After installing the app on a development store, run a local backfill with:
+
+```shell
+npm run shopify:backfill -- --shop your-dev-store.myshopify.com
+```
+
+Backfill uses the existing offline Shopify session token, writes raw source records to `ledger_events`, and upserts canonical commerce rows for products, variants, inventory levels, orders, line items and refunds.
+
+Webhook endpoints verify Shopify HMAC signatures before parsing payloads, dedupe by Shopify delivery/event ID where available, write raw payloads to `ledger_events`, and process canonical upserts inline.
 
 ## Verification
 
@@ -75,10 +81,11 @@ Implemented:
 - Placeholder cards for Daily Verdict, Inventory Guardian, Watchdog, Klaviyo Winback, Feedback Engine, and House Rules + Goals
 - Postgres-backed Prisma schema for Shopify sessions, tenant data, House Rules, goals, ledger events, commerce state, actions, executions, feedback, attribution, connectors, and cost metering
 - Dev-only Shopify dummy store data loader for Ticket 003 seed data
+- Shopify ingestion for products, variants, inventory levels, orders, line items and refunds
+- HMAC-verified Shopify webhook ingestion with ledger dedupe
 
 Not implemented yet:
 
-- Shopify commerce data sync
 - AI recommendations
 - Klaviyo integration
 - Billing

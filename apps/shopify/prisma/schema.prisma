@@ -210,23 +210,25 @@ model LedgerEvent {
 }
 
 model Product {
-  id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId  String          @map("merchant_id") @db.Uuid
-  shopId      String          @map("shop_id") @db.Uuid
-  externalId  String          @map("external_id")
-  title       String
-  handle      String?
-  status      String?
-  vendor      String?
-  productType String?         @map("product_type")
-  rawPayload  Json            @default("{}") @map("raw_payload")
-  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant    Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop        Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  variants    Variant[]
-  lineItems   OrderLineItem[]
-  cogsInputs  CogsInput[]
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String          @map("merchant_id") @db.Uuid
+  shopId          String          @map("shop_id") @db.Uuid
+  externalId      String          @map("external_id")
+  title           String
+  handle          String?
+  status          String?
+  vendor          String?
+  productType     String?         @map("product_type")
+  sourceCreatedAt DateTime?       @map("source_created_at") @db.Timestamptz(6)
+  sourceUpdatedAt DateTime?       @map("source_updated_at") @db.Timestamptz(6)
+  rawPayload      Json            @default("{}") @map("raw_payload")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant        Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variants        Variant[]
+  lineItems       OrderLineItem[]
+  cogsInputs      CogsInput[]
 
   @@unique([shopId, externalId])
   @@index([merchantId])
@@ -234,25 +236,28 @@ model Product {
 }
 
 model Variant {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId         String              @map("merchant_id") @db.Uuid
-  shopId             String              @map("shop_id") @db.Uuid
-  productId          String              @map("product_id") @db.Uuid
-  externalId         String              @map("external_id")
-  sku                String?
-  title              String?
-  price              Decimal?            @db.Decimal(18, 2)
-  currency           String?             @default("GBP")
-  rawPayload         Json                @default("{}") @map("raw_payload")
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant           Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop               Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  product            Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
-  lineItems          OrderLineItem[]
-  inventoryLevels    InventoryLevel[]
-  cogsInputs         CogsInput[]
-  holdoutAssignments HoldoutAssignment[]
+  id                      String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId              String              @map("merchant_id") @db.Uuid
+  shopId                  String              @map("shop_id") @db.Uuid
+  productId               String              @map("product_id") @db.Uuid
+  externalId              String              @map("external_id")
+  sku                     String?
+  title                   String?
+  price                   Decimal?            @db.Decimal(18, 2)
+  currency                String?             @default("GBP")
+  inventoryItemExternalId String?             @map("inventory_item_external_id")
+  sourceCreatedAt         DateTime?           @map("source_created_at") @db.Timestamptz(6)
+  sourceUpdatedAt         DateTime?           @map("source_updated_at") @db.Timestamptz(6)
+  rawPayload              Json                @default("{}") @map("raw_payload")
+  createdAt               DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                    Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product                 Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  lineItems               OrderLineItem[]
+  inventoryLevels         InventoryLevel[]
+  cogsInputs              CogsInput[]
+  holdoutAssignments      HoldoutAssignment[]
 
   @@unique([shopId, externalId])
   @@index([merchantId])
@@ -267,12 +272,16 @@ model Order {
   externalId         String          @map("external_id")
   orderName          String?         @map("order_name")
   customerExternalId String?         @map("customer_external_id")
+  financialStatus    String?         @map("financial_status")
+  fulfillmentStatus  String?         @map("fulfillment_status")
   currency           String          @default("GBP")
   subtotalPrice      Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
   totalPrice         Decimal?        @map("total_price") @db.Decimal(18, 2)
   totalDiscount      Decimal?        @map("total_discount") @db.Decimal(18, 2)
   totalTax           Decimal?        @map("total_tax") @db.Decimal(18, 2)
   totalShipping      Decimal?        @map("total_shipping") @db.Decimal(18, 2)
+  sourceCreatedAt    DateTime?       @map("source_created_at") @db.Timestamptz(6)
+  sourceUpdatedAt    DateTime?       @map("source_updated_at") @db.Timestamptz(6)
   processedAt        DateTime?       @map("processed_at") @db.Timestamptz(6)
   rawPayload         Json            @default("{}") @map("raw_payload")
   createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -288,27 +297,28 @@ model Order {
 }
 
 model OrderLineItem {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId String   @map("merchant_id") @db.Uuid
-  shopId     String   @map("shop_id") @db.Uuid
-  orderId    String   @map("order_id") @db.Uuid
-  productId  String?  @map("product_id") @db.Uuid
-  variantId  String?  @map("variant_id") @db.Uuid
-  externalId String?  @map("external_id")
-  sku        String?
-  title      String?
-  quantity   Int
-  unitPrice  Decimal? @map("unit_price") @db.Decimal(18, 2)
-  totalPrice Decimal? @map("total_price") @db.Decimal(18, 2)
-  discount   Decimal? @db.Decimal(18, 2)
-  rawPayload Json     @default("{}") @map("raw_payload")
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product    Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variant    Variant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId          String   @map("merchant_id") @db.Uuid
+  shopId              String   @map("shop_id") @db.Uuid
+  orderId             String   @map("order_id") @db.Uuid
+  productId           String?  @map("product_id") @db.Uuid
+  variantId           String?  @map("variant_id") @db.Uuid
+  externalId          String?  @map("external_id")
+  sku                 String?
+  title               String?
+  quantity            Int
+  unitPrice           Decimal? @map("unit_price") @db.Decimal(18, 2)
+  totalPrice          Decimal? @map("total_price") @db.Decimal(18, 2)
+  discount            Decimal? @db.Decimal(18, 2)
+  discountAllocations Json     @default("[]") @map("discount_allocations")
+  rawPayload          Json     @default("{}") @map("raw_payload")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant            Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  order               Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variant             Variant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@unique([orderId, externalId])
   @@index([merchantId])
@@ -317,21 +327,22 @@ model OrderLineItem {
 }
 
 model Refund {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId  String    @map("merchant_id") @db.Uuid
-  shopId      String    @map("shop_id") @db.Uuid
-  orderId     String    @map("order_id") @db.Uuid
-  externalId  String    @map("external_id")
-  amount      Decimal?  @db.Decimal(18, 2)
-  currency    String    @default("GBP")
-  reason      String?
-  processedAt DateTime? @map("processed_at") @db.Timestamptz(6)
-  rawPayload  Json      @default("{}") @map("raw_payload")
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant    Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String    @map("merchant_id") @db.Uuid
+  shopId          String    @map("shop_id") @db.Uuid
+  orderId         String    @map("order_id") @db.Uuid
+  externalId      String    @map("external_id")
+  amount          Decimal?  @db.Decimal(18, 2)
+  currency        String    @default("GBP")
+  reason          String?
+  sourceCreatedAt DateTime? @map("source_created_at") @db.Timestamptz(6)
+  processedAt     DateTime? @map("processed_at") @db.Timestamptz(6)
+  rawPayload      Json      @default("{}") @map("raw_payload")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant        Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  order           Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@unique([shopId, externalId])
   @@index([merchantId, processedAt])
@@ -339,24 +350,26 @@ model Refund {
 }
 
 model InventoryLevel {
-  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId              String   @map("merchant_id") @db.Uuid
-  shopId                  String   @map("shop_id") @db.Uuid
-  variantId               String?  @map("variant_id") @db.Uuid
-  inventoryItemExternalId String?  @map("inventory_item_external_id")
-  locationExternalId      String   @map("location_external_id")
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId              String    @map("merchant_id") @db.Uuid
+  shopId                  String    @map("shop_id") @db.Uuid
+  variantId               String?   @map("variant_id") @db.Uuid
+  inventoryItemExternalId String?   @map("inventory_item_external_id")
+  locationExternalId      String    @map("location_external_id")
   available               Int?
   committed               Int?
   incoming                Int?
-  rawPayload              Json     @default("{}") @map("raw_payload")
-  observedAt              DateTime @default(now()) @map("observed_at") @db.Timestamptz(6)
-  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant                Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  variant                 Variant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  sourceUpdatedAt         DateTime? @map("source_updated_at") @db.Timestamptz(6)
+  rawPayload              Json      @default("{}") @map("raw_payload")
+  observedAt              DateTime  @default(now()) @map("observed_at") @db.Timestamptz(6)
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                    Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variant                 Variant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@unique([shopId, inventoryItemExternalId, locationExternalId])
+  @@index([shopId, inventoryItemExternalId])
   @@index([merchantId, observedAt])
   @@map("inventory_levels")
 }
