@@ -1,0 +1,221 @@
+{
+  "version": "2026-07-13.ticket-003",
+  "currency": "GBP",
+  "tags": ["jefe-dummy", "ticket-003"],
+  "products": [
+    {
+      "title": "Jefe Dummy Hero Hydration Pack",
+      "handle": "jefe-dummy-hero-hydration-pack",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Hero Product",
+      "scenario": "protected_hero_high_margin_low_stock",
+      "cogsHint": "18.50",
+      "variants": [
+        {
+          "sku": "JEFE-HERO-PACK-BLK",
+          "option": "Black",
+          "price": "64.00",
+          "inventory": 7
+        },
+        {
+          "sku": "JEFE-HERO-PACK-SND",
+          "option": "Sand",
+          "price": "64.00",
+          "inventory": 42
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Everyday Bottle",
+      "handle": "jefe-dummy-everyday-bottle",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Core Product",
+      "scenario": "steady_seller_known_cogs",
+      "cogsHint": "7.25",
+      "variants": [
+        {
+          "sku": "JEFE-BOTTLE-500",
+          "option": "500ml",
+          "price": "24.00",
+          "inventory": 128
+        },
+        {
+          "sku": "JEFE-BOTTLE-750",
+          "option": "750ml",
+          "price": "29.00",
+          "inventory": 86
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Margin Leak Hoodie",
+      "handle": "jefe-dummy-margin-leak-hoodie",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Apparel",
+      "scenario": "discounted_low_margin",
+      "cogsHint": "31.75",
+      "variants": [
+        {
+          "sku": "JEFE-HOODIE-MRG-M",
+          "option": "Medium",
+          "price": "48.00",
+          "inventory": 61
+        },
+        {
+          "sku": "JEFE-HOODIE-MRG-L",
+          "option": "Large",
+          "price": "48.00",
+          "inventory": 58
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Stockout Serum",
+      "handle": "jefe-dummy-stockout-serum",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Consumable",
+      "scenario": "stockout_risk",
+      "cogsHint": "9.40",
+      "variants": [
+        {
+          "sku": "JEFE-SERUM-30",
+          "option": "30ml",
+          "price": "38.00",
+          "inventory": 3
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Viral Tote",
+      "handle": "jefe-dummy-viral-tote",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Accessory",
+      "scenario": "sales_collapse_after_baseline",
+      "cogsHint": "6.80",
+      "variants": [
+        {
+          "sku": "JEFE-TOTE-VIRAL",
+          "option": "Natural",
+          "price": "22.00",
+          "inventory": 94
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Mystery Bundle",
+      "handle": "jefe-dummy-mystery-bundle",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Bundle",
+      "scenario": "missing_cogs_confidence_range",
+      "cogsHint": null,
+      "variants": [
+        {
+          "sku": "JEFE-BUNDLE-MYSTERY",
+          "option": "Default",
+          "price": "39.00",
+          "inventory": 34
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Hidden Gift Card",
+      "handle": "jefe-dummy-hidden-gift-card",
+      "status": "DRAFT",
+      "vendor": "Jefe Fixtures",
+      "productType": "Gift Card",
+      "scenario": "product_unavailable",
+      "cogsHint": "0.00",
+      "variants": [
+        {
+          "sku": "JEFE-GIFT-HIDDEN",
+          "option": "Hidden",
+          "price": "25.00",
+          "inventory": 0
+        }
+      ]
+    },
+    {
+      "title": "Jefe Dummy Dead Stock Candle",
+      "handle": "jefe-dummy-dead-stock-candle",
+      "status": "ACTIVE",
+      "vendor": "Jefe Fixtures",
+      "productType": "Home",
+      "scenario": "dead_stock_cash_tied_up",
+      "cogsHint": "12.10",
+      "variants": [
+        {
+          "sku": "JEFE-CANDLE-DEAD",
+          "option": "Cedar",
+          "price": "34.00",
+          "inventory": 240
+        }
+      ]
+    }
+  ],
+  "orders": [
+    {
+      "name": "#JDF-1001",
+      "daysAgo": 28,
+      "scenario": "baseline_healthy_mix",
+      "discountPercentage": null,
+      "refundSku": null,
+      "lineItems": [
+        { "sku": "JEFE-HERO-PACK-BLK", "quantity": 2 },
+        { "sku": "JEFE-BOTTLE-500", "quantity": 4 },
+        { "sku": "JEFE-TOTE-VIRAL", "quantity": 6 }
+      ]
+    },
+    {
+      "name": "#JDF-1002",
+      "daysAgo": 21,
+      "scenario": "baseline_tote_peak",
+      "discountPercentage": null,
+      "refundSku": null,
+      "lineItems": [
+        { "sku": "JEFE-TOTE-VIRAL", "quantity": 8 },
+        { "sku": "JEFE-BOTTLE-750", "quantity": 3 }
+      ]
+    },
+    {
+      "name": "#JDF-1003",
+      "daysAgo": 14,
+      "scenario": "discount_stacking_margin_leak",
+      "discountPercentage": 25,
+      "refundSku": null,
+      "lineItems": [
+        { "sku": "JEFE-HOODIE-MRG-M", "quantity": 3 },
+        { "sku": "JEFE-HOODIE-MRG-L", "quantity": 2 },
+        { "sku": "JEFE-BUNDLE-MYSTERY", "quantity": 1 }
+      ]
+    },
+    {
+      "name": "#JDF-1004",
+      "daysAgo": 7,
+      "scenario": "stockout_velocity",
+      "discountPercentage": null,
+      "refundSku": null,
+      "lineItems": [
+        { "sku": "JEFE-SERUM-30", "quantity": 5 },
+        { "sku": "JEFE-HERO-PACK-BLK", "quantity": 2 }
+      ]
+    },
+    {
+      "name": "#JDF-1005",
+      "daysAgo": 1,
+      "scenario": "refund_spike_and_recent_revenue_drop",
+      "discountPercentage": 10,
+      "refundSku": "JEFE-HOODIE-MRG-L",
+      "lineItems": [
+        { "sku": "JEFE-HOODIE-MRG-L", "quantity": 1 },
+        { "sku": "JEFE-BUNDLE-MYSTERY", "quantity": 2 },
+        { "sku": "JEFE-SERUM-30", "quantity": 2 }
+      ]
+    }
+  ]
+}
