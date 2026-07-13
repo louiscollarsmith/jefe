@@ -1,4 +1,5 @@
 import fixture from "../fixtures/dummy-store-data.json";
+import { getMissingShopifyScopes } from "./shopify-scopes.server.js";
 
 const MARKER_NAMESPACE = "jefe_dummy_data";
 const MARKER_KEY = "seeded";
@@ -283,16 +284,7 @@ export function getDummyFixtureSummary() {
 }
 
 export function getMissingDummyDataScopes(grantedScopes?: string | null) {
-  const grantedScopeSet = new Set(
-    grantedScopes
-      ?.split(",")
-      .map((scope) => scope.trim())
-      .filter(Boolean) ?? [],
-  );
-
-  return REQUIRED_DUMMY_DATA_SCOPES.filter(
-    (scope) => !grantedScopeSet.has(scope),
-  );
+  return getMissingShopifyScopes(REQUIRED_DUMMY_DATA_SCOPES, grantedScopes);
 }
 
 export async function getDummyDataStatus(

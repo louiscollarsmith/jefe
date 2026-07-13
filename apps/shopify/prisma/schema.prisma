@@ -77,36 +77,43 @@ model Merchant {
 }
 
 model Shop {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId         String              @map("merchant_id") @db.Uuid
-  platform           String              @default("shopify")
-  shopDomain         String              @map("shop_domain")
-  externalShopId     String?             @map("external_shop_id")
-  status             String              @default("active")
-  rawPayload         Json                @default("{}") @map("raw_payload")
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant           Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  users              MerchantUser[]
-  houseRules         HouseRule[]
-  goals              Goal[]
-  ledgerEvents       LedgerEvent[]
-  products           Product[]
-  variants           Variant[]
-  orders             Order[]
-  orderLineItems     OrderLineItem[]
-  refunds            Refund[]
-  inventoryLevels    InventoryLevel[]
-  cogsInputs         CogsInput[]
-  dailyBriefs        DailyBrief[]
-  actions            Action[]
-  executions         Execution[]
-  feedback           Feedback[]
-  provenanceLinks    ProvenanceLink[]
-  holdoutAssignments HoldoutAssignment[]
-  attributionResults AttributionResult[]
-  connectorAccounts  ConnectorAccount[]
-  costMetering       CostMetering[]
+  id                       String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId               String              @map("merchant_id") @db.Uuid
+  platform                 String              @default("shopify")
+  shopDomain               String              @map("shop_domain")
+  externalShopId           String?             @map("external_shop_id")
+  status                   String              @default("active")
+  rawPayload               Json                @default("{}") @map("raw_payload")
+  onboardingStartedAt      DateTime?           @map("onboarding_started_at") @db.Timestamptz(6)
+  onboardingCompletedAt    DateTime?           @map("onboarding_completed_at") @db.Timestamptz(6)
+  goalsCompleted           Boolean             @default(false) @map("goals_completed")
+  houseRulesCompleted      Boolean             @default(false) @map("house_rules_completed")
+  cogsCompletionPercentage Decimal             @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
+  cogsConfidenceLevel      String              @default("missing") @map("cogs_confidence_level")
+  onboardingMetadata       Json                @default("{}") @map("onboarding_metadata")
+  createdAt                DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                 Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  users                    MerchantUser[]
+  houseRules               HouseRule[]
+  goals                    Goal[]
+  ledgerEvents             LedgerEvent[]
+  products                 Product[]
+  variants                 Variant[]
+  orders                   Order[]
+  orderLineItems           OrderLineItem[]
+  refunds                  Refund[]
+  inventoryLevels          InventoryLevel[]
+  cogsInputs               CogsInput[]
+  dailyBriefs              DailyBrief[]
+  actions                  Action[]
+  executions               Execution[]
+  feedback                 Feedback[]
+  provenanceLinks          ProvenanceLink[]
+  holdoutAssignments       HoldoutAssignment[]
+  attributionResults       AttributionResult[]
+  connectorAccounts        ConnectorAccount[]
+  costMetering             CostMetering[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -135,26 +142,33 @@ model MerchantUser {
 }
 
 model HouseRule {
-  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId          String        @map("merchant_id") @db.Uuid
-  shopId              String?       @map("shop_id") @db.Uuid
-  title               String
-  status              String        @default("active")
-  structuredRules     Json          @default("{}") @map("structured_rules")
-  freeTextRules       String?       @map("free_text_rules")
-  maxDiscountBps      Int?          @map("max_discount_bps")
-  emailFrequencyRules Json          @default("{}") @map("email_frequency_rules")
-  brandVoiceRules     Json          @default("{}") @map("brand_voice_rules")
-  protectedProducts   Json          @default("[]") @map("protected_products")
-  marginPriorityRules Json          @default("{}") @map("margin_priority_rules")
-  seasonalPriorities  Json          @default("{}") @map("seasonal_priorities")
-  riskyActionRules    Json          @default("{}") @map("risky_action_rules")
-  lastEditedByUserId  String?       @map("last_edited_by_user_id") @db.Uuid
-  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant            Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                Shop?         @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  lastEditedByUser    MerchantUser? @relation("HouseRuleEditor", fields: [lastEditedByUserId], references: [id], onDelete: SetNull)
+  id                               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId                       String        @map("merchant_id") @db.Uuid
+  shopId                           String?       @map("shop_id") @db.Uuid
+  title                            String
+  status                           String        @default("active")
+  structuredRules                  Json          @default("{}") @map("structured_rules")
+  freeTextRules                    String?       @map("free_text_rules")
+  maxDiscountBps                   Int?          @map("max_discount_bps")
+  maxDefaultDiscountBps            Int?          @map("max_default_discount_bps")
+  maxWinbackDiscountBps            Int?          @map("max_winback_discount_bps")
+  allowWinbackDiscountAboveDefault Boolean       @default(false) @map("allow_winback_discount_above_default")
+  maxCampaignAudienceSize          Int?          @map("max_campaign_audience_size")
+  emailCooldownDays                Int?          @map("email_cooldown_days")
+  emailFrequencyScope              String?       @map("email_frequency_scope")
+  bfcmFreezeMode                   Boolean       @default(false) @map("bfcm_freeze_mode")
+  emailFrequencyRules              Json          @default("{}") @map("email_frequency_rules")
+  brandVoiceRules                  Json          @default("{}") @map("brand_voice_rules")
+  protectedProducts                Json          @default("[]") @map("protected_products")
+  marginPriorityRules              Json          @default("{}") @map("margin_priority_rules")
+  seasonalPriorities               Json          @default("{}") @map("seasonal_priorities")
+  riskyActionRules                 Json          @default("{}") @map("risky_action_rules")
+  lastEditedByUserId               String?       @map("last_edited_by_user_id") @db.Uuid
+  createdAt                        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                         Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                             Shop?         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  lastEditedByUser                 MerchantUser? @relation("HouseRuleEditor", fields: [lastEditedByUserId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, status])
   @@index([shopId])
@@ -375,25 +389,27 @@ model InventoryLevel {
 }
 
 model CogsInput {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId    String    @map("merchant_id") @db.Uuid
-  shopId        String?   @map("shop_id") @db.Uuid
-  productId     String?   @map("product_id") @db.Uuid
-  variantId     String?   @map("variant_id") @db.Uuid
-  sku           String?
-  costAmount    Decimal   @map("cost_amount") @db.Decimal(18, 4)
-  currency      String    @default("GBP")
-  source        String
-  confidence    Decimal?  @db.Decimal(5, 4)
-  effectiveFrom DateTime  @map("effective_from") @db.Timestamptz(6)
-  effectiveTo   DateTime? @map("effective_to") @db.Timestamptz(6)
-  rawPayload    Json      @default("{}") @map("raw_payload")
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop          Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  product       Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variant       Variant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId          String    @map("merchant_id") @db.Uuid
+  shopId              String?   @map("shop_id") @db.Uuid
+  productId           String?   @map("product_id") @db.Uuid
+  variantId           String?   @map("variant_id") @db.Uuid
+  sku                 String?
+  costAmount          Decimal   @map("cost_amount") @db.Decimal(18, 4)
+  currency            String    @default("GBP")
+  source              String
+  confidence          Decimal?  @db.Decimal(5, 4)
+  confidenceLevel     String    @default("confirmed") @map("confidence_level")
+  confirmedByMerchant Boolean   @default(false) @map("confirmed_by_merchant")
+  effectiveFrom       DateTime  @map("effective_from") @db.Timestamptz(6)
+  effectiveTo         DateTime? @map("effective_to") @db.Timestamptz(6)
+  rawPayload          Json      @default("{}") @map("raw_payload")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant            Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  product             Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variant             Variant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, sku])
   @@index([variantId, effectiveFrom])
