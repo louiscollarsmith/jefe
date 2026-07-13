@@ -4,6 +4,6 @@ import { handleShopifyWebhookRequest } from "../lib/ingestion/shopify/webhooks.s
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   return handleShopifyWebhookRequest(db, request, {
-    expectedTopic: "app/uninstalled",
+    expectedTopic: "orders/updated",
   });
 };

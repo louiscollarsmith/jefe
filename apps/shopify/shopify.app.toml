@@ -20,6 +20,26 @@ api_version = "2026-07"
   topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
 
+  [[webhooks.subscriptions]]
+  topics = [ "inventory_levels/update" ]
+  uri = "/webhooks/inventory_levels/update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/create" ]
+  uri = "/webhooks/orders/create"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/updated" ]
+  uri = "/webhooks/orders/updated"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/update" ]
+  uri = "/webhooks/products/update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "/webhooks/refunds/create"
+
 [access_scopes]
 # Dummy store loader needs these in development to create Ticket 03 fixture
 # products/variants, inventory levels, test orders/refunds, and the primary
