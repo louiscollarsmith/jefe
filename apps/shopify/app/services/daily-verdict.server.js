@@ -791,7 +791,8 @@ function roundPercent(value) {
  * @param {string} currency
  */
 function formatMoney(value, currency) {
-  const symbol = currency === "GBP" ? "£" : `${currency} `;
+  const safeCurrency = isCurrencyCode(currency) ? currency : "GBP";
+  const symbol = safeCurrency === "GBP" ? "£" : `${safeCurrency} `;
 
   return `${symbol}${roundMoney(value).toLocaleString("en-GB", {
     minimumFractionDigits: 2,
@@ -804,10 +805,19 @@ function formatMoney(value, currency) {
  */
 function firstCurrency(lineItems) {
   return (
-    lineItems.find((lineItem) => lineItem.order?.currency)?.order?.currency ??
-    lineItems.find((lineItem) => lineItem.variant?.currency)?.variant?.currency ??
+    lineItems.find((lineItem) => isCurrencyCode(lineItem.order?.currency))?.order
+      ?.currency ??
+    lineItems.find((lineItem) => isCurrencyCode(lineItem.variant?.currency))
+      ?.variant?.currency ??
     null
   );
+}
+
+/**
+ * @param {unknown} value
+ */
+function isCurrencyCode(value) {
+  return typeof value === "string" && /^[A-Z]{3}$/.test(value);
 }
 
 /**

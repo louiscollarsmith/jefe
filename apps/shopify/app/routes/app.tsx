@@ -34,6 +34,11 @@ export default function App() {
       onClick: () => navigate("/app"),
     },
     {
+      label: "Inventory Guardian",
+      selected: location.pathname === "/app/inventory-guardian",
+      onClick: () => navigate("/app/inventory-guardian"),
+    },
+    {
       label: "Manager Settings",
       selected: location.pathname === "/app/onboarding",
       onClick: () => navigate("/app/onboarding"),

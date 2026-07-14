@@ -27,17 +27,17 @@ export default function Changelog() {
   const { entries } = useLoaderData<typeof loader>();
 
   return (
-    <Page title="Changelog">
+    <Page>
       <Layout>
         <Layout.Section>
           <InlineStack align="center">
-            <Box width="100%" maxWidth="860px">
+            <Box width="100%" maxWidth="980px">
               <BlockStack gap="500">
                 <BlockStack gap="100">
-                  <Text as="h1" variant="headingXl">
+                  <Text as="h1" variant="heading2xl">
                     Changelog
                   </Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
+                  <Text as="p" variant="bodyLg" tone="subdued">
                     Product updates, fixes and internal improvements.
                   </Text>
                 </BlockStack>
