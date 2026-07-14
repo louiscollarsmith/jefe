@@ -154,6 +154,12 @@ When coding:
 - Never implement unapproved external write actions.
 
 Before finishing:
+- Before finishing any ticket, update `CHANGELOG.md` using today's UK/London date.
+- If the current date section does not exist in `CHANGELOG.md`, create it.
+- Add a concise entry under Added / Changed / Fixed / Removed / Security / Internal.
+- Do not duplicate entries.
+- Use merchant/operator-facing language, not noisy implementation details.
+- Mention the changelog update in the PR summary.
 - Run typecheck.
 - Run lint.
 - Run tests.

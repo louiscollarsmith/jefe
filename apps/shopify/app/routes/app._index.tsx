@@ -1,21 +1,11 @@
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
+import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { useLoaderData, useNavigate } from "react-router";
 import {
-  Form,
-  useActionData,
-  useLoaderData,
-  useNavigate,
-  useNavigation,
-} from "react-router";
-import {
-  Banner,
   BlockStack,
-  Button,
+  Box,
   Card,
   InlineGrid,
+  InlineStack,
   Layout,
   Link,
   Page,
@@ -23,238 +13,214 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import {
-  getDummyDataStatus,
-  getDummyFixtureSummary,
-  getMissingDummyDataScopes,
-  seedDummyStoreData,
-} from "../services/dummy-store-data.server";
+import prisma from "../db.server";
+import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { generateDailyVerdict } from "../services/daily-verdict.server";
+
+type DailyVerdictView = {
+  headline: string;
+  summary: string;
+  period: {
+    display: string;
+  };
+  sections: {
+    whatHappened: string;
+    whatMatters: string;
+    confidence: string;
+    nextStep: string;
+  };
+  revenue: {
+    gross: number;
+    net: number;
+    refunded: number;
+    currency: string;
+  };
+  margin: {
+    estimatedGrossProfit: number | null;
+    confidenceLevel: "low" | "medium" | "high";
+    cogsCoveragePercent: number;
+  };
+  highlights: Array<{
+    type: string;
+    title: string;
+    message: string;
+    confidence: "low" | "medium" | "high";
+    evidence?: {
+      productName?: string;
+      variantName?: string | null;
+      sku?: string | null;
+      unitsSold?: number;
+      revenue?: number;
+      unitCogs?: number | null;
+      grossProfit?: number | null;
+      marginPercent?: number | null;
+      confidence?: "low" | "medium" | "high";
+      cogsCoveragePercent?: number;
+      refundRatePercent?: number;
+      refundedAmount?: number;
+    };
+  }>;
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const missingScopes = getMissingDummyDataScopes(session.scope);
-  const dummyDataStatus = await getDummyDataStatus(admin, {
-    skipExistingProductCheck: missingScopes.includes("read_products"),
+  const { session } = await authenticate.admin(request);
+  const { merchant, shop } = await ensureShopifyTenant(prisma, {
+    shopDomain: session.shop,
+    accessTokenSessionId: session.id,
+    scopes: session.scope?.split(",").filter(Boolean) ?? [],
+    rawPayload: { source: "daily_verdict" },
+  });
+  const dailyBrief = await generateDailyVerdict(prisma, {
+    merchantId: merchant.id,
+    shopId: shop.id,
   });
 
   return {
-    shop: session.shop,
-    dummyData: {
-      enabled: process.env.ENABLE_DUMMY_STORE_LOADER === "true",
-      missingScopes,
-      status: dummyDataStatus,
-      fixture: getDummyFixtureSummary(),
-    },
+    dailyVerdict: dailyBrief.verdict,
+    generatedAt: dailyBrief.updatedAt.toISOString(),
   };
 };
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const formData = await request.formData();
-  const intent = formData.get("intent");
-
-  if (intent !== "seed-dummy-store-data") {
-    return { ok: false, error: "Unknown action." };
-  }
-
-  if (process.env.ENABLE_DUMMY_STORE_LOADER !== "true") {
-    return {
-      ok: false,
-      error: "Dummy store data loader is disabled for this environment.",
-    };
-  }
-
-  const missingScopes = getMissingDummyDataScopes(session.scope);
-
-  if (missingScopes.length > 0) {
-    return {
-      ok: false,
-      error: `Dummy store data loader is missing Shopify scopes: ${missingScopes.join(
-        ", ",
-      )}. Update the app scopes and reinstall this store.`,
-    };
-  }
-
-  try {
-    const result = await seedDummyStoreData(admin, session.shop);
-
-    return { ok: true, result };
-  } catch (error) {
-    return {
-      ok: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Dummy store data could not be loaded.",
-    };
-  }
-};
-
 export default function Index() {
-  const { shop, dummyData } = useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
+  const { dailyVerdict: rawDailyVerdict, generatedAt } =
+    useLoaderData<typeof loader>();
+  const dailyVerdict = rawDailyVerdict as unknown as DailyVerdictView;
   const navigate = useNavigate();
-  const navigation = useNavigation();
-  const isSubmitting =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "seed-dummy-store-data";
-  const seedButtonDisabled =
-    !dummyData.enabled ||
-    dummyData.status.seeded ||
-    dummyData.missingScopes.length > 0 ||
-    isSubmitting;
-  const seedResult = actionData?.ok ? actionData.result : null;
-  const sections = [
-    {
-      heading: "Daily Verdict",
-      body: "Contribution margin, top winners, top losers, margin leaks, and missing data warnings will appear here.",
-    },
-    {
-      heading: "Inventory Guardian",
-      body: "Stockout dates, margin at risk, reorder quantities, and supplier draft actions will appear here.",
-    },
-    {
-      heading: "Watchdog",
-      body: "Refund spikes, conversion drops, stock anomalies, and suspicious operational changes will appear here.",
-    },
-    {
-      heading: "Klaviyo Winback",
-      body: "Dormant customer segments, holdout plans, campaign drafts, approval gates, and verified results will appear here.",
-    },
-    {
-      heading: "Feedback Engine",
-      body: "Merchant feedback on recommendations, briefs, and outcomes will be captured here.",
-    },
-    {
-      heading: "House Rules + Goals",
-      body: "Merchant goals, discount limits, brand rules, protected products, and rules consulted by proposals will appear here.",
-    },
+  const briefSections = [
+    ["What happened", dailyVerdict.sections.whatHappened],
+    ["What matters", dailyVerdict.sections.whatMatters],
+    ["Confidence", dailyVerdict.sections.confidence],
+    ["Next step", dailyVerdict.sections.nextStep],
   ];
 
   return (
-    <Page title="Today's Verdict">
+    <Page>
       <Layout>
         <Layout.Section>
-          <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="400">
-              <Text as="p" variant="bodyMd">
-                AI Ecom Manager will open each day with what happened, what
-                matters, the money at stake, the recommended action, and the
-                evidence behind it.
-              </Text>
-              <Link onClick={() => navigate("/app/onboarding")}>
-                Open founder onboarding for goals, House Rules, and COGS
-              </Link>
-              </BlockStack>
-            </Card>
-            <InlineGrid columns={{ xs: 1, sm: 2, md: 3 }} gap="400">
-              {sections.map((section) => (
-                <Card key={section.heading} background="bg-surface-secondary">
-                  <BlockStack gap="200">
-                    <Text as="h2" variant="headingMd">
-                      {section.heading}
+          <InlineStack align="center">
+            <Box width="100%" maxWidth="980px">
+              <BlockStack gap="500">
+                <BlockStack gap="100">
+                  <Text as="h1" variant="heading2xl">
+                    Today&apos;s Verdict
+                  </Text>
+                  <Text as="p" variant="bodyLg" tone="subdued">
+                    {dailyVerdict.period.display} · Generated{" "}
+                    {formatDateTime(generatedAt)} ·{" "}
+                    {formatConfidence(dailyVerdict.margin.confidenceLevel)}{" "}
+                    confidence
+                  </Text>
+                </BlockStack>
+
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Verdict
                     </Text>
-                    <Text as="p" variant="bodyMd" tone="subdued">
-                      {section.body}
+                    <Text as="h1" variant="headingXl">
+                      {dailyVerdict.headline}
                     </Text>
+                    <Link onClick={() => navigate("/app/onboarding")}>
+                      Manager Settings
+                    </Link>
                   </BlockStack>
                 </Card>
-              ))}
-            </InlineGrid>
-          </BlockStack>
-        </Layout.Section>
 
-        <Layout.Section variant="oneThird">
-          <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="200">
-                <Text as="h2" variant="headingMd">
-                  MVP status
-                </Text>
-                <Text as="p" variant="bodyMd">
-                  This scaffold is intentionally read-only. Shopify data sync,
-                  recommendations, approvals, and measured write loops will be
-                  added in later tickets.
-                </Text>
-              </BlockStack>
-            </Card>
+                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
+                  <Card>
+                    <MetricBlock
+                      label="Gross revenue"
+                      value={formatMoney(
+                        dailyVerdict.revenue.gross,
+                        dailyVerdict.revenue.currency,
+                      )}
+                    />
+                  </Card>
+                  <Card>
+                    <MetricBlock
+                      label="Net after refunds"
+                      value={formatMoney(
+                        dailyVerdict.revenue.net,
+                        dailyVerdict.revenue.currency,
+                      )}
+                    />
+                  </Card>
+                  <Card>
+                    <MetricBlock
+                      label="Estimated gross profit"
+                      value={
+                        dailyVerdict.margin.estimatedGrossProfit === null
+                          ? "Missing"
+                          : formatMoney(
+                              dailyVerdict.margin.estimatedGrossProfit,
+                              dailyVerdict.revenue.currency,
+                            )
+                      }
+                    />
+                  </Card>
+                  <Card>
+                    <MetricBlock
+                      label="Margin confidence"
+                      value={formatConfidence(
+                        dailyVerdict.margin.confidenceLevel,
+                      )}
+                    />
+                  </Card>
+                </InlineGrid>
 
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Dummy store data
-                </Text>
-                <Text as="p" variant="bodyMd">
-                  Load Ticket 03 seed data into {shop}:{" "}
-                  {dummyData.fixture.productCount} products,{" "}
-                  {dummyData.fixture.variantCount} variants,{" "}
-                  {dummyData.fixture.orderCount} test orders, and{" "}
-                  {dummyData.fixture.refundCount} refund.
-                </Text>
+                <Card>
+                  <BlockStack gap="500">
+                    <BlockStack gap="100">
+                      <Text as="h2" variant="headingLg">
+                        Operator brief
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        The read-only call for this period.
+                      </Text>
+                    </BlockStack>
+                    <BlockStack gap="400">
+                      {briefSections.map(([heading, body]) => (
+                        <BlockStack key={heading} gap="100">
+                          <Text as="h3" variant="headingMd">
+                            {heading}
+                          </Text>
+                          <Text as="p" variant="bodyMd" tone="subdued">
+                            {body}
+                          </Text>
+                        </BlockStack>
+                      ))}
+                    </BlockStack>
+                  </BlockStack>
+                </Card>
 
-                {dummyData.status.seeded ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Dummy data exists from {dummyData.status.seededAt}. The
-                    loader is disabled for this store to avoid duplicate fixture
-                    data.
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingLg">
+                    Insight cards
                   </Text>
-                ) : null}
-
-                {!dummyData.enabled ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Set ENABLE_DUMMY_STORE_LOADER=true in the app environment to
-                    enable this dev-only write path.
-                  </Text>
-                ) : null}
-
-                {dummyData.missingScopes.length > 0 ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      Missing Shopify scopes:{" "}
-                      {dummyData.missingScopes.join(", ")}. Update the app
-                      scopes and reinstall this store.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {actionData && !actionData.ok ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      {actionData.error}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {seedResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Loaded {seedResult.productsCreated} products,{" "}
-                      {seedResult.variantsCreated} variants,{" "}
-                      {seedResult.ordersCreated} orders, and{" "}
-                      {seedResult.refundsCreated} refund.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="seed-dummy-store-data"
-                  />
-                  <Button
-                    submit
-                    variant="primary"
-                    disabled={seedButtonDisabled}
-                    loading={isSubmitting}
-                  >
-                    {isSubmitting ? "Loading data" : "Load dummy store data"}
-                  </Button>
-                </Form>
+                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
+                    {dailyVerdict.highlights.map((highlight) => (
+                      <Card key={`${highlight.type}-${highlight.title}`}>
+                        <BlockStack gap="300">
+                          <Text as="h3" variant="headingMd">
+                            {highlight.title}
+                          </Text>
+                          <Text as="p" variant="bodyMd" tone="subdued">
+                            {highlight.message}
+                          </Text>
+                          {highlight.evidence ? (
+                            <HighlightEvidence
+                              evidence={highlight.evidence}
+                              currency={dailyVerdict.revenue.currency}
+                            />
+                          ) : null}
+                        </BlockStack>
+                      </Card>
+                    ))}
+                  </InlineGrid>
+                </BlockStack>
               </BlockStack>
-            </Card>
-          </BlockStack>
+            </Box>
+          </InlineStack>
         </Layout.Section>
       </Layout>
     </Page>
@@ -264,3 +230,114 @@ export default function Index() {
 export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
+
+function MetricBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <BlockStack gap="100">
+      <Text as="p" variant="bodySm" tone="subdued">
+        {label}
+      </Text>
+      <Text as="p" variant="headingLg">
+        {value}
+      </Text>
+    </BlockStack>
+  );
+}
+
+function HighlightEvidence({
+  evidence,
+  currency,
+}: {
+  evidence: NonNullable<DailyVerdictView["highlights"][number]["evidence"]>;
+  currency: string;
+}) {
+  const rows = [
+    ["Product", evidence.productName],
+    ["SKU", evidence.sku],
+    ["Units sold", evidence.unitsSold],
+    [
+      "Revenue",
+      evidence.revenue === undefined
+        ? undefined
+        : formatMoney(evidence.revenue, currency),
+    ],
+    [
+      "COGS",
+      evidence.unitCogs === undefined || evidence.unitCogs === null
+        ? "Missing"
+        : formatMoney(evidence.unitCogs, currency),
+    ],
+    [
+      "Gross profit",
+      evidence.grossProfit === undefined || evidence.grossProfit === null
+        ? "Missing"
+        : formatMoney(evidence.grossProfit, currency),
+    ],
+    [
+      "Margin",
+      evidence.marginPercent === undefined || evidence.marginPercent === null
+        ? "Missing"
+        : `${evidence.marginPercent}%`,
+    ],
+    [
+      "COGS coverage",
+      evidence.cogsCoveragePercent === undefined
+        ? undefined
+        : `${evidence.cogsCoveragePercent}%`,
+    ],
+    [
+      "Refund rate",
+      evidence.refundRatePercent === undefined
+        ? undefined
+        : `${evidence.refundRatePercent}%`,
+    ],
+    [
+      "Refunded",
+      evidence.refundedAmount === undefined
+        ? undefined
+        : formatMoney(evidence.refundedAmount, currency),
+    ],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+
+  return (
+    <BlockStack gap="200">
+      <Text as="p" variant="bodySm" tone="subdued">
+        Evidence
+      </Text>
+      <InlineGrid columns={{ xs: 1, sm: 2 }} gap="200">
+        {rows.map(([label, value]) => (
+          <BlockStack key={label} gap="050">
+            <Text as="p" variant="bodySm" tone="subdued">
+              {label}
+            </Text>
+            <Text as="p" variant="bodyMd">
+              {value}
+            </Text>
+          </BlockStack>
+        ))}
+      </InlineGrid>
+    </BlockStack>
+  );
+}
+
+function formatMoney(value: number, currency: string) {
+  const symbol = currency === "GBP" ? "£" : `${currency} `;
+
+  return `${symbol}${Number(value).toLocaleString("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatConfidence(confidence: "low" | "medium" | "high") {
+  return confidence[0].toUpperCase() + confidence.slice(1);
+}

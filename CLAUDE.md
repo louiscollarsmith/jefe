@@ -47,9 +47,19 @@ Every PR must include:
 - files changed
 - tests run
 - screenshots if UI changed
+- changelog entry added or a clear reason it was not needed
+- confirmation that the PR summary mentions the changelog update
 - risks
 - assumptions
 - follow-up tasks
+
+Before finishing any ticket:
+- update `CHANGELOG.md` using today's UK/London date
+- if the current date section does not exist in `CHANGELOG.md`, create it
+- add a concise entry under Added / Changed / Fixed / Removed / Security / Internal
+- do not duplicate entries
+- use merchant/operator-facing language, not noisy implementation details
+- mention the changelog update in the PR summary
 
 ## Quality bar
 
@@ -57,6 +67,7 @@ A feature is not done unless it is:
 - testable
 - typed
 - documented enough for the next agent
+- reflected in `CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour
 - scoped to the ticket
 - safe around merchant/customer data
 - compatible with the event-ledger architecture
