@@ -9,6 +9,7 @@ import {
 import { verifyShopifyWebhookHmac } from "../app/lib/shopify/webhook-hmac.server.js";
 import { processShopifyWebhook } from "../app/lib/ingestion/shopify/webhooks.server.js";
 import { runShopifyBackfill } from "../app/lib/ingestion/shopify/backfill.server.js";
+import { currencyCode } from "../app/lib/ingestion/shopify/normalize.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const silentLogger = {
@@ -77,6 +78,13 @@ test("Shopify webhook HMAC verification accepts valid signatures only", () => {
 
   assert.equal(verifyShopifyWebhookHmac(rawBody, valid, secret), true);
   assert.equal(verifyShopifyWebhookHmac(rawBody, "invalid", secret), false);
+});
+
+test("Shopify currency normalization does not treat string prices as currency codes", () => {
+  assert.equal(currencyCode("49.00"), "GBP");
+  assert.equal(currencyCode("GBP"), "GBP");
+  assert.equal(currencyCode({ amount: "49.00", currencyCode: "GBP" }), "GBP");
+  assert.equal(currencyCode({ amount: "49.00", currencyCode: "49.00" }), "GBP");
 });
 
 test("Shopify webhook ingestion dedupes and upserts products", async (t) => {

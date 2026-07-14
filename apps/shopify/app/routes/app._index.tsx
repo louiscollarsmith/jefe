@@ -126,6 +126,21 @@ export default function Index() {
                   </BlockStack>
                 </Card>
 
+                <Card>
+                  <BlockStack gap="200">
+                    <Text as="h2" variant="headingMd">
+                      Inventory Guardian
+                    </Text>
+                    <Text as="p" variant="bodyMd" tone="subdued">
+                      Stockout risk, revenue at risk and reorder quantity
+                      estimates are now available in their own operator view.
+                    </Text>
+                    <Link onClick={() => navigate("/app/inventory-guardian")}>
+                      Open Inventory Guardian
+                    </Link>
+                  </BlockStack>
+                </Card>
+
                 <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
                   <Card>
                     <MetricBlock
@@ -321,12 +336,17 @@ function HighlightEvidence({
 }
 
 function formatMoney(value: number, currency: string) {
-  const symbol = currency === "GBP" ? "£" : `${currency} `;
+  const safeCurrency = isCurrencyCode(currency) ? currency : "GBP";
+  const symbol = safeCurrency === "GBP" ? "£" : `${safeCurrency} `;
 
   return `${symbol}${Number(value).toLocaleString("en-GB", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function isCurrencyCode(value: string) {
+  return /^[A-Z]{3}$/.test(value);
 }
 
 function formatDateTime(value: string) {

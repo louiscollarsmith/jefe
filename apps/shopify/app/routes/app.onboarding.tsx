@@ -349,8 +349,17 @@ export default function Onboarding() {
     setHouseRulesForm((current) => ({ ...current, [field]: value }));
   };
   return (
-    <Page title="Founder onboarding">
+    <Page>
       <BlockStack gap="500">
+        <BlockStack gap="100">
+          <Text as="h1" variant="heading2xl">
+            Manager Settings
+          </Text>
+          <Text as="p" variant="bodyLg" tone="subdued">
+            Goals, House Rules and cost assumptions for {data.shop.domain}.
+          </Text>
+        </BlockStack>
+
         <Card>
           <BlockStack gap="400">
             <Text as="p" variant="bodyMd">

@@ -24,11 +24,19 @@ export function moneyAmount(value) {
 
 /** @param {unknown} value */
 export function currencyCode(value) {
-  if (typeof value === "string" && value) return value;
+  if (typeof value === "string" && isCurrencyCode(value)) return value;
   if (typeof value === "object" && value && "currencyCode" in value) {
-    return typeof value.currencyCode === "string" ? value.currencyCode : "GBP";
+    return typeof value.currencyCode === "string" &&
+      isCurrencyCode(value.currencyCode)
+      ? value.currencyCode
+      : "GBP";
   }
   return "GBP";
+}
+
+/** @param {string} value */
+function isCurrencyCode(value) {
+  return /^[A-Z]{3}$/.test(value);
 }
 
 /**
