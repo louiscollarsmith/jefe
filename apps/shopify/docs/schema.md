@@ -24,6 +24,10 @@ Shopify ingestion normalises source IDs, source timestamps, order financial/fulf
 
 Manual onboarding COGS rows use `source = manual_onboarding`, keep raw entry metadata in `raw_payload`, and mark each cost as `missing`, `estimated` or `confirmed` through `confidence_level`. Missing COGS is intentionally non-blocking; Daily Verdict should display lower confidence ranges until enough variant costs are estimated or confirmed.
 
+## Daily Briefs
+
+`daily_briefs` stores deterministic Daily Verdict v0 output in JSONB. The `verdict` payload includes the analysed period, merchant-facing headline, structured operator brief sections, compatibility summary, revenue totals, sold-unit COGS coverage, margin confidence, typed highlights and evidence. The `metrics` payload duplicates the main numeric slices for easier querying. V0 confidence is based on sold-unit COGS coverage for the selected period, not catalogue-wide COGS completion.
+
 ## Actions And Verification
 
 `actions` stores expected value, confidence, risk level, evidence, rules consulted, preview and verification class. `verification_class` is a Postgres enum with only `verified` and `estimated`; verified lift and estimated prevention should be queried and displayed separately.
