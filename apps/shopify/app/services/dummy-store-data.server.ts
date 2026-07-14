@@ -1,10 +1,15 @@
 import fixture from "../fixtures/dummy-store-data.json";
+import watchdogScenarioFixture from "../fixtures/watchdog-scenario-data.json";
 import { getMissingShopifyScopes } from "./shopify-scopes.server.js";
 
 const MARKER_NAMESPACE = "jefe_dummy_data";
 const MARKER_KEY = "seeded";
 const DUMMY_TAG = "jefe-dummy";
+const WATCHDOG_MARKER_NAMESPACE = "jefe_watchdog_scenarios";
+const WATCHDOG_MARKER_KEY = "seeded";
+const WATCHDOG_TAG = "jefe-watchdog-scenario";
 const REFUND_RETRY_DELAYS_MS = [1500, 3000, 6000, 10000, 15000];
+const SHOPIFY_RETRY_DELAYS_MS = [1000, 2500, 5000, 10000, 20000, 30000];
 const REQUIRED_DUMMY_DATA_SCOPES = [
   "read_locations",
   "read_products",
@@ -39,6 +44,8 @@ type DummyProduct = {
   title: string;
   handle: string;
   status: "ACTIVE" | "DRAFT";
+  finalStatus?: "ACTIVE" | "DRAFT";
+  finalInventory?: number;
   vendor: string;
   productType: string;
   scenario: string;
@@ -64,8 +71,14 @@ type DummyFixture = {
   version: string;
   currency: "GBP";
   tags: string[];
+  scenarios?: Array<{
+    key: string;
+    title: string;
+    description: string;
+  }>;
   products: DummyProduct[];
   orders: DummyOrder[];
+  notes?: string[];
 };
 
 type SeededMarker = {
@@ -75,19 +88,25 @@ type SeededMarker = {
   productCount: number;
   orderCount: number;
   refundCount: number;
+  scenarioCount?: number;
 };
 
-type DummyDataStatus =
-  | {
-      seeded: false;
-      seededAt: null;
-      marker: null;
-    }
-  | {
-      seeded: true;
-      seededAt: string;
-      marker: SeededMarker;
-    };
+type FixtureProgress = {
+  complete: boolean;
+  productCount: number;
+  productsExisting: number;
+  orderCount: number;
+  ordersExisting: number;
+  refundCount: number;
+  refundsExisting: number;
+};
+
+type DummyDataStatus = {
+  seeded: boolean;
+  seededAt: string | null;
+  marker: SeededMarker | null;
+  progress: FixtureProgress;
+};
 
 type CreatedVariant = {
   id: string;
@@ -98,6 +117,7 @@ type CreatedVariant = {
 type CreatedOrder = {
   id: string;
   name: string;
+  refundCount: number;
   lineItems: Array<{
     id: string;
     sku: string | null;
@@ -105,10 +125,11 @@ type CreatedOrder = {
   }>;
 };
 
-type ShopifyCreatedOrder = Omit<CreatedOrder, "lineItems"> & {
+type ShopifyCreatedOrder = Omit<CreatedOrder, "lineItems" | "refundCount"> & {
   lineItems: {
     nodes: CreatedOrder["lineItems"];
   };
+  refunds?: Array<{ id: string }>;
 };
 
 type SeedDummyStoreDataResult = {
@@ -117,15 +138,45 @@ type SeedDummyStoreDataResult = {
   variantsCreated: number;
   ordersCreated: number;
   refundsCreated: number;
+  progress: FixtureProgress;
+  scenariosLoaded?: number;
 };
 
 const dummyFixture = fixture as DummyFixture;
+const watchdogFixture = watchdogScenarioFixture as DummyFixture;
+
+type FixtureConfig = {
+  fixture: DummyFixture;
+  markerNamespace: string;
+  markerKey: string;
+  productTag: string;
+  sourceName: string;
+  idempotencyPrefix: string;
+};
+
+const dummyFixtureConfig: FixtureConfig = {
+  fixture: dummyFixture,
+  markerNamespace: MARKER_NAMESPACE,
+  markerKey: MARKER_KEY,
+  productTag: DUMMY_TAG,
+  sourceName: "jefe_dummy_data_loader",
+  idempotencyPrefix: "jefe-dummy",
+};
+
+const watchdogFixtureConfig: FixtureConfig = {
+  fixture: watchdogFixture,
+  markerNamespace: WATCHDOG_MARKER_NAMESPACE,
+  markerKey: WATCHDOG_MARKER_KEY,
+  productTag: WATCHDOG_TAG,
+  sourceName: "jefe_watchdog_scenario_loader",
+  idempotencyPrefix: "jefe-watchdog-scenario",
+};
 
 const STATUS_QUERY = `#graphql
-  query JefeDummyDataStatus {
+  query JefeFixtureDataStatus($namespace: String!, $key: String!) {
     currentAppInstallation {
       id
-      metafield(namespace: "${MARKER_NAMESPACE}", key: "${MARKER_KEY}") {
+      metafield(namespace: $namespace, key: $key) {
         value
         updatedAt
       }
@@ -133,13 +184,28 @@ const STATUS_QUERY = `#graphql
   }
 `;
 
-const EXISTING_DUMMY_PRODUCTS_QUERY = `#graphql
-  query JefeExistingDummyProducts($query: String!) {
-    products(first: 1, query: $query) {
+const EXISTING_FIXTURE_PRODUCTS_QUERY = `#graphql
+  query JefeExistingFixtureProducts($query: String!) {
+    products(first: 100, query: $query) {
       nodes {
         id
         title
+        handle
         createdAt
+      }
+    }
+  }
+`;
+
+const EXISTING_FIXTURE_ORDERS_QUERY = `#graphql
+  query JefeExistingFixtureOrders($query: String!) {
+    orders(first: 100, query: $query) {
+      nodes {
+        id
+        name
+        refunds(first: 10) {
+          id
+        }
       }
     }
   }
@@ -232,6 +298,9 @@ const ORDER_BY_NAME_QUERY = `#graphql
             quantity
           }
         }
+        refunds(first: 10) {
+          id
+        }
       }
     }
   }
@@ -270,16 +339,28 @@ const SET_MARKER_MUTATION = `#graphql
 `;
 
 export function getDummyFixtureSummary() {
+  return getFixtureSummary(dummyFixture);
+}
+
+export function getWatchdogScenarioFixtureSummary() {
+  return getFixtureSummary(watchdogFixture);
+}
+
+function getFixtureSummary(sourceFixture: DummyFixture) {
   return {
-    version: dummyFixture.version,
-    productCount: dummyFixture.products.length,
-    variantCount: dummyFixture.products.reduce(
+    version: sourceFixture.version,
+    productCount: sourceFixture.products.length,
+    variantCount: sourceFixture.products.reduce(
       (count, product) => count + product.variants.length,
       0,
     ),
-    orderCount: dummyFixture.orders.length,
-    refundCount: dummyFixture.orders.filter((order) => order.refundSku).length,
-    scenarios: dummyFixture.products.map((product) => product.scenario),
+    orderCount: sourceFixture.orders.length,
+    refundCount: sourceFixture.orders.filter((order) => order.refundSku).length,
+    scenarioCount: sourceFixture.scenarios?.length ?? 0,
+    scenarios:
+      sourceFixture.scenarios?.map((scenario) => scenario.title) ??
+      sourceFixture.products.map((product) => product.scenario),
+    notes: sourceFixture.notes ?? [],
   };
 }
 
@@ -287,40 +368,48 @@ export function getMissingDummyDataScopes(grantedScopes?: string | null) {
   return getMissingShopifyScopes(REQUIRED_DUMMY_DATA_SCOPES, grantedScopes);
 }
 
+export function getMissingWatchdogScenarioScopes(grantedScopes?: string | null) {
+  return getMissingShopifyScopes(REQUIRED_DUMMY_DATA_SCOPES, grantedScopes);
+}
+
 export async function getDummyDataStatus(
   admin: AdminGraphqlClient,
-  options: { skipExistingProductCheck?: boolean } = {},
+  options: { skipProgressCheck?: boolean } = {},
 ): Promise<DummyDataStatus> {
-  const data = await graphqlRequest<{
-    currentAppInstallation: {
-      id: string;
-      metafield: { value: string; updatedAt: string } | null;
-    };
-  }>(admin, STATUS_QUERY);
+  return getFixtureDataStatus(admin, dummyFixtureConfig, options);
+}
+
+export async function getWatchdogScenarioStatus(
+  admin: AdminGraphqlClient,
+  options: { skipProgressCheck?: boolean } = {},
+): Promise<DummyDataStatus> {
+  return getFixtureDataStatus(admin, watchdogFixtureConfig, options);
+}
+
+async function getFixtureDataStatus(
+  admin: AdminGraphqlClient,
+  config: FixtureConfig,
+  options: { skipProgressCheck?: boolean } = {},
+): Promise<DummyDataStatus> {
+  const [data, progress] = await Promise.all([
+    graphqlRequest<{
+      currentAppInstallation: {
+        id: string;
+        metafield: { value: string; updatedAt: string } | null;
+      };
+    }>(admin, STATUS_QUERY, {
+      namespace: config.markerNamespace,
+      key: config.markerKey,
+    }),
+    options.skipProgressCheck
+      ? Promise.resolve(emptyFixtureProgress(config.fixture))
+      : buildFixtureProgress(admin, config),
+  ]);
 
   const markerValue = data.currentAppInstallation.metafield?.value;
 
-  if (!markerValue && !options.skipExistingProductCheck) {
-    const existingDummyProduct = await findExistingDummyProduct(admin);
-
-    if (existingDummyProduct) {
-      return {
-        seeded: true,
-        seededAt: existingDummyProduct.createdAt,
-        marker: {
-          seededAt: existingDummyProduct.createdAt,
-          fixtureVersion: dummyFixture.version,
-          shop: "unknown",
-          productCount: dummyFixture.products.length,
-          orderCount: 0,
-          refundCount: 0,
-        },
-      };
-    }
-  }
-
   if (!markerValue) {
-    return { seeded: false, seededAt: null, marker: null };
+    return { seeded: false, seededAt: null, marker: null, progress };
   }
 
   const marker = JSON.parse(markerValue) as SeededMarker;
@@ -328,42 +417,167 @@ export async function getDummyDataStatus(
     seeded: true,
     seededAt: marker.seededAt,
     marker,
+    progress: progress.complete ? progress : markerProgress(config.fixture, marker),
   };
 }
 
-async function findExistingDummyProduct(admin: AdminGraphqlClient) {
-  const data = await graphqlRequest<{
-    products: {
-      nodes: Array<{
-        id: string;
-        title: string;
-        createdAt: string;
-      }>;
-    };
-  }>(admin, EXISTING_DUMMY_PRODUCTS_QUERY, {
-    query: `tag:${DUMMY_TAG}`,
-  });
+async function buildFixtureProgress(
+  admin: AdminGraphqlClient,
+  config: FixtureConfig,
+): Promise<FixtureProgress> {
+  const [productData, orderData] = await Promise.all([
+    graphqlRequest<{
+      products: {
+        nodes: Array<{
+          id: string;
+          title: string;
+          handle: string;
+          createdAt: string;
+        }>;
+      };
+    }>(admin, EXISTING_FIXTURE_PRODUCTS_QUERY, {
+      query: `tag:${config.productTag}`,
+    }),
+    graphqlRequest<{
+      orders: {
+        nodes: Array<{
+          id: string;
+          name: string;
+          refunds?: Array<{ id: string }>;
+        }>;
+      };
+    }>(admin, EXISTING_FIXTURE_ORDERS_QUERY, {
+      query: `tag:${config.productTag}`,
+    }),
+  ]);
+  const expectedHandles = new Set(
+    config.fixture.products.map((product) => product.handle),
+  );
+  const expectedOrderNames = new Set(
+    config.fixture.orders.map((order) => order.name),
+  );
+  const expectedRefundOrderNames = new Set(
+    config.fixture.orders
+      .filter((order) => order.refundSku)
+      .map((order) => order.name),
+  );
+  const productsExisting = productData.products.nodes.filter((product) =>
+    expectedHandles.has(product.handle),
+  ).length;
+  const existingOrders = orderData.orders.nodes.filter((order) =>
+    expectedOrderNames.has(order.name),
+  );
+  const refundsExisting = existingOrders.filter(
+    (order) =>
+      expectedRefundOrderNames.has(order.name) &&
+      (order.refunds?.length ?? 0) > 0,
+  ).length;
 
-  return data.products.nodes[0] ?? null;
+  return {
+    productCount: config.fixture.products.length,
+    productsExisting,
+    orderCount: config.fixture.orders.length,
+    ordersExisting: existingOrders.length,
+    refundCount: expectedRefundOrderNames.size,
+    refundsExisting,
+    complete:
+      productsExisting >= config.fixture.products.length &&
+      existingOrders.length >= config.fixture.orders.length &&
+      refundsExisting >= expectedRefundOrderNames.size,
+  };
+}
+
+function emptyFixtureProgress(sourceFixture: DummyFixture): FixtureProgress {
+  const refundCount = sourceFixture.orders.filter((order) => order.refundSku).length;
+
+  return {
+    complete: false,
+    productCount: sourceFixture.products.length,
+    productsExisting: 0,
+    orderCount: sourceFixture.orders.length,
+    ordersExisting: 0,
+    refundCount,
+    refundsExisting: 0,
+  };
+}
+
+function markerProgress(
+  sourceFixture: DummyFixture,
+  marker: SeededMarker,
+): FixtureProgress {
+  const refundCount = sourceFixture.orders.filter((order) => order.refundSku).length;
+
+  return {
+    complete: true,
+    productCount: sourceFixture.products.length,
+    productsExisting: marker.productCount,
+    orderCount: sourceFixture.orders.length,
+    ordersExisting: marker.orderCount,
+    refundCount,
+    refundsExisting: marker.refundCount,
+  };
 }
 
 export async function seedDummyStoreData(
   admin: AdminGraphqlClient,
   shop: string,
 ): Promise<SeedDummyStoreDataResult> {
-  const existingStatus = await getDummyDataStatus(admin);
+  return seedStoreFixtureData(admin, shop, dummyFixtureConfig);
+}
+
+export async function seedWatchdogScenarios(
+  admin: AdminGraphqlClient,
+  shop: string,
+): Promise<SeedDummyStoreDataResult> {
+  return seedStoreFixtureData(admin, shop, watchdogFixtureConfig);
+}
+
+async function seedStoreFixtureData(
+  admin: AdminGraphqlClient,
+  shop: string,
+  config: FixtureConfig,
+): Promise<SeedDummyStoreDataResult> {
+  const existingStatus = await getFixtureDataStatus(admin, config);
 
   if (existingStatus.seeded) {
-    throw new Error("Dummy data has already been loaded for this store.");
+    throw new Error("This dev fixture has already been loaded for this store.");
   }
 
   await assertOrderObjectAccess(admin);
 
+  if (existingStatus.progress.complete) {
+    const marker = buildSeededMarker(config, shop, existingStatus.progress);
+    await setSeededMarker(admin, marker, config);
+
+    return {
+      marker,
+      productsCreated: existingStatus.progress.productsExisting,
+      variantsCreated: config.fixture.products.reduce(
+        (count, product) => count + product.variants.length,
+        0,
+      ),
+      ordersCreated: existingStatus.progress.ordersExisting,
+      refundsCreated: existingStatus.progress.refundsExisting,
+      progress: existingStatus.progress,
+      scenariosLoaded: config.fixture.scenarios?.length,
+    };
+  }
+
   const locationId = await getPrimaryLocationId(admin);
   const variantsBySku = new Map<string, CreatedVariant>();
 
-  for (const product of dummyFixture.products) {
-    const createdVariants = await upsertProduct(admin, product, locationId);
+  for (const product of config.fixture.products) {
+    const createdVariants = await retryShopifyFixtureStep(
+      () =>
+        upsertProduct(
+          admin,
+          product,
+          locationId,
+          config,
+          "initial",
+        ),
+      product.title,
+    );
 
     for (const variant of createdVariants) {
       variantsBySku.set(variant.sku, variant);
@@ -372,13 +586,18 @@ export async function seedDummyStoreData(
 
   const createdOrders: CreatedOrder[] = [];
 
-  for (const order of dummyFixture.orders) {
-    createdOrders.push(await createOrder(admin, order, variantsBySku));
+  for (const order of config.fixture.orders) {
+    createdOrders.push(
+      await retryShopifyFixtureStep(
+        () => createOrder(admin, order, variantsBySku, config),
+        order.name,
+      ),
+    );
   }
 
   let refundCount = 0;
 
-  for (const order of dummyFixture.orders) {
+  for (const order of config.fixture.orders) {
     if (!order.refundSku) {
       continue;
     }
@@ -399,32 +618,60 @@ export async function seedDummyStoreData(
       throw new Error(`Refund SKU ${order.refundSku} was not found on order.`);
     }
 
+    if (createdOrder.refundCount > 0) {
+      refundCount += 1;
+      continue;
+    }
+
     await createRefund(
       admin,
       createdOrder.id,
       lineItem.id,
-      buildIdempotencyKey("refund", order.name, order.refundSku),
+      buildIdempotencyKey(config, "refund", order.name, order.refundSku),
     );
     refundCount += 1;
   }
 
-  const marker: SeededMarker = {
-    seededAt: new Date().toISOString(),
-    fixtureVersion: dummyFixture.version,
-    shop,
-    productCount: dummyFixture.products.length,
-    orderCount: createdOrders.length,
-    refundCount,
-  };
+  for (const product of config.fixture.products) {
+    if (product.finalStatus || product.finalInventory !== undefined) {
+      await retryShopifyFixtureStep(
+        () => upsertProduct(admin, product, locationId, config, "final"),
+        `${product.title} final state`,
+      );
+    }
+  }
 
-  await setSeededMarker(admin, marker);
+  const finalProgress = await buildFixtureProgress(admin, config);
+  const marker = buildSeededMarker(config, shop, finalProgress);
+
+  if (finalProgress.complete) {
+    await setSeededMarker(admin, marker, config);
+  }
 
   return {
     marker,
-    productsCreated: dummyFixture.products.length,
+    productsCreated: finalProgress.productsExisting,
     variantsCreated: variantsBySku.size,
-    ordersCreated: createdOrders.length,
-    refundsCreated: refundCount,
+    ordersCreated: finalProgress.ordersExisting,
+    refundsCreated: Math.max(refundCount, finalProgress.refundsExisting),
+    progress: finalProgress,
+    scenariosLoaded: config.fixture.scenarios?.length,
+  };
+}
+
+function buildSeededMarker(
+  config: FixtureConfig,
+  shop: string,
+  progress: FixtureProgress,
+): SeededMarker {
+  return {
+    seededAt: new Date().toISOString(),
+    fixtureVersion: config.fixture.version,
+    shop,
+    productCount: progress.productsExisting,
+    orderCount: progress.ordersExisting,
+    refundCount: progress.refundsExisting,
+    scenarioCount: config.fixture.scenarios?.length,
   };
 }
 
@@ -464,6 +711,8 @@ async function upsertProduct(
   admin: AdminGraphqlClient,
   product: DummyProduct,
   locationId: string,
+  config: FixtureConfig,
+  phase: "initial" | "final",
 ): Promise<CreatedVariant[]> {
   const data = await graphqlRequest<{
     productSet: {
@@ -479,7 +728,7 @@ async function upsertProduct(
   }>(admin, PRODUCT_SET_MUTATION, {
     identifier: { handle: product.handle },
     synchronous: true,
-    productSet: buildProductSetInput(product, locationId),
+    productSet: buildProductSetInput(product, locationId, config, phase),
   });
 
   assertNoUserErrors(data.productSet.userErrors, product.title);
@@ -493,21 +742,29 @@ async function upsertProduct(
   return createdProduct.variants.nodes;
 }
 
-function buildProductSetInput(product: DummyProduct, locationId: string) {
+function buildProductSetInput(
+  product: DummyProduct,
+  locationId: string,
+  config: FixtureConfig,
+  phase: "initial" | "final",
+) {
+  const productStatus =
+    phase === "final" ? product.finalStatus ?? product.status : product.status;
+
   return {
     title: product.title,
     handle: product.handle,
-    status: product.status,
+    status: productStatus,
     vendor: product.vendor,
     productType: product.productType,
-    tags: [...dummyFixture.tags, product.scenario],
-    descriptionHtml: `<p>Jefe dummy data fixture for ${product.scenario}.</p>`,
+    tags: [...config.fixture.tags, product.scenario],
+    descriptionHtml: `<p>Jefe dev fixture for ${product.scenario}.</p>`,
     metafields: [
       {
         namespace: "jefe_dummy",
         key: "fixture_version",
         type: "single_line_text_field",
-        value: dummyFixture.version,
+        value: config.fixture.version,
       },
       {
         namespace: "jefe_dummy",
@@ -552,7 +809,10 @@ function buildProductSetInput(product: DummyProduct, locationId: string) {
         {
           locationId,
           name: "available",
-          quantity: variant.inventory,
+          quantity:
+            phase === "final" && product.finalInventory !== undefined
+              ? product.finalInventory
+              : variant.inventory,
         },
       ],
       metafields: [
@@ -571,6 +831,7 @@ async function createOrder(
   admin: AdminGraphqlClient,
   order: DummyOrder,
   variantsBySku: Map<string, CreatedVariant>,
+  config: FixtureConfig,
 ): Promise<CreatedOrder> {
   const existingOrder = await findExistingOrder(admin, order.name);
 
@@ -594,7 +855,7 @@ async function createOrder(
       priceSet: {
         shopMoney: {
           amount: variant.price,
-          currencyCode: dummyFixture.currency,
+          currencyCode: config.fixture.currency,
         },
       },
     };
@@ -608,16 +869,16 @@ async function createOrder(
   }>(admin, ORDER_CREATE_MUTATION, {
     order: {
       name: order.name,
-      currency: dummyFixture.currency,
+      currency: config.fixture.currency,
       financialStatus: "PAID",
       processedAt: processedAt.toISOString(),
-      sourceIdentifier: `jefe-dummy-${dummyFixture.version}-${order.name}`,
-      sourceName: "jefe_dummy_data_loader",
-      tags: [DUMMY_TAG, "ticket-003", order.scenario],
+      sourceIdentifier: `${config.idempotencyPrefix}-${config.fixture.version}-${order.name}`,
+      sourceName: config.sourceName,
+      tags: [config.productTag, order.scenario],
       test: true,
-      note: `Jefe dummy order for ${order.scenario}.`,
+      note: `Jefe dev fixture order for ${order.scenario}.`,
       customAttributes: [
-        { key: "jefe_fixture_version", value: dummyFixture.version },
+        { key: "jefe_fixture_version", value: config.fixture.version },
         { key: "jefe_scenario", value: order.scenario },
       ],
       lineItems,
@@ -643,6 +904,7 @@ async function createOrder(
   return {
     id: data.orderCreate.order.id,
     name: data.orderCreate.order.name,
+    refundCount: data.orderCreate.order.refunds?.length ?? 0,
     lineItems: data.orderCreate.order.lineItems.nodes,
   };
 }
@@ -659,7 +921,9 @@ async function findExistingOrder(
     query: `name:${orderName}`,
   });
 
-  const order = data.orders.nodes.find((candidate) => candidate.name === orderName);
+  const order = data.orders.nodes.find(
+    (candidate) => candidate.name === orderName,
+  );
 
   if (!order) {
     return null;
@@ -668,6 +932,7 @@ async function findExistingOrder(
   return {
     id: order.id,
     name: order.name,
+    refundCount: order.refunds?.length ?? 0,
     lineItems: order.lineItems.nodes,
   };
 }
@@ -701,7 +966,7 @@ async function createRefund(
               quantity: 1,
             },
           ],
-          note: `Jefe dummy refund for fixture ${dummyFixture.version}.`,
+          note: "Jefe dev refund fixture.",
           transactions: [],
         },
         idempotencyKey,
@@ -718,7 +983,7 @@ async function createRefund(
       const message = error instanceof Error ? error.message : String(error);
       const hasRetryRemaining = attemptIndex < REFUND_RETRY_DELAYS_MS.length;
 
-      if (isTemporarilyUnavailableOrderError(message) && hasRetryRemaining) {
+      if (isRetryableShopifyError(message) && hasRetryRemaining) {
         continue;
       }
 
@@ -727,15 +992,11 @@ async function createRefund(
   }
 }
 
-function buildIdempotencyKey(...parts: string[]) {
-  return ["jefe-dummy", dummyFixture.version, ...parts]
+function buildIdempotencyKey(config: FixtureConfig, ...parts: string[]) {
+  return [config.idempotencyPrefix, config.fixture.version, ...parts]
     .join("-")
     .replace(/[^a-zA-Z0-9_-]/g, "-")
     .slice(0, 255);
-}
-
-function isTemporarilyUnavailableOrderError(message: string) {
-  return message.includes("Order is temporarily unavailable to be modified");
 }
 
 function sleep(ms: number) {
@@ -745,10 +1006,14 @@ function sleep(ms: number) {
 async function setSeededMarker(
   admin: AdminGraphqlClient,
   marker: SeededMarker,
+  config: FixtureConfig,
 ) {
   const statusData = await graphqlRequest<{
     currentAppInstallation: { id: string };
-  }>(admin, STATUS_QUERY);
+  }>(admin, STATUS_QUERY, {
+    namespace: config.markerNamespace,
+    key: config.markerKey,
+  });
 
   const appInstallationId = statusData.currentAppInstallation.id;
 
@@ -760,8 +1025,8 @@ async function setSeededMarker(
     metafields: [
       {
         ownerId: appInstallationId,
-        namespace: MARKER_NAMESPACE,
-        key: MARKER_KEY,
+        namespace: config.markerNamespace,
+        key: config.markerKey,
         type: "json",
         value: JSON.stringify(marker),
       },
@@ -776,21 +1041,50 @@ async function graphqlRequest<TData>(
   query: string,
   variables?: Record<string, unknown>,
 ): Promise<TData> {
-  const response = await admin.graphql(query, variables ? { variables } : {});
-  const payload = (await response.json()) as {
-    data?: TData;
-    errors?: Array<{ message: string }>;
-  };
+  let lastError: Error | null = null;
 
-  if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join("; "));
+  for (let attempt = 0; attempt <= SHOPIFY_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const response = await admin.graphql(
+        query,
+        variables ? { variables } : {},
+      );
+      const payload = await readGraphqlPayload<TData>(response);
+      const errorMessage = payload.errors
+        ?.map((error) => error.message)
+        .join("; ");
+
+      if (!response.ok || errorMessage) {
+        const message =
+          errorMessage || `Shopify GraphQL returned HTTP ${response.status}.`;
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+
+        if (shouldRetryShopifyAttempt(message, response.status, attempt)) {
+          await sleep(retryAfterMs ?? SHOPIFY_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+
+        throw new Error(message);
+      }
+
+      if (!payload.data) {
+        throw new Error("Shopify returned an empty GraphQL response.");
+      }
+
+      return payload.data;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      if (shouldRetryShopifyAttempt(lastError.message, undefined, attempt)) {
+        await sleep(SHOPIFY_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+
+      throw lastError;
+    }
   }
 
-  if (!payload.data) {
-    throw new Error("Shopify returned an empty GraphQL response.");
-  }
-
-  return payload.data;
+  throw lastError ?? new Error("Shopify GraphQL retries exhausted.");
 }
 
 function assertNoUserErrors(userErrors: UserError[], label: string) {
@@ -809,4 +1103,93 @@ function assertNoUserErrors(userErrors: UserError[], label: string) {
     .join("; ");
 
   throw new Error(`${label}: ${messages}`);
+}
+
+async function retryShopifyFixtureStep<TData>(
+  operation: () => Promise<TData>,
+  label: string,
+): Promise<TData> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= SHOPIFY_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      if (shouldRetryShopifyAttempt(lastError.message, undefined, attempt)) {
+        await sleep(SHOPIFY_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new Error(`${label}: Shopify retries exhausted.`);
+}
+
+async function readGraphqlPayload<TData>(response: Response): Promise<{
+  data?: TData;
+  errors?: Array<{ message: string }>;
+}> {
+  const body = await response.text();
+
+  if (!body) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(body) as {
+      data?: TData;
+      errors?: Array<{ message: string }>;
+    };
+  } catch (error) {
+    if (response.ok) {
+      throw new Error("Shopify returned invalid GraphQL JSON.");
+    }
+
+    return {
+      errors: [
+        {
+          message: `Shopify GraphQL returned HTTP ${response.status}.`,
+        },
+      ],
+    };
+  }
+}
+
+function shouldRetryShopifyAttempt(
+  message: string,
+  status: number | undefined,
+  attempt: number,
+) {
+  return (
+    attempt < SHOPIFY_RETRY_DELAYS_MS.length &&
+    (isRetryableShopifyStatus(status) || isRetryableShopifyError(message))
+  );
+}
+
+function isRetryableShopifyStatus(status: number | undefined) {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function isRetryableShopifyError(message: string) {
+  return /too many attempts|try again later|throttled|rate limit|temporarily unavailable|HTTP 429|HTTP 500|HTTP 502|HTTP 503|HTTP 504/i.test(
+    message,
+  );
+}
+
+function parseRetryAfterMs(value: string | null) {
+  if (!value) return null;
+
+  const seconds = Number(value);
+
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const dateMs = Date.parse(value);
+
+  return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : null;
 }

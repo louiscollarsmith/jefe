@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fixture from "../app/fixtures/dummy-store-data.json" with { type: "json" };
+import watchdogFixture from "../app/fixtures/watchdog-scenario-data.json" with { type: "json" };
 import { getMissingShopifyScopes } from "../app/services/shopify-scopes.server.js";
 
 test("dummy store fixture covers Ticket 003 ingestion and downstream scenarios", () => {
@@ -84,3 +85,148 @@ test("dummy store scope check treats Shopify write scopes as read scopes", () =>
 
   assert.deepEqual(missingScopes, []);
 });
+
+test("watchdog scenario fixture covers exact dev scenarios", () => {
+  const variants = new Map(
+    watchdogFixture.products.flatMap((product) =>
+      product.variants.map((variant) => [
+        variant.sku,
+        { ...variant, product },
+      ]),
+    ),
+  );
+  const scenarioKeys = new Set(
+    watchdogFixture.scenarios.map((scenario) => scenario.key),
+  );
+  const ordersByScenario = groupOrdersByScenario(watchdogFixture.orders);
+
+  assert.equal(watchdogFixture.currency, "GBP");
+  assert.ok(watchdogFixture.tags.includes("jefe-watchdog-scenario"));
+  assert.equal(
+    new Set(watchdogFixture.products.map((product) => product.handle)).size,
+    watchdogFixture.products.length,
+  );
+  assert.equal(
+    new Set(watchdogFixture.orders.map((order) => order.name)).size,
+    watchdogFixture.orders.length,
+  );
+  assert.deepEqual(scenarioKeys, new Set([
+    "refund_spike",
+    "sales_collapse",
+    "product_unavailable",
+    "revenue_drop",
+    "missing_cogs_important_seller",
+    "high_return_product",
+  ]));
+
+  for (const order of watchdogFixture.orders) {
+    assert.ok(order.name.startsWith("#JWS-"));
+
+    for (const lineItem of order.lineItems) {
+      assert.ok(variants.has(lineItem.sku), `missing SKU ${lineItem.sku}`);
+      assert.ok(lineItem.quantity > 0);
+    }
+  }
+
+  const hoodieBaselineUnits = unitsSold({
+    orders: ordersByScenario.get("sales_collapse_baseline") ?? [],
+    sku: "JWDS-HOODIE-BLK-M",
+  });
+  const hoodieLast7dUnits = unitsSold({
+    orders: watchdogFixture.orders.filter((order) => order.daysAgo <= 7),
+    sku: "JWDS-HOODIE-BLK-M",
+  });
+
+  assert.equal(hoodieBaselineUnits, 20);
+  assert.equal(hoodieLast7dUnits, 0);
+
+  const unavailableProduct = watchdogFixture.products.find(
+    (product) => product.scenario === "product_unavailable",
+  );
+  assert.equal(unavailableProduct.finalStatus, "DRAFT");
+  assert.equal(unavailableProduct.finalInventory, 0);
+  assert.equal(
+    unitsSold({
+      orders: ordersByScenario.get("product_unavailable_recent_sale") ?? [],
+      sku: "JWDS-MUG-TRAVEL",
+    }),
+    3,
+  );
+
+  const revenueBaseline = revenueForSku({
+    orders: ordersByScenario.get("revenue_drop_baseline") ?? [],
+    variants,
+    sku: "JWDS-REV-MIX",
+  });
+  const revenueCurrentWeek = revenueForSku({
+    orders: ordersByScenario.get("revenue_drop_current_week") ?? [],
+    variants,
+    sku: "JWDS-REV-MIX",
+  });
+
+  assert.equal(revenueBaseline / 4, 1000);
+  assert.equal(revenueCurrentWeek, 400);
+
+  const missingCogsProduct = watchdogFixture.products.find(
+    (product) => product.scenario === "missing_cogs_important_seller",
+  );
+  const missingCogsRevenue = revenueForSku({
+    orders: ordersByScenario.get("missing_cogs_important_seller") ?? [],
+    variants,
+    sku: "JWDS-MYSTERY-SELLER",
+  });
+
+  assert.equal(missingCogsProduct.cogsHint, null);
+  assert.ok(missingCogsRevenue > 100);
+
+  const refundSpikeOrders =
+    ordersByScenario.get("refund_spike_current_week") ?? [];
+  assert.equal(
+    refundSpikeOrders.filter((order) => order.refundSku === "JWDS-REFUND-BOTTLE")
+      .length,
+    5,
+  );
+  assert.equal(
+    (ordersByScenario.get("refund_spike_baseline_normal_refund") ?? []).length,
+    1,
+  );
+
+  const summerDressOrders = ordersByScenario.get("high_return_product") ?? [];
+  const summerDressRefunds = summerDressOrders.filter(
+    (order) => order.refundSku === "JWDS-SUMMER-DRESS",
+  ).length;
+
+  assert.equal(summerDressOrders.length, 8);
+  assert.ok(summerDressRefunds / summerDressOrders.length > 0.25);
+});
+
+function unitsSold({ orders, sku }) {
+  return orders.reduce(
+    (sum, order) =>
+      sum +
+      order.lineItems
+        .filter((lineItem) => lineItem.sku === sku)
+        .reduce((lineSum, lineItem) => lineSum + lineItem.quantity, 0),
+    0,
+  );
+}
+
+function revenueForSku({ orders, variants, sku }) {
+  const variant = variants.get(sku);
+
+  assert.ok(variant, `missing variant ${sku}`);
+
+  return unitsSold({ orders, sku }) * Number(variant.price);
+}
+
+function groupOrdersByScenario(orders) {
+  const groups = new Map();
+
+  for (const order of orders) {
+    const existing = groups.get(order.scenario) ?? [];
+    existing.push(order);
+    groups.set(order.scenario, existing);
+  }
+
+  return groups;
+}
