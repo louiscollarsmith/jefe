@@ -12,6 +12,7 @@
 - Added onboarding for goals, House Rules and COGS.
 - Added Daily Verdict v0 with revenue, net after refunds, margin confidence and product highlights.
 - Added COGS confidence handling for missing, estimated and confirmed product costs.
+- Added dev-only Shopify scenario seeding for refund spikes, sales collapse, unavailable products, revenue drops, missing COGS sellers and high-return products.
 
 ### Changed
 
@@ -26,6 +27,7 @@
 
 ### Fixed
 
+- Fixed dev-only Shopify scenario loading so partial runs can resume without duplicating existing products, orders or refunds.
 - Fixed Inventory Guardian confidence so zero-risk variants do not drag down the overall risk confidence.
 - Fixed Inventory Guardian money displays so variant prices are no longer shown as currency prefixes.
 - Fixed COGS behaviour so entering a valid manual cost defaults confidence to confirmed.
