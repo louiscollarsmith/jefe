@@ -5,6 +5,7 @@
 ### Added
 
 - Added Inventory Guardian v0 with stockout risk, sales velocity, revenue-at-risk and reorder quantity estimates.
+- Added Watchdog v0 with read-only alerts for refund spikes, sales collapses, revenue drops, missing product costs and other operational anomalies.
 - Added Changelog v0 inside the Shopify app and made changelog updates part of the agent workflow.
 - Added changelog rules for future tickets and PRs.
 - Added Shopify embedded app scaffold.
@@ -16,6 +17,8 @@
 
 ### Changed
 
+- Improved Watchdog alert cards so incident details, evidence and suggested checks are easier to scan.
+- Improved Watchdog sales-collapse alerts with clearer baseline evidence and suggested checks.
 - Improved Inventory Guardian ordering so active revenue-at-risk items appear before zero-risk inventory notes.
 - Improved Shopify app page headers so Inventory Guardian, Manager Settings and Changelog use consistent single-title layouts.
 - Improved Inventory Guardian so out-of-stock variants with no recent demand are separated from active stockout risks.

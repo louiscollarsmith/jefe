@@ -141,6 +141,22 @@ export default function Index() {
                   </BlockStack>
                 </Card>
 
+                <Card>
+                  <BlockStack gap="200">
+                    <Text as="h2" variant="headingMd">
+                      Watchdog
+                    </Text>
+                    <Text as="p" variant="bodyMd" tone="subdued">
+                      Read-only alerts for refund spikes, sales collapses,
+                      revenue drops, missing product costs and operational
+                      anomalies are now available in their own operator view.
+                    </Text>
+                    <Link onClick={() => navigate("/app/watchdog")}>
+                      Open Watchdog
+                    </Link>
+                  </BlockStack>
+                </Card>
+
                 <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
                   <Card>
                     <MetricBlock
