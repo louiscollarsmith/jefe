@@ -29,7 +29,7 @@ No staging branch, production branch, manual promotion, release tags, branch pro
 - Reset command: no scripted reset exists. Reset by creating a fresh Neon branch/database or manually clearing staging test data, then run `npm run migrate`.
 - Docker required: no.
 - Railway Railpack/Nixpacks viable without Docker: yes, with the Railway service rooted at `apps/shopify` and `apps/shopify/railway.json` as the config file.
-- Existing Docker blocker: `apps/shopify/Dockerfile` installs with `npm ci --omit=dev` before `npm run build`, which can omit build tooling. Use Railpack for staging.
+- Docker note: `apps/shopify/Dockerfile` generates Prisma Client at build time so `npm run start` can run even when Railway bypasses the `docker-start` setup script.
 
 ## Railway
 

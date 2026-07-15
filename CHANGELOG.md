@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Fixed the Shopify app Docker image so Prisma Client is generated during image builds before Railway starts the web service.
 - Fixed the Klaviyo private key field so pilot stores can enter and save their key reference.
 - Fixed Klaviyo Winback empty-state copy so it explains when test orders are too recent instead of implying emails are missing.
 - Fixed Klaviyo Winback audience filtering so Shopify customer account state does not suppress marketable buyers and reused emails are grouped consistently.
