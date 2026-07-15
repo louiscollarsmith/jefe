@@ -115,7 +115,19 @@ export async function markShopifyInstallInactive(prisma, shopDomain) {
     }),
     prisma.shop.update({
       where: { id: shop.id },
-      data: { status: "uninstalled" },
+      data: { status: "uninstalled", setupStatus: "uninstalled" },
+    }),
+    prisma.backfillJob.updateMany({
+      where: {
+        shopId: shop.id,
+        status: { in: ["queued", "running", "failed"] },
+      },
+      data: {
+        status: "cancelled",
+        failedAt: null,
+        completedAt: new Date(),
+        lastError: null,
+      },
     }),
     prisma.session.deleteMany({ where: { shop: normalized } }),
   ]);

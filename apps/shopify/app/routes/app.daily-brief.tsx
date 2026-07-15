@@ -1,8 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import {
-  useLoaderData,
-  useNavigate,
-} from "react-router";
+import { useLoaderData, useNavigate } from "react-router";
 import {
   Badge,
   Banner,
@@ -15,6 +12,7 @@ import {
   Link,
   List,
   Page,
+  ProgressBar,
   Text,
 } from "@shopify/polaris";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -25,16 +23,13 @@ import {
   generateDailyBrief,
   getLatestDailyBrief,
 } from "../services/daily-brief.server";
+import { getShopBackfillProgress } from "../services/shopify-backfill-status.server";
 
 type BriefConfidence = "low" | "medium" | "high";
 type BriefStatus = "generated" | "degraded" | "failed";
 
 type BriefSection = {
-  type:
-    | "daily_verdict"
-    | "inventory_guardian"
-    | "watchdog"
-    | "suggested_focus";
+  type: "daily_verdict" | "inventory_guardian" | "watchdog" | "suggested_focus";
   title: string;
   summary: string;
   confidence?: BriefConfidence;
@@ -82,6 +77,20 @@ type DeliveryStatus = {
   recipient?: string;
 };
 
+type SetupStatus = {
+  setupStatus: string;
+  historicalOrdersLimited: boolean;
+  availableOrderHistoryDays: number;
+  readyForInventoryGuardian: boolean;
+  readyForWinback: boolean;
+  statuses: Array<{
+    domain: string;
+    status: string;
+    recordsProcessed: number;
+    lastError: string | null;
+  }>;
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
@@ -90,6 +99,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "daily_brief" },
   });
+  const setupProgress = await getShopBackfillProgress(prisma, {
+    shopId: shop.id,
+  });
+
+  if (setupProgress && !setupProgress.readyForBasicBrief) {
+    return {
+      brief: null,
+      setup: {
+        setupStatus: setupProgress.shop.setupStatus,
+        historicalOrdersLimited: setupProgress.historicalOrdersLimited,
+        availableOrderHistoryDays: setupProgress.shop.availableOrderHistoryDays,
+        readyForInventoryGuardian: setupProgress.readyForInventoryGuardian,
+        readyForWinback: setupProgress.readyForWinback,
+        statuses: Object.entries(setupProgress.statuses).map(
+          ([domain, status]) => ({
+            domain,
+            status: status?.status ?? "queued",
+            recordsProcessed: status?.recordsProcessed ?? 0,
+            lastError: status?.lastError ?? null,
+          }),
+        ),
+      } satisfies SetupStatus,
+    };
+  }
+
   const latestBrief = await getLatestDailyBrief(prisma, {
     merchantId: merchant.id,
     shopId: shop.id,
@@ -107,11 +141,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  return { brief };
+  return { brief, setup: null };
 };
 
 export default function DailyBrief() {
-  const { brief } = useLoaderData<typeof loader>();
+  const { brief, setup } = useLoaderData<typeof loader>();
+
+  if (setup || !brief) {
+    return <SetupProgressView setup={setup} />;
+  }
+
   const view = brief.verdict as unknown as DailyBriefView;
   const deliveryStatus = brief.deliveryStatus as DeliveryStatus;
   const inventoryRisk =
@@ -155,7 +194,9 @@ export default function DailyBrief() {
                 </InlineStack>
 
                 {view.dataIncomplete ? (
-                  <Banner tone={view.status === "failed" ? "critical" : "warning"}>
+                  <Banner
+                    tone={view.status === "failed" ? "critical" : "warning"}
+                  >
                     <BlockStack gap="150">
                       <Text as="p" variant="bodyMd">
                         Data is incomplete. Here is what Jefe can verify.
@@ -173,7 +214,11 @@ export default function DailyBrief() {
 
                 <Card>
                   <BlockStack gap="300">
-                    <InlineStack align="space-between" blockAlign="center" gap="300">
+                    <InlineStack
+                      align="space-between"
+                      blockAlign="center"
+                      gap="300"
+                    >
                       <InlineStack gap="200" blockAlign="center">
                         <Badge tone={statusTone(view.status)}>
                           {formatStatus(view.status)}
@@ -248,6 +293,128 @@ export default function DailyBrief() {
   );
 }
 
+function SetupProgressView({ setup }: { setup: SetupStatus | null }) {
+  const statuses = setup?.statuses ?? [];
+  const completeCount = statuses.filter(
+    (status) => status.status === "complete",
+  ).length;
+  const progress =
+    statuses.length === 0
+      ? 0
+      : Math.round((completeCount / statuses.length) * 100);
+
+  return (
+    <Page>
+      <Layout>
+        <Layout.Section>
+          <InlineStack align="center">
+            <Box width="100%" maxWidth="980px">
+              <BlockStack gap="500">
+                <BlockStack gap="100">
+                  <Text as="h1" variant="heading2xl">
+                    Daily Brief
+                  </Text>
+                  <Text as="p" variant="bodyLg" tone="subdued">
+                    Jefe is setting up your store.
+                  </Text>
+                </BlockStack>
+
+                {setup?.historicalOrdersLimited ? (
+                  <Banner tone="warning">
+                    <BlockStack gap="150">
+                      <Text as="p" variant="bodyMd">
+                        Historical order access is limited.
+                      </Text>
+                      <Text as="p" variant="bodyMd">
+                        Jefe can currently access only recent Shopify orders.
+                        Request read_all_orders to unlock 365-day insights and
+                        winback.
+                      </Text>
+                    </BlockStack>
+                  </Banner>
+                ) : null}
+
+                <Card>
+                  <BlockStack gap="400">
+                    <BlockStack gap="100">
+                      <Text as="h2" variant="headingLg">
+                        Importing Shopify history
+                      </Text>
+                      <Text as="p" variant="bodyMd" tone="subdued">
+                        We are importing products, orders and inventory from
+                        Shopify. You can leave this page open or come back
+                        later.
+                      </Text>
+                    </BlockStack>
+                    <ProgressBar progress={progress} tone="primary" />
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      {statuses.map((status) => (
+                        <SetupDomainStatus
+                          key={status.domain}
+                          status={status}
+                        />
+                      ))}
+                    </InlineGrid>
+                  </BlockStack>
+                </Card>
+
+                <Card>
+                  <BlockStack gap="200">
+                    <Text as="h2" variant="headingMd">
+                      Module readiness
+                    </Text>
+                    <List type="bullet">
+                      <List.Item>
+                        Daily Brief waits for products, orders and insights.
+                      </List.Item>
+                      <List.Item>
+                        Inventory Guardian waits for products and inventory.
+                      </List.Item>
+                      <List.Item>
+                        Klaviyo Winback needs at least 180 days of order
+                        history.
+                      </List.Item>
+                    </List>
+                  </BlockStack>
+                </Card>
+              </BlockStack>
+            </Box>
+          </InlineStack>
+        </Layout.Section>
+      </Layout>
+    </Page>
+  );
+}
+
+function SetupDomainStatus({
+  status,
+}: {
+  status: SetupStatus["statuses"][number];
+}) {
+  return (
+    <Card>
+      <BlockStack gap="100">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="p" variant="headingSm">
+            {formatDomain(status.domain)}
+          </Text>
+          <Badge tone={setupStatusTone(status.status)}>
+            {formatStatus(status.status)}
+          </Badge>
+        </InlineStack>
+        <Text as="p" variant="bodySm" tone="subdued">
+          {status.recordsProcessed.toLocaleString("en-GB")} records processed
+        </Text>
+        {status.lastError ? (
+          <Text as="p" variant="bodySm" tone="critical">
+            {status.lastError}
+          </Text>
+        ) : null}
+      </BlockStack>
+    </Card>
+  );
+}
+
 export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
@@ -304,7 +471,11 @@ function BriefSectionCard({
           </Text>
           <InlineStack gap="200" blockAlign="center">
             {section.verificationClass ? (
-              <Badge tone={section.verificationClass === "estimated" ? "info" : "success"}>
+              <Badge
+                tone={
+                  section.verificationClass === "estimated" ? "info" : "success"
+                }
+              >
                 {section.verificationClass === "estimated"
                   ? "Estimated"
                   : "Verified"}
@@ -386,7 +557,13 @@ function formatConfidence(confidence: BriefConfidence) {
 }
 
 function formatStatus(status: string) {
-  return status[0].toUpperCase() + status.slice(1);
+  const display = status.replace(/_/g, " ");
+  return display[0].toUpperCase() + display.slice(1);
+}
+
+function formatDomain(domain: string) {
+  if (domain === "derived_metrics") return "Insights";
+  return formatStatus(domain);
 }
 
 function formatEmailStatus(status: DeliveryStatus) {
@@ -405,4 +582,11 @@ function confidenceTone(confidence: BriefConfidence) {
   if (confidence === "high") return "success";
   if (confidence === "medium") return "attention";
   return "warning";
+}
+
+function setupStatusTone(status: string) {
+  if (status === "complete") return "success";
+  if (status === "running") return "info";
+  if (status === "failed") return "critical";
+  return "attention";
 }

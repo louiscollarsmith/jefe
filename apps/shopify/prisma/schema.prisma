@@ -62,6 +62,7 @@ model Merchant {
   orderLineItems       OrderLineItem[]
   refunds              Refund[]
   inventoryLevels      InventoryLevel[]
+  customerIdentities    CustomerIdentity[]
   cogsInputs           CogsInput[]
   dailyBriefs          DailyBrief[]
   actions              Action[]
@@ -73,6 +74,8 @@ model Merchant {
   attributionResults   AttributionResult[]
   connectorAccounts    ConnectorAccount[]
   costMetering         CostMetering[]
+  backfillStatuses     ShopBackfillStatus[]
+  backfillJobs         BackfillJob[]
 
   @@map("merchants")
 }
@@ -84,6 +87,11 @@ model Shop {
   shopDomain               String                @map("shop_domain")
   externalShopId           String?               @map("external_shop_id")
   status                   String                @default("active")
+  setupStatus              String                @default("installed") @map("setup_status")
+  historicalOrderAccess    String                @default("unknown") @map("historical_order_access")
+  availableOrderHistoryDays Int                  @default(0) @map("available_order_history_days")
+  backfillStartedAt        DateTime?             @map("backfill_started_at") @db.Timestamptz(6)
+  backfillCompletedAt      DateTime?             @map("backfill_completed_at") @db.Timestamptz(6)
   rawPayload               Json                  @default("{}") @map("raw_payload")
   onboardingStartedAt      DateTime?             @map("onboarding_started_at") @db.Timestamptz(6)
   onboardingCompletedAt    DateTime?             @map("onboarding_completed_at") @db.Timestamptz(6)
@@ -105,6 +113,7 @@ model Shop {
   orderLineItems           OrderLineItem[]
   refunds                  Refund[]
   inventoryLevels          InventoryLevel[]
+  customerIdentities       CustomerIdentity[]
   cogsInputs               CogsInput[]
   dailyBriefs              DailyBrief[]
   actions                  Action[]
@@ -116,6 +125,8 @@ model Shop {
   attributionResults       AttributionResult[]
   connectorAccounts        ConnectorAccount[]
   costMetering             CostMetering[]
+  backfillStatuses         ShopBackfillStatus[]
+  backfillJobs             BackfillJob[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -388,6 +399,82 @@ model InventoryLevel {
   @@index([shopId, inventoryItemExternalId])
   @@index([merchantId, observedAt])
   @@map("inventory_levels")
+}
+
+model CustomerIdentity {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId        String    @map("merchant_id") @db.Uuid
+  shopId            String    @map("shop_id") @db.Uuid
+  normalizedEmail   String    @map("normalized_email")
+  emailHash         String    @map("email_hash")
+  maskedEmail       String    @map("masked_email")
+  firstSeenOrderAt  DateTime? @map("first_seen_order_at") @db.Timestamptz(6)
+  lastOrderAt       DateTime? @map("last_order_at") @db.Timestamptz(6)
+  orderCount        Int       @default(0) @map("order_count")
+  totalSpend        Decimal   @default(0) @map("total_spend") @db.Decimal(18, 2)
+  averageOrderValue Decimal   @default(0) @map("average_order_value") @db.Decimal(18, 2)
+  source            String
+  shopifyCustomerId String?   @map("shopify_customer_id")
+  rawPayload        Json      @default("{}") @map("raw_payload")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant          Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop              Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, emailHash])
+  @@index([merchantId, lastOrderAt])
+  @@map("customer_identities")
+}
+
+model ShopBackfillStatus {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId           String    @map("merchant_id") @db.Uuid
+  shopId               String    @map("shop_id") @db.Uuid
+  domain               String
+  status               String    @default("queued")
+  startedAt            DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt          DateTime? @map("completed_at") @db.Timestamptz(6)
+  lastError            String?   @map("last_error")
+  recordsProcessed     Int       @default(0) @map("records_processed")
+  totalRecordsEstimate Int?      @map("total_records_estimate")
+  lastCursor           String?   @map("last_cursor")
+  bulkOperationId      String?   @map("bulk_operation_id")
+  metadata             Json      @default("{}")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant             Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, domain])
+  @@index([merchantId, status])
+  @@map("shop_backfill_statuses")
+}
+
+model BackfillJob {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId   String    @map("merchant_id") @db.Uuid
+  shopId       String    @map("shop_id") @db.Uuid
+  jobType      String    @map("job_type")
+  status       String    @default("queued")
+  priority     Int       @default(100)
+  attemptCount Int       @default(0) @map("attempt_count")
+  maxAttempts  Int       @default(3) @map("max_attempts")
+  runAfter     DateTime  @default(now()) @map("run_after") @db.Timestamptz(6)
+  startedAt    DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz(6)
+  failedAt     DateTime? @map("failed_at") @db.Timestamptz(6)
+  lastError    String?   @map("last_error")
+  payloadJson  Json      @default("{}") @map("payload_json")
+  resultJson   Json      @default("{}") @map("result_json")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant     Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop         Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, jobType])
+  @@index([status, runAfter, priority])
+  @@index([merchantId, status])
+  @@map("backfill_jobs")
 }
 
 model CogsInput {

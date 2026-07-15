@@ -27,6 +27,10 @@ api_version = "2026-07"
   uri = "/webhooks/inventory_levels/update"
 
   [[webhooks.subscriptions]]
+  topics = [ "bulk_operations/finish" ]
+  uri = "/webhooks/bulk_operations/finish"
+
+  [[webhooks.subscriptions]]
   topics = [ "orders/create" ]
   uri = "/webhooks/orders/create"
 
@@ -35,18 +39,29 @@ api_version = "2026-07"
   uri = "/webhooks/orders/updated"
 
   [[webhooks.subscriptions]]
+  topics = [ "orders/cancelled" ]
+  uri = "/webhooks/orders/cancelled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/create" ]
+  uri = "/webhooks/products/create"
+
+  [[webhooks.subscriptions]]
   topics = [ "products/update" ]
   uri = "/webhooks/products/update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/delete" ]
+  uri = "/webhooks/products/delete"
 
   [[webhooks.subscriptions]]
   topics = [ "refunds/create" ]
   uri = "/webhooks/refunds/create"
 
 [access_scopes]
-# Staging uses a Shopify development store and the dummy data loader/backfill
-# workflows. Do not reuse this scope set for a production merchant app without
-# a separate written scope review.
-scopes = "read_locations,read_products,write_products,read_inventory,write_inventory,read_customers,write_customers,read_orders,write_orders"
+# MVP install backfill is read-only. `read_all_orders` is needed for the
+# 365-day order window; stores without it fall back to recent orders.
+scopes = "read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers"
 
 [auth]
 redirect_urls = [ "https://<railway-staging-url>/auth/callback" ]

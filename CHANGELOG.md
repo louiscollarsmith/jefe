@@ -5,6 +5,8 @@
 ### Added
 
 - Added a shared action safety lifecycle for proposals, approvals, executions and verification states.
+- Added install-time Shopify backfill so new stores can import products, orders, inventory and customer identities after OAuth without blocking install.
+- Added setup progress states so merchants can see Jefe importing Shopify history instead of an empty app.
 - Added the single staging deployment plan for Railway, Neon and the Shopify development app.
 - Added Klaviyo Winback v0 so Jefe can identify dormant customers, prepare an approval-gated draft, apply House Rules and hold back a measured control group without sending automatically.
 - Added fixture customers to the dev dummy store and Watchdog scenario orders so winback testing has reachable test buyers attached to orders.
@@ -22,6 +24,7 @@
 - Updated Klaviyo Winback so draft preparation, approval, execution and verification are recorded as separate safety states.
 - Added clearer Klaviyo Winback mode, holdout group and estimated upside copy.
 - Added a deterministic Klaviyo Winback email copy preview before approval.
+- Added degraded behaviour when historical Shopify order access is limited to recent orders.
 
 ### Fixed
 

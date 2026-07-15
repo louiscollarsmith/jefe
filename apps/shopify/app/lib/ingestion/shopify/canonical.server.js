@@ -1,5 +1,6 @@
 // @ts-check
 
+import crypto from "node:crypto";
 import {
   currencyCode,
   edgesToNodes,
@@ -191,6 +192,12 @@ export async function upsertShopifyOrder(prisma, input) {
       refund,
     });
   }
+
+  await upsertCustomerIdentityFromOrder(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    order,
+  });
 
   return savedOrder;
 }
@@ -400,6 +407,93 @@ export async function upsertShopifyInventoryLevel(prisma, input) {
   });
 }
 
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; order: unknown }} input
+ */
+async function upsertCustomerIdentityFromOrder(prisma, input) {
+  const order = jsonObject(input.order);
+  const identity = extractOrderEmailIdentity(order);
+  if (!identity) return null;
+
+  const processedAt =
+    parseDate(order.processedAt ?? order.processed_at) ??
+    parseDate(order.createdAt ?? order.created_at);
+  const totalSpend = moneyAmount(
+    order.currentTotalPriceSet?.shopMoney ??
+      order.current_total_price_set?.shop_money ??
+      order.total_price,
+  );
+  const customer = jsonObject(order.customer);
+  const shopifyCustomerId = customerExternalId(customer);
+  const emailHash = hashEmail(identity.normalizedEmail);
+  const orderId = orderExternalId(order);
+  const existing = await prisma.customerIdentity.findUnique({
+    where: { shopId_emailHash: { shopId: input.shopId, emailHash } },
+  });
+  const existingRawPayload = jsonObject(existing?.rawPayload);
+  const existingOrderIds = Array.isArray(existingRawPayload.orderIds)
+    ? existingRawPayload.orderIds
+    : [];
+  const alreadySeen = orderId ? existingOrderIds.includes(orderId) : false;
+  const nextOrderCount = alreadySeen
+    ? (existing?.orderCount ?? 0)
+    : (existing?.orderCount ?? 0) + 1;
+  const nextTotalSpend =
+    Number(existing?.totalSpend ?? 0) +
+    (alreadySeen ? 0 : Number(totalSpend ?? 0));
+  const nextOrderIds =
+    orderId && !alreadySeen ? [...existingOrderIds, orderId] : existingOrderIds;
+
+  return prisma.customerIdentity.upsert({
+    where: { shopId_emailHash: { shopId: input.shopId, emailHash } },
+    create: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      normalizedEmail: identity.normalizedEmail,
+      emailHash,
+      maskedEmail: maskEmail(identity.normalizedEmail),
+      firstSeenOrderAt: processedAt,
+      lastOrderAt: processedAt,
+      orderCount: 1,
+      totalSpend: totalSpend ?? "0",
+      averageOrderValue: totalSpend ?? "0",
+      source: identity.source,
+      shopifyCustomerId,
+      rawPayload: {
+        source: identity.source,
+        orderIds: orderId ? [orderId] : [],
+        hasShopifyCustomerId: Boolean(shopifyCustomerId),
+      },
+    },
+    update: {
+      normalizedEmail: identity.normalizedEmail,
+      maskedEmail: maskEmail(identity.normalizedEmail),
+      firstSeenOrderAt:
+        existing?.firstSeenOrderAt && processedAt
+          ? minDate(existing.firstSeenOrderAt, processedAt)
+          : (existing?.firstSeenOrderAt ?? processedAt),
+      lastOrderAt:
+        existing?.lastOrderAt && processedAt
+          ? maxDate(existing.lastOrderAt, processedAt)
+          : (existing?.lastOrderAt ?? processedAt),
+      orderCount: nextOrderCount,
+      totalSpend: String(nextTotalSpend.toFixed(2)),
+      averageOrderValue: String((nextTotalSpend / nextOrderCount).toFixed(2)),
+      source: existing?.source ?? identity.source,
+      shopifyCustomerId: shopifyCustomerId ?? existing?.shopifyCustomerId,
+      rawPayload: {
+        source: existing?.source ?? identity.source,
+        orderIds: nextOrderIds,
+        lastOrderId: orderId,
+        hasShopifyCustomerId: Boolean(
+          shopifyCustomerId ?? existing?.shopifyCustomerId,
+        ),
+      },
+    },
+  });
+}
+
 /** @param {unknown} product */
 function extractVariants(product) {
   const payload = jsonObject(product);
@@ -514,6 +608,84 @@ function customerExternalId(customer) {
     stringValue(payload.id) ||
     shopifyGid("Customer", payload.customer_id)
   );
+}
+
+/** @param {Record<string, any>} order */
+function extractOrderEmailIdentity(order) {
+  const noteAttributeEmail = noteAttributeValue(order, "jefe_customer_email");
+  const candidates = [
+    ["shopify_customer", order.customer?.email],
+    ["order_email", order.email],
+    ["contact_email", order.contact_email ?? order.contactEmail],
+    ["note_attribute", noteAttributeEmail],
+    [
+      "billing_email",
+      order.billing_address?.email ?? order.billingAddress?.email,
+    ],
+    [
+      "shipping_email",
+      order.shipping_address?.email ?? order.shippingAddress?.email,
+    ],
+  ];
+
+  for (const [source, value] of candidates) {
+    const normalizedEmail = normalizeEmail(value);
+    if (normalizedEmail) return { source, normalizedEmail };
+  }
+
+  return null;
+}
+
+/**
+ * @param {Record<string, any>} order
+ * @param {string} name
+ */
+function noteAttributeValue(order, name) {
+  const attributes = order.note_attributes ?? order.noteAttributes;
+  if (!Array.isArray(attributes)) return null;
+  const match = attributes.find(
+    (attribute) =>
+      attribute?.name === name ||
+      attribute?.key === name ||
+      attribute?.Name === name,
+  );
+  return match?.value ?? match?.Value ?? null;
+}
+
+/** @param {unknown} value */
+function normalizeEmail(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : null;
+}
+
+/** @param {string} email */
+function hashEmail(email) {
+  return crypto.createHash("sha256").update(email).digest("hex");
+}
+
+/** @param {string} email */
+function maskEmail(email) {
+  const [local, domain] = email.split("@");
+  if (!local || !domain) return "masked";
+  const first = local.slice(0, 1);
+  return `${first}${"*".repeat(Math.max(local.length - 1, 2))}@${domain}`;
+}
+
+/**
+ * @param {Date} a
+ * @param {Date} b
+ */
+function minDate(a, b) {
+  return a.getTime() <= b.getTime() ? a : b;
+}
+
+/**
+ * @param {Date} a
+ * @param {Date} b
+ */
+function maxDate(a, b) {
+  return a.getTime() >= b.getTime() ? a : b;
 }
 
 /** @param {unknown} inventoryLevel */

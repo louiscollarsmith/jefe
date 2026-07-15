@@ -24,13 +24,13 @@ Local `.env` defaults:
 ```shell
 DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
 SHOPIFY_API_VERSION="2026-07"
-SCOPES=read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,write_orders
+SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers
 ENABLE_DUMMY_STORE_LOADER=true
 ```
 
 ## Dummy Store Data
 
-For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. Set `ENABLE_DUMMY_STORE_LOADER=true` and install the app with:
+For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The MVP app config is read-only, so only use this temporary local scope override on a development store when you need the fixture writer:
 
 ```shell
 SCOPES=read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,write_orders
@@ -52,13 +52,23 @@ Order and refund fixture creation also requires protected customer data access f
 
 ## Shopify Ingestion
 
+After OAuth, Jefe queues an install-time Shopify backfill instead of blocking the callback. The same web service processes jobs from Postgres in a lightweight background loop.
+
+Default MVP scopes:
+
+```shell
+SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers
+```
+
+`read_all_orders` unlocks the intended 365-day order import. If it is not granted, Jefe imports the recent 60-day window, marks setup as limited, and keeps Klaviyo Winback unavailable until enough order history is present.
+
 After installing the app on a development store, run a local backfill with:
 
 ```shell
 npm run shopify:backfill -- --shop your-dev-store.myshopify.com
 ```
 
-Backfill uses the existing offline Shopify session token, writes raw source records to `ledger_events`, and upserts canonical commerce rows for products, variants, inventory levels, orders, line items and refunds.
+Backfill uses the existing offline Shopify session token, writes raw source records to `ledger_events`, and upserts canonical commerce rows for products, variants, inventory levels, orders, line items, refunds and order-derived customer identities.
 
 Webhook endpoints verify Shopify HMAC signatures before parsing payloads, dedupe by Shopify delivery/event ID where available, write raw payloads to `ledger_events`, and process canonical upserts inline.
 
@@ -89,6 +99,7 @@ Implemented:
 - Founder-assisted onboarding for goals, House Rules, COGS inputs and completion state
 - Dev-only Shopify dummy store data loader for Ticket 003 seed data
 - Shopify ingestion for products, variants, inventory levels, orders, line items and refunds
+- Install-time Shopify backfill queue with 365-day/60-day order access handling
 - HMAC-verified Shopify webhook ingestion with ledger dedupe
 
 Not implemented yet:
