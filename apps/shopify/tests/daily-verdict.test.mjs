@@ -402,6 +402,10 @@ test("Daily Verdict dev panels are hidden unless explicitly enabled", () => {
     shouldShowDailyVerdictDevTools({ ENABLE_DUMMY_STORE_LOADER: "true" }),
     true,
   );
+  assert.equal(
+    shouldShowDailyVerdictDevTools({ ENABLE_DEV_TOOLS: "true" }),
+    true,
+  );
 });
 
 async function createCogsInput(

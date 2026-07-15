@@ -5,12 +5,14 @@
 ### Added
 
 - Added a shared action safety lifecycle for proposals, approvals, executions and verification states.
+- Added the single staging deployment plan for Railway, Neon and the Shopify development app.
 - Added Klaviyo Winback v0 so Jefe can identify dormant customers, prepare an approval-gated draft, apply House Rules and hold back a measured control group without sending automatically.
 - Added fixture customers to the dev dummy store and Watchdog scenario orders so winback testing has reachable test buyers attached to orders.
 - Added a dev Klaviyo Winback scenario loader with 60-180 day customer orders for winback testing.
 
 ### Changed
 
+- Documented auto-deploy from `main`, staging environment variables, Shopify app URLs and Neon migration flow.
 - Renamed Today’s Verdict to Revenue & Margin so Daily Brief is clearly the main morning summary and Revenue & Margin is the detailed performance view.
 - Added more bottom spacing across the app so the final card on each page can scroll comfortably above the bottom edge.
 - Replaced the Daily Brief manual generate button with scheduled status copy and moved test generation to the Dev page.
@@ -23,6 +25,7 @@
 
 ### Fixed
 
+- Fixed the Shopify app Docker image so Prisma Client is generated during image builds before Railway starts the web service.
 - Fixed the Klaviyo private key field so pilot stores can enter and save their key reference.
 - Fixed Klaviyo Winback empty-state copy so it explains when test orders are too recent instead of implying emails are missing.
 - Fixed Klaviyo Winback audience filtering so Shopify customer account state does not suppress marketable buyers and reused emails are grouped consistently.

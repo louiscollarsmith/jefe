@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { buildHealthPayload } from "../app/services/deployment-health.server.js";
+
+test("deployment health reports the configured app environment", () => {
+  assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
+    ok: true,
+    environment: "staging",
+  });
+});
+
+test("deployment health falls back to NODE_ENV and development", () => {
+  assert.deepEqual(buildHealthPayload({ NODE_ENV: "production" }), {
+    ok: true,
+    environment: "production",
+  });
+  assert.deepEqual(buildHealthPayload({}), {
+    ok: true,
+    environment: "development",
+  });
+});
+
+test("Dockerfile generates Prisma Client before building the app", async () => {
+  const dockerfile = await readFile("Dockerfile", "utf8");
+  const copySourceIndex = dockerfile.indexOf("COPY . .");
+  const prismaGenerateIndex = dockerfile.indexOf("RUN npx prisma generate");
+  const buildIndex = dockerfile.indexOf("RUN npm run build");
+
+  assert.ok(copySourceIndex >= 0);
+  assert.ok(prismaGenerateIndex > copySourceIndex);
+  assert.ok(buildIndex > prismaGenerateIndex);
+});
