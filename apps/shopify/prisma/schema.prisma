@@ -43,57 +43,58 @@ model Session {
 }
 
 model Merchant {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name               String
-  status             String              @default("active")
-  primaryCurrency    String              @default("GBP") @map("primary_currency")
-  timezone           String              @default("Europe/London")
-  goalsJson          Json                @default("{}") @map("goals_json")
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  shops              Shop[]
-  users              MerchantUser[]
-  houseRules         HouseRule[]
-  goals              Goal[]
-  ledgerEvents       LedgerEvent[]
-  products           Product[]
-  variants           Variant[]
-  orders             Order[]
-  orderLineItems     OrderLineItem[]
-  refunds            Refund[]
-  inventoryLevels    InventoryLevel[]
-  cogsInputs         CogsInput[]
-  dailyBriefs        DailyBrief[]
-  actions            Action[]
-  executions         Execution[]
-  feedback           Feedback[]
-  provenanceLinks    ProvenanceLink[]
-  holdoutAssignments HoldoutAssignment[]
-  attributionResults AttributionResult[]
-  connectorAccounts  ConnectorAccount[]
-  costMetering       CostMetering[]
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                 String
+  status               String                @default("active")
+  primaryCurrency      String                @default("GBP") @map("primary_currency")
+  timezone             String                @default("Europe/London")
+  goalsJson            Json                  @default("{}") @map("goals_json")
+  createdAt            DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shops                Shop[]
+  users                MerchantUser[]
+  houseRules           HouseRule[]
+  goals                Goal[]
+  ledgerEvents         LedgerEvent[]
+  products             Product[]
+  variants             Variant[]
+  orders               Order[]
+  orderLineItems       OrderLineItem[]
+  refunds              Refund[]
+  inventoryLevels      InventoryLevel[]
+  cogsInputs           CogsInput[]
+  dailyBriefs          DailyBrief[]
+  actions              Action[]
+  executions           Execution[]
+  feedback             Feedback[]
+  actionApprovalEvents ActionApprovalEvent[]
+  provenanceLinks      ProvenanceLink[]
+  holdoutAssignments   HoldoutAssignment[]
+  attributionResults   AttributionResult[]
+  connectorAccounts    ConnectorAccount[]
+  costMetering         CostMetering[]
 
   @@map("merchants")
 }
 
 model Shop {
-  id                       String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId               String              @map("merchant_id") @db.Uuid
-  platform                 String              @default("shopify")
-  shopDomain               String              @map("shop_domain")
-  externalShopId           String?             @map("external_shop_id")
-  status                   String              @default("active")
-  rawPayload               Json                @default("{}") @map("raw_payload")
-  onboardingStartedAt      DateTime?           @map("onboarding_started_at") @db.Timestamptz(6)
-  onboardingCompletedAt    DateTime?           @map("onboarding_completed_at") @db.Timestamptz(6)
-  goalsCompleted           Boolean             @default(false) @map("goals_completed")
-  houseRulesCompleted      Boolean             @default(false) @map("house_rules_completed")
-  cogsCompletionPercentage Decimal             @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
-  cogsConfidenceLevel      String              @default("missing") @map("cogs_confidence_level")
-  onboardingMetadata       Json                @default("{}") @map("onboarding_metadata")
-  createdAt                DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant                 Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                       String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId               String                @map("merchant_id") @db.Uuid
+  platform                 String                @default("shopify")
+  shopDomain               String                @map("shop_domain")
+  externalShopId           String?               @map("external_shop_id")
+  status                   String                @default("active")
+  rawPayload               Json                  @default("{}") @map("raw_payload")
+  onboardingStartedAt      DateTime?             @map("onboarding_started_at") @db.Timestamptz(6)
+  onboardingCompletedAt    DateTime?             @map("onboarding_completed_at") @db.Timestamptz(6)
+  goalsCompleted           Boolean               @default(false) @map("goals_completed")
+  houseRulesCompleted      Boolean               @default(false) @map("house_rules_completed")
+  cogsCompletionPercentage Decimal               @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
+  cogsConfidenceLevel      String                @default("missing") @map("cogs_confidence_level")
+  onboardingMetadata       Json                  @default("{}") @map("onboarding_metadata")
+  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                 Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   users                    MerchantUser[]
   houseRules               HouseRule[]
   goals                    Goal[]
@@ -109,6 +110,7 @@ model Shop {
   actions                  Action[]
   executions               Execution[]
   feedback                 Feedback[]
+  actionApprovalEvents     ActionApprovalEvent[]
   provenanceLinks          ProvenanceLink[]
   holdoutAssignments       HoldoutAssignment[]
   attributionResults       AttributionResult[]
@@ -452,29 +454,45 @@ model DailyBrief {
 }
 
 model Action {
-  id                     String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId             String              @map("merchant_id") @db.Uuid
-  shopId                 String?             @map("shop_id") @db.Uuid
-  dailyBriefId           String?             @map("daily_brief_id") @db.Uuid
-  actionType             String              @map("action_type")
-  status                 String              @default("proposed")
-  expectedValue          Json                @default("{}") @map("expected_value")
-  confidence             Decimal?            @db.Decimal(5, 4)
-  riskLevel              String              @map("risk_level")
-  evidence               Json                @default("[]")
-  rulesConsulted         Json                @default("[]") @map("rules_consulted")
-  ruleConstraintsApplied Json                @default("[]") @map("rule_constraints_applied")
-  preview                Json                @default("{}")
-  verificationClass      VerificationClass   @map("verification_class")
-  idempotencyKey         String?             @map("idempotency_key")
-  proposedAt             DateTime            @default(now()) @map("proposed_at") @db.Timestamptz(6)
-  approvedAt             DateTime?           @map("approved_at") @db.Timestamptz(6)
-  createdAt              DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt              DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant               Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                   Shop?               @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  dailyBrief             DailyBrief?         @relation(fields: [dailyBriefId], references: [id], onDelete: SetNull)
+  id                     String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId             String                @map("merchant_id") @db.Uuid
+  shopId                 String?               @map("shop_id") @db.Uuid
+  dailyBriefId           String?               @map("daily_brief_id") @db.Uuid
+  actionType             String                @map("action_type")
+  status                 String                @default("proposed")
+  title                  String                @default("Action")
+  summary                String                @default("")
+  expectedValue          Json                  @default("{}") @map("expected_value")
+  valueCurrency          String                @default("GBP") @map("value_currency")
+  valueType              String                @default("estimated_margin") @map("value_type")
+  confidence             Decimal?              @db.Decimal(5, 4)
+  riskLevel              String                @map("risk_level")
+  approvalRequired       Boolean               @default(true) @map("approval_required")
+  evidence               Json                  @default("[]")
+  rulesConsulted         Json                  @default("[]") @map("rules_consulted")
+  ruleConstraintsApplied Json                  @default("[]") @map("rule_constraints_applied")
+  capsApplied            Json                  @default("[]") @map("caps_applied")
+  provenanceReferences   Json                  @default("[]") @map("provenance_references")
+  preview                Json                  @default("{}")
+  verificationClass      VerificationClass     @map("verification_class")
+  executionMode          String                @default("dry_run") @map("execution_mode")
+  externalSystem         String                @default("internal") @map("external_system")
+  externalDraftId        String?               @map("external_draft_id")
+  externalExecutionId    String?               @map("external_execution_id")
+  idempotencyKey         String?               @map("idempotency_key")
+  proposedAt             DateTime              @default(now()) @map("proposed_at") @db.Timestamptz(6)
+  approvedAt             DateTime?             @map("approved_at") @db.Timestamptz(6)
+  approvedBy             String?               @map("approved_by") @db.Uuid
+  rejectedAt             DateTime?             @map("rejected_at") @db.Timestamptz(6)
+  rejectedBy             String?               @map("rejected_by") @db.Uuid
+  blockedReason          String?               @map("blocked_reason")
+  createdAt              DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant               Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                   Shop?                 @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  dailyBrief             DailyBrief?           @relation(fields: [dailyBriefId], references: [id], onDelete: SetNull)
   executions             Execution[]
+  approvalEvents         ActionApprovalEvent[]
   feedbackItems          Feedback[]
   holdoutAssignments     HoldoutAssignment[]
   attributionResults     AttributionResult[]
@@ -483,6 +501,28 @@ model Action {
   @@index([merchantId, status, proposedAt])
   @@index([shopId])
   @@map("actions")
+}
+
+model ActionApprovalEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String   @map("merchant_id") @db.Uuid
+  shopId          String?  @map("shop_id") @db.Uuid
+  actionId        String   @map("action_id") @db.Uuid
+  previousStatus  String   @map("previous_status")
+  newStatus       String   @map("new_status")
+  actor           String
+  actorType       String   @map("actor_type")
+  reason          String?
+  requestSnapshot Json     @default("{}") @map("request_snapshot")
+  eventTs         DateTime @default(now()) @map("event_ts") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop?    @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  action          Action   @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+  @@index([actionId, eventTs])
+  @@index([merchantId, eventTs])
+  @@map("action_approval_events")
 }
 
 model Execution {

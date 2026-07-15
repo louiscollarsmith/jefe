@@ -34,10 +34,12 @@ import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { authenticate } from "../shopify.server";
 import {
   approveWinbackProposal,
+  cancelWinbackProposal,
   connectKlaviyoPrivateKey,
   createWinbackProposal,
   disconnectKlaviyo,
   getWinbackDashboard,
+  rejectWinbackProposal,
 } from "../services/klaviyo-winback.server";
 
 type LoaderData = Awaited<ReturnType<typeof getWinbackDashboard>>;
@@ -125,6 +127,34 @@ export const action = async ({
         ok: true,
         message:
           "Winback proposal approved in Jefe. Klaviyo sending is still manual in v0.",
+      };
+    }
+
+    if (intent === "reject-winback-proposal") {
+      await rejectWinbackProposal(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: String(formData.get("actionId") ?? ""),
+        reason: String(formData.get("reason") ?? "") || null,
+      });
+
+      return {
+        ok: true,
+        message: "Winback proposal rejected. No customer email was sent.",
+      };
+    }
+
+    if (intent === "cancel-winback-proposal") {
+      await cancelWinbackProposal(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: String(formData.get("actionId") ?? ""),
+        reason: "Cancelled from Klaviyo Winback queue.",
+      });
+
+      return {
+        ok: true,
+        message: "Winback proposal cancelled. No customer email was sent.",
       };
     }
   } catch (error) {
@@ -270,7 +300,7 @@ function ConnectionCard({
 function ModeStatusCard({ dashboard }: { dashboard: LoaderData }) {
   const connected = dashboard.connection.status === "active";
   const draftPrepared = dashboard.actions.some((action) =>
-    Boolean(action.executionStatus),
+    action.executionStatus === "draft_prepared",
   );
   const klaviyoDraftCreated = dashboard.actions.some((action) =>
     Boolean(action.externalDraftId),
@@ -561,6 +591,24 @@ function RecentActions({ actions }: { actions: LoaderData["actions"] }) {
                   </InlineStack>
                   <InlineGrid columns={{ xs: 1, sm: 4 }} gap="300">
                     <MetricBlock
+                      label="Action type"
+                      value={action.externalSystem}
+                    />
+                    <MetricBlock
+                      label="Expected value"
+                      value={formatActionValue(action)}
+                    />
+                    <MetricBlock
+                      label="Verification"
+                      value={verificationLabel(action)}
+                    />
+                    <MetricBlock
+                      label="Execution mode"
+                      value={executionModeLabel(action.executionMode)}
+                    />
+                  </InlineGrid>
+                  <InlineGrid columns={{ xs: 1, sm: 4 }} gap="300">
+                    <MetricBlock
                       label="Treatment"
                       value={String(action.treatmentCount)}
                     />
@@ -574,22 +622,144 @@ function RecentActions({ actions }: { actions: LoaderData["actions"] }) {
                     />
                     <MetricBlock
                       label="Send enabled"
-                      value={action.executionDryRun === false ? "Yes" : "No"}
+                      value="No"
                     />
                   </InlineGrid>
-                  {action.status === "draft_prepared" ||
-                  action.status === "needs_approval" ? (
-                    <Form method="post">
-                      <input
-                        type="hidden"
-                        name="intent"
-                        value="approve-winback-proposal"
-                      />
-                      <input type="hidden" name="actionId" value={action.id} />
-                      <Button submit variant="primary">
-                        Approve in Jefe
-                      </Button>
-                    </Form>
+
+                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+                    <BlockStack gap="200">
+                      <Text as="h3" variant="headingSm">
+                        House Rules consulted
+                      </Text>
+                      <List>
+                        {action.rulesConsulted.map(
+                          (rule: Record<string, unknown>, index: number) => (
+                          <List.Item key={`${action.id}-rule-${index}`}>
+                            {ruleLabel(rule)}
+                          </List.Item>
+                          ),
+                        )}
+                      </List>
+                    </BlockStack>
+                    <BlockStack gap="200">
+                      <Text as="h3" variant="headingSm">
+                        Caps applied
+                      </Text>
+                      <List>
+                        {action.capsApplied.map(
+                          (cap: Record<string, unknown>) => (
+                          <List.Item key={`${action.id}-${cap.rule}`}>
+                            {capLabel(cap)}
+                          </List.Item>
+                          ),
+                        )}
+                      </List>
+                    </BlockStack>
+                  </InlineGrid>
+
+                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+                    <HistoryList
+                      title="Approval history"
+                      emptyText="No approval decision recorded yet."
+                      items={action.approvalHistory.map((event: {
+                        id: string;
+                        previousStatus: string;
+                        newStatus: string;
+                        actorType: string;
+                        reason: string | null;
+                        eventTs: string;
+                      }) => ({
+                        id: event.id,
+                        label: `${statusLabel(event.previousStatus)} -> ${statusLabel(
+                          event.newStatus,
+                        )}`,
+                        detail: [
+                          formatDateTime(event.eventTs),
+                          event.actorType,
+                          event.reason,
+                        ].filter(Boolean).join(" · "),
+                      }))}
+                    />
+                    <HistoryList
+                      title="Execution history"
+                      emptyText="No execution attempt recorded yet."
+                      items={action.executionHistory.map((event: {
+                        id: string;
+                        status: string;
+                        dryRun: boolean;
+                        connector: string;
+                        createdAt: string;
+                        completedAt: string | null;
+                      }) => ({
+                        id: event.id,
+                        label: executionStatusLabel(event.status),
+                        detail: [
+                          event.connector,
+                          event.dryRun ? "Dry run" : "Live",
+                          event.completedAt
+                            ? formatDateTime(event.completedAt)
+                            : formatDateTime(event.createdAt),
+                        ].join(" · "),
+                      }))}
+                    />
+                  </InlineGrid>
+
+                  <InlineStack gap="200">
+                    {action.status === "needs_approval" ? (
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="approve-winback-proposal"
+                        />
+                        <input type="hidden" name="actionId" value={action.id} />
+                        <Button submit variant="primary">
+                          Approve
+                        </Button>
+                      </Form>
+                    ) : null}
+                    {action.status === "needs_approval" ||
+                    action.status === "approved" ? (
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="reject-winback-proposal"
+                        />
+                        <input type="hidden" name="actionId" value={action.id} />
+                        <input
+                          type="hidden"
+                          name="reason"
+                          value="Rejected from Klaviyo Winback queue."
+                        />
+                        <Button submit>
+                          Reject
+                        </Button>
+                      </Form>
+                    ) : null}
+                    {["proposed", "draft_prepared", "needs_approval", "approved"].includes(
+                      action.status,
+                    ) ? (
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="cancel-winback-proposal"
+                        />
+                        <input type="hidden" name="actionId" value={action.id} />
+                        <Button submit>
+                          Cancel
+                        </Button>
+                      </Form>
+                    ) : null}
+                    <Button disabled>Execute</Button>
+                  </InlineStack>
+
+                  {action.externalDraftId || action.externalExecutionId ? (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      External draft: {action.externalDraftId ?? "none"} ·
+                      External execution: {action.externalExecutionId ?? "none"}
+                    </Text>
                   ) : null}
                 </BlockStack>
               </Card>
@@ -610,6 +780,37 @@ function MetricBlock({ label, value }: { label: string; value: string }) {
       <Text as="p" variant="headingLg">
         {value}
       </Text>
+    </BlockStack>
+  );
+}
+
+function HistoryList({
+  title,
+  emptyText,
+  items,
+}: {
+  title: string;
+  emptyText: string;
+  items: Array<{ id: string; label: string; detail: string }>;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Text as="h3" variant="headingSm">
+        {title}
+      </Text>
+      {items.length === 0 ? (
+        <Text as="p" variant="bodySm" tone="subdued">
+          {emptyText}
+        </Text>
+      ) : (
+        <List>
+          {items.map((item) => (
+            <List.Item key={item.id}>
+              {item.label}: {item.detail}
+            </List.Item>
+          ))}
+        </List>
+      )}
     </BlockStack>
   );
 }
@@ -645,6 +846,7 @@ function capLabel(cap: Record<string, unknown>) {
 function statusTone(status: string) {
   if (status === "approved") return "success";
   if (status === "blocked") return "critical";
+  if (status === "rejected" || status === "cancelled") return "critical";
   if (status === "draft_prepared" || status === "needs_approval") {
     return "attention";
   }
@@ -657,12 +859,53 @@ function statusLabel(status: string) {
   if (status === "draft_prepared") return "Draft prepared";
   if (status === "needs_approval") return "Needs approval";
   if (status === "rejected") return "Rejected";
-  return "Needs approval";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "executed") return "Executed";
+  if (status === "verified") return "Verified";
+  return status;
 }
 
 function executionStatusLabel(status: string | null) {
   if (status === "draft_prepared") return "Prepared";
+  if (status === "dry_run_executed") return "Dry run executed";
   return status ?? "Pending";
+}
+
+function executionModeLabel(mode: string) {
+  if (mode === "draft_only") return "Draft only";
+  if (mode === "dry_run") return "Dry run";
+  if (mode === "live_write_disabled") return "Live disabled";
+  if (mode === "live") return "Live";
+  return mode;
+}
+
+function verificationLabel(action: LoaderData["actions"][number]) {
+  const classLabel =
+    action.verificationClass === "verified" ? "Verified" : "Estimated";
+  const valueLabel = action.valueType.replace(/_/g, " ");
+
+  return `${classLabel} · ${valueLabel}`;
+}
+
+function formatActionValue(action: LoaderData["actions"][number]) {
+  const expectedValue = action.expectedValue as {
+    expectedRevenueAfterDiscount?: { base?: number };
+    expectedRevenue?: { base?: number };
+    currency?: string;
+  };
+  const value =
+    expectedValue.expectedRevenueAfterDiscount?.base ??
+    expectedValue.expectedRevenue?.base ??
+    0;
+
+  return formatMoney(value, action.valueCurrency ?? expectedValue.currency ?? "GBP");
+}
+
+function ruleLabel(rule: Record<string, unknown>) {
+  const source = String(rule.source ?? "house rules");
+  const rules = Array.isArray(rule.rules) ? rule.rules.join(", ") : "policy";
+
+  return `${source}: ${rules}`;
 }
 
 function formatDateTime(value: string) {

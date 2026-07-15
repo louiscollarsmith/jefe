@@ -30,7 +30,9 @@ Manual onboarding COGS rows use `source = manual_onboarding`, keep raw entry met
 
 ## Actions And Verification
 
-`actions` stores expected value, confidence, risk level, evidence, rules consulted, preview and verification class. `verification_class` is a Postgres enum with only `verified` and `estimated`; verified lift and estimated prevention should be queried and displayed separately.
+`actions` stores the shared action safety lifecycle: status, title, summary, expected value, value currency/type, confidence, risk level, approval requirement, evidence, rules consulted, caps applied, preview, execution mode, external system IDs and verification class. `verification_class` is a Postgres enum with only `verified` and `estimated`; verified lift and estimated prevention should be queried and displayed separately.
+
+Action statuses are deliberately separate: `draft_prepared` is not approved, `approved` is not executed, and `executed` is not verified. `verified` should only be set by later attribution/measurement code. `action_approval_events` records immutable approval, rejection, cancellation and safety-transition history with previous/new status, actor, actor type, reason/comment and request snapshot.
 
 `executions` records dry-run or approved execution attempts with idempotency keys. `holdout_assignments` and `attribution_results` support measured outcomes. `provenance_links` ties recommendations and outputs back to ledger events or source records.
 
