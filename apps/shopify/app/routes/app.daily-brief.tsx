@@ -139,7 +139,7 @@ export default function DailyBrief() {
                 <InlineStack align="space-between" blockAlign="start" gap="400">
                   <BlockStack gap="100">
                     <Text as="h1" variant="heading2xl">
-                      Hello verdict
+                      Daily Brief
                     </Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
                       {view.merchantName} · {view.shopDomain} ·{" "}
