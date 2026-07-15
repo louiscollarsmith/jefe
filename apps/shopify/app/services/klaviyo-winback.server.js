@@ -3,6 +3,12 @@
 import crypto from "node:crypto";
 
 import { prepareKlaviyoWinbackDraft } from "../lib/klaviyo/adapter.server.js";
+import {
+  approveAction,
+  cancelAction,
+  recordDraftPreparedExecution,
+  rejectAction,
+} from "./action-safety.server.js";
 import { HOUSE_RULE_DEFAULTS } from "./house-rules-policy.js";
 import { loadMerchantPolicyContext } from "./onboarding.server.js";
 
@@ -144,7 +150,8 @@ export async function getWinbackDashboard(prisma, input) {
       orderBy: { proposedAt: "desc" },
       take: 5,
       include: {
-        executions: { orderBy: { createdAt: "desc" }, take: 1 },
+        executions: { orderBy: { createdAt: "desc" } },
+        approvalEvents: { orderBy: { eventTs: "asc" } },
         holdoutAssignments: true,
       },
     }),
@@ -315,7 +322,10 @@ export async function createWinbackProposal(prisma, input) {
   const connection = await loadKlaviyoConnection(prisma, input);
   const proposal = await buildWinbackProposal(prisma, { ...input, now });
   const idempotencyKey = winbackIdempotencyKey(input.shopId, now);
-  const status = proposal.status === "blocked" ? "blocked" : "draft_prepared";
+  const status = proposal.status === "blocked" ? "blocked" : "needs_approval";
+  const title = "Dormant customer winback";
+  const summary =
+    "Prepare a Klaviyo dormant-customer winback draft with a randomised holdout. Sending remains disabled in v0.";
 
   const action = await prisma.action.upsert({
     where: {
@@ -329,9 +339,14 @@ export async function createWinbackProposal(prisma, input) {
       shopId: input.shopId,
       actionType: WINBACK_ACTION_TYPE,
       status,
+      title,
+      summary,
       expectedValue: proposal.economics,
+      valueCurrency: proposal.economics.currency,
+      valueType: "estimated_revenue",
       confidence: "0.5500",
       riskLevel: proposal.riskLevel,
+      approvalRequired: true,
       evidence: [
         {
           source: "orders",
@@ -342,17 +357,41 @@ export async function createWinbackProposal(prisma, input) {
       ],
       rulesConsulted: proposal.rulesConsulted,
       ruleConstraintsApplied: proposal.capsApplied,
+      capsApplied: proposal.capsApplied,
+      provenanceReferences: [
+        {
+          source: "orders",
+          formulaVersion: WINBACK_FORMULA_VERSION,
+          plannedVerification: proposal.plannedVerification,
+        },
+      ],
       preview: proposal.preview,
       verificationClass: "ESTIMATED",
+      executionMode: "draft_only",
+      externalSystem: KLAVIYO_CONNECTOR,
+      blockedReason: proposal.status === "blocked"
+        ? proposal.blockedReasons[0] ?? "house_rules_blocked"
+        : null,
       idempotencyKey,
       proposedAt: now,
     },
     update: {
       status,
       approvedAt: null,
+      approvedBy: null,
+      rejectedAt: null,
+      rejectedBy: null,
+      blockedReason: proposal.status === "blocked"
+        ? proposal.blockedReasons[0] ?? "house_rules_blocked"
+        : null,
+      title,
+      summary,
       expectedValue: proposal.economics,
+      valueCurrency: proposal.economics.currency,
+      valueType: "estimated_revenue",
       confidence: "0.5500",
       riskLevel: proposal.riskLevel,
+      approvalRequired: true,
       evidence: [
         {
           source: "orders",
@@ -363,8 +402,20 @@ export async function createWinbackProposal(prisma, input) {
       ],
       rulesConsulted: proposal.rulesConsulted,
       ruleConstraintsApplied: proposal.capsApplied,
+      capsApplied: proposal.capsApplied,
+      provenanceReferences: [
+        {
+          source: "orders",
+          formulaVersion: WINBACK_FORMULA_VERSION,
+          plannedVerification: proposal.plannedVerification,
+        },
+      ],
       preview: proposal.preview,
       verificationClass: "ESTIMATED",
+      executionMode: "draft_only",
+      externalSystem: KLAVIYO_CONNECTOR,
+      externalDraftId: null,
+      externalExecutionId: null,
       proposedAt: now,
     },
   });
@@ -378,8 +429,10 @@ export async function createWinbackProposal(prisma, input) {
     payload: {
       actionId: action.id,
       status,
+      draftPrepared: proposal.status !== "blocked",
       formulaVersion: WINBACK_FORMULA_VERSION,
       verificationClass: "estimated",
+      valueType: "estimated_revenue",
       eligibleCustomers: proposal.audience.eligibleCount,
       includedCustomers: proposal.audience.includedCount,
       holdoutPercent: WINBACK_HOLDOUT_PERCENT,
@@ -411,40 +464,20 @@ export async function createWinbackProposal(prisma, input) {
       stagedSend: proposal.preview.stagedSend,
     });
 
-    await prisma.execution.upsert({
-      where: {
-        merchantId_idempotencyKey: {
-          merchantId: input.merchantId,
-          idempotencyKey: executionIdempotencyKey,
-        },
+    await recordDraftPreparedExecution(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      connector: KLAVIYO_CONNECTOR,
+      idempotencyKey: executionIdempotencyKey,
+      request: {
+        actionType: WINBACK_ACTION_TYPE,
+        noAutomaticSend: true,
+        connectionStatus: connection?.status ?? "missing",
       },
-      create: {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        actionId: action.id,
-        status: "draft_prepared",
-        connector: KLAVIYO_CONNECTOR,
-        idempotencyKey: executionIdempotencyKey,
-        dryRun: true,
-        request: {
-          actionType: WINBACK_ACTION_TYPE,
-          noAutomaticSend: true,
-          connectionStatus: connection?.status ?? "missing",
-        },
-        response: toJson(response),
-        completedAt: now,
-      },
-      update: {
-        status: "draft_prepared",
-        dryRun: true,
-        request: {
-          actionType: WINBACK_ACTION_TYPE,
-          noAutomaticSend: true,
-          connectionStatus: connection?.status ?? "missing",
-        },
-        response: toJson(response),
-        completedAt: now,
-      },
+      response: toJson(response),
+      externalDraftId: response.externalDraftId ?? null,
+      now,
     });
   }
 
@@ -466,16 +499,23 @@ export async function approveWinbackProposal(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionType: WINBACK_ACTION_TYPE,
-      status: { in: ["draft_prepared", "needs_approval"] },
+      status: "needs_approval",
     },
   });
 
-  const approved = await prisma.action.update({
-    where: { id: action.id },
-    data: {
-      status: "approved",
-      approvedAt: now,
+  const approved = await approveAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    actor: "merchant",
+    actorType: "merchant_user",
+    comment: "Approved in Klaviyo Winback queue. Sending remains disabled in v0.",
+    requestSnapshot: {
+      actionType: WINBACK_ACTION_TYPE,
+      executionMode: action.executionMode,
+      noAutomaticSend: true,
     },
+    now,
   });
 
   await recordLedgerEvent(prisma, {
@@ -492,6 +532,68 @@ export async function approveWinbackProposal(prisma, input) {
   });
 
   return approved;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; reason?: string | null; now?: Date }} input
+ */
+export async function rejectWinbackProposal(prisma, input) {
+  const action = await prisma.action.findFirstOrThrow({
+    where: {
+      id: input.actionId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionType: WINBACK_ACTION_TYPE,
+      status: { in: ["needs_approval", "approved"] },
+    },
+  });
+
+  return rejectAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    actor: "merchant",
+    actorType: "merchant_user",
+    reason: input.reason ?? null,
+    requestSnapshot: {
+      actionType: WINBACK_ACTION_TYPE,
+      executionMode: action.executionMode,
+      noAutomaticSend: true,
+    },
+    now: input.now,
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; reason?: string | null; now?: Date }} input
+ */
+export async function cancelWinbackProposal(prisma, input) {
+  const action = await prisma.action.findFirstOrThrow({
+    where: {
+      id: input.actionId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionType: WINBACK_ACTION_TYPE,
+      status: { in: ["proposed", "draft_prepared", "needs_approval", "approved"] },
+    },
+  });
+
+  return cancelAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    actor: "merchant",
+    actorType: "merchant_user",
+    reason: input.reason ?? null,
+    requestSnapshot: {
+      actionType: WINBACK_ACTION_TYPE,
+      executionMode: action.executionMode,
+      noAutomaticSend: true,
+    },
+    now: input.now,
+  });
 }
 
 /**
@@ -989,7 +1091,10 @@ function serializeConnection(connection) {
 
 /** @param {any} action */
 function serializeAction(action) {
-  const execution = action.executions[0] ?? null;
+  const execution = action.executions.find(
+    /** @param {any} item */
+    (item) => item.status === "draft_prepared",
+  ) ?? action.executions[0] ?? null;
   const executionResponse = objectValue(execution?.response);
   const holdoutCount = action.holdoutAssignments.filter(
     /** @param {any} assignment */
@@ -1005,15 +1110,50 @@ function serializeAction(action) {
     status: action.status,
     proposedAt: action.proposedAt.toISOString(),
     approvedAt: action.approvedAt?.toISOString() ?? null,
+    rejectedAt: action.rejectedAt?.toISOString() ?? null,
+    blockedReason: action.blockedReason ?? null,
+    title: action.title,
+    summary: action.summary,
     riskLevel: action.riskLevel,
     expectedValue: action.expectedValue,
+    valueCurrency: action.valueCurrency,
+    valueType: action.valueType,
     preview: action.preview,
     rulesConsulted: action.rulesConsulted,
-    capsApplied: action.ruleConstraintsApplied,
+    capsApplied: action.capsApplied?.length
+      ? action.capsApplied
+      : action.ruleConstraintsApplied,
+    provenanceReferences: action.provenanceReferences ?? [],
     verificationClass: "estimated",
+    executionMode: action.executionMode,
+    externalSystem: action.externalSystem,
     executionStatus: execution?.status ?? null,
     executionDryRun: execution?.dryRun ?? null,
-    externalDraftId: executionResponse.externalDraftId ?? null,
+    externalDraftId: action.externalDraftId ?? executionResponse.externalDraftId ?? null,
+    externalExecutionId: action.externalExecutionId ?? null,
+    approvalHistory: (action.approvalEvents ?? []).map(
+      /** @param {any} event */
+      (event) => ({
+        id: event.id,
+        previousStatus: event.previousStatus,
+        newStatus: event.newStatus,
+        actor: event.actor,
+        actorType: event.actorType,
+        reason: event.reason,
+        eventTs: event.eventTs.toISOString(),
+      }),
+    ),
+    executionHistory: action.executions.map(
+      /** @param {any} item */
+      (item) => ({
+        id: item.id,
+        status: item.status,
+        dryRun: item.dryRun,
+        connector: item.connector,
+        createdAt: item.createdAt.toISOString(),
+        completedAt: item.completedAt?.toISOString() ?? null,
+      }),
+    ),
     holdoutCount,
     treatmentCount,
   };

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a shared action safety lifecycle for proposals, approvals, executions and verification states.
 - Added Klaviyo Winback v0 so Jefe can identify dormant customers, prepare an approval-gated draft, apply House Rules and hold back a measured control group without sending automatically.
 - Added fixture customers to the dev dummy store and Watchdog scenario orders so winback testing has reachable test buyers attached to orders.
 - Added a dev Klaviyo Winback scenario loader with 60-180 day customer orders for winback testing.
@@ -16,6 +17,7 @@
 - Reduced duplication between Daily Brief and module pages so Daily Brief acts as the main morning summary and detail pages focus on evidence.
 - Removed the separate fixture-customer dev action now that fixture customers are included by default.
 - Clarified Klaviyo Winback approval states so draft preparation is not shown as merchant approval.
+- Updated Klaviyo Winback so draft preparation, approval, execution and verification are recorded as separate safety states.
 - Added clearer Klaviyo Winback mode, holdout group and estimated upside copy.
 - Added a deterministic Klaviyo Winback email copy preview before approval.
 

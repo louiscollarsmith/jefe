@@ -184,15 +184,38 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
         shopId: shop.id,
         dailyBriefId: brief.id,
         actionType: "klaviyo_winback",
+        title: "Dormant customer winback",
+        summary: "Prepare a measured winback campaign.",
         expectedValue: { lowMargin: 100, highMargin: 220, currency: "GBP" },
+        valueCurrency: "GBP",
+        valueType: "verified_margin",
         confidence: "0.7000",
         riskLevel: "medium",
+        approvalRequired: true,
         evidence: [{ ledgerEventId: ledgerEvent.id }],
         rulesConsulted: [{ houseRuleId: houseRule.id }],
         ruleConstraintsApplied: [{ maxDiscountBps: 2000 }],
+        capsApplied: [{ maxDiscountBps: 2000 }],
+        provenanceReferences: [{ ledgerEventId: ledgerEvent.id }],
         preview: { campaignName: "Dormant customer winback" },
         verificationClass: "VERIFIED",
+        executionMode: "dry_run",
+        externalSystem: "klaviyo",
         idempotencyKey: `action-${suffix}`,
+      },
+    });
+
+    const approvalEvent = await prisma.actionApprovalEvent.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: action.id,
+        previousStatus: "needs_approval",
+        newStatus: "approved",
+        actor: "schema-test",
+        actorType: "system",
+        reason: "schema coverage",
+        requestSnapshot: { source: "schema.test" },
       },
     });
 
@@ -297,7 +320,13 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
         ledgerEvents: true,
         products: { include: { variants: true } },
         orders: { include: { lineItems: true, refunds: true } },
-        actions: { include: { executions: true, attributionResults: true } },
+        actions: {
+          include: {
+            approvalEvents: true,
+            executions: true,
+            attributionResults: true,
+          },
+        },
         connectorAccounts: true,
         costMetering: true,
       },
@@ -314,6 +343,12 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
     assert.equal(readBack.products[0].variants[0].sku, "HERO-1");
     assert.equal(readBack.orders[0].lineItems[0].quantity, 1);
     assert.equal(readBack.actions[0].verificationClass, "VERIFIED");
+    assert.equal(readBack.actions[0].title, "Dormant customer winback");
+    assert.equal(readBack.actions[0].valueType, "verified_margin");
+    assert.equal(
+      readBack.actions[0].approvalEvents[0].id,
+      approvalEvent.id,
+    );
     assert.equal(readBack.actions[0].executions[0].id, execution.id);
     assert.equal(
       readBack.actions[0].attributionResults[0].verificationClass,

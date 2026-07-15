@@ -281,7 +281,7 @@ test("winback groups customers by email when customer IDs are incomplete", () =>
   assert.equal(audience.length, 0);
 });
 
-test("winback proposal prepares a dry-run draft before explicit approval", async (t) => {
+test("winback proposal uses shared lifecycle before explicit approval", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for winback persistence tests");
     return;
@@ -366,7 +366,12 @@ test("winback proposal prepares a dry-run draft before explicit approval", async
       },
     });
 
-    assert.equal(action.status, "draft_prepared");
+    assert.equal(action.status, "needs_approval");
+    assert.equal(action.title, "Dormant customer winback");
+    assert.equal(action.valueType, "estimated_revenue");
+    assert.equal(action.valueCurrency, "GBP");
+    assert.equal(action.executionMode, "draft_only");
+    assert.equal(action.externalSystem, "klaviyo");
     assert.equal(action.approvedAt, null);
     assert.equal(action.verificationClass, "ESTIMATED");
     assert.equal(assignments.length, 11);
@@ -398,9 +403,33 @@ test("winback proposal prepares a dry-run draft before explicit approval", async
     const executionsAfterApproval = await prisma.execution.findMany({
       where: { actionId: action.id },
     });
+    const approvalEvents = await prisma.actionApprovalEvent.findMany({
+      where: { actionId: action.id },
+      orderBy: { eventTs: "asc" },
+    });
+    const ledgers = await prisma.ledgerEvent.findMany({
+      where: {
+        merchantId: merchant.id,
+      },
+    });
 
     assert.equal(approved.status, "approved");
     assert.ok(approved.approvedAt);
+    assert.ok(approvalEvents.length >= 2);
+    assert.ok(
+      approvalEvents.some(
+        (event) =>
+          event.previousStatus === "needs_approval" &&
+          event.newStatus === "approved",
+      ),
+    );
+    assert.ok(
+      ledgers.some(
+        (event) =>
+          event.eventType === "action.approved" &&
+          event.payload.actionId === action.id,
+      ),
+    );
     assert.equal(executionsAfterApproval.length, 1);
     assert.equal(executionsAfterApproval[0].dryRun, true);
     assert.equal(executionsAfterApproval[0].response.dryRun, true);
@@ -413,7 +442,7 @@ test("winback proposal prepares a dry-run draft before explicit approval", async
     });
 
     assert.equal(redrafted.id, action.id);
-    assert.equal(redrafted.status, "draft_prepared");
+    assert.equal(redrafted.status, "needs_approval");
     assert.equal(redrafted.approvedAt, null);
   } finally {
     await prisma.merchant.deleteMany({
