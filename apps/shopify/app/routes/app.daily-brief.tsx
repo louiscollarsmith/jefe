@@ -88,7 +88,18 @@ type SetupStatus = {
     status: string;
     recordsProcessed: number;
     lastError: string | null;
+    bulkOperationStatus: string | null;
+    bulkOperationObjectCount: number | null;
+    fallbackUsed: boolean;
+    resultImportedAt: string | null;
   }>;
+};
+
+type BackfillStatusInput = {
+  metadata?: unknown;
+  status?: string | null;
+  recordsProcessed?: number | null;
+  lastError?: string | null;
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -113,12 +124,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         readyForInventoryGuardian: setupProgress.readyForInventoryGuardian,
         readyForWinback: setupProgress.readyForWinback,
         statuses: Object.entries(setupProgress.statuses).map(
-          ([domain, status]) => ({
-            domain,
-            status: status?.status ?? "queued",
-            recordsProcessed: status?.recordsProcessed ?? 0,
-            lastError: status?.lastError ?? null,
-          }),
+          ([domain, status]) => serializeBackfillStatus(domain, status),
         ),
       } satisfies SetupStatus,
     };
@@ -405,6 +411,24 @@ function SetupDomainStatus({
         <Text as="p" variant="bodySm" tone="subdued">
           {status.recordsProcessed.toLocaleString("en-GB")} records processed
         </Text>
+        {status.bulkOperationStatus ? (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Bulk: {formatStatus(status.bulkOperationStatus)}
+            {typeof status.bulkOperationObjectCount === "number"
+              ? ` · ${status.bulkOperationObjectCount.toLocaleString("en-GB")} objects`
+              : ""}
+          </Text>
+        ) : null}
+        {status.fallbackUsed ? (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Paginated fallback used
+          </Text>
+        ) : null}
+        {status.resultImportedAt ? (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Imported {formatDateTime(status.resultImportedAt)}
+          </Text>
+        ) : null}
         {status.lastError ? (
           <Text as="p" variant="bodySm" tone="critical">
             {status.lastError}
@@ -585,8 +609,39 @@ function confidenceTone(confidence: BriefConfidence) {
 }
 
 function setupStatusTone(status: string) {
-  if (status === "complete") return "success";
-  if (status === "running") return "info";
-  if (status === "failed") return "critical";
+  if (status === "complete" || status === "bulk_imported") return "success";
+  if (status === "running" || status.startsWith("bulk_")) return "info";
+  if (status === "failed" || status === "bulk_failed") return "critical";
   return "attention";
+}
+
+function serializeBackfillStatus(
+  domain: string,
+  status: BackfillStatusInput | null | undefined,
+) {
+  const metadata = jsonObject(status?.metadata);
+  return {
+    domain,
+    status: status?.status ?? "queued",
+    recordsProcessed: status?.recordsProcessed ?? 0,
+    lastError: status?.lastError ?? null,
+    bulkOperationStatus: stringOrNull(metadata.bulkOperationStatus),
+    bulkOperationObjectCount: numberOrNull(metadata.bulkOperationObjectCount),
+    fallbackUsed: metadata.fallbackUsed === true,
+    resultImportedAt: stringOrNull(metadata.resultImportedAt),
+  };
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringOrNull(value: unknown) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function numberOrNull(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

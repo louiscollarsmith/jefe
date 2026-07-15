@@ -48,6 +48,13 @@ import {
   seedWatchdogScenarios,
 } from "../services/dummy-store-data.server";
 
+type BackfillStatusInput = {
+  metadata?: unknown;
+  status?: string | null;
+  recordsProcessed?: number | null;
+  lastError?: string | null;
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
 
@@ -94,12 +101,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           setupStatus: backfillProgress.shop.setupStatus,
           historicalOrdersLimited: backfillProgress.historicalOrdersLimited,
           statuses: Object.entries(backfillProgress.statuses).map(
-            ([domain, status]) => ({
-              domain,
-              status: status?.status ?? "queued",
-              recordsProcessed: status?.recordsProcessed ?? 0,
-              lastError: status?.lastError ?? null,
-            }),
+            ([domain, status]) => serializeBackfillStatus(domain, status),
           ),
           jobs: backfillProgress.jobs.map((job) => ({
             jobType: job.jobType,
@@ -433,6 +435,31 @@ export default function Dev() {
                         {status.recordsProcessed.toLocaleString("en-GB")}{" "}
                         records
                       </Text>
+                      {status.bulkOperationStatus ? (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Bulk: {formatStatus(status.bulkOperationStatus)}
+                          {typeof status.bulkOperationObjectCount === "number"
+                            ? ` · ${status.bulkOperationObjectCount.toLocaleString(
+                                "en-GB",
+                              )} objects`
+                            : ""}
+                        </Text>
+                      ) : null}
+                      {status.fallbackUsed ? (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Fallback used
+                        </Text>
+                      ) : null}
+                      {status.resultImportedAt ? (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Imported {formatDateTime(status.resultImportedAt)}
+                        </Text>
+                      ) : null}
+                      {status.lastError ? (
+                        <Text as="p" variant="bodySm" tone="critical">
+                          {status.lastError}
+                        </Text>
+                      ) : null}
                     </BlockStack>
                   ))}
                 </InlineGrid>
@@ -848,4 +875,35 @@ function formatDateTime(value: string) {
 function formatStatus(status: string) {
   const display = status.replace(/_/g, " ");
   return display[0].toUpperCase() + display.slice(1);
+}
+
+function serializeBackfillStatus(
+  domain: string,
+  status: BackfillStatusInput | null | undefined,
+) {
+  const metadata = jsonObject(status?.metadata);
+  return {
+    domain,
+    status: status?.status ?? "queued",
+    recordsProcessed: status?.recordsProcessed ?? 0,
+    lastError: status?.lastError ?? null,
+    bulkOperationStatus: stringOrNull(metadata.bulkOperationStatus),
+    bulkOperationObjectCount: numberOrNull(metadata.bulkOperationObjectCount),
+    fallbackUsed: metadata.fallbackUsed === true,
+    resultImportedAt: stringOrNull(metadata.resultImportedAt),
+  };
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringOrNull(value: unknown) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function numberOrNull(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
