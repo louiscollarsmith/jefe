@@ -49,6 +49,11 @@ export default function App() {
       onClick: () => navigate("/app/watchdog"),
     },
     {
+      label: "Klaviyo Winback",
+      selected: location.pathname === "/app/klaviyo-winback",
+      onClick: () => navigate("/app/klaviyo-winback"),
+    },
+    {
       label: "Manager Settings",
       selected: location.pathname === "/app/onboarding",
       onClick: () => navigate("/app/onboarding"),

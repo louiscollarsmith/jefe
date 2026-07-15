@@ -185,6 +185,28 @@ test("onboarding edits House Rules in place", async (t) => {
       second.riskyActionRules.actionsRequiringExtraApproval,
       "Any winback audience above the default cap",
     );
+
+    const third = await saveOnboardingHouseRules(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      rules: {
+        maxDefaultDiscountPercent: "15",
+        maxWinbackDiscountPercent: "10",
+        allowWinbackDiscountAboveDefault: "false",
+        maxCampaignAudienceSize: "20",
+        emailCooldownDays: "7",
+        maxEmailsPerCustomer: "1",
+        emailFrequencyScope: "per_customer_per_week",
+        bfcmFreezeMode: "false",
+        brandVoice: "Direct",
+      },
+    });
+
+    assert.equal(third.id, first.id);
+    assert.equal(third.maxCampaignAudienceSize, 20);
+    assert.equal(third.emailCooldownDays, 7);
+    assert.equal(third.allowWinbackDiscountAboveDefault, false);
+    assert.equal(third.bfcmFreezeMode, false);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Onboarding Test Merchant ${suffix}` },

@@ -1,4 +1,5 @@
 import fixture from "../fixtures/dummy-store-data.json";
+import klaviyoWinbackScenarioFixture from "../fixtures/klaviyo-winback-scenario-data.json";
 import watchdogScenarioFixture from "../fixtures/watchdog-scenario-data.json";
 import { getMissingShopifyScopes } from "./shopify-scopes.server.js";
 
@@ -8,6 +9,9 @@ const DUMMY_TAG = "jefe-dummy";
 const WATCHDOG_MARKER_NAMESPACE = "jefe_watchdog_scenarios";
 const WATCHDOG_MARKER_KEY = "seeded";
 const WATCHDOG_TAG = "jefe-watchdog-scenario";
+const KLAVIYO_WINBACK_MARKER_NAMESPACE = "jefe_klaviyo_winback_scenarios";
+const KLAVIYO_WINBACK_MARKER_KEY = "seeded";
+const KLAVIYO_WINBACK_TAG = "jefe-klaviyo-winback-scenario";
 const REFUND_RETRY_DELAYS_MS = [1500, 3000, 6000, 10000, 15000];
 const SHOPIFY_RETRY_DELAYS_MS = [1000, 2500, 5000, 10000, 20000, 30000];
 const REQUIRED_DUMMY_DATA_SCOPES = [
@@ -16,6 +20,8 @@ const REQUIRED_DUMMY_DATA_SCOPES = [
   "write_products",
   "read_inventory",
   "write_inventory",
+  "read_customers",
+  "write_customers",
   "read_orders",
   "write_orders",
 ] as const;
@@ -58,6 +64,13 @@ type DummyOrderLineItem = {
   quantity: number;
 };
 
+type DummyCustomer = {
+  email: string;
+  firstName: string;
+  lastName: string;
+  acceptsMarketing: boolean;
+};
+
 type DummyOrder = {
   name: string;
   daysAgo: number;
@@ -65,6 +78,7 @@ type DummyOrder = {
   discountPercentage: number | null;
   refundSku: string | null;
   lineItems: DummyOrderLineItem[];
+  customer: DummyCustomer;
 };
 
 type DummyFixture = {
@@ -144,6 +158,7 @@ type SeedDummyStoreDataResult = {
 
 const dummyFixture = fixture as DummyFixture;
 const watchdogFixture = watchdogScenarioFixture as DummyFixture;
+const klaviyoWinbackFixture = klaviyoWinbackScenarioFixture as DummyFixture;
 
 type FixtureConfig = {
   fixture: DummyFixture;
@@ -170,6 +185,15 @@ const watchdogFixtureConfig: FixtureConfig = {
   productTag: WATCHDOG_TAG,
   sourceName: "jefe_watchdog_scenario_loader",
   idempotencyPrefix: "jefe-watchdog-scenario",
+};
+
+const klaviyoWinbackFixtureConfig: FixtureConfig = {
+  fixture: klaviyoWinbackFixture,
+  markerNamespace: KLAVIYO_WINBACK_MARKER_NAMESPACE,
+  markerKey: KLAVIYO_WINBACK_MARKER_KEY,
+  productTag: KLAVIYO_WINBACK_TAG,
+  sourceName: "jefe_klaviyo_winback_scenario_loader",
+  idempotencyPrefix: "jefe-klaviyo-winback-scenario",
 };
 
 const STATUS_QUERY = `#graphql
@@ -203,6 +227,11 @@ const EXISTING_FIXTURE_ORDERS_QUERY = `#graphql
       nodes {
         id
         name
+        email
+        customer {
+          id
+          email
+        }
         refunds(first: 10) {
           id
         }
@@ -269,6 +298,13 @@ const ORDER_CREATE_MUTATION = `#graphql
       order {
         id
         name
+        email
+        customer {
+          id
+          email
+          firstName
+          lastName
+        }
         lineItems(first: 20) {
           nodes {
             id
@@ -280,6 +316,27 @@ const ORDER_CREATE_MUTATION = `#graphql
       userErrors {
         field
         message
+      }
+    }
+  }
+`;
+
+const CUSTOMER_SET_MUTATION = `#graphql
+  mutation JefeDummyCustomerSet(
+    $identifier: CustomerSetIdentifiers!
+    $input: CustomerSetInput!
+  ) {
+    customerSet(identifier: $identifier, input: $input) {
+      customer {
+        id
+        email
+        firstName
+        lastName
+      }
+      userErrors {
+        field
+        message
+        code
       }
     }
   }
@@ -346,7 +403,15 @@ export function getWatchdogScenarioFixtureSummary() {
   return getFixtureSummary(watchdogFixture);
 }
 
+export function getKlaviyoWinbackScenarioFixtureSummary() {
+  return getFixtureSummary(klaviyoWinbackFixture);
+}
+
 function getFixtureSummary(sourceFixture: DummyFixture) {
+  const customerEmails = new Set(
+    sourceFixture.orders.map((order) => order.customer.email),
+  );
+
   return {
     version: sourceFixture.version,
     productCount: sourceFixture.products.length,
@@ -355,6 +420,7 @@ function getFixtureSummary(sourceFixture: DummyFixture) {
       0,
     ),
     orderCount: sourceFixture.orders.length,
+    customerCount: customerEmails.size,
     refundCount: sourceFixture.orders.filter((order) => order.refundSku).length,
     scenarioCount: sourceFixture.scenarios?.length ?? 0,
     scenarios:
@@ -372,6 +438,12 @@ export function getMissingWatchdogScenarioScopes(grantedScopes?: string | null) 
   return getMissingShopifyScopes(REQUIRED_DUMMY_DATA_SCOPES, grantedScopes);
 }
 
+export function getMissingKlaviyoWinbackScenarioScopes(
+  grantedScopes?: string | null,
+) {
+  return getMissingShopifyScopes(REQUIRED_DUMMY_DATA_SCOPES, grantedScopes);
+}
+
 export async function getDummyDataStatus(
   admin: AdminGraphqlClient,
   options: { skipProgressCheck?: boolean } = {},
@@ -384,6 +456,13 @@ export async function getWatchdogScenarioStatus(
   options: { skipProgressCheck?: boolean } = {},
 ): Promise<DummyDataStatus> {
   return getFixtureDataStatus(admin, watchdogFixtureConfig, options);
+}
+
+export async function getKlaviyoWinbackScenarioStatus(
+  admin: AdminGraphqlClient,
+  options: { skipProgressCheck?: boolean } = {},
+): Promise<DummyDataStatus> {
+  return getFixtureDataStatus(admin, klaviyoWinbackFixtureConfig, options);
 }
 
 async function getFixtureDataStatus(
@@ -530,6 +609,13 @@ export async function seedWatchdogScenarios(
   shop: string,
 ): Promise<SeedDummyStoreDataResult> {
   return seedStoreFixtureData(admin, shop, watchdogFixtureConfig);
+}
+
+export async function seedKlaviyoWinbackScenarios(
+  admin: AdminGraphqlClient,
+  shop: string,
+): Promise<SeedDummyStoreDataResult> {
+  return seedStoreFixtureData(admin, shop, klaviyoWinbackFixtureConfig);
 }
 
 async function seedStoreFixtureData(
@@ -839,6 +925,7 @@ async function createOrder(
     return existingOrder;
   }
 
+  const customer = await upsertFixtureCustomer(admin, order.customer);
   const processedAt = new Date();
   processedAt.setDate(processedAt.getDate() - order.daysAgo);
 
@@ -869,6 +956,13 @@ async function createOrder(
   }>(admin, ORDER_CREATE_MUTATION, {
     order: {
       name: order.name,
+      email: order.customer.email,
+      buyerAcceptsMarketing: order.customer.acceptsMarketing,
+      customer: {
+        toAssociate: {
+          id: customer.id,
+        },
+      },
       currency: config.fixture.currency,
       financialStatus: "PAID",
       processedAt: processedAt.toISOString(),
@@ -880,6 +974,9 @@ async function createOrder(
       customAttributes: [
         { key: "jefe_fixture_version", value: config.fixture.version },
         { key: "jefe_scenario", value: order.scenario },
+        { key: "jefe_customer_email", value: order.customer.email },
+        { key: "jefe_customer_first_name", value: order.customer.firstName },
+        { key: "jefe_customer_last_name", value: order.customer.lastName },
       ],
       lineItems,
       ...(order.discountPercentage
@@ -906,6 +1003,43 @@ async function createOrder(
     name: data.orderCreate.order.name,
     refundCount: data.orderCreate.order.refunds?.length ?? 0,
     lineItems: data.orderCreate.order.lineItems.nodes,
+  };
+}
+
+async function upsertFixtureCustomer(
+  admin: AdminGraphqlClient,
+  customer: DummyCustomer,
+): Promise<{ id: string; email: string }> {
+  const data = await graphqlRequest<{
+    customerSet: {
+      customer: {
+        id: string;
+        email: string;
+        firstName?: string | null;
+        lastName?: string | null;
+      } | null;
+      userErrors: UserError[];
+    };
+  }>(admin, CUSTOMER_SET_MUTATION, {
+    identifier: { email: customer.email },
+    input: {
+      email: customer.email,
+      firstName: customer.firstName,
+      lastName: customer.lastName,
+      note: "Jefe dev fixture customer for winback testing.",
+      tags: ["jefe-fixture-customer"],
+    },
+  });
+
+  assertNoUserErrors(data.customerSet.userErrors, customer.email);
+
+  if (!data.customerSet.customer) {
+    throw new Error(`Shopify did not return customer ${customer.email}.`);
+  }
+
+  return {
+    id: data.customerSet.customer.id,
+    email: data.customerSet.customer.email,
   };
 }
 

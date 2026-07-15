@@ -27,11 +27,15 @@ import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server
 import {
   getDummyDataStatus,
   getDummyFixtureSummary,
+  getKlaviyoWinbackScenarioFixtureSummary,
+  getKlaviyoWinbackScenarioStatus,
   getMissingDummyDataScopes,
+  getMissingKlaviyoWinbackScenarioScopes,
   getMissingWatchdogScenarioScopes,
   getWatchdogScenarioFixtureSummary,
   getWatchdogScenarioStatus,
   seedDummyStoreData,
+  seedKlaviyoWinbackScenarios,
   seedWatchdogScenarios,
 } from "../services/dummy-store-data.server";
 
@@ -44,6 +48,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const missingScopes = getMissingDummyDataScopes(session.scope);
   const scenarioMissingScopes = getMissingWatchdogScenarioScopes(session.scope);
+  const winbackScenarioMissingScopes =
+    getMissingKlaviyoWinbackScenarioScopes(session.scope);
   const status = await getDummyDataStatus(admin, {
     skipProgressCheck:
       missingScopes.includes("read_products") ||
@@ -53,6 +59,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     skipProgressCheck:
       scenarioMissingScopes.includes("read_products") ||
       scenarioMissingScopes.includes("read_orders"),
+  });
+  const winbackScenarioStatus = await getKlaviyoWinbackScenarioStatus(admin, {
+    skipProgressCheck:
+      winbackScenarioMissingScopes.includes("read_products") ||
+      winbackScenarioMissingScopes.includes("read_orders"),
   });
 
   return {
@@ -67,6 +78,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: scenarioStatus,
       fixture: getWatchdogScenarioFixtureSummary(),
     },
+    klaviyoWinbackScenarios: {
+      missingScopes: winbackScenarioMissingScopes,
+      status: winbackScenarioStatus,
+      fixture: getKlaviyoWinbackScenarioFixtureSummary(),
+    },
   };
 };
 
@@ -78,6 +94,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (
     intent !== "seed-dummy-store-data" &&
     intent !== "seed-watchdog-scenarios" &&
+    intent !== "seed-klaviyo-winback-scenarios" &&
     intent !== "generate-test-brief"
   ) {
     return { ok: false, error: "Unknown action." };
@@ -116,6 +133,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const missingScopes =
     intent === "seed-watchdog-scenarios"
       ? getMissingWatchdogScenarioScopes(session.scope)
+      : intent === "seed-klaviyo-winback-scenarios"
+      ? getMissingKlaviyoWinbackScenarioScopes(session.scope)
       : getMissingDummyDataScopes(session.scope);
 
   if (missingScopes.length > 0) {
@@ -131,6 +150,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const result =
       intent === "seed-watchdog-scenarios"
         ? await seedWatchdogScenarios(admin, session.shop)
+        : intent === "seed-klaviyo-winback-scenarios"
+        ? await seedKlaviyoWinbackScenarios(admin, session.shop)
         : await seedDummyStoreData(admin, session.shop);
 
     return { ok: true, intent, result };
@@ -146,7 +167,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Dev() {
-  const { shop, dummyData, watchdogScenarios } =
+  const { shop, dummyData, watchdogScenarios, klaviyoWinbackScenarios } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -156,6 +177,9 @@ export default function Dev() {
   const isSeedingWatchdogScenarios =
     navigation.state === "submitting" &&
     navigation.formData?.get("intent") === "seed-watchdog-scenarios";
+  const isSeedingKlaviyoWinbackScenarios =
+    navigation.state === "submitting" &&
+    navigation.formData?.get("intent") === "seed-klaviyo-winback-scenarios";
   const seedButtonDisabled =
     dummyData.status.seeded ||
     dummyData.missingScopes.length > 0 ||
@@ -164,6 +188,10 @@ export default function Dev() {
     watchdogScenarios.status.seeded ||
     watchdogScenarios.missingScopes.length > 0 ||
     isSeedingWatchdogScenarios;
+  const winbackScenarioButtonDisabled =
+    klaviyoWinbackScenarios.status.seeded ||
+    klaviyoWinbackScenarios.missingScopes.length > 0 ||
+    isSeedingKlaviyoWinbackScenarios;
   const seedResult =
     actionData?.ok && actionData.intent === "seed-dummy-store-data"
       ? (actionData.result as DummySeedResult)
@@ -172,6 +200,10 @@ export default function Dev() {
     actionData?.ok && actionData.intent === "seed-watchdog-scenarios"
       ? (actionData.result as WatchdogScenarioSeedResult)
       : null;
+  const winbackScenarioResult =
+    actionData?.ok && actionData.intent === "seed-klaviyo-winback-scenarios"
+      ? (actionData.result as KlaviyoWinbackScenarioSeedResult)
+      : null;
   const testBriefResult =
     actionData?.ok && actionData.intent === "generate-test-brief"
       ? (actionData.result as TestBriefResult)
@@ -179,6 +211,9 @@ export default function Dev() {
   const hasDummyProgress = hasFixtureProgress(dummyData.status.progress);
   const hasScenarioProgress = hasFixtureProgress(
     watchdogScenarios.status.progress,
+  );
+  const hasWinbackScenarioProgress = hasFixtureProgress(
+    klaviyoWinbackScenarios.status.progress,
   );
   const isGeneratingTestBrief =
     navigation.state === "submitting" &&
@@ -415,6 +450,95 @@ export default function Dev() {
                 </Form>
               </BlockStack>
             </Card>
+
+            <Card>
+              <BlockStack gap="400">
+                <Text as="h2" variant="headingMd">
+                  Klaviyo Winback scenario data
+                </Text>
+                <Text as="p" variant="bodyMd">
+                  Create {klaviyoWinbackScenarios.fixture.scenarioCount}{" "}
+                  winback scenarios in {shop}:{" "}
+                  {klaviyoWinbackScenarios.fixture.scenarios.join(", ")}. The
+                  fixture creates {klaviyoWinbackScenarios.fixture.productCount}{" "}
+                  products, {klaviyoWinbackScenarios.fixture.orderCount} orders
+                  aged 60-180 days, and{" "}
+                  {klaviyoWinbackScenarios.fixture.customerCount} customer
+                  profiles.
+                </Text>
+
+                {klaviyoWinbackScenarios.fixture.notes.map((note) => (
+                  <Text key={note} as="p" variant="bodyMd" tone="subdued">
+                    {note}
+                  </Text>
+                ))}
+
+                {klaviyoWinbackScenarios.status.seeded ? (
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Klaviyo Winback scenario data exists from{" "}
+                    {klaviyoWinbackScenarios.status.seededAt}. The loader is
+                    disabled for this store to avoid duplicate fixture data.
+                  </Text>
+                ) : null}
+
+                {!klaviyoWinbackScenarios.status.seeded &&
+                hasWinbackScenarioProgress ? (
+                  <Banner tone="warning">
+                    <Text as="p" variant="bodyMd">
+                      Partial Klaviyo Winback scenario data found:{" "}
+                      {formatFixtureProgress(
+                        klaviyoWinbackScenarios.status.progress,
+                      )}
+                      . Run this again to resume from the missing records.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                {klaviyoWinbackScenarios.missingScopes.length > 0 ? (
+                  <Banner tone="critical">
+                    <Text as="p" variant="bodyMd">
+                      Missing Shopify scopes:{" "}
+                      {klaviyoWinbackScenarios.missingScopes.join(", ")}.
+                      Update the app scopes and reinstall this store.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                {winbackScenarioResult ? (
+                  <Banner tone="success">
+                    <Text as="p" variant="bodyMd">
+                      Loaded {winbackScenarioResult.scenariosLoaded} scenarios,{" "}
+                      {winbackScenarioResult.productsCreated} products,{" "}
+                      {winbackScenarioResult.ordersCreated} orders, and{" "}
+                      {winbackScenarioResult.refundsCreated} refunds. Current
+                      progress:{" "}
+                      {formatFixtureProgress(winbackScenarioResult.progress)}.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                <Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="seed-klaviyo-winback-scenarios"
+                  />
+                  <Button
+                    submit
+                    variant="primary"
+                    loading={isSeedingKlaviyoWinbackScenarios}
+                    disabled={winbackScenarioButtonDisabled}
+                  >
+                    {winbackScenarioButtonText({
+                      isSubmitting: isSeedingKlaviyoWinbackScenarios,
+                      hasProgress: hasWinbackScenarioProgress,
+                      progressComplete:
+                        klaviyoWinbackScenarios.status.progress.complete,
+                    })}
+                  </Button>
+                </Form>
+              </BlockStack>
+            </Card>
           </BlockStack>
         </Layout.Section>
       </Layout>
@@ -451,6 +575,8 @@ type WatchdogScenarioSeedResult = {
   refundsCreated: number;
   progress: FixtureProgress;
 };
+
+type KlaviyoWinbackScenarioSeedResult = WatchdogScenarioSeedResult;
 
 type TestBriefResult = {
   generatedAt: string;
@@ -489,6 +615,17 @@ function scenarioButtonText(input: {
   if (input.progressComplete) return "Finalize watchdog scenarios";
   if (input.hasProgress) return "Resume watchdog scenarios";
   return "Create watchdog scenarios";
+}
+
+function winbackScenarioButtonText(input: {
+  isSubmitting: boolean;
+  hasProgress: boolean;
+  progressComplete: boolean;
+}) {
+  if (input.isSubmitting) return "Creating winback scenarios";
+  if (input.progressComplete) return "Finalize winback scenarios";
+  if (input.hasProgress) return "Resume winback scenarios";
+  return "Create winback scenarios";
 }
 
 function formatDateTime(value: string) {

@@ -1,7 +1,10 @@
 {
-  "version": "2026-07-13.ticket-003",
+  "version": "2026-07-15.ticket-003-customers",
   "currency": "GBP",
-  "tags": ["jefe-dummy", "ticket-003"],
+  "tags": [
+    "jefe-dummy",
+    "ticket-003"
+  ],
   "products": [
     {
       "title": "Jefe Dummy Hero Hydration Pack",
@@ -166,10 +169,25 @@
       "discountPercentage": null,
       "refundSku": null,
       "lineItems": [
-        { "sku": "JEFE-HERO-PACK-BLK", "quantity": 2 },
-        { "sku": "JEFE-BOTTLE-500", "quantity": 4 },
-        { "sku": "JEFE-TOTE-VIRAL", "quantity": 6 }
-      ]
+        {
+          "sku": "JEFE-HERO-PACK-BLK",
+          "quantity": 2
+        },
+        {
+          "sku": "JEFE-BOTTLE-500",
+          "quantity": 4
+        },
+        {
+          "sku": "JEFE-TOTE-VIRAL",
+          "quantity": 6
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-001@quiver.co.uk",
+        "firstName": "Avery",
+        "lastName": "Carter",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JDF-1002",
@@ -178,9 +196,21 @@
       "discountPercentage": null,
       "refundSku": null,
       "lineItems": [
-        { "sku": "JEFE-TOTE-VIRAL", "quantity": 8 },
-        { "sku": "JEFE-BOTTLE-750", "quantity": 3 }
-      ]
+        {
+          "sku": "JEFE-TOTE-VIRAL",
+          "quantity": 8
+        },
+        {
+          "sku": "JEFE-BOTTLE-750",
+          "quantity": 3
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-002@quiver.co.uk",
+        "firstName": "Morgan",
+        "lastName": "Ellis",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JDF-1003",
@@ -189,10 +219,25 @@
       "discountPercentage": 25,
       "refundSku": null,
       "lineItems": [
-        { "sku": "JEFE-HOODIE-MRG-M", "quantity": 3 },
-        { "sku": "JEFE-HOODIE-MRG-L", "quantity": 2 },
-        { "sku": "JEFE-BUNDLE-MYSTERY", "quantity": 1 }
-      ]
+        {
+          "sku": "JEFE-HOODIE-MRG-M",
+          "quantity": 3
+        },
+        {
+          "sku": "JEFE-HOODIE-MRG-L",
+          "quantity": 2
+        },
+        {
+          "sku": "JEFE-BUNDLE-MYSTERY",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-003@quiver.co.uk",
+        "firstName": "Riley",
+        "lastName": "Shaw",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JDF-1004",
@@ -201,9 +246,21 @@
       "discountPercentage": null,
       "refundSku": null,
       "lineItems": [
-        { "sku": "JEFE-SERUM-30", "quantity": 5 },
-        { "sku": "JEFE-HERO-PACK-BLK", "quantity": 2 }
-      ]
+        {
+          "sku": "JEFE-SERUM-30",
+          "quantity": 5
+        },
+        {
+          "sku": "JEFE-HERO-PACK-BLK",
+          "quantity": 2
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-004@quiver.co.uk",
+        "firstName": "Harper",
+        "lastName": "Bennett",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JDF-1005",
@@ -212,10 +269,25 @@
       "discountPercentage": 10,
       "refundSku": "JEFE-HOODIE-MRG-L",
       "lineItems": [
-        { "sku": "JEFE-HOODIE-MRG-L", "quantity": 1 },
-        { "sku": "JEFE-BUNDLE-MYSTERY", "quantity": 2 },
-        { "sku": "JEFE-SERUM-30", "quantity": 2 }
-      ]
+        {
+          "sku": "JEFE-HOODIE-MRG-L",
+          "quantity": 1
+        },
+        {
+          "sku": "JEFE-BUNDLE-MYSTERY",
+          "quantity": 2
+        },
+        {
+          "sku": "JEFE-SERUM-30",
+          "quantity": 2
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-005@quiver.co.uk",
+        "firstName": "Rowan",
+        "lastName": "Mills",
+        "acceptsMarketing": true
+      }
     }
   ]
 }
