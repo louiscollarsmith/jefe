@@ -1,5 +1,11 @@
 # @shopify/shopify-app-template-react-router
 
+## 2026.07.15
+
+### Fixed
+
+- Improved Railway deployment startup so health checks can reach the Shopify app once required production variables are set.
+
 ## 2026.01.08
 - [#170](https://github.com/Shopify/shopify-app-template-react-router/pull/170) - Update React Router minimum version to v7.12.0
 
