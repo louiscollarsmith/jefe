@@ -52,7 +52,7 @@ Order and refund fixture creation also requires protected customer data access f
 
 ## Shopify Ingestion
 
-After OAuth, Jefe queues an install-time Shopify backfill instead of blocking the callback. The same web service processes jobs from Postgres in a lightweight background loop.
+After OAuth, Jefe queues an install-time Shopify backfill instead of blocking the callback. The same web service processes jobs from Postgres in a lightweight background loop. Products and historical orders use Shopify bulk operations first; paginated GraphQL remains the fallback for failed bulk operations, delta sync and manual debug.
 
 Default MVP scopes:
 

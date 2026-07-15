@@ -22,6 +22,8 @@ const JOB_PRIORITIES = {
   shop_backfill_start: 10,
   products_backfill: 20,
   orders_backfill_365d: 30,
+  products_bulk_poll: 35,
+  orders_bulk_poll: 36,
   inventory_backfill: 40,
   backfill_delta_sync: 50,
   derived_metrics_recompute: 60,
@@ -197,11 +199,13 @@ export async function getShopBackfillProgress(prisma, input) {
       shop.backfillStatuses.find((status) => status.domain === domain) ?? null,
     ]),
   );
-  const productsComplete = statusByDomain.products?.status === "complete";
-  const ordersComplete = statusByDomain.orders?.status === "complete";
-  const inventoryComplete = statusByDomain.inventory?.status === "complete";
-  const derivedComplete = statusByDomain.derived_metrics?.status === "complete";
-  const customersComplete = statusByDomain.customers?.status === "complete";
+  const productsComplete = isCompleteStatus(statusByDomain.products?.status);
+  const ordersComplete = isCompleteStatus(statusByDomain.orders?.status);
+  const inventoryComplete = isCompleteStatus(statusByDomain.inventory?.status);
+  const derivedComplete = isCompleteStatus(
+    statusByDomain.derived_metrics?.status,
+  );
+  const customersComplete = isCompleteStatus(statusByDomain.customers?.status);
 
   return {
     shop,
@@ -260,6 +264,11 @@ function jobPriority(jobType) {
   return Object.prototype.hasOwnProperty.call(JOB_PRIORITIES, jobType)
     ? JOB_PRIORITIES[/** @type {keyof typeof JOB_PRIORITIES} */ (jobType)]
     : 100;
+}
+
+/** @param {string | null | undefined} status */
+function isCompleteStatus(status) {
+  return status === "complete" || status === "bulk_imported";
 }
 
 /**

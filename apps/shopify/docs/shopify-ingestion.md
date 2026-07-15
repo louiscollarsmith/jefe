@@ -10,6 +10,8 @@ Shopify ingestion is read-only. The MVP app requests `read_products`, `read_orde
 
 Install-time backfill is queued after OAuth and processed by the same web service through a lightweight DB-backed job loop. OAuth should only save the session, register webhooks through Shopify app config, mark setup status and queue `shop_backfill_start`.
 
+Products and 365-day orders use Shopify GraphQL bulk operations as the primary import path. Inventory, delta sync, manual debug and bulk failure recovery use the paginated GraphQL path.
+
 The default order window is 365 days when `read_all_orders` is granted. If Shopify does not grant `read_all_orders`, the app falls back to 60 days, marks historical order access as limited, and leaves Klaviyo Winback unavailable until at least 180 days of order history is available.
 
 Manual/dev backfill can still run:
@@ -30,6 +32,16 @@ Backfill progress is stored in:
 - `customer_identities`
 
 The web service loop processes one queued job at a time. Failed jobs store `last_error` and can be retried from the Dev page.
+
+Bulk operation flow:
+
+- start `bulkOperationRunQuery` for products or orders
+- persist the bulk operation ID and Shopify status metadata on `shop_backfill_statuses`
+- wake the poll/import job from `bulk_operations/finish`, with polling as fallback
+- stream-download the JSONL result URL and parse line by line
+- upsert products, variants, orders, line items, refunds and customer identities idempotently
+- run paginated fallback if the bulk operation fails or the JSONL import cannot complete
+- queue delta sync, derived metrics and finalization only after products, orders and inventory are imported
 
 ## Webhooks
 

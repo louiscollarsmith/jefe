@@ -176,10 +176,91 @@ async function processCanonicalWebhook(prisma, input) {
       });
       break;
     case "bulk_operations/finish":
+      await handleBulkOperationFinish(prisma, input);
       break;
     default:
       break;
   }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; payload: unknown }} input
+ */
+async function handleBulkOperationFinish(prisma, input) {
+  const payload = jsonObject(input.payload);
+  const operationId =
+    stringValue(payload.admin_graphql_api_id) || stringValue(payload.id);
+  if (!operationId) return;
+
+  const statuses = await prisma.shopBackfillStatus.findMany({
+    where: {
+      shopId: input.shopId,
+      bulkOperationId: operationId,
+      domain: { in: ["products", "orders"] },
+    },
+  });
+
+  await Promise.all(
+    statuses.map((status) =>
+      prisma.$transaction([
+        prisma.shopBackfillStatus.update({
+          where: { id: status.id },
+          data: {
+            status: "bulk_completed",
+            completedAt: new Date(),
+            metadata: {
+              ...(jsonObject(status.metadata) ?? {}),
+              bulkOperationStatus:
+                stringValue(payload.status) ?? "webhook_finished",
+              bulkOperationErrorCode: stringValue(payload.error_code),
+              bulkOperationObjectCount: numberValue(payload.object_count),
+              bulkOperationFileSize: numberValue(payload.file_size),
+              bulkOperationCompletedAt: stringValue(payload.completed_at),
+            },
+          },
+        }),
+        prisma.backfillJob.upsert({
+          where: {
+            shopId_jobType: {
+              shopId: input.shopId,
+              jobType:
+                status.domain === "products"
+                  ? "products_bulk_poll"
+                  : "orders_bulk_poll",
+            },
+          },
+          create: {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            jobType:
+              status.domain === "products"
+                ? "products_bulk_poll"
+                : "orders_bulk_poll",
+            status: "queued",
+            priority: status.domain === "products" ? 35 : 36,
+            runAfter: new Date(),
+            payloadJson: {
+              domain: status.domain,
+              bulkOperationId: operationId,
+              source: "bulk_operations_finish_webhook",
+            },
+          },
+          update: {
+            status: "queued",
+            runAfter: new Date(),
+            failedAt: null,
+            lastError: null,
+            payloadJson: {
+              domain: status.domain,
+              bulkOperationId: operationId,
+              source: "bulk_operations_finish_webhook",
+            },
+          },
+        }),
+      ]),
+    ),
+  );
 }
 
 /**
@@ -267,6 +348,16 @@ function safeJsonParse(rawBody) {
 /** @param {unknown} value */
 function stringValue(value) {
   return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** @param {unknown} value */
+function numberValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 /**

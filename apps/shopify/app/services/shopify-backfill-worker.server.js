@@ -1,6 +1,12 @@
 // @ts-check
 
 import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server.js";
+import {
+  bulkStatusMetadata,
+  getShopifyBulkOperation,
+  importShopifyBulkResult,
+  startShopifyBulkBackfill,
+} from "../lib/ingestion/shopify/bulk.server.js";
 import { generateDailyBrief } from "./daily-brief.server.js";
 import {
   DEFAULT_BACKFILL_DAYS,
@@ -12,7 +18,8 @@ import {
 } from "./shopify-backfill-status.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
-const DELTA_SYNC_OVERLAP_MINUTES = 10;
+const BULK_POLL_INTERVAL_MS = 30_000;
+const DELTA_SYNC_OVERLAP_HOURS = 24;
 
 let loopStarted = false;
 let loopRunning = false;
@@ -92,7 +99,25 @@ export async function processNextBackfillJob(prisma, options = {}) {
   }
 
   try {
-    const result = await runBackfillJob(prisma, job, options);
+    const result = /** @type {any} */ (
+      await runBackfillJob(prisma, job, options)
+    );
+    if (result?.requeueJob) {
+      await prisma.backfillJob.update({
+        where: { id: job.id },
+        data: {
+          status: "queued",
+          runAfter: result.runAfter ?? retryAfter(0),
+          startedAt: null,
+          completedAt: null,
+          failedAt: null,
+          lastError: null,
+          resultJson: result,
+        },
+      });
+      return { status: "queued", jobType: job.jobType, result };
+    }
+
     await prisma.backfillJob.update({
       where: { id: job.id },
       data: {
@@ -171,6 +196,16 @@ async function runBackfillJob(prisma, job, options) {
         domain: "inventory",
         backfillDomains: ["inventory"],
       });
+    case "products_bulk_poll":
+      return handleBulkPoll(prisma, jobContext, {
+        domain: "products",
+        fallbackDomains: ["products"],
+      });
+    case "orders_bulk_poll":
+      return handleBulkPoll(prisma, jobContext, {
+        domain: "orders",
+        fallbackDomains: ["orders"],
+      });
     case "backfill_delta_sync":
       return handleDeltaSync(prisma, jobContext);
     case "derived_metrics_recompute":
@@ -226,27 +261,9 @@ async function handleBackfillStart(prisma, context) {
       jobType: "inventory_backfill",
       payload,
     }),
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "backfill_delta_sync",
-      payload,
-    }),
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "derived_metrics_recompute",
-      payload,
-    }),
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "backfill_finalize",
-      payload,
-    }),
   ]);
 
-  return { queued: 6, orderHistoryDays: context.orderHistoryDays };
+  return { queued: 3, orderHistoryDays: context.orderHistoryDays };
 }
 
 /**
@@ -255,6 +272,13 @@ async function handleBackfillStart(prisma, context) {
  * @param {{ domain: string; backfillDomains: Array<"products" | "orders" | "inventory"> }} input
  */
 async function handleCommerceBackfill(prisma, context, input) {
+  if (input.domain === "products" || input.domain === "orders") {
+    return handleBulkStart(prisma, context, {
+      domain: input.domain,
+      fallbackDomains: input.backfillDomains,
+    });
+  }
+
   await markRunning(prisma, context, input.domain);
   if (input.domain === "orders") {
     await markRunning(prisma, context, "refunds");
@@ -287,7 +311,226 @@ async function handleCommerceBackfill(prisma, context, input) {
     await markComplete(prisma, context, "customers", customerCount);
   }
 
+  await enqueuePostImportJobsIfReady(prisma, context);
+
   return totals;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ * @param {{ domain: "products" | "orders"; fallbackDomains: Array<"products" | "orders" | "inventory"> }} input
+ */
+async function handleBulkStart(prisma, context, input) {
+  await markRunning(prisma, context, input.domain, "bulk_queued");
+  if (input.domain === "orders") {
+    await markRunning(prisma, context, "refunds", "bulk_queued");
+    await markRunning(prisma, context, "customers", "bulk_queued");
+  }
+
+  try {
+    const { bulkOperation } = await startShopifyBulkBackfill(prisma, {
+      shopDomain: context.shopDomain,
+      accessToken: context.accessToken,
+      domain: input.domain,
+      sessionId: context.sessionId,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+      orderBackfillDays: context.orderHistoryDays,
+      logger: context.logger,
+      fetchImpl: context.fetchImpl,
+    });
+
+    await enqueueBackfillJob(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      jobType:
+        input.domain === "products" ? "products_bulk_poll" : "orders_bulk_poll",
+      payload: {
+        shopDomain: context.shopDomain,
+        sessionId: context.sessionId,
+        scopes: context.scopes,
+        backfillStartedAt: (context.startedAt ?? new Date()).toISOString(),
+        domain: input.domain,
+        bulkOperationId: bulkOperation.id,
+      },
+    });
+
+    return { bulkOperationId: bulkOperation.id, status: bulkOperation.status };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Shopify bulk operation failed.";
+    context.logger.warn("Shopify bulk start failed; using paginated fallback", {
+      shopDomain: context.shopDomain,
+      domain: input.domain,
+      error: message,
+    });
+    return runPaginatedFallback(prisma, context, {
+      domain: input.domain,
+      fallbackDomains: input.fallbackDomains,
+      errorMessage: message,
+    });
+  }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ * @param {{ domain: "products" | "orders"; fallbackDomains: Array<"products" | "orders" | "inventory"> }} input
+ */
+async function handleBulkPoll(prisma, context, input) {
+  const status = await prisma.shopBackfillStatus.findUnique({
+    where: {
+      shopId_domain: { shopId: context.shopId, domain: input.domain },
+    },
+  });
+  const statusMetadata = jsonObject(status?.metadata);
+  const operationId =
+    stringValue(status?.bulkOperationId) ||
+    stringValue(jsonObject(statusMetadata).bulkOperationId);
+  if (!operationId) {
+    throw new Error(`No bulk operation ID found for ${input.domain}.`);
+  }
+
+  const operation = await getShopifyBulkOperation(
+    {
+      shopDomain: context.shopDomain,
+      accessToken: context.accessToken,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+      logger: context.logger,
+      fetchImpl: context.fetchImpl,
+    },
+    operationId,
+  );
+  await updateBulkStatus(prisma, context, input.domain, operation, {
+    status:
+      operation.status === "COMPLETED" ? "bulk_completed" : "bulk_running",
+  });
+
+  if (operation.status === "RUNNING" || operation.status === "CREATED") {
+    return {
+      requeueJob: true,
+      runAfter: new Date(Date.now() + BULK_POLL_INTERVAL_MS),
+      bulkOperationId: operationId,
+      bulkStatus: operation.status,
+    };
+  }
+
+  if (operation.status !== "COMPLETED") {
+    const message =
+      operation.errorCode || `Shopify bulk operation ${operation.status}`;
+    return runPaginatedFallback(prisma, context, {
+      domain: input.domain,
+      fallbackDomains: input.fallbackDomains,
+      errorMessage: message,
+    });
+  }
+
+  await updateBulkStatus(prisma, context, input.domain, operation, {
+    status: "bulk_downloading",
+  });
+  await updateBulkStatus(prisma, context, input.domain, operation, {
+    status: "bulk_importing",
+  });
+
+  try {
+    const totals = await importShopifyBulkResult(prisma, {
+      shopDomain: context.shopDomain,
+      accessToken: context.accessToken,
+      sessionId: context.sessionId,
+      domain: input.domain,
+      operation,
+      logger: context.logger,
+      fetchImpl: context.fetchImpl,
+    });
+    const importedAt = new Date().toISOString();
+    await updateBulkStatus(prisma, context, input.domain, operation, {
+      status: "bulk_imported",
+      recordsProcessed: totals.recordsProcessed,
+      importedAt,
+    });
+
+    if (input.domain === "orders") {
+      await updateBulkStatus(prisma, context, "refunds", operation, {
+        status: "bulk_imported",
+        recordsProcessed: "refunds" in totals ? totals.refunds : 0,
+        importedAt,
+      });
+      const customerCount = await prisma.customerIdentity.count({
+        where: { shopId: context.shopId },
+      });
+      await updateBulkStatus(prisma, context, "customers", operation, {
+        status: "bulk_imported",
+        recordsProcessed: customerCount,
+        importedAt,
+      });
+    }
+
+    await enqueuePostImportJobsIfReady(prisma, context);
+
+    return totals;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Shopify bulk import failed.";
+    return runPaginatedFallback(prisma, context, {
+      domain: input.domain,
+      fallbackDomains: input.fallbackDomains,
+      errorMessage: message,
+    });
+  }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ * @param {{ domain: string; fallbackDomains: Array<"products" | "orders" | "inventory">; errorMessage: string }} input
+ */
+async function runPaginatedFallback(prisma, context, input) {
+  await upsertBackfillStatus(prisma, {
+    merchantId: context.merchantId,
+    shopId: context.shopId,
+    domain: input.domain,
+    status: "fallback_paginated_running",
+    startedAt: new Date(),
+    lastError: input.errorMessage,
+    metadata: { fallbackUsed: true, fallbackReason: input.errorMessage },
+  });
+
+  const totals = await runShopifyBackfill(prisma, {
+    shopDomain: context.shopDomain,
+    accessToken: context.accessToken,
+    sessionId: context.sessionId,
+    apiVersion: process.env.SHOPIFY_API_VERSION,
+    logger: context.logger,
+    fetchImpl: context.fetchImpl,
+    domains: input.fallbackDomains,
+    orderBackfillDays: context.orderHistoryDays,
+  });
+
+  await markComplete(
+    prisma,
+    context,
+    input.domain,
+    domainTotal(totals, input.domain),
+    { fallbackUsed: true, fallbackReason: input.errorMessage },
+  );
+
+  if (input.domain === "orders") {
+    await markComplete(prisma, context, "refunds", totals.refunds, {
+      fallbackUsed: true,
+      fallbackReason: input.errorMessage,
+    });
+    const customerCount = await prisma.customerIdentity.count({
+      where: { shopId: context.shopId },
+    });
+    await markComplete(prisma, context, "customers", customerCount, {
+      fallbackUsed: true,
+      fallbackReason: input.errorMessage,
+    });
+  }
+
+  await enqueuePostImportJobsIfReady(prisma, context);
+
+  return { ...totals, fallbackUsed: true };
 }
 
 /**
@@ -297,7 +540,7 @@ async function handleCommerceBackfill(prisma, context, input) {
 async function handleDeltaSync(prisma, context) {
   const updatedAfter = new Date(
     (context.startedAt ?? new Date()).getTime() -
-      DELTA_SYNC_OVERLAP_MINUTES * 60 * 1000,
+      DELTA_SYNC_OVERLAP_HOURS * 60 * 60 * 1000,
   );
   const totals = await runShopifyBackfill(prisma, {
     shopDomain: context.shopDomain,
@@ -312,6 +555,50 @@ async function handleDeltaSync(prisma, context) {
   });
 
   return { ...totals, updatedAfter: updatedAfter.toISOString() };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ */
+async function enqueuePostImportJobsIfReady(prisma, context) {
+  const statuses = await prisma.shopBackfillStatus.findMany({
+    where: { shopId: context.shopId },
+  });
+  const ready = ["products", "orders", "inventory"].every((domain) =>
+    isCompleteStatus(
+      statuses.find((status) => status.domain === domain)?.status,
+    ),
+  );
+  if (!ready) return;
+
+  const payload = {
+    shopDomain: context.shopDomain,
+    sessionId: context.sessionId,
+    scopes: context.scopes,
+    backfillStartedAt: (context.startedAt ?? new Date()).toISOString(),
+  };
+
+  await Promise.all([
+    enqueueBackfillJob(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      jobType: "backfill_delta_sync",
+      payload,
+    }),
+    enqueueBackfillJob(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      jobType: "derived_metrics_recompute",
+      payload,
+    }),
+    enqueueBackfillJob(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      jobType: "backfill_finalize",
+      payload,
+    }),
+  ]);
 }
 
 /**
@@ -340,8 +627,9 @@ async function handleFinalize(prisma, context) {
   const failed = statuses.filter((status) => status.status === "failed");
   const requiredComplete = ["products", "orders", "derived_metrics"].every(
     (domain) =>
-      statuses.find((status) => status.domain === domain)?.status ===
-      "complete",
+      isCompleteStatus(
+        statuses.find((status) => status.domain === domain)?.status,
+      ),
   );
   const nextSetupStatus =
     failed.length > 0
@@ -369,12 +657,12 @@ async function handleFinalize(prisma, context) {
  * @param {BackfillContext} context
  * @param {string} domain
  */
-async function markRunning(prisma, context, domain) {
+async function markRunning(prisma, context, domain, status = "running") {
   await upsertBackfillStatus(prisma, {
     merchantId: context.merchantId,
     shopId: context.shopId,
     domain,
-    status: "running",
+    status,
     startedAt: new Date(),
     completedAt: null,
     lastError: null,
@@ -386,8 +674,15 @@ async function markRunning(prisma, context, domain) {
  * @param {BackfillContext} context
  * @param {string} domain
  * @param {number} recordsProcessed
+ * @param {unknown} [metadata]
  */
-async function markComplete(prisma, context, domain, recordsProcessed) {
+async function markComplete(
+  prisma,
+  context,
+  domain,
+  recordsProcessed,
+  metadata = undefined,
+) {
   await upsertBackfillStatus(prisma, {
     merchantId: context.merchantId,
     shopId: context.shopId,
@@ -396,6 +691,36 @@ async function markComplete(prisma, context, domain, recordsProcessed) {
     completedAt: new Date(),
     lastError: null,
     recordsProcessed,
+    metadata,
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ * @param {string} domain
+ * @param {import("../lib/ingestion/shopify/bulk.server.js").BulkOperationState} operation
+ * @param {{ status: string; recordsProcessed?: number; importedAt?: string }} input
+ */
+async function updateBulkStatus(prisma, context, domain, operation, input) {
+  await upsertBackfillStatus(prisma, {
+    merchantId: context.merchantId,
+    shopId: context.shopId,
+    domain,
+    status: input.status,
+    completedAt:
+      input.status === "bulk_imported" || input.status === "bulk_completed"
+        ? new Date()
+        : undefined,
+    lastError: operation.errorCode ?? null,
+    recordsProcessed: input.recordsProcessed,
+    totalRecordsEstimate: operation.objectCount,
+    bulkOperationId: operation.id,
+    metadata: bulkStatusMetadata({
+      bulkOperation: operation,
+      fallbackUsed: false,
+      importedAt: input.importedAt ?? null,
+    }),
   });
 }
 
@@ -434,6 +759,11 @@ function domainTotal(totals, domain) {
   if (domain === "orders") return totals.orders;
   if (domain === "inventory") return totals.inventoryLevels;
   return 0;
+}
+
+/** @param {string | null | undefined} status */
+function isCompleteStatus(status) {
+  return status === "complete" || status === "bulk_imported";
 }
 
 /**
