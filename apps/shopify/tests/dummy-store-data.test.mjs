@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fixture from "../app/fixtures/dummy-store-data.json" with { type: "json" };
+import klaviyoWinbackFixture from "../app/fixtures/klaviyo-winback-scenario-data.json" with { type: "json" };
 import watchdogFixture from "../app/fixtures/watchdog-scenario-data.json" with { type: "json" };
 import { getMissingShopifyScopes } from "../app/services/shopify-scopes.server.js";
 
@@ -52,6 +53,7 @@ test("dummy store fixture covers Ticket 003 ingestion and downstream scenarios",
   for (const order of fixture.orders) {
     assert.ok(order.name.startsWith("#JDF-"));
     assert.ok(order.lineItems.length > 0);
+    assertFixtureCustomer(order.customer);
 
     for (const lineItem of order.lineItems) {
       assert.ok(skus.has(lineItem.sku), `missing SKU ${lineItem.sku}`);
@@ -77,13 +79,70 @@ test("dummy store scope check treats Shopify write scopes as read scopes", () =>
       "write_products",
       "read_inventory",
       "write_inventory",
+      "read_customers",
+      "write_customers",
       "read_orders",
       "write_orders",
     ],
-    "read_locations,write_inventory,write_orders,write_products",
+    "read_locations,write_inventory,write_orders,write_products,write_customers",
   );
 
   assert.deepEqual(missingScopes, []);
+});
+
+test("Klaviyo winback scenario fixture creates dormant customer orders", () => {
+  const variants = new Map(
+    klaviyoWinbackFixture.products.flatMap((product) =>
+      product.variants.map((variant) => [
+        variant.sku,
+        { ...variant, product },
+      ]),
+    ),
+  );
+  const scenarioKeys = new Set(
+    klaviyoWinbackFixture.scenarios.map((scenario) => scenario.key),
+  );
+  const emails = klaviyoWinbackFixture.orders.map((order) => order.customer.email);
+  const uniqueEmails = new Set(emails);
+  const reusedRecentEmails = new Set([
+    "louis+jefe-test-001@quiver.co.uk",
+    "louis+jefe-test-002@quiver.co.uk",
+    "louis+jefe-test-003@quiver.co.uk",
+    "louis+jefe-test-006@quiver.co.uk",
+  ]);
+
+  assert.equal(klaviyoWinbackFixture.currency, "GBP");
+  assert.ok(
+    klaviyoWinbackFixture.tags.includes("jefe-klaviyo-winback-scenario"),
+  );
+  assert.deepEqual(scenarioKeys, new Set([
+    "dormant_customers",
+    "recent_reorder_exclusion",
+    "repeat_dormant_buyer",
+  ]));
+  assert.equal(klaviyoWinbackFixture.orders.length, 16);
+  assert.ok(uniqueEmails.size < klaviyoWinbackFixture.orders.length);
+  assert.ok(
+    Array.from(reusedRecentEmails).every((email) => emails.includes(email)),
+  );
+
+  for (const order of klaviyoWinbackFixture.orders) {
+    assert.ok(order.name.startsWith("#JWB-"));
+    assert.ok(order.daysAgo >= 60);
+    assert.ok(order.daysAgo <= 180);
+    assertFixtureCustomer(order.customer);
+
+    for (const lineItem of order.lineItems) {
+      assert.ok(variants.has(lineItem.sku), `missing SKU ${lineItem.sku}`);
+      assert.ok(lineItem.quantity > 0);
+    }
+  }
+
+  assert.ok(
+    klaviyoWinbackFixture.orders.some(
+      (order) => Number(order.customer.email.match(/\d{3}/)?.[0]) >= 19,
+    ),
+  );
 });
 
 test("watchdog scenario fixture covers exact dev scenarios", () => {
@@ -121,6 +180,7 @@ test("watchdog scenario fixture covers exact dev scenarios", () => {
 
   for (const order of watchdogFixture.orders) {
     assert.ok(order.name.startsWith("#JWS-"));
+    assertFixtureCustomer(order.customer);
 
     for (const lineItem of order.lineItems) {
       assert.ok(variants.has(lineItem.sku), `missing SKU ${lineItem.sku}`);
@@ -198,7 +258,23 @@ test("watchdog scenario fixture covers exact dev scenarios", () => {
 
   assert.equal(summerDressOrders.length, 8);
   assert.ok(summerDressRefunds / summerDressOrders.length > 0.25);
+
+  const uniqueCustomers = new Set(
+    watchdogFixture.orders.map((order) => order.customer.email),
+  );
+  assert.ok(uniqueCustomers.size < watchdogFixture.orders.length);
+  assert.ok(uniqueCustomers.size >= 10);
 });
+
+function assertFixtureCustomer(customer) {
+  assert.match(
+    customer.email,
+    /^louis\+jefe-test-\d{3}@quiver\.co\.uk$/,
+  );
+  assert.ok(customer.firstName);
+  assert.ok(customer.lastName);
+  assert.equal(customer.acceptsMarketing, true);
+}
 
 function unitsSold({ orders, sku }) {
   return orders.reduce(

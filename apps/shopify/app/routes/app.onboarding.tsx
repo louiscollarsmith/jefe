@@ -3,13 +3,14 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { Fragment, useState } from "react";
+import { Fragment, type FormEvent, useState } from "react";
 import {
   Form,
   useActionData,
   useLoaderData,
   useNavigate,
   useNavigation,
+  useSubmit,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
@@ -279,7 +280,9 @@ export default function Onboarding() {
   const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
   const navigation = useNavigation();
+  const submit = useSubmit();
   const isSubmitting = navigation.state === "submitting";
+  const submittingIntent = navigation.formData?.get("intent");
   const goalsByHorizon = Object.fromEntries(
     data.goals.map((goal) => [goal.horizon, goal]),
   );
@@ -347,6 +350,20 @@ export default function Onboarding() {
     value: string | boolean,
   ) => {
     setHouseRulesForm((current) => ({ ...current, [field]: value }));
+  };
+  const submitHouseRules = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!event.currentTarget.reportValidity()) return;
+
+    const formData = new FormData();
+    formData.set("intent", "save-house-rules");
+
+    for (const [field, value] of Object.entries(houseRulesForm)) {
+      formData.set(field, String(value));
+    }
+
+    submit(formData, { method: "post" });
   };
   return (
     <Page>
@@ -504,7 +521,7 @@ export default function Onboarding() {
             description="Structured constraints, approval rules and the founder's free-text constitution."
           >
             <Card>
-              <Form method="post">
+              <Form method="post" onSubmit={submitHouseRules}>
                 <BlockStack gap="400">
                   <Text as="p" variant="bodyMd">
                     House Rules are the rules Jefe must obey before
@@ -721,7 +738,13 @@ export default function Onboarding() {
                       autoComplete="off"
                     />
                   </FormLayout>
-                  <Button submit variant="primary" loading={isSubmitting}>
+                  <Button
+                    submit
+                    variant="primary"
+                    loading={
+                      isSubmitting && submittingIntent === "save-house-rules"
+                    }
+                  >
                     Save House Rules
                   </Button>
                 </BlockStack>

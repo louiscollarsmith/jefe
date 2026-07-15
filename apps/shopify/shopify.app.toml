@@ -42,10 +42,10 @@ api_version = "2026-07"
 
 [access_scopes]
 # Dummy store loader needs these in development to create Ticket 03 fixture
-# products/variants, inventory levels, test orders/refunds, and the primary
+# products/variants, inventory levels, test customers, test orders/refunds, and the primary
 # inventory location. Do not use this scope set for a production merchant app
 # without a separate written scope review.
-scopes = "read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,write_orders"
+scopes = "read_locations,read_products,write_products,read_inventory,write_inventory,read_customers,write_customers,read_orders,write_orders"
 
 [auth]
 redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]

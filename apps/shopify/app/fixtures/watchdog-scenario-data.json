@@ -1,7 +1,10 @@
 {
-  "version": "2026-07-14.watchdog-scenarios",
+  "version": "2026-07-15.watchdog-scenarios-customers",
   "currency": "GBP",
-  "tags": ["jefe-watchdog-scenario", "dev-scenario"],
+  "tags": [
+    "jefe-watchdog-scenario",
+    "dev-scenario"
+  ],
   "scenarios": [
     {
       "key": "refund_spike",
@@ -147,7 +150,18 @@
       "scenario": "sales_collapse_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-HOODIE-BLK-M", "quantity": 5 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-HOODIE-BLK-M",
+          "quantity": 5
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-006@quiver.co.uk",
+        "firstName": "Jamie",
+        "lastName": "Foster",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2002",
@@ -155,7 +169,18 @@
       "scenario": "sales_collapse_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-HOODIE-BLK-M", "quantity": 5 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-HOODIE-BLK-M",
+          "quantity": 5
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-007@quiver.co.uk",
+        "firstName": "Taylor",
+        "lastName": "Reed",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2003",
@@ -163,7 +188,18 @@
       "scenario": "sales_collapse_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-HOODIE-BLK-M", "quantity": 5 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-HOODIE-BLK-M",
+          "quantity": 5
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-006@quiver.co.uk",
+        "firstName": "Jamie",
+        "lastName": "Foster",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2004",
@@ -171,7 +207,18 @@
       "scenario": "sales_collapse_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-HOODIE-BLK-M", "quantity": 5 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-HOODIE-BLK-M",
+          "quantity": 5
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-008@quiver.co.uk",
+        "firstName": "Casey",
+        "lastName": "Brooks",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2010",
@@ -179,7 +226,18 @@
       "scenario": "product_unavailable_recent_sale",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-MUG-TRAVEL", "quantity": 3 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-MUG-TRAVEL",
+          "quantity": 3
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-009@quiver.co.uk",
+        "firstName": "Quinn",
+        "lastName": "Hayes",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2021",
@@ -187,7 +245,18 @@
       "scenario": "revenue_drop_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REV-MIX", "quantity": 10 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REV-MIX",
+          "quantity": 10
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-010@quiver.co.uk",
+        "firstName": "Jordan",
+        "lastName": "Price",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2022",
@@ -195,7 +264,18 @@
       "scenario": "revenue_drop_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REV-MIX", "quantity": 10 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REV-MIX",
+          "quantity": 10
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-011@quiver.co.uk",
+        "firstName": "Alex",
+        "lastName": "Grant",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2023",
@@ -203,7 +283,18 @@
       "scenario": "revenue_drop_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REV-MIX", "quantity": 10 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REV-MIX",
+          "quantity": 10
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-012@quiver.co.uk",
+        "firstName": "Sam",
+        "lastName": "Walker",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2024",
@@ -211,7 +302,18 @@
       "scenario": "revenue_drop_baseline",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REV-MIX", "quantity": 10 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REV-MIX",
+          "quantity": 10
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-013@quiver.co.uk",
+        "firstName": "Drew",
+        "lastName": "Morgan",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2025",
@@ -219,7 +321,18 @@
       "scenario": "revenue_drop_current_week",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REV-MIX", "quantity": 4 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REV-MIX",
+          "quantity": 4
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-014@quiver.co.uk",
+        "firstName": "Parker",
+        "lastName": "Lane",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2030",
@@ -227,7 +340,18 @@
       "scenario": "missing_cogs_important_seller",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-MYSTERY-SELLER", "quantity": 3 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-MYSTERY-SELLER",
+          "quantity": 3
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-015@quiver.co.uk",
+        "firstName": "Cameron",
+        "lastName": "Stone",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2041",
@@ -235,7 +359,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": "JWDS-SUMMER-DRESS",
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-011@quiver.co.uk",
+        "firstName": "Alex",
+        "lastName": "Grant",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2042",
@@ -243,7 +378,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": "JWDS-SUMMER-DRESS",
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-012@quiver.co.uk",
+        "firstName": "Sam",
+        "lastName": "Walker",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2043",
@@ -251,7 +397,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": "JWDS-SUMMER-DRESS",
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-013@quiver.co.uk",
+        "firstName": "Drew",
+        "lastName": "Morgan",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2044",
@@ -259,7 +416,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-016@quiver.co.uk",
+        "firstName": "Reese",
+        "lastName": "Cole",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2045",
@@ -267,7 +435,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-017@quiver.co.uk",
+        "firstName": "Finley",
+        "lastName": "Hart",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2046",
@@ -275,7 +454,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-018@quiver.co.uk",
+        "firstName": "Skyler",
+        "lastName": "Wells",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2047",
@@ -283,7 +473,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-017@quiver.co.uk",
+        "firstName": "Finley",
+        "lastName": "Hart",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2048",
@@ -291,7 +492,18 @@
       "scenario": "high_return_product",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-SUMMER-DRESS", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-SUMMER-DRESS",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-018@quiver.co.uk",
+        "firstName": "Skyler",
+        "lastName": "Wells",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2050",
@@ -299,7 +511,18 @@
       "scenario": "refund_spike_baseline_normal_refund",
       "discountPercentage": null,
       "refundSku": null,
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-017@quiver.co.uk",
+        "firstName": "Finley",
+        "lastName": "Hart",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2051",
@@ -307,7 +530,18 @@
       "scenario": "refund_spike_current_week",
       "discountPercentage": null,
       "refundSku": "JWDS-REFUND-BOTTLE",
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-001@quiver.co.uk",
+        "firstName": "Avery",
+        "lastName": "Carter",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2052",
@@ -315,7 +549,18 @@
       "scenario": "refund_spike_current_week",
       "discountPercentage": null,
       "refundSku": "JWDS-REFUND-BOTTLE",
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-002@quiver.co.uk",
+        "firstName": "Morgan",
+        "lastName": "Ellis",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2053",
@@ -323,7 +568,18 @@
       "scenario": "refund_spike_current_week",
       "discountPercentage": null,
       "refundSku": "JWDS-REFUND-BOTTLE",
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-003@quiver.co.uk",
+        "firstName": "Riley",
+        "lastName": "Shaw",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2054",
@@ -331,7 +587,18 @@
       "scenario": "refund_spike_current_week",
       "discountPercentage": null,
       "refundSku": "JWDS-REFUND-BOTTLE",
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-004@quiver.co.uk",
+        "firstName": "Harper",
+        "lastName": "Bennett",
+        "acceptsMarketing": true
+      }
     },
     {
       "name": "#JWS-2055",
@@ -339,7 +606,18 @@
       "scenario": "refund_spike_current_week",
       "discountPercentage": null,
       "refundSku": "JWDS-REFUND-BOTTLE",
-      "lineItems": [{ "sku": "JWDS-REFUND-BOTTLE", "quantity": 1 }]
+      "lineItems": [
+        {
+          "sku": "JWDS-REFUND-BOTTLE",
+          "quantity": 1
+        }
+      ],
+      "customer": {
+        "email": "louis+jefe-test-005@quiver.co.uk",
+        "firstName": "Rowan",
+        "lastName": "Mills",
+        "acceptsMarketing": true
+      }
     }
   ],
   "notes": [

@@ -52,9 +52,20 @@ export const ORDERS_QUERY = `#graphql
           createdAt
           updatedAt
           processedAt
+          email
           displayFinancialStatus
           displayFulfillmentStatus
           currencyCode
+          customer {
+            id
+            email
+            firstName
+            lastName
+            acceptsMarketing
+            emailMarketingConsent {
+              marketingState
+            }
+          }
           currentSubtotalPriceSet {
             shopMoney {
               amount

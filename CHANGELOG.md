@@ -2,12 +2,32 @@
 
 ## 2026-07-15
 
+### Added
+
+- Added Klaviyo Winback v0 so Jefe can identify dormant customers, prepare an approval-gated draft, apply House Rules and hold back a measured control group without sending automatically.
+- Added fixture customers to the dev dummy store and Watchdog scenario orders so winback testing has reachable test buyers attached to orders.
+- Added a dev Klaviyo Winback scenario loader with 60-180 day customer orders for winback testing.
+
 ### Changed
 
 - Renamed Today’s Verdict to Revenue & Margin so Daily Brief is clearly the main morning summary and Revenue & Margin is the detailed performance view.
 - Added more bottom spacing across the app so the final card on each page can scroll comfortably above the bottom edge.
 - Replaced the Daily Brief manual generate button with scheduled status copy and moved test generation to the Dev page.
 - Reduced duplication between Daily Brief and module pages so Daily Brief acts as the main morning summary and detail pages focus on evidence.
+- Removed the separate fixture-customer dev action now that fixture customers are included by default.
+- Clarified Klaviyo Winback approval states so draft preparation is not shown as merchant approval.
+- Added clearer Klaviyo Winback mode, holdout group and estimated upside copy.
+- Added a deterministic Klaviyo Winback email copy preview before approval.
+
+### Fixed
+
+- Fixed the Klaviyo private key field so pilot stores can enter and save their key reference.
+- Fixed Klaviyo Winback empty-state copy so it explains when test orders are too recent instead of implying emails are missing.
+- Fixed Klaviyo Winback audience filtering so Shopify customer account state does not suppress marketable buyers and reused emails are grouped consistently.
+- Fixed House Rules saving so edited caps and unchecked rule toggles are submitted reliably from Manager Settings.
+- Clarified Klaviyo Winback holdout copy so measurement controls are not confused with House Rules exclusions.
+- Added Klaviyo Winback economics detail so estimated upside is shown separately from discount cost before approval.
+- Fixed the Klaviyo Winback approval queue badge so preparing a draft does not display as merchant approval.
 
 ---
 
