@@ -406,6 +406,30 @@ export default function Onboarding() {
                 }
               />
             </InlineGrid>
+
+            <BlockStack gap="200">
+              <Text as="h2" variant="headingMd">
+                Settings sections
+              </Text>
+              <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+                <SettingsSection
+                  title="Goals"
+                  description="Founder-defined outcomes and priorities."
+                />
+                <SettingsSection
+                  title="House Rules"
+                  description="Brand, margin, discount and frequency constraints."
+                />
+                <SettingsSection
+                  title="Product Costs"
+                  description="COGS coverage for revenue and margin confidence."
+                />
+                <SettingsSection
+                  title="Approval Rules"
+                  description="Audience caps, risky periods and actions needing extra approval."
+                />
+              </InlineGrid>
+            </BlockStack>
           </BlockStack>
         </Card>
 
@@ -477,7 +501,7 @@ export default function Onboarding() {
 
           <Layout.AnnotatedSection
             title="House Rules"
-            description="Structured constraints for winback approvals plus the founder's free-text constitution."
+            description="Structured constraints, approval rules and the founder's free-text constitution."
           >
             <Card>
               <Form method="post">
@@ -706,7 +730,7 @@ export default function Onboarding() {
           </Layout.AnnotatedSection>
 
           <Layout.AnnotatedSection
-            title="COGS setup"
+            title="Product Costs"
             description="Manual COGS inputs raise margin confidence; missing values remain allowed."
           >
             <Card>
@@ -905,6 +929,33 @@ function ProgressItem({
         </Text>
         <Text as="p" variant="bodyMd" tone="subdued">
           {detail}
+        </Text>
+      </BlockStack>
+    </Box>
+  );
+}
+
+function SettingsSection({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <Box
+      background="bg-surface-secondary"
+      borderColor="border"
+      borderRadius="200"
+      borderWidth="025"
+      padding="300"
+    >
+      <BlockStack gap="100">
+        <Text as="h3" variant="headingSm">
+          {title}
+        </Text>
+        <Text as="p" variant="bodySm" tone="subdued">
+          {description}
         </Text>
       </BlockStack>
     </Box>

@@ -417,23 +417,33 @@ model CogsInput {
 }
 
 model DailyBrief {
-  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId     String     @map("merchant_id") @db.Uuid
-  shopId         String?    @map("shop_id") @db.Uuid
-  briefDate      DateTime   @map("brief_date") @db.Date
-  status         String     @default("draft")
-  channel        String     @default("app")
-  verdict        Json       @default("{}")
-  metrics        Json       @default("{}")
-  evidence       Json       @default("[]")
-  idempotencyKey String?    @map("idempotency_key")
-  sentAt         DateTime?  @map("sent_at") @db.Timestamptz(6)
-  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant       Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop           Shop?      @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  actions        Action[]
-  feedbackItems  Feedback[]
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String     @map("merchant_id") @db.Uuid
+  shopId          String?    @map("shop_id") @db.Uuid
+  briefDate       DateTime   @map("brief_date") @db.Date
+  periodStart     DateTime?  @map("period_start") @db.Timestamptz(6)
+  periodEnd       DateTime?  @map("period_end") @db.Timestamptz(6)
+  generatedAt     DateTime?  @map("generated_at") @db.Timestamptz(6)
+  status          String     @default("draft")
+  channel         String     @default("app")
+  confidenceLevel String?    @map("confidence_level")
+  headline        String?
+  sections        Json       @default("[]")
+  verdict         Json       @default("{}")
+  metrics         Json       @default("{}")
+  evidence        Json       @default("[]")
+  deliveryStatus  Json       @default("{}") @map("delivery_status")
+  failureReason   String?    @map("failure_reason")
+  dataIncomplete  Boolean    @default(false) @map("data_incomplete")
+  degradedReasons Json       @default("[]") @map("degraded_reasons")
+  idempotencyKey  String?    @map("idempotency_key")
+  sentAt          DateTime?  @map("sent_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant        Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop?      @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  actions         Action[]
+  feedbackItems   Feedback[]
 
   @@unique([merchantId, shopId, briefDate, channel])
   @@unique([merchantId, idempotencyKey])

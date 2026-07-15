@@ -371,6 +371,18 @@ test("Daily Verdict shows no-COGS state when sold products have no costs", async
     assert.equal(brief.verdict.margin.confidenceLevel, "low");
     assert.equal(brief.verdict.margin.cogsCoveragePercent, 0);
     assert.match(brief.verdict.headline, /product costs are missing/);
+    assert.match(
+      brief.verdict.sections.confidence,
+      /0% of sold units have COGS and 100% are missing product costs/,
+    );
+    assert.doesNotMatch(
+      brief.verdict.sections.confidence,
+      /every selling variant|all selling variants have COGS/i,
+    );
+    assert.doesNotMatch(
+      brief.verdict.summary,
+      /all selling variants have COGS/i,
+    );
     assert.match(brief.verdict.sections.nextStep, /Add product costs/);
   } finally {
     await prisma.merchant.deleteMany({

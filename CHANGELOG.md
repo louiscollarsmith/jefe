@@ -1,9 +1,21 @@
 # Changelog
 
+## 2026-07-15
+
+### Changed
+
+- Renamed Today’s Verdict to Revenue & Margin so Daily Brief is clearly the main morning summary and Revenue & Margin is the detailed performance view.
+- Added more bottom spacing across the app so the final card on each page can scroll comfortably above the bottom edge.
+- Replaced the Daily Brief manual generate button with scheduled status copy and moved test generation to the Dev page.
+- Reduced duplication between Daily Brief and module pages so Daily Brief acts as the main morning summary and detail pages focus on evidence.
+
+---
+
 ## 2026-07-14
 
 ### Added
 
+- Added Daily Brief v0 with one morning operator brief across Today's Verdict, Inventory Guardian and Watchdog.
 - Added Inventory Guardian v0 with stockout risk, sales velocity, revenue-at-risk and reorder quantity estimates.
 - Added Watchdog v0 with read-only alerts for refund spikes, sales collapses, revenue drops, missing product costs and other operational anomalies.
 - Added Changelog v0 inside the Shopify app and made changelog updates part of the agent workflow.

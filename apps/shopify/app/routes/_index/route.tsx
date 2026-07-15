@@ -7,20 +7,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
   if (url.searchParams.get("shop")) {
-    throw redirect(`/app?${url.searchParams.toString()}`);
+    throw redirect(`/app/daily-brief?${url.searchParams.toString()}`);
   }
 
   return null;
 };
 
 const proofPoints = [
-  "Daily verdicts with evidence, confidence and money at stake.",
+  "Daily briefs with evidence, confidence and money at stake.",
   "Inventory and margin risks surfaced before they become expensive.",
   "Approved actions only, with previews, caps and outcome tracking.",
 ];
 
 const modules = [
-  "Daily Verdict",
+  "Revenue & Margin",
   "Inventory Guardian",
   "Watchdog",
   "Klaviyo Winback",

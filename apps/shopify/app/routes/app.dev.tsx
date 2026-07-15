@@ -19,7 +19,10 @@ import {
   Text,
 } from "@shopify/polaris";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import prisma from "../db.server";
+import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { authenticate } from "../shopify.server";
+import { generateDailyBrief } from "../services/daily-brief.server";
 import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server";
 import {
   getDummyDataStatus,
@@ -74,7 +77,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (
     intent !== "seed-dummy-store-data" &&
-    intent !== "seed-watchdog-scenarios"
+    intent !== "seed-watchdog-scenarios" &&
+    intent !== "generate-test-brief"
   ) {
     return { ok: false, error: "Unknown action." };
   }
@@ -83,6 +87,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return {
       ok: false,
       error: "Dummy store data loader is disabled for this environment.",
+    };
+  }
+
+  if (intent === "generate-test-brief") {
+    const { merchant, shop } = await ensureShopifyTenant(prisma, {
+      shopDomain: session.shop,
+      accessTokenSessionId: session.id,
+      scopes: session.scope?.split(",").filter(Boolean) ?? [],
+      rawPayload: { source: "daily_brief_dev_generate" },
+    });
+    const brief = await generateDailyBrief(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+
+    return {
+      ok: true,
+      intent,
+      result: {
+        generatedAt:
+          brief.generatedAt?.toISOString() ?? brief.updatedAt.toISOString(),
+        status: brief.status,
+      },
     };
   }
 
@@ -139,16 +166,23 @@ export default function Dev() {
     isSeedingWatchdogScenarios;
   const seedResult =
     actionData?.ok && actionData.intent === "seed-dummy-store-data"
-      ? actionData.result
+      ? (actionData.result as DummySeedResult)
       : null;
   const scenarioResult =
     actionData?.ok && actionData.intent === "seed-watchdog-scenarios"
-      ? actionData.result
+      ? (actionData.result as WatchdogScenarioSeedResult)
+      : null;
+  const testBriefResult =
+    actionData?.ok && actionData.intent === "generate-test-brief"
+      ? (actionData.result as TestBriefResult)
       : null;
   const hasDummyProgress = hasFixtureProgress(dummyData.status.progress);
   const hasScenarioProgress = hasFixtureProgress(
     watchdogScenarios.status.progress,
   );
+  const isGeneratingTestBrief =
+    navigation.state === "submitting" &&
+    navigation.formData?.get("intent") === "generate-test-brief";
 
   return (
     <Page title="Dev">
@@ -164,6 +198,47 @@ export default function Dev() {
                   Dev-only scaffold notes for {shop}. This page is hidden
                   unless ENABLE_DUMMY_STORE_LOADER=true.
                 </Text>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="400">
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Daily Brief
+                  </Text>
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Use this to regenerate the Daily Brief during development.
+                    In production, briefs should generate automatically every
+                    morning.
+                  </Text>
+                </BlockStack>
+
+                {testBriefResult ? (
+                  <Banner tone="success">
+                    <Text as="p" variant="bodyMd">
+                      Test brief generated at{" "}
+                      {formatDateTime(testBriefResult.generatedAt)}. Status:{" "}
+                      {formatStatus(testBriefResult.status)}.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                <Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="generate-test-brief"
+                  />
+                  <Button
+                    submit
+                    variant="primary"
+                    loading={isGeneratingTestBrief}
+                    disabled={isGeneratingTestBrief}
+                  >
+                    Generate test brief
+                  </Button>
+                </Form>
               </BlockStack>
             </Card>
 
@@ -361,6 +436,27 @@ type FixtureProgress = {
   refundsExisting: number;
 };
 
+type DummySeedResult = {
+  productsCreated: number;
+  variantsCreated: number;
+  ordersCreated: number;
+  refundsCreated: number;
+  progress: FixtureProgress;
+};
+
+type WatchdogScenarioSeedResult = {
+  scenariosLoaded: number;
+  productsCreated: number;
+  ordersCreated: number;
+  refundsCreated: number;
+  progress: FixtureProgress;
+};
+
+type TestBriefResult = {
+  generatedAt: string;
+  status: string;
+};
+
 function hasFixtureProgress(progress: FixtureProgress) {
   return (
     progress.productsExisting > 0 ||
@@ -393,4 +489,17 @@ function scenarioButtonText(input: {
   if (input.progressComplete) return "Finalize watchdog scenarios";
   if (input.hasProgress) return "Resume watchdog scenarios";
   return "Create watchdog scenarios";
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatStatus(status: string) {
+  return status[0].toUpperCase() + status.slice(1);
 }

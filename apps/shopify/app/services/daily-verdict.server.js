@@ -560,7 +560,7 @@ function buildSections(input) {
   if (input.lineItemCount === 0) {
     return {
       whatHappened:
-        "No Shopify sales were recorded in this period, so Daily Verdict has no product winners or margin concerns to rank.",
+        "No Shopify sales were recorded in this period, so Revenue & Margin has no product winners or margin concerns to rank.",
       whatMatters:
         "The read model is ready, but order sync needs real sales before Jefe can make an accountable call.",
       confidence:
@@ -581,10 +581,15 @@ function buildSections(input) {
     : input.topGrossProfitProduct
       ? `${input.topGrossProfitProduct.title} is the strongest gross-profit signal where COGS exists.`
       : "Revenue can be ranked, but margin winners cannot be trusted until COGS coverage improves.";
+  const missingCoverage = roundPercent(100 - input.cogsCoveragePercent);
   const confidence =
-    input.missingCogsVariantCount > 0
-      ? `Margin confidence is ${input.confidenceLevel}: ${input.cogsCoveragePercent}% of sold units have COGS and ${input.missingCogsVariantCount} selling variant${input.missingCogsVariantCount === 1 ? " is" : "s are"} missing product costs.`
-      : `Margin confidence is ${input.confidenceLevel}: every selling variant in this period has COGS.`;
+    input.cogsCoveragePercent >= 100
+      ? `Margin confidence is ${input.confidenceLevel}: 100% of sold units have COGS.`
+      : `Margin confidence is ${input.confidenceLevel}: ${input.cogsCoveragePercent}% of sold units have COGS and ${missingCoverage}% are missing product costs${
+          input.missingCogsVariantCount > 0
+            ? ` across ${input.missingCogsVariantCount} selling variant${input.missingCogsVariantCount === 1 ? "" : "s"}`
+            : ""
+        }.`;
   const nextStep = input.missingCogsProduct
     ? `Add product costs for ${input.missingCogsProduct.title} before relying on margin recommendations.`
     : input.lowMarginProduct
@@ -616,7 +621,7 @@ function buildSections(input) {
  */
 function buildSummary(input) {
   if (input.lineItemCount === 0) {
-    return "No Shopify sales were recorded in the selected period. Daily Verdict can still run, but it needs synced orders before it can identify winners, margin leaks or refund risk.";
+    return "No Shopify sales were recorded in the selected period. Revenue & Margin can still run, but it needs synced orders before it can identify winners, margin leaks or refund risk.";
   }
 
   const marginText =
@@ -632,12 +637,21 @@ function buildSummary(input) {
   const topProfitText = input.topGrossProfitProduct
     ? `${input.topGrossProfitProduct.title} led estimated gross profit`
     : "no gross-profit winner can be trusted yet";
+  const missingCoverage = roundPercent(100 - input.cogsCoveragePercent);
   const missingText =
-    input.missingCogsVariantCount > 0
-      ? `${input.missingCogsVariantCount} selling variant${
-          input.missingCogsVariantCount === 1 ? " is" : "s are"
-        } missing COGS`
-      : "all selling variants have COGS";
+    input.cogsCoveragePercent >= 100
+      ? "all sold units have COGS"
+      : `${missingCoverage}% of sold units are missing COGS${
+          input.missingCogsVariantCount > 0
+            ? ` across ${input.missingCogsVariantCount} selling variant${
+                input.missingCogsVariantCount === 1 ? "" : "s"
+              }`
+            : ""
+        }`;
+  const confidenceText =
+    input.cogsCoveragePercent >= 100
+      ? `Margin confidence is ${input.confidenceLevel} because ${missingText}.`
+      : `Margin confidence is ${input.confidenceLevel} because ${input.cogsCoveragePercent}% of sold units have COGS and ${missingText}.`;
 
   return `Revenue was ${formatMoney(
     input.grossRevenue,
@@ -645,7 +659,7 @@ function buildSummary(input) {
   )} over the period, net of recorded refunds was ${formatMoney(
     input.netRevenue,
     input.currency,
-  )}, and ${marginText}. ${topRevenueText}, while ${topProfitText}. Margin confidence is ${input.confidenceLevel} because ${input.cogsCoveragePercent}% of sold units have COGS and ${missingText}. Refunds were ${input.refundRate}% of gross revenue.`;
+  )}, and ${marginText}. ${topRevenueText}, while ${topProfitText}. ${confidenceText} Refunds were ${input.refundRate}% of gross revenue.`;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
-import { Frame, Navigation } from "@shopify/polaris";
+import { Box, Frame, Navigation } from "@shopify/polaris";
 
 import { authenticate } from "../shopify.server";
 import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server";
@@ -29,9 +29,14 @@ export default function App() {
   const navigate = useNavigate();
   const navigationItems = [
     {
-      label: "Today's Verdict",
-      selected: location.pathname === "/app",
-      onClick: () => navigate("/app"),
+      label: "Daily Brief",
+      selected: location.pathname === "/app/daily-brief",
+      onClick: () => navigate("/app/daily-brief"),
+    },
+    {
+      label: "Revenue & Margin",
+      selected: location.pathname === "/app/revenue-margin",
+      onClick: () => navigate("/app/revenue-margin"),
     },
     {
       label: "Inventory Guardian",
@@ -72,7 +77,9 @@ export default function App() {
           </Navigation>
         }
       >
-        <Outlet />
+        <Box paddingBlockEnd="1600">
+          <Outlet />
+        </Box>
       </Frame>
     </AppProvider>
   );

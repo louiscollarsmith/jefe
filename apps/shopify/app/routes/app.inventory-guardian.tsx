@@ -131,22 +131,18 @@ export default function InventoryGuardian() {
                 </BlockStack>
 
                 <Card>
-                  <BlockStack gap="300">
+                  <BlockStack gap="200">
                     <InlineStack align="space-between" blockAlign="center">
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Stockout risk · Estimated prevention
+                        Stockout evidence · Estimated prevention
                       </Text>
                       <Badge tone={confidenceTone(view.hero.confidence)}>
                         {`${formatConfidence(view.hero.confidence)} confidence`}
                       </Badge>
                     </InlineStack>
-                    <Text as="h2" variant="headingXl">
-                      {view.hero.message}
-                    </Text>
                     <Text as="p" variant="bodyMd" tone="subdued">
-                      Inventory Guardian uses the last 14 days as the default
-                      velocity window and keeps 7-day and 30-day sales as
-                      evidence. This is estimated prevention, not verified lift.
+                      Detailed stockout and reorder evidence from current
+                      inventory, recent sales velocity, COGS and price signals.
                     </Text>
                   </BlockStack>
                 </Card>

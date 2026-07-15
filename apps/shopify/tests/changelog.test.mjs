@@ -52,10 +52,10 @@ test("changelog loader finds the root changelog from the app workspace", async (
   const entries = await loadChangelog({ cwd: process.cwd() });
 
   assert.ok(entries.length >= 2);
-  assert.equal(entries[0].date, "2026-07-14");
+  assert.equal(entries[0].date, "2026-07-15");
   assert.ok(
     entries[0].sections.some((section) =>
-      section.items.some((item) => item.includes("Changelog v0")),
+      section.items.some((item) => item.includes("Revenue & Margin")),
     ),
   );
 });
