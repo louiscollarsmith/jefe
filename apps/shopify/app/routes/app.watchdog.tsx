@@ -113,10 +113,10 @@ export default function Watchdog() {
                 </BlockStack>
 
                 <Card>
-                  <BlockStack gap="300">
+                  <BlockStack gap="200">
                     <InlineStack align="space-between" blockAlign="center">
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Silent breakage checks · Estimated prevention
+                        Incident evidence · Estimated prevention
                       </Text>
                       {view.hero.highestSeverity ? (
                         <Badge tone={severityTone(view.hero.highestSeverity)}>
@@ -126,12 +126,9 @@ export default function Watchdog() {
                         <Badge tone="success">No urgent issues</Badge>
                       )}
                     </InlineStack>
-                    <Text as="h2" variant="headingXl">
-                      {view.hero.message}
-                    </Text>
                     <Text as="p" variant="bodyMd" tone="subdued">
-                      Watchdog uses deterministic read-only checks. These
-                      alerts are estimated prevention only, not verified lift.
+                      Detailed read-only anomaly checks with baseline evidence,
+                      incident severity and suggested checks.
                     </Text>
                   </BlockStack>
                 </Card>
