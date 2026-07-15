@@ -1,0 +1,52 @@
+# Shopify Partner Dashboard config for the Jefe Staging app.
+# Replace the placeholder host with Railway's generated staging URL before deploying
+# this config with `npm run deploy -- --config shopify.app.staging.toml`.
+
+client_id = ""
+name = "Jefe Staging"
+application_url = "https://<railway-staging-url>"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+include_config_on_deploy = true
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "inventory_levels/update" ]
+  uri = "/webhooks/inventory_levels/update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/create" ]
+  uri = "/webhooks/orders/create"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/updated" ]
+  uri = "/webhooks/orders/updated"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/update" ]
+  uri = "/webhooks/products/update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "/webhooks/refunds/create"
+
+[access_scopes]
+# Staging uses a Shopify development store and the dummy data loader/backfill
+# workflows. Do not reuse this scope set for a production merchant app without
+# a separate written scope review.
+scopes = "read_locations,read_products,write_products,read_inventory,write_inventory,read_customers,write_customers,read_orders,write_orders"
+
+[auth]
+redirect_urls = [ "https://<railway-staging-url>/auth/callback" ]

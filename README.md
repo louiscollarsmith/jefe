@@ -49,3 +49,13 @@ The project north star is:
 > Holdout-verified incremental margin delivered per merchant per month.
 
 The product is not an analytics dashboard or chatbot. It is an accountable AI ecom manager for founder-run Shopify stores.
+
+## Staging deployment
+
+Merging or pushing to `main` deploys automatically to the single `staging` environment on Railway.
+
+- Staging app: Railway generated URL, then optionally `https://staging.usejefe.com`.
+- Database: Neon Postgres `staging` database.
+- Shopify app: `Jefe Staging`.
+- Deployment doc: `docs/ops/deployment_staging_railway_neon.md`.
+- Safety: live writes, Klaviyo sends and Daily Brief emails are disabled.
