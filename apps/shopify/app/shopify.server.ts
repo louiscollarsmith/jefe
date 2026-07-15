@@ -7,6 +7,7 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { resolveShopifyAppUrl } from "./services/shopify-app-url.server";
+import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
   "2025-10": ApiVersion.October25,
@@ -44,3 +45,5 @@ export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
+
+startShopifyBackfillLoop(prisma);

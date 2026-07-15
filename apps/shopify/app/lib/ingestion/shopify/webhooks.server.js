@@ -147,6 +147,7 @@ async function processCanonicalWebhook(prisma, input) {
   switch (input.topic) {
     case "orders/create":
     case "orders/updated":
+    case "orders/cancelled":
       await upsertShopifyOrder(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -156,12 +157,16 @@ async function processCanonicalWebhook(prisma, input) {
     case "refunds/create":
       await upsertRefundWebhook(prisma, input);
       break;
+    case "products/create":
     case "products/update":
       await upsertShopifyProduct(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
         product: input.payload,
       });
+      break;
+    case "products/delete":
+      await markProductDeleted(prisma, input);
       break;
     case "inventory_levels/update":
       await upsertShopifyInventoryLevel(prisma, {
@@ -170,9 +175,35 @@ async function processCanonicalWebhook(prisma, input) {
         inventoryLevel: input.payload,
       });
       break;
+    case "bulk_operations/finish":
+      break;
     default:
       break;
   }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string; payload: unknown }} input
+ */
+async function markProductDeleted(prisma, input) {
+  const payload = jsonObject(input.payload);
+  const externalId =
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("Product", payload.product_id ?? payload.id);
+  if (!externalId) return;
+
+  await prisma.product.updateMany({
+    where: {
+      shopId: input.shopId,
+      externalId,
+    },
+    data: {
+      status: "deleted",
+      rawPayload: payload,
+    },
+  });
 }
 
 /**

@@ -10,6 +10,11 @@ import { verifyShopifyWebhookHmac } from "../app/lib/shopify/webhook-hmac.server
 import { processShopifyWebhook } from "../app/lib/ingestion/shopify/webhooks.server.js";
 import { runShopifyBackfill } from "../app/lib/ingestion/shopify/backfill.server.js";
 import { currencyCode } from "../app/lib/ingestion/shopify/normalize.server.js";
+import {
+  getShopBackfillProgress,
+  queueInstallShopifyBackfill,
+  retryFailedBackfillJobs,
+} from "../app/services/shopify-backfill-status.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const silentLogger = {
@@ -175,6 +180,7 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
         products: { include: { variants: true } },
         orders: { include: { lineItems: true, refunds: true } },
         inventoryLevels: true,
+        customerIdentities: true,
         ledgerEvents: true,
       },
     });
@@ -194,7 +200,134 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
     assert.equal(shop.orders[0].lineItems.length, 1);
     assert.equal(shop.orders[0].refunds.length, 1);
     assert.equal(shop.inventoryLevels[0].available, 12);
+    assert.equal(shop.customerIdentities.length, 1);
+    assert.equal(shop.customerIdentities[0].orderCount, 1);
+    assert.match(shop.customerIdentities[0].maskedEmail, /^b\*+@example\.com$/);
     assert.equal(shop.ledgerEvents.length, 6);
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+test("Shopify install queues async backfill with 365-day and 60-day scope behaviour", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const fullShopDomain = `install-full-${suffix}.myshopify.com`;
+  const limitedShopDomain = `install-limited-${suffix}.myshopify.com`;
+
+  try {
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain: fullShopDomain,
+      sessionId: `offline-${suffix}`,
+      scopes: [
+        "read_products",
+        "read_orders",
+        "read_all_orders",
+        "read_inventory",
+        "read_locations",
+        "read_customers",
+      ],
+    });
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain: limitedShopDomain,
+      sessionId: `offline-limited-${suffix}`,
+      scopes: ["read_products", "read_orders", "read_inventory"],
+    });
+
+    const [fullShop, limitedShop] = await Promise.all([
+      prisma.shop.findUniqueOrThrow({
+        where: {
+          platform_shopDomain: {
+            platform: "shopify",
+            shopDomain: fullShopDomain,
+          },
+        },
+      }),
+      prisma.shop.findUniqueOrThrow({
+        where: {
+          platform_shopDomain: {
+            platform: "shopify",
+            shopDomain: limitedShopDomain,
+          },
+        },
+      }),
+    ]);
+    const fullProgress = await getShopBackfillProgress(prisma, {
+      shopId: fullShop.id,
+    });
+    const limitedProgress = await getShopBackfillProgress(prisma, {
+      shopId: limitedShop.id,
+    });
+
+    assert.equal(fullShop.setupStatus, "backfill_queued");
+    assert.equal(fullShop.availableOrderHistoryDays, 365);
+    assert.equal(fullShop.historicalOrderAccess, "full");
+    assert.equal(fullProgress.statuses.orders.status, "queued");
+    assert.equal(fullProgress.jobs.length, 1);
+    assert.equal(fullProgress.jobs[0].jobType, "shop_backfill_start");
+    assert.equal(limitedShop.availableOrderHistoryDays, 60);
+    assert.equal(limitedShop.historicalOrderAccess, "limited");
+    assert.equal(limitedProgress.historicalOrdersLimited, true);
+    assert.equal(limitedProgress.readyForWinback, false);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: {
+        name: { in: [fullShopDomain, limitedShopDomain] },
+      },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("failed Shopify backfill jobs can be retried", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const shopDomain = `retry-${suffix}.myshopify.com`;
+
+  try {
+    const merchant = await prisma.merchant.create({
+      data: {
+        name: shopDomain,
+        shops: { create: { shopDomain } },
+      },
+      include: { shops: true },
+    });
+    const shop = merchant.shops[0];
+
+    await prisma.backfillJob.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: "products_backfill",
+        status: "failed",
+        lastError: "temporary Shopify error",
+        failedAt: new Date(),
+      },
+    });
+
+    const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
+    const job = await prisma.backfillJob.findFirstOrThrow({
+      where: { shopId: shop.id, jobType: "products_backfill" },
+    });
+
+    assert.equal(result.retried, 1);
+    assert.equal(job.status, "queued");
+    assert.equal(job.lastError, null);
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
@@ -310,6 +443,8 @@ function mockGraphqlOrder(suffix) {
     createdAt: "2026-07-12T08:00:00Z",
     updatedAt: "2026-07-13T08:00:00Z",
     processedAt: "2026-07-12T08:05:00Z",
+    email: `backfill-${suffix}@example.com`,
+    contactEmail: `contact-${suffix}@example.com`,
     displayFinancialStatus: "PAID",
     displayFulfillmentStatus: "UNFULFILLED",
     currencyCode: "GBP",

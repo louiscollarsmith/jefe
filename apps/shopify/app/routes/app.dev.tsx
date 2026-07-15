@@ -15,6 +15,8 @@ import {
   Button,
   Card,
   Layout,
+  InlineGrid,
+  InlineStack,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -24,6 +26,13 @@ import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { authenticate } from "../shopify.server";
 import { generateDailyBrief } from "../services/daily-brief.server";
 import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server";
+import {
+  enqueueBackfillJob,
+  getShopBackfillProgress,
+  queueInstallShopifyBackfill,
+  retryFailedBackfillJobs,
+  splitScopes,
+} from "../services/shopify-backfill-status.server";
 import {
   getDummyDataStatus,
   getDummyFixtureSummary,
@@ -48,8 +57,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const missingScopes = getMissingDummyDataScopes(session.scope);
   const scenarioMissingScopes = getMissingWatchdogScenarioScopes(session.scope);
-  const winbackScenarioMissingScopes =
-    getMissingKlaviyoWinbackScenarioScopes(session.scope);
+  const winbackScenarioMissingScopes = getMissingKlaviyoWinbackScenarioScopes(
+    session.scope,
+  );
   const status = await getDummyDataStatus(admin, {
     skipProgressCheck:
       missingScopes.includes("read_products") ||
@@ -65,9 +75,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       winbackScenarioMissingScopes.includes("read_products") ||
       winbackScenarioMissingScopes.includes("read_orders"),
   });
+  const { merchant, shop: tenantShop } = await ensureShopifyTenant(prisma, {
+    shopDomain: session.shop,
+    accessTokenSessionId: session.id,
+    scopes: splitScopes(session.scope),
+    rawPayload: { source: "dev_backfill_status" },
+  });
+  const backfillProgress = await getShopBackfillProgress(prisma, {
+    shopId: tenantShop.id,
+  });
 
   return {
     shop: session.shop,
+    backfill: backfillProgress
+      ? {
+          merchantId: merchant.id,
+          shopId: tenantShop.id,
+          setupStatus: backfillProgress.shop.setupStatus,
+          historicalOrdersLimited: backfillProgress.historicalOrdersLimited,
+          statuses: Object.entries(backfillProgress.statuses).map(
+            ([domain, status]) => ({
+              domain,
+              status: status?.status ?? "queued",
+              recordsProcessed: status?.recordsProcessed ?? 0,
+              lastError: status?.lastError ?? null,
+            }),
+          ),
+          jobs: backfillProgress.jobs.map((job) => ({
+            jobType: job.jobType,
+            status: job.status,
+            attemptCount: job.attemptCount,
+            lastError: job.lastError,
+          })),
+        }
+      : null,
     dummyData: {
       missingScopes,
       status,
@@ -95,7 +136,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     intent !== "seed-dummy-store-data" &&
     intent !== "seed-watchdog-scenarios" &&
     intent !== "seed-klaviyo-winback-scenarios" &&
-    intent !== "generate-test-brief"
+    intent !== "generate-test-brief" &&
+    intent !== "run-full-shopify-backfill" &&
+    intent !== "run-orders-backfill" &&
+    intent !== "run-delta-sync" &&
+    intent !== "recompute-derived-metrics" &&
+    intent !== "retry-failed-backfill-jobs"
   ) {
     return { ok: false, error: "Unknown action." };
   }
@@ -105,6 +151,60 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ok: false,
       error: "Dummy store data loader is disabled for this environment.",
     };
+  }
+
+  if (
+    intent === "run-full-shopify-backfill" ||
+    intent === "run-orders-backfill" ||
+    intent === "run-delta-sync" ||
+    intent === "recompute-derived-metrics" ||
+    intent === "retry-failed-backfill-jobs"
+  ) {
+    const scopes = splitScopes(session.scope);
+    const { merchant, shop } = await ensureShopifyTenant(prisma, {
+      shopDomain: session.shop,
+      accessTokenSessionId: session.id,
+      scopes,
+      rawPayload: { source: "dev_backfill_action", intent },
+    });
+    const payload = {
+      shopDomain: shop.shopDomain,
+      sessionId: session.id,
+      scopes,
+      backfillStartedAt: (shop.backfillStartedAt ?? new Date()).toISOString(),
+      source: "dev",
+    };
+
+    if (intent === "run-full-shopify-backfill") {
+      await queueInstallShopifyBackfill(prisma, {
+        shopDomain: session.shop,
+        sessionId: session.id,
+        scopes,
+        rawPayload: { source: "dev_full_backfill" },
+      });
+      return { ok: true, intent, result: { queued: "full_backfill" } };
+    }
+
+    if (intent === "retry-failed-backfill-jobs") {
+      const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
+      return { ok: true, intent, result };
+    }
+
+    const jobType =
+      intent === "run-orders-backfill"
+        ? "orders_backfill_365d"
+        : intent === "run-delta-sync"
+          ? "backfill_delta_sync"
+          : "derived_metrics_recompute";
+
+    await enqueueBackfillJob(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      jobType,
+      payload,
+    });
+
+    return { ok: true, intent, result: { queued: jobType } };
   }
 
   if (intent === "generate-test-brief") {
@@ -134,8 +234,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     intent === "seed-watchdog-scenarios"
       ? getMissingWatchdogScenarioScopes(session.scope)
       : intent === "seed-klaviyo-winback-scenarios"
-      ? getMissingKlaviyoWinbackScenarioScopes(session.scope)
-      : getMissingDummyDataScopes(session.scope);
+        ? getMissingKlaviyoWinbackScenarioScopes(session.scope)
+        : getMissingDummyDataScopes(session.scope);
 
   if (missingScopes.length > 0) {
     return {
@@ -151,8 +251,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       intent === "seed-watchdog-scenarios"
         ? await seedWatchdogScenarios(admin, session.shop)
         : intent === "seed-klaviyo-winback-scenarios"
-        ? await seedKlaviyoWinbackScenarios(admin, session.shop)
-        : await seedDummyStoreData(admin, session.shop);
+          ? await seedKlaviyoWinbackScenarios(admin, session.shop)
+          : await seedDummyStoreData(admin, session.shop);
 
     return { ok: true, intent, result };
   } catch (error) {
@@ -167,8 +267,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Dev() {
-  const { shop, dummyData, watchdogScenarios, klaviyoWinbackScenarios } =
-    useLoaderData<typeof loader>();
+  const {
+    shop,
+    backfill,
+    dummyData,
+    watchdogScenarios,
+    klaviyoWinbackScenarios,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSeedingDummyData =
@@ -218,6 +323,17 @@ export default function Dev() {
   const isGeneratingTestBrief =
     navigation.state === "submitting" &&
     navigation.formData?.get("intent") === "generate-test-brief";
+  const isBackfillAction =
+    navigation.state === "submitting" &&
+    String(navigation.formData?.get("intent") ?? "").includes("backfill");
+  const backfillResult =
+    actionData?.ok &&
+    typeof actionData.intent === "string" &&
+    (actionData.intent.includes("backfill") ||
+      actionData.intent === "recompute-derived-metrics" ||
+      actionData.intent === "retry-failed-backfill-jobs")
+      ? actionData.result
+      : null;
 
   return (
     <Page title="Dev">
@@ -230,8 +346,8 @@ export default function Dev() {
                   MVP status
                 </Text>
                 <Text as="p" variant="bodyMd">
-                  Dev-only scaffold notes for {shop}. This page is hidden
-                  unless ENABLE_DUMMY_STORE_LOADER=true.
+                  Dev-only scaffold notes for {shop}. This page is hidden unless
+                  ENABLE_DUMMY_STORE_LOADER=true.
                 </Text>
               </BlockStack>
             </Card>
@@ -274,6 +390,80 @@ export default function Dev() {
                     Generate test brief
                   </Button>
                 </Form>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="400">
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Shopify install backfill
+                  </Text>
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Queue or retry the DB-backed install backfill jobs for
+                    products, orders, inventory and derived insights.
+                  </Text>
+                </BlockStack>
+
+                {backfill?.historicalOrdersLimited ? (
+                  <Banner tone="warning">
+                    <Text as="p" variant="bodyMd">
+                      This store only has recent order access. Winback remains
+                      limited until read_all_orders is granted.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                {backfillResult ? (
+                  <Banner tone="success">
+                    <Text as="p" variant="bodyMd">
+                      Backfill action queued: {JSON.stringify(backfillResult)}.
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+                  {backfill?.statuses.map((status) => (
+                    <BlockStack key={status.domain} gap="050">
+                      <Text as="p" variant="headingSm">
+                        {formatStatus(status.domain)}
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        {formatStatus(status.status)} ·{" "}
+                        {status.recordsProcessed.toLocaleString("en-GB")}{" "}
+                        records
+                      </Text>
+                    </BlockStack>
+                  ))}
+                </InlineGrid>
+
+                <InlineStack gap="200">
+                  <DevBackfillButton
+                    intent="run-full-shopify-backfill"
+                    label="Run full Shopify backfill"
+                    loading={isBackfillAction}
+                  />
+                  <DevBackfillButton
+                    intent="run-orders-backfill"
+                    label="Run 365-day orders backfill"
+                    loading={isBackfillAction}
+                  />
+                  <DevBackfillButton
+                    intent="run-delta-sync"
+                    label="Run delta sync"
+                    loading={isBackfillAction}
+                  />
+                  <DevBackfillButton
+                    intent="recompute-derived-metrics"
+                    label="Recompute derived metrics"
+                    loading={isBackfillAction}
+                  />
+                  <DevBackfillButton
+                    intent="retry-failed-backfill-jobs"
+                    label="Retry failed jobs"
+                    loading={isBackfillAction}
+                  />
+                </InlineStack>
               </BlockStack>
             </Card>
 
@@ -421,9 +611,8 @@ export default function Dev() {
                       Loaded {scenarioResult.scenariosLoaded} scenarios,{" "}
                       {scenarioResult.productsCreated} products,{" "}
                       {scenarioResult.ordersCreated} orders, and{" "}
-                      {scenarioResult.refundsCreated} refunds. Current
-                      progress: {formatFixtureProgress(scenarioResult.progress)}
-                      .
+                      {scenarioResult.refundsCreated} refunds. Current progress:{" "}
+                      {formatFixtureProgress(scenarioResult.progress)}.
                     </Text>
                   </Banner>
                 ) : null}
@@ -457,8 +646,8 @@ export default function Dev() {
                   Klaviyo Winback scenario data
                 </Text>
                 <Text as="p" variant="bodyMd">
-                  Create {klaviyoWinbackScenarios.fixture.scenarioCount}{" "}
-                  winback scenarios in {shop}:{" "}
+                  Create {klaviyoWinbackScenarios.fixture.scenarioCount} winback
+                  scenarios in {shop}:{" "}
                   {klaviyoWinbackScenarios.fixture.scenarios.join(", ")}. The
                   fixture creates {klaviyoWinbackScenarios.fixture.productCount}{" "}
                   products, {klaviyoWinbackScenarios.fixture.orderCount} orders
@@ -498,8 +687,8 @@ export default function Dev() {
                   <Banner tone="critical">
                     <Text as="p" variant="bodyMd">
                       Missing Shopify scopes:{" "}
-                      {klaviyoWinbackScenarios.missingScopes.join(", ")}.
-                      Update the app scopes and reinstall this store.
+                      {klaviyoWinbackScenarios.missingScopes.join(", ")}. Update
+                      the app scopes and reinstall this store.
                     </Text>
                   </Banner>
                 ) : null}
@@ -549,6 +738,25 @@ export default function Dev() {
 export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
+
+function DevBackfillButton({
+  intent,
+  label,
+  loading,
+}: {
+  intent: string;
+  label: string;
+  loading: boolean;
+}) {
+  return (
+    <Form method="post">
+      <input type="hidden" name="intent" value={intent} />
+      <Button submit loading={loading} disabled={loading}>
+        {label}
+      </Button>
+    </Form>
+  );
+}
 
 type FixtureProgress = {
   complete: boolean;
@@ -638,5 +846,6 @@ function formatDateTime(value: string) {
 }
 
 function formatStatus(status: string) {
-  return status[0].toUpperCase() + status.slice(1);
+  const display = status.replace(/_/g, " ");
+  return display[0].toUpperCase() + display.slice(1);
 }

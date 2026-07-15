@@ -39,8 +39,8 @@ export const PRODUCTS_QUERY = `#graphql
 `;
 
 export const ORDERS_QUERY = `#graphql
-  query JefeOrdersBackfill($first: Int!, $after: String) {
-    orders(first: $first, after: $after, sortKey: UPDATED_AT) {
+  query JefeOrdersBackfill($first: Int!, $after: String, $query: String) {
+    orders(first: $first, after: $after, sortKey: UPDATED_AT, query: $query) {
       pageInfo {
         hasNextPage
         endCursor
