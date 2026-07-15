@@ -760,10 +760,13 @@ function productCogsConfidence(product) {
 }
 
 /**
- * @param {{ ENABLE_DUMMY_STORE_LOADER?: string }} env
+ * @param {{ ENABLE_DEV_TOOLS?: string, ENABLE_DUMMY_STORE_LOADER?: string }} env
  */
 export function shouldShowDailyVerdictDevTools(env = process.env) {
-  return env.ENABLE_DUMMY_STORE_LOADER === "true";
+  return (
+    env.ENABLE_DEV_TOOLS === "true" ||
+    env.ENABLE_DUMMY_STORE_LOADER === "true"
+  );
 }
 
 /**
