@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { buildHealthPayload } from "../app/services/deployment-health.server.js";
+import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
 
 test("deployment health reports the configured app environment", () => {
   assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
@@ -30,4 +31,26 @@ test("Dockerfile generates Prisma Client before building the app", async () => {
   assert.ok(copySourceIndex >= 0);
   assert.ok(prismaGenerateIndex > copySourceIndex);
   assert.ok(buildIndex > prismaGenerateIndex);
+});
+
+test("Shopify app URL resolves from explicit and Railway environment values", () => {
+  assert.equal(
+    resolveShopifyAppUrl({
+      SHOPIFY_APP_URL: "https://jefe.example.com",
+      RAILWAY_PUBLIC_DOMAIN: "ignored.up.railway.app",
+    }),
+    "https://jefe.example.com",
+  );
+  assert.equal(
+    resolveShopifyAppUrl({
+      RAILWAY_PUBLIC_DOMAIN: "jefe-production.up.railway.app",
+    }),
+    "https://jefe-production.up.railway.app",
+  );
+  assert.equal(
+    resolveShopifyAppUrl({
+      HOST: "https://dev-tunnel.example.com",
+    }),
+    "https://dev-tunnel.example.com",
+  );
 });
