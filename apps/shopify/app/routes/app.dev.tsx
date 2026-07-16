@@ -289,14 +289,17 @@ export default function Dev() {
     navigation.formData?.get("intent") === "seed-klaviyo-winback-scenarios";
   const seedButtonDisabled =
     dummyData.status.seeded ||
+    dummyData.status.progress.complete ||
     dummyData.missingScopes.length > 0 ||
     isSeedingDummyData;
   const scenarioButtonDisabled =
     watchdogScenarios.status.seeded ||
+    watchdogScenarios.status.progress.complete ||
     watchdogScenarios.missingScopes.length > 0 ||
     isSeedingWatchdogScenarios;
   const winbackScenarioButtonDisabled =
     klaviyoWinbackScenarios.status.seeded ||
+    klaviyoWinbackScenarios.status.progress.complete ||
     klaviyoWinbackScenarios.missingScopes.length > 0 ||
     isSeedingKlaviyoWinbackScenarios;
   const seedResult =
@@ -516,11 +519,16 @@ export default function Dev() {
                 ) : null}
 
                 {!dummyData.status.seeded && hasDummyProgress ? (
-                  <Banner tone="warning">
+                  <Banner
+                    tone={
+                      dummyData.status.progress.complete ? "success" : "warning"
+                    }
+                  >
                     <Text as="p" variant="bodyMd">
-                      Partial dummy data found:{" "}
-                      {formatFixtureProgress(dummyData.status.progress)}. Run
-                      this again to resume from the missing records.
+                      {fixtureProgressBannerText({
+                        label: "dummy data",
+                        progress: dummyData.status.progress,
+                      })}
                     </Text>
                   </Banner>
                 ) : null}
@@ -605,11 +613,18 @@ export default function Dev() {
                 ) : null}
 
                 {!watchdogScenarios.status.seeded && hasScenarioProgress ? (
-                  <Banner tone="warning">
+                  <Banner
+                    tone={
+                      watchdogScenarios.status.progress.complete
+                        ? "success"
+                        : "warning"
+                    }
+                  >
                     <Text as="p" variant="bodyMd">
-                      Partial watchdog scenario data found:{" "}
-                      {formatFixtureProgress(watchdogScenarios.status.progress)}
-                      . Run this again to resume from the missing records.
+                      {fixtureProgressBannerText({
+                        label: "watchdog scenario data",
+                        progress: watchdogScenarios.status.progress,
+                      })}
                     </Text>
                   </Banner>
                 ) : null}
@@ -699,13 +714,18 @@ export default function Dev() {
 
                 {!klaviyoWinbackScenarios.status.seeded &&
                 hasWinbackScenarioProgress ? (
-                  <Banner tone="warning">
+                  <Banner
+                    tone={
+                      klaviyoWinbackScenarios.status.progress.complete
+                        ? "success"
+                        : "warning"
+                    }
+                  >
                     <Text as="p" variant="bodyMd">
-                      Partial Klaviyo Winback scenario data found:{" "}
-                      {formatFixtureProgress(
-                        klaviyoWinbackScenarios.status.progress,
-                      )}
-                      . Run this again to resume from the missing records.
+                      {fixtureProgressBannerText({
+                        label: "Klaviyo Winback scenario data",
+                        progress: klaviyoWinbackScenarios.status.progress,
+                      })}
                     </Text>
                   </Banner>
                 ) : null}
@@ -830,13 +850,26 @@ function formatFixtureProgress(progress: FixtureProgress) {
   return `${progress.productsExisting}/${progress.productCount} products, ${progress.ordersExisting}/${progress.orderCount} orders, ${progress.refundsExisting}/${progress.refundCount} refunds`;
 }
 
+export function fixtureProgressBannerText(input: {
+  label: string;
+  progress: FixtureProgress;
+}) {
+  const progress = formatFixtureProgress(input.progress);
+
+  if (input.progress.complete) {
+    return `All ${input.label} records are present: ${progress}. The loader is disabled for this store to avoid duplicate fixture data.`;
+  }
+
+  return `Partial ${input.label} found: ${progress}. Run this again to resume from the missing records.`;
+}
+
 function dummyStoreButtonText(input: {
   isSubmitting: boolean;
   hasProgress: boolean;
   progressComplete: boolean;
 }) {
   if (input.isSubmitting) return "Loading data";
-  if (input.progressComplete) return "Finalize dummy store data";
+  if (input.progressComplete) return "Dummy store data loaded";
   if (input.hasProgress) return "Resume dummy store data";
   return "Load dummy store data";
 }
@@ -847,7 +880,7 @@ function scenarioButtonText(input: {
   progressComplete: boolean;
 }) {
   if (input.isSubmitting) return "Creating scenarios";
-  if (input.progressComplete) return "Finalize watchdog scenarios";
+  if (input.progressComplete) return "Watchdog scenarios loaded";
   if (input.hasProgress) return "Resume watchdog scenarios";
   return "Create watchdog scenarios";
 }
@@ -858,7 +891,7 @@ function winbackScenarioButtonText(input: {
   progressComplete: boolean;
 }) {
   if (input.isSubmitting) return "Creating winback scenarios";
-  if (input.progressComplete) return "Finalize winback scenarios";
+  if (input.progressComplete) return "Winback scenarios loaded";
   if (input.hasProgress) return "Resume winback scenarios";
   return "Create winback scenarios";
 }

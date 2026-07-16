@@ -5,6 +5,7 @@
 ### Changed
 
 - Consolidated the in-app changelog into one production source of truth.
+- Updated Shopify development scopes so local fixture loading can create products, inventory, customers and test orders after reinstall.
 
 ### Fixed
 
@@ -14,6 +15,7 @@
 - Clarified Shopify history setup copy to show the order-history window being imported.
 - Fixed the in-app Changelog so production can load the app-local changelog file.
 - Fixed Shopify history jobs so stale running work is retried after worker restarts.
+- Fixed Dev page fixture status copy so complete seed data is shown as loaded instead of implying records are missing.
 
 ---
 
