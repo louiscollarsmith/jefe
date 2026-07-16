@@ -184,46 +184,98 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
     inventoryRoute,
     watchdogRoute,
     onboardingRoute,
+    importProgressRoute,
+    managerSettingsRoute,
+    dailyBriefReadinessService,
     appIndexRoute,
     devRoute,
   ] = await Promise.all([
-      readFile("app/routes/app.tsx", "utf8"),
-      readFile("app/routes/app.daily-brief.tsx", "utf8"),
-      readFile("app/services/daily-brief.server.js", "utf8"),
-      readFile("app/routes/app.revenue-margin.tsx", "utf8"),
-      readFile("app/routes/app.inventory-guardian.tsx", "utf8"),
-      readFile("app/routes/app.watchdog.tsx", "utf8"),
-      readFile("app/routes/app.onboarding.tsx", "utf8"),
-      readFile("app/routes/app._index.tsx", "utf8"),
-      readFile("app/routes/app.dev.tsx", "utf8"),
-    ]);
+    readFile("app/routes/app.tsx", "utf8"),
+    readFile("app/routes/app.daily-brief.tsx", "utf8"),
+    readFile("app/services/daily-brief.server.js", "utf8"),
+    readFile("app/routes/app.revenue-margin.tsx", "utf8"),
+    readFile("app/routes/app.inventory-guardian.tsx", "utf8"),
+    readFile("app/routes/app.watchdog.tsx", "utf8"),
+    readFile("app/routes/app.onboarding.tsx", "utf8"),
+    readFile("app/routes/app.import-progress.tsx", "utf8"),
+    readFile("app/routes/app.manager-settings.tsx", "utf8"),
+    readFile("app/services/daily-brief-readiness.server.js", "utf8"),
+    readFile("app/routes/app._index.tsx", "utf8"),
+    readFile("app/routes/app.dev.tsx", "utf8"),
+  ]);
 
   assert.match(appShell, /label: "Daily Brief"/);
   assert.match(appShell, /label: "Revenue & Margin"/);
+  assert.match(appShell, /label: "Manager Settings"/);
+  assert.match(appShell, /\/app\/manager-settings/);
+  assert.doesNotMatch(appShell, /label: "Onboarding"/);
+  assert.match(appShell, /getOnboardingState/);
+  assert.match(appShell, /getDailyBriefReadiness/);
+  assert.match(appShell, /app_shell_backfill_guard/);
+  assert.match(appShell, /onboardingComplete/);
+  assert.match(appShell, /!briefReady && !allowedBeforeOnboarding/);
+  assert.match(appShell, /redirect\(`\/app\/onboarding/);
+  assert.match(appShell, /redirect\("\/app\/onboarding\?task=backfill"\)/);
+  assert.doesNotMatch(appShell, /redirect\("\/app\/daily-brief"\)/);
+  assert.doesNotMatch(appShell, /url\.searchParams\.get\("task"\) === null/);
+  assert.match(appShell, /onboardingTask === "backfill"/);
+  assert.match(appShell, /<Outlet \/>/);
+  assert.doesNotMatch(appShell, /variant="plain" url="\/app\/dev"/);
   assert.doesNotMatch(appShell, /Today's Verdict|Today&apos;s Verdict/);
   assert.match(appShell, /paddingBlockEnd="1600"/);
   assert.match(revenueMarginRoute, /Revenue &amp; Margin/);
   assert.match(dailyBriefRoute, /View revenue and margin details/);
   assert.match(dailyBriefRoute, /\/app\/revenue-margin/);
-  assert.match(dailyBriefRoute, /queueInstallShopifyBackfill/);
+  assert.match(dailyBriefRoute, /getDailyBriefReadiness/);
   assert.match(dailyBriefRoute, /daily_brief_backfill_guard/);
-  assert.match(dailyBriefRoute, /useRevalidator/);
-  assert.match(dailyBriefRoute, /setInterval/);
-  assert.match(dailyBriefRoute, /getCanonicalBackfillCounts/);
-  assert.match(dailyBriefRoute, /SETUP_IMPORT_DOMAINS.length/);
-  assert.match(dailyBriefRoute, /completedCount/);
-  assert.match(dailyBriefRoute, /totalRecordsEstimate/);
-  assert.match(dailyBriefRoute, /Imported \$\{count\} of/);
-  assert.match(dailyBriefRoute, /availableOrderHistoryDays/);
-  assert.match(dailyBriefRoute, /days of order\s+history from Shopify/);
+  assert.match(dailyBriefRoute, /redirect\("\/app\/onboarding\?task=backfill"\)/);
+  assert.match(dailyBriefRoute, /getOnboardingState/);
+  assert.match(dailyBriefRoute, /setOnboardingStepStatus/);
+  assert.match(dailyBriefRoute, /onboarding\.warnings/);
+  assert.match(dailyBriefReadinessService, /queueInstallShopifyBackfill/);
+  assert.match(dailyBriefReadinessService, /allBackfillDomainsComplete/);
   assert.match(
-    dailyBriefRoute,
-    /status\.status === "queued" && status\.recordsProcessed === 0[\s\S]*return null;/,
+    dailyBriefReadinessService,
+    /isReadyDailyBriefStatus\(latestBrief\?\.status\)/,
   );
+  assert.match(dailyBriefReadinessService, /status === "degraded"/);
+  assert.match(importProgressRoute, /task", "backfill"/);
+  assert.match(importProgressRoute, /\/app\/onboarding/);
+  assert.match(managerSettingsRoute, /Manager Settings/);
+  assert.match(managerSettingsRoute, /Edit the operating settings/);
+  assert.match(managerSettingsRoute, /Business goals/);
+  assert.match(managerSettingsRoute, /\/app\/onboarding\?task=goal/);
+  assert.match(managerSettingsRoute, /\/app\/onboarding\?task=brand-voice/);
+  assert.doesNotMatch(managerSettingsRoute, /<Badge/);
+  assert.doesNotMatch(managerSettingsRoute, /settingTone/);
+  assert.doesNotMatch(managerSettingsRoute, /settingLabel/);
+  assert.doesNotMatch(dailyBriefRoute, /useRevalidator/);
+  assert.doesNotMatch(dailyBriefRoute, /setInterval/);
+  assert.doesNotMatch(dailyBriefRoute, /getCanonicalBackfillCounts/);
+  assert.doesNotMatch(dailyBriefRoute, /SetupProgressView/);
+  assert.doesNotMatch(
+    dailyBriefRoute,
+    /Finish setup before opening the first Daily Brief/,
+  );
+  assert.doesNotMatch(dailyBriefRoute, /Jefe is reviewing your Shopify store/);
+  assert.doesNotMatch(dailyBriefRoute, /Jefe setup/);
+  assert.doesNotMatch(dailyBriefRoute, /Recommended next step/);
   assert.doesNotMatch(dailyBriefRoute, /Module readiness/);
+  assert.doesNotMatch(dailyBriefRoute, /Do now/);
+  assert.doesNotMatch(dailyBriefRoute, /Unlocked soon/);
+  assert.doesNotMatch(dailyBriefRoute, /set-approval-mode/);
+  assert.doesNotMatch(dailyBriefRoute, /onboarding-step/);
+  assert.doesNotMatch(dailyBriefRoute, /Retry import/);
+  assert.doesNotMatch(dailyBriefRoute, /OnboardingReadinessPanel/);
   assert.doesNotMatch(dailyBriefRoute, /Bulk:/);
   assert.doesNotMatch(dailyBriefRoute, /bulkOperationObjectCount/);
   assert.doesNotMatch(dailyBriefRoute, /records processed/);
+  assert.doesNotMatch(dailyBriefRoute, /bulk_operation_id/);
+  assert.match(appIndexRoute, /getOnboardingState/);
+  assert.match(appIndexRoute, /getDailyBriefReadiness/);
+  assert.match(appIndexRoute, /app_index_backfill_guard/);
+  assert.match(appIndexRoute, /\/app\/onboarding/);
+  assert.match(appIndexRoute, /task", "backfill"/);
   assert.match(appIndexRoute, /\/app\/daily-brief/);
   assert.doesNotMatch(dailyBriefRoute, />\s*Generate brief\s*</);
   assert.match(dailyBriefRoute, /Daily Brief scheduled for 7:00am/);
@@ -256,11 +308,117 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(inventoryRoute, /Detailed stockout and reorder evidence/);
   assert.match(watchdogRoute, /Incident evidence/);
   assert.match(watchdogRoute, /Detailed read-only anomaly checks/);
-  assert.match(onboardingRoute, /Settings sections/);
-  assert.match(onboardingRoute, /Goals/);
-  assert.match(onboardingRoute, /House Rules/);
-  assert.match(onboardingRoute, /Product Costs/);
-  assert.match(onboardingRoute, /Approval Rules/);
+  assert.match(onboardingRoute, /Onboarding/);
+  assert.match(onboardingRoute, /FocusedOnboardingPanel/);
+  assert.match(onboardingRoute, /TaskPageHeader/);
+  assert.match(
+    onboardingRoute,
+    /Complete the below information to get your first Daily Brief/,
+  );
+  assert.match(onboardingRoute, /not set in stone/);
+  assert.match(onboardingRoute, /Manager Settings whenever you want/);
+  assert.match(onboardingRoute, /Required setup/);
+  assert.match(onboardingRoute, /Optional setup/);
+  assert.match(onboardingRoute, /Complete these inputs so Jefe can prepare/);
+  assert.match(onboardingRoute, /CollapsibleSetupHeader/);
+  assert.match(onboardingRoute, /requiredExpanded/);
+  assert.match(onboardingRoute, /optionalExpanded/);
+  assert.match(
+    onboardingRoute,
+    /These settings are optional for now, but recommended/,
+  );
+  assert.match(onboardingRoute, /requiredTaskSteps/);
+  assert.match(onboardingRoute, /requiredTasksComplete/);
+  assert.doesNotMatch(onboardingRoute, /completeOptionalSteps/);
+  assert.doesNotMatch(
+    onboardingRoute,
+    /of \$\{requiredTaskSteps\.length\} complete/,
+  );
+  assert.doesNotMatch(onboardingRoute, /Start here/);
+  assert.doesNotMatch(onboardingRoute, /ImportStatusPopover/);
+  assert.doesNotMatch(onboardingRoute, /Shopify import/);
+  assert.doesNotMatch(onboardingRoute, /Last updated:/);
+  assert.doesNotMatch(onboardingRoute, /Import progress/);
+  assert.doesNotMatch(onboardingRoute, /Jefe is reviewing your Shopify data/);
+  assert.doesNotMatch(onboardingRoute, /bulk import/);
+  assert.match(onboardingRoute, /complete_onboarding_backfill_guard/);
+  assert.doesNotMatch(onboardingRoute, /\/app\/manager-settings/);
+  assert.match(onboardingRoute, /readiness\.briefReady/);
+  assert.match(onboardingRoute, /"\/app\/daily-brief"/);
+  assert.match(onboardingRoute, /"\/app\/onboarding\?task=backfill"/);
+  assert.match(
+    onboardingRoute,
+    /data\.backfillProgress\?\.briefReady \? "Complete" : "Continue"/,
+  );
+  assert.match(onboardingRoute, /Back/);
+  assert.match(onboardingRoute, /backfill/);
+  assert.match(onboardingRoute, /Importing your shop data/);
+  assert.match(onboardingRoute, /365 days of Shopify history/);
+  assert.match(onboardingRoute, /Shopify data import/);
+  assert.match(onboardingRoute, /BackfillStatusRow/);
+  assert.match(onboardingRoute, /loadCurrentBackfillCounts/);
+  assert.match(onboardingRoute, /prisma\.product\.count/);
+  assert.match(onboardingRoute, /prisma\.order\.count/);
+  assert.match(onboardingRoute, /Math\.max/);
+  assert.match(onboardingRoute, /useRevalidator/);
+  assert.match(onboardingRoute, /BACKFILL_POLL_INTERVAL_MS/);
+  assert.match(
+    onboardingRoute,
+    /data\.backfillProgress\.briefReady \? "Complete" : "Continue"/,
+  );
+  assert.match(onboardingRoute, /primaryUrl="\/app\/daily-brief"/);
+  assert.match(onboardingRoute, /primaryDisabled=\{!data\.backfillProgress\.briefReady\}/);
+  assert.match(onboardingRoute, /formatBackfillImportCount/);
+  assert.match(onboardingRoute, /Shop details/);
+  assert.match(onboardingRoute, /Store details connected/);
+  assert.match(onboardingRoute, /Webhook subscriptions active/);
+  assert.match(onboardingRoute, /return "Queued"/);
+  assert.match(onboardingRoute, /return "Importing"/);
+  assert.match(onboardingRoute, /Imported \$\{processed\} of \$\{total\}/);
+  assert.match(onboardingRoute, /Importing \$\{processed\} of \$\{total\}/);
+  assert.match(onboardingRoute, /Analysing/);
+  assert.match(onboardingRoute, /primaryLabel="Save"/);
+  assert.match(onboardingRoute, /primaryDisabled/);
+  assert.match(onboardingRoute, /formChanged/);
+  assert.match(onboardingRoute, /onDirtyChange/);
+  assert.match(onboardingRoute, /goalExampleOptions/);
+  assert.match(onboardingRoute, /3 month goal starting point/);
+  assert.match(onboardingRoute, /Protect margin/);
+  assert.match(onboardingRoute, /Reduce founder firefighting/);
+  assert.match(onboardingRoute, /navigate\(step\.href\)/);
+  assert.match(onboardingRoute, /navigate\("\/app\/onboarding"\)/);
+  assert.match(onboardingRoute, /const prefix =/);
+  assert.match(onboardingRoute, /\$\{prefix\} goals/);
+  assert.match(onboardingRoute, /\$\{prefix\} rules/);
+  assert.match(onboardingRoute, /Margin and discounts/);
+  assert.match(onboardingRoute, /Messaging limits/);
+  assert.match(onboardingRoute, /HiddenHouseRulesFields/);
+  assert.match(onboardingRoute, /Brand voice/);
+  assert.match(onboardingRoute, /Protected products/);
+  assert.match(onboardingRoute, /Approvals and risk periods/);
+  assert.match(onboardingRoute, /approvalModeOptions/);
+  assert.match(onboardingRoute, /Approval mode/);
+  assert.match(onboardingRoute, /Very cautious/);
+  assert.match(onboardingRoute, /\$\{prefix\} mode/);
+  assert.match(onboardingRoute, /\$\{prefix\} costs/);
+  assert.match(onboardingRoute, /Connect Klaviyo/);
+  assert.match(onboardingRoute, /\$\{prefix\} products/);
+  assert.match(onboardingRoute, /requiredOnboardingComplete/);
+  assert.match(onboardingRoute, /set-approval-mode/);
+  assert.match(onboardingRoute, /onboarding-step/);
+  assert.match(onboardingRoute, /task === "goal"/);
+  assert.match(onboardingRoute, /task === "house-rules"/);
+  assert.match(onboardingRoute, /task === "brand-voice"/);
+  assert.match(onboardingRoute, /task === "protected-products"/);
+  assert.match(onboardingRoute, /task === "product-costs"/);
+  assert.doesNotMatch(onboardingRoute, /AnnotatedSection/);
+  assert.doesNotMatch(onboardingRoute, /Current priority/);
+  assert.doesNotMatch(onboardingRoute, /What would be worth paying/);
+  assert.doesNotMatch(onboardingRoute, /Balanced by default/);
+  assert.doesNotMatch(onboardingRoute, /Settings sections/);
+  assert.match(managerSettingsRoute, /House Rules/);
+  assert.match(managerSettingsRoute, /Product costs/);
+  assert.match(managerSettingsRoute, /Approval mode/);
 });
 
 function dailyVerdictFixture() {
@@ -282,7 +440,8 @@ function dailyVerdictFixture() {
       },
     ],
     sections: {
-      nextStep: "Use Stockout Serum as the margin benchmark for the next brief.",
+      nextStep:
+        "Use Stockout Serum as the margin benchmark for the next brief.",
     },
     evidence: {
       orderLineItemCount: 2,

@@ -3,12 +3,16 @@ import test from "node:test";
 import { PrismaClient } from "@prisma/client";
 import {
   completeOnboarding,
+  getOnboardingState,
   HOUSE_RULE_DEFAULTS,
   loadMerchantPolicyContext,
+  saveOnboardingApprovalMode,
   saveOnboardingCogsInputs,
   saveOnboardingGoals,
   saveOnboardingHouseRules,
+  setOnboardingStepStatus,
 } from "../app/services/onboarding.server.js";
+import { upsertBackfillStatus } from "../app/services/shopify-backfill-status.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -534,6 +538,268 @@ test("onboarding COGS treats manual values as confirmed and blanks as missing", 
   }
 });
 
+test("onboarding readiness exposes progressive setup while import runs", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const { merchant, shop } = await createOnboardingTenant(prisma, suffix);
+    await createBackfillStatuses(prisma, merchant.id, shop.id, {
+      shop: "complete",
+      webhooks: "complete",
+      products: "queued",
+      orders: "queued",
+      customers: "queued",
+      inventory: "queued",
+      refunds: "queued",
+      derived_metrics: "queued",
+    });
+
+    const state = await getOnboardingState(prisma, shop.id);
+    const stepsByKey = Object.fromEntries(
+      state.steps.map((step) => [step.key, step]),
+    );
+
+    assert.equal(state.overallStatus, "importing");
+    assert.equal(state.onboardingComplete, false);
+    assert.equal(state.requiredOnboardingComplete, false);
+    assert.equal(state.requiredProgress.completeSteps, 0);
+    assert.equal(state.requiredProgress.totalSteps, 3);
+    assert.equal(state.progress.totalSteps, 9);
+    assert.equal(stepsByKey.business_goal.status, "available");
+    assert.equal(stepsByKey.house_rules.status, "available");
+    assert.equal(stepsByKey.approval_mode.status, "available");
+    assert.equal(stepsByKey.brand_voice.status, "available");
+    assert.equal(stepsByKey.klaviyo.status, "available");
+    assert.equal(stepsByKey.product_costs.status, "locked");
+    assert.equal(stepsByKey.protected_products.status, "locked");
+    assert.equal(stepsByKey.first_risks.status, "locked");
+    assert.equal(stepsByKey.first_daily_brief.status, "locked");
+    assert.equal(state.recommendedNextStep.key, "business_goal");
+    assert.equal(state.importStatus.orders.reason.includes("bulk"), false);
+    assert.equal(
+      JSON.stringify(state).includes("bulk_operation_id"),
+      false,
+    );
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("onboarding readiness unlocks product setup after products import", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const { merchant, shop } = await createOnboardingTenant(prisma, suffix);
+    await createBackfillStatuses(prisma, merchant.id, shop.id, {
+      products: "complete",
+      orders: "queued",
+      inventory: "queued",
+      derived_metrics: "queued",
+    });
+
+    const state = await getOnboardingState(prisma, shop.id);
+    const stepsByKey = Object.fromEntries(
+      state.steps.map((step) => [step.key, step]),
+    );
+
+    assert.equal(stepsByKey.product_costs.status, "needs_attention");
+    assert.equal(stepsByKey.protected_products.status, "available");
+    assert.equal(state.importStatus.products.reason, "Products are ready. You can now confirm product costs.");
+    assert.equal(state.cogs.coveragePercentage, 0);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("onboarding readiness recommends COGS after required setup is complete", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const { merchant, shop } = await createOnboardingTenant(prisma, suffix);
+    await createBackfillStatuses(prisma, merchant.id, shop.id, {
+      products: "complete",
+      orders: "complete",
+      inventory: "complete",
+      derived_metrics: "complete",
+    });
+    await saveOnboardingGoals(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      goals: {
+        THREE_MONTHS: "Protect margin",
+        SIX_MONTHS: "Improve retention",
+        TWELVE_MONTHS: "Build operating discipline",
+      },
+    });
+    await saveOnboardingHouseRules(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      rules: { freeTextRules: "Protect margin before volume." },
+    });
+    await saveOnboardingApprovalMode(prisma, {
+      shopId: shop.id,
+      approvalMode: "balanced",
+    });
+
+    const state = await getOnboardingState(prisma, shop.id);
+
+    assert.equal(state.requiredOnboardingComplete, true);
+    assert.equal(state.onboardingComplete, false);
+    assert.equal(state.recommendedNextStep.key, "product_costs");
+    assert.equal(state.warnings[0].key, "margin_limited");
+    assert.equal(
+      state.moduleReadiness.find((module) => module.key === "revenue_margin")
+        .status,
+      "limited",
+    );
+
+    await completeOnboarding(prisma, shop.id);
+    const completedState = await getOnboardingState(prisma, shop.id);
+
+    assert.equal(completedState.onboardingComplete, true);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("onboarding readiness unlocks risks and Daily Brief after insights", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const { merchant, shop } = await createOnboardingTenant(prisma, suffix);
+    await createBackfillStatuses(prisma, merchant.id, shop.id, {
+      products: "complete",
+      orders: "complete",
+      inventory: "complete",
+      derived_metrics: "complete",
+    });
+    await setOnboardingStepStatus(prisma, {
+      shopId: shop.id,
+      stepKey: "first_daily_brief",
+      status: "complete",
+    });
+
+    const state = await getOnboardingState(prisma, shop.id);
+    const stepsByKey = Object.fromEntries(
+      state.steps.map((step) => [step.key, step]),
+    );
+
+    assert.equal(state.overallStatus, "ready");
+    assert.equal(stepsByKey.first_risks.status, "available");
+    assert.equal(stepsByKey.first_daily_brief.status, "complete");
+    assert.equal(
+      state.moduleReadiness.find((module) => module.key === "daily_brief")
+        .status,
+      "ready",
+    );
+    assert.equal(
+      state.moduleReadiness.find((module) => module.key === "watchdog").status,
+      "ready",
+    );
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("onboarding readiness persists skipped optional steps and limited order access", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const { merchant, shop } = await createOnboardingTenant(prisma, suffix);
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: {
+        historicalOrderAccess: "limited",
+        availableOrderHistoryDays: 60,
+      },
+    });
+    await createBackfillStatuses(prisma, merchant.id, shop.id, {
+      products: "complete",
+      orders: "complete",
+      inventory: "complete",
+      derived_metrics: "complete",
+    });
+    await setOnboardingStepStatus(prisma, {
+      shopId: shop.id,
+      stepKey: "klaviyo",
+      status: "skipped",
+    });
+    await setOnboardingStepStatus(prisma, {
+      shopId: shop.id,
+      stepKey: "product_costs",
+      status: "skipped",
+    });
+
+    const state = await getOnboardingState(prisma, shop.id);
+    const stepsByKey = Object.fromEntries(
+      state.steps.map((step) => [step.key, step]),
+    );
+
+    assert.equal(state.overallStatus, "partial");
+    assert.equal(state.historicalOrdersLimited, true);
+    assert.equal(stepsByKey.klaviyo.status, "skipped");
+    assert.equal(stepsByKey.product_costs.status, "skipped");
+    assert.equal(state.progress.completeSteps, 2);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("onboarding files do not contain production secrets", async () => {
   const prismaSchema = await import("node:fs/promises").then((fs) =>
     fs.readFile(new URL("../prisma/schema.prisma", import.meta.url), "utf8"),
@@ -548,6 +814,31 @@ test("onboarding files do not contain production secrets", async () => {
   assert.equal(/shpat_|sk_live_|SHOPIFY_API_SECRET=["'][^"']+/.test(prismaSchema), false);
   assert.equal(/shpat_|sk_live_|SHOPIFY_API_SECRET=["'][^"']+/.test(onboardingService), false);
 });
+
+async function createBackfillStatuses(prisma, merchantId, shopId, statuses) {
+  const domains = [
+    "shop",
+    "webhooks",
+    "products",
+    "orders",
+    "customers",
+    "inventory",
+    "refunds",
+    "derived_metrics",
+  ];
+
+  await Promise.all(
+    domains.map((domain) =>
+      upsertBackfillStatus(prisma, {
+        merchantId,
+        shopId,
+        domain,
+        status: statuses[domain] ?? "complete",
+        recordsProcessed: statuses[domain] === "queued" ? 0 : 1,
+      }),
+    ),
+  );
+}
 
 async function createOnboardingTenant(prisma, suffix) {
   const merchant = await prisma.merchant.create({
