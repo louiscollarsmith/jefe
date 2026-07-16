@@ -1,6 +1,10 @@
-# @shopify/shopify-app-template-react-router
+# Changelog
 
-## 2026.07.16
+## 2026-07-16
+
+### Changed
+
+- Consolidated the in-app changelog into one production source of truth.
 
 ### Fixed
 
@@ -11,7 +15,35 @@
 - Fixed the in-app Changelog so production can load the app-local changelog file.
 - Fixed Shopify history jobs so stale running work is retried after worker restarts.
 
-## 2026.07.15
+---
+
+## 2026-07-15
+
+### Added
+
+- Added a shared action safety lifecycle for proposals, approvals, executions and verification states.
+- Added install-time Shopify backfill so new stores can import products, orders, inventory and customer identities after OAuth without blocking install.
+- Added Shopify bulk operations as the primary install backfill path for product and order history imports.
+- Added setup progress states so merchants can see Jefe importing Shopify history instead of an empty app.
+- Added the single staging deployment plan for Railway, Neon and the Shopify development app.
+- Added Klaviyo Winback v0 so Jefe can identify dormant customers, prepare an approval-gated draft, apply House Rules and hold back a measured control group without sending automatically.
+- Added fixture customers to the dev dummy store and Watchdog scenario orders so winback testing has reachable test buyers attached to orders.
+- Added a dev Klaviyo Winback scenario loader with 60-180 day customer orders for winback testing.
+
+### Changed
+
+- Documented auto-deploy from `main`, staging environment variables, Shopify app URLs and Neon migration flow.
+- Renamed Today's Verdict to Revenue & Margin so Daily Brief is clearly the main morning summary and Revenue & Margin is the detailed performance view.
+- Added more bottom spacing across the app so the final card on each page can scroll comfortably above the bottom edge.
+- Replaced the Daily Brief manual generate button with scheduled status copy and moved test generation to the Dev page.
+- Reduced duplication between Daily Brief and module pages so Daily Brief acts as the main morning summary and detail pages focus on evidence.
+- Removed the separate fixture-customer dev action now that fixture customers are included by default.
+- Clarified Klaviyo Winback approval states so draft preparation is not shown as merchant approval.
+- Updated Klaviyo Winback so draft preparation, approval, execution and verification are recorded as separate safety states.
+- Added clearer Klaviyo Winback mode, holdout group and estimated upside copy.
+- Added a deterministic Klaviyo Winback email copy preview before approval.
+- Added degraded behaviour when historical Shopify order access is limited to recent orders.
+- Updated backfill progress to show bulk operation status, object counts, fallback use and import completion.
 
 ### Fixed
 
@@ -19,123 +51,59 @@
 - Fixed first app load setup so Shopify history import is queued even when Shopify lands directly on Daily Brief.
 - Fixed staging scope configuration so Shopify can request extended order history access.
 - Improved Railway deployment startup so health checks can reach the Shopify app once required production variables are set.
+- Fixed the Shopify app Docker image so Prisma Client is generated during image builds before Railway starts the web service.
+- Fixed the Klaviyo private key field so pilot stores can enter and save their key reference.
+- Fixed Klaviyo Winback empty-state copy so it explains when test orders are too recent instead of implying emails are missing.
+- Fixed Klaviyo Winback audience filtering so Shopify customer account state does not suppress marketable buyers and reused emails are grouped consistently.
+- Fixed House Rules saving so edited caps and unchecked rule toggles are submitted reliably from Manager Settings.
+- Clarified Klaviyo Winback holdout copy so measurement controls are not confused with House Rules exclusions.
+- Added Klaviyo Winback economics detail so estimated upside is shown separately from discount cost before approval.
+- Fixed the Klaviyo Winback approval queue badge so preparing a draft does not display as merchant approval.
 
-## 2026.01.08
-- [#170](https://github.com/Shopify/shopify-app-template-react-router/pull/170) - Update React Router minimum version to v7.12.0
+---
 
-## 2025.12.11
+## 2026-07-14
 
-- [#151](https://github.com/Shopify/shopify-app-template-react-router/pull/151) Update `@shopify/shopify-app-react-router` to v1.1.0 and `@shopify/shopify-app-session-storage-prisma` to v8.0.0, add refresh token fields (`refreshToken` and `refreshTokenExpires`) to Session model in Prisma schema, and adopt the `expiringOfflineAccessTokens` flag for enhanced security through token rotation. See [expiring vs non-expiring offline tokens](https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/offline-access-tokens#expiring-vs-non-expiring-offline-tokens) for more information.
+### Added
 
-## 2025.10.10
+- Added Daily Brief v0 with one morning operator brief across Today's Verdict, Inventory Guardian and Watchdog.
+- Added Inventory Guardian v0 with stockout risk, sales velocity, revenue-at-risk and reorder quantity estimates.
+- Added Watchdog v0 with read-only alerts for refund spikes, sales collapses, revenue drops, missing product costs and other operational anomalies.
+- Added Changelog v0 inside the Shopify app and made changelog updates part of the agent workflow.
+- Added changelog rules for future tickets and PRs.
+- Added Shopify embedded app scaffold.
+- Added Today's Verdict page.
+- Added onboarding for goals, House Rules and COGS.
+- Added Daily Verdict v0 with revenue, net after refunds, margin confidence and product highlights.
+- Added COGS confidence handling for missing, estimated and confirmed product costs.
+- Added dev-only Shopify scenario seeding for refund spikes, sales collapse, unavailable products, revenue drops, missing COGS sellers and high-return products.
 
-- [#95](https://github.com/Shopify/shopify-app-template-react-router/pull/95) Swap the product link for [admin intents](https://shopify.dev/docs/apps/build/admin/admin-intents).
+### Changed
 
-## 2025.10.02
+- Improved Watchdog alert cards so incident details, evidence and suggested checks are easier to scan.
+- Improved Watchdog sales-collapse alerts with clearer baseline evidence and suggested checks.
+- Improved Inventory Guardian ordering so active revenue-at-risk items appear before zero-risk inventory notes.
+- Improved Shopify app page headers so Inventory Guardian, Manager Settings and Changelog use consistent single-title layouts.
+- Improved Inventory Guardian so out-of-stock variants with no recent demand are separated from active stockout risks.
+- Improved the Daily Verdict page with a clearer hero verdict, separated metric cards, tighter status header, an operator brief section and cleaner product insight cards.
+- Improved the Changelog page so it reads as a clean left-aligned vertical product update feed.
+- Updated House Rules to include winback discount cap, campaign audience approval threshold, email cooldowns and BFCM freeze mode.
+- Improved House Rules defaults and merchant-facing helper copy.
+- Moved MVP status and dummy store data controls to a dev-only page.
 
-- [#81](https://github.com/Shopify/shopify-app-template-react-router/pull/81) Add shopify global to eslint for ui extensions
+### Fixed
 
-## 2025.10.01
+- Fixed dev-only Shopify scenario loading so partial runs can resume without duplicating existing products, orders or refunds.
+- Fixed Inventory Guardian confidence so zero-risk variants do not drag down the overall risk confidence.
+- Fixed Inventory Guardian money displays so variant prices are no longer shown as currency prefixes.
+- Fixed COGS behaviour so entering a valid manual cost defaults confidence to confirmed.
+- Fixed COGS behaviour so clearing a value returns confidence to missing.
+- Fixed Daily Verdict loading so dev-only dummy store checks no longer obscure or slow the homepage.
 
-- [#79](https://github.com/Shopify/shopify-app-template-react-router/pull/78) Update API version to 2025-10.
-- [#77](https://github.com/Shopify/shopify-app-template-react-router/pull/77) Update `@shopify/shopify-app-react-router` to V1.
-- [#73](https://github.com/Shopify/shopify-app-template-react-router/pull/73/files) Rename @shopify/app-bridge-ui-types to @shopify/polaris-types
+---
 
-## 2025.08.30
+## 2026-07-13
 
-- [#70](https://github.com/Shopify/shopify-app-template-react-router/pull/70/files) Upgrade `@shopify/app-bridge-ui-types` from 0.2.1 to 0.3.1.
+### Added
 
-## 2025.08.17
-
-- [#58](https://github.com/Shopify/shopify-app-template-react-router/pull/58) Update Shopify & React Router dependencies.  Use Shopify React Router in graphqlrc, not shopify-api
-- [#57](https://github.com/Shopify/shopify-app-template-react-router/pull/57) Update Webhook API version in `shopify.app.toml` to `2025-07`
-- [#56](https://github.com/Shopify/shopify-app-template-react-router/pull/56) Remove local CLI from package.json in favor of global CLI installation
-- [#53](https://github.com/Shopify/shopify-app-template-react-router/pull/53) Add the Shopify Dev MCP to the template
-
-## 2025.08.16
-
-- [#52](https://github.com/Shopify/shopify-app-template-react-router/pull/52) Use `ApiVersion.July25` rather than `LATEST_API_VERSION` in `.graphqlrc`.
-
-## 2025.07.24
-
-- [14](https://github.com/Shopify/shopify-app-template-react-router/pull/14/files) Add [App Bridge web components](https://shopify.dev/docs/api/app-home/app-bridge-web-components) to the template.
-
-## July 2025
-
-Forked the [shopify-app-template repo](https://github.com/Shopify/shopify-app-template-remix)
-
-# @shopify/shopify-app-template-remix
-
-## 2025.03.18
-
--[#998](https://github.com/Shopify/shopify-app-template-remix/pull/998) Update to Vite 6
-
-## 2025.03.01
-
-- [#982](https://github.com/Shopify/shopify-app-template-remix/pull/982) Add Shopify Dev Assistant extension to the VSCode extension recommendations
-
-## 2025.01.31
-
-- [#952](https://github.com/Shopify/shopify-app-template-remix/pull/952) Update to Shopify App API v2025-01
-
-## 2025.01.23
-
-- [#923](https://github.com/Shopify/shopify-app-template-remix/pull/923) Update `@shopify/shopify-app-session-storage-prisma` to v6.0.0
-
-## 2025.01.8
-
-- [#923](https://github.com/Shopify/shopify-app-template-remix/pull/923) Enable GraphQL autocomplete for Javascript
-
-## 2024.12.19
-
-- [#904](https://github.com/Shopify/shopify-app-template-remix/pull/904) bump `@shopify/app-bridge-react` to latest
--
-## 2024.12.18
-
-- [875](https://github.com/Shopify/shopify-app-template-remix/pull/875) Add Scopes Update Webhook
-## 2024.12.05
-
-- [#910](https://github.com/Shopify/shopify-app-template-remix/pull/910) Install `openssl` in Docker image to fix Prisma (see [#25817](https://github.com/prisma/prisma/issues/25817#issuecomment-2538544254))
-- [#907](https://github.com/Shopify/shopify-app-template-remix/pull/907) Move `@remix-run/fs-routes` to `dependencies` to fix Docker image build
-- [#899](https://github.com/Shopify/shopify-app-template-remix/pull/899) Disable v3_singleFetch flag
-- [#898](https://github.com/Shopify/shopify-app-template-remix/pull/898) Enable the `removeRest` future flag so new apps aren't tempted to use the REST Admin API.
-
-## 2024.12.04
-
-- [#891](https://github.com/Shopify/shopify-app-template-remix/pull/891) Enable remix future flags.
-
-## 2024.11.26
-
-- [888](https://github.com/Shopify/shopify-app-template-remix/pull/888) Update restResources version to 2024-10
-
-## 2024.11.06
-
-- [881](https://github.com/Shopify/shopify-app-template-remix/pull/881) Update to the productCreate mutation to use the new ProductCreateInput type
-
-## 2024.10.29
-
-- [876](https://github.com/Shopify/shopify-app-template-remix/pull/876) Update shopify-app-remix to v3.4.0 and shopify-app-session-storage-prisma to v5.1.5
-
-## 2024.10.02
-
-- [863](https://github.com/Shopify/shopify-app-template-remix/pull/863) Update to Shopify App API v2024-10 and shopify-app-remix v3.3.2
-
-## 2024.09.18
-
-- [850](https://github.com/Shopify/shopify-app-template-remix/pull/850) Removed "~" import alias
-
-## 2024.09.17
-
-- [842](https://github.com/Shopify/shopify-app-template-remix/pull/842) Move webhook processing to individual routes
-
-## 2024.08.19
-
-Replaced deprecated `productVariantUpdate` with `productVariantsBulkUpdate`
-
-## v2024.08.06
-
-Allow `SHOP_REDACT` webhook to process without admin context
-
-## v2024.07.16
-
-Started tracking changes and releases using calver
+- Added Shopify ingestion foundations for products, orders, refunds and inventory updates.
