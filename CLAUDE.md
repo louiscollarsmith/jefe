@@ -54,8 +54,9 @@ Every PR must include:
 - follow-up tasks
 
 Before finishing any ticket:
-- update `CHANGELOG.md` using today's UK/London date
-- if the current date section does not exist in `CHANGELOG.md`, create it
+- update `apps/shopify/CHANGELOG.md` using today's UK/London date
+- `apps/shopify/CHANGELOG.md` is the single source of truth for the in-app and production changelog; do not create or update a root `CHANGELOG.md`
+- if the current date section does not exist in `apps/shopify/CHANGELOG.md`, create it
 - add a concise entry under Added / Changed / Fixed / Removed / Security / Internal
 - do not duplicate entries
 - use merchant/operator-facing language, not noisy implementation details
@@ -67,7 +68,7 @@ A feature is not done unless it is:
 - testable
 - typed
 - documented enough for the next agent
-- reflected in `CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour
+- reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour
 - scoped to the ticket
 - safe around merchant/customer data
 - compatible with the event-ledger architecture

@@ -154,8 +154,9 @@ When coding:
 - Never implement unapproved external write actions.
 
 Before finishing:
-- Before finishing any ticket, update `CHANGELOG.md` using today's UK/London date.
-- If the current date section does not exist in `CHANGELOG.md`, create it.
+- Before finishing any ticket, update `apps/shopify/CHANGELOG.md` using today's UK/London date.
+- `apps/shopify/CHANGELOG.md` is the single source of truth for the in-app and production changelog. Do not create or update a root `CHANGELOG.md`.
+- If the current date section does not exist in `apps/shopify/CHANGELOG.md`, create it.
 - Add a concise entry under Added / Changed / Fixed / Removed / Security / Internal.
 - Do not duplicate entries.
 - Use merchant/operator-facing language, not noisy implementation details.

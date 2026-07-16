@@ -2,8 +2,13 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CHANGELOG_FILENAME = "CHANGELOG.md";
+const CHANGELOG_PATH = path.join(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
+  CHANGELOG_FILENAME,
+);
 const CHANGELOG_CATEGORIES = new Set([
   "Added",
   "Changed",
@@ -39,7 +44,7 @@ export function parseChangelogMarkdown(markdown) {
 
   for (const rawLine of markdown.split(/\r?\n/)) {
     const line = rawLine.trim();
-    const dateMatch = line.match(/^## (\d{4})[-.](\d{2})[-.](\d{2})$/);
+    const dateMatch = line.match(/^## (\d{4})-(\d{2})-(\d{2})$/);
     const sectionMatch = line.match(/^### (.+)$/);
     const itemMatch = line.match(/^- (.+)$/);
 
@@ -79,43 +84,8 @@ export function parseChangelogMarkdown(markdown) {
     .filter((entry) => entry.sections.length > 0);
 }
 
-/**
- * @param {{ cwd?: string }} [input]
- */
-export async function loadChangelog(input = {}) {
-  const markdown = await readChangelog(input.cwd ?? process.cwd());
+export async function loadChangelog() {
+  const markdown = await readFile(CHANGELOG_PATH, "utf8");
 
   return parseChangelogMarkdown(markdown);
-}
-
-/**
- * @param {string} cwd
- */
-async function readChangelog(cwd) {
-  const candidates = [
-    cwd,
-    path.resolve(cwd, ".."),
-    path.resolve(cwd, "../.."),
-    path.resolve(cwd, "../../.."),
-  ].map((candidate) => path.join(candidate, CHANGELOG_FILENAME));
-
-  for (const candidate of candidates) {
-    try {
-      const markdown = await readFile(candidate, "utf8");
-
-      if (parseChangelogMarkdown(markdown).length > 0) {
-        return markdown;
-      }
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error) {
-        const code = /** @type {{ code?: string }} */ (error).code;
-
-        if (code === "ENOENT") continue;
-      }
-
-      throw error;
-    }
-  }
-
-  throw new Error(`Could not find root ${CHANGELOG_FILENAME} from ${cwd}`);
 }
