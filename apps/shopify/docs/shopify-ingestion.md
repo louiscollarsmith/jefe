@@ -1,6 +1,6 @@
 # Shopify Ingestion
 
-Shopify ingestion is read-only. The MVP app requests `read_products`, `read_orders`, `read_all_orders`, `read_inventory`, `read_locations` and `read_customers`; no Shopify write scopes are used by this ticket.
+Shopify ingestion remains read-only, but local development installs also request bounded fixture write scopes so the Dev page can create dummy products, inventory, customers and test orders. The default app scope set is `read_products`, `write_products`, `read_orders`, `read_all_orders`, `write_orders`, `read_inventory`, `write_inventory`, `read_locations`, `read_customers` and `write_customers`.
 
 ## Admin GraphQL Client
 

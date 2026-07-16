@@ -24,26 +24,27 @@ Local `.env` defaults:
 ```shell
 DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
 SHOPIFY_API_VERSION="2026-07"
-SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers
+SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
 ENABLE_DUMMY_STORE_LOADER=true
 ```
 
 ## Dummy Store Data
 
-For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The MVP app config is read-only, so only use this temporary local scope override on a development store when you need the fixture writer:
+For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The default development scope set includes the bounded write scopes needed by the fixture writer:
 
 ```shell
-SCOPES=read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,read_all_orders,write_orders
+SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
 ```
 
 The loader uses the authenticated Shopify Admin token to create fixture products, variants, inventory levels, test orders and one refund. After a successful run it writes an app-installation metafield marker in Shopify, so the button is disabled for that store.
 
 If the app shows every dummy-loader scope as missing after install, check `shopify.app.toml` first. The Shopify CLI install flow reads app scopes from that config, so `.env` alone is not enough. After changing scopes, reinstall the app or run the Shopify CLI scope update flow for the store.
 
-Scope reasons:
+Write-scope reasons:
 
 - `write_products`: create/update dummy products and variants.
 - `write_inventory`: set dummy inventory quantities.
+- `write_customers`: create fixture customer profiles for customer-backed test orders.
 - `write_orders`: create test orders and the refund fixture.
 - `read_locations`: place inventory at the store's primary location.
 - `read_products`, `read_inventory`, `read_orders`: support Ticket 003 ingestion/backfill reads.
@@ -57,7 +58,7 @@ After OAuth, Jefe queues an install-time Shopify backfill instead of blocking th
 Default MVP scopes:
 
 ```shell
-SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers
+SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
 ```
 
 `read_all_orders` unlocks the intended 365-day order import. If it is not granted, Jefe imports the recent 60-day window, marks setup as limited, and keeps Klaviyo Winback unavailable until enough order history is present.

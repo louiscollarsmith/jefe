@@ -241,6 +241,13 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
     devRoute,
     /Use this to regenerate the Daily Brief during development/,
   );
+  assert.match(devRoute, /All \$\{input\.label\} records are present/);
+  assert.match(
+    devRoute,
+    /The loader is disabled for this store to avoid duplicate fixture data/,
+  );
+  assert.doesNotMatch(devRoute, /Partial dummy data found/);
+  assert.doesNotMatch(devRoute, /Finalize/);
   assert.doesNotMatch(revenueMarginRoute, /Open Inventory Guardian/);
   assert.doesNotMatch(revenueMarginRoute, /Open Watchdog/);
   assert.match(revenueMarginRoute, /Performance evidence/);

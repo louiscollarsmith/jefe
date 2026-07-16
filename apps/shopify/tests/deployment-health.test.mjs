@@ -4,6 +4,9 @@ import test from "node:test";
 import { buildHealthPayload } from "../app/services/deployment-health.server.js";
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
 
+const EXPECTED_SHOPIFY_SCOPES =
+  "read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers";
+
 test("deployment health reports the configured app environment", () => {
   assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
     ok: true,
@@ -53,4 +56,29 @@ test("Shopify app URL resolves from explicit and Railway environment values", ()
     }),
     "https://dev-tunnel.example.com",
   );
+});
+
+test("tracked Shopify scope declarations stay in sync", async () => {
+  const exactScopeFiles = [
+    "shopify.app.toml",
+    "shopify.app.staging.toml",
+    ".env.example",
+    "README.md",
+    "../../docs/ops/deployment_staging_railway_neon.md",
+  ];
+  const proseScopeFiles = [
+    "docs/shopify-ingestion.md",
+  ];
+
+  for (const file of exactScopeFiles) {
+    const content = await readFile(file, "utf8");
+    assert.match(content, new RegExp(EXPECTED_SHOPIFY_SCOPES));
+  }
+
+  for (const file of proseScopeFiles) {
+    const content = await readFile(file, "utf8");
+    for (const scope of EXPECTED_SHOPIFY_SCOPES.split(",")) {
+      assert.match(content, new RegExp(scope));
+    }
+  }
 });
