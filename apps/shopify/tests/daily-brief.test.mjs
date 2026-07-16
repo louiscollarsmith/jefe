@@ -205,6 +205,25 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(revenueMarginRoute, /Revenue &amp; Margin/);
   assert.match(dailyBriefRoute, /View revenue and margin details/);
   assert.match(dailyBriefRoute, /\/app\/revenue-margin/);
+  assert.match(dailyBriefRoute, /queueInstallShopifyBackfill/);
+  assert.match(dailyBriefRoute, /daily_brief_backfill_guard/);
+  assert.match(dailyBriefRoute, /useRevalidator/);
+  assert.match(dailyBriefRoute, /setInterval/);
+  assert.match(dailyBriefRoute, /getCanonicalBackfillCounts/);
+  assert.match(dailyBriefRoute, /SETUP_IMPORT_DOMAINS.length/);
+  assert.match(dailyBriefRoute, /completedCount/);
+  assert.match(dailyBriefRoute, /totalRecordsEstimate/);
+  assert.match(dailyBriefRoute, /Imported \$\{count\} of/);
+  assert.match(dailyBriefRoute, /availableOrderHistoryDays/);
+  assert.match(dailyBriefRoute, /days of order\s+history from Shopify/);
+  assert.match(
+    dailyBriefRoute,
+    /status\.status === "queued" && status\.recordsProcessed === 0[\s\S]*return null;/,
+  );
+  assert.doesNotMatch(dailyBriefRoute, /Module readiness/);
+  assert.doesNotMatch(dailyBriefRoute, /Bulk:/);
+  assert.doesNotMatch(dailyBriefRoute, /bulkOperationObjectCount/);
+  assert.doesNotMatch(dailyBriefRoute, /records processed/);
   assert.match(appIndexRoute, /\/app\/daily-brief/);
   assert.doesNotMatch(dailyBriefRoute, />\s*Generate brief\s*</);
   assert.match(dailyBriefRoute, /Daily Brief scheduled for 7:00am/);

@@ -40,6 +40,22 @@ export const BULK_OPERATION_NODE_QUERY = `#graphql
   }
 `;
 
+export const PRODUCTS_COUNT_QUERY = `#graphql
+  query JefeProductsCount {
+    productsCount(limit: null) {
+      count
+    }
+  }
+`;
+
+export const ORDERS_COUNT_QUERY = `#graphql
+  query JefeOrdersCount($query: String!) {
+    ordersCount(query: $query, limit: null) {
+      count
+    }
+  }
+`;
+
 export const PRODUCTS_BULK_QUERY = `#graphql
   {
     products {
@@ -63,10 +79,6 @@ export const PRODUCTS_BULK_QUERY = `#graphql
                 title
                 sku
                 price
-                compareAtPrice
-                inventoryManagement
-                taxable
-                requiresShipping
                 createdAt
                 updatedAt
                 inventoryItem {
@@ -82,15 +94,22 @@ export const PRODUCTS_BULK_QUERY = `#graphql
 `;
 
 /** @param {number} days */
-export function buildOrdersBulkQuery(days) {
+export function buildOrdersBackfillQueryFilter(days) {
   const boundedDays = Math.min(Math.max(days, 1), 365);
   const start = new Date(Date.now() - boundedDays * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
 
+  return `created_at:>=${start}`;
+}
+
+/** @param {number} days */
+export function buildOrdersBulkQuery(days) {
+  const query = buildOrdersBackfillQueryFilter(days);
+
   return `#graphql
     {
-      orders(query: "created_at:>=${start}") {
+      orders(query: "${query}") {
         edges {
           node {
             __typename
@@ -271,7 +290,6 @@ export const ORDERS_QUERY = `#graphql
             email
             firstName
             lastName
-            acceptsMarketing
             emailMarketingConsent {
               marketingState
             }

@@ -1,9 +1,23 @@
 # @shopify/shopify-app-template-react-router
 
+## 2026.07.16
+
+### Fixed
+
+- Fixed Shopify history setup progress so it polls automatically and reports canonical imported counts.
+- Fixed Shopify history import totals so setup progress can show imported records against the expected Shopify count.
+- Fixed Shopify history setup copy so queued imports do not show imported-count progress before importing starts.
+- Clarified Shopify history setup copy to show the order-history window being imported.
+- Fixed the in-app Changelog so production can load the app-local changelog file.
+- Fixed Shopify history jobs so stale running work is retried after worker restarts.
+
 ## 2026.07.15
 
 ### Fixed
 
+- Fixed Shopify history import compatibility so installs can complete cleanly against the current Admin API.
+- Fixed first app load setup so Shopify history import is queued even when Shopify lands directly on Daily Brief.
+- Fixed staging scope configuration so Shopify can request extended order history access.
 - Improved Railway deployment startup so health checks can reach the Shopify app once required production variables are set.
 
 ## 2026.01.08

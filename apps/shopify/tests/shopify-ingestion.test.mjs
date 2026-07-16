@@ -15,7 +15,10 @@ import {
 } from "../app/lib/ingestion/shopify/bulk.server.js";
 import { runShopifyBackfill } from "../app/lib/ingestion/shopify/backfill.server.js";
 import { currencyCode } from "../app/lib/ingestion/shopify/normalize.server.js";
-import { processNextBackfillJob } from "../app/services/shopify-backfill-worker.server.js";
+import {
+  processNextBackfillJob,
+  recoverStaleRunningBackfillJobs,
+} from "../app/services/shopify-backfill-worker.server.js";
 import {
   getShopBackfillProgress,
   queueInstallShopifyBackfill,
@@ -340,6 +343,76 @@ test("failed Shopify backfill jobs can be retried", async (t) => {
   }
 });
 
+test("stale running Shopify backfill jobs are requeued", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const shopDomain = `stale-running-${suffix}.myshopify.com`;
+  const now = new Date("2026-07-16T12:00:00Z");
+
+  try {
+    const merchant = await prisma.merchant.create({
+      data: {
+        name: shopDomain,
+        shops: { create: { shopDomain } },
+      },
+      include: { shops: true },
+    });
+    const shop = merchant.shops[0];
+    await prisma.backfillJob.createMany({
+      data: [
+        {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          jobType: "stale_running_job",
+          status: "running",
+          startedAt: new Date("2026-07-16T11:00:00Z"),
+          priority: 20,
+        },
+        {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          jobType: "fresh_running_job",
+          status: "running",
+          startedAt: new Date("2026-07-16T11:59:00Z"),
+          priority: 30,
+        },
+      ],
+    });
+
+    const result = await recoverStaleRunningBackfillJobs(prisma, {
+      now,
+      timeoutMs: 15 * 60_000,
+      logger: silentLogger,
+    });
+    const jobs = await prisma.backfillJob.findMany({
+      where: { shopId: shop.id },
+      orderBy: { jobType: "asc" },
+    });
+    const fresh = jobs.find((job) => job.jobType === "fresh_running_job");
+    const stale = jobs.find((job) => job.jobType === "stale_running_job");
+
+    assert.equal(result.recovered, 1);
+    assert.equal(stale?.status, "queued");
+    assert.equal(stale?.startedAt, null);
+    assert.equal(stale?.runAfter.toISOString(), now.toISOString());
+    assert.equal(
+      stale?.lastError,
+      "Recovered stale running job after worker restart.",
+    );
+    assert.equal(fresh?.status, "running");
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
 test("Shopify bulk backfill starts products and stores operation status", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");
@@ -424,7 +497,7 @@ test("Shopify bulk JSONL parser streams and imports products and orders", async 
         "https://bulk.test/products.jsonl": productsBulkJsonl(suffix),
       }),
     });
-    await importShopifyBulkResult(prisma, {
+    const firstOrderImport = await importShopifyBulkResult(prisma, {
       shopDomain,
       accessToken: "test-token",
       sessionId: `session-${suffix}`,
@@ -435,7 +508,7 @@ test("Shopify bulk JSONL parser streams and imports products and orders", async 
         "https://bulk.test/orders.jsonl": ordersBulkJsonl(suffix),
       }),
     });
-    await importShopifyBulkResult(prisma, {
+    const secondOrderImport = await importShopifyBulkResult(prisma, {
       shopDomain,
       accessToken: "test-token",
       sessionId: `session-${suffix}`,
@@ -458,6 +531,8 @@ test("Shopify bulk JSONL parser streams and imports products and orders", async 
 
     assert.equal(shop.products.length, 1);
     assert.equal(shop.products[0].variants.length, 1);
+    assert.equal(firstOrderImport.refunds, 1);
+    assert.equal(secondOrderImport.refunds, 1);
     assert.equal(shop.orders.length, 1);
     assert.equal(shop.orders[0].lineItems.length, 1);
     assert.equal(shop.orders[0].refunds.length, 1);
@@ -577,6 +652,12 @@ test("Shopify bulk polling imports completed result and falls back on failure", 
       )?.status,
       "bulk_imported",
     );
+    assert.equal(
+      completeShop.backfillStatuses.find(
+        (status) => status.domain === "products",
+      )?.recordsProcessed,
+      1,
+    );
     assert.ok(
       await prisma.backfillJob.findUnique({
         where: {
@@ -628,6 +709,20 @@ test("Shopify bulk polling imports completed result and falls back on failure", 
 function createBackfillFetch(suffix) {
   return async (_url, init) => {
     const body = JSON.parse(init.body);
+    if (body.query.includes("JefeProductsCount")) {
+      return Response.json({
+        data: {
+          productsCount: { count: 1 },
+        },
+      });
+    }
+    if (body.query.includes("JefeOrdersCount")) {
+      return Response.json({
+        data: {
+          ordersCount: { count: 1 },
+        },
+      });
+    }
     if (body.query.includes("JefeProductsBackfill")) {
       return Response.json({
         data: {
@@ -643,6 +738,7 @@ function createBackfillFetch(suffix) {
       });
     }
     if (body.query.includes("JefeOrdersBackfill")) {
+      assert.ok(!body.query.includes("acceptsMarketing"));
       return Response.json({
         data: {
           orders: connection([mockGraphqlOrder(suffix)]),
@@ -658,6 +754,8 @@ function createBulkStartFetch(operationId) {
     const body = JSON.parse(init.body);
     assert.ok(body.query.includes("JefeBulkOperationRun"));
     assert.ok(body.variables.query.includes("products"));
+    assert.ok(!body.variables.query.includes("inventoryManagement"));
+    assert.ok(!body.variables.query.includes("requiresShipping"));
     return Response.json({
       data: {
         bulkOperationRunQuery: {
@@ -805,10 +903,6 @@ function productsBulkJsonl(suffix) {
       title: "Default",
       sku: `BULK-SKU-${suffix}`,
       price: "49.00",
-      compareAtPrice: "59.00",
-      inventoryManagement: "SHOPIFY",
-      taxable: true,
-      requiresShipping: true,
       createdAt: "2026-07-01T08:00:00Z",
       updatedAt: "2026-07-13T08:00:00Z",
       inventoryItem: { id: `gid://shopify/InventoryItem/bulk-inv-${suffix}` },

@@ -48,14 +48,34 @@ test("changelog parser reads dated entries and allowed sections", () => {
   ]);
 });
 
-test("changelog loader finds the root changelog from the app workspace", async () => {
+test("changelog parser accepts the app changelog date format", () => {
+  const entries = parseChangelogMarkdown(`# @shopify/shopify-app-template-react-router
+
+## 2026.07.16
+
+### Fixed
+
+- Fixed Shopify history setup progress.
+`);
+
+  assert.deepEqual(entries, [
+    {
+      date: "2026-07-16",
+      sections: [
+        { category: "Fixed", items: ["Fixed Shopify history setup progress."] },
+      ],
+    },
+  ]);
+});
+
+test("changelog loader finds the app changelog from the app workspace", async () => {
   const entries = await loadChangelog({ cwd: process.cwd() });
 
   assert.ok(entries.length >= 2);
-  assert.equal(entries[0].date, "2026-07-15");
+  assert.equal(entries[0].date, "2026-07-16");
   assert.ok(
     entries[0].sections.some((section) =>
-      section.items.some((item) => item.includes("Revenue & Margin")),
+      section.items.some((item) => item.includes("Shopify history setup")),
     ),
   );
 });

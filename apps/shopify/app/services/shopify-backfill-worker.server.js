@@ -1,6 +1,12 @@
 // @ts-check
 
 import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server.js";
+import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server.js";
+import {
+  buildOrdersBackfillQueryFilter,
+  ORDERS_COUNT_QUERY,
+  PRODUCTS_COUNT_QUERY,
+} from "../lib/shopify/queries.server.js";
 import {
   bulkStatusMetadata,
   getShopifyBulkOperation,
@@ -19,6 +25,7 @@ import {
 
 const LOOP_INTERVAL_MS = 15_000;
 const BULK_POLL_INTERVAL_MS = 30_000;
+const STALE_RUNNING_JOB_TIMEOUT_MS = 15 * 60_000;
 const DELTA_SYNC_OVERLAP_HOURS = 24;
 
 let loopStarted = false;
@@ -62,6 +69,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
+  await recoverStaleRunningBackfillJobs(prisma, { now, logger: options.logger });
   const job = await prisma.backfillJob.findFirst({
     where: {
       status: "queued",
@@ -148,6 +156,39 @@ export async function processNextBackfillJob(prisma, options = {}) {
     });
     return { status: "failed", jobType: job.jobType, error: message };
   }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ now?: Date; timeoutMs?: number; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
+ */
+export async function recoverStaleRunningBackfillJobs(prisma, options = {}) {
+  const now = options.now ?? new Date();
+  const timeoutMs = options.timeoutMs ?? STALE_RUNNING_JOB_TIMEOUT_MS;
+  const staleStartedBefore = new Date(now.getTime() - timeoutMs);
+  const result = await prisma.backfillJob.updateMany({
+    where: {
+      status: "running",
+      startedAt: { lt: staleStartedBefore },
+    },
+    data: {
+      status: "queued",
+      runAfter: now,
+      startedAt: null,
+      completedAt: null,
+      failedAt: null,
+      lastError: "Recovered stale running job after worker restart.",
+    },
+  });
+
+  if (result.count > 0) {
+    options.logger?.warn("Recovered stale Shopify backfill jobs", {
+      count: result.count,
+      staleStartedBefore: staleStartedBefore.toISOString(),
+    });
+  }
+
+  return { recovered: result.count };
 }
 
 /**
@@ -242,6 +283,8 @@ async function handleBackfillStart(prisma, context) {
     backfillStartedAt: (context.startedAt ?? new Date()).toISOString(),
   };
 
+  await applyBackfillCountEstimates(prisma, context);
+
   await Promise.all([
     enqueueBackfillJob(prisma, {
       merchantId: context.merchantId,
@@ -322,7 +365,17 @@ async function handleCommerceBackfill(prisma, context, input) {
  * @param {{ domain: "products" | "orders"; fallbackDomains: Array<"products" | "orders" | "inventory"> }} input
  */
 async function handleBulkStart(prisma, context, input) {
-  await markRunning(prisma, context, input.domain, "bulk_queued");
+  const totalRecordsEstimate = await loadBackfillCountEstimate(
+    context,
+    input.domain,
+  );
+  await markRunning(
+    prisma,
+    context,
+    input.domain,
+    "bulk_queued",
+    totalRecordsEstimate,
+  );
   if (input.domain === "orders") {
     await markRunning(prisma, context, "refunds", "bulk_queued");
     await markRunning(prisma, context, "customers", "bulk_queued");
@@ -443,9 +496,15 @@ async function handleBulkPoll(prisma, context, input) {
       fetchImpl: context.fetchImpl,
     });
     const importedAt = new Date().toISOString();
+    const recordsProcessed =
+      input.domain === "products" && "products" in totals
+        ? totals.products
+        : "orders" in totals
+          ? totals.orders
+          : 0;
     await updateBulkStatus(prisma, context, input.domain, operation, {
       status: "bulk_imported",
-      recordsProcessed: totals.recordsProcessed,
+      recordsProcessed,
       importedAt,
     });
 
@@ -656,8 +715,16 @@ async function handleFinalize(prisma, context) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {BackfillContext} context
  * @param {string} domain
+ * @param {string} [status]
+ * @param {number | null | undefined} [totalRecordsEstimate]
  */
-async function markRunning(prisma, context, domain, status = "running") {
+async function markRunning(
+  prisma,
+  context,
+  domain,
+  status = "running",
+  totalRecordsEstimate = undefined,
+) {
   await upsertBackfillStatus(prisma, {
     merchantId: context.merchantId,
     shopId: context.shopId,
@@ -666,6 +733,7 @@ async function markRunning(prisma, context, domain, status = "running") {
     startedAt: new Date(),
     completedAt: null,
     lastError: null,
+    totalRecordsEstimate,
   });
 }
 
@@ -714,7 +782,6 @@ async function updateBulkStatus(prisma, context, domain, operation, input) {
         : undefined,
     lastError: operation.errorCode ?? null,
     recordsProcessed: input.recordsProcessed,
-    totalRecordsEstimate: operation.objectCount,
     bulkOperationId: operation.id,
     metadata: bulkStatusMetadata({
       bulkOperation: operation,
@@ -722,6 +789,79 @@ async function updateBulkStatus(prisma, context, domain, operation, input) {
       importedAt: input.importedAt ?? null,
     }),
   });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ */
+async function applyBackfillCountEstimates(prisma, context) {
+  const [products, orders] = await Promise.all([
+    loadBackfillCountEstimate(context, "products"),
+    loadBackfillCountEstimate(context, "orders"),
+  ]);
+
+  await Promise.all(
+    [
+      ["products", products],
+      ["orders", orders],
+    ]
+      .filter((entry) => typeof entry[1] === "number")
+      .map(([domain, totalRecordsEstimate]) =>
+        prisma.shopBackfillStatus.update({
+          where: {
+            shopId_domain: {
+              shopId: context.shopId,
+              domain: /** @type {string} */ (domain),
+            },
+          },
+          data: {
+            totalRecordsEstimate: /** @type {number} */ (
+              totalRecordsEstimate
+            ),
+          },
+        }),
+      ),
+  );
+}
+
+/**
+ * @param {BackfillContext} context
+ * @param {"products" | "orders"} domain
+ */
+async function loadBackfillCountEstimate(context, domain) {
+  try {
+    const client = new ShopifyAdminGraphqlClient({
+      shopDomain: context.shopDomain,
+      accessToken: context.accessToken,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+      logger: context.logger,
+      fetchImpl: context.fetchImpl,
+    });
+
+    if (domain === "products") {
+      const data = /** @type {{ productsCount?: { count?: number } }} */ (
+        await client.request(PRODUCTS_COUNT_QUERY)
+      );
+      const count = data.productsCount?.count;
+      return typeof count === "number" && Number.isFinite(count) ? count : null;
+    }
+
+    const data = /** @type {{ ordersCount?: { count?: number } }} */ (
+      await client.request(ORDERS_COUNT_QUERY, {
+        query: buildOrdersBackfillQueryFilter(context.orderHistoryDays),
+      })
+    );
+    const count = data.ordersCount?.count;
+    return typeof count === "number" && Number.isFinite(count) ? count : null;
+  } catch (error) {
+    context.logger.warn("Shopify backfill count estimate unavailable", {
+      shopDomain: context.shopDomain,
+      domain,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useNavigate } from "react-router";
+import { useLoaderData, useNavigate, useRevalidator } from "react-router";
+import { useEffect } from "react";
 import {
   Badge,
   Banner,
@@ -23,7 +24,22 @@ import {
   generateDailyBrief,
   getLatestDailyBrief,
 } from "../services/daily-brief.server";
-import { getShopBackfillProgress } from "../services/shopify-backfill-status.server";
+import {
+  getShopBackfillProgress,
+  queueInstallShopifyBackfill,
+  splitScopes,
+} from "../services/shopify-backfill-status.server";
+
+const SETUP_IMPORT_DOMAINS = [
+  "shop",
+  "webhooks",
+  "products",
+  "orders",
+  "customers",
+  "inventory",
+  "refunds",
+  "derived_metrics",
+];
 
 type BriefConfidence = "low" | "medium" | "high";
 type BriefStatus = "generated" | "degraded" | "failed";
@@ -77,21 +93,23 @@ type DeliveryStatus = {
   recipient?: string;
 };
 
+type SetupDisplayStatus = "queued" | "importing" | "completed";
+
 type SetupStatus = {
   setupStatus: string;
   historicalOrdersLimited: boolean;
   availableOrderHistoryDays: number;
   readyForInventoryGuardian: boolean;
   readyForWinback: boolean;
+  completedCount: number;
+  totalCount: number;
   statuses: Array<{
     domain: string;
-    status: string;
-    recordsProcessed: number;
+    status: SetupDisplayStatus;
+    rawStatus: string;
+    recordsProcessed: number | null;
+    totalRecordsEstimate: number | null;
     lastError: string | null;
-    bulkOperationStatus: string | null;
-    bulkOperationObjectCount: number | null;
-    fallbackUsed: boolean;
-    resultImportedAt: string | null;
   }>;
 };
 
@@ -99,8 +117,11 @@ type BackfillStatusInput = {
   metadata?: unknown;
   status?: string | null;
   recordsProcessed?: number | null;
+  totalRecordsEstimate?: number | null;
   lastError?: string | null;
 };
+
+type BackfillCounts = Record<string, number | null>;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -110,11 +131,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "daily_brief" },
   });
-  const setupProgress = await getShopBackfillProgress(prisma, {
+  let setupProgress = await getShopBackfillProgress(prisma, {
     shopId: shop.id,
   });
+  const hasBackfillRows =
+    setupProgress &&
+    (setupProgress.jobs.length > 0 ||
+      Object.values(setupProgress.statuses).some(Boolean));
+
+  if (setupProgress && !hasBackfillRows) {
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain: session.shop,
+      sessionId: session.id,
+      scopes: splitScopes(session.scope),
+      rawPayload: { source: "daily_brief_backfill_guard" },
+    });
+    setupProgress = await getShopBackfillProgress(prisma, {
+      shopId: shop.id,
+    });
+  }
 
   if (setupProgress && !setupProgress.readyForBasicBrief) {
+    const counts = await getCanonicalBackfillCounts(shop.id);
+    const statuses = Object.entries(setupProgress.statuses).map(
+      ([domain, status]) => serializeBackfillStatus(domain, status, counts),
+    );
+    const completedCount = statuses.filter(
+      (status) => status.status === "completed",
+    ).length;
+
     return {
       brief: null,
       setup: {
@@ -123,9 +168,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         availableOrderHistoryDays: setupProgress.shop.availableOrderHistoryDays,
         readyForInventoryGuardian: setupProgress.readyForInventoryGuardian,
         readyForWinback: setupProgress.readyForWinback,
-        statuses: Object.entries(setupProgress.statuses).map(
-          ([domain, status]) => serializeBackfillStatus(domain, status),
-        ),
+        completedCount,
+        totalCount: SETUP_IMPORT_DOMAINS.length,
+        statuses,
       } satisfies SetupStatus,
     };
   }
@@ -152,6 +197,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function DailyBrief() {
   const { brief, setup } = useLoaderData<typeof loader>();
+  const { revalidate, state: revalidationState } = useRevalidator();
+  const shouldPollSetup = Boolean(setup);
+
+  useEffect(() => {
+    if (!shouldPollSetup) return;
+
+    const intervalId = window.setInterval(() => {
+      if (revalidationState === "idle") {
+        void revalidate();
+      }
+    }, 3_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [revalidate, revalidationState, shouldPollSetup]);
 
   if (setup || !brief) {
     return <SetupProgressView setup={setup} />;
@@ -301,13 +360,10 @@ export default function DailyBrief() {
 
 function SetupProgressView({ setup }: { setup: SetupStatus | null }) {
   const statuses = setup?.statuses ?? [];
-  const completeCount = statuses.filter(
-    (status) => status.status === "complete",
-  ).length;
+  const completeCount = setup?.completedCount ?? 0;
+  const totalCount = setup?.totalCount ?? SETUP_IMPORT_DOMAINS.length;
   const progress =
-    statuses.length === 0
-      ? 0
-      : Math.round((completeCount / statuses.length) * 100);
+    totalCount === 0 ? 0 : Math.round((completeCount / totalCount) * 100);
 
   return (
     <Page>
@@ -347,12 +403,18 @@ function SetupProgressView({ setup }: { setup: SetupStatus | null }) {
                         Importing Shopify history
                       </Text>
                       <Text as="p" variant="bodyMd" tone="subdued">
-                        We are importing products, orders and inventory from
-                        Shopify. You can leave this page open or come back
-                        later.
+                        We are importing products, inventory and{" "}
+                        {setup?.availableOrderHistoryDays ?? 365} days of order
+                        history from Shopify. You can leave this page open or
+                        come back later.
                       </Text>
                     </BlockStack>
-                    <ProgressBar progress={progress} tone="primary" />
+                    <BlockStack gap="150">
+                      <ProgressBar progress={progress} tone="success" />
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        {completeCount} of {totalCount} completed
+                      </Text>
+                    </BlockStack>
                     <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                       {statuses.map((status) => (
                         <SetupDomainStatus
@@ -361,26 +423,6 @@ function SetupProgressView({ setup }: { setup: SetupStatus | null }) {
                         />
                       ))}
                     </InlineGrid>
-                  </BlockStack>
-                </Card>
-
-                <Card>
-                  <BlockStack gap="200">
-                    <Text as="h2" variant="headingMd">
-                      Module readiness
-                    </Text>
-                    <List type="bullet">
-                      <List.Item>
-                        Daily Brief waits for products, orders and insights.
-                      </List.Item>
-                      <List.Item>
-                        Inventory Guardian waits for products and inventory.
-                      </List.Item>
-                      <List.Item>
-                        Klaviyo Winback needs at least 180 days of order
-                        history.
-                      </List.Item>
-                    </List>
                   </BlockStack>
                 </Card>
               </BlockStack>
@@ -397,6 +439,8 @@ function SetupDomainStatus({
 }: {
   status: SetupStatus["statuses"][number];
 }) {
+  const summary = setupStatusSummary(status);
+
   return (
     <Card>
       <BlockStack gap="100">
@@ -405,28 +449,12 @@ function SetupDomainStatus({
             {formatDomain(status.domain)}
           </Text>
           <Badge tone={setupStatusTone(status.status)}>
-            {formatStatus(status.status)}
+            {formatSetupStatus(status.status)}
           </Badge>
         </InlineStack>
-        <Text as="p" variant="bodySm" tone="subdued">
-          {status.recordsProcessed.toLocaleString("en-GB")} records processed
-        </Text>
-        {status.bulkOperationStatus ? (
+        {summary ? (
           <Text as="p" variant="bodySm" tone="subdued">
-            Bulk: {formatStatus(status.bulkOperationStatus)}
-            {typeof status.bulkOperationObjectCount === "number"
-              ? ` · ${status.bulkOperationObjectCount.toLocaleString("en-GB")} objects`
-              : ""}
-          </Text>
-        ) : null}
-        {status.fallbackUsed ? (
-          <Text as="p" variant="bodySm" tone="subdued">
-            Paginated fallback used
-          </Text>
-        ) : null}
-        {status.resultImportedAt ? (
-          <Text as="p" variant="bodySm" tone="subdued">
-            Imported {formatDateTime(status.resultImportedAt)}
+            {summary}
           </Text>
         ) : null}
         {status.lastError ? (
@@ -609,39 +637,91 @@ function confidenceTone(confidence: BriefConfidence) {
 }
 
 function setupStatusTone(status: string) {
-  if (status === "complete" || status === "bulk_imported") return "success";
-  if (status === "running" || status.startsWith("bulk_")) return "info";
-  if (status === "failed" || status === "bulk_failed") return "critical";
+  if (status === "completed") return "success";
+  if (status === "importing") return "info";
   return "attention";
+}
+
+async function getCanonicalBackfillCounts(shopId: string) {
+  const [products, orders, customers, inventory, refunds, insights] =
+    await Promise.all([
+      prisma.product.count({ where: { shopId } }),
+      prisma.order.count({ where: { shopId } }),
+      prisma.customerIdentity.count({ where: { shopId } }),
+      prisma.inventoryLevel.count({ where: { shopId } }),
+      prisma.refund.count({ where: { shopId } }),
+      prisma.dailyBrief.count({ where: { shopId } }),
+    ]);
+
+  return {
+    shop: null,
+    webhooks: null,
+    products,
+    orders,
+    customers,
+    inventory,
+    refunds,
+    derived_metrics: insights,
+  } satisfies BackfillCounts;
 }
 
 function serializeBackfillStatus(
   domain: string,
   status: BackfillStatusInput | null | undefined,
+  counts: BackfillCounts,
 ) {
-  const metadata = jsonObject(status?.metadata);
+  const rawStatus = status?.status ?? "queued";
   return {
     domain,
-    status: status?.status ?? "queued",
-    recordsProcessed: status?.recordsProcessed ?? 0,
+    status: displaySetupStatus(rawStatus),
+    rawStatus,
+    recordsProcessed: counts[domain] ?? null,
+    totalRecordsEstimate: status?.totalRecordsEstimate ?? null,
     lastError: status?.lastError ?? null,
-    bulkOperationStatus: stringOrNull(metadata.bulkOperationStatus),
-    bulkOperationObjectCount: numberOrNull(metadata.bulkOperationObjectCount),
-    fallbackUsed: metadata.fallbackUsed === true,
-    resultImportedAt: stringOrNull(metadata.resultImportedAt),
   };
 }
 
-function jsonObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+function displaySetupStatus(status: string): SetupDisplayStatus {
+  if (status === "complete" || status === "bulk_imported") return "completed";
+  if (status === "failed" || status === "bulk_failed") return "queued";
+  if (status === "queued") return "queued";
+  return "importing";
 }
 
-function stringOrNull(value: unknown) {
-  return typeof value === "string" && value !== "" ? value : null;
+function formatSetupStatus(status: SetupDisplayStatus) {
+  if (status === "completed") return "Completed";
+  if (status === "importing") return "Importing";
+  return "Queued";
 }
 
-function numberOrNull(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function setupStatusSummary(status: SetupStatus["statuses"][number]) {
+  if (typeof status.recordsProcessed !== "number") {
+    return null;
+  }
+  if (status.status === "queued" && status.recordsProcessed === 0) {
+    return null;
+  }
+
+  const count = status.recordsProcessed.toLocaleString("en-GB");
+  const noun = setupCountNoun(status.domain, status.recordsProcessed);
+  if (status.status === "completed") return `Imported ${count} ${noun}`;
+  if (
+    status.status === "importing" &&
+    typeof status.totalRecordsEstimate === "number"
+  ) {
+    return `Imported ${count} of ${status.totalRecordsEstimate.toLocaleString("en-GB")} ${setupCountNoun(status.domain, status.totalRecordsEstimate)}`;
+  }
+  if (status.status === "importing") return `Importing ${count} ${noun}`;
+  return `${count} ${noun} imported`;
+}
+
+function setupCountNoun(domain: string, count: number) {
+  const plural = count === 1 ? "" : "s";
+  if (domain === "inventory") return `inventory level${plural}`;
+  if (domain === "derived_metrics") return `insight${plural}`;
+  if (domain === "customers") return `customer${plural}`;
+  if (domain === "refunds") return `refund${plural}`;
+  if (domain === "orders") return `order${plural}`;
+  if (domain === "products") return `product${plural}`;
+  return `record${plural}`;
 }
