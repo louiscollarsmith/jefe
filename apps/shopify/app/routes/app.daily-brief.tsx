@@ -1,6 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useNavigate, useRevalidator } from "react-router";
-import { useEffect } from "react";
+import { redirect, useLoaderData, useNavigate } from "react-router";
 import {
   Badge,
   Banner,
@@ -13,33 +12,18 @@ import {
   Link,
   List,
   Page,
-  ProgressBar,
   Text,
 } from "@shopify/polaris";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { generateDailyBrief } from "../services/daily-brief.server";
 import {
-  generateDailyBrief,
-  getLatestDailyBrief,
-} from "../services/daily-brief.server";
-import {
-  getShopBackfillProgress,
-  queueInstallShopifyBackfill,
-  splitScopes,
-} from "../services/shopify-backfill-status.server";
-
-const SETUP_IMPORT_DOMAINS = [
-  "shop",
-  "webhooks",
-  "products",
-  "orders",
-  "customers",
-  "inventory",
-  "refunds",
-  "derived_metrics",
-];
+  getOnboardingState,
+  setOnboardingStepStatus,
+} from "../services/onboarding.server";
+import { getDailyBriefReadiness } from "../services/daily-brief-readiness.server";
 
 type BriefConfidence = "low" | "medium" | "high";
 type BriefStatus = "generated" | "degraded" | "failed";
@@ -93,36 +77,6 @@ type DeliveryStatus = {
   recipient?: string;
 };
 
-type SetupDisplayStatus = "queued" | "importing" | "completed";
-
-type SetupStatus = {
-  setupStatus: string;
-  historicalOrdersLimited: boolean;
-  availableOrderHistoryDays: number;
-  readyForInventoryGuardian: boolean;
-  readyForWinback: boolean;
-  completedCount: number;
-  totalCount: number;
-  statuses: Array<{
-    domain: string;
-    status: SetupDisplayStatus;
-    rawStatus: string;
-    recordsProcessed: number | null;
-    totalRecordsEstimate: number | null;
-    lastError: string | null;
-  }>;
-};
-
-type BackfillStatusInput = {
-  metadata?: unknown;
-  status?: string | null;
-  recordsProcessed?: number | null;
-  totalRecordsEstimate?: number | null;
-  lastError?: string | null;
-};
-
-type BackfillCounts = Record<string, number | null>;
-
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
@@ -131,54 +85,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "daily_brief" },
   });
-  let setupProgress = await getShopBackfillProgress(prisma, {
-    shopId: shop.id,
-  });
-  const hasBackfillRows =
-    setupProgress &&
-    (setupProgress.jobs.length > 0 ||
-      Object.values(setupProgress.statuses).some(Boolean));
-
-  if (setupProgress && !hasBackfillRows) {
-    await queueInstallShopifyBackfill(prisma, {
-      shopDomain: session.shop,
-      sessionId: session.id,
-      scopes: splitScopes(session.scope),
-      rawPayload: { source: "daily_brief_backfill_guard" },
-    });
-    setupProgress = await getShopBackfillProgress(prisma, {
-      shopId: shop.id,
-    });
-  }
-
-  if (setupProgress && !setupProgress.readyForBasicBrief) {
-    const counts = await getCanonicalBackfillCounts(shop.id);
-    const statuses = Object.entries(setupProgress.statuses).map(
-      ([domain, status]) => serializeBackfillStatus(domain, status, counts),
-    );
-    const completedCount = statuses.filter(
-      (status) => status.status === "completed",
-    ).length;
-
-    return {
-      brief: null,
-      setup: {
-        setupStatus: setupProgress.shop.setupStatus,
-        historicalOrdersLimited: setupProgress.historicalOrdersLimited,
-        availableOrderHistoryDays: setupProgress.shop.availableOrderHistoryDays,
-        readyForInventoryGuardian: setupProgress.readyForInventoryGuardian,
-        readyForWinback: setupProgress.readyForWinback,
-        completedCount,
-        totalCount: SETUP_IMPORT_DOMAINS.length,
-        statuses,
-      } satisfies SetupStatus,
-    };
-  }
-
-  const latestBrief = await getLatestDailyBrief(prisma, {
+  const readiness = await getDailyBriefReadiness(prisma, {
     merchantId: merchant.id,
     shopId: shop.id,
+    shopDomain: session.shop,
+    sessionId: session.id,
+    scopes: session.scope?.split(",").filter(Boolean) ?? [],
+    source: "daily_brief_backfill_guard",
   });
+
+  if (!readiness.briefReady) {
+    throw redirect("/app/onboarding?task=backfill");
+  }
+
+  const latestBrief = readiness.latestBrief;
   const today = new Date().toISOString().slice(0, 10);
   const latestDate = latestBrief?.briefDate
     ? new Date(latestBrief.briefDate).toISOString().slice(0, 10)
@@ -192,29 +112,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  return { brief, setup: null };
+  if (!brief) {
+    throw redirect("/app/onboarding?task=backfill");
+  }
+
+  if (brief) {
+    await setOnboardingStepStatus(prisma, {
+      shopId: shop.id,
+      stepKey: "first_daily_brief",
+      status: "complete",
+      metadata: { viewedFrom: "daily_brief" },
+    });
+  }
+
+  const onboarding = await getOnboardingState(prisma, shop.id);
+
+  return { brief, onboarding };
 };
 
 export default function DailyBrief() {
-  const { brief, setup } = useLoaderData<typeof loader>();
-  const { revalidate, state: revalidationState } = useRevalidator();
-  const shouldPollSetup = Boolean(setup);
-
-  useEffect(() => {
-    if (!shouldPollSetup) return;
-
-    const intervalId = window.setInterval(() => {
-      if (revalidationState === "idle") {
-        void revalidate();
-      }
-    }, 3_000);
-
-    return () => window.clearInterval(intervalId);
-  }, [revalidate, revalidationState, shouldPollSetup]);
-
-  if (setup || !brief) {
-    return <SetupProgressView setup={setup} />;
-  }
+  const { brief, onboarding } = useLoaderData<typeof loader>();
 
   const view = brief.verdict as unknown as DailyBriefView;
   const deliveryStatus = brief.deliveryStatus as DeliveryStatus;
@@ -273,6 +190,18 @@ export default function DailyBrief() {
                           ))}
                         </List>
                       ) : null}
+                    </BlockStack>
+                  </Banner>
+                ) : null}
+
+                {onboarding.warnings.length > 0 ? (
+                  <Banner tone="warning">
+                    <BlockStack gap="100">
+                      {onboarding.warnings.map((warning) => (
+                        <Text as="p" variant="bodyMd" key={warning.key}>
+                          {warning.message}
+                        </Text>
+                      ))}
                     </BlockStack>
                   </Banner>
                 ) : null}
@@ -355,115 +284,6 @@ export default function DailyBrief() {
         </Layout.Section>
       </Layout>
     </Page>
-  );
-}
-
-function SetupProgressView({ setup }: { setup: SetupStatus | null }) {
-  const statuses = setup?.statuses ?? [];
-  const completeCount = setup?.completedCount ?? 0;
-  const totalCount = setup?.totalCount ?? SETUP_IMPORT_DOMAINS.length;
-  const progress =
-    totalCount === 0 ? 0 : Math.round((completeCount / totalCount) * 100);
-
-  return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <BlockStack gap="100">
-                  <Text as="h1" variant="heading2xl">
-                    Daily Brief
-                  </Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    Jefe is setting up your store.
-                  </Text>
-                </BlockStack>
-
-                {setup?.historicalOrdersLimited ? (
-                  <Banner tone="warning">
-                    <BlockStack gap="150">
-                      <Text as="p" variant="bodyMd">
-                        Historical order access is limited.
-                      </Text>
-                      <Text as="p" variant="bodyMd">
-                        Jefe can currently access only recent Shopify orders.
-                        Request read_all_orders to unlock 365-day insights and
-                        winback.
-                      </Text>
-                    </BlockStack>
-                  </Banner>
-                ) : null}
-
-                <Card>
-                  <BlockStack gap="400">
-                    <BlockStack gap="100">
-                      <Text as="h2" variant="headingLg">
-                        Importing Shopify history
-                      </Text>
-                      <Text as="p" variant="bodyMd" tone="subdued">
-                        We are importing products, inventory and{" "}
-                        {setup?.availableOrderHistoryDays ?? 365} days of order
-                        history from Shopify. You can leave this page open or
-                        come back later.
-                      </Text>
-                    </BlockStack>
-                    <BlockStack gap="150">
-                      <ProgressBar progress={progress} tone="success" />
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {completeCount} of {totalCount} completed
-                      </Text>
-                    </BlockStack>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
-                      {statuses.map((status) => (
-                        <SetupDomainStatus
-                          key={status.domain}
-                          status={status}
-                        />
-                      ))}
-                    </InlineGrid>
-                  </BlockStack>
-                </Card>
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
-    </Page>
-  );
-}
-
-function SetupDomainStatus({
-  status,
-}: {
-  status: SetupStatus["statuses"][number];
-}) {
-  const summary = setupStatusSummary(status);
-
-  return (
-    <Card>
-      <BlockStack gap="100">
-        <InlineStack align="space-between" blockAlign="center">
-          <Text as="p" variant="headingSm">
-            {formatDomain(status.domain)}
-          </Text>
-          <Badge tone={setupStatusTone(status.status)}>
-            {formatSetupStatus(status.status)}
-          </Badge>
-        </InlineStack>
-        {summary ? (
-          <Text as="p" variant="bodySm" tone="subdued">
-            {summary}
-          </Text>
-        ) : null}
-        {status.lastError ? (
-          <Text as="p" variant="bodySm" tone="critical">
-            {status.lastError}
-          </Text>
-        ) : null}
-      </BlockStack>
-    </Card>
   );
 }
 
@@ -613,11 +433,6 @@ function formatStatus(status: string) {
   return display[0].toUpperCase() + display.slice(1);
 }
 
-function formatDomain(domain: string) {
-  if (domain === "derived_metrics") return "Insights";
-  return formatStatus(domain);
-}
-
 function formatEmailStatus(status: DeliveryStatus) {
   if (status.email === "logged") return "preview logged";
   if (status.email === "not_configured") return "not configured";
@@ -634,94 +449,4 @@ function confidenceTone(confidence: BriefConfidence) {
   if (confidence === "high") return "success";
   if (confidence === "medium") return "attention";
   return "warning";
-}
-
-function setupStatusTone(status: string) {
-  if (status === "completed") return "success";
-  if (status === "importing") return "info";
-  return "attention";
-}
-
-async function getCanonicalBackfillCounts(shopId: string) {
-  const [products, orders, customers, inventory, refunds, insights] =
-    await Promise.all([
-      prisma.product.count({ where: { shopId } }),
-      prisma.order.count({ where: { shopId } }),
-      prisma.customerIdentity.count({ where: { shopId } }),
-      prisma.inventoryLevel.count({ where: { shopId } }),
-      prisma.refund.count({ where: { shopId } }),
-      prisma.dailyBrief.count({ where: { shopId } }),
-    ]);
-
-  return {
-    shop: null,
-    webhooks: null,
-    products,
-    orders,
-    customers,
-    inventory,
-    refunds,
-    derived_metrics: insights,
-  } satisfies BackfillCounts;
-}
-
-function serializeBackfillStatus(
-  domain: string,
-  status: BackfillStatusInput | null | undefined,
-  counts: BackfillCounts,
-) {
-  const rawStatus = status?.status ?? "queued";
-  return {
-    domain,
-    status: displaySetupStatus(rawStatus),
-    rawStatus,
-    recordsProcessed: counts[domain] ?? null,
-    totalRecordsEstimate: status?.totalRecordsEstimate ?? null,
-    lastError: status?.lastError ?? null,
-  };
-}
-
-function displaySetupStatus(status: string): SetupDisplayStatus {
-  if (status === "complete" || status === "bulk_imported") return "completed";
-  if (status === "failed" || status === "bulk_failed") return "queued";
-  if (status === "queued") return "queued";
-  return "importing";
-}
-
-function formatSetupStatus(status: SetupDisplayStatus) {
-  if (status === "completed") return "Completed";
-  if (status === "importing") return "Importing";
-  return "Queued";
-}
-
-function setupStatusSummary(status: SetupStatus["statuses"][number]) {
-  if (typeof status.recordsProcessed !== "number") {
-    return null;
-  }
-  if (status.status === "queued" && status.recordsProcessed === 0) {
-    return null;
-  }
-
-  const count = status.recordsProcessed.toLocaleString("en-GB");
-  const noun = setupCountNoun(status.domain, status.recordsProcessed);
-  if (status.status === "completed") return `Imported ${count} ${noun}`;
-  if (
-    status.status === "importing" &&
-    typeof status.totalRecordsEstimate === "number"
-  ) {
-    return `Imported ${count} of ${status.totalRecordsEstimate.toLocaleString("en-GB")} ${setupCountNoun(status.domain, status.totalRecordsEstimate)}`;
-  }
-  if (status.status === "importing") return `Importing ${count} ${noun}`;
-  return `${count} ${noun} imported`;
-}
-
-function setupCountNoun(domain: string, count: number) {
-  const plural = count === 1 ? "" : "s";
-  if (domain === "inventory") return `inventory level${plural}`;
-  if (domain === "derived_metrics") return `insight${plural}`;
-  if (domain === "customers") return `customer${plural}`;
-  if (domain === "refunds") return `refund${plural}`;
-  if (domain === "orders") return `order${plural}`;
-  if (domain === "products") return `product${plural}`;
-  return `record${plural}`;
 }

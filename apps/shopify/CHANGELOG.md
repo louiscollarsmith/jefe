@@ -2,10 +2,49 @@
 
 ## 2026-07-16
 
+### Added
+
+- Added progressive onboarding checklist so merchants can configure Jefe while Shopify data imports.
+- Added data-based unlocks for product costs, protected products, first risks and the first Daily Brief.
+
 ### Changed
 
 - Consolidated the in-app changelog into one production source of truth.
 - Updated Shopify development scopes so local fixture loading can create products, inventory, customers and test orders after reinstall.
+- Improved post-install setup from raw import progress to merchant-facing onboarding and readiness.
+- Moved Jefe setup out of Daily Brief into a dedicated onboarding flow.
+- Hid the main app navigation until required onboarding steps are complete.
+- Simplified onboarding into a focused setup hub with one dominant next step.
+- Moved setup forms out of the onboarding hub into dedicated setup pages.
+- Removed import progress from onboarding so setup stays focused while Shopify data imports in the background.
+- Removed the extra setup header and Dev link from the focused onboarding screen.
+- Show optional setup steps only after the three required setup steps are complete.
+- Moved task page Save and Back actions into the setup header and removed duplicate task section headings.
+- Disabled task page Save buttons until the current task has unsaved changes.
+- Added editable goal examples so merchants can choose a 3, 6 or 12 month starting point and tailor it.
+- Split House Rules into grouped settings sections so discount, messaging, product and approval rules are easier to scan.
+- Renamed setup to Onboarding and made approval mode an editable setup choice with consistent status labels.
+- Moved onboarding row status badges beside the item title and changed setup actions to Set before completion and Edit after completion.
+- Split onboarding into collapsible Required setup and Optional setup cards with a single Complete setup action once required steps are done.
+- Refined onboarding setup copy, plural goals wording and title-row completion action placement.
+- Removed optional setup skip buttons so optional tasks can simply be left alone until needed.
+- Separated Brand Voice and Protected Products into their own optional setup pages instead of showing the full House Rules form.
+- Made completed optional setup badges use the same green success treatment as required setup.
+- Added an onboarding import-progress step that waits for Shopify import completion and the first generated Daily Brief before opening the app.
+- Split guided Onboarding from Manager Settings and added Back/Continue controls to the onboarding import screen.
+- Kept onboarding task actions aligned in the top-right header area.
+- Clarified onboarding import rows so shop details and webhooks no longer show misleading zero-count imports.
+- Simplified onboarding import progress copy and removed the duplicate import status badge.
+- Removed redundant helper copy from the onboarding import progress step.
+- Updated onboarding completion actions so merchants only see the import step when shop data is still being prepared.
+- Removed Onboarding from the main app navigation after first-install setup.
+- Enforced onboarding as the app entry until required setup and backfill readiness are both complete.
+- Removed the dummy import-progress preview mode.
+- Simplified onboarding import badges to Queued, Importing and Completed.
+- Updated onboarding import progress to show live database counts and keep merchants on the completed step until they click Complete.
+- Redirected all completed onboarding URLs to Daily Brief once required setup and backfill readiness are complete.
+- Moved completed-onboarding redirects out of the app shell so embedded navigation renders Daily Brief instead of a blank frame.
+- Removed onboarding status badges from Manager Settings.
 
 ### Fixed
 
@@ -16,6 +55,9 @@
 - Fixed the in-app Changelog so production can load the app-local changelog file.
 - Fixed Shopify history jobs so stale running work is retried after worker restarts.
 - Fixed Dev page fixture status copy so complete seed data is shown as loaded instead of implying records are missing.
+- Fixed first app load routing so merchants land on onboarding, import progress or Daily Brief instead of a blank app frame.
+- Fixed the import progress screen so it remains inside onboarding and hides the main app navigation until Daily Brief is ready.
+- Fixed onboarding import completion so a degraded first Daily Brief still unlocks Continue.
 
 ---
 
