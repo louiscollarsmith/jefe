@@ -45,6 +45,9 @@
 - Redirected all completed onboarding URLs to Daily Brief once required setup and backfill readiness are complete.
 - Moved completed-onboarding redirects out of the app shell so embedded navigation renders Daily Brief instead of a blank frame.
 - Removed onboarding status badges from Manager Settings.
+- Updated onboarding so merchants can finish available setup tasks while Shopify data imports in the background.
+- Removed the duplicate top-level onboarding setup action so the next action only appears in the setup content.
+- Kept the Daily Brief readiness status beside the section title on onboarding.
 
 ### Fixed
 

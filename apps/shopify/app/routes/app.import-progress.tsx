@@ -4,9 +4,8 @@ import { redirect } from "react-router";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   url.searchParams.delete("preview");
-  url.searchParams.set("task", "backfill");
 
-  throw redirect(`/app/onboarding?${url.searchParams.toString()}`);
+  throw redirect(`/app/onboarding${url.search}`);
 };
 
 export default function ImportProgressRedirect() {

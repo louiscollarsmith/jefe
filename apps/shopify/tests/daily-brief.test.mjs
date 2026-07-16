@@ -215,10 +215,10 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(appShell, /onboardingComplete/);
   assert.match(appShell, /!briefReady && !allowedBeforeOnboarding/);
   assert.match(appShell, /redirect\(`\/app\/onboarding/);
-  assert.match(appShell, /redirect\("\/app\/onboarding\?task=backfill"\)/);
+  assert.match(appShell, /redirect\("\/app\/onboarding"\)/);
   assert.doesNotMatch(appShell, /redirect\("\/app\/daily-brief"\)/);
   assert.doesNotMatch(appShell, /url\.searchParams\.get\("task"\) === null/);
-  assert.match(appShell, /onboardingTask === "backfill"/);
+  assert.match(appShell, /location\.pathname === "\/app\/onboarding"/);
   assert.match(appShell, /<Outlet \/>/);
   assert.doesNotMatch(appShell, /variant="plain" url="\/app\/dev"/);
   assert.doesNotMatch(appShell, /Today's Verdict|Today&apos;s Verdict/);
@@ -228,7 +228,7 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(dailyBriefRoute, /\/app\/revenue-margin/);
   assert.match(dailyBriefRoute, /getDailyBriefReadiness/);
   assert.match(dailyBriefRoute, /daily_brief_backfill_guard/);
-  assert.match(dailyBriefRoute, /redirect\("\/app\/onboarding\?task=backfill"\)/);
+  assert.match(dailyBriefRoute, /redirect\("\/app\/onboarding"\)/);
   assert.match(dailyBriefRoute, /getOnboardingState/);
   assert.match(dailyBriefRoute, /setOnboardingStepStatus/);
   assert.match(dailyBriefRoute, /onboarding\.warnings/);
@@ -239,7 +239,6 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
     /isReadyDailyBriefStatus\(latestBrief\?\.status\)/,
   );
   assert.match(dailyBriefReadinessService, /status === "degraded"/);
-  assert.match(importProgressRoute, /task", "backfill"/);
   assert.match(importProgressRoute, /\/app\/onboarding/);
   assert.match(managerSettingsRoute, /Manager Settings/);
   assert.match(managerSettingsRoute, /Edit the operating settings/);
@@ -275,7 +274,7 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(appIndexRoute, /getDailyBriefReadiness/);
   assert.match(appIndexRoute, /app_index_backfill_guard/);
   assert.match(appIndexRoute, /\/app\/onboarding/);
-  assert.match(appIndexRoute, /task", "backfill"/);
+  assert.doesNotMatch(appIndexRoute, /task", "backfill"/);
   assert.match(appIndexRoute, /\/app\/daily-brief/);
   assert.doesNotMatch(dailyBriefRoute, />\s*Generate brief\s*</);
   assert.match(dailyBriefRoute, /Daily Brief scheduled for 7:00am/);
@@ -313,22 +312,23 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(onboardingRoute, /TaskPageHeader/);
   assert.match(
     onboardingRoute,
-    /Complete the below information to get your first Daily Brief/,
+    /Jefe is importing your Shopify data in the background/,
   );
   assert.match(onboardingRoute, /not set in stone/);
   assert.match(onboardingRoute, /Manager Settings whenever you want/);
-  assert.match(onboardingRoute, /Required setup/);
-  assert.match(onboardingRoute, /Optional setup/);
-  assert.match(onboardingRoute, /Complete these inputs so Jefe can prepare/);
-  assert.match(onboardingRoute, /CollapsibleSetupHeader/);
-  assert.match(onboardingRoute, /requiredExpanded/);
-  assert.match(onboardingRoute, /optionalExpanded/);
+  assert.match(onboardingRoute, /Required/);
+  assert.match(onboardingRoute, /Your setup/);
+  assert.match(onboardingRoute, /Recommended while you wait/);
+  assert.match(onboardingRoute, /Unlocked when products are ready/);
+  assert.doesNotMatch(onboardingRoute, /CollapsibleSetupHeader/);
+  assert.doesNotMatch(onboardingRoute, /requiredExpanded/);
+  assert.doesNotMatch(onboardingRoute, /optionalExpanded/);
   assert.match(
     onboardingRoute,
-    /These settings are optional for now, but recommended/,
+    /These settings are optional now but recommended later/,
   );
   assert.match(onboardingRoute, /requiredTaskSteps/);
-  assert.match(onboardingRoute, /requiredTasksComplete/);
+  assert.doesNotMatch(onboardingRoute, /requiredTasksComplete/);
   assert.doesNotMatch(onboardingRoute, /completeOptionalSteps/);
   assert.doesNotMatch(
     onboardingRoute,
@@ -345,16 +345,12 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.doesNotMatch(onboardingRoute, /\/app\/manager-settings/);
   assert.match(onboardingRoute, /readiness\.briefReady/);
   assert.match(onboardingRoute, /"\/app\/daily-brief"/);
-  assert.match(onboardingRoute, /"\/app\/onboarding\?task=backfill"/);
-  assert.match(
-    onboardingRoute,
-    /data\.backfillProgress\?\.briefReady \? "Complete" : "Continue"/,
-  );
+  assert.doesNotMatch(onboardingRoute, /"\/app\/onboarding\?task=backfill"/);
+  assert.match(onboardingRoute, /Waiting for orders and insights to finish importing/);
   assert.match(onboardingRoute, /Back/);
-  assert.match(onboardingRoute, /backfill/);
-  assert.match(onboardingRoute, /Importing your shop data/);
+  assert.doesNotMatch(onboardingRoute, /task === "backfill"/);
   assert.match(onboardingRoute, /365 days of Shopify history/);
-  assert.match(onboardingRoute, /Shopify data import/);
+  assert.match(onboardingRoute, /Jefe setup/);
   assert.match(onboardingRoute, /BackfillStatusRow/);
   assert.match(onboardingRoute, /loadCurrentBackfillCounts/);
   assert.match(onboardingRoute, /prisma\.product\.count/);
@@ -362,16 +358,10 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(onboardingRoute, /Math\.max/);
   assert.match(onboardingRoute, /useRevalidator/);
   assert.match(onboardingRoute, /BACKFILL_POLL_INTERVAL_MS/);
-  assert.match(
-    onboardingRoute,
-    /data\.backfillProgress\.briefReady \? "Complete" : "Continue"/,
-  );
-  assert.match(onboardingRoute, /primaryUrl="\/app\/daily-brief"/);
-  assert.match(onboardingRoute, /primaryDisabled=\{!data\.backfillProgress\.briefReady\}/);
+  assert.match(onboardingRoute, /Open Daily Brief/);
+  assert.match(onboardingRoute, /disabled=\{!ready\}/);
   assert.match(onboardingRoute, /formatBackfillImportCount/);
-  assert.match(onboardingRoute, /Shop details/);
-  assert.match(onboardingRoute, /Store details connected/);
-  assert.match(onboardingRoute, /Webhook subscriptions active/);
+  assert.match(onboardingRoute, /Insights ready/);
   assert.match(onboardingRoute, /return "Queued"/);
   assert.match(onboardingRoute, /return "Importing"/);
   assert.match(onboardingRoute, /Imported \$\{processed\} of \$\{total\}/);

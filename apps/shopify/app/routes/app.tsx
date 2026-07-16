@@ -51,7 +51,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     briefReady = readiness.briefReady;
 
     if (!briefReady && !allowedBeforeOnboarding) {
-      throw redirect("/app/onboarding?task=backfill");
+      throw redirect("/app/onboarding");
     }
 
     // Completed onboarding URLs are redirected by the onboarding route itself.
@@ -119,13 +119,9 @@ export default function App() {
     });
   }
 
-  const onboardingSearch = new URLSearchParams(location.search);
-  const onboardingTask = onboardingSearch.get("task");
   const inFirstInstallOnboarding =
     !onboardingComplete ||
-    (location.pathname === "/app/onboarding" &&
-      onboardingTask === "backfill" &&
-      !briefReady);
+    (location.pathname === "/app/onboarding" && !briefReady);
 
   if (inFirstInstallOnboarding) {
     return (

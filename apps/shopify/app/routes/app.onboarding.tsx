@@ -49,9 +49,6 @@ import { getDailyBriefReadiness } from "../services/daily-brief-readiness.server
 import { HOUSE_RULE_DEFAULTS } from "../services/house-rules-policy";
 import {
   BACKFILL_DOMAINS,
-  getShopBackfillProgress,
-  queueInstallShopifyBackfill,
-  splitScopes,
 } from "../services/shopify-backfill-status.server";
 
 const BACKFILL_POLL_INTERVAL_MS = 5000;
@@ -179,6 +176,7 @@ type FocusedOptionalStep = {
   status: string;
   href: string;
   skippable: boolean;
+  unlockReason: string | null;
 };
 
 type FocusedOnboardingState = {
@@ -196,7 +194,6 @@ const onboardingTasks = [
   "klaviyo",
   "brand-voice",
   "protected-products",
-  "backfill",
 ] as const;
 
 type OnboardingTask = (typeof onboardingTasks)[number];
@@ -212,25 +209,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
   });
-  let setupProgress = await getShopBackfillProgress(prisma, {
+  const readiness = await getDailyBriefReadiness(prisma, {
+    merchantId: merchant.id,
     shopId: shop.id,
+    shopDomain: session.shop,
+    sessionId: session.id,
+    scopes: session.scope?.split(",").filter(Boolean) ?? [],
+    source: "onboarding_background_import",
+    generateIfImportComplete: true,
   });
-  const hasBackfillRows =
-    setupProgress &&
-    (setupProgress.jobs.length > 0 ||
-      Object.values(setupProgress.statuses).some(Boolean));
-
-  if (setupProgress && !hasBackfillRows) {
-    await queueInstallShopifyBackfill(prisma, {
-      shopDomain: session.shop,
-      sessionId: session.id,
-      scopes: splitScopes(session.scope),
-      rawPayload: { source: "onboarding_backfill_guard" },
-    });
-    setupProgress = await getShopBackfillProgress(prisma, {
-      shopId: shop.id,
-    });
-  }
 
   const [goals, houseRule, products, cogsStats, onboarding] = await Promise.all(
     [
@@ -270,35 +257,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       getOnboardingState(prisma, shop.id),
     ],
   );
-  const shouldLoadBackfillProgress =
-    task === "backfill" ||
-    onboarding.onboardingComplete ||
-    (!task && onboarding.requiredOnboardingComplete);
-  const backfillProgress =
-    shouldLoadBackfillProgress
-      ? await buildBackfillProgressView(
-          prisma,
-          { merchantId: merchant.id, shopId: shop.id },
-          await getDailyBriefReadiness(prisma, {
-            merchantId: merchant.id,
-            shopId: shop.id,
-            shopDomain: session.shop,
-            sessionId: session.id,
-            scopes: session.scope?.split(",").filter(Boolean) ?? [],
-            source: "onboarding_backfill_task",
-            generateIfImportComplete: true,
-          }),
-        )
-      : null;
+  const backfillProgress = await buildBackfillProgressView(
+    prisma,
+    { merchantId: merchant.id, shopId: shop.id },
+    readiness,
+  );
 
-  if (onboarding.onboardingComplete) {
-    if (backfillProgress?.briefReady) {
-      throw redirect("/app/daily-brief");
-    }
-
-    if (task !== "backfill") {
-      throw redirect("/app/onboarding?task=backfill");
-    }
+  if (onboarding.onboardingComplete && backfillProgress.briefReady) {
+    throw redirect("/app/daily-brief");
   }
 
   return {
@@ -492,8 +458,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
 
-    await completeOnboarding(prisma, shop.id);
-
     const readiness = await getDailyBriefReadiness(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -504,9 +468,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       generateIfImportComplete: true,
     });
 
-    throw redirect(
-      readiness.briefReady ? "/app/daily-brief" : "/app/onboarding?task=backfill",
-    );
+    if (!readiness.briefReady) {
+      return {
+        ok: false,
+        message:
+          "Waiting for orders and insights to finish importing before Daily Brief opens.",
+      };
+    }
+
+    await completeOnboarding(prisma, shop.id);
+
+    throw redirect("/app/daily-brief");
   }
 
   return { ok: false, message: "Unknown onboarding action." };
@@ -596,12 +568,6 @@ export default function Onboarding() {
   );
   const approvalModeDirty =
     approvalMode !== "" && approvalMode !== initialApprovalMode;
-  const requiredHeaderSteps = (data.onboarding.requiredSetup ?? []).filter(
-    (step) => step.key !== "store_review",
-  );
-  const requiredHeaderComplete =
-    requiredHeaderSteps.length > 0 &&
-    requiredHeaderSteps.every((step) => step.complete);
   const updateGoalField = (field: keyof typeof goalsForm, value: string) => {
     setGoalsForm((current) => ({ ...current, [field]: value }));
   };
@@ -631,23 +597,14 @@ export default function Onboarding() {
   };
 
   useEffect(() => {
-    if (
-      data.task !== "backfill" ||
-      data.backfillProgress?.briefReady
-    ) {
-      return;
-    }
+    if (data.task || data.backfillProgress.briefReady) return;
 
     const interval = setInterval(() => {
       revalidator.revalidate();
     }, BACKFILL_POLL_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [
-    data.backfillProgress?.briefReady,
-    data.task,
-    revalidator,
-  ]);
+  }, [data.backfillProgress.briefReady, data.task, revalidator]);
 
   return (
     <Page>
@@ -659,30 +616,22 @@ export default function Onboarding() {
                 Onboarding
               </Text>
               <Text as="p" variant="bodyLg" tone="subdued">
-                Complete the below information to get your first Daily Brief.
+                Jefe is importing your Shopify data in the background.
+                While that runs, complete the setup steps below.
               </Text>
               <Text as="p" variant="bodyMd" tone="subdued">
                 These settings are not set in stone. You can edit them in
                 Manager Settings whenever you want.
               </Text>
             </BlockStack>
-            {requiredHeaderComplete ? (
-              <Form method="post">
-                <input
-                  type="hidden"
-                  name="intent"
-                  value="complete-onboarding"
-                />
-                <Button submit variant="primary">
-                  {data.backfillProgress?.briefReady ? "Complete" : "Continue"}
-                </Button>
-              </Form>
-            ) : null}
           </InlineStack>
         ) : null}
 
         {!data.task ? (
-          <FocusedOnboardingPanel onboarding={data.onboarding} />
+          <FocusedOnboardingPanel
+            onboarding={data.onboarding}
+            backfillProgress={data.backfillProgress}
+          />
         ) : null}
 
         {actionData ? (
@@ -1239,48 +1188,6 @@ export default function Onboarding() {
           </BlockStack>
         ) : null}
 
-        {data.task === "backfill" && data.backfillProgress ? (
-          <BlockStack gap="500">
-            <TaskPageHeader
-              title={taskPageTitle(data.task)}
-              subtitle={taskPageSubtitle(data.task)}
-              primaryLabel={
-                data.backfillProgress.briefReady ? "Complete" : "Continue"
-              }
-              primaryUrl="/app/daily-brief"
-              primaryDisabled={!data.backfillProgress.briefReady}
-            />
-
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack
-                  align="space-between"
-                  blockAlign="center"
-                  gap="300"
-                >
-                  <BlockStack gap="050">
-                    <Text as="h2" variant="headingMd">
-                      Shopify data import
-                    </Text>
-                    <Text as="p" variant="bodyMd" tone="subdued">
-                      Each area updates as Shopify makes its data available.
-                    </Text>
-                  </BlockStack>
-                </InlineStack>
-
-                <BlockStack gap="150">
-                  {data.backfillProgress.statuses.map((status) => (
-                    <BackfillStatusRow key={status.domain} status={status} />
-                  ))}
-                </BlockStack>
-
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Progress will update automatically.
-                </Text>
-              </BlockStack>
-            </Card>
-          </BlockStack>
-        ) : null}
       </BlockStack>
     </Page>
   );
@@ -1470,113 +1377,282 @@ function CogsProductsTable({
 
 function FocusedOnboardingPanel({
   onboarding,
+  backfillProgress,
 }: {
   onboarding: FocusedOnboardingState;
+  backfillProgress: BackfillProgress;
 }) {
   const requiredTaskSteps = (onboarding.requiredSetup ?? []).filter(
     (step) => step.key !== "store_review",
   );
-  const completeRequiredTaskSteps = requiredTaskSteps.filter(
-    (step) => step.complete,
-  ).length;
-  const requiredTasksComplete =
-    requiredTaskSteps.length > 0 &&
-    completeRequiredTaskSteps === requiredTaskSteps.length;
-  const [requiredExpandedOverride, setRequiredExpandedOverride] = useState<
-    boolean | null
-  >(null);
-  const [optionalExpanded, setOptionalExpanded] = useState(true);
   const optionalSteps = onboarding.steps
     .filter((step) =>
       [
-        "brand_voice",
         "klaviyo",
+        "brand_voice",
         "product_costs",
         "protected_products",
       ].includes(step.key),
     )
     .sort((a, b) => optionalStepOrder(a.key) - optionalStepOrder(b.key));
-
-  const requiredExpanded = requiredExpandedOverride ?? !requiredTasksComplete;
+  const recommendedWhileWaiting = optionalSteps.filter((step) =>
+    ["klaviyo", "brand_voice"].includes(step.key),
+  );
+  const productDependentSteps = optionalSteps.filter((step) =>
+    ["product_costs", "protected_products"].includes(step.key),
+  );
 
   return (
     <BlockStack gap="400">
-      <Card>
-        <BlockStack gap="300">
-          <CollapsibleSetupHeader
-            title="Required setup"
-            subtitle="Complete these inputs so Jefe can prepare your first Daily Brief."
-            expanded={requiredExpanded}
-            onToggle={() =>
-              setRequiredExpandedOverride(
-                (expanded) => !(expanded ?? !requiredTasksComplete),
-              )
-            }
-          />
-          {requiredExpanded ? (
-            <BlockStack gap="150">
-              {requiredTaskSteps.map((step) => (
-                <FocusedRequiredStep key={step.key} step={step} />
-              ))}
-            </BlockStack>
-          ) : null}
-        </BlockStack>
-      </Card>
+      <OnboardingStatusCard
+        onboarding={onboarding}
+        backfillProgress={backfillProgress}
+      />
 
-      {requiredTasksComplete ? (
-        <Card>
+      <Card>
+        <BlockStack gap="400">
+          <BlockStack gap="100">
+            <Text as="h2" variant="headingMd">
+              Your setup
+            </Text>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              Complete what you can now. Product-specific settings unlock as
+              Shopify data becomes available.
+            </Text>
+          </BlockStack>
+
           <BlockStack gap="300">
-            <CollapsibleSetupHeader
-              title="Optional setup"
-              subtitle="These settings are optional for now, but recommended once your first Daily Brief is ready."
-              expanded={optionalExpanded}
-              onToggle={() => setOptionalExpanded((expanded) => !expanded)}
-            />
-            {optionalExpanded ? (
+            <BlockStack gap="150">
+              <Text as="h3" variant="headingSm">
+                Required
+              </Text>
               <BlockStack gap="150">
-                {optionalSteps.map((step) => (
+                {requiredTaskSteps.map((step) => (
+                  <FocusedRequiredStep key={step.key} step={step} />
+                ))}
+              </BlockStack>
+            </BlockStack>
+
+            <BlockStack gap="150">
+              <BlockStack gap="050">
+                <Text as="h3" variant="headingSm">
+                  Recommended while you wait
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  These settings are optional now but recommended later.
+                </Text>
+              </BlockStack>
+              <BlockStack gap="150">
+                {recommendedWhileWaiting.map((step) => (
                   <FocusedOptionalStep key={step.key} step={step} />
                 ))}
               </BlockStack>
-            ) : null}
+            </BlockStack>
+
+            <BlockStack gap="150">
+              <BlockStack gap="050">
+                <Text as="h3" variant="headingSm">
+                  Unlocked when products are ready
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Product costs are recommended but do not block onboarding.
+                </Text>
+              </BlockStack>
+              <BlockStack gap="150">
+                {productDependentSteps.map((step) => (
+                  <FocusedOptionalStep key={step.key} step={step} />
+                ))}
+              </BlockStack>
+            </BlockStack>
           </BlockStack>
-        </Card>
-      ) : null}
+        </BlockStack>
+      </Card>
+
+      <JefeSetupCard backfillProgress={backfillProgress} />
+      <DailyBriefReadinessCard
+        onboarding={onboarding}
+        backfillProgress={backfillProgress}
+      />
     </BlockStack>
   );
 }
 
-function CollapsibleSetupHeader({
-  title,
-  subtitle,
-  expanded,
-  onToggle,
+function OnboardingStatusCard({
+  onboarding,
+  backfillProgress,
 }: {
-  title: string;
-  subtitle?: string;
-  expanded: boolean;
-  onToggle: () => void;
+  onboarding: FocusedOnboardingState;
+  backfillProgress: BackfillProgress;
 }) {
-  return (
-    <InlineStack align="space-between" blockAlign="start" gap="300">
-      <BlockStack gap="050">
-        <Text as="h3" variant="headingMd">
-          {title}
-        </Text>
-        {subtitle ? (
-          <Text as="p" variant="bodySm" tone="subdued">
-            {subtitle}
+  const nextRequiredStep = firstIncompleteRequiredStep(onboarding);
+  const productCostStep = findStep(onboarding, "product_costs");
+
+  if (nextRequiredStep) {
+    return (
+      <Card>
+        <InlineStack align="space-between" blockAlign="center" gap="300">
+          <BlockStack gap="050">
+            <Text as="h2" variant="headingMd">
+              Next: {nextRequiredStep.label}
+            </Text>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              {nextRequiredStep.reason}
+            </Text>
+          </BlockStack>
+          <Button url={nextRequiredStep.href} variant="primary">
+            {setupButtonLabel(nextRequiredStep)}
+          </Button>
+        </InlineStack>
+      </Card>
+    );
+  }
+
+  if (
+    productCostStep &&
+    ["available", "needs_attention"].includes(productCostStep.status)
+  ) {
+    return (
+      <Card>
+        <InlineStack align="space-between" blockAlign="center" gap="300">
+          <BlockStack gap="050">
+            <Text as="h2" variant="headingMd">
+              Products are ready.
+            </Text>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              You can now add product costs to improve margin confidence.
+            </Text>
+          </BlockStack>
+          <Button url={productCostStep.href} variant="primary">
+            Add product costs
+          </Button>
+        </InlineStack>
+      </Card>
+    );
+  }
+
+  if (!backfillProgress.briefReady) {
+    return (
+      <Card>
+        <BlockStack gap="200">
+          <Text as="h2" variant="headingMd">
+            You have completed your setup.
           </Text>
-        ) : null}
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Jefe is still importing Shopify data. Your first Daily Brief will
+            unlock when orders and insights are ready.
+          </Text>
+          <InlineStack gap="200">
+            <Button url="/app/klaviyo-winback">Connect Klaviyo</Button>
+            <Button url="/app/onboarding?task=brand-voice">
+              Set brand voice
+            </Button>
+          </InlineStack>
+        </BlockStack>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <InlineStack align="space-between" blockAlign="center" gap="300">
+        <BlockStack gap="050">
+          <Text as="h2" variant="headingMd">
+            Jefe is ready.
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Your first Daily Brief is ready.
+          </Text>
+        </BlockStack>
+        <Form method="post">
+          <input type="hidden" name="intent" value="complete-onboarding" />
+          <Button submit variant="primary">
+            Open Daily Brief
+          </Button>
+        </Form>
+      </InlineStack>
+    </Card>
+  );
+}
+
+function JefeSetupCard({
+  backfillProgress,
+}: {
+  backfillProgress: BackfillProgress;
+}) {
+  const visibleDomains = new Set([
+    "products",
+    "orders",
+    "inventory",
+    "derived_metrics",
+  ]);
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">
+            Jefe setup
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Jefe is importing up to 365 days of Shopify history so the first
+            Daily Brief can use recent orders, products, inventory, refunds and
+            customer context.
+          </Text>
+        </BlockStack>
+        <BlockStack gap="150">
+          {backfillProgress.statuses
+            .filter((status) => visibleDomains.has(status.domain))
+            .map((status) => (
+              <BackfillStatusRow key={status.domain} status={status} />
+            ))}
+        </BlockStack>
+        <Text as="p" variant="bodySm" tone="subdued">
+          Progress will update automatically.
+        </Text>
       </BlockStack>
-      <Button
-        onClick={onToggle}
-        disclosure={expanded ? "up" : "down"}
-        ariaExpanded={expanded}
-      >
-        {expanded ? "Hide" : "Show"}
-      </Button>
-    </InlineStack>
+    </Card>
+  );
+}
+
+function DailyBriefReadinessCard({
+  onboarding,
+  backfillProgress,
+}: {
+  onboarding: FocusedOnboardingState;
+  backfillProgress: BackfillProgress;
+}) {
+  const nextRequiredStep = firstIncompleteRequiredStep(onboarding);
+  const ready = onboarding.requiredOnboardingComplete && backfillProgress.briefReady;
+  const reason = ready
+    ? "Your first Daily Brief is ready."
+    : nextRequiredStep
+      ? `Complete ${nextRequiredStep.label} to continue.`
+      : "Waiting for orders and insights to finish importing.";
+
+  return (
+    <Card>
+      <InlineStack align="space-between" blockAlign="center" gap="300">
+        <BlockStack gap="050">
+          <InlineStack as="span" gap="150" blockAlign="center" wrap={false}>
+            <Text as="span" variant="headingMd">
+              Daily Brief
+            </Text>
+            <Badge tone={ready ? "success" : "attention"}>
+              {ready ? "Ready" : "Locked"}
+            </Badge>
+          </InlineStack>
+          <Text as="p" variant="bodySm" tone="subdued">
+            {reason}
+          </Text>
+        </BlockStack>
+        <Form method="post">
+          <input type="hidden" name="intent" value="complete-onboarding" />
+          <Button submit variant="primary" disabled={!ready}>
+            Open Daily Brief
+          </Button>
+        </Form>
+      </InlineStack>
+    </Card>
   );
 }
 
@@ -1622,6 +1698,7 @@ function FocusedRequiredStep({ step }: { step: FocusedRequiredStep }) {
 
 function FocusedOptionalStep({ step }: { step: FocusedOptionalStep }) {
   const navigate = useNavigate();
+  const locked = step.status === "locked";
 
   return (
     <Box
@@ -1659,8 +1736,8 @@ function FocusedOptionalStep({ step }: { step: FocusedOptionalStep }) {
           </Text>
         </BlockStack>
         <InlineStack gap="200">
-          <Button onClick={() => navigate(step.href)}>
-            {setupButtonLabel(step)}
+          <Button onClick={() => navigate(step.href)} disabled={locked}>
+            {locked ? "Locked" : setupButtonLabel(step)}
           </Button>
         </InlineStack>
       </InlineStack>
@@ -1689,9 +1766,9 @@ function setupButtonLabel(step: {
 
 function optionalStepOrder(key: string) {
   const order: Record<string, number> = {
-    product_costs: 0,
-    klaviyo: 1,
-    brand_voice: 2,
+    klaviyo: 0,
+    brand_voice: 1,
+    product_costs: 2,
     protected_products: 3,
   };
 
@@ -1701,13 +1778,16 @@ function optionalStepOrder(key: string) {
 function optionalStepBadge(step: FocusedOptionalStep) {
   if (["complete", "skipped"].includes(step.status))
     return setupStepLabel(step.status);
+  if (step.status === "locked") return "Locked";
   if (step.key === "product_costs") return "Recommended";
   return "Optional";
 }
 
 function optionalStepDescription(step: FocusedOptionalStep) {
   if (step.key === "product_costs") {
-    return "Margin insights will be limited until costs are added.";
+    return step.status === "locked"
+      ? (step.unlockReason ?? "Available when products finish importing.")
+      : "Margin insights will be limited until costs are added.";
   }
   if (step.key === "klaviyo") {
     return "Prepare winback drafts. Live sends remain disabled.";
@@ -1716,10 +1796,22 @@ function optionalStepDescription(step: FocusedOptionalStep) {
     return "Guide future email and campaign copy.";
   }
   if (step.key === "protected_products") {
-    return "Mark products Jefe should not discount casually.";
+    return step.status === "locked"
+      ? (step.unlockReason ?? "Available when products finish importing.")
+      : "Mark products Jefe should not discount casually.";
   }
 
   return step.description;
+}
+
+function firstIncompleteRequiredStep(onboarding: FocusedOnboardingState) {
+  return (onboarding.requiredSetup ?? [])
+    .filter((step) => step.key !== "store_review")
+    .find((step) => !step.complete);
+}
+
+function findStep(onboarding: FocusedOnboardingState, key: string) {
+  return onboarding.steps.find((step) => step.key === key);
 }
 
 function requiredStepStatusLabel(step: FocusedRequiredStep) {
@@ -1847,7 +1939,7 @@ function formatBackfillStatusLabel(status: string) {
 
 function formatBackfillDomain(domain: string) {
   if (domain === "shop") return "Shop details";
-  if (domain === "derived_metrics") return "Derived metrics";
+  if (domain === "derived_metrics") return "Insights";
   return formatStatus(domain);
 }
 
@@ -1870,6 +1962,14 @@ function formatBackfillImportCount(status: BackfillStatus) {
     return status.status === "queued"
       ? "Analysing webhook setup"
       : "Configuring webhook subscriptions";
+  }
+
+  if (status.domain === "derived_metrics") {
+    if (status.status === "complete" || status.status === "bulk_imported") {
+      return "Insights ready";
+    }
+
+    return status.status === "queued" ? "Analysing" : "Building insights";
   }
 
   const processed = status.recordsProcessed.toLocaleString("en-GB");
@@ -1976,7 +2076,6 @@ function taskPageTitle(task: OnboardingTask) {
     klaviyo: "Connect Klaviyo",
     "brand-voice": "Set brand voice",
     "protected-products": "Protect hero products",
-    backfill: "Importing your shop data",
   };
 
   return titles[task];
@@ -1993,8 +2092,6 @@ function taskPageSubtitle(task: OnboardingTask) {
       "Connect Klaviyo so Jefe can prepare winback drafts. Live sends remain disabled.",
     "brand-voice": "Guide future email and campaign copy.",
     "protected-products": "Mark products Jefe should not discount casually.",
-    backfill:
-      "Jefe is importing up to 365 days of Shopify history so your first Daily Brief can use recent orders, products, inventory, refunds and customer context.",
   };
 
   return subtitles[task];
