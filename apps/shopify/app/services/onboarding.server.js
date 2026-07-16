@@ -49,7 +49,7 @@ const STEP_DEFINITIONS = [
   },
   {
     key: "approval_mode",
-    label: "Choose approval mode",
+    label: "Confirm approval mode",
     description:
       "Decide how cautious Jefe should be with recommendations and future action drafts.",
     href: "/app/daily-brief",

@@ -36,8 +36,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app/daily-brief${url.search}`);
   }
 
-  url.searchParams.set("task", "backfill");
-  throw redirect(`/app/onboarding?${url.searchParams.toString()}`);
+  throw redirect(`/app/onboarding${url.search}`);
 };
 
 export default function AppIndex() {

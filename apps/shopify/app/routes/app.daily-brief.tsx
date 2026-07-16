@@ -95,7 +95,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   if (!readiness.briefReady) {
-    throw redirect("/app/onboarding?task=backfill");
+    throw redirect("/app/onboarding");
   }
 
   const latestBrief = readiness.latestBrief;
@@ -113,7 +113,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   if (!brief) {
-    throw redirect("/app/onboarding?task=backfill");
+    throw redirect("/app/onboarding");
   }
 
   if (brief) {
