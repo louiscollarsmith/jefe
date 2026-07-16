@@ -2,12 +2,11 @@
 
 client_id = "c7d72018569103d47cc8dffb3980e89a"
 name = "jefe"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://jefe-production.up.railway.app"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -62,4 +61,4 @@ api_version = "2026-07"
 scopes = "read_products,read_orders,read_all_orders,read_inventory,read_locations,read_customers"
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = [ "https://jefe-production.up.railway.app/auth/callback" ]

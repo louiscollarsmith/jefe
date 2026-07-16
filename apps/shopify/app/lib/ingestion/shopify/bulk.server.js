@@ -116,6 +116,14 @@ export async function importShopifyBulkResult(prisma, input) {
     processed += 1;
   }
 
+  const totals =
+    input.domain === "orders"
+      ? {
+          ...importer.totals,
+          refunds: await prisma.refund.count({ where: { shopId: shop.id } }),
+        }
+      : importer.totals;
+
   logger.info("Shopify bulk JSONL imported", {
     shopDomain: shop.shopDomain,
     domain: input.domain,
@@ -125,7 +133,7 @@ export async function importShopifyBulkResult(prisma, input) {
 
   return {
     recordsProcessed: processed,
-    ...importer.totals,
+    ...totals,
   };
 }
 

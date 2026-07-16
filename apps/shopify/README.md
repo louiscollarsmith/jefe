@@ -33,7 +33,7 @@ ENABLE_DUMMY_STORE_LOADER=true
 For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The MVP app config is read-only, so only use this temporary local scope override on a development store when you need the fixture writer:
 
 ```shell
-SCOPES=read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,write_orders
+SCOPES=read_locations,read_products,write_products,read_inventory,write_inventory,read_orders,read_all_orders,write_orders
 ```
 
 The loader uses the authenticated Shopify Admin token to create fixture products, variants, inventory levels, test orders and one refund. After a successful run it writes an app-installation metafield marker in Shopify, so the button is disabled for that store.

@@ -39,12 +39,15 @@ export function parseChangelogMarkdown(markdown) {
 
   for (const rawLine of markdown.split(/\r?\n/)) {
     const line = rawLine.trim();
-    const dateMatch = line.match(/^## (\d{4}-\d{2}-\d{2})$/);
+    const dateMatch = line.match(/^## (\d{4})[-.](\d{2})[-.](\d{2})$/);
     const sectionMatch = line.match(/^### (.+)$/);
     const itemMatch = line.match(/^- (.+)$/);
 
     if (dateMatch) {
-      currentEntry = { date: dateMatch[1], sections: [] };
+      currentEntry = {
+        date: `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`,
+        sections: [],
+      };
       entries.push(currentEntry);
       currentSection = null;
       continue;
@@ -100,7 +103,7 @@ async function readChangelog(cwd) {
     try {
       const markdown = await readFile(candidate, "utf8");
 
-      if (markdown.trimStart().startsWith("# Changelog")) {
+      if (parseChangelogMarkdown(markdown).length > 0) {
         return markdown;
       }
     } catch (error) {
