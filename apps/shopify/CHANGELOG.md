@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-07-17
+
+### Added
+
+- Added product cost setup with Shopify cost import, sold-revenue coverage, prioritised missing-cost actions and bulk cost rules.
+- Added COGS diagnostics and Shopify cost re-sync controls for development.
+- Added Shopify product links to product-cost rows so operators can open the source product while filling costs.
+
+### Changed
+
+- Updated margin confidence to use sold-revenue product-cost coverage.
+- Updated product-cost Shopify links so product and variant names open their Shopify records directly in a new tab.
+
+### Fixed
+
+- Fixed embedded app redirects so onboarding, setup saves and Daily Brief handoffs keep pages loading inside Shopify.
+- Fixed Manager Settings edit links so completed shops can update goals, House Rules, approval mode, product costs, brand voice and protected products without returning to onboarding.
+- Fixed Shopify cost webhooks so variant Cost changes in Shopify update product costs in Jefe instead of staying blank.
+
+---
+
 ## 2026-07-16
 
 ### Added

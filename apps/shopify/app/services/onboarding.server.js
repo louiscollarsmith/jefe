@@ -5,12 +5,18 @@ import {
   EMAIL_FREQUENCY_SCOPES,
   HOUSE_RULE_DEFAULTS,
 } from "./house-rules-policy.js";
+import {
+  COGS_SOURCE_MANUAL_ONBOARDING,
+  getCogsCoverage,
+  recomputeCogsCoverage,
+  upsertVariantCost,
+} from "./cogs.server.js";
 import { getShopBackfillProgress } from "./shopify-backfill-status.server.js";
 export { HOUSE_RULE_DEFAULTS } from "./house-rules-policy.js";
 
 /** @type {import("@prisma/client").GoalHorizon[]} */
 export const GOAL_HORIZONS = ["THREE_MONTHS", "SIX_MONTHS", "TWELVE_MONTHS"];
-export const COGS_CONFIDENCE_LEVELS = ["missing", "estimated", "confirmed"];
+export const COGS_CONFIDENCE_LEVELS = ["low", "medium", "high"];
 export const APPROVAL_MODES = ["very_cautious", "balanced", "experimental"];
 export const ONBOARDING_STEP_KEYS = [
   "business_goal",
@@ -73,8 +79,8 @@ const STEP_DEFINITIONS = [
   {
     key: "product_costs",
     label: "Confirm product costs",
-    description: "Add or confirm COGS so Jefe can calculate margin.",
-    href: "/app/onboarding?task=product-costs&cogs=1",
+    description: "Confirm the highest-impact product costs first.",
+    href: "/app/onboarding/product-costs",
     requiredData: ["products"],
   },
   {
@@ -383,35 +389,9 @@ export async function loadMerchantPolicyContext(prisma, shopId) {
 export async function saveOnboardingCogsInputs(prisma, input) {
   await markOnboardingStarted(prisma, input.shopId);
 
-  const now = new Date();
   for (const row of input.rows) {
     const costAmount = decimalStringOrNull(row.costAmount);
-
-    if (!costAmount) {
-      await prisma.cogsInput.updateMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          variantId: row.variantId,
-          source: "manual_onboarding",
-          effectiveTo: null,
-        },
-        data: { effectiveTo: now },
-      });
-      continue;
-    }
-
-    const confidenceLevel = "confirmed";
-    const existing = await prisma.cogsInput.findFirst({
-      where: {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        variantId: row.variantId,
-        source: "manual_onboarding",
-        effectiveTo: null,
-      },
-    });
-    const data = {
+    await upsertVariantCost(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       productId: row.productId || null,
@@ -419,22 +399,15 @@ export async function saveOnboardingCogsInputs(prisma, input) {
       sku: row.sku || null,
       costAmount,
       currency: "GBP",
-      source: "manual_onboarding",
-      confidence: "1.0000",
-      confidenceLevel,
+      source: COGS_SOURCE_MANUAL_ONBOARDING,
+      confidenceLevel: costAmount ? "confirmed" : "missing",
       confirmedByMerchant: true,
-      effectiveFrom: now,
+      missingReason: costAmount ? null : "merchant_cleared_cost",
       rawPayload: {
         onboarding: true,
-        confidenceState: confidenceLevel,
+        confidenceState: costAmount ? "confirmed" : "missing",
       },
-    };
-
-    if (existing) {
-      await prisma.cogsInput.update({ where: { id: existing.id }, data });
-    } else {
-      await prisma.cogsInput.create({ data });
-    }
+    });
   }
 
   return updateShopCogsCompletion(prisma, input.shopId);
@@ -445,17 +418,17 @@ export async function saveOnboardingCogsInputs(prisma, input) {
  * @param {string} shopId
  */
 export async function updateShopCogsCompletion(prisma, shopId) {
-  const stats = await calculateCogsCompletion(prisma, shopId);
+  const stats = await recomputeCogsCoverage(prisma, shopId);
 
   await prisma.shop.update({
     where: { id: shopId },
     data: {
-      cogsCompletionPercentage: stats.completionPercentage,
-      cogsConfidenceLevel: stats.confidenceLevel,
+      cogsCompletionPercentage: stats.usableRevenueCoveragePercent.toFixed(2),
+      cogsConfidenceLevel: stats.marginConfidence,
     },
   });
 
-  return stats;
+  return cogsCompletionView(stats);
 }
 
 /**
@@ -463,56 +436,7 @@ export async function updateShopCogsCompletion(prisma, shopId) {
  * @param {string} shopId
  */
 export async function calculateCogsCompletion(prisma, shopId) {
-  const [totalVariants, cogsInputs] = await Promise.all([
-    prisma.variant.count({ where: { shopId } }),
-    prisma.cogsInput.findMany({
-      where: {
-        shopId,
-        variantId: { not: null },
-        effectiveTo: null,
-      },
-      select: {
-        variantId: true,
-        confidenceLevel: true,
-        confirmedByMerchant: true,
-      },
-    }),
-  ]);
-
-  if (totalVariants === 0) {
-    return {
-      totalVariants,
-      variantsWithCogs: 0,
-      completionPercentage: "0.00",
-      confidenceLevel: "missing",
-    };
-  }
-
-  const covered = new Set(cogsInputs.map((input) => input.variantId));
-  const confirmed = new Set(
-    cogsInputs
-      .filter(
-        (input) =>
-          input.confidenceLevel === "confirmed" && input.confirmedByMerchant,
-      )
-      .map((input) => input.variantId),
-  );
-  const completionPercentage = ((covered.size / totalVariants) * 100).toFixed(
-    2,
-  );
-  const confidenceLevel =
-    covered.size === 0
-      ? "missing"
-      : covered.size === totalVariants && confirmed.size === totalVariants
-        ? "confirmed"
-        : "estimated";
-
-  return {
-    totalVariants,
-    variantsWithCogs: covered.size,
-    completionPercentage,
-    confidenceLevel,
-  };
+  return cogsCompletionView(await getCogsCoverage(prisma, shopId));
 }
 
 /**
@@ -532,12 +456,25 @@ export async function completeOnboarding(prisma, shopId) {
   });
 }
 
+/** @param {Awaited<ReturnType<typeof getCogsCoverage>>} coverage */
+function cogsCompletionView(coverage) {
+  return {
+    totalVariants: coverage.totalVariants,
+    variantsWithCogs:
+      coverage.variantsWithConfirmedCost +
+      coverage.variantsWithMerchantRuleCost,
+    completionPercentage: coverage.usableRevenueCoveragePercent.toFixed(2),
+    confidenceLevel: coverage.marginConfidence,
+    coverage,
+  };
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {string} shopId
  */
 export async function getOnboardingState(prisma, shopId) {
-  const [shop, backfillProgress, soldUnitCogsCoverage] = await Promise.all([
+  const [shop, backfillProgress, cogsCoverage] = await Promise.all([
     prisma.shop.findUnique({
       where: { id: shopId },
       include: {
@@ -589,7 +526,7 @@ export async function getOnboardingState(prisma, shopId) {
     approvalMode,
     brandVoiceComplete: Boolean(brandVoice),
     klaviyoConnected,
-    cogsCoveragePercent: soldUnitCogsCoverage.coveragePercentage,
+    cogsCoveragePercent: cogsCoverage.coveragePercentage,
     protectedProductsConfirmed: protectedProducts.length > 0,
     criticalRiskCount,
     winbackAudienceCount,
@@ -615,7 +552,7 @@ export async function getOnboardingState(prisma, shopId) {
   const recommendedNextStep = chooseRecommendedNextStep({
     steps,
     readiness,
-    cogsCoveragePercent: soldUnitCogsCoverage.coveragePercentage,
+    cogsCoveragePercent: cogsCoverage.coveragePercentage,
     criticalRiskCount,
     klaviyoConnected,
     winbackAudienceCount,
@@ -642,7 +579,7 @@ export async function getOnboardingState(prisma, shopId) {
     steps,
     moduleReadiness: buildModuleReadiness({
       readiness,
-      cogsCoveragePercent: soldUnitCogsCoverage.coveragePercentage,
+      cogsCoveragePercent: cogsCoverage.coveragePercentage,
       klaviyoConnected,
       goalsComplete,
       houseRulesComplete,
@@ -650,9 +587,9 @@ export async function getOnboardingState(prisma, shopId) {
     }),
     recommendedNextStep,
     approvalMode,
-    cogs: soldUnitCogsCoverage,
+    cogs: cogsCoverage,
     warnings: buildOnboardingWarnings({
-      cogsCoveragePercent: soldUnitCogsCoverage.coveragePercentage,
+      cogsCoveragePercent: cogsCoverage.coveragePercentage,
       productCostsSkipped:
         objectValue(metadata.steps.product_costs).status === "skipped",
     }),
@@ -665,58 +602,19 @@ export async function getOnboardingState(prisma, shopId) {
  * @param {string} shopId
  */
 export async function calculateSoldUnitCogsCoverage(prisma, shopId) {
-  const lineItems = await prisma.orderLineItem.findMany({
-    where: { shopId, variantId: { not: null } },
-    select: { variantId: true, quantity: true },
-  });
-  const variantIds = Array.from(
-    new Set(
-      lineItems
-        .map((lineItem) => lineItem.variantId)
-        .filter((variantId) => typeof variantId === "string"),
-    ),
-  );
-
-  if (lineItems.length === 0 || variantIds.length === 0) {
-    const stats = await calculateCogsCompletion(prisma, shopId);
-
-    return {
-      soldUnits: 0,
-      soldUnitsWithCogs: 0,
-      coveragePercentage: Number(stats.completionPercentage),
-      basis: "variant_count",
-    };
-  }
-
-  const cogsInputs = await prisma.cogsInput.findMany({
-    where: {
-      shopId,
-      variantId: { in: variantIds },
-      effectiveTo: null,
-    },
-    select: { variantId: true },
-  });
-  const coveredVariantIds = new Set(cogsInputs.map((input) => input.variantId));
-  const soldUnits = lineItems.reduce(
-    (total, lineItem) => total + Math.max(0, lineItem.quantity),
-    0,
-  );
-  const soldUnitsWithCogs = lineItems.reduce(
-    (total, lineItem) =>
-      coveredVariantIds.has(lineItem.variantId)
-        ? total + Math.max(0, lineItem.quantity)
-        : total,
-    0,
-  );
+  const coverage = await getCogsCoverage(prisma, shopId);
 
   return {
-    soldUnits,
-    soldUnitsWithCogs,
-    coveragePercentage:
-      soldUnits === 0
-        ? 0
-        : Number(((soldUnitsWithCogs / soldUnits) * 100).toFixed(2)),
-    basis: "sold_units",
+    soldUnits: coverage.soldUnitsTotal,
+    soldUnitsWithCogs:
+      coverage.soldUnitsConfirmedCost +
+      coverage.soldUnitsMerchantRuleCost,
+    soldRevenue: coverage.soldRevenueTotal,
+    soldRevenueWithCogs:
+      coverage.soldRevenueConfirmedCost +
+      coverage.soldRevenueMerchantRuleCost,
+    coveragePercentage: coverage.usableRevenueCoveragePercent,
+    basis: coverage.coverageBasis,
   };
 }
 
@@ -949,7 +847,7 @@ function buildOnboardingStep(definition, context) {
       ...base,
       status: "needs_attention",
       unlockReason:
-        "Margin confidence is limited because product costs are missing for most sold units.",
+        "Margin confidence is limited because product costs are missing for most sold revenue.",
     };
   }
 

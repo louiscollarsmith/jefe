@@ -6,7 +6,6 @@ import type {
 import { Fragment, type FormEvent, useEffect, useState } from "react";
 import {
   Form,
-  redirect,
   useActionData,
   useLoaderData,
   useNavigate,
@@ -199,7 +198,7 @@ const onboardingTasks = [
 type OnboardingTask = (typeof onboardingTasks)[number];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const url = new URL(request.url);
   const task = normalizeOnboardingTask(url.searchParams.get("task"));
   const shouldLoadCogsProducts =
@@ -343,7 +342,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const { merchant, shop } = await ensureOnboardingTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
@@ -1087,17 +1086,23 @@ export default function Onboarding() {
                   <input type="hidden" name="intent" value="save-cogs" />
                   <Banner
                     tone={
-                      data.cogsStats.confidenceLevel === "missing"
+                      data.cogsStats.confidenceLevel === "low"
                         ? "warning"
                         : "info"
                     }
                   >
                     <Text as="p" variant="bodyMd">
-                      Missing COGS is allowed. Jefe will show contribution
-                      margin with lower confidence until costs are estimated or
-                      confirmed.
+                      Product costs are recommended, not required. Margin
+                      confidence is based on sold revenue with confirmed or
+                      merchant-rule costs.
                     </Text>
                   </Banner>
+                  <Button
+                    onClick={() => navigate("/app/onboarding/product-costs")}
+                    variant="primary"
+                  >
+                    Open prioritised product cost setup
+                  </Button>
                   {!data.cogsProductsLoaded ? (
                     <BlockStack gap="300">
                       <Text as="p" variant="bodyMd" tone="subdued">

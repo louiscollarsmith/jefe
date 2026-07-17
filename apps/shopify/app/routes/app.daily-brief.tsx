@@ -1,5 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { redirect, useLoaderData, useNavigate } from "react-router";
+import { useLoaderData, useNavigate } from "react-router";
 import {
   Badge,
   Banner,
@@ -78,7 +78,7 @@ type DeliveryStatus = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,

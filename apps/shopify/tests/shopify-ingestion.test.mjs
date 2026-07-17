@@ -9,6 +9,10 @@ import {
 import { verifyShopifyWebhookHmac } from "../app/lib/shopify/webhook-hmac.server.js";
 import { processShopifyWebhook } from "../app/lib/ingestion/shopify/webhooks.server.js";
 import {
+  ensureShopifyTenant,
+  markShopifyInstallInactive,
+} from "../app/lib/ingestion/shopify/tenant.server.js";
+import {
   importShopifyBulkResult,
   parseJsonlStream,
   startShopifyBulkBackfill,
@@ -136,6 +140,7 @@ test("Shopify webhook ingestion dedupes and upserts products", async (t) => {
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
       include: {
         products: { include: { variants: true } },
+        cogsInputs: true,
         ledgerEvents: true,
       },
     });
@@ -146,9 +151,53 @@ test("Shopify webhook ingestion dedupes and upserts products", async (t) => {
     assert.equal(shop.products[0].variants.length, 1);
     assert.equal(
       shop.products[0].variants[0].inventoryItemExternalId,
-      `gid://shopify/InventoryItem/inv-${suffix}`,
+      "gid://shopify/InventoryItem/54200616911144",
     );
+    assert.equal(shop.cogsInputs.length, 0);
     assert.equal(shop.ledgerEvents.length, 1);
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+test("Shopify tenant is reactivated after reinstall", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const shopDomain = `reactivated-${suffix}.myshopify.com`;
+
+  try {
+    await ensureShopifyTenant(prisma, {
+      shopDomain,
+      accessTokenSessionId: `offline-${suffix}`,
+      scopes: ["read_products"],
+    });
+    await markShopifyInstallInactive(prisma, shopDomain);
+
+    const { shop } = await ensureShopifyTenant(prisma, {
+      shopDomain,
+      accessTokenSessionId: `offline-reinstalled-${suffix}`,
+      scopes: ["read_products", "read_inventory"],
+    });
+    const connector = await prisma.connectorAccount.findFirstOrThrow({
+      where: { shopId: shop.id, connector: "shopify" },
+    });
+
+    assert.equal(shop.status, "active");
+    assert.equal(shop.setupStatus, "installed");
+    assert.equal(connector.status, "active");
+    assert.deepEqual(connector.scopes, ["read_products", "read_inventory"]);
+    assert.equal(
+      connector.readTokenRef,
+      `shopify_session:offline-reinstalled-${suffix}`,
+    );
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
@@ -190,6 +239,7 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
         orders: { include: { lineItems: true, refunds: true } },
         inventoryLevels: true,
         customerIdentities: true,
+        cogsInputs: true,
         ledgerEvents: true,
       },
     });
@@ -209,11 +259,128 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
     assert.equal(shop.orders[0].lineItems.length, 1);
     assert.equal(shop.orders[0].refunds.length, 1);
     assert.equal(shop.inventoryLevels[0].available, 12);
+    assert.equal(shop.cogsInputs.length, 1);
+    assert.equal(shop.cogsInputs[0].source, "shopify_unit_cost");
+    assert.equal(shop.cogsInputs[0].confidenceLevel, "confirmed");
+    assert.equal(Number(shop.cogsInputs[0].costAmount), 13.5);
     assert.equal(shop.customerIdentities.length, 1);
     assert.equal(shop.customerIdentities[0].orderCount, 1);
     assert.match(shop.customerIdentities[0].maskedEmail, /^b\*+@example\.com$/);
     assert.equal(shop.ledgerEvents.length, 6);
   } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+test("inventory_items/update webhook updates local COGS and refetches missing unit cost", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const shopDomain = `inventory-item-cost-${suffix}.myshopify.com`;
+  const inventoryItemId = `gid://shopify/InventoryItem/inv-${suffix}`;
+  const variantId = `gid://shopify/ProductVariant/variant-${suffix}`;
+  const originalFetch = globalThis.fetch;
+
+  try {
+    await runShopifyBackfill(prisma, {
+      shopDomain,
+      accessToken: "test-token",
+      sessionId: `session-${suffix}`,
+      logger: silentLogger,
+      fetchImpl: createBackfillFetch(suffix),
+      domains: ["products", "inventory"],
+    });
+    await prisma.session.create({
+      data: {
+        id: `offline-${suffix}`,
+        shop: shopDomain,
+        state: `state-${suffix}`,
+        isOnline: false,
+        accessToken: "test-token",
+      },
+    });
+
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.ok(body.query.includes("JefeInventoryItemCost"));
+      return Response.json({
+        data: {
+          node: {
+            id: inventoryItemId,
+            updatedAt: "2026-07-16T12:00:00Z",
+            unitCost: { amount: "21.00", currencyCode: "GBP" },
+            variant: { id: variantId },
+          },
+        },
+      });
+    };
+
+    const result = await processShopifyWebhook(prisma, {
+      rawBody: JSON.stringify({ admin_graphql_api_id: inventoryItemId }),
+      topic: "inventory_items/update",
+      shopDomain,
+      webhookId: `inventory-item-webhook-${suffix}`,
+      triggeredAt: "2026-07-16T12:00:00Z",
+      apiVersion: "2026-07",
+    });
+    const cogs = await prisma.cogsInput.findFirstOrThrow({
+      where: { shop: { shopDomain }, inventoryItemExternalId: inventoryItemId },
+    });
+    const shop = await prisma.shop.findUniqueOrThrow({
+      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+    });
+
+    assert.equal(result.status, "processed");
+    assert.equal(Number(cogs.costAmount), 21);
+    assert.equal(cogs.source, "shopify_unit_cost");
+    assert.ok(shop.lastInventoryItemCostWebhookAt);
+    assert.ok(shop.lastCogsRecomputeAt);
+
+    await processShopifyWebhook(prisma, {
+      rawBody: JSON.stringify({
+        id: 54200616911144,
+        admin_graphql_api_id: inventoryItemId,
+        sku: `SKU-${suffix}`,
+        cost: "22.50",
+        updated_at: "2026-07-16T12:15:00Z",
+      }),
+      topic: "inventory_items/update",
+      shopDomain,
+      webhookId: `inventory-item-rest-webhook-${suffix}`,
+      triggeredAt: "2026-07-16T12:15:00Z",
+      apiVersion: "2026-07",
+    });
+    const restCost = await prisma.cogsInput.findFirstOrThrow({
+      where: { shop: { shopDomain }, inventoryItemExternalId: inventoryItemId },
+    });
+    assert.equal(Number(restCost.costAmount), 22.5);
+
+    await processShopifyWebhook(prisma, {
+      rawBody: JSON.stringify({
+        inventory_item_id: inventoryItemId,
+        location_id: `gid://shopify/Location/location-${suffix}`,
+        available: 99,
+        updated_at: "2026-07-16T12:30:00Z",
+      }),
+      topic: "inventory_levels/update",
+      shopDomain,
+      webhookId: `inventory-level-webhook-${suffix}`,
+      triggeredAt: "2026-07-16T12:30:00Z",
+      apiVersion: "2026-07",
+    });
+    const unchangedCogs = await prisma.cogsInput.findFirstOrThrow({
+      where: { id: cogs.id },
+    });
+    assert.equal(Number(unchangedCogs.costAmount), 22.5);
+  } finally {
+    globalThis.fetch = originalFetch;
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
   }
@@ -905,7 +1072,11 @@ function productsBulkJsonl(suffix) {
       price: "49.00",
       createdAt: "2026-07-01T08:00:00Z",
       updatedAt: "2026-07-13T08:00:00Z",
-      inventoryItem: { id: `gid://shopify/InventoryItem/bulk-inv-${suffix}` },
+      inventoryItem: {
+        id: `gid://shopify/InventoryItem/bulk-inv-${suffix}`,
+        updatedAt: "2026-07-13T08:00:00Z",
+        unitCost: { amount: "11.25", currencyCode: "GBP" },
+      },
     },
   ]
     .map((row) => JSON.stringify(row))
@@ -1000,7 +1171,7 @@ function mockProductPayload(suffix) {
         sku: `SKU-${suffix}`,
         title: "Default",
         price: "49.00",
-        inventory_item_id: `inv-${suffix}`,
+        inventory_item_id: 54200616911144,
         created_at: "2026-07-01T08:00:00Z",
         updated_at: "2026-07-13T08:00:00Z",
       },
@@ -1026,7 +1197,11 @@ function mockGraphqlProduct(suffix) {
         price: "49.00",
         createdAt: "2026-07-01T08:00:00Z",
         updatedAt: "2026-07-13T08:00:00Z",
-        inventoryItem: { id: `gid://shopify/InventoryItem/inv-${suffix}` },
+        inventoryItem: {
+          id: `gid://shopify/InventoryItem/inv-${suffix}`,
+          updatedAt: "2026-07-13T08:00:00Z",
+          unitCost: { amount: "12.34", currencyCode: "GBP" },
+        },
       },
     ]),
   };
@@ -1036,6 +1211,7 @@ function mockGraphqlInventoryItem(suffix) {
   return {
     id: `gid://shopify/InventoryItem/inv-${suffix}`,
     updatedAt: "2026-07-13T08:00:00Z",
+    unitCost: { amount: "13.50", currencyCode: "GBP" },
     variant: { id: `gid://shopify/ProductVariant/variant-${suffix}` },
     inventoryLevels: connection([
       {

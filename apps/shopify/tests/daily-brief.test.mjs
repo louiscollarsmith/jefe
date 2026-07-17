@@ -214,9 +214,10 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(appShell, /app_shell_backfill_guard/);
   assert.match(appShell, /onboardingComplete/);
   assert.match(appShell, /!briefReady && !allowedBeforeOnboarding/);
-  assert.match(appShell, /redirect\(`\/app\/onboarding/);
-  assert.match(appShell, /redirect\("\/app\/onboarding"\)/);
+  assert.match(appShell, /\{ session, redirect \} = await authenticate\.admin/);
+  assert.match(appShell, /throw redirect\("\/app\/onboarding"\)/);
   assert.doesNotMatch(appShell, /redirect\("\/app\/daily-brief"\)/);
+  assert.doesNotMatch(appShell, /from "react-router";[\s\S]*redirect,/);
   assert.doesNotMatch(appShell, /url\.searchParams\.get\("task"\) === null/);
   assert.match(appShell, /location\.pathname === "\/app\/onboarding"/);
   assert.match(appShell, /<Outlet \/>/);
@@ -228,7 +229,12 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(dailyBriefRoute, /\/app\/revenue-margin/);
   assert.match(dailyBriefRoute, /getDailyBriefReadiness/);
   assert.match(dailyBriefRoute, /daily_brief_backfill_guard/);
-  assert.match(dailyBriefRoute, /redirect\("\/app\/onboarding"\)/);
+  assert.match(
+    dailyBriefRoute,
+    /\{ session, redirect \} = await authenticate\.admin/,
+  );
+  assert.match(dailyBriefRoute, /throw redirect\("\/app\/onboarding"\)/);
+  assert.doesNotMatch(dailyBriefRoute, /import \{ redirect,/);
   assert.match(dailyBriefRoute, /getOnboardingState/);
   assert.match(dailyBriefRoute, /setOnboardingStepStatus/);
   assert.match(dailyBriefRoute, /onboarding\.warnings/);
@@ -240,11 +246,29 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   );
   assert.match(dailyBriefReadinessService, /status === "degraded"/);
   assert.match(importProgressRoute, /\/app\/onboarding/);
+  assert.match(importProgressRoute, /authenticate\.admin\(request\)/);
+  assert.match(importProgressRoute, /throw redirect\("\/app\/onboarding"\)/);
   assert.match(managerSettingsRoute, /Manager Settings/);
   assert.match(managerSettingsRoute, /Edit the operating settings/);
   assert.match(managerSettingsRoute, /Business goals/);
-  assert.match(managerSettingsRoute, /\/app\/onboarding\?task=goal/);
-  assert.match(managerSettingsRoute, /\/app\/onboarding\?task=brand-voice/);
+  assert.match(managerSettingsRoute, /\/app\/manager-settings\?task=goal/);
+  assert.match(
+    managerSettingsRoute,
+    /\/app\/manager-settings\?task=brand-voice/,
+  );
+  assert.match(
+    managerSettingsRoute,
+    /\/app\/manager-settings\?task=product-costs/,
+  );
+  assert.doesNotMatch(managerSettingsRoute, /\/app\/onboarding\?task=/);
+  assert.doesNotMatch(managerSettingsRoute, /cogs=1/);
+  assert.match(managerSettingsRoute, /saveOnboardingCogsInputs/);
+  assert.match(managerSettingsRoute, /Product cost/);
+  assert.match(managerSettingsRoute, /ShopifyAdminLink/);
+  assert.match(managerSettingsRoute, /ExternalSmallIcon/);
+  assert.match(managerSettingsRoute, /align="start"/);
+  assert.match(managerSettingsRoute, /admin\.shopify\.com\/store/);
+  assert.match(managerSettingsRoute, /target="_blank"/);
   assert.doesNotMatch(managerSettingsRoute, /<Badge/);
   assert.doesNotMatch(managerSettingsRoute, /settingTone/);
   assert.doesNotMatch(managerSettingsRoute, /settingLabel/);
@@ -273,6 +297,8 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(appIndexRoute, /getOnboardingState/);
   assert.match(appIndexRoute, /getDailyBriefReadiness/);
   assert.match(appIndexRoute, /app_index_backfill_guard/);
+  assert.match(appIndexRoute, /\{ session, redirect \} = await authenticate\.admin/);
+  assert.match(appIndexRoute, /throw redirect\("\/app\/daily-brief"\)/);
   assert.match(appIndexRoute, /\/app\/onboarding/);
   assert.doesNotMatch(appIndexRoute, /task", "backfill"/);
   assert.match(appIndexRoute, /\/app\/daily-brief/);
@@ -342,6 +368,13 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.doesNotMatch(onboardingRoute, /Jefe is reviewing your Shopify data/);
   assert.doesNotMatch(onboardingRoute, /bulk import/);
   assert.match(onboardingRoute, /complete_onboarding_backfill_guard/);
+  assert.match(
+    onboardingRoute,
+    /\{ session, redirect \} = await authenticate\.admin/,
+  );
+  assert.match(onboardingRoute, /throw redirect\("\/app\/daily-brief"\)/);
+  assert.match(onboardingRoute, /throw redirect\(afterSave\)/);
+  assert.doesNotMatch(onboardingRoute, /import \{[\s\S]*redirect,/);
   assert.doesNotMatch(onboardingRoute, /\/app\/manager-settings/);
   assert.match(onboardingRoute, /readiness\.briefReady/);
   assert.match(onboardingRoute, /"\/app\/daily-brief"/);

@@ -17,6 +17,7 @@ import {
   upsertShopifyRefund,
   upsertShopifyVariant,
 } from "./canonical.server.js";
+import { upsertShopifyUnitCostFromVariant } from "../../../services/cogs.server.js";
 
 const DEFAULT_BACKFILL_DAYS = 365;
 
@@ -218,6 +219,12 @@ class ProductBulkImporter {
         eventTs: parseDate(variant.updatedAt) ?? new Date(),
       });
       await upsertShopifyVariant(this.prisma, {
+        merchantId: this.merchantId,
+        shopId: this.shopId,
+        productId: productDbId,
+        variant,
+      });
+      await upsertShopifyUnitCostFromVariant(this.prisma, {
         merchantId: this.merchantId,
         shopId: this.shopId,
         productId: productDbId,

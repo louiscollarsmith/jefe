@@ -386,7 +386,7 @@ function dailyVerdictBriefSection(verdict) {
       verdict.revenue.currency,
     )}. ${grossProfit} Margin confidence is ${
       verdict.margin.confidenceLevel
-    } because ${verdict.margin.cogsCoveragePercent}% of sold units have COGS. ${topInsight}`,
+    } because ${verdict.margin.cogsCoveragePercent}% of sold revenue has product costs. ${topInsight}`,
     confidence: verdict.margin.confidenceLevel,
     verificationClass: "estimated",
   };
@@ -525,8 +525,8 @@ function dailyVerdictDegradedReasons(verdict) {
   if ((verdict.evidence?.orderLineItemCount ?? 0) === 0) {
     reasons.push("No synced order history for the selected period.");
   }
-  if ((verdict.margin?.cogsCoveragePercent ?? 0) < 90) {
-    reasons.push("Margin confidence is limited by missing COGS.");
+  if ((verdict.margin?.cogsCoveragePercent ?? 0) < 80) {
+    reasons.push("Margin confidence is limited by missing product costs.");
   }
   if (verdict.evidence?.refundDataCompleteness === "no_refunds_recorded") {
     reasons.push("Refund checks are limited because no refunds are synced.");

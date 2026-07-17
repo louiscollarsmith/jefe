@@ -83,6 +83,11 @@ export const PRODUCTS_BULK_QUERY = `#graphql
                 updatedAt
                 inventoryItem {
                   id
+                  updatedAt
+                  unitCost {
+                    amount
+                    currencyCode
+                  }
                 }
               }
             }
@@ -257,6 +262,11 @@ export const PRODUCTS_QUERY = `#graphql
                 updatedAt
                 inventoryItem {
                   id
+                  updatedAt
+                  unitCost {
+                    amount
+                    currencyCode
+                  }
                 }
               }
             }
@@ -388,6 +398,10 @@ export const INVENTORY_ITEMS_QUERY = `#graphql
         node {
           id
           updatedAt
+          unitCost {
+            amount
+            currencyCode
+          }
           variant {
             id
           }
@@ -406,6 +420,24 @@ export const INVENTORY_ITEMS_QUERY = `#graphql
               }
             }
           }
+        }
+      }
+    }
+  }
+`;
+
+export const INVENTORY_ITEM_COST_QUERY = `#graphql
+  query JefeInventoryItemCost($id: ID!) {
+    node(id: $id) {
+      ... on InventoryItem {
+        id
+        updatedAt
+        unitCost {
+          amount
+          currencyCode
+        }
+        variant {
+          id
         }
       }
     }

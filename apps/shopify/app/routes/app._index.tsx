@@ -1,5 +1,4 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect } from "react-router";
 
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
@@ -8,7 +7,7 @@ import { getOnboardingState } from "../services/onboarding.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
@@ -16,10 +15,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     rawPayload: { source: "app_index" },
   });
   const onboarding = await getOnboardingState(prisma, shop.id);
-  const url = new URL(request.url);
 
   if (!onboarding.onboardingComplete) {
-    throw redirect(`/app/onboarding${url.search}`);
+    throw redirect("/app/onboarding");
   }
 
   const readiness = await getDailyBriefReadiness(prisma, {
@@ -33,10 +31,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   if (readiness.briefReady) {
-    throw redirect(`/app/daily-brief${url.search}`);
+    throw redirect("/app/daily-brief");
   }
 
-  throw redirect(`/app/onboarding${url.search}`);
+  throw redirect("/app/onboarding");
 };
 
 export default function AppIndex() {

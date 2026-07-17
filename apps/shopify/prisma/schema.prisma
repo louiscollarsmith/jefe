@@ -62,7 +62,7 @@ model Merchant {
   orderLineItems       OrderLineItem[]
   refunds              Refund[]
   inventoryLevels      InventoryLevel[]
-  customerIdentities    CustomerIdentity[]
+  customerIdentities   CustomerIdentity[]
   cogsInputs           CogsInput[]
   dailyBriefs          DailyBrief[]
   actions              Action[]
@@ -81,52 +81,57 @@ model Merchant {
 }
 
 model Shop {
-  id                       String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId               String                @map("merchant_id") @db.Uuid
-  platform                 String                @default("shopify")
-  shopDomain               String                @map("shop_domain")
-  externalShopId           String?               @map("external_shop_id")
-  status                   String                @default("active")
-  setupStatus              String                @default("installed") @map("setup_status")
-  historicalOrderAccess    String                @default("unknown") @map("historical_order_access")
-  availableOrderHistoryDays Int                  @default(0) @map("available_order_history_days")
-  backfillStartedAt        DateTime?             @map("backfill_started_at") @db.Timestamptz(6)
-  backfillCompletedAt      DateTime?             @map("backfill_completed_at") @db.Timestamptz(6)
-  rawPayload               Json                  @default("{}") @map("raw_payload")
-  onboardingStartedAt      DateTime?             @map("onboarding_started_at") @db.Timestamptz(6)
-  onboardingCompletedAt    DateTime?             @map("onboarding_completed_at") @db.Timestamptz(6)
-  goalsCompleted           Boolean               @default(false) @map("goals_completed")
-  houseRulesCompleted      Boolean               @default(false) @map("house_rules_completed")
-  cogsCompletionPercentage Decimal               @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
-  cogsConfidenceLevel      String                @default("missing") @map("cogs_confidence_level")
-  onboardingMetadata       Json                  @default("{}") @map("onboarding_metadata")
-  createdAt                DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant                 Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  users                    MerchantUser[]
-  houseRules               HouseRule[]
-  goals                    Goal[]
-  ledgerEvents             LedgerEvent[]
-  products                 Product[]
-  variants                 Variant[]
-  orders                   Order[]
-  orderLineItems           OrderLineItem[]
-  refunds                  Refund[]
-  inventoryLevels          InventoryLevel[]
-  customerIdentities       CustomerIdentity[]
-  cogsInputs               CogsInput[]
-  dailyBriefs              DailyBrief[]
-  actions                  Action[]
-  executions               Execution[]
-  feedback                 Feedback[]
-  actionApprovalEvents     ActionApprovalEvent[]
-  provenanceLinks          ProvenanceLink[]
-  holdoutAssignments       HoldoutAssignment[]
-  attributionResults       AttributionResult[]
-  connectorAccounts        ConnectorAccount[]
-  costMetering             CostMetering[]
-  backfillStatuses         ShopBackfillStatus[]
-  backfillJobs             BackfillJob[]
+  id                             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId                     String                @map("merchant_id") @db.Uuid
+  platform                       String                @default("shopify")
+  shopDomain                     String                @map("shop_domain")
+  externalShopId                 String?               @map("external_shop_id")
+  status                         String                @default("active")
+  setupStatus                    String                @default("installed") @map("setup_status")
+  historicalOrderAccess          String                @default("unknown") @map("historical_order_access")
+  availableOrderHistoryDays      Int                   @default(0) @map("available_order_history_days")
+  backfillStartedAt              DateTime?             @map("backfill_started_at") @db.Timestamptz(6)
+  backfillCompletedAt            DateTime?             @map("backfill_completed_at") @db.Timestamptz(6)
+  rawPayload                     Json                  @default("{}") @map("raw_payload")
+  onboardingStartedAt            DateTime?             @map("onboarding_started_at") @db.Timestamptz(6)
+  onboardingCompletedAt          DateTime?             @map("onboarding_completed_at") @db.Timestamptz(6)
+  goalsCompleted                 Boolean               @default(false) @map("goals_completed")
+  houseRulesCompleted            Boolean               @default(false) @map("house_rules_completed")
+  cogsCompletionPercentage       Decimal               @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
+  cogsConfidenceLevel            String                @default("missing") @map("cogs_confidence_level")
+  productCostsSkipped            Boolean               @default(false) @map("product_costs_skipped")
+  lastSuccessfulCogsSyncAt       DateTime?             @map("last_successful_cogs_sync_at") @db.Timestamptz(6)
+  lastInventoryItemCostWebhookAt DateTime?             @map("last_inventory_item_cost_webhook_at") @db.Timestamptz(6)
+  lastCogsRecomputeAt            DateTime?             @map("last_cogs_recompute_at") @db.Timestamptz(6)
+  lastCogsSyncError              String?               @map("last_cogs_sync_error")
+  onboardingMetadata             Json                  @default("{}") @map("onboarding_metadata")
+  createdAt                      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                       Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  users                          MerchantUser[]
+  houseRules                     HouseRule[]
+  goals                          Goal[]
+  ledgerEvents                   LedgerEvent[]
+  products                       Product[]
+  variants                       Variant[]
+  orders                         Order[]
+  orderLineItems                 OrderLineItem[]
+  refunds                        Refund[]
+  inventoryLevels                InventoryLevel[]
+  customerIdentities             CustomerIdentity[]
+  cogsInputs                     CogsInput[]
+  dailyBriefs                    DailyBrief[]
+  actions                        Action[]
+  executions                     Execution[]
+  feedback                       Feedback[]
+  actionApprovalEvents           ActionApprovalEvent[]
+  provenanceLinks                ProvenanceLink[]
+  holdoutAssignments             HoldoutAssignment[]
+  attributionResults             AttributionResult[]
+  connectorAccounts              ConnectorAccount[]
+  costMetering                   CostMetering[]
+  backfillStatuses               ShopBackfillStatus[]
+  backfillJobs                   BackfillJob[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -478,29 +483,38 @@ model BackfillJob {
 }
 
 model CogsInput {
-  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId          String    @map("merchant_id") @db.Uuid
-  shopId              String?   @map("shop_id") @db.Uuid
-  productId           String?   @map("product_id") @db.Uuid
-  variantId           String?   @map("variant_id") @db.Uuid
-  sku                 String?
-  costAmount          Decimal   @map("cost_amount") @db.Decimal(18, 4)
-  currency            String    @default("GBP")
-  source              String
-  confidence          Decimal?  @db.Decimal(5, 4)
-  confidenceLevel     String    @default("confirmed") @map("confidence_level")
-  confirmedByMerchant Boolean   @default(false) @map("confirmed_by_merchant")
-  effectiveFrom       DateTime  @map("effective_from") @db.Timestamptz(6)
-  effectiveTo         DateTime? @map("effective_to") @db.Timestamptz(6)
-  rawPayload          Json      @default("{}") @map("raw_payload")
-  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant            Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  product             Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variant             Variant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  id                            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId                    String    @map("merchant_id") @db.Uuid
+  shopId                        String?   @map("shop_id") @db.Uuid
+  productId                     String?   @map("product_id") @db.Uuid
+  variantId                     String?   @map("variant_id") @db.Uuid
+  inventoryItemExternalId       String?   @map("inventory_item_external_id")
+  sku                           String?
+  costAmount                    Decimal?  @map("cost_amount") @db.Decimal(18, 4)
+  currency                      String    @default("GBP")
+  source                        String
+  confidence                    Decimal?  @db.Decimal(5, 4)
+  confidenceLevel               String    @default("confirmed") @map("confidence_level")
+  ruleId                        String?   @map("rule_id") @db.Uuid
+  confirmedByMerchant           Boolean   @default(false) @map("confirmed_by_merchant")
+  confirmedAt                   DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  confirmedBy                   String?   @map("confirmed_by") @db.Uuid
+  importedAt                    DateTime? @map("imported_at") @db.Timestamptz(6)
+  shopifyInventoryItemUpdatedAt DateTime? @map("shopify_inventory_item_updated_at") @db.Timestamptz(6)
+  lastSyncedAt                  DateTime? @map("last_synced_at") @db.Timestamptz(6)
+  missingReason                 String?   @map("missing_reason")
+  effectiveFrom                 DateTime  @map("effective_from") @db.Timestamptz(6)
+  effectiveTo                   DateTime? @map("effective_to") @db.Timestamptz(6)
+  rawPayload                    Json      @default("{}") @map("raw_payload")
+  createdAt                     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                          Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  product                       Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variant                       Variant?  @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, sku])
+  @@index([shopId, inventoryItemExternalId])
   @@index([variantId, effectiveFrom])
   @@map("cogs_inputs")
 }

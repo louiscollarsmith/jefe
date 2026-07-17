@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect } from "react-router";
+
+import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const url = new URL(request.url);
-  url.searchParams.delete("preview");
+  const { redirect } = await authenticate.admin(request);
 
-  throw redirect(`/app/onboarding${url.search}`);
+  throw redirect("/app/onboarding");
 };
 
 export default function ImportProgressRedirect() {

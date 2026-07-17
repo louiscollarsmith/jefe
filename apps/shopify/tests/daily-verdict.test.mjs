@@ -130,7 +130,7 @@ test("Daily Verdict stores revenue, margin confidence and highlights", async (t)
     assert.equal(verdict.revenue.refunded, 28);
     assert.equal(verdict.margin.soldUnits, 4);
     assert.equal(verdict.margin.soldUnitsWithCogs, 3);
-    assert.equal(verdict.margin.cogsCoveragePercent, 75);
+    assert.equal(verdict.margin.cogsCoveragePercent, 64.29);
     assert.equal(verdict.margin.confidenceLevel, "medium");
     assert.equal(verdict.margin.missingCogsVariantCount, 1);
     assert.equal(verdict.margin.estimatedGrossProfit, 120);
@@ -138,7 +138,10 @@ test("Daily Verdict stores revenue, margin confidence and highlights", async (t)
     assert.match(verdict.headline, /margin confidence is medium/);
     assert.match(verdict.summary, /Revenue was £280.00/);
     assert.match(verdict.sections.whatHappened, /£280.00 gross revenue/);
-    assert.match(verdict.sections.confidence, /75% of sold units have COGS/);
+    assert.match(
+      verdict.sections.confidence,
+      /64.29% of sold revenue has product costs/,
+    );
     assert.equal(
       verdict.sections.nextStep,
       "Add product costs for Ceramic Mug before relying on margin recommendations.",
@@ -226,7 +229,7 @@ test("Daily Verdict handles no sales without blocking", async (t) => {
   }
 });
 
-test("Daily Verdict uses high-confidence headline when all sold units have COGS", async (t) => {
+test("Daily Verdict uses high-confidence headline when all sold revenue has product costs", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Daily Verdict tests");
     return;
@@ -373,7 +376,7 @@ test("Daily Verdict shows no-COGS state when sold products have no costs", async
     assert.match(brief.verdict.headline, /product costs are missing/);
     assert.match(
       brief.verdict.sections.confidence,
-      /0% of sold units have COGS and 100% are missing product costs/,
+      /0% of sold revenue has product costs and 100% is missing product costs/,
     );
     assert.doesNotMatch(
       brief.verdict.sections.confidence,
