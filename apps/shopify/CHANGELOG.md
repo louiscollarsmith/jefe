@@ -17,6 +17,8 @@
 - Polished Daily Brief into a clearer manager-style briefing with one dominant recommended action, cleaner evidence and more compact module summaries.
 - Rebuilt Daily Brief as a single-column manager briefing with a stronger verdict, dominant recommended action, compact key numbers and cleaner supporting modules.
 - Updated recommended action value labels so product-cost actions show sold revenue affected rather than implied revenue uplift.
+- Redesigned Revenue & Margin, Inventory Guardian, Watchdog, Klaviyo Winback and Manager Settings using the Jefe UI Quality Playbook.
+- Added clearer verdicts, primary actions, evidence and supporting details across core product pages.
 
 ### Fixed
 

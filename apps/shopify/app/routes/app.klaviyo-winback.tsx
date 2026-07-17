@@ -22,7 +22,6 @@ import {
   FormLayout,
   InlineGrid,
   InlineStack,
-  Layout,
   List,
   Page,
   Text,
@@ -41,6 +40,7 @@ import {
   getWinbackDashboard,
   rejectWinbackProposal,
 } from "../services/klaviyo-winback.server";
+import styles from "../styles/manager-briefing.module.css";
 
 type LoaderData = Awaited<ReturnType<typeof getWinbackDashboard>>;
 
@@ -176,47 +176,99 @@ export default function KlaviyoWinback() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state !== "idle";
   const proposal = dashboard.proposal;
+  const connected = dashboard.connection.status === "active";
+  const draftPrepared = dashboard.actions.some(
+    (action) =>
+      action.executionStatus === "draft_prepared" ||
+      Boolean(action.externalDraftId),
+  );
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <BlockStack gap="100">
-                  <Text as="h1" variant="heading2xl">
-                    Klaviyo Winback
-                  </Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    Draft a measured dormant-customer winback with approval,
-                    House Rules and a randomised holdout.
-                  </Text>
-                </BlockStack>
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <header className={styles.header}>
+          <Text as="h1" variant="heading2xl">
+            Klaviyo Winback
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Draft only · Send disabled
+          </Text>
+          <div className={styles.statusRow}>
+            <Badge tone="attention">Draft only</Badge>
+            <Badge tone="info">Estimated</Badge>
+            <Badge tone={connected ? "success" : "attention"}>
+              {connected ? "Klaviyo connected" : "Klaviyo not connected"}
+            </Badge>
+          </div>
+        </header>
 
-                {actionData ? (
-                  <Banner tone={actionData.ok ? "success" : "critical"}>
-                    <Text as="p" variant="bodyMd">
-                      {actionData.message}
-                    </Text>
-                  </Banner>
-                ) : null}
+        {actionData ? (
+          <Box paddingBlockStart="500">
+            <Banner tone={actionData.ok ? "success" : "critical"}>
+              <Text as="p" variant="bodyMd">
+                {actionData.message}
+              </Text>
+            </Banner>
+          </Box>
+        ) : null}
 
-                <ConnectionCard
-                  connection={dashboard.connection}
-                  isSubmitting={isSubmitting}
-                />
+        <section className={styles.verdict}>
+          <h2 className={styles.verdictTitle}>
+            {proposal.audience.eligibleCount > 0
+              ? `Jefe found ${proposal.audience.eligibleCount} dormant customer${proposal.audience.eligibleCount === 1 ? "" : "s"} worth preparing a winback draft for.`
+              : "No dormant customer draft is ready yet."}
+          </h2>
+          <p className={styles.verdictBody}>
+            This is a measured campaign proposal with a treatment group and
+            holdout. No customer-facing email will be sent from Jefe.
+          </p>
+        </section>
 
-                <ModeStatusCard dashboard={dashboard} />
+        <PrimaryWinbackAction
+          connected={connected}
+          blocked={proposal.status === "blocked"}
+          draftPrepared={draftPrepared}
+          isSubmitting={isSubmitting}
+        />
 
-                <ProposalCard proposal={proposal} isSubmitting={isSubmitting} />
+        <section className={styles.keyNumbers}>
+          <h3 className={styles.sectionTitle}>Key numbers</h3>
+          <div className={styles.keyNumberGrid}>
+            <MetricBlock
+              label="Eligible customers"
+              value={String(proposal.audience.eligibleCount)}
+            />
+            <MetricBlock
+              label="Treatment"
+              value={String(proposal.audience.treatmentCount)}
+            />
+            <MetricBlock
+              label="Holdout"
+              value={String(proposal.audience.holdoutCount)}
+            />
+            <MetricBlock
+              label="Estimated upside"
+              value={formatMoney(
+                proposal.economics.expectedRevenueAfterDiscount.base,
+                proposal.economics.currency,
+              )}
+            />
+          </div>
+        </section>
 
-                <RecentActions actions={dashboard.actions} />
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+        <SafetyChecks dashboard={dashboard} />
+
+        <section id="klaviyo-connection">
+          <ConnectionCard
+            connection={dashboard.connection}
+            isSubmitting={isSubmitting}
+          />
+        </section>
+
+        <ProposalCard proposal={proposal} />
+
+        <RecentActions actions={dashboard.actions} />
+      </div>
     </Page>
   );
 }
@@ -297,54 +349,129 @@ function ConnectionCard({
   );
 }
 
-function ModeStatusCard({ dashboard }: { dashboard: LoaderData }) {
-  const connected = dashboard.connection.status === "active";
-  const draftPrepared = dashboard.actions.some((action) =>
-    action.executionStatus === "draft_prepared",
-  );
-  const klaviyoDraftCreated = dashboard.actions.some((action) =>
-    Boolean(action.externalDraftId),
-  );
+function PrimaryWinbackAction({
+  connected,
+  blocked,
+  draftPrepared,
+  isSubmitting,
+}: {
+  connected: boolean;
+  blocked: boolean;
+  draftPrepared: boolean;
+  isSubmitting: boolean;
+}) {
+  if (!connected) {
+    return (
+      <section className={styles.actionCard}>
+        <p className={styles.eyebrow}>Primary action</p>
+        <h3 className={styles.actionTitle}>Connect Klaviyo</h3>
+        <p className={styles.actionReason}>
+          Jefe needs a Klaviyo connection before it can prepare a safe measured
+          winback draft.
+        </p>
+        <div className={styles.actionButtonRow}>
+          <Button variant="primary" url="#klaviyo-connection">
+            Connect Klaviyo
+          </Button>
+        </div>
+        <div className={styles.actionMeta}>
+          <MetricBlock label="Mode" value="Draft only" />
+          <MetricBlock label="Send enabled" value="No" />
+          <MetricBlock label="Risk" value="Low" />
+        </div>
+      </section>
+    );
+  }
+
+  if (draftPrepared) {
+    return (
+      <section className={styles.actionCard}>
+        <p className={styles.eyebrow}>Primary action</p>
+        <h3 className={styles.actionTitle}>Draft prepared in Klaviyo</h3>
+        <p className={styles.actionReason}>
+          Review the prepared draft and approval history. Jefe still will not
+          send customer-facing email automatically.
+        </p>
+        <div className={styles.actionMeta}>
+          <MetricBlock label="Mode" value="Draft only" />
+          <MetricBlock label="Send enabled" value="No" />
+          <MetricBlock label="Status" value="Prepared" />
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <Card>
-      <BlockStack gap="300">
-        <InlineStack align="space-between" blockAlign="center" gap="300">
-          <BlockStack gap="100">
-            <Text as="h2" variant="headingLg">
-              Klaviyo mode
-            </Text>
-            <Text as="p" variant="bodyMd" tone="subdued">
-              Sending is disabled in this dev preview. No customer-facing
-              emails will be sent.
-            </Text>
-          </BlockStack>
-          <Badge tone="attention">Dry run / Draft only</Badge>
-        </InlineStack>
-        <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
-          <MetricBlock label="Klaviyo connected" value={connected ? "Yes" : "No"} />
-          <MetricBlock
-            label="Local draft prepared"
-            value={draftPrepared ? "Yes" : "No"}
+    <section className={styles.actionCard}>
+      <p className={styles.eyebrow}>Primary action</p>
+      <h3 className={styles.actionTitle}>Prepare Klaviyo draft</h3>
+      <p className={styles.actionReason}>
+        Create a draft campaign and treatment list in Klaviyo. Holdout customers
+        are excluded so Jefe can measure incremental lift.
+      </p>
+      <div className={styles.actionButtonRow}>
+        <Form method="post">
+          <input
+            type="hidden"
+            name="intent"
+            value="create-winback-proposal"
           />
-          <MetricBlock
-            label="Klaviyo draft created"
-            value={klaviyoDraftCreated ? "Yes" : "No"}
-          />
-          <MetricBlock label="Send enabled" value="No" />
-        </InlineGrid>
-      </BlockStack>
-    </Card>
+          <Button
+            submit
+            variant="primary"
+            disabled={blocked}
+            loading={isSubmitting}
+          >
+            Create Klaviyo draft
+          </Button>
+        </Form>
+      </div>
+      <div className={styles.actionMeta}>
+        <MetricBlock label="Mode" value="Draft only" />
+        <MetricBlock label="Holdout" value="Excluded" />
+        <MetricBlock label="Send enabled" value="No" />
+      </div>
+    </section>
   );
 }
 
-function ProposalCard({
-  proposal,
-  isSubmitting,
-}: {
-  proposal: LoaderData["proposal"];
-  isSubmitting: boolean;
-}) {
+function SafetyChecks({ dashboard }: { dashboard: LoaderData }) {
+  const connected = dashboard.connection.status === "active";
+  const proposal = dashboard.proposal;
+  const blocked = proposal.status === "blocked";
+
+  return (
+    <section className={styles.explanation}>
+      <h3 className={styles.sectionTitle}>Safety checks</h3>
+      <p className={styles.explanationText}>
+        Holdout customers are excluded so Jefe can measure whether the campaign
+        creates incremental lift. Estimated value will only become verified
+        after measurement.
+      </p>
+      <div className={styles.evidenceList}>
+        <EvidenceItem>Holdout assigned</EvidenceItem>
+        <EvidenceItem>
+          {blocked ? "House Rules blocked this draft" : "House Rules passed"}
+        </EvidenceItem>
+        <EvidenceItem>Send disabled</EvidenceItem>
+        <EvidenceItem>
+          {connected ? "Klaviyo connected" : "Klaviyo connection required"}
+        </EvidenceItem>
+      </div>
+    </section>
+  );
+}
+
+function EvidenceItem({ children }: { children: string }) {
+  return (
+    <div className={styles.evidenceItem}>
+      <span className={styles.checkmark}>✓</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function ProposalCard({ proposal }: { proposal: LoaderData["proposal"] }) {
   const blocked = proposal.status === "blocked";
 
   return (
@@ -546,16 +673,6 @@ function ProposalCard({
           </Text>
         </Banner>
 
-        <Form method="post">
-          <input
-            type="hidden"
-            name="intent"
-            value="create-winback-proposal"
-          />
-          <Button submit variant="primary" disabled={blocked} loading={isSubmitting}>
-            Prepare approval draft
-          </Button>
-        </Form>
       </BlockStack>
     </Card>
   );
@@ -773,14 +890,10 @@ function RecentActions({ actions }: { actions: LoaderData["actions"] }) {
 
 function MetricBlock({ label, value }: { label: string; value: string }) {
   return (
-    <BlockStack gap="100">
-      <Text as="p" variant="bodySm" tone="subdued">
-        {label}
-      </Text>
-      <Text as="p" variant="headingLg">
-        {value}
-      </Text>
-    </BlockStack>
+    <div>
+      <p className={styles.keyNumberLabel}>{label}</p>
+      <p className={styles.keyNumberValue}>{value}</p>
+    </div>
   );
 }
 

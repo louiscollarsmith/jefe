@@ -1,15 +1,9 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type { ReactNode } from "react";
 import { useLoaderData } from "react-router";
 import {
   Badge,
-  Banner,
-  BlockStack,
-  Box,
-  Card,
-  InlineGrid,
-  InlineStack,
-  Layout,
-  List,
+  Button,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -18,6 +12,7 @@ import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { generateWatchdog } from "../services/watchdog.server";
+import styles from "../styles/manager-briefing.module.css";
 
 type WatchdogAlertType =
   | "refund_spike"
@@ -93,121 +88,166 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function Watchdog() {
   const { watchdog } = useLoaderData<typeof loader>();
   const view = watchdog as unknown as WatchdogView;
+  const alerts = [...view.alerts].sort(alertPrioritySort);
+  const topAlert = alerts[0] ?? null;
+  const groupedAlerts = {
+    critical: alerts.filter((alert) => alert.severity === "critical"),
+    warning: alerts.filter((alert) => alert.severity === "warning"),
+    watch: alerts.filter((alert) => alert.severity === "watch"),
+  };
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <BlockStack gap="100">
-                  <Text as="h1" variant="heading2xl">
-                    Watchdog
-                  </Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    {view.statusStrip.currentPeriod} ·{" "}
-                    {view.statusStrip.comparisonPeriod} · Generated{" "}
-                    {formatDateTime(view.generatedAt)}
-                  </Text>
-                </BlockStack>
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <header className={styles.header}>
+          <Text as="h1" variant="heading2xl">
+            Watchdog
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Unusual changes · {view.statusStrip.currentPeriod} · Generated{" "}
+            {formatDateTime(view.generatedAt)}
+          </Text>
+          <div className={styles.statusRow}>
+            {view.hero.highestSeverity ? (
+              <Badge tone={severityTone(view.hero.highestSeverity)}>
+                {severityLabel(view.hero.highestSeverity)}
+              </Badge>
+            ) : (
+              <Badge tone="success">No urgent issues</Badge>
+            )}
+            <Badge tone="attention">Estimated prevention</Badge>
+          </div>
+        </header>
 
-                <Card>
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Incident evidence · Estimated prevention
-                      </Text>
-                      {view.hero.highestSeverity ? (
-                        <Badge tone={severityTone(view.hero.highestSeverity)}>
-                          {severityLabel(view.hero.highestSeverity)}
-                        </Badge>
-                      ) : (
-                        <Badge tone="success">No urgent issues</Badge>
-                      )}
-                    </InlineStack>
-                    <Text as="p" variant="bodyMd" tone="subdued">
-                      Detailed read-only anomaly checks with baseline evidence,
-                      incident severity and suggested checks.
-                    </Text>
-                  </BlockStack>
-                </Card>
+        {view.emptyState ? (
+          <WatchdogEmptyState state={view.emptyState} />
+        ) : (
+          <>
+            <section className={styles.verdict}>
+              <h2 className={styles.verdictTitle}>
+                Jefe found {view.hero.alertCount} alert
+                {view.hero.alertCount === 1 ? "" : "s"} worth checking.
+              </h2>
+              <p className={styles.verdictBody}>
+                {topAlert
+                  ? `The most important alert is ${alertTypeLabel(topAlert.type).toLowerCase()} on ${topAlert.affectedSku ?? "the store"}.`
+                  : view.hero.message}
+              </p>
+            </section>
 
-                {view.limitations.refundData ? (
-                  <Banner tone="info">
-                    <Text as="p" variant="bodyMd">
-                      {view.limitations.refundData}
-                    </Text>
-                  </Banner>
+            {topAlert ? (
+              <section className={styles.actionCard}>
+                <p className={styles.eyebrow}>Primary action</p>
+                <h3 className={styles.actionTitle}>
+                  Investigate {alertTypeLabel(topAlert.type).toLowerCase()}
+                </h3>
+                <p className={styles.actionReason}>
+                  {topAlert.summary}
+                </p>
+                <div className={styles.actionButtonRow}>
+                  <Button variant="primary" url="#alert-queue">
+                    Open Watchdog alert
+                  </Button>
+                </div>
+                <div className={styles.actionMeta}>
+                  <MetricBlock
+                    label="Value at risk"
+                    value={
+                      topAlert.estimatedValueAtRisk === null
+                        ? "Unavailable"
+                        : formatMoney(topAlert.estimatedValueAtRisk, view.metrics.currency)
+                    }
+                  />
+                  <MetricBlock
+                    label="Alert severity"
+                    value={severityLabel(topAlert.severity)}
+                  />
+                  <MetricBlock
+                    label="Confidence"
+                    value={formatConfidence(topAlert.confidence)}
+                  />
+                </div>
+              </section>
+            ) : null}
+
+            <section className={styles.keyNumbers}>
+              <h3 className={styles.sectionTitle}>Key numbers</h3>
+              <div className={styles.keyNumberGrid}>
+                <MetricBlock label="Alerts" value={String(view.hero.alertCount)} />
+                <MetricBlock
+                  label="Highest severity"
+                  value={
+                    view.hero.highestSeverity
+                      ? severityLabel(view.hero.highestSeverity)
+                      : "None"
+                  }
+                />
+                <MetricBlock
+                  label="Value at risk"
+                  value={formatMoney(
+                    view.metrics.estimatedValueAtRisk,
+                    view.metrics.currency,
+                  )}
+                />
+                <MetricBlock
+                  label="Products affected"
+                  value={String(countAffectedProducts(alerts))}
+                />
+              </div>
+            </section>
+
+            <section className={styles.explanation}>
+              <h3 className={styles.sectionTitle}>Why Jefe recommends this</h3>
+              <p className={styles.explanationText}>
+                {topAlert?.whyThisMatters ??
+                  "Watchdog looks for sales collapses, refund spikes, revenue drops and unusual stock movement that may point to silent breakage."}
+              </p>
+              <div className={styles.evidenceList}>
+                {topAlert ? (
+                  <>
+                    <EvidenceItem>{topAlert.summary}</EvidenceItem>
+                    <EvidenceItem>
+                      Suggested check: {firstSuggestedCheck(topAlert)}
+                    </EvidenceItem>
+                  </>
                 ) : null}
+                <EvidenceItem>
+                  Estimated value at risk is prevention, not verified lift.
+                </EvidenceItem>
+              </div>
+              {view.limitations.refundData ? (
+                <p className={styles.inlineNote}>{view.limitations.refundData}</p>
+              ) : null}
+              {view.limitations.inventoryMovement ? (
+                <p className={styles.inlineNote}>
+                  {view.limitations.inventoryMovement}
+                </p>
+              ) : null}
+            </section>
 
-                {view.limitations.inventoryMovement ? (
-                  <Banner tone="info">
-                    <Text as="p" variant="bodyMd">
-                      {view.limitations.inventoryMovement}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 5 }} gap="400">
-                  <Card>
-                    <MetricBlock
-                      label="Critical alerts"
-                      value={String(view.metrics.critical)}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Warnings"
-                      value={String(view.metrics.warning)}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Watch items"
-                      value={String(view.metrics.watch)}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Estimated value at risk"
-                      value={formatMoney(
-                        view.metrics.estimatedValueAtRisk,
-                        view.metrics.currency,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Generated"
-                      value={formatDateTime(view.generatedAt)}
-                    />
-                  </Card>
-                </InlineGrid>
-
-                {view.emptyState ? (
-                  <WatchdogEmptyState state={view.emptyState} />
-                ) : null}
-
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingLg">
-                    Alert list
-                  </Text>
-                  <BlockStack gap="300">
-                    {view.alerts.map((alert) => (
-                      <AlertCard
-                        key={`${alert.type}-${alert.title}-${alert.affectedSku ?? "store"}`}
-                        alert={alert}
-                        currency={view.metrics.currency}
-                      />
-                    ))}
-                  </BlockStack>
-                </BlockStack>
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+            <section id="alert-queue">
+              {(["critical", "warning", "watch"] as const).map((severity) =>
+                groupedAlerts[severity].length > 0 ? (
+                  <div className={styles.sectionCard} key={severity}>
+                    <h3 className={styles.sectionTitle}>
+                      {severityLabel(severity)}
+                    </h3>
+                    <div className={styles.moduleList}>
+                      {groupedAlerts[severity].map((alert) => (
+                        <AlertRow
+                          key={`${alert.type}-${alert.title}-${alert.affectedSku ?? "store"}`}
+                          alert={alert}
+                          currency={view.metrics.currency}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null,
+              )}
+            </section>
+          </>
+        )}
+      </div>
     </Page>
   );
 }
@@ -218,18 +258,14 @@ export const headers: HeadersFunction = (headersArgs) => {
 
 function MetricBlock({ label, value }: { label: string; value: string }) {
   return (
-    <BlockStack gap="100">
-      <Text as="p" variant="bodySm" tone="subdued">
-        {label}
-      </Text>
-      <Text as="p" variant="headingLg">
-        {value}
-      </Text>
-    </BlockStack>
+    <div>
+      <p className={styles.keyNumberLabel}>{label}</p>
+      <p className={styles.keyNumberValue}>{value}</p>
+    </div>
   );
 }
 
-function AlertCard({
+function AlertRow({
   alert,
   currency,
 }: {
@@ -239,89 +275,24 @@ function AlertCard({
   const evidenceRows = evidenceRowsForAlert(alert, currency);
 
   return (
-    <Card>
-      <BlockStack gap="400">
-        <InlineStack align="space-between" blockAlign="center" gap="300">
-          <InlineStack gap="200" blockAlign="center">
-            <Badge tone={severityTone(alert.severity)}>
-              {severityLabel(alert.severity)}
-            </Badge>
-            <Badge tone="info">{alertTypeLabel(alert.type)}</Badge>
-            <Badge tone={confidenceTone(alert.confidence)}>
-              {`${formatConfidence(alert.confidence)} confidence`}
-            </Badge>
-          </InlineStack>
-          <Text as="p" variant="headingMd" alignment="end">
-            {alert.estimatedValueAtRisk === null
-              ? "Value unavailable"
-              : `${formatMoney(alert.estimatedValueAtRisk, currency)} at risk`}
-          </Text>
-        </InlineStack>
-
-        <BlockStack gap="150">
-          <Text as="h3" variant="headingLg">
-            {alert.title}
-          </Text>
-          <Text as="p" variant="bodyMd" tone="subdued">
-            {alert.summary}
-          </Text>
-        </BlockStack>
-
-        {alert.whyThisMatters ? (
-          <BlockStack gap="050">
-            <Text as="p" variant="bodySm" tone="subdued">
-              Why this matters
-            </Text>
-            <Text as="p" variant="bodyMd">
-              {alert.whyThisMatters}
-            </Text>
-          </BlockStack>
-        ) : null}
-
-        {evidenceRows.length > 0 ? (
-          <BlockStack gap="200">
-            <Text as="p" variant="bodySm" tone="subdued">
-              Evidence
-            </Text>
-            <EvidenceGrid rows={evidenceRows} />
-          </BlockStack>
-        ) : null}
-
-        <BlockStack gap="100">
-          <Text as="p" variant="bodySm" tone="subdued">
-            Suggested checks
-          </Text>
-          {alert.suggestedChecks.length > 0 ? (
-            <List type="bullet">
-              {alert.suggestedChecks.map((check) => (
-                <List.Item key={check}>{check}</List.Item>
-              ))}
-            </List>
-          ) : (
-            <Text as="p" variant="bodyMd">
-              {alert.suggestedCheck}
-            </Text>
-          )}
-        </BlockStack>
-      </BlockStack>
-    </Card>
-  );
-}
-
-function EvidenceGrid({ rows }: { rows: Array<[string, string]> }) {
-  return (
-    <InlineGrid columns={{ xs: 1, md: 2 }} gap="200">
-      {rows.map(([label, value]) => (
-        <InlineStack key={label} align="space-between" gap="300" wrap={false}>
-          <Text as="p" variant="bodySm" tone="subdued">
-            {label}
-          </Text>
-          <Text as="p" variant="bodySm" alignment="end">
-            {value}
-          </Text>
-        </InlineStack>
-      ))}
-    </InlineGrid>
+    <div className={styles.moduleRow}>
+      <div>
+        <div className={styles.moduleTitle}>{alertTypeLabel(alert.type)}</div>
+        <div className={styles.moduleDetail}>{alert.summary}</div>
+      </div>
+      <div className={styles.moduleStatus}>
+        {severityLabel(alert.severity)} · {formatConfidence(alert.confidence)}
+      </div>
+      <div className={styles.moduleDetail}>
+        {alert.estimatedValueAtRisk === null
+          ? "Value unavailable"
+          : `${formatMoney(alert.estimatedValueAtRisk, currency)} at risk`}
+        {evidenceRows[0] ? ` · ${evidenceRows[0][0]}: ${evidenceRows[0][1]}` : ""}
+      </div>
+      <Button size="slim" url="#alert-queue">
+        Open Watchdog alert
+      </Button>
+    </div>
   );
 }
 
@@ -342,16 +313,20 @@ function WatchdogEmptyState({
         };
 
   return (
-    <Card>
-      <BlockStack gap="100">
-        <Text as="h2" variant="headingMd">
-          {copy.title}
-        </Text>
-        <Text as="p" variant="bodyMd" tone="subdued">
-          {copy.body}
-        </Text>
-      </BlockStack>
-    </Card>
+    <section className={styles.actionCard}>
+      <p className={styles.eyebrow}>Current status</p>
+      <h2 className={styles.actionTitle}>{copy.title}</h2>
+      <p className={styles.actionReason}>{copy.body}</p>
+    </section>
+  );
+}
+
+function EvidenceItem({ children }: { children: ReactNode }) {
+  return (
+    <div className={styles.evidenceItem}>
+      <span className={styles.checkmark}>✓</span>
+      <span>{children}</span>
+    </div>
   );
 }
 
@@ -441,12 +416,6 @@ function severityTone(severity: WatchdogSeverity) {
   return "info";
 }
 
-function confidenceTone(confidence: WatchdogConfidence) {
-  if (confidence === "high") return "success";
-  if (confidence === "medium") return "warning";
-  return "info";
-}
-
 function formatConfidence(confidence: WatchdogConfidence) {
   return confidence[0].toUpperCase() + confidence.slice(1);
 }
@@ -456,8 +425,7 @@ function formatMoney(value: number, currency: string) {
   const symbol = safeCurrency === "GBP" ? "£" : `${safeCurrency} `;
 
   return `${symbol}${Number(value).toLocaleString("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
   })}`;
 }
 
@@ -472,4 +440,31 @@ function formatDateTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function alertPrioritySort(a: WatchdogAlert, b: WatchdogAlert) {
+  return (
+    severityRank(a.severity) - severityRank(b.severity) ||
+    (b.estimatedValueAtRisk ?? 0) - (a.estimatedValueAtRisk ?? 0)
+  );
+}
+
+function severityRank(severity: WatchdogSeverity) {
+  if (severity === "critical") return 0;
+  if (severity === "warning") return 1;
+  return 2;
+}
+
+function countAffectedProducts(alerts: WatchdogAlert[]) {
+  const affected = new Set(
+    alerts
+      .map((alert) => alert.affectedSku)
+      .filter((sku): sku is string => Boolean(sku)),
+  );
+
+  return affected.size;
+}
+
+function firstSuggestedCheck(alert: WatchdogAlert) {
+  return alert.suggestedChecks[0] ?? alert.suggestedCheck;
 }

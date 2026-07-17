@@ -289,11 +289,12 @@ test("Watchdog route includes required merchant-facing sections and labels", asy
 
   assert.match(route, /Watchdog/);
   assert.match(route, /Estimated prevention/);
-  assert.match(route, /Critical alerts/);
-  assert.match(route, /Warnings/);
-  assert.match(route, /Watch items/);
-  assert.match(route, /Estimated value at risk/);
-  assert.match(route, /Alert list/);
+  assert.match(route, /Primary action/);
+  assert.match(route, /Open Watchdog alert/);
+  assert.match(route, /Value at risk/);
+  assert.match(route, /Alert severity/);
+  assert.match(route, /Products affected/);
+  assert.match(route, /alert-queue/);
   assert.match(route, /Refund spike/);
   assert.match(route, /Sales collapse/);
   assert.match(route, /Product unavailable/);
@@ -301,10 +302,10 @@ test("Watchdog route includes required merchant-facing sections and labels", asy
   assert.match(route, /Unusual stock movement/);
   assert.match(route, /Missing product costs/);
   assert.match(route, /High return warning/);
-  assert.match(route, /Why this matters/);
+  assert.match(route, /Why Jefe recommends this/);
   assert.match(route, /Expected 7d revenue/);
-  assert.match(route, /Actual last 7d revenue/);
-  assert.match(route, /Suggested checks/);
+  assert.match(route, /Actual last 7d units/);
+  assert.match(route, /Suggested check/);
   assert.match(route, /No urgent issues found/);
   assert.match(route, /Not enough store history yet/);
 });

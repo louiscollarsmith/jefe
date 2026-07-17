@@ -14,6 +14,7 @@ import {
   useSubmit,
 } from "react-router";
 import {
+  Badge,
   Banner,
   BlockStack,
   Box,
@@ -24,7 +25,6 @@ import {
   FormLayout,
   Icon,
   InlineStack,
-  Layout,
   Link,
   Page,
   Select,
@@ -46,6 +46,7 @@ import {
 } from "../services/onboarding.server";
 import { HOUSE_RULE_DEFAULTS } from "../services/house-rules-policy";
 import { authenticate } from "../shopify.server";
+import styles from "../styles/manager-briefing.module.css";
 
 const settingsTasks = [
   "goal",
@@ -378,7 +379,7 @@ export default function ManagerSettings() {
   const data = useLoaderData<typeof loader>();
 
   if (!data.task) {
-    return <ManagerSettingsIndex />;
+    return <ManagerSettingsIndex data={data} />;
   }
 
   return <ManagerSettingsTask data={data as ManagerSettingsTaskData} />;
@@ -498,12 +499,9 @@ function ManagerSettingsTask({ data }: { data: ManagerSettingsTaskData }) {
   };
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <BlockStack gap="500">
                 {actionData ? (
                   <Banner tone={actionData.ok ? "success" : "critical"}>
                     <Text as="p" variant="bodyMd">
@@ -839,107 +837,245 @@ function ManagerSettingsTask({ data }: { data: ManagerSettingsTaskData }) {
                     </BlockStack>
                   </Form>
                 ) : null}
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+        </BlockStack>
+      </div>
     </Page>
   );
 }
 
-function ManagerSettingsIndex() {
+function ManagerSettingsIndex({ data }: { data: ManagerSettingsData }) {
+  const summary = [
+    {
+      label: "Goals",
+      value: data.onboarding.requiredSetup.find((step) => step.key === "goals")
+        ?.complete
+        ? "Complete"
+        : "Needs review",
+      tone: data.onboarding.requiredSetup.find((step) => step.key === "goals")
+        ?.complete
+        ? "success"
+        : "attention",
+    },
+    {
+      label: "House Rules",
+      value: data.onboarding.requiredSetup.find(
+        (step) => step.key === "house_rules",
+      )?.complete
+        ? "Complete"
+        : "Needs review",
+      tone: data.onboarding.requiredSetup.find(
+        (step) => step.key === "house_rules",
+      )?.complete
+        ? "success"
+        : "attention",
+    },
+    {
+      label: "Approval",
+      value: approvalModeSummary(data.onboarding.approvalMode),
+      tone: data.onboarding.approvalMode ? "info" : "attention",
+    },
+    {
+      label: "Costs",
+      value:
+        data.cogsStats.confidenceLevel === "low" ? "Limited" : "Ready",
+      tone: data.cogsStats.confidenceLevel === "low" ? "warning" : "success",
+    },
+  ] as const;
   const settings = [
     {
       title: "Business goals",
       description: "Edit the 3, 6 and 12 month goals Jefe should work toward.",
       href: "/app/manager-settings?task=goal",
+      action: "Edit goals",
+      status: summary[0].value,
     },
     {
       title: "House Rules",
       description: "Edit margin, discount, messaging and approval guardrails.",
       href: "/app/manager-settings?task=house-rules",
+      action: "Edit rules",
+      status: summary[1].value,
     },
     {
       title: "Approval mode",
       description: "Choose how cautious Jefe should be with recommendations.",
       href: "/app/manager-settings?task=approval-mode",
+      action: "Change mode",
+      status: summary[2].value,
     },
     {
       title: "Product costs",
       description: "Maintain COGS coverage for margin confidence.",
       href: "/app/manager-settings?task=product-costs",
+      action: "Review product costs",
+      status: `${data.cogsStats.completionPercentage}% coverage`,
     },
     {
       title: "Brand voice",
       description: "Edit copy and campaign voice guidance.",
       href: "/app/manager-settings?task=brand-voice",
+      action: "Edit brand voice",
+      status: data.onboarding.steps.find((step) => step.key === "brand_voice")
+        ?.status === "complete"
+        ? "Complete"
+        : "Optional",
     },
     {
       title: "Protected products",
       description: "Edit products, SKUs or collections Jefe should protect.",
       href: "/app/manager-settings?task=protected-products",
+      action: "Edit protected products",
+      status: data.onboarding.steps.find(
+        (step) => step.key === "protected_products",
+      )?.status === "complete"
+        ? "Complete"
+        : "Optional",
     },
     {
       title: "Klaviyo",
       description: "Connect or review winback setup.",
       href: "/app/klaviyo-winback",
+      action: "Manage Klaviyo",
+      status: data.onboarding.moduleReadiness.find(
+        (module) => module.key === "klaviyo_winback",
+      )?.status ?? "Not connected",
     },
   ];
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <BlockStack gap="100">
-                  <Text as="h1" variant="heading2xl">
-                    Manager Settings
-                  </Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    Edit the operating settings Jefe uses when making
-                    recommendations.
-                  </Text>
-                </BlockStack>
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <header className={styles.header}>
+          <Text as="h1" variant="heading2xl">
+            Manager Settings
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Teach Jefe how to manage your store.
+          </Text>
+          <div className={styles.statusRow}>
+            {summary.map((item) => (
+              <Badge key={item.label} tone={item.tone}>
+                {`${item.label} ${item.value}`}
+              </Badge>
+            ))}
+          </div>
+        </header>
 
-                <Card>
-                  <BlockStack gap="200">
-                    {settings.map((setting) => (
-                      <Box
-                        key={setting.title}
-                        borderColor="border"
-                        borderWidth="025"
-                        borderRadius="200"
-                        padding="300"
-                      >
-                        <InlineStack
-                          align="space-between"
-                          blockAlign="center"
-                          gap="300"
-                        >
-                          <BlockStack gap="050">
-                            <Text as="h2" variant="headingSm">
-                              {setting.title}
-                            </Text>
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {setting.description}
-                            </Text>
-                          </BlockStack>
-                          <Button url={setting.href}>Edit</Button>
-                        </InlineStack>
-                      </Box>
-                    ))}
-                  </BlockStack>
-                </Card>
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+        <section className={styles.verdict}>
+          <h2 className={styles.verdictTitle}>
+            These settings control what Jefe recommends.
+          </h2>
+          <p className={styles.verdictBody}>
+            Jefe uses your goals, House Rules, approval comfort and product
+            costs to decide what it recommends, what it blocks, and when it asks
+            for approval.
+          </p>
+        </section>
+
+        <section className={styles.actionCard}>
+          <p className={styles.eyebrow}>Primary action</p>
+          <h3 className={styles.actionTitle}>
+            {primarySettingsAction(data).title}
+          </h3>
+          <p className={styles.actionReason}>
+            {primarySettingsAction(data).reason}
+          </p>
+          <div className={styles.actionButtonRow}>
+            <Button variant="primary" url={primarySettingsAction(data).href}>
+              {primarySettingsAction(data).label}
+            </Button>
+          </div>
+        </section>
+
+        <section className={styles.keyNumbers}>
+          <h3 className={styles.sectionTitle}>Setup summary</h3>
+          <div className={styles.keyNumberGrid}>
+            {summary.map((item) => (
+              <MetricBlock
+                key={item.label}
+                label={item.label}
+                value={item.value}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className={styles.moduleList}>
+          {settings.map((setting) => (
+            <div className={styles.moduleRow} key={setting.title}>
+              <div>
+                <div className={styles.moduleTitle}>{setting.title}</div>
+                <div className={styles.moduleDetail}>{setting.description}</div>
+              </div>
+              <div className={styles.moduleStatus}>{setting.status}</div>
+              <div className={styles.moduleDetail}>
+                {setting.title === "House Rules"
+                  ? "Discounts, margin protection, email contact and risk periods"
+                  : setting.title === "Product costs"
+                    ? "Margin confidence depends on product costs"
+                    : "Used in Jefe recommendations"}
+              </div>
+              <Button url={setting.href}>{setting.action}</Button>
+            </div>
+          ))}
+        </section>
+      </div>
     </Page>
   );
+}
+
+function MetricBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className={styles.keyNumberLabel}>{label}</p>
+      <p className={styles.keyNumberValue}>{value}</p>
+    </div>
+  );
+}
+
+function primarySettingsAction(data: ManagerSettingsData) {
+  const incompleteRequired = data.onboarding.requiredSetup.find(
+    (step) => !step.complete && step.href,
+  );
+
+  if (incompleteRequired) {
+    return {
+      title: incompleteRequired.label,
+      reason: incompleteRequired.reason,
+      href: incompleteRequired.href,
+      label:
+        incompleteRequired.key === "goals"
+          ? "Set goals"
+          : incompleteRequired.key === "house_rules"
+            ? "Review rules"
+            : "Confirm mode",
+    };
+  }
+
+  if (data.cogsStats.confidenceLevel === "low") {
+    return {
+      title: "Review product costs",
+      reason:
+        "Margin confidence depends on product costs, especially for products driving sold revenue.",
+      href: "/app/manager-settings?task=product-costs",
+      label: "Review product costs",
+    };
+  }
+
+  return {
+    title: "Review House Rules",
+    reason:
+      "House Rules are the boundaries Jefe follows before recommending actions.",
+    href: "/app/manager-settings?task=house-rules",
+    label: "Review rules",
+  };
+}
+
+function approvalModeSummary(mode: string | null) {
+  if (mode === "very_cautious") return "Very cautious";
+  if (mode === "balanced") return "Balanced";
+  if (mode === "experimental") return "Experimental";
+  return "Needs review";
 }
 
 function SettingsTaskHeader({

@@ -1,13 +1,8 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useNavigate } from "react-router";
 import {
-  BlockStack,
-  Box,
-  Card,
-  InlineGrid,
-  InlineStack,
-  Layout,
-  Link,
+  Badge,
+  Button,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -16,6 +11,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { generateDailyVerdict } from "../services/daily-verdict.server";
+import styles from "../styles/manager-briefing.module.css";
 
 type DailyVerdictView = {
   headline: string;
@@ -86,149 +82,166 @@ export default function Index() {
     useLoaderData<typeof loader>();
   const dailyVerdict = rawDailyVerdict as unknown as DailyVerdictView;
   const navigate = useNavigate();
-  const briefSections = [
-    ["What happened", dailyVerdict.sections.whatHappened],
-    ["What matters", dailyVerdict.sections.whatMatters],
-    ["Confidence", dailyVerdict.sections.confidence],
-    ["Next step", dailyVerdict.sections.nextStep],
-  ];
+  const marginCoverage = dailyVerdict.margin.cogsCoveragePercent;
+  const missingCoverage = Math.max(0, 100 - marginCoverage);
+  const productCostAction = marginCoverage < 85;
+  const verdictTitle = productCostAction
+    ? `Margin confidence is ${dailyVerdict.margin.confidenceLevel}.`
+    : dailyVerdict.headline;
+  const verdictBody = productCostAction
+    ? `Revenue was ${formatMoney(dailyVerdict.revenue.gross, dailyVerdict.revenue.currency)}, but product costs are missing for ${formatPercent(missingCoverage)} of sold revenue, so Jefe cannot calculate reliable gross profit yet.`
+    : dailyVerdict.summary;
+  const topHighlights = dailyVerdict.highlights.slice(0, 5);
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <BlockStack gap="100">
-                  <Text as="h1" variant="heading2xl">
-                    Revenue &amp; Margin
-                  </Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    {dailyVerdict.period.display} · Generated{" "}
-                    {formatDateTime(generatedAt)} ·{" "}
-                    {formatConfidence(dailyVerdict.margin.confidenceLevel)}{" "}
-                    confidence
-                  </Text>
-                </BlockStack>
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <header className={styles.header}>
+          <Text as="h1" variant="heading2xl">
+            Revenue &amp; Margin
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            {dailyVerdict.period.display} · Generated {formatDateTime(generatedAt)}
+          </Text>
+          <div className={styles.statusRow}>
+            <Badge tone={confidenceTone(dailyVerdict.margin.confidenceLevel)}>
+              {`${formatConfidence(dailyVerdict.margin.confidenceLevel)} confidence`}
+            </Badge>
+            {productCostAction ? <Badge tone="warning">Product costs limited</Badge> : null}
+          </div>
+        </header>
 
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Store performance
-                    </Text>
-                    <Text as="h1" variant="headingXl">
-                      {dailyVerdict.headline}
-                    </Text>
-                    <Link onClick={() => navigate("/app/onboarding")}>
-                      Manager Settings
-                    </Link>
-                  </BlockStack>
-                </Card>
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 5 }} gap="400">
-                  <Card>
-                    <MetricBlock
-                      label="Gross revenue"
-                      value={formatMoney(
-                        dailyVerdict.revenue.gross,
+        <section className={styles.verdict}>
+          <h2 className={styles.verdictTitle}>{verdictTitle}</h2>
+          <p className={styles.verdictBody}>{verdictBody}</p>
+        </section>
+
+        <section className={styles.actionCard}>
+          <p className={styles.eyebrow}>Primary action</p>
+          <h3 className={styles.actionTitle}>
+            {productCostAction
+              ? "Confirm product costs for high-revenue products"
+              : "Review margin evidence"}
+          </h3>
+          <p className={styles.actionReason}>
+            {productCostAction
+              ? `This would improve margin coverage from ${formatPercent(marginCoverage)} of sold revenue and make gross profit more reliable.`
+              : "Margin confidence is strong enough to review the product-level evidence behind this period."}
+          </p>
+          <div className={styles.actionButtonRow}>
+            <Button
+              variant="primary"
+              onClick={() =>
+                navigate(
+                  productCostAction
+                    ? "/app/manager-settings?task=product-costs"
+                    : "/app/revenue-margin",
+                )
+              }
+            >
+              {productCostAction ? "Review product costs" : "Review margin evidence"}
+            </Button>
+          </div>
+          <div className={styles.actionMeta}>
+            <MetricBlock
+              label="Sold revenue affected"
+              value={formatMoney(
+                dailyVerdict.revenue.gross * (missingCoverage / 100),
+                dailyVerdict.revenue.currency,
+              )}
+            />
+            <MetricBlock
+              label="Margin coverage"
+              value={formatPercent(marginCoverage)}
+            />
+            <MetricBlock
+              label="Risk"
+              value={productCostAction ? "Low" : "Review"}
+            />
+          </div>
+        </section>
+
+        <section className={styles.keyNumbers}>
+          <h3 className={styles.sectionTitle}>Key numbers</h3>
+          <div className={styles.keyNumberGrid}>
+            <MetricBlock
+              label="Revenue"
+              value={formatMoney(
+                dailyVerdict.revenue.gross,
+                dailyVerdict.revenue.currency,
+              )}
+            />
+            <MetricBlock
+              label="Net after refunds"
+              value={formatMoney(
+                dailyVerdict.revenue.net,
+                dailyVerdict.revenue.currency,
+              )}
+            />
+            <MetricBlock
+              label="Margin coverage"
+              value={formatPercent(marginCoverage)}
+            />
+            <MetricBlock
+              label="Refund impact"
+              value={formatMoney(
+                dailyVerdict.revenue.refunded,
+                dailyVerdict.revenue.currency,
+              )}
+            />
+          </div>
+        </section>
+
+        <section className={styles.explanation}>
+          <h3 className={styles.sectionTitle}>Why this matters</h3>
+          <p className={styles.explanationText}>
+            {dailyVerdict.sections.whatMatters}
+          </p>
+          <div className={styles.evidenceList}>
+            <EvidenceItem>{dailyVerdict.sections.whatHappened}</EvidenceItem>
+            <EvidenceItem>{dailyVerdict.sections.confidence}</EvidenceItem>
+            <EvidenceItem>{dailyVerdict.sections.nextStep}</EvidenceItem>
+          </div>
+          {dailyVerdict.margin.estimatedGrossProfit === null ? (
+            <p className={styles.inlineNote}>
+              Gross profit is unavailable until more product costs are added.
+            </p>
+          ) : null}
+        </section>
+
+        {topHighlights.length > 0 ? (
+          <section className={styles.moduleList}>
+            {topHighlights.map((highlight) => (
+              <div
+                className={styles.moduleRow}
+                key={`${highlight.type}-${highlight.title}`}
+              >
+                <div>
+                  <div className={styles.moduleTitle}>{highlight.title}</div>
+                  <div className={styles.moduleDetail}>{highlight.message}</div>
+                </div>
+                <div className={styles.moduleStatus}>
+                  {formatConfidence(highlight.confidence)} confidence
+                </div>
+                <div className={styles.moduleDetail}>
+                  {highlight.evidence
+                    ? productEvidenceSummary(
+                        highlight.evidence,
                         dailyVerdict.revenue.currency,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Net after refunds"
-                      value={formatMoney(
-                        dailyVerdict.revenue.net,
-                        dailyVerdict.revenue.currency,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Estimated gross profit"
-                      value={
-                        dailyVerdict.margin.estimatedGrossProfit === null
-                          ? "Missing"
-                          : formatMoney(
-                              dailyVerdict.margin.estimatedGrossProfit,
-                              dailyVerdict.revenue.currency,
-                            )
-                      }
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Margin confidence"
-                      value={formatConfidence(
-                        dailyVerdict.margin.confidenceLevel,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="COGS coverage"
-                      value={`${dailyVerdict.margin.cogsCoveragePercent}%`}
-                    />
-                  </Card>
-                </InlineGrid>
-
-                <Card>
-                  <BlockStack gap="500">
-                    <BlockStack gap="100">
-                      <Text as="h2" variant="headingLg">
-                        Performance evidence
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Revenue, refunds, margin confidence and product-level
-                        evidence for this period.
-                      </Text>
-                    </BlockStack>
-                    <BlockStack gap="400">
-                      {briefSections.map(([heading, body]) => (
-                        <BlockStack key={heading} gap="100">
-                          <Text as="h3" variant="headingMd">
-                            {heading}
-                          </Text>
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            {body}
-                          </Text>
-                        </BlockStack>
-                      ))}
-                    </BlockStack>
-                  </BlockStack>
-                </Card>
-
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingLg">
-                    Insight cards
-                  </Text>
-                  <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-                    {dailyVerdict.highlights.map((highlight) => (
-                      <Card key={`${highlight.type}-${highlight.title}`}>
-                        <BlockStack gap="300">
-                          <Text as="h3" variant="headingMd">
-                            {highlight.title}
-                          </Text>
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            {highlight.message}
-                          </Text>
-                          {highlight.evidence ? (
-                            <HighlightEvidence
-                              evidence={highlight.evidence}
-                              currency={dailyVerdict.revenue.currency}
-                            />
-                          ) : null}
-                        </BlockStack>
-                      </Card>
-                    ))}
-                  </InlineGrid>
-                </BlockStack>
-              </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+                      )
+                    : "Supporting evidence available"}
+                </div>
+                <Button
+                  size="slim"
+                  onClick={() => navigate("/app/manager-settings?task=product-costs")}
+                >
+                  Review product costs
+                </Button>
+              </div>
+            ))}
+          </section>
+        ) : null}
+      </div>
     </Page>
   );
 }
@@ -239,91 +252,36 @@ export const headers: HeadersFunction = (headersArgs) => {
 
 function MetricBlock({ label, value }: { label: string; value: string }) {
   return (
-    <BlockStack gap="100">
-      <Text as="p" variant="bodySm" tone="subdued">
-        {label}
-      </Text>
-      <Text as="p" variant="headingLg">
-        {value}
-      </Text>
-    </BlockStack>
+    <div>
+      <p className={styles.keyNumberLabel}>{label}</p>
+      <p className={styles.keyNumberValue}>{value}</p>
+    </div>
   );
 }
 
-function HighlightEvidence({
-  evidence,
-  currency,
-}: {
-  evidence: NonNullable<DailyVerdictView["highlights"][number]["evidence"]>;
-  currency: string;
-}) {
-  const rows = [
-    ["Product", evidence.productName],
-    ["SKU", evidence.sku],
-    ["Units sold", evidence.unitsSold],
-    [
-      "Revenue",
-      evidence.revenue === undefined
-        ? undefined
-        : formatMoney(evidence.revenue, currency),
-    ],
-    [
-      "COGS",
-      evidence.unitCogs === undefined || evidence.unitCogs === null
-        ? "Missing"
-        : formatMoney(evidence.unitCogs, currency),
-    ],
-    [
-      "Gross profit",
-      evidence.grossProfit === undefined || evidence.grossProfit === null
-        ? "Missing"
-        : formatMoney(evidence.grossProfit, currency),
-    ],
-    [
-      "Margin",
-      evidence.marginPercent === undefined || evidence.marginPercent === null
-        ? "Missing"
-        : `${evidence.marginPercent}%`,
-    ],
-    [
-      "COGS coverage",
-      evidence.cogsCoveragePercent === undefined
-        ? undefined
-        : `${evidence.cogsCoveragePercent}%`,
-    ],
-    [
-      "Refund rate",
-      evidence.refundRatePercent === undefined
-        ? undefined
-        : `${evidence.refundRatePercent}%`,
-    ],
-    [
-      "Refunded",
-      evidence.refundedAmount === undefined
-        ? undefined
-        : formatMoney(evidence.refundedAmount, currency),
-    ],
-  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
-
+function EvidenceItem({ children }: { children: string }) {
   return (
-    <BlockStack gap="200">
-      <Text as="p" variant="bodySm" tone="subdued">
-        Evidence
-      </Text>
-      <InlineGrid columns={{ xs: 1, sm: 2 }} gap="200">
-        {rows.map(([label, value]) => (
-          <BlockStack key={label} gap="050">
-            <Text as="p" variant="bodySm" tone="subdued">
-              {label}
-            </Text>
-            <Text as="p" variant="bodyMd">
-              {value}
-            </Text>
-          </BlockStack>
-        ))}
-      </InlineGrid>
-    </BlockStack>
+    <div className={styles.evidenceItem}>
+      <span className={styles.checkmark}>✓</span>
+      <span>{children}</span>
+    </div>
   );
+}
+
+function productEvidenceSummary(
+  evidence: NonNullable<DailyVerdictView["highlights"][number]["evidence"]>,
+  currency: string,
+) {
+  if (evidence.revenue !== undefined) {
+    return `${formatMoney(evidence.revenue, currency)} sold revenue`;
+  }
+  if (evidence.cogsCoveragePercent !== undefined) {
+    return `${formatPercent(evidence.cogsCoveragePercent)} coverage`;
+  }
+  if (evidence.refundedAmount !== undefined) {
+    return `${formatMoney(evidence.refundedAmount, currency)} refunded`;
+  }
+  return evidence.sku ? `SKU ${evidence.sku}` : "Evidence available";
 }
 
 function formatMoney(value: number, currency: string) {
@@ -331,8 +289,7 @@ function formatMoney(value: number, currency: string) {
   const symbol = safeCurrency === "GBP" ? "£" : `${safeCurrency} `;
 
   return `${symbol}${Number(value).toLocaleString("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
   })}`;
 }
 
@@ -351,4 +308,17 @@ function formatDateTime(value: string) {
 
 function formatConfidence(confidence: "low" | "medium" | "high") {
   return confidence[0].toUpperCase() + confidence.slice(1);
+}
+
+function confidenceTone(confidence: "low" | "medium" | "high") {
+  if (confidence === "high") return "success";
+  if (confidence === "medium") return "attention";
+
+  return "warning";
+}
+
+function formatPercent(value: number) {
+  return `${Number(value).toLocaleString("en-GB", {
+    maximumFractionDigits: value < 20 ? 1 : 0,
+  })}%`;
 }
