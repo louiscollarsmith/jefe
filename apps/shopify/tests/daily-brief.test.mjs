@@ -428,7 +428,8 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(importProgressRoute, /authenticate\.admin\(request\)/);
   assert.match(importProgressRoute, /throw redirect\("\/app\/onboarding"\)/);
   assert.match(managerSettingsRoute, /Manager Settings/);
-  assert.match(managerSettingsRoute, /Edit the operating settings/);
+  assert.match(managerSettingsRoute, /Teach Jefe how to manage your store/);
+  assert.match(managerSettingsRoute, /Setup summary/);
   assert.match(managerSettingsRoute, /Business goals/);
   assert.match(managerSettingsRoute, /\/app\/manager-settings\?task=goal/);
   assert.match(
@@ -448,7 +449,7 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.match(managerSettingsRoute, /align="start"/);
   assert.match(managerSettingsRoute, /admin\.shopify\.com\/store/);
   assert.match(managerSettingsRoute, /target="_blank"/);
-  assert.doesNotMatch(managerSettingsRoute, /<Badge/);
+  assert.match(managerSettingsRoute, /<Badge/);
   assert.doesNotMatch(managerSettingsRoute, /settingTone/);
   assert.doesNotMatch(managerSettingsRoute, /settingLabel/);
   assert.doesNotMatch(dailyBriefRoute, /useRevalidator/);
@@ -512,12 +513,12 @@ test("Daily Brief navigation and scheduled status copy match product IA", async 
   assert.doesNotMatch(devRoute, /Finalize/);
   assert.doesNotMatch(revenueMarginRoute, /Open Inventory Guardian/);
   assert.doesNotMatch(revenueMarginRoute, /Open Watchdog/);
-  assert.match(revenueMarginRoute, /Performance evidence/);
-  assert.match(revenueMarginRoute, /COGS coverage/);
-  assert.match(inventoryRoute, /Stockout evidence/);
-  assert.match(inventoryRoute, /Detailed stockout and reorder evidence/);
-  assert.match(watchdogRoute, /Incident evidence/);
-  assert.match(watchdogRoute, /Detailed read-only anomaly checks/);
+  assert.match(revenueMarginRoute, /Primary action/);
+  assert.match(revenueMarginRoute, /Margin coverage/);
+  assert.match(inventoryRoute, /Review stockout risk/);
+  assert.match(inventoryRoute, /Estimated prevention/);
+  assert.match(watchdogRoute, /Open Watchdog alert/);
+  assert.match(watchdogRoute, /Unusual changes/);
   assert.match(onboardingRoute, /Onboarding/);
   assert.match(onboardingRoute, /FocusedOnboardingPanel/);
   assert.match(onboardingRoute, /TaskPageHeader/);
