@@ -25,6 +25,10 @@
 - Fixed Manager Settings edit links so completed shops can update goals, House Rules, approval mode, product costs, brand voice and protected products without returning to onboarding.
 - Fixed Shopify cost webhooks so variant Cost changes in Shopify update product costs in Jefe instead of staying blank.
 
+### Internal
+
+- Added a UI quality playbook for future product-surface changes.
+
 ---
 
 ## 2026-07-16

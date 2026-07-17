@@ -40,6 +40,25 @@ Before any task:
 4. Relevant task-specific context docs
 5. Current ticket
 
+## UI quality rule
+
+Before working on any UI/front-end/product-surface task, read:
+
+```txt
+docs/context/12_ui_quality_playbook.md
+```
+
+For UI tasks, include a UI Preflight before coding:
+
+### What is the page's job?
+### What is the one thing the user should do?
+### What should be visually dominant?
+### What can be secondary or hidden?
+### What should not be shown on this page?
+### Proposed layout
+
+Do not mark UI work complete unless it passes the UI completion checklist in the playbook.
+
 ## PR expectations
 
 Every PR must include:
