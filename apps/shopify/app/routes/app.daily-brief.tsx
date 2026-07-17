@@ -5,12 +5,7 @@ import {
   Banner,
   BlockStack,
   Box,
-  Card,
-  InlineGrid,
-  InlineStack,
-  Layout,
-  Link,
-  List,
+  Button,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -24,6 +19,7 @@ import {
   setOnboardingStepStatus,
 } from "../services/onboarding.server";
 import { getDailyBriefReadiness } from "../services/daily-brief-readiness.server";
+import styles from "../styles/daily-brief.module.css";
 
 type BriefConfidence = "low" | "medium" | "high";
 type BriefStatus = "generated" | "degraded" | "failed";
@@ -49,7 +45,46 @@ type DailyBriefView = {
   degradedReasons: string[];
   failureReason: string | null;
   headline: string;
+  verdict: {
+    title: string;
+    body: string;
+  };
   sections: BriefSection[];
+  todayNumbers: Array<{
+    label: string;
+    value: string;
+  }>;
+  whatChanged: string[];
+  recommendedFocus: {
+    type: string;
+    title: string;
+    reason: string;
+    estimatedValue: string;
+    valueLabel: string;
+    confidence: BriefConfidence | "estimated" | "limited";
+    riskLabel: string;
+    effortLabel: string;
+    href: string;
+    buttonLabel: string;
+    verificationClass: "verified" | "estimated";
+    actionId?: string;
+  };
+  evidenceItems: string[];
+  recommendationEvidence: {
+    title: string;
+    summary?: string;
+    items: string[];
+    secondaryItems: string[];
+  };
+  moduleSummaries: Array<{
+    key: string;
+    title: string;
+    status: string;
+    detail: string;
+    href: string;
+    confidence: BriefConfidence | "estimated";
+  }>;
+  optionalWarnings: string[];
   metrics: {
     revenue: {
       gross: number;
@@ -105,7 +140,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     : null;
   let brief = latestBrief;
 
-  if (!brief || latestDate !== today) {
+  if (!brief || latestDate !== today || !isDailyBriefV1Payload(brief.verdict)) {
     brief = await generateDailyBrief(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -113,6 +148,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   if (!brief) {
+    throw redirect("/app/onboarding");
+  }
+
+  const onboarding = await getOnboardingState(prisma, shop.id);
+  if (!onboarding.requiredOnboardingComplete) {
     throw redirect("/app/onboarding");
   }
 
@@ -125,164 +165,177 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  const onboarding = await getOnboardingState(prisma, shop.id);
-
   return { brief, onboarding };
 };
 
 export default function DailyBrief() {
   const { brief, onboarding } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
 
   const view = brief.verdict as unknown as DailyBriefView;
   const deliveryStatus = brief.deliveryStatus as DeliveryStatus;
-  const inventoryRisk =
-    view.metrics.inventory?.revenueAtRisk === undefined
-      ? "Unavailable"
-      : formatMoney(
-          view.metrics.inventory.revenueAtRisk,
-          view.metrics.inventory.currency,
-        );
-  const watchdogRisk =
-    view.metrics.watchdog?.estimatedValueAtRisk === undefined
-      ? "Unavailable"
-      : formatMoney(
-          view.metrics.watchdog.estimatedValueAtRisk,
-          view.metrics.watchdog.currency,
-        );
+  const todayNumbers = Array.isArray(view.todayNumbers)
+    ? view.todayNumbers
+    : [];
+  const whatChanged = Array.isArray(view.whatChanged) ? view.whatChanged : [];
+  const evidenceItems = Array.isArray(view.evidenceItems)
+    ? view.evidenceItems
+    : [];
+  const moduleSummaries = Array.isArray(view.moduleSummaries)
+    ? view.moduleSummaries
+    : [];
+  const optionalWarnings = Array.isArray(view.optionalWarnings)
+    ? view.optionalWarnings
+    : [];
+  const onboardingWarnings = Array.isArray(onboarding.warnings)
+    ? onboarding.warnings
+    : [];
+  const recommendedFocus = view.recommendedFocus ?? {
+    title: "Review Daily Brief",
+    reason: "Jefe regenerated this brief format. Review the latest evidence.",
+    estimatedValue: "Unavailable",
+    valueLabel: "Value at risk",
+    confidence: "limited" as const,
+    riskLabel: "Low",
+    effortLabel: "~2 minutes",
+    href: "/app/daily-brief",
+    buttonLabel: "Review Daily Brief",
+    verificationClass: "estimated" as const,
+  };
+  const verdict = view.verdict ?? {
+    title: view.headline,
+    body: "Review the latest Daily Brief evidence before taking action.",
+  };
+  const recommendationEvidence = view.recommendationEvidence ?? {
+    title: "Why Jefe recommends this",
+    summary: "Review the latest evidence before taking action.",
+    items: evidenceItems,
+    secondaryItems: [],
+  };
 
   return (
-    <Page>
-      <Layout>
-        <Layout.Section>
-          <InlineStack align="center">
-            <Box width="100%" maxWidth="980px">
-              <BlockStack gap="500">
-                <InlineStack align="space-between" blockAlign="start" gap="400">
-                  <BlockStack gap="100">
-                    <Text as="h1" variant="heading2xl">
-                      Daily Brief
-                    </Text>
-                    <Text as="p" variant="bodyLg" tone="subdued">
-                      {view.merchantName} · {view.shopDomain} ·{" "}
-                      {formatPeriod(view.periodStart, view.periodEnd)} ·
-                      Generated {formatDateTime(view.generatedAt)}
-                    </Text>
-                  </BlockStack>
-                  <DailyBriefScheduleStatus
-                    generatedAt={view.generatedAt}
-                    status={view.status}
-                    deliveryStatus={deliveryStatus}
-                  />
-                </InlineStack>
+    <Page fullWidth>
+      <div className={styles.briefing}>
+        <header className={styles.header}>
+          <Text as="h1" variant="heading2xl">
+            Daily Brief
+          </Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            {formatPeriod(view.periodStart, view.periodEnd)} · Generated{" "}
+            {formatDateTime(view.generatedAt)} · Email{" "}
+            {formatEmailStatus(deliveryStatus)}
+          </Text>
+          <div className={styles.statusRow}>
+            <Badge tone={statusTone(view.status)}>
+              {formatStatus(view.status)}
+            </Badge>
+            <Badge tone={confidenceTone(view.confidenceLevel)}>
+              {`${formatConfidence(view.confidenceLevel)} confidence`}
+            </Badge>
+          </div>
+        </header>
 
-                {view.dataIncomplete ? (
-                  <Banner
-                    tone={view.status === "failed" ? "critical" : "warning"}
-                  >
-                    <BlockStack gap="150">
-                      <Text as="p" variant="bodyMd">
-                        Data is incomplete. Here is what Jefe can verify.
-                      </Text>
-                      {view.degradedReasons.length > 0 ? (
-                        <List type="bullet">
-                          {view.degradedReasons.map((reason) => (
-                            <List.Item key={reason}>{reason}</List.Item>
-                          ))}
-                        </List>
-                      ) : null}
-                    </BlockStack>
-                  </Banner>
-                ) : null}
-
-                {onboarding.warnings.length > 0 ? (
-                  <Banner tone="warning">
-                    <BlockStack gap="100">
-                      {onboarding.warnings.map((warning) => (
-                        <Text as="p" variant="bodyMd" key={warning.key}>
-                          {warning.message}
-                        </Text>
-                      ))}
-                    </BlockStack>
-                  </Banner>
-                ) : null}
-
-                <Card>
-                  <BlockStack gap="300">
-                    <InlineStack
-                      align="space-between"
-                      blockAlign="center"
-                      gap="300"
-                    >
-                      <InlineStack gap="200" blockAlign="center">
-                        <Badge tone={statusTone(view.status)}>
-                          {formatStatus(view.status)}
-                        </Badge>
-                        <Badge tone={confidenceTone(view.confidenceLevel)}>
-                          {`${formatConfidence(view.confidenceLevel)} confidence`}
-                        </Badge>
-                      </InlineStack>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Email: {formatEmailStatus(deliveryStatus)}
-                      </Text>
-                    </InlineStack>
-                    <Text as="h2" variant="headingXl">
-                      {view.headline}
-                    </Text>
-                    <Text as="p" variant="bodyMd" tone="subdued">
-                      Inventory Guardian and Watchdog value-at-risk figures are
-                      estimated prevention. Daily Brief v0 does not claim
-                      verified lift.
-                    </Text>
-                  </BlockStack>
-                </Card>
-
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
-                  <Card>
-                    <MetricBlock
-                      label="Revenue"
-                      value={formatMoney(
-                        view.metrics.revenue.gross,
-                        view.metrics.revenue.currency,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Net after refunds"
-                      value={formatMoney(
-                        view.metrics.revenue.net,
-                        view.metrics.revenue.currency,
-                      )}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Stockout revenue at risk"
-                      value={inventoryRisk}
-                    />
-                  </Card>
-                  <Card>
-                    <MetricBlock
-                      label="Watchdog value at risk"
-                      value={watchdogRisk}
-                    />
-                  </Card>
-                </InlineGrid>
-
-                <BlockStack gap="300">
-                  {view.sections.map((section) => (
-                    <BriefSectionCard
-                      key={section.type}
-                      section={section}
-                      currency={view.metrics.revenue.currency}
-                    />
-                  ))}
-                </BlockStack>
+        {view.status === "failed" ? (
+          <Box paddingBlockStart="500">
+            <Banner tone="critical">
+              <BlockStack gap="150">
+                <Text as="p" variant="bodyMd">
+                  Data is incomplete. Here is what Jefe can verify.
+                </Text>
+                {view.degradedReasons.map((reason) => (
+                  <Text as="p" variant="bodySm" key={reason}>
+                    {reason}
+                  </Text>
+                ))}
               </BlockStack>
-            </Box>
-          </InlineStack>
-        </Layout.Section>
-      </Layout>
+            </Banner>
+          </Box>
+        ) : null}
+
+        <section className={styles.verdict}>
+          <h2 className={styles.verdictTitle}>{verdict.title}</h2>
+          <p className={styles.verdictBody}>{verdict.body}</p>
+        </section>
+
+        <section className={styles.actionCard}>
+          <p className={styles.eyebrow}>Recommended action</p>
+          <h2 className={styles.actionTitle}>{recommendedFocus.title}</h2>
+          <p className={styles.actionReason}>{recommendedFocus.reason}</p>
+          <div className={styles.actionButtonRow}>
+            <Button
+              variant="primary"
+              onClick={() => navigate(recommendedFocus.href)}
+            >
+              {recommendedFocus.buttonLabel}
+            </Button>
+            <Text as="p" variant="bodySm" tone="subdued">
+              No action runs automatically.
+            </Text>
+          </div>
+          <div className={styles.actionMeta}>
+            <ActionMeta
+              label={recommendedFocus.valueLabel}
+              value={recommendedFocus.estimatedValue}
+            />
+            <ActionMeta label="Risk" value={recommendedFocus.riskLabel} />
+            <ActionMeta label="Effort" value={recommendedFocus.effortLabel} />
+          </div>
+        </section>
+
+        <section className={styles.keyNumbers}>
+          <h3 className={styles.sectionTitle}>Key numbers</h3>
+          <div className={styles.keyNumberGrid}>
+            {todayNumbers.map((number) => (
+              <KeyNumber
+                key={number.label}
+                label={number.label}
+                value={number.value}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className={styles.explanation}>
+          <h3 className={styles.sectionTitle}>Why Jefe recommends this</h3>
+          <p className={styles.explanationText}>
+            {recommendationEvidence.summary ?? recommendationEvidence.title}
+          </p>
+          <div className={styles.evidenceList}>
+            {recommendationEvidence.items.map((item) => (
+              <EvidenceItem key={item}>{item}</EvidenceItem>
+            ))}
+            {whatChanged.map((item) => (
+              <EvidenceItem key={item}>{item}</EvidenceItem>
+            ))}
+            {recommendationEvidence.secondaryItems.map((item) => (
+              <EvidenceItem key={item}>{item}</EvidenceItem>
+            ))}
+          </div>
+        </section>
+
+        {[
+          ...optionalWarnings,
+          ...onboardingWarnings.map((warning) =>
+            normalizeBriefWarning(warning.message),
+          ),
+        ]
+          .filter((warning, index, all) => all.indexOf(warning) === index)
+          .map((warning) => (
+            <p className={styles.inlineNote} key={warning}>
+              {warning}
+            </p>
+          ))}
+
+        <section className={styles.moduleList} aria-label="Supporting modules">
+          {moduleSummaries.map((summary) => (
+            <ModuleSummary
+              key={summary.key}
+              summary={summary}
+              onOpen={() => navigate(summary.href)}
+            />
+          ))}
+        </section>
+      </div>
     </Page>
   );
 }
@@ -291,115 +344,77 @@ export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
 
-function DailyBriefScheduleStatus({
-  generatedAt,
-  status,
-  deliveryStatus,
+function isDailyBriefV1Payload(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Partial<DailyBriefView>;
+
+  return (
+    Array.isArray(payload.todayNumbers) &&
+    Array.isArray(payload.whatChanged) &&
+    Boolean(payload.verdict) &&
+    Boolean(payload.recommendedFocus) &&
+    Boolean(payload.recommendationEvidence) &&
+    typeof payload.recommendationEvidence?.summary === "string" &&
+    Array.isArray(payload.evidenceItems) &&
+    Array.isArray(payload.moduleSummaries) &&
+    Array.isArray(payload.optionalWarnings)
+  );
+}
+
+function normalizeBriefWarning(message: string) {
+  if (/margin insights|margin confidence|product costs/i.test(message)) {
+    return "Until product costs are added, gross profit and margin-based recommendations will stay limited.";
+  }
+
+  return message;
+}
+
+function ModuleSummary({
+  summary,
+  onOpen,
 }: {
-  generatedAt: string;
-  status: BriefStatus;
-  deliveryStatus: DeliveryStatus;
+  summary: DailyBriefView["moduleSummaries"][number];
+  onOpen: () => void;
 }) {
   return (
-    <Box minWidth="260px">
-      <BlockStack gap="100">
-        <Text as="p" variant="headingSm">
-          Daily Brief scheduled for 7:00am
-        </Text>
-        <Text as="p" variant="bodySm" tone="subdued">
-          Automatic morning delivery is not enabled in this dev preview yet.
-        </Text>
-        <BlockStack gap="050">
-          <Text as="p" variant="bodySm" tone="subdued">
-            Last generated: {formatDateTime(generatedAt)}
-          </Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            Status: {formatStatus(status)}
-          </Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            Email: {formatEmailStatus(deliveryStatus)}
-          </Text>
-        </BlockStack>
-      </BlockStack>
-    </Box>
+    <div className={styles.moduleRow}>
+      <div className={styles.moduleTitle}>{summary.title}</div>
+      <div className={styles.moduleStatus}>{summary.status}</div>
+      <div className={styles.moduleDetail}>{summary.detail}</div>
+      <div className={styles.moduleButton}>
+        <Button size="slim" onClick={onOpen}>
+          Open
+        </Button>
+      </div>
+    </div>
   );
 }
 
-function BriefSectionCard({
-  section,
-  currency,
-}: {
-  section: BriefSection;
-  currency: string;
-}) {
-  const navigate = useNavigate();
-
+function ActionMeta({ label, value }: { label: string; value: string }) {
   return (
-    <Card>
-      <BlockStack gap="200">
-        <InlineStack align="space-between" blockAlign="center" gap="300">
-          <Text as="h2" variant="headingMd">
-            {section.title}
-          </Text>
-          <InlineStack gap="200" blockAlign="center">
-            {section.verificationClass ? (
-              <Badge
-                tone={
-                  section.verificationClass === "estimated" ? "info" : "success"
-                }
-              >
-                {section.verificationClass === "estimated"
-                  ? "Estimated"
-                  : "Verified"}
-              </Badge>
-            ) : null}
-            {section.confidence ? (
-              <Badge tone={confidenceTone(section.confidence)}>
-                {formatConfidence(section.confidence)}
-              </Badge>
-            ) : null}
-          </InlineStack>
-        </InlineStack>
-        <Text as="p" variant="bodyMd" tone="subdued">
-          {section.summary}
-        </Text>
-        {section.type === "daily_verdict" ? (
-          <Link onClick={() => navigate("/app/revenue-margin")}>
-            View revenue and margin details
-          </Link>
-        ) : null}
-        {typeof section.valueAtRisk === "number" && section.valueAtRisk > 0 ? (
-          <MetricBlock
-            label="Value at risk"
-            value={formatMoney(section.valueAtRisk, currency)}
-          />
-        ) : null}
-      </BlockStack>
-    </Card>
+    <div>
+      <p className={styles.metaLabel}>{label}</p>
+      <p className={styles.metaValue}>{value}</p>
+    </div>
   );
 }
 
-function MetricBlock({ label, value }: { label: string; value: string }) {
+function KeyNumber({ label, value }: { label: string; value: string }) {
   return (
-    <BlockStack gap="100">
-      <Text as="p" variant="bodySm" tone="subdued">
-        {label}
-      </Text>
-      <Text as="p" variant="headingLg">
-        {value}
-      </Text>
-    </BlockStack>
+    <div>
+      <p className={styles.keyNumberLabel}>{label}</p>
+      <p className={styles.keyNumberValue}>{value}</p>
+    </div>
   );
 }
 
-function formatMoney(value: number, currency: string) {
-  const safeCurrency = /^[A-Z]{3}$/.test(currency) ? currency : "GBP";
-  const symbol = safeCurrency === "GBP" ? "£" : `${safeCurrency} `;
-
-  return `${symbol}${Number(value).toLocaleString("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+function EvidenceItem({ children }: { children: string }) {
+  return (
+    <div className={styles.evidenceItem}>
+      <span className={styles.checkmark}>✓</span>
+      <span>{children}</span>
+    </div>
+  );
 }
 
 function formatDateTime(value: string) {
@@ -424,7 +439,9 @@ function formatDayMonth(value: string) {
   }).format(new Date(value));
 }
 
-function formatConfidence(confidence: BriefConfidence) {
+function formatConfidence(
+  confidence: BriefConfidence | "estimated" | "limited",
+) {
   return confidence[0].toUpperCase() + confidence.slice(1);
 }
 
@@ -445,8 +462,10 @@ function statusTone(status: BriefStatus) {
   return "critical";
 }
 
-function confidenceTone(confidence: BriefConfidence) {
+function confidenceTone(confidence: BriefConfidence | "estimated" | "limited") {
   if (confidence === "high") return "success";
+  if (confidence === "estimated") return "info";
+  if (confidence === "limited") return "warning";
   if (confidence === "medium") return "attention";
   return "warning";
 }
