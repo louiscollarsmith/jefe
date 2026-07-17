@@ -12,9 +12,15 @@
 
 - Updated margin confidence to use sold-revenue product-cost coverage.
 - Updated product-cost Shopify links so product and variant names open their Shopify records directly in a new tab.
+- Improved Daily Brief into a COGS-aware manager verdict with one recommended focus, evidence and clearer margin confidence.
+- Reduced module duplication in Daily Brief and moved optional setup warnings into smaller context messages.
+- Polished Daily Brief into a clearer manager-style briefing with one dominant recommended action, cleaner evidence and more compact module summaries.
+- Rebuilt Daily Brief as a single-column manager briefing with a stronger verdict, dominant recommended action, compact key numbers and cleaner supporting modules.
+- Updated recommended action value labels so product-cost actions show sold revenue affected rather than implied revenue uplift.
 
 ### Fixed
 
+- Fixed app load for stores with an older same-day Daily Brief payload by regenerating stale brief formats instead of crashing.
 - Fixed embedded app redirects so onboarding, setup saves and Daily Brief handoffs keep pages loading inside Shopify.
 - Fixed Manager Settings edit links so completed shops can update goals, House Rules, approval mode, product costs, brand voice and protected products without returning to onboarding.
 - Fixed Shopify cost webhooks so variant Cost changes in Shopify update product costs in Jefe instead of staying blank.
