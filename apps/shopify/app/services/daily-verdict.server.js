@@ -18,7 +18,7 @@ const LOW_MARGIN_PERCENT = 30;
  * @property {string} summary
  * @property {{ whatHappened: string, whatMatters: string, confidence: string, nextStep: string }} sections
  * @property {{ gross: number, net: number, refunded: number, currency: string }} revenue
- * @property {{ estimatedGrossProfit: number | null, estimatedMarginPercent: number | null, confidenceLevel: ConfidenceLevel, missingCogsVariantCount: number, cogsCoveragePercent: number, soldUnitsWithCogs: number, soldUnits: number }} margin
+ * @property {{ estimatedGrossProfit: number | null, estimatedMarginPercent: number | null, confidenceLevel: ConfidenceLevel, missingCogsVariantCount: number, cogsCoveragePercent: number, soldRevenueWithCogs: number, soldRevenue: number, soldUnitsWithCogs: number, soldUnits: number }} margin
  * @property {Array<Record<string, any>>} highlights
  * @property {Record<string, unknown>} evidence
  * @property {Array<Record<string, unknown>>} provenanceLinks
@@ -261,6 +261,8 @@ export async function buildDailyVerdictPayload(prisma, input) {
       confidenceLevel,
       missingCogsVariantCount: aggregates.missingCogsVariantCount,
       cogsCoveragePercent: aggregates.cogsCoveragePercent,
+      soldRevenueWithCogs: aggregates.soldRevenueWithCogs,
+      soldRevenue: aggregates.soldRevenue,
       soldUnitsWithCogs: aggregates.soldUnitsWithCogs,
       soldUnits: aggregates.soldUnits,
     },
@@ -316,6 +318,8 @@ function aggregateLineItems(lineItems, cogsByVariantId, currency) {
   let estimatedGrossProfit = 0;
   let soldUnits = 0;
   let soldUnitsWithCogs = 0;
+  let soldRevenue = 0;
+  let soldRevenueWithCogs = 0;
   const missingCogsVariantIds = new Set();
 
   for (const lineItem of lineItems) {
@@ -328,15 +332,17 @@ function aggregateLineItems(lineItems, cogsByVariantId, currency) {
     const variantTitle = lineItem.variant?.title ?? lineItem.title ?? "Unknown variant";
     const sku = lineItem.sku ?? lineItem.variant?.sku ?? null;
     const cogs = lineItem.variantId ? cogsByVariantId.get(lineItem.variantId) : null;
-    const cogsAmount = cogs ? money(cogs.costAmount) : null;
+    const cogsAmount = hasUsableCost(cogs) ? money(cogs.costAmount) : null;
     const grossProfit =
       cogsAmount !== null ? roundMoney((unitSalePrice - cogsAmount) * quantity) : null;
 
     grossRevenue += revenue;
     soldUnits += quantity;
+    soldRevenue += revenue;
 
     if (cogsAmount !== null) {
       soldUnitsWithCogs += quantity;
+      soldRevenueWithCogs += revenue;
       estimatedGrossProfit += grossProfit ?? 0;
     } else if (lineItem.variantId) {
       missingCogsVariantIds.add(lineItem.variantId);
@@ -407,7 +413,7 @@ function aggregateLineItems(lineItems, cogsByVariantId, currency) {
       ? roundPercent((estimatedGrossProfit / grossRevenue) * 100)
       : null;
   const cogsCoveragePercent =
-    soldUnits > 0 ? roundPercent((soldUnitsWithCogs / soldUnits) * 100) : 0;
+    soldRevenue > 0 ? roundPercent((soldRevenueWithCogs / soldRevenue) * 100) : 0;
 
   return {
     grossRevenue: roundMoney(grossRevenue),
@@ -416,6 +422,8 @@ function aggregateLineItems(lineItems, cogsByVariantId, currency) {
     estimatedMarginPercent,
     soldUnits,
     soldUnitsWithCogs,
+    soldRevenue: roundMoney(soldRevenue),
+    soldRevenueWithCogs: roundMoney(soldRevenueWithCogs),
     cogsCoveragePercent,
     missingCogsVariantCount: missingCogsVariantIds.size,
     products,
@@ -510,11 +518,11 @@ function buildHighlights(input) {
     });
   }
 
-  if (input.cogsCoveragePercent < 90) {
+  if (input.cogsCoveragePercent < 80) {
     highlights.push({
       type: "missing_cogs",
       title: "Margin confidence is limited",
-      message: `${input.cogsCoveragePercent}% of sold units have COGS. Fill the missing sellers before trusting margin rankings.`,
+      message: `${input.cogsCoveragePercent}% of sold revenue has product costs. Fill the missing sellers before trusting margin rankings.`,
       evidence: { cogsCoveragePercent: input.cogsCoveragePercent },
       confidence: "high",
     });
@@ -542,7 +550,7 @@ function buildHeadline(input) {
     return `Revenue was ${formatMoney(
       input.grossRevenue,
       input.currency,
-    )}, with high margin confidence because ${input.cogsCoveragePercent}% of sold units have COGS.`;
+    )}, with high margin confidence because ${input.cogsCoveragePercent}% of sold revenue has product costs.`;
   }
 
   const missingCoverage = roundPercent(100 - input.cogsCoveragePercent);
@@ -550,7 +558,7 @@ function buildHeadline(input) {
   return `Revenue was ${formatMoney(
     input.grossRevenue,
     input.currency,
-  )}, but margin confidence is ${input.confidenceLevel} because ${missingCoverage}% of sold units are missing COGS.`;
+  )}, but margin confidence is ${input.confidenceLevel} because ${missingCoverage}% of sold revenue is missing product costs.`;
 }
 
 /**
@@ -564,7 +572,7 @@ function buildSections(input) {
       whatMatters:
         "The read model is ready, but order sync needs real sales before Jefe can make an accountable call.",
       confidence:
-        "Margin confidence is low because there are no sold units with COGS in the period.",
+        "Margin confidence is low because there is no sold revenue with product costs in the period.",
       nextStep: "Wait for Shopify orders to sync, then check the first product-level highlight.",
     };
   }
@@ -584,8 +592,8 @@ function buildSections(input) {
   const missingCoverage = roundPercent(100 - input.cogsCoveragePercent);
   const confidence =
     input.cogsCoveragePercent >= 100
-      ? `Margin confidence is ${input.confidenceLevel}: 100% of sold units have COGS.`
-      : `Margin confidence is ${input.confidenceLevel}: ${input.cogsCoveragePercent}% of sold units have COGS and ${missingCoverage}% are missing product costs${
+      ? `Margin confidence is ${input.confidenceLevel}: 100% of sold revenue has product costs.`
+      : `Margin confidence is ${input.confidenceLevel}: ${input.cogsCoveragePercent}% of sold revenue has product costs and ${missingCoverage}% is missing product costs${
           input.missingCogsVariantCount > 0
             ? ` across ${input.missingCogsVariantCount} selling variant${input.missingCogsVariantCount === 1 ? "" : "s"}`
             : ""
@@ -640,8 +648,8 @@ function buildSummary(input) {
   const missingCoverage = roundPercent(100 - input.cogsCoveragePercent);
   const missingText =
     input.cogsCoveragePercent >= 100
-      ? "all sold units have COGS"
-      : `${missingCoverage}% of sold units are missing COGS${
+      ? "all sold revenue has product costs"
+      : `${missingCoverage}% of sold revenue is missing product costs${
           input.missingCogsVariantCount > 0
             ? ` across ${input.missingCogsVariantCount} selling variant${
                 input.missingCogsVariantCount === 1 ? "" : "s"
@@ -651,7 +659,7 @@ function buildSummary(input) {
   const confidenceText =
     input.cogsCoveragePercent >= 100
       ? `Margin confidence is ${input.confidenceLevel} because ${missingText}.`
-      : `Margin confidence is ${input.confidenceLevel} because ${input.cogsCoveragePercent}% of sold units have COGS and ${missingText}.`;
+      : `Margin confidence is ${input.confidenceLevel} because ${input.cogsCoveragePercent}% of sold revenue has product costs and ${missingText}.`;
 
   return `Revenue was ${formatMoney(
     input.grossRevenue,
@@ -667,7 +675,7 @@ function buildSummary(input) {
  * @returns {ConfidenceLevel}
  */
 function cogsConfidenceFromCoverage(coveragePercent) {
-  if (coveragePercent >= 90) return "high";
+  if (coveragePercent >= 80) return "high";
   if (coveragePercent >= 50) return "medium";
   return "low";
 }
@@ -787,6 +795,15 @@ function money(value) {
   const parsed = Number(value);
 
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** @param {any} cogsInput */
+function hasUsableCost(cogsInput) {
+  if (!cogsInput || cogsInput.costAmount === null || cogsInput.costAmount === undefined) {
+    return false;
+  }
+  const parsed = Number(cogsInput.costAmount);
+  return Number.isFinite(parsed) && parsed >= 0;
 }
 
 /**

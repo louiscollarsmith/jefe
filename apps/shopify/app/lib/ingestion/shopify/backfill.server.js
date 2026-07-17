@@ -14,6 +14,7 @@ import {
   upsertShopifyOrder,
   upsertShopifyProduct,
 } from "./canonical.server.js";
+import { upsertShopifyUnitCostFromInventoryItem } from "../../../services/cogs.server.js";
 
 const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_BACKFILL_DAYS = 365;
@@ -112,6 +113,12 @@ export async function runShopifyBackfill(prisma, input) {
         const inventoryItemId = stringValue(itemPayload.id);
         const variantExternalId = stringValue(itemPayload.variant?.id);
         if (!inventoryItemId) return;
+
+        await upsertShopifyUnitCostFromInventoryItem(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          inventoryItem: itemPayload,
+        });
 
         for (const level of edgesToNodes(itemPayload.inventoryLevels)) {
           const levelPayload = jsonObject(level);
@@ -230,6 +237,16 @@ export async function runShopifyBackfill(prisma, input) {
           order: orderPayload,
         });
         totals.orders += 1;
+      },
+    });
+  }
+
+  if (domains.has("products") || domains.has("inventory")) {
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: {
+        lastSuccessfulCogsSyncAt: new Date(),
+        lastCogsSyncError: null,
       },
     });
   }

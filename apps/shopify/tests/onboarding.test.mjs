@@ -475,7 +475,7 @@ test("onboarding COGS treats manual values as confirmed and blanks as missing", 
     assert.equal(partial.totalVariants, 2);
     assert.equal(partial.variantsWithCogs, 1);
     assert.equal(partial.completionPercentage, "50.00");
-    assert.equal(partial.confidenceLevel, "estimated");
+    assert.equal(partial.confidenceLevel, "medium");
 
     const manualCogsInput = await prisma.cogsInput.findFirstOrThrow({
       where: {
@@ -506,7 +506,7 @@ test("onboarding COGS treats manual values as confirmed and blanks as missing", 
     });
 
     assert.equal(Number(readBack.cogsCompletionPercentage), 100);
-    assert.equal(readBack.cogsConfidenceLevel, "confirmed");
+    assert.equal(readBack.cogsConfidenceLevel, "high");
     assert.equal(readBack.cogsInputs.length, 2);
     assert.equal(readBack.cogsInputs[0].confirmedByMerchant, true);
 
@@ -523,7 +523,7 @@ test("onboarding COGS treats manual values as confirmed and blanks as missing", 
 
     assert.equal(missingAgain.variantsWithCogs, 0);
     assert.equal(missingAgain.completionPercentage, "0.00");
-    assert.equal(missingAgain.confidenceLevel, "missing");
+    assert.equal(missingAgain.confidenceLevel, "low");
 
     await completeOnboarding(prisma, shop.id);
     const completed = await prisma.shop.findUniqueOrThrow({

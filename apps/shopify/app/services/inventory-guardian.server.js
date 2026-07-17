@@ -179,7 +179,9 @@ export function calculateInventoryGuardianRecord(input) {
   const velocity = soldUnits[14] / SALES_WINDOW_DAYS;
   const price = averageSellingPrice(input.lineItems ?? [], input.variant);
   const cogsAmount =
-    input.cogsInput && input.cogsInput.costAmount !== undefined
+    input.cogsInput &&
+    input.cogsInput.costAmount !== undefined &&
+    input.cogsInput.costAmount !== null
       ? money(input.cogsInput.costAmount)
       : null;
   const daysUntilStockout = calculateDaysUntilStockout(

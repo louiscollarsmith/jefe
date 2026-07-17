@@ -23,9 +23,14 @@ import {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server";
 import { authenticate } from "../shopify.server";
 import { generateDailyBrief } from "../services/daily-brief.server";
 import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server";
+import {
+  getCogsDiagnostics,
+  recomputeCogsCoverage,
+} from "../services/cogs.server";
 import {
   enqueueBackfillJob,
   getShopBackfillProgress,
@@ -91,6 +96,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const backfillProgress = await getShopBackfillProgress(prisma, {
     shopId: tenantShop.id,
   });
+  const cogsDiagnostics = await getCogsDiagnostics(prisma, tenantShop.id);
 
   return {
     shop: session.shop,
@@ -111,6 +117,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           })),
         }
       : null,
+    cogsDiagnostics,
     dummyData: {
       missingScopes,
       status,
@@ -143,6 +150,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     intent !== "run-orders-backfill" &&
     intent !== "run-delta-sync" &&
     intent !== "recompute-derived-metrics" &&
+    intent !== "recompute-cogs-coverage" &&
+    intent !== "resync-shopify-costs" &&
     intent !== "retry-failed-backfill-jobs"
   ) {
     return { ok: false, error: "Unknown action." };
@@ -160,6 +169,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     intent === "run-orders-backfill" ||
     intent === "run-delta-sync" ||
     intent === "recompute-derived-metrics" ||
+    intent === "recompute-cogs-coverage" ||
+    intent === "resync-shopify-costs" ||
     intent === "retry-failed-backfill-jobs"
   ) {
     const scopes = splitScopes(session.scope);
@@ -190,6 +201,48 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (intent === "retry-failed-backfill-jobs") {
       const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
       return { ok: true, intent, result };
+    }
+
+    if (intent === "recompute-cogs-coverage") {
+      const result = await recomputeCogsCoverage(prisma, shop.id);
+      await generateDailyBrief(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
+      return { ok: true, intent, result };
+    }
+
+    if (intent === "resync-shopify-costs") {
+      try {
+        const totals = await runShopifyBackfill(prisma, {
+          shopDomain: session.shop,
+          accessToken: session.accessToken ?? "",
+          sessionId: session.id,
+          apiVersion: process.env.SHOPIFY_API_VERSION,
+          domains: ["inventory"],
+        });
+        const coverage = await recomputeCogsCoverage(prisma, shop.id);
+        await prisma.shop.update({
+          where: { id: shop.id },
+          data: {
+            lastSuccessfulCogsSyncAt: new Date(),
+            lastCogsSyncError: null,
+          },
+        });
+        await generateDailyBrief(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        });
+        return { ok: true, intent, result: { totals, coverage } };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Shopify costs could not be synced.";
+        await prisma.shop.update({
+          where: { id: shop.id },
+          data: { lastCogsSyncError: message.slice(0, 1000) },
+        });
+        return { ok: false, error: message };
+      }
     }
 
     const jobType =
@@ -272,6 +325,7 @@ export default function Dev() {
   const {
     shop,
     backfill,
+    cogsDiagnostics,
     dummyData,
     watchdogScenarios,
     klaviyoWinbackScenarios,
@@ -334,8 +388,10 @@ export default function Dev() {
   const backfillResult =
     actionData?.ok &&
     typeof actionData.intent === "string" &&
-    (actionData.intent.includes("backfill") ||
+      (actionData.intent.includes("backfill") ||
       actionData.intent === "recompute-derived-metrics" ||
+      actionData.intent === "recompute-cogs-coverage" ||
+      actionData.intent === "resync-shopify-costs" ||
       actionData.intent === "retry-failed-backfill-jobs")
       ? actionData.result
       : null;
@@ -395,6 +451,92 @@ export default function Dev() {
                     Generate test brief
                   </Button>
                 </Form>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="400">
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    COGS diagnostics
+                  </Text>
+                  <Text as="p" variant="bodyMd" tone="subdued">
+                    Inspect product-cost source coverage and refresh Shopify
+                    unit costs during development.
+                  </Text>
+                </BlockStack>
+
+                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+                  <MetricLine
+                    label="Shopify cost"
+                    value={`${cogsDiagnostics.variantsWithShopifyCost}`}
+                  />
+                  <MetricLine
+                    label="Manual cost"
+                    value={`${cogsDiagnostics.variantsWithManualCost}`}
+                  />
+                  <MetricLine
+                    label="Merchant rule"
+                    value={`${cogsDiagnostics.variantsWithMerchantRuleCost}`}
+                  />
+                  <MetricLine
+                    label="Missing cost"
+                    value={`${cogsDiagnostics.variantsMissingCost}`}
+                  />
+                  <MetricLine
+                    label="Sold revenue coverage"
+                    value={`${cogsDiagnostics.usableRevenueCoveragePercent}%`}
+                  />
+                  <MetricLine
+                    label="Last Shopify cost import"
+                    value={
+                      cogsDiagnostics.lastSuccessfulCogsSyncAt
+                        ? formatDateTime(
+                            cogsDiagnostics.lastSuccessfulCogsSyncAt,
+                          )
+                        : "Never"
+                    }
+                  />
+                  <MetricLine
+                    label="Last cost webhook"
+                    value={
+                      cogsDiagnostics.lastInventoryItemCostWebhookAt
+                        ? formatDateTime(
+                            cogsDiagnostics.lastInventoryItemCostWebhookAt,
+                          )
+                        : "Never"
+                    }
+                  />
+                  <MetricLine
+                    label="Last COGS recompute"
+                    value={
+                      cogsDiagnostics.lastCogsRecomputeAt
+                        ? formatDateTime(cogsDiagnostics.lastCogsRecomputeAt)
+                        : "Never"
+                    }
+                  />
+                </InlineGrid>
+
+                {cogsDiagnostics.lastCogsSyncError ? (
+                  <Banner tone="critical">
+                    <Text as="p" variant="bodyMd">
+                      {cogsDiagnostics.lastCogsSyncError}
+                    </Text>
+                  </Banner>
+                ) : null}
+
+                <InlineStack gap="200">
+                  <DevBackfillButton
+                    intent="resync-shopify-costs"
+                    label="Re-sync Shopify costs"
+                    loading={isBackfillAction}
+                  />
+                  <DevBackfillButton
+                    intent="recompute-cogs-coverage"
+                    label="Recompute COGS coverage"
+                    loading={isBackfillAction}
+                  />
+                </InlineStack>
               </BlockStack>
             </Card>
 
@@ -802,6 +944,19 @@ function DevBackfillButton({
         {label}
       </Button>
     </Form>
+  );
+}
+
+function MetricLine({ label, value }: { label: string; value: string }) {
+  return (
+    <BlockStack gap="050">
+      <Text as="p" variant="headingSm">
+        {value}
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        {label}
+      </Text>
+    </BlockStack>
   );
 }
 

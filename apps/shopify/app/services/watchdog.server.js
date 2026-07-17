@@ -202,7 +202,10 @@ export function buildWatchdogView(input) {
   const comparisonRefunds = input.refunds.filter((refund) =>
     refundInWindow(refund, input.comparisonStart, comparisonEnd),
   );
-  const cogsByVariantId = firstBy(input.cogsInputs, "variantId");
+  const cogsByVariantId = firstBy(
+    input.cogsInputs.filter((cogsInput) => hasUsableCost(cogsInput)),
+    "variantId",
+  );
   const alerts = [
     detectRefundSpike({
       merchantId: input.merchantId,
@@ -799,6 +802,15 @@ function detectHighReturnProducts(input) {
   }
 
   return alerts;
+}
+
+/** @param {any} cogsInput */
+function hasUsableCost(cogsInput) {
+  if (!cogsInput || cogsInput.costAmount === null || cogsInput.costAmount === undefined) {
+    return false;
+  }
+  const parsed = Number(cogsInput.costAmount);
+  return Number.isFinite(parsed) && parsed >= 0;
 }
 
 /**

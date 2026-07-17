@@ -1,7 +1,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import {
   Outlet,
-  redirect,
   useLoaderData,
   useLocation,
   useNavigate,
@@ -19,7 +18,7 @@ import { getDailyBriefReadiness } from "../services/daily-brief-readiness.server
 import { getOnboardingState } from "../services/onboarding.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, redirect } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
@@ -35,7 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let briefReady = false;
 
   if (!onboarding.onboardingComplete && !allowedBeforeOnboarding) {
-    throw redirect(`/app/onboarding${url.search}`);
+    throw redirect("/app/onboarding");
   }
 
   if (onboarding.onboardingComplete) {

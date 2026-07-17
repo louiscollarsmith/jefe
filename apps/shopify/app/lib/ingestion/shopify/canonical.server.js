@@ -9,6 +9,7 @@ import {
   moneyAmount,
   parseDate,
 } from "./normalize.server.js";
+import { upsertShopifyUnitCostFromVariant } from "../../../services/cogs.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -48,12 +49,20 @@ export async function upsertShopifyProduct(prisma, input) {
 
   const variants = extractVariants(product);
   for (const variant of variants) {
-    await upsertShopifyVariant(prisma, {
+    const savedVariant = await upsertShopifyVariant(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       productId: savedProduct.id,
       variant,
     });
+    if (savedVariant && variantHasCostPayload(variant)) {
+      await upsertShopifyUnitCostFromVariant(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        productId: savedProduct.id,
+        variant,
+      });
+    }
   }
 
   return savedProduct;
@@ -501,6 +510,20 @@ function extractVariants(product) {
   return edgesToNodes(payload.variants);
 }
 
+/** @param {unknown} variant */
+function variantHasCostPayload(variant) {
+  const payload = jsonObject(variant);
+  const inventoryItem = jsonObject(
+    payload.inventoryItem ?? payload.inventory_item,
+  );
+  return (
+    Object.prototype.hasOwnProperty.call(payload, "cost") ||
+    Object.prototype.hasOwnProperty.call(inventoryItem, "cost") ||
+    Object.prototype.hasOwnProperty.call(inventoryItem, "unitCost") ||
+    Object.prototype.hasOwnProperty.call(inventoryItem, "unit_cost")
+  );
+}
+
 /** @param {unknown} order */
 function extractLineItems(order) {
   const payload = jsonObject(order);
@@ -596,7 +619,10 @@ function inventoryItemExternalId(variant) {
  */
 function shopifyGid(resource, value) {
   if (typeof value === "string" && value.startsWith("gid://")) return value;
-  const id = gidToId(value);
+  const id =
+    typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : gidToId(value);
   return id ? `gid://shopify/${resource}/${id}` : null;
 }
 

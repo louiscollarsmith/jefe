@@ -14,16 +14,29 @@ export async function ensureShopifyTenant(prisma, input) {
   });
 
   if (existingShop) {
+    const shop =
+      existingShop.status === "uninstalled" ||
+      existingShop.setupStatus === "uninstalled"
+        ? await prisma.shop.update({
+            where: { id: existingShop.id },
+            data: {
+              status: "active",
+              setupStatus: "installed",
+            },
+            include: { merchant: true },
+          })
+        : existingShop;
+
     await upsertConnectorAccount(prisma, {
-      merchantId: existingShop.merchant.id,
-      shopId: existingShop.id,
+      merchantId: shop.merchant.id,
+      shopId: shop.id,
       shopDomain,
       accessTokenSessionId: input.accessTokenSessionId,
       scopes: input.scopes,
       rawPayload: input.rawPayload,
     });
 
-    return { merchant: existingShop.merchant, shop: existingShop };
+    return { merchant: shop.merchant, shop };
   }
 
   const merchant = await prisma.merchant.create({

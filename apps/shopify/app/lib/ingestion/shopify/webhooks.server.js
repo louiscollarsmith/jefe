@@ -5,6 +5,8 @@ import {
   getShopifyWebhookHeaders,
   verifyShopifyWebhookHmac,
 } from "../../shopify/webhook-hmac.server.js";
+import { ShopifyAdminGraphqlClient } from "../../shopify/admin-graphql.server.js";
+import { INVENTORY_ITEM_COST_QUERY } from "../../shopify/queries.server.js";
 import { jsonObject, parseDate } from "./normalize.server.js";
 import {
   ensureShopifyTenant,
@@ -17,6 +19,11 @@ import {
   upsertShopifyProduct,
   upsertShopifyRefund,
 } from "./canonical.server.js";
+import {
+  recomputeCogsCoverage,
+  upsertShopifyUnitCostFromInventoryItem,
+} from "../../../services/cogs.server.js";
+import { generateDailyBrief } from "../../../services/daily-brief.server.js";
 
 const COMPLIANCE_TOPICS = new Set([
   "customers/data_request",
@@ -132,6 +139,7 @@ export async function processShopifyWebhook(prisma, input) {
   await processCanonicalWebhook(prisma, {
     merchantId: merchant.id,
     shopId: shop.id,
+    shopDomain: input.shopDomain,
     topic: input.topic,
     payload,
   });
@@ -141,7 +149,7 @@ export async function processShopifyWebhook(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; topic: string; payload: unknown }} input
+ * @param {{ merchantId: string; shopId: string; shopDomain: string; topic: string; payload: unknown }} input
  */
 async function processCanonicalWebhook(prisma, input) {
   switch (input.topic) {
@@ -175,12 +183,81 @@ async function processCanonicalWebhook(prisma, input) {
         inventoryLevel: input.payload,
       });
       break;
+    case "inventory_items/update":
+      await handleInventoryItemUpdate(prisma, input);
+      break;
     case "bulk_operations/finish":
       await handleBulkOperationFinish(prisma, input);
       break;
     default:
       break;
   }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; shopDomain: string; payload: unknown }} input
+ */
+async function handleInventoryItemUpdate(prisma, input) {
+  const payload = jsonObject(input.payload);
+  const inventoryItemId =
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("InventoryItem", payload.inventory_item_id ?? payload.id);
+  if (!inventoryItemId) return;
+
+  let inventoryItem = payload;
+  if (!hasUnitCost(payload)) {
+    inventoryItem =
+      (await fetchInventoryItemForWebhook(prisma, {
+        shopDomain: input.shopDomain,
+        inventoryItemId,
+      })) ?? payload;
+  }
+
+  await upsertShopifyUnitCostFromInventoryItem(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    inventoryItem,
+  });
+  await prisma.shop.update({
+    where: { id: input.shopId },
+    data: {
+      lastInventoryItemCostWebhookAt: new Date(),
+      lastSuccessfulCogsSyncAt: new Date(),
+      lastCogsSyncError: null,
+    },
+  });
+  await recomputeCogsCoverage(prisma, input.shopId);
+  await generateDailyBrief(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    force: true,
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopDomain: string; inventoryItemId: string }} input
+ */
+async function fetchInventoryItemForWebhook(prisma, input) {
+  const session = await prisma.session.findFirst({
+    where: { shop: input.shopDomain, isOnline: false },
+    orderBy: { expires: "desc" },
+  });
+  if (!session?.accessToken) return null;
+
+  const client = new ShopifyAdminGraphqlClient({
+    shopDomain: input.shopDomain,
+    accessToken: session.accessToken,
+    apiVersion: process.env.SHOPIFY_API_VERSION,
+  });
+  const data = /** @type {any} */ (
+    await client.request(INVENTORY_ITEM_COST_QUERY, {
+      id: input.inventoryItemId,
+    })
+  );
+  return data.node ?? null;
 }
 
 /**
@@ -358,6 +435,11 @@ function numberValue(value) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+/** @param {Record<string, any>} payload */
+function hasUnitCost(payload) {
+  return Boolean(payload.unitCost || payload.unit_cost || payload.cost);
 }
 
 /**
