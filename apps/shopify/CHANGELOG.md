@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-21
+
+### Fixed
+
+- Fixed Klaviyo private key saving so stores with existing app secrets can connect after the draft-creation rollout.
+
+---
+
 ## 2026-07-17
 
 ### Added

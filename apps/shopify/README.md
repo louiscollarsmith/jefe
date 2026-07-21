@@ -25,8 +25,11 @@ Local `.env` defaults:
 DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
 SHOPIFY_API_VERSION="2026-07"
 SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
+KLAVIYO_KEY_ENCRYPTION_SECRET="use-a-strong-secret-for-klaviyo-key-storage"
 ENABLE_DUMMY_STORE_LOADER=true
 ```
+
+Klaviyo private keys are encrypted before storage. `KLAVIYO_KEY_ENCRYPTION_SECRET` is the preferred encryption secret; existing app secrets are accepted as fallbacks so older environments keep working after the draft-creation rollout.
 
 ## Dummy Store Data
 
