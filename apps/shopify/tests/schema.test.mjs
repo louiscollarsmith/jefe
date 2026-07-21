@@ -296,6 +296,33 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
       },
     });
 
+    await prisma.merchantKlaviyoCredential.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        provider: "klaviyo",
+        encryptedPrivateKey: "v1:test",
+        keyPrefix: "pk_test",
+        lastFour: "1234",
+        scopesJson: ["profiles:write"],
+        connectionStatus: "active",
+      },
+    });
+
+    await prisma.externalActionArtifact.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: action.id,
+        provider: "klaviyo",
+        artifactType: "klaviyo_campaign",
+        externalId: `campaign-${suffix}`,
+        externalName: "Dormant customer winback",
+        externalStatus: "draft_created",
+        payloadSnapshotJson: { sendEnabled: false },
+      },
+    });
+
     await prisma.costMetering.create({
       data: {
         merchantId: merchant.id,
@@ -328,6 +355,8 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
           },
         },
         connectorAccounts: true,
+        klaviyoCredentials: true,
+        externalArtifacts: true,
         costMetering: true,
       },
     });
@@ -358,6 +387,8 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
       readBack.connectorAccounts[0].readTokenRef,
       "secret-manager://dev/shopify/read",
     );
+    assert.equal(readBack.klaviyoCredentials[0].connectionStatus, "active");
+    assert.equal(readBack.externalArtifacts[0].externalStatus, "draft_created");
     assert.equal(readBack.costMetering[0].operation, "classification");
   } finally {
     await prisma.merchant.deleteMany({

@@ -7,6 +7,7 @@
 - Added product cost setup with Shopify cost import, sold-revenue coverage, prioritised missing-cost actions and bulk cost rules.
 - Added COGS diagnostics and Shopify cost re-sync controls for development.
 - Added Shopify product links to product-cost rows so operators can open the source product while filling costs.
+- Added approved Klaviyo winback draft creation so Jefe can prepare the treatment list, campaign draft and template without sending customer-facing emails.
 
 ### Changed
 
@@ -30,6 +31,10 @@
 ### Internal
 
 - Added a UI quality playbook for future product-surface changes.
+
+### Security
+
+- Stores Klaviyo private keys encrypted and keeps raw keys hidden after save.
 
 ---
 

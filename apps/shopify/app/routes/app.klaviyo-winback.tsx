@@ -37,6 +37,7 @@ import {
   connectKlaviyoPrivateKey,
   createWinbackProposal,
   disconnectKlaviyo,
+  executeApprovedWinbackDraft,
   getWinbackDashboard,
   rejectWinbackProposal,
 } from "../services/klaviyo-winback.server";
@@ -88,7 +89,7 @@ export const action = async ({
       return {
         ok: true,
         message:
-          "Klaviyo key reference saved. The raw private key was not stored in the app database.",
+          "Klaviyo private key saved securely. The raw key will not be shown again.",
       };
     }
 
@@ -126,7 +127,22 @@ export const action = async ({
       return {
         ok: true,
         message:
-          "Winback proposal approved in Jefe. Klaviyo sending is still manual in v0.",
+          "Winback proposal approved in Jefe. You can now create the Klaviyo draft. Send remains disabled.",
+      };
+    }
+
+    if (intent === "create-klaviyo-draft") {
+      const result = await executeApprovedWinbackDraft(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: String(formData.get("actionId") ?? ""),
+      });
+
+      return {
+        ok: result.ok,
+        message: result.ok
+          ? `Klaviyo draft prepared. Treatment audience: ${result.response?.audience.treatmentCount ?? 0}. Holdout: ${result.response?.audience.holdoutCount ?? 0}. Send disabled.`
+          : `Klaviyo draft creation blocked: ${result.blockedReasons.join(", ")}.`,
       };
     }
 
@@ -182,6 +198,9 @@ export default function KlaviyoWinback() {
       action.executionStatus === "draft_prepared" ||
       Boolean(action.externalDraftId),
   );
+  const approvedAction = dashboard.actions.find(
+    (action) => action.status === "approved",
+  );
 
   return (
     <Page fullWidth>
@@ -228,6 +247,7 @@ export default function KlaviyoWinback() {
           connected={connected}
           blocked={proposal.status === "blocked"}
           draftPrepared={draftPrepared}
+          approvedActionId={approvedAction?.id ?? null}
           isSubmitting={isSubmitting}
         />
 
@@ -296,8 +316,8 @@ function ConnectionCard({
               Klaviyo connection
             </Text>
             <Text as="p" variant="bodyMd" tone="subdued">
-              Pilot mode uses a merchant-generated private key. The raw key is
-              not shown after save.
+              Pilot mode uses a merchant-generated private key stored encrypted.
+              The raw key is not shown after save.
             </Text>
           </BlockStack>
           <Badge tone={connected ? "success" : "attention"}>
@@ -336,10 +356,10 @@ function ConnectionCard({
                 onChange={setPrivateKey}
                 type="password"
                 autoComplete="off"
-                helpText="Saved as a masked key reference for v0; no production secret is committed or logged."
+                helpText="Stored encrypted with an app-level key. The raw value is never shown after save."
               />
               <Button submit variant="primary" loading={isSubmitting}>
-                Save key reference
+                Save private key
               </Button>
             </FormLayout>
           </Form>
@@ -353,11 +373,13 @@ function PrimaryWinbackAction({
   connected,
   blocked,
   draftPrepared,
+  approvedActionId,
   isSubmitting,
 }: {
   connected: boolean;
   blocked: boolean;
   draftPrepared: boolean;
+  approvedActionId: string | null;
   isSubmitting: boolean;
 }) {
   if (!connected) {
@@ -401,13 +423,41 @@ function PrimaryWinbackAction({
     );
   }
 
+  if (approvedActionId) {
+    return (
+      <section className={styles.actionCard}>
+        <p className={styles.eyebrow}>Primary action</p>
+        <h3 className={styles.actionTitle}>Create Klaviyo draft</h3>
+        <p className={styles.actionReason}>
+          Prepare the treatment list, campaign draft and template in Klaviyo.
+          Holdout customers stay excluded and send remains disabled.
+        </p>
+        <div className={styles.actionButtonRow}>
+          <Form method="post">
+            <input type="hidden" name="intent" value="create-klaviyo-draft" />
+            <input type="hidden" name="actionId" value={approvedActionId} />
+            <Button submit variant="primary" loading={isSubmitting}>
+              Create Klaviyo draft
+            </Button>
+          </Form>
+        </div>
+        <div className={styles.actionMeta}>
+          <MetricBlock label="Mode" value="Draft only" />
+          <MetricBlock label="Holdout" value="Excluded" />
+          <MetricBlock label="Send enabled" value="No" />
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className={styles.actionCard}>
       <p className={styles.eyebrow}>Primary action</p>
-      <h3 className={styles.actionTitle}>Prepare Klaviyo draft</h3>
+      <h3 className={styles.actionTitle}>Prepare approval draft</h3>
       <p className={styles.actionReason}>
-        Create a draft campaign and treatment list in Klaviyo. Holdout customers
-        are excluded so Jefe can measure incremental lift.
+        Prepare the measured winback proposal for approval. After approval,
+        Jefe can create the treatment list, campaign draft and template in
+        Klaviyo without sending customer-facing email.
       </p>
       <div className={styles.actionButtonRow}>
         <Form method="post">
@@ -422,7 +472,7 @@ function PrimaryWinbackAction({
             disabled={blocked}
             loading={isSubmitting}
           >
-            Create Klaviyo draft
+            Prepare approval draft
           </Button>
         </Form>
       </div>
@@ -589,7 +639,7 @@ function ProposalCard({ proposal }: { proposal: LoaderData["proposal"] }) {
                   Holdout: {proposal.audience.holdoutCount} customers randomly
                   excluded from the send to measure lift
                 </List.Item>
-                <List.Item>No automatic send</List.Item>
+              <List.Item>Draft only. No customer-facing emails will be sent.</List.Item>
               </List>
             </BlockStack>
           </Card>
@@ -666,11 +716,16 @@ function ProposalCard({ proposal }: { proposal: LoaderData["proposal"] }) {
         ) : null}
 
         <Banner tone="info">
-          <Text as="p" variant="bodyMd">
-            Holdout customers are not blocked by House Rules. They are randomly
-            excluded from the send so verified lift can be measured separately
-            from this proposal.
-          </Text>
+          <BlockStack gap="100">
+            <Text as="p" variant="bodyMd">
+              This draft uses the treatment audience only. Jefe has not
+              subscribed anyone or sent any emails.
+            </Text>
+            <Text as="p" variant="bodyMd">
+              Holdout customers are randomly excluded so verified lift can be
+              measured separately from this proposal.
+            </Text>
+          </BlockStack>
         </Banner>
 
       </BlockStack>
@@ -835,6 +890,22 @@ function RecentActions({ actions }: { actions: LoaderData["actions"] }) {
                         </Button>
                       </Form>
                     ) : null}
+                    {action.status === "approved" ? (
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="create-klaviyo-draft"
+                        />
+                        <input type="hidden" name="actionId" value={action.id} />
+                        <Button submit variant="primary">
+                          Create Klaviyo draft
+                        </Button>
+                      </Form>
+                    ) : null}
+                    {action.status === "executed" ? (
+                      <Badge tone="success">Draft prepared</Badge>
+                    ) : null}
                     {action.status === "needs_approval" ||
                     action.status === "approved" ? (
                       <Form method="post">
@@ -869,13 +940,14 @@ function RecentActions({ actions }: { actions: LoaderData["actions"] }) {
                         </Button>
                       </Form>
                     ) : null}
-                    <Button disabled>Execute</Button>
+                    {action.status !== "approved" && action.status !== "executed" ? (
+                      <Button disabled>Create Klaviyo draft</Button>
+                    ) : null}
                   </InlineStack>
 
                   {action.externalDraftId || action.externalExecutionId ? (
                     <Text as="p" variant="bodySm" tone="subdued">
-                      External draft: {action.externalDraftId ?? "none"} ·
-                      External execution: {action.externalExecutionId ?? "none"}
+                      Klaviyo draft prepared. Send disabled.
                     </Text>
                   ) : null}
                 </BlockStack>
@@ -973,13 +1045,14 @@ function statusLabel(status: string) {
   if (status === "needs_approval") return "Needs approval";
   if (status === "rejected") return "Rejected";
   if (status === "cancelled") return "Cancelled";
-  if (status === "executed") return "Executed";
+  if (status === "executed") return "Draft prepared";
   if (status === "verified") return "Verified";
   return status;
 }
 
 function executionStatusLabel(status: string | null) {
   if (status === "draft_prepared") return "Prepared";
+  if (status === "draft_created") return "Draft created";
   if (status === "dry_run_executed") return "Dry run executed";
   return status ?? "Pending";
 }

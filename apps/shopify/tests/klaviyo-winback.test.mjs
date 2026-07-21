@@ -10,6 +10,7 @@ import {
   diagnoseWinbackOrderInputs,
   dormantCustomersFromOrders,
   estimateWinbackValue,
+  executeApprovedWinbackDraft,
   WINBACK_DORMANT_MAX_DAYS,
   WINBACK_DORMANT_MIN_DAYS,
 } from "../app/services/klaviyo-winback.server.js";
@@ -290,7 +291,73 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
+  process.env.KLAVIYO_KEY_ENCRYPTION_SECRET =
+    process.env.KLAVIYO_KEY_ENCRYPTION_SECRET ??
+      "test-klaviyo-key-encryption-secret";
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const klaviyoCalls = [];
+  const fetchFn = async (url, init = {}) => {
+    klaviyoCalls.push({ url: String(url), method: init.method });
+    const path = new URL(String(url)).pathname;
+
+    assert.doesNotMatch(path, /send|schedule/i);
+
+    if (path === "/api/profile-import") {
+      return jsonResponse(201, {
+        data: {
+          type: "profile",
+          id: `profile_${klaviyoCalls.length}`,
+        },
+      });
+    }
+    if (path === "/api/lists") {
+      return jsonResponse(201, {
+        data: {
+          type: "list",
+          id: "list_123",
+          attributes: { name: "Jefe Winback Treatment" },
+        },
+      });
+    }
+    if (path === "/api/lists/list_123/relationships/profiles") {
+      return new Response(null, { status: 204 });
+    }
+    if (path === "/api/campaigns") {
+      return jsonResponse(201, {
+        data: {
+          type: "campaign",
+          id: "campaign_123",
+          attributes: { name: "Jefe Dormant Customer Winback" },
+          relationships: {
+            "campaign-messages": {
+              data: [{ type: "campaign-message", id: "message_123" }],
+            },
+          },
+        },
+      });
+    }
+    if (path === "/api/templates") {
+      return jsonResponse(201, {
+        data: {
+          type: "template",
+          id: "template_123",
+          attributes: { name: "Jefe Winback Draft" },
+        },
+      });
+    }
+    if (path === "/api/campaign-message-assign-template") {
+      return jsonResponse(200, {
+        data: {
+          type: "campaign-message",
+          id: "message_123",
+        },
+      });
+    }
+
+    return jsonResponse(404, {
+      errors: [{ detail: `Unexpected test endpoint ${path}` }],
+    });
+  };
 
   try {
     const merchant = await prisma.merchant.create({
@@ -365,8 +432,16 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
         connector: "klaviyo",
       },
     });
+    const credential = await prisma.merchantKlaviyoCredential.findFirstOrThrow({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        provider: "klaviyo",
+      },
+    });
 
     assert.equal(action.status, "needs_approval");
+    assert.equal(action.actionType, "klaviyo_winback_draft");
     assert.equal(action.title, "Dormant customer winback");
     assert.equal(action.valueType, "estimated_revenue");
     assert.equal(action.valueCurrency, "GBP");
@@ -385,14 +460,11 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
         .length,
       9,
     );
-    assert.equal(executions.length, 1);
-    assert.equal(executions[0].connector, "klaviyo");
-    assert.equal(executions[0].dryRun, true);
-    assert.equal(executions[0].status, "draft_prepared");
-    assert.equal(executions[0].response.dryRun, true);
-    assert.equal(executions[0].response.externalDraftId, null);
-    assert.equal(connector.authMetadata.secretStorage, "external_secret_required");
-    assert.equal(connector.rawPayload.secretStoredInDb, false);
+    assert.equal(executions.length, 0);
+    assert.equal(connector.authMetadata.secretStorage, "encrypted_db");
+    assert.equal(connector.rawPayload.secretStoredInDb, true);
+    assert.equal(credential.connectionStatus, "active");
+    assert.notEqual(credential.encryptedPrivateKey, `pk_test_${suffix}_secret`);
 
     const approved = await approveWinbackProposal(prisma, {
       merchantId: merchant.id,
@@ -400,8 +472,12 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
       actionId: action.id,
       now,
     });
-    const executionsAfterApproval = await prisma.execution.findMany({
-      where: { actionId: action.id },
+    const executedDraft = await executeApprovedWinbackDraft(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId: action.id,
+      now,
+      fetchFn,
     });
     const approvalEvents = await prisma.actionApprovalEvent.findMany({
       where: { actionId: action.id },
@@ -412,9 +488,24 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
         merchantId: merchant.id,
       },
     });
+    const executionsAfterApproval = await prisma.execution.findMany({
+      where: { actionId: action.id },
+    });
+    const artifacts = await prisma.externalActionArtifact.findMany({
+      where: { actionId: action.id },
+    });
 
     assert.equal(approved.status, "approved");
     assert.ok(approved.approvedAt);
+    assert.equal(executedDraft.ok, true);
+    assert.equal(executedDraft.action.status, "executed");
+    assert.equal(executedDraft.response.sendEnabled, false);
+    assert.equal(executedDraft.response.executionMode, "draft_only");
+    assert.equal(executedDraft.response.klaviyoListId, "list_123");
+    assert.equal(executedDraft.response.klaviyoCampaignId, "campaign_123");
+    assert.equal(executedDraft.response.klaviyoTemplateId, "template_123");
+    assert.equal(executedDraft.response.audience.treatmentCount, 9);
+    assert.equal(executedDraft.response.audience.holdoutCount, 2);
     assert.ok(approvalEvents.length >= 2);
     assert.ok(
       approvalEvents.some(
@@ -431,19 +522,40 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
       ),
     );
     assert.equal(executionsAfterApproval.length, 1);
-    assert.equal(executionsAfterApproval[0].dryRun, true);
-    assert.equal(executionsAfterApproval[0].response.dryRun, true);
-    assert.equal(executionsAfterApproval[0].response.externalDraftId, null);
+    assert.equal(executionsAfterApproval[0].dryRun, false);
+    assert.equal(executionsAfterApproval[0].status, "draft_created");
+    assert.equal(executionsAfterApproval[0].response.sendEnabled, false);
+    assert.ok(
+      artifacts.some((artifact) => artifact.artifactType === "klaviyo_list"),
+    );
+    assert.ok(
+      artifacts.some((artifact) => artifact.artifactType === "klaviyo_campaign"),
+    );
+    assert.ok(
+      artifacts.some((artifact) => artifact.artifactType === "klaviyo_template"),
+    );
+    assert.ok(
+      artifacts.some(
+        (artifact) => artifact.artifactType === "klaviyo_campaign_message",
+      ),
+    );
+    assert.equal(
+      artifacts.filter((artifact) => artifact.artifactType === "klaviyo_profile")
+        .length,
+      9,
+    );
 
-    const redrafted = await createWinbackProposal(prisma, {
+    const callCountAfterFirstExecution = klaviyoCalls.length;
+    const duplicateClick = await executeApprovedWinbackDraft(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
+      actionId: action.id,
       now,
+      fetchFn,
     });
 
-    assert.equal(redrafted.id, action.id);
-    assert.equal(redrafted.status, "needs_approval");
-    assert.equal(redrafted.approvedAt, null);
+    assert.equal(duplicateClick.ok, true);
+    assert.equal(klaviyoCalls.length, callCountAfterFirstExecution);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Winback Test Merchant ${suffix}` },
@@ -451,6 +563,13 @@ test("winback proposal uses shared lifecycle before explicit approval", async (t
     await prisma.$disconnect();
   }
 });
+
+function jsonResponse(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/vnd.api+json" },
+  });
+}
 
 function order({
   externalId,
