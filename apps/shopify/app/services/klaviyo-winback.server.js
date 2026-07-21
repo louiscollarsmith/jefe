@@ -28,6 +28,10 @@ import { loadMerchantPolicyContext } from "./onboarding.server.js";
 export const KLAVIYO_CONNECTOR = "klaviyo";
 export const WINBACK_ACTION_TYPE = "klaviyo_winback_draft";
 export const LEGACY_WINBACK_ACTION_TYPE = "klaviyo_winback";
+const WINBACK_ACTION_TYPES = Object.freeze([
+  WINBACK_ACTION_TYPE,
+  LEGACY_WINBACK_ACTION_TYPE,
+]);
 export const WINBACK_DORMANT_MIN_DAYS = 60;
 export const WINBACK_DORMANT_MAX_DAYS = 180;
 export const WINBACK_HOLDOUT_PERCENT = 10;
@@ -491,7 +495,7 @@ export async function approveWinbackProposal(prisma, input) {
       id: input.actionId,
       merchantId: input.merchantId,
       shopId: input.shopId,
-      actionType: WINBACK_ACTION_TYPE,
+      actionType: { in: [...WINBACK_ACTION_TYPES] },
       status: "needs_approval",
     },
   });
@@ -538,7 +542,7 @@ export async function executeApprovedWinbackDraft(prisma, input) {
       id: input.actionId,
       merchantId: input.merchantId,
       shopId: input.shopId,
-      actionType: { in: [WINBACK_ACTION_TYPE, LEGACY_WINBACK_ACTION_TYPE] },
+      actionType: { in: [...WINBACK_ACTION_TYPES] },
     },
     include: {
       holdoutAssignments: true,
@@ -883,7 +887,7 @@ export async function rejectWinbackProposal(prisma, input) {
       id: input.actionId,
       merchantId: input.merchantId,
       shopId: input.shopId,
-      actionType: WINBACK_ACTION_TYPE,
+      actionType: { in: [...WINBACK_ACTION_TYPES] },
       status: { in: ["needs_approval", "approved"] },
     },
   });
@@ -914,7 +918,7 @@ export async function cancelWinbackProposal(prisma, input) {
       id: input.actionId,
       merchantId: input.merchantId,
       shopId: input.shopId,
-      actionType: WINBACK_ACTION_TYPE,
+      actionType: { in: [...WINBACK_ACTION_TYPES] },
       status: { in: ["proposed", "draft_prepared", "needs_approval", "approved"] },
     },
   });

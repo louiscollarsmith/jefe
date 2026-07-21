@@ -5,12 +5,14 @@ import { PrismaClient } from "@prisma/client";
 import {
   approveWinbackProposal,
   buildWinbackProposal,
+  cancelWinbackProposal,
   connectKlaviyoPrivateKey,
   createWinbackProposal,
   diagnoseWinbackOrderInputs,
   dormantCustomersFromOrders,
   estimateWinbackValue,
   executeApprovedWinbackDraft,
+  rejectWinbackProposal,
   WINBACK_DORMANT_MAX_DAYS,
   WINBACK_DORMANT_MIN_DAYS,
 } from "../app/services/klaviyo-winback.server.js";
@@ -51,6 +53,82 @@ test("Klaviyo key storage falls back to existing app secrets", async () => {
     }),
     privateKey,
   );
+});
+
+test("winback queue actions support legacy Klaviyo action rows", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for winback persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  try {
+    const merchant = await prisma.merchant.create({
+      data: {
+        name: `Legacy Winback Queue Merchant ${suffix}`,
+        primaryCurrency: "GBP",
+        shops: {
+          create: {
+            shopDomain: `legacy-winback-${suffix}.myshopify.com`,
+            rawPayload: { source: "test" },
+          },
+        },
+      },
+      include: { shops: true },
+    });
+    const shop = merchant.shops[0];
+    const approveAction = await createLegacyWinbackAction(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      suffix: `approve-${suffix}`,
+      status: "needs_approval",
+    });
+    const rejectAction = await createLegacyWinbackAction(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      suffix: `reject-${suffix}`,
+      status: "needs_approval",
+    });
+    const cancelAction = await createLegacyWinbackAction(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      suffix: `cancel-${suffix}`,
+      status: "needs_approval",
+    });
+
+    const approved = await approveWinbackProposal(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId: approveAction.id,
+      now,
+    });
+    const rejected = await rejectWinbackProposal(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId: rejectAction.id,
+      reason: "Rejected from test.",
+      now,
+    });
+    const cancelled = await cancelWinbackProposal(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId: cancelAction.id,
+      now,
+    });
+
+    assert.equal(approved.status, "approved");
+    assert.equal(rejected.status, "rejected");
+    assert.equal(cancelled.status, "cancelled");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Legacy Winback Queue Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
 });
 
 test("winback audience includes only email-reachable dormant customers", () => {
@@ -602,6 +680,39 @@ function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/vnd.api+json" },
+  });
+}
+
+async function createLegacyWinbackAction(
+  prisma,
+  { merchantId, shopId, suffix, status },
+) {
+  return prisma.action.create({
+    data: {
+      merchantId,
+      shopId,
+      actionType: "klaviyo_winback",
+      status,
+      title: "Dormant customer winback",
+      summary: "Legacy Klaviyo winback draft queued before draft creation.",
+      expectedValue: { base: 34.72, currency: "GBP" },
+      valueCurrency: "GBP",
+      valueType: "estimated_revenue",
+      confidence: "0.5500",
+      riskLevel: "low",
+      approvalRequired: true,
+      evidence: [],
+      rulesConsulted: [],
+      ruleConstraintsApplied: [],
+      capsApplied: [],
+      provenanceReferences: [],
+      preview: {},
+      verificationClass: "ESTIMATED",
+      executionMode: "draft_only",
+      externalSystem: "klaviyo",
+      idempotencyKey: `legacy-winback-${suffix}`,
+      proposedAt: now,
+    },
   });
 }
 

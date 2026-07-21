@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Klaviyo private key saving so stores with existing app secrets can connect after the draft-creation rollout.
+- Fixed Klaviyo Winback approval queue actions for draft proposals created before the draft-creation rollout.
 
 ---
 
