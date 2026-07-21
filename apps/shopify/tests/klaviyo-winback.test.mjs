@@ -14,10 +14,44 @@ import {
   WINBACK_DORMANT_MAX_DAYS,
   WINBACK_DORMANT_MIN_DAYS,
 } from "../app/services/klaviyo-winback.server.js";
+import {
+  decryptKlaviyoPrivateKey,
+  saveKlaviyoPrivateKey,
+} from "../app/services/klaviyo-credentials.server.js";
 import { saveOnboardingHouseRules } from "../app/services/onboarding.server.js";
 
 const now = new Date("2026-07-15T09:00:00Z");
 const databaseUrl = process.env.DATABASE_URL;
+
+test("Klaviyo key storage falls back to existing app secrets", async () => {
+  const prisma = {
+    merchantKlaviyoCredential: {
+      upsert: async ({ create }) => ({
+        id: "credential_test",
+        ...create,
+      }),
+    },
+  };
+  const privateKey = "pk_test_private_key_secret";
+  const credential = await saveKlaviyoPrivateKey(prisma, {
+    merchantId: "merchant_test",
+    shopId: "shop_test",
+    privateKey,
+    now,
+    env: {
+      SESSION_SECRET: "existing-session-secret-for-tests",
+    },
+  });
+
+  assert.equal(credential.connectionStatus, "active");
+  assert.notEqual(credential.encryptedPrivateKey, privateKey);
+  assert.equal(
+    decryptKlaviyoPrivateKey(credential, {
+      SESSION_SECRET: "existing-session-secret-for-tests",
+    }),
+    privateKey,
+  );
+});
 
 test("winback audience includes only email-reachable dormant customers", () => {
   const audience = dormantCustomersFromOrders(

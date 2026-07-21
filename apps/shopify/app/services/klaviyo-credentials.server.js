@@ -14,6 +14,12 @@ export const KLAVIYO_REQUIRED_DRAFT_SCOPES = Object.freeze([
   "templates:write",
 ]);
 
+const ENCRYPTION_SECRET_ENV_KEYS = Object.freeze([
+  "KLAVIYO_KEY_ENCRYPTION_SECRET",
+  "SESSION_SECRET",
+  "SHOPIFY_API_SECRET",
+]);
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; privateKey: string; now?: Date; env?: Record<string, string | undefined> }} input
@@ -175,38 +181,64 @@ function decryptSecret(value, env) {
     throw new KlaviyoCredentialError("invalid_encrypted_secret");
   }
 
-  try {
-    const key = encryptionKey(env);
-    const decipher = crypto.createDecipheriv(
-      "aes-256-gcm",
-      key,
-      Buffer.from(encodedIv, "base64url"),
-    );
-    decipher.setAuthTag(Buffer.from(encodedTag, "base64url"));
-    return Buffer.concat([
-      decipher.update(Buffer.from(encodedEncrypted, "base64url")),
-      decipher.final(),
-    ]).toString("utf8");
-  } catch (error) {
-    if (error instanceof KlaviyoCredentialError) throw error;
-    throw new KlaviyoCredentialError("invalid_encrypted_secret");
+  const keys = encryptionKeys(env);
+  let lastError = null;
+  for (const key of keys) {
+    try {
+      const decipher = crypto.createDecipheriv(
+        "aes-256-gcm",
+        key,
+        Buffer.from(encodedIv, "base64url"),
+      );
+      decipher.setAuthTag(Buffer.from(encodedTag, "base64url"));
+      return Buffer.concat([
+        decipher.update(Buffer.from(encodedEncrypted, "base64url")),
+        decipher.final(),
+      ]).toString("utf8");
+    } catch (error) {
+      lastError = error;
+    }
   }
+
+  if (lastError instanceof KlaviyoCredentialError) throw lastError;
+  if (keys.length === 0) throw new KlaviyoCredentialError("missing_encryption_secret");
+  throw new KlaviyoCredentialError("invalid_encrypted_secret");
 }
 
 /** @param {Record<string, string | undefined>} env */
 function encryptionKey(env) {
-  const secret = env.KLAVIYO_KEY_ENCRYPTION_SECRET;
-  if (!secret || secret.trim().length < 16) {
+  const keys = encryptionKeys(env);
+  if (keys.length === 0) {
     throw new KlaviyoCredentialError("missing_encryption_secret");
   }
 
-  return crypto.createHash("sha256").update(secret).digest();
+  return keys[0];
+}
+
+/** @param {Record<string, string | undefined>} env */
+function encryptionKeys(env) {
+  return encryptionSecretCandidates(env).map((secret) =>
+    crypto.createHash("sha256").update(secret).digest(),
+  );
+}
+
+/** @param {Record<string, string | undefined>} env */
+function encryptionSecretCandidates(env) {
+  /** @type {string[]} */
+  const candidates = [];
+  for (const key of ENCRYPTION_SECRET_ENV_KEYS) {
+    const secret = env[key]?.trim();
+    if (secret && secret.length >= 16 && !candidates.includes(secret)) {
+      candidates.push(secret);
+    }
+  }
+  return candidates;
 }
 
 /** @param {"missing_secret" | "missing_encryption_secret" | "invalid_encrypted_secret"} reason */
 function credentialErrorMessage(reason) {
   if (reason === "missing_encryption_secret") {
-    return "Klaviyo draft creation is blocked because KLAVIYO_KEY_ENCRYPTION_SECRET is not configured.";
+    return "Klaviyo private key storage is blocked because no app encryption secret is configured.";
   }
   if (reason === "invalid_encrypted_secret") {
     return "Klaviyo draft creation is blocked because the saved private key cannot be decrypted.";

@@ -282,6 +282,7 @@ export default function KlaviyoWinback() {
           <ConnectionCard
             connection={dashboard.connection}
             isSubmitting={isSubmitting}
+            actionData={actionData}
           />
         </section>
 
@@ -300,12 +301,14 @@ export const headers: HeadersFunction = (headersArgs) => {
 function ConnectionCard({
   connection,
   isSubmitting,
+  actionData,
 }: {
   connection: LoaderData["connection"];
   isSubmitting: boolean;
+  actionData: ActionData | undefined;
 }) {
   const connected = connection.status === "active";
-  const [privateKey, setPrivateKey] = useState("");
+  const formKey = `${connection.status}:${actionData?.message ?? "ready"}`;
 
   return (
     <Card>
@@ -346,26 +349,34 @@ function ConnectionCard({
             </Form>
           </InlineStack>
         ) : (
-          <Form method="post">
-            <input type="hidden" name="intent" value="connect-klaviyo" />
-            <FormLayout>
-              <TextField
-                label="Klaviyo private API key"
-                name="privateKey"
-                value={privateKey}
-                onChange={setPrivateKey}
-                type="password"
-                autoComplete="off"
-                helpText="Stored encrypted with an app-level key. The raw value is never shown after save."
-              />
-              <Button submit variant="primary" loading={isSubmitting}>
-                Save private key
-              </Button>
-            </FormLayout>
-          </Form>
+          <KlaviyoPrivateKeyForm key={formKey} isSubmitting={isSubmitting} />
         )}
       </BlockStack>
     </Card>
+  );
+}
+
+function KlaviyoPrivateKeyForm({ isSubmitting }: { isSubmitting: boolean }) {
+  const [privateKey, setPrivateKey] = useState("");
+
+  return (
+    <Form method="post">
+      <input type="hidden" name="intent" value="connect-klaviyo" />
+      <FormLayout>
+        <TextField
+          label="Klaviyo private API key"
+          name="privateKey"
+          value={privateKey}
+          onChange={setPrivateKey}
+          type="password"
+          autoComplete="off"
+          helpText="Stored encrypted with an app-level key. The raw value is never shown after save."
+        />
+        <Button submit variant="primary" loading={isSubmitting}>
+          Save private key
+        </Button>
+      </FormLayout>
+    </Form>
   );
 }
 
