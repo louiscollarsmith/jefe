@@ -1,19 +1,33 @@
 // @ts-check
 
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 
-import { prepareKlaviyoWinbackDraft } from "../lib/klaviyo/adapter.server.js";
+import {
+  createKlaviyoWinbackDraft,
+  KlaviyoApiError,
+} from "../lib/klaviyo/adapter.server.js";
 import {
   approveAction,
+  blockAction,
   cancelAction,
-  recordDraftPreparedExecution,
+  transitionAction,
   rejectAction,
 } from "./action-safety.server.js";
+import {
+  decryptKlaviyoPrivateKey,
+  KLAVIYO_REQUIRED_DRAFT_SCOPES,
+  loadKlaviyoCredential,
+  removeKlaviyoCredential,
+  saveKlaviyoPrivateKey,
+  serializeKlaviyoCredential,
+} from "./klaviyo-credentials.server.js";
 import { HOUSE_RULE_DEFAULTS } from "./house-rules-policy.js";
 import { loadMerchantPolicyContext } from "./onboarding.server.js";
 
 export const KLAVIYO_CONNECTOR = "klaviyo";
-export const WINBACK_ACTION_TYPE = "klaviyo_winback";
+export const WINBACK_ACTION_TYPE = "klaviyo_winback_draft";
+export const LEGACY_WINBACK_ACTION_TYPE = "klaviyo_winback";
 export const WINBACK_DORMANT_MIN_DAYS = 60;
 export const WINBACK_DORMANT_MAX_DAYS = 180;
 export const WINBACK_HOLDOUT_PERCENT = 10;
@@ -30,9 +44,15 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
   }
 
   const now = input.now ?? new Date();
+  const credential = await saveKlaviyoPrivateKey(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    privateKey,
+    now,
+  });
   const keyFingerprint = sha256(privateKey).slice(0, 16);
   const keySuffix = privateKey.slice(-4);
-  const tokenRef = `klaviyo_private_key:${input.shopId}:${keyFingerprint}`;
+  const tokenRef = `merchant_klaviyo_credentials:${credential.id}`;
   const accountExternalId = `shop:${input.shopId}`;
 
   const connectorAccount = await prisma.connectorAccount.upsert({
@@ -49,7 +69,7 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
       connector: KLAVIYO_CONNECTOR,
       accountExternalId,
       status: "active",
-      scopes: ["profiles:read", "campaigns:write:draft"],
+      scopes: [...KLAVIYO_REQUIRED_DRAFT_SCOPES],
       writeTokenRef: tokenRef,
       authMetadata: {
         mode: "merchant_private_key",
@@ -57,15 +77,16 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
         keySuffix,
         keyFingerprint,
         lastCheckedAt: now.toISOString(),
-        secretStorage: "external_secret_required",
+        credentialId: credential.id,
+        secretStorage: "encrypted_db",
       },
       connectedAt: now,
-      rawPayload: { source: "manager_settings", secretStoredInDb: false },
+      rawPayload: { source: "manager_settings", secretStoredInDb: true },
     },
     update: {
       shopId: input.shopId,
       status: "active",
-      scopes: ["profiles:read", "campaigns:write:draft"],
+      scopes: [...KLAVIYO_REQUIRED_DRAFT_SCOPES],
       writeTokenRef: tokenRef,
       authMetadata: {
         mode: "merchant_private_key",
@@ -73,10 +94,11 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
         keySuffix,
         keyFingerprint,
         lastCheckedAt: now.toISOString(),
-        secretStorage: "external_secret_required",
+        credentialId: credential.id,
+        secretStorage: "encrypted_db",
       },
       connectedAt: now,
-      rawPayload: { source: "manager_settings", secretStoredInDb: false },
+      rawPayload: { source: "manager_settings", secretStoredInDb: true },
     },
   });
 
@@ -88,9 +110,10 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
     idempotencyKey: `klaviyo-connected:${input.shopId}:${keyFingerprint}`,
     payload: {
       connectorAccountId: connectorAccount.id,
+      credentialId: credential.id,
       connector: KLAVIYO_CONNECTOR,
       maskedKey: maskSecret(privateKey),
-      secretStoredInDb: false,
+      secretStoredInDb: true,
     },
   });
 
@@ -103,6 +126,7 @@ export async function connectKlaviyoPrivateKey(prisma, input) {
  */
 export async function disconnectKlaviyo(prisma, input) {
   const account = await loadKlaviyoConnection(prisma, input);
+  await removeKlaviyoCredential(prisma, input);
   if (!account) return null;
 
   const disconnected = await prisma.connectorAccount.update({
@@ -138,14 +162,14 @@ export async function disconnectKlaviyo(prisma, input) {
  * @param {{ merchantId: string; shopId: string; now?: Date }} input
  */
 export async function getWinbackDashboard(prisma, input) {
-  const [connection, proposal, actions] = await Promise.all([
-    loadKlaviyoConnection(prisma, input),
+  const [credential, proposal, actions] = await Promise.all([
+    loadKlaviyoCredential(prisma, input),
     buildWinbackProposal(prisma, input),
     prisma.action.findMany({
       where: {
         merchantId: input.merchantId,
         shopId: input.shopId,
-        actionType: WINBACK_ACTION_TYPE,
+        actionType: { in: [WINBACK_ACTION_TYPE, LEGACY_WINBACK_ACTION_TYPE] },
       },
       orderBy: { proposedAt: "desc" },
       take: 5,
@@ -153,12 +177,13 @@ export async function getWinbackDashboard(prisma, input) {
         executions: { orderBy: { createdAt: "desc" } },
         approvalEvents: { orderBy: { eventTs: "asc" } },
         holdoutAssignments: true,
+        externalArtifacts: true,
       },
     }),
   ]);
 
   return {
-    connection: serializeConnection(connection),
+    connection: serializeKlaviyoCredential(credential),
     proposal,
     actions: actions.map(serializeAction),
   };
@@ -319,7 +344,6 @@ export async function buildWinbackProposal(prisma, input) {
  */
 export async function createWinbackProposal(prisma, input) {
   const now = input.now ?? new Date();
-  const connection = await loadKlaviyoConnection(prisma, input);
   const proposal = await buildWinbackProposal(prisma, { ...input, now });
   const idempotencyKey = winbackIdempotencyKey(input.shopId, now);
   const status = proposal.status === "blocked" ? "blocked" : "needs_approval";
@@ -448,37 +472,6 @@ export async function createWinbackProposal(prisma, input) {
       customers: await includedAudienceForAction(prisma, input, now),
       assignmentSeed: idempotencyKey,
     });
-
-    const executionIdempotencyKey = `klaviyo-draft:${action.id}`;
-    const response = await prepareKlaviyoWinbackDraft({
-      actionId: action.id,
-      idempotencyKey: executionIdempotencyKey,
-      privateKeyRef: connection?.writeTokenRef ?? null,
-      dryRun: true,
-      campaignName: proposal.preview.campaignName,
-      discountPercent: proposal.economics.discountPercent,
-      audience: {
-        treatmentCount: proposal.audience.treatmentCount,
-        holdoutCount: proposal.audience.holdoutCount,
-      },
-      stagedSend: proposal.preview.stagedSend,
-    });
-
-    await recordDraftPreparedExecution(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-      connector: KLAVIYO_CONNECTOR,
-      idempotencyKey: executionIdempotencyKey,
-      request: {
-        actionType: WINBACK_ACTION_TYPE,
-        noAutomaticSend: true,
-        connectionStatus: connection?.status ?? "missing",
-      },
-      response: toJson(response),
-      externalDraftId: response.externalDraftId ?? null,
-      now,
-    });
   }
 
   return prisma.action.findUniqueOrThrow({
@@ -532,6 +525,352 @@ export async function approveWinbackProposal(prisma, input) {
   });
 
   return approved;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; now?: Date; env?: Record<string, string | undefined>; fetchFn?: typeof fetch }} input
+ */
+export async function executeApprovedWinbackDraft(prisma, input) {
+  const now = input.now ?? new Date();
+  const action = await prisma.action.findFirstOrThrow({
+    where: {
+      id: input.actionId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionType: { in: [WINBACK_ACTION_TYPE, LEGACY_WINBACK_ACTION_TYPE] },
+    },
+    include: {
+      holdoutAssignments: true,
+      externalArtifacts: true,
+      executions: { orderBy: { createdAt: "desc" } },
+    },
+  });
+
+  const existingSummary = existingDraftSummary(action);
+  if (existingSummary) {
+    return {
+      ok: true,
+      action,
+      execution: action.executions[0] ?? null,
+      response: existingSummary,
+      blockedReasons: [],
+    };
+  }
+
+  if (action.status !== "approved") {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "not_approved",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  const connector = await loadKlaviyoConnection(prisma, input);
+  if (!connector || connector.status !== "active") {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "missing_klaviyo_connection",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  if (!action.idempotencyKey) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "missing_idempotency_key",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  const credential = await loadKlaviyoCredential(prisma, input);
+  let privateKey;
+  try {
+    privateKey = decryptKlaviyoPrivateKey(credential, input.env ?? process.env);
+  } catch (error) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "missing_secret",
+      request: {
+        actionType: WINBACK_ACTION_TYPE,
+        credentialError: error instanceof Error ? error.message : "missing_secret",
+      },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  const treatmentAssignments = action.holdoutAssignments.filter(
+    (assignment) => assignment.assignmentGroup === "treatment",
+  );
+  const holdoutAssignments = action.holdoutAssignments.filter(
+    (assignment) => assignment.assignmentGroup === "holdout",
+  );
+  if (holdoutAssignments.length === 0) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "holdout_missing",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+  if (treatmentAssignments.length === 0) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "empty_treatment_audience",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  const policy = await loadMerchantPolicyContext(prisma, input.shopId);
+  const caps = policyCaps(policy);
+  if (caps.bfcmFreezeMode) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "house_rules_blocked",
+      request: { actionType: WINBACK_ACTION_TYPE, rule: "bfcm_freeze_mode" },
+      now,
+    });
+    return { ...result, response: null };
+  }
+  if (action.holdoutAssignments.length > caps.maxCampaignAudienceSize) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "audience_cap_exceeded",
+      request: {
+        actionType: WINBACK_ACTION_TYPE,
+        audienceCount: action.holdoutAssignments.length,
+        cap: caps.maxCampaignAudienceSize,
+      },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  const treatmentHashes = new Set(
+    treatmentAssignments.map((assignment) => assignment.subjectId).filter(Boolean),
+  );
+  const audience = await includedAudienceForAction(
+    prisma,
+    input,
+    action.proposedAt,
+  );
+  const treatmentCustomers = audience
+    .filter((customer) => treatmentHashes.has(customer.emailHash))
+    .map((customer) => ({
+      email: customer.email,
+      emailHash: customer.emailHash,
+      customerExternalId: customer.customerExternalId,
+    }));
+  if (treatmentCustomers.length === 0) {
+    const result = await blockWinbackExecution(prisma, action, {
+      reason: "empty_treatment_audience",
+      request: { actionType: WINBACK_ACTION_TYPE },
+      now,
+    });
+    return { ...result, response: null };
+  }
+
+  await transitionAction(prisma, {
+    merchantId: action.merchantId,
+    shopId: action.shopId,
+    actionId: action.id,
+    newStatus: "execution_queued",
+    actor: "system",
+    actorType: "system",
+    requestSnapshot: {
+      actionType: WINBACK_ACTION_TYPE,
+      executionMode: "draft_only",
+      sendEnabled: false,
+    },
+    now,
+  });
+  await transitionAction(prisma, {
+    merchantId: action.merchantId,
+    shopId: action.shopId,
+    actionId: action.id,
+    newStatus: "executing",
+    actor: "system",
+    actorType: "system",
+    requestSnapshot: {
+      actionType: WINBACK_ACTION_TYPE,
+      executionMode: "draft_only",
+      sendEnabled: false,
+    },
+    now,
+  });
+
+  const executionIdempotencyKey = `klaviyo-draft:${action.id}`;
+  const shortActionId = action.id.slice(0, 8);
+  const date = dateOnly(now);
+  const preview = objectValue(action.preview);
+
+  try {
+    const response = await createKlaviyoWinbackDraft({
+      privateKey,
+      shopId: input.shopId,
+      actionId: action.id,
+      idempotencyKey: executionIdempotencyKey,
+      now,
+      campaignName: `Jefe Dormant Customer Winback - ${date} - ${shortActionId}`,
+      listName: `Jefe Winback Treatment - ${date} - ${shortActionId}`,
+      templateName: `Jefe Winback Draft - ${date} - ${shortActionId}`,
+      subjectLine: stringValue(preview.subjectLine) ??
+        "A 10% thank-you for coming back",
+      previewText: stringValue(preview.previewText) ??
+        "A thank-you offer for coming back.",
+      html: winbackTemplateHtml(preview),
+      text: winbackTemplateText(preview),
+      treatmentCustomers,
+      holdoutCount: holdoutAssignments.length,
+      existing: existingKlaviyoArtifacts(action.externalArtifacts),
+      fetchFn: input.fetchFn,
+    });
+
+    await persistExternalArtifacts(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      artifacts: response.artifacts,
+    });
+
+    const execution = await prisma.execution.upsert({
+      where: {
+        merchantId_idempotencyKey: {
+          merchantId: action.merchantId,
+          idempotencyKey: executionIdempotencyKey,
+        },
+      },
+      create: {
+        merchantId: action.merchantId,
+        shopId: action.shopId,
+        actionId: action.id,
+        status: "draft_created",
+        connector: KLAVIYO_CONNECTOR,
+        idempotencyKey: executionIdempotencyKey,
+        dryRun: false,
+        request: toJson({
+          actionType: WINBACK_ACTION_TYPE,
+          executionMode: "draft_only",
+          sendEnabled: false,
+          treatmentCount: treatmentCustomers.length,
+          holdoutCount: holdoutAssignments.length,
+        }),
+        response: toJson(safeExecutionResponse(response)),
+        startedAt: now,
+        completedAt: now,
+      },
+      update: {
+        status: "draft_created",
+        dryRun: false,
+        request: toJson({
+          actionType: WINBACK_ACTION_TYPE,
+          executionMode: "draft_only",
+          sendEnabled: false,
+          treatmentCount: treatmentCustomers.length,
+          holdoutCount: holdoutAssignments.length,
+        }),
+        response: toJson(safeExecutionResponse(response)),
+        startedAt: now,
+        completedAt: now,
+        error: Prisma.JsonNull,
+      },
+    });
+
+    const executed = await transitionAction(prisma, {
+      merchantId: action.merchantId,
+      shopId: action.shopId,
+      actionId: action.id,
+      newStatus: "executed",
+      actor: "system",
+      actorType: "system",
+      requestSnapshot: {
+        executionId: execution.id,
+        response: safeExecutionResponse(response),
+      },
+      now,
+      data: {
+        externalDraftId: response.klaviyoCampaignId,
+        externalExecutionId: execution.id,
+      },
+    });
+
+    await recordLedgerEvent(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      eventType: "action.klaviyo_winback.draft_created",
+      dedupeKey: `klaviyo-draft-created:${action.id}`,
+      idempotencyKey: `klaviyo-draft-created:${action.id}`,
+      payload: safeExecutionResponse(response),
+    });
+
+    return {
+      ok: true,
+      action: executed,
+      execution,
+      response: safeExecutionResponse(response),
+      blockedReasons: [],
+    };
+  } catch (error) {
+    const safeError = safeKlaviyoExecutionError(error);
+    const execution = await prisma.execution.upsert({
+      where: {
+        merchantId_idempotencyKey: {
+          merchantId: action.merchantId,
+          idempotencyKey: executionIdempotencyKey,
+        },
+      },
+      create: {
+        merchantId: action.merchantId,
+        shopId: action.shopId,
+        actionId: action.id,
+        status: "execution_failed",
+        connector: KLAVIYO_CONNECTOR,
+        idempotencyKey: executionIdempotencyKey,
+        dryRun: false,
+        request: toJson({
+          actionType: WINBACK_ACTION_TYPE,
+          executionMode: "draft_only",
+          sendEnabled: false,
+        }),
+        response: {},
+        error: toJson(safeError),
+        startedAt: now,
+        completedAt: now,
+      },
+      update: {
+        status: "execution_failed",
+        dryRun: false,
+        error: toJson(safeError),
+        completedAt: now,
+      },
+    });
+
+    const failed = await transitionAction(prisma, {
+      merchantId: action.merchantId,
+      shopId: action.shopId,
+      actionId: action.id,
+      newStatus: "execution_failed",
+      actor: "system",
+      actorType: "system",
+      reason: safeError.code,
+      requestSnapshot: {
+        executionId: execution.id,
+        error: safeError,
+      },
+      now,
+      data: { externalExecutionId: execution.id },
+    });
+
+    return {
+      ok: false,
+      action: failed,
+      execution,
+      response: null,
+      blockedReasons: [safeError.code],
+    };
+  }
 }
 
 /**
@@ -606,6 +945,7 @@ async function loadKlaviyoConnection(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       connector: KLAVIYO_CONNECTOR,
+      status: "active",
     },
     orderBy: { updatedAt: "desc" },
   });
@@ -922,6 +1262,7 @@ function summarizeCustomer(customer, now) {
 
   return {
     customerExternalId: customer.customerExternalId,
+    email: customer.email,
     emailHash: sha256(customer.email),
     maskedEmail: maskEmail(customer.email),
     lastOrderDate: lastOrder.processedAt.toISOString(),
@@ -1068,34 +1409,14 @@ function exactHoldoutAssignments(actionId, customers) {
   );
 }
 
-/** @param {any} connection */
-function serializeConnection(connection) {
-  if (!connection) {
-    return {
-      status: "missing",
-      maskedKey: null,
-      lastCheckedAt: null,
-      secretStoredInDb: false,
-    };
-  }
-  const metadata = objectValue(connection.authMetadata);
-
-  return {
-    id: connection.id,
-    status: connection.status,
-    maskedKey: metadata.maskedKey ?? null,
-    lastCheckedAt: metadata.lastCheckedAt ?? null,
-    secretStoredInDb: false,
-  };
-}
-
 /** @param {any} action */
 function serializeAction(action) {
   const execution = action.executions.find(
     /** @param {any} item */
-    (item) => item.status === "draft_prepared",
+    (item) => ["draft_created", "draft_prepared"].includes(item.status),
   ) ?? action.executions[0] ?? null;
   const executionResponse = objectValue(execution?.response);
+  const artifacts = existingKlaviyoArtifacts(action.externalArtifacts ?? []);
   const holdoutCount = action.holdoutAssignments.filter(
     /** @param {any} assignment */
     (assignment) => assignment.assignmentGroup === "holdout",
@@ -1129,7 +1450,11 @@ function serializeAction(action) {
     externalSystem: action.externalSystem,
     executionStatus: execution?.status ?? null,
     executionDryRun: execution?.dryRun ?? null,
-    externalDraftId: action.externalDraftId ?? executionResponse.externalDraftId ?? null,
+    externalDraftId:
+      action.externalDraftId ??
+      executionResponse.externalDraftId ??
+      artifacts.campaign?.id ??
+      null,
     externalExecutionId: action.externalExecutionId ?? null,
     approvalHistory: (action.approvalEvents ?? []).map(
       /** @param {any} event */
@@ -1174,6 +1499,235 @@ function redactedCustomerView(customer, group = "treatment") {
     previousTotalSpend: customer.previousTotalSpend,
     averageOrderValue: customer.averageOrderValue,
     productsBought: customer.productsBought,
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; artifacts: Array<{ artifactType: string; externalId: string; externalName?: string | null; externalStatus: string; externalUrl?: string | null; payloadSnapshotJson?: unknown }> }} input
+ */
+async function persistExternalArtifacts(prisma, input) {
+  for (const artifact of input.artifacts) {
+    await prisma.externalActionArtifact.upsert({
+      where: {
+        actionId_provider_artifactType_externalId: {
+          actionId: input.actionId,
+          provider: KLAVIYO_CONNECTOR,
+          artifactType: artifact.artifactType,
+          externalId: artifact.externalId,
+        },
+      },
+      create: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: input.actionId,
+        provider: KLAVIYO_CONNECTOR,
+        artifactType: artifact.artifactType,
+        externalId: artifact.externalId,
+        externalName: artifact.externalName ?? null,
+        externalStatus: artifact.externalStatus,
+        externalUrl: artifact.externalUrl ?? null,
+        payloadSnapshotJson: toJson(artifact.payloadSnapshotJson ?? {}),
+      },
+      update: {
+        externalName: artifact.externalName ?? null,
+        externalStatus: artifact.externalStatus,
+        externalUrl: artifact.externalUrl ?? null,
+        payloadSnapshotJson: toJson(artifact.payloadSnapshotJson ?? {}),
+      },
+    });
+  }
+}
+
+/** @param {any} action */
+function existingDraftSummary(action) {
+  const artifacts = action.externalArtifacts ?? [];
+  const existing = existingKlaviyoArtifacts(artifacts);
+  if (
+    !existing.list?.id ||
+    !existing.campaign?.id ||
+    !existing.campaignMessage?.id ||
+    !existing.template?.id
+  ) {
+    return null;
+  }
+
+  const treatmentCount = action.holdoutAssignments.filter(
+    /** @param {any} assignment */
+    (assignment) => assignment.assignmentGroup === "treatment",
+  ).length;
+  const holdoutCount = action.holdoutAssignments.filter(
+    /** @param {any} assignment */
+    (assignment) => assignment.assignmentGroup === "holdout",
+  ).length;
+
+  return {
+    connector: KLAVIYO_CONNECTOR,
+    actionId: action.id,
+    externalDraftId: existing.campaign.id,
+    klaviyoListId: existing.list.id,
+    klaviyoCampaignId: existing.campaign.id,
+    klaviyoCampaignMessageId: existing.campaignMessage.id,
+    klaviyoTemplateId: existing.template.id,
+    externalStatus: "draft_created",
+    executionMode: "draft_only",
+    sendEnabled: false,
+    audience: { treatmentCount, holdoutCount },
+    profilesCreatedOrUpdated: artifacts.filter(
+      /** @param {any} artifact */
+      (artifact) => artifact.artifactType === "klaviyo_profile",
+    ).length,
+    profilesAddedToList: treatmentCount,
+    profilesFailed: 0,
+  };
+}
+
+/** @param {Array<any>} artifacts */
+function existingKlaviyoArtifacts(artifacts) {
+  const byType = new Map(
+    artifacts
+      .filter((artifact) => artifact.provider === KLAVIYO_CONNECTOR)
+      .map((artifact) => [
+        artifact.artifactType,
+        { id: artifact.externalId, name: artifact.externalName },
+      ]),
+  );
+
+  return {
+    list: byType.get("klaviyo_list"),
+    campaign: byType.get("klaviyo_campaign"),
+    campaignMessage: byType.get("klaviyo_campaign_message"),
+    template: byType.get("klaviyo_template"),
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} action
+ * @param {{ reason: string; request: Record<string, unknown>; now: Date }} input
+ */
+async function blockWinbackExecution(prisma, action, input) {
+  const blocked = await blockAction(prisma, {
+    merchantId: action.merchantId,
+    shopId: action.shopId,
+    actionId: action.id,
+    reason: input.reason,
+    actor: "system",
+    actorType: "system",
+    requestSnapshot: {
+      blockedReasons: [input.reason],
+      request: input.request,
+    },
+    now: input.now,
+  });
+
+  return {
+    ok: false,
+    blockedReasons: [input.reason],
+    action: blocked,
+    execution: null,
+  };
+}
+
+/** @param {Record<string, any>} preview */
+function winbackTemplateHtml(preview) {
+  const headline = escapeHtml(
+    stringValue(preview.headline) ?? "Here is 10% off your next order",
+  );
+  const bodyCopy = Array.isArray(preview.bodyCopy)
+    ? preview.bodyCopy.map((item) => String(item))
+    : [
+        "We noticed it has been a while since your last order.",
+        "Here is 10% off your next purchase.",
+      ];
+  const ctaText = escapeHtml(stringValue(preview.ctaText) ?? "Shop now");
+  const footerNote = escapeHtml(
+    stringValue(preview.footerNote) ??
+      "You are receiving this because you previously placed an order with us.",
+  );
+
+  return `<!doctype html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #202223; line-height: 1.5;">
+    <h1>${headline}</h1>
+    ${bodyCopy.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("\n    ")}
+    <p><strong>${ctaText}</strong></p>
+    <p>Use your usual winback discount code before sending.</p>
+    <p style="font-size: 12px; color: #6d7175;">${footerNote}</p>
+  </body>
+</html>`;
+}
+
+/** @param {Record<string, any>} preview */
+function winbackTemplateText(preview) {
+  const bodyCopy = Array.isArray(preview.bodyCopy)
+    ? preview.bodyCopy.map((item) => String(item))
+    : [
+        "We noticed it has been a while since your last order.",
+        "Here is 10% off your next purchase.",
+      ];
+  return [
+    stringValue(preview.headline) ?? "Here is 10% off your next order",
+    "",
+    ...bodyCopy,
+    "",
+    stringValue(preview.ctaText) ?? "Shop now",
+    "Use your usual winback discount code before sending.",
+    "",
+    stringValue(preview.footerNote) ??
+      "You are receiving this because you previously placed an order with us.",
+  ].join("\n");
+}
+
+/** @param {string} value */
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** @param {any} response */
+function safeExecutionResponse(response) {
+  return {
+    connector: KLAVIYO_CONNECTOR,
+    actionId: response.actionId,
+    externalDraftId: response.externalDraftId,
+    klaviyoListId: response.klaviyoListId,
+    klaviyoCampaignId: response.klaviyoCampaignId,
+    klaviyoCampaignMessageId: response.klaviyoCampaignMessageId,
+    klaviyoTemplateId: response.klaviyoTemplateId,
+    externalStatus: response.externalStatus,
+    executionMode: "draft_only",
+    sendEnabled: false,
+    audience: response.audience,
+    profilesCreatedOrUpdated: response.profilesCreatedOrUpdated,
+    profilesAddedToList: response.profilesAddedToList,
+    profilesFailed: response.profilesFailed,
+  };
+}
+
+/** @param {unknown} error */
+function safeKlaviyoExecutionError(error) {
+  if (error instanceof KlaviyoApiError) {
+    return {
+      code: error.code,
+      message: error.message,
+      status: error.status,
+      requestId: error.requestId,
+      failedStep: error.step,
+      retryable: error.retryable,
+    };
+  }
+
+  return {
+    code: "klaviyo_validation_error",
+    message: error instanceof Error ? error.message : "Klaviyo draft creation failed.",
+    status: null,
+    requestId: null,
+    failedStep: "unknown",
+    retryable: false,
   };
 }
 

@@ -57,11 +57,17 @@ export const ACTION_EXTERNAL_SYSTEMS = Object.freeze([
 
 export const ACTION_BLOCKED_REASONS = Object.freeze([
   "approval_required",
+  "not_approved",
   "house_rules_blocked",
   "audience_cap_exceeded",
   "freeze_mode_enabled",
   "live_write_disabled",
   "missing_connector",
+  "missing_klaviyo_connection",
+  "missing_secret",
+  "holdout_missing",
+  "empty_treatment_audience",
+  "draft_already_created",
   "missing_idempotency_key",
   "invalid_status",
   "value_verification_mismatch",
