@@ -7,7 +7,7 @@ function playVideo() {
   const videoId = videoBlock.dataset.yt;
   videoBlock.innerHTML = `<iframe
     src="https://www.youtube.com/embed/${videoId}?autoplay=1"
-    title="22 Jump Street — My Name is Jeff"
+    title="My name... Jeff"
     allow="autoplay; encrypted-media"
     allowfullscreen
   ></iframe>`;
