@@ -25,6 +25,7 @@ app.get("/health", (_req, res) => {
 
 app.post("/api/waitlist", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
+  const storeUrl = String(req.body?.storeUrl || "").trim().slice(0, 320) || null;
   const honeypot = req.body?.company;
 
   if (honeypot) {
@@ -38,9 +39,9 @@ app.post("/api/waitlist", async (req, res) => {
 
   try {
     await sql`
-      INSERT INTO waitlist_signups (email, source)
-      VALUES (${email}, 'mynamejefe.com')
-      ON CONFLICT (email) DO NOTHING
+      INSERT INTO waitlist_signups (email, source, store_url)
+      VALUES (${email}, 'mynamejefe.com', ${storeUrl})
+      ON CONFLICT (email) DO UPDATE SET store_url = COALESCE(waitlist_signups.store_url, EXCLUDED.store_url)
     `;
     return res.json({ ok: true });
   } catch (err) {
