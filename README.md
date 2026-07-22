@@ -9,9 +9,8 @@ The product is not an analytics dashboard, chatbot or generic autonomous agent. 
 ## Authoritative Context
 
 - `context/` - current product and architecture context.
-- `docs/repository_reorientation_audit.md` - audit of the previous implementation and what to retain/adapt.
+- `docs/repository_reset_audit.md` - audit for the blank-canvas repository reset.
 - `docs/merchant_memory_data_model.md` - target Merchant Memory data model.
-- `docs/first_merchant_execution_plan.md` - shortest credible path for merchant one and Percival readiness.
 - `prompts/` - active prompts for memory synthesis, revision, questions, recommendations and consistency review.
 
 Historical planning material from the previous product direction is archived under `docs/archive/previous_product_direction/`.
@@ -20,13 +19,14 @@ Historical planning material from the previous product direction is archived und
 
 The main app lives in `apps/shopify`.
 
-It currently includes useful foundations for the new model:
+It currently includes the blank-canvas Shopify evidence layer:
 
 - Shopify embedded app shell.
-- Shopify OAuth, backfill, webhooks and HMAC verification.
-- Canonical commerce records and source event ledger.
-- COGS, House Rules, goals, Daily Brief, Watchdog, Inventory Guardian, Klaviyo draft and action-safety infrastructure.
-- Additive Merchant Memory persistence foundation.
+- Shopify OAuth, session storage and install state.
+- Shopify product, order, customer identity and inventory backfills.
+- Persisted Shopify products, variants, orders, order line items, refunds, customer identities and inventory levels.
+- HMAC-verified product, order, refund and inventory webhooks.
+- Source event ledger for backfill and webhook dedupe.
 
 ## Local Development
 
@@ -49,12 +49,4 @@ npm test
 
 ## Current Execution Focus
 
-Optimise for one complete Merchant Memory loop:
-
-1. Connect Shopify.
-2. Import enough data.
-3. Generate deterministic evidence.
-4. Produce initial Merchant Memory.
-5. Let the merchant confirm and correct it.
-6. Save a revised version.
-7. Generate one useful recommendation from confirmed memory.
+Current repository state is intentionally minimal. The next product work should build Merchant Memory on top of Shopify commerce evidence without inheriting old Daily Brief, analytics, COGS, Klaviyo or action-safety assumptions.

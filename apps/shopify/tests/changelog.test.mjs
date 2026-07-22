@@ -16,7 +16,7 @@ test("changelog parser reads dated entries and allowed sections", () => {
 
 ### Changed
 
-- Improved Daily Verdict copy.
+- Improved evidence backfill copy.
 
 ### Noise
 
@@ -28,7 +28,7 @@ test("changelog parser reads dated entries and allowed sections", () => {
 
 ### Fixed
 
-- Fixed onboarding state.
+- Fixed product webhook state.
 `);
 
   assert.deepEqual(entries, [
@@ -36,13 +36,13 @@ test("changelog parser reads dated entries and allowed sections", () => {
       date: "2026-07-14",
       sections: [
         { category: "Added", items: ["Added Changelog v0."] },
-        { category: "Changed", items: ["Improved Daily Verdict copy."] },
+        { category: "Changed", items: ["Improved evidence backfill copy."] },
       ],
     },
     {
       date: "2026-07-13",
       sections: [
-        { category: "Fixed", items: ["Fixed onboarding state."] },
+        { category: "Fixed", items: ["Fixed product webhook state."] },
       ],
     },
   ]);
@@ -69,7 +69,7 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("Merchant Memory repository foundation"),
+        item.includes("retained evidence layer for future Merchant Memory work"),
       ),
     ),
   );

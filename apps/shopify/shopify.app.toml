@@ -24,14 +24,6 @@ api_version = "2026-07"
   uri = "/webhooks/inventory_levels/update"
 
   [[webhooks.subscriptions]]
-  topics = [ "inventory_items/update" ]
-  uri = "/webhooks/inventory_items/update"
-
-  [[webhooks.subscriptions]]
-  topics = [ "bulk_operations/finish" ]
-  uri = "/webhooks/bulk_operations/finish"
-
-  [[webhooks.subscriptions]]
   topics = [ "orders/create" ]
   uri = "/webhooks/orders/create"
 
@@ -60,9 +52,7 @@ api_version = "2026-07"
   uri = "/webhooks/refunds/create"
 
 [access_scopes]
-# Dev fixture loading needs bounded write scopes. `read_all_orders` is needed
-# for the 365-day order window; stores without it fall back to recent orders.
-scopes = "read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers"
+scopes = "read_products,read_orders,read_all_orders,read_inventory,read_locations"
 
 [auth]
 redirect_urls = [ "https://jefe-production.up.railway.app/auth/callback" ]

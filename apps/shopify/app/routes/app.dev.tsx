@@ -10,102 +10,81 @@ import {
   useNavigation,
 } from "react-router";
 import {
-  Banner,
+  Badge,
   BlockStack,
   Button,
   Card,
-  Layout,
-  InlineGrid,
   InlineStack,
+  Layout,
   Page,
   Text,
 } from "@shopify/polaris";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
-import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server";
 import { authenticate } from "../shopify.server";
-import { generateDailyBrief } from "../services/daily-brief.server";
-import { shouldShowDailyVerdictDevTools } from "../services/daily-verdict.server";
+import { processNextBackfillJob } from "../services/shopify-backfill-worker.server";
 import {
-  getCogsDiagnostics,
-  recomputeCogsCoverage,
-} from "../services/cogs.server";
-import {
-  enqueueBackfillJob,
   getShopBackfillProgress,
   queueInstallShopifyBackfill,
   retryFailedBackfillJobs,
   splitScopes,
 } from "../services/shopify-backfill-status.server";
-import {
-  getDummyDataStatus,
-  getDummyFixtureSummary,
-  getKlaviyoWinbackScenarioFixtureSummary,
-  getKlaviyoWinbackScenarioStatus,
-  getMissingDummyDataScopes,
-  getMissingKlaviyoWinbackScenarioScopes,
-  getMissingWatchdogScenarioScopes,
-  getWatchdogScenarioFixtureSummary,
-  getWatchdogScenarioStatus,
-  seedDummyStoreData,
-  seedKlaviyoWinbackScenarios,
-  seedWatchdogScenarios,
-} from "../services/dummy-store-data.server";
 
 type BackfillStatusInput = {
   metadata?: unknown;
   status?: string | null;
   recordsProcessed?: number | null;
+  totalRecordsEstimate?: number | null;
   lastError?: string | null;
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
-  if (!shouldShowDailyVerdictDevTools(process.env)) {
+  if (process.env.ENABLE_DEV_TOOLS === "false") {
     throw new Response("Not found", { status: 404 });
   }
 
-  const missingScopes = getMissingDummyDataScopes(session.scope);
-  const scenarioMissingScopes = getMissingWatchdogScenarioScopes(session.scope);
-  const winbackScenarioMissingScopes = getMissingKlaviyoWinbackScenarioScopes(
-    session.scope,
-  );
-  const status = await getDummyDataStatus(admin, {
-    skipProgressCheck:
-      missingScopes.includes("read_products") ||
-      missingScopes.includes("read_orders"),
-  });
-  const scenarioStatus = await getWatchdogScenarioStatus(admin, {
-    skipProgressCheck:
-      scenarioMissingScopes.includes("read_products") ||
-      scenarioMissingScopes.includes("read_orders"),
-  });
-  const winbackScenarioStatus = await getKlaviyoWinbackScenarioStatus(admin, {
-    skipProgressCheck:
-      winbackScenarioMissingScopes.includes("read_products") ||
-      winbackScenarioMissingScopes.includes("read_orders"),
-  });
-  const { merchant, shop: tenantShop } = await ensureShopifyTenant(prisma, {
+  const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: splitScopes(session.scope),
-    rawPayload: { source: "dev_backfill_status" },
+    rawPayload: { source: "dev_product_backfill_status" },
   });
   const backfillProgress = await getShopBackfillProgress(prisma, {
-    shopId: tenantShop.id,
+    shopId: shop.id,
   });
-  const cogsDiagnostics = await getCogsDiagnostics(prisma, tenantShop.id);
+  const [
+    productCount,
+    variantCount,
+    orderCount,
+    lineItemCount,
+    customerCount,
+    inventoryLevelCount,
+  ] = await Promise.all([
+    prisma.product.count({ where: { shopId: shop.id } }),
+    prisma.variant.count({ where: { shopId: shop.id } }),
+    prisma.order.count({ where: { shopId: shop.id } }),
+    prisma.orderLineItem.count({ where: { shopId: shop.id } }),
+    prisma.customerIdentity.count({ where: { shopId: shop.id } }),
+    prisma.inventoryLevel.count({ where: { shopId: shop.id } }),
+  ]);
 
   return {
     shop: session.shop,
+    merchantId: merchant.id,
+    shopId: shop.id,
+    setupStatus: shop.setupStatus,
+    productCount,
+    variantCount,
+    orderCount,
+    lineItemCount,
+    customerCount,
+    inventoryLevelCount,
     backfill: backfillProgress
       ? {
-          merchantId: merchant.id,
-          shopId: tenantShop.id,
-          setupStatus: backfillProgress.shop.setupStatus,
-          historicalOrdersLimited: backfillProgress.historicalOrdersLimited,
           statuses: Object.entries(backfillProgress.statuses).map(
             ([domain, status]) => serializeBackfillStatus(domain, status),
           ),
@@ -117,804 +96,219 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           })),
         }
       : null,
-    cogsDiagnostics,
-    dummyData: {
-      missingScopes,
-      status,
-      fixture: getDummyFixtureSummary(),
-    },
-    watchdogScenarios: {
-      missingScopes: scenarioMissingScopes,
-      status: scenarioStatus,
-      fixture: getWatchdogScenarioFixtureSummary(),
-    },
-    klaviyoWinbackScenarios: {
-      missingScopes: winbackScenarioMissingScopes,
-      status: winbackScenarioStatus,
-      fixture: getKlaviyoWinbackScenarioFixtureSummary(),
-    },
   };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+
+  if (process.env.ENABLE_DEV_TOOLS === "false") {
+    return { ok: false, error: "Dev tools are disabled for this environment." };
+  }
+
   const formData = await request.formData();
   const intent = formData.get("intent");
+  const scopes = splitScopes(session.scope);
+  const { shop } = await ensureShopifyTenant(prisma, {
+    shopDomain: session.shop,
+    accessTokenSessionId: session.id,
+    scopes,
+    rawPayload: { source: "dev_product_backfill_action", intent },
+  });
 
-  if (
-    intent !== "seed-dummy-store-data" &&
-    intent !== "seed-watchdog-scenarios" &&
-    intent !== "seed-klaviyo-winback-scenarios" &&
-    intent !== "generate-test-brief" &&
-    intent !== "run-full-shopify-backfill" &&
-    intent !== "run-orders-backfill" &&
-    intent !== "run-delta-sync" &&
-    intent !== "recompute-derived-metrics" &&
-    intent !== "recompute-cogs-coverage" &&
-    intent !== "resync-shopify-costs" &&
-    intent !== "retry-failed-backfill-jobs"
-  ) {
-    return { ok: false, error: "Unknown action." };
-  }
-
-  if (!shouldShowDailyVerdictDevTools(process.env)) {
-    return {
-      ok: false,
-      error: "Dummy store data loader is disabled for this environment.",
-    };
-  }
-
-  if (
-    intent === "run-full-shopify-backfill" ||
-    intent === "run-orders-backfill" ||
-    intent === "run-delta-sync" ||
-    intent === "recompute-derived-metrics" ||
-    intent === "recompute-cogs-coverage" ||
-    intent === "resync-shopify-costs" ||
-    intent === "retry-failed-backfill-jobs"
-  ) {
-    const scopes = splitScopes(session.scope);
-    const { merchant, shop } = await ensureShopifyTenant(prisma, {
+  if (intent === "queue-product-backfill") {
+    await queueInstallShopifyBackfill(prisma, {
       shopDomain: session.shop,
-      accessTokenSessionId: session.id,
-      scopes,
-      rawPayload: { source: "dev_backfill_action", intent },
-    });
-    const payload = {
-      shopDomain: shop.shopDomain,
       sessionId: session.id,
       scopes,
-      backfillStartedAt: (shop.backfillStartedAt ?? new Date()).toISOString(),
-      source: "dev",
-    };
-
-    if (intent === "run-full-shopify-backfill") {
-      await queueInstallShopifyBackfill(prisma, {
-        shopDomain: session.shop,
-        sessionId: session.id,
-        scopes,
-        rawPayload: { source: "dev_full_backfill" },
-      });
-      return { ok: true, intent, result: { queued: "full_backfill" } };
-    }
-
-    if (intent === "retry-failed-backfill-jobs") {
-      const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
-      return { ok: true, intent, result };
-    }
-
-    if (intent === "recompute-cogs-coverage") {
-      const result = await recomputeCogsCoverage(prisma, shop.id);
-      await generateDailyBrief(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-      });
-      return { ok: true, intent, result };
-    }
-
-    if (intent === "resync-shopify-costs") {
-      try {
-        const totals = await runShopifyBackfill(prisma, {
-          shopDomain: session.shop,
-          accessToken: session.accessToken ?? "",
-          sessionId: session.id,
-          apiVersion: process.env.SHOPIFY_API_VERSION,
-          domains: ["inventory"],
-        });
-        const coverage = await recomputeCogsCoverage(prisma, shop.id);
-        await prisma.shop.update({
-          where: { id: shop.id },
-          data: {
-            lastSuccessfulCogsSyncAt: new Date(),
-            lastCogsSyncError: null,
-          },
-        });
-        await generateDailyBrief(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
-        });
-        return { ok: true, intent, result: { totals, coverage } };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Shopify costs could not be synced.";
-        await prisma.shop.update({
-          where: { id: shop.id },
-          data: { lastCogsSyncError: message.slice(0, 1000) },
-        });
-        return { ok: false, error: message };
-      }
-    }
-
-    const jobType =
-      intent === "run-orders-backfill"
-        ? "orders_backfill_365d"
-        : intent === "run-delta-sync"
-          ? "backfill_delta_sync"
-          : "derived_metrics_recompute";
-
-    await enqueueBackfillJob(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      jobType,
-      payload,
+      rawPayload: { source: "dev_queue_evidence_backfill" },
     });
-
-    return { ok: true, intent, result: { queued: jobType } };
+    return { ok: true, result: "Queued evidence backfill." };
   }
 
-  if (intent === "generate-test-brief") {
-    const { merchant, shop } = await ensureShopifyTenant(prisma, {
-      shopDomain: session.shop,
-      accessTokenSessionId: session.id,
-      scopes: session.scope?.split(",").filter(Boolean) ?? [],
-      rawPayload: { source: "daily_brief_dev_generate" },
-    });
-    const brief = await generateDailyBrief(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-    });
-
+  if (intent === "process-next-backfill-job") {
+    const result = await processNextBackfillJob(prisma);
     return {
       ok: true,
-      intent,
-      result: {
-        generatedAt:
-          brief.generatedAt?.toISOString() ?? brief.updatedAt.toISOString(),
-        status: brief.status,
-      },
+      result: result
+        ? `Processed ${result.jobType}: ${result.status}.`
+        : "No queued product backfill job was ready.",
     };
   }
 
-  const missingScopes =
-    intent === "seed-watchdog-scenarios"
-      ? getMissingWatchdogScenarioScopes(session.scope)
-      : intent === "seed-klaviyo-winback-scenarios"
-        ? getMissingKlaviyoWinbackScenarioScopes(session.scope)
-        : getMissingDummyDataScopes(session.scope);
-
-  if (missingScopes.length > 0) {
-    return {
-      ok: false,
-      error: `Dummy store data loader is missing Shopify scopes: ${missingScopes.join(
-        ", ",
-      )}. Update the app scopes and reinstall this store.`,
-    };
+  if (intent === "retry-failed-backfill-jobs") {
+    const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
+    return { ok: true, result: `Retried ${result.retried} failed job(s).` };
   }
 
-  try {
-    const result =
-      intent === "seed-watchdog-scenarios"
-        ? await seedWatchdogScenarios(admin, session.shop)
-        : intent === "seed-klaviyo-winback-scenarios"
-          ? await seedKlaviyoWinbackScenarios(admin, session.shop)
-          : await seedDummyStoreData(admin, session.shop);
-
-    return { ok: true, intent, result };
-  } catch (error) {
-    return {
-      ok: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Dummy store data could not be loaded.",
-    };
-  }
+  return { ok: false, error: "Unknown action." };
 };
 
 export default function Dev() {
-  const {
-    shop,
-    backfill,
-    cogsDiagnostics,
-    dummyData,
-    watchdogScenarios,
-    klaviyoWinbackScenarios,
-  } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
-  const isSeedingDummyData =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "seed-dummy-store-data";
-  const isSeedingWatchdogScenarios =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "seed-watchdog-scenarios";
-  const isSeedingKlaviyoWinbackScenarios =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "seed-klaviyo-winback-scenarios";
-  const seedButtonDisabled =
-    dummyData.status.seeded ||
-    dummyData.status.progress.complete ||
-    dummyData.missingScopes.length > 0 ||
-    isSeedingDummyData;
-  const scenarioButtonDisabled =
-    watchdogScenarios.status.seeded ||
-    watchdogScenarios.status.progress.complete ||
-    watchdogScenarios.missingScopes.length > 0 ||
-    isSeedingWatchdogScenarios;
-  const winbackScenarioButtonDisabled =
-    klaviyoWinbackScenarios.status.seeded ||
-    klaviyoWinbackScenarios.status.progress.complete ||
-    klaviyoWinbackScenarios.missingScopes.length > 0 ||
-    isSeedingKlaviyoWinbackScenarios;
-  const seedResult =
-    actionData?.ok && actionData.intent === "seed-dummy-store-data"
-      ? (actionData.result as DummySeedResult)
-      : null;
-  const scenarioResult =
-    actionData?.ok && actionData.intent === "seed-watchdog-scenarios"
-      ? (actionData.result as WatchdogScenarioSeedResult)
-      : null;
-  const winbackScenarioResult =
-    actionData?.ok && actionData.intent === "seed-klaviyo-winback-scenarios"
-      ? (actionData.result as KlaviyoWinbackScenarioSeedResult)
-      : null;
-  const testBriefResult =
-    actionData?.ok && actionData.intent === "generate-test-brief"
-      ? (actionData.result as TestBriefResult)
-      : null;
-  const hasDummyProgress = hasFixtureProgress(dummyData.status.progress);
-  const hasScenarioProgress = hasFixtureProgress(
-    watchdogScenarios.status.progress,
-  );
-  const hasWinbackScenarioProgress = hasFixtureProgress(
-    klaviyoWinbackScenarios.status.progress,
-  );
-  const isGeneratingTestBrief =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "generate-test-brief";
-  const isBackfillAction =
-    navigation.state === "submitting" &&
-    String(navigation.formData?.get("intent") ?? "").includes("backfill");
-  const backfillResult =
-    actionData?.ok &&
-    typeof actionData.intent === "string" &&
-      (actionData.intent.includes("backfill") ||
-      actionData.intent === "recompute-derived-metrics" ||
-      actionData.intent === "recompute-cogs-coverage" ||
-      actionData.intent === "resync-shopify-costs" ||
-      actionData.intent === "retry-failed-backfill-jobs")
-      ? actionData.result
-      : null;
+  const submittingIntent =
+    navigation.formData?.get("intent")?.toString() ?? null;
 
   return (
     <Page title="Dev">
       <Layout>
         <Layout.Section>
           <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="200">
-                <Text as="h2" variant="headingMd">
-                  MVP status
+            {actionData ? (
+              <Card>
+                <Text as="p" tone={actionData.ok ? undefined : "critical"}>
+                  {actionData.ok ? actionData.result : actionData.error}
                 </Text>
-                <Text as="p" variant="bodyMd">
-                  Dev-only scaffold notes for {shop}. This page is hidden unless
-                  ENABLE_DUMMY_STORE_LOADER=true.
-                </Text>
-              </BlockStack>
-            </Card>
+              </Card>
+            ) : null}
 
             <Card>
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="h2" variant="headingMd">
-                    Daily Brief
-                  </Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Use this to regenerate the Daily Brief during development.
-                    In production, briefs should generate automatically every
-                    morning.
-                  </Text>
-                </BlockStack>
-
-                {testBriefResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Test brief generated at{" "}
-                      {formatDateTime(testBriefResult.generatedAt)}. Status:{" "}
-                      {formatStatus(testBriefResult.status)}.
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingMd">
+                    Shopify evidence layer
                     </Text>
-                  </Banner>
-                ) : null}
-
-                <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="generate-test-brief"
-                  />
-                  <Button
-                    submit
-                    variant="primary"
-                    loading={isGeneratingTestBrief}
-                    disabled={isGeneratingTestBrief}
-                  >
-                    Generate test brief
-                  </Button>
-                </Form>
-              </BlockStack>
-            </Card>
-
-            <Card>
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="h2" variant="headingMd">
-                    COGS diagnostics
-                  </Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Inspect product-cost source coverage and refresh Shopify
-                    unit costs during development.
-                  </Text>
-                </BlockStack>
-
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
-                  <MetricLine
-                    label="Shopify cost"
-                    value={`${cogsDiagnostics.variantsWithShopifyCost}`}
-                  />
-                  <MetricLine
-                    label="Manual cost"
-                    value={`${cogsDiagnostics.variantsWithManualCost}`}
-                  />
-                  <MetricLine
-                    label="Merchant rule"
-                    value={`${cogsDiagnostics.variantsWithMerchantRuleCost}`}
-                  />
-                  <MetricLine
-                    label="Missing cost"
-                    value={`${cogsDiagnostics.variantsMissingCost}`}
-                  />
-                  <MetricLine
-                    label="Sold revenue coverage"
-                    value={`${cogsDiagnostics.usableRevenueCoveragePercent}%`}
-                  />
-                  <MetricLine
-                    label="Last Shopify cost import"
-                    value={
-                      cogsDiagnostics.lastSuccessfulCogsSyncAt
-                        ? formatDateTime(
-                            cogsDiagnostics.lastSuccessfulCogsSyncAt,
-                          )
-                        : "Never"
-                    }
-                  />
-                  <MetricLine
-                    label="Last cost webhook"
-                    value={
-                      cogsDiagnostics.lastInventoryItemCostWebhookAt
-                        ? formatDateTime(
-                            cogsDiagnostics.lastInventoryItemCostWebhookAt,
-                          )
-                        : "Never"
-                    }
-                  />
-                  <MetricLine
-                    label="Last COGS recompute"
-                    value={
-                      cogsDiagnostics.lastCogsRecomputeAt
-                        ? formatDateTime(cogsDiagnostics.lastCogsRecomputeAt)
-                        : "Never"
-                    }
-                  />
-                </InlineGrid>
-
-                {cogsDiagnostics.lastCogsSyncError ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      {cogsDiagnostics.lastCogsSyncError}
+                    <Text as="p" tone="subdued">
+                      {data.shop}
                     </Text>
-                  </Banner>
-                ) : null}
+                  </BlockStack>
+                  <Badge tone={setupStatusTone(data.setupStatus)}>
+                    {data.setupStatus}
+                  </Badge>
+                </InlineStack>
+
+                <InlineStack gap="600">
+                  <Metric label="Products" value={data.productCount} />
+                  <Metric label="Variants" value={data.variantCount} />
+                  <Metric label="Orders" value={data.orderCount} />
+                  <Metric label="Line items" value={data.lineItemCount} />
+                  <Metric label="Customers" value={data.customerCount} />
+                  <Metric
+                    label="Inventory levels"
+                    value={data.inventoryLevelCount}
+                  />
+                </InlineStack>
 
                 <InlineStack gap="200">
-                  <DevBackfillButton
-                    intent="resync-shopify-costs"
-                    label="Re-sync Shopify costs"
-                    loading={isBackfillAction}
-                  />
-                  <DevBackfillButton
-                    intent="recompute-cogs-coverage"
-                    label="Recompute COGS coverage"
-                    loading={isBackfillAction}
-                  />
+                  <Form method="post">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="queue-product-backfill"
+                    />
+                    <Button
+                      submit
+                      loading={submittingIntent === "queue-product-backfill"}
+                    >
+                      Queue evidence backfill
+                    </Button>
+                  </Form>
+                  <Form method="post">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="process-next-backfill-job"
+                    />
+                    <Button
+                      submit
+                      loading={
+                        submittingIntent === "process-next-backfill-job"
+                      }
+                    >
+                      Process next job
+                    </Button>
+                  </Form>
+                  <Form method="post">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="retry-failed-backfill-jobs"
+                    />
+                    <Button
+                      submit
+                      loading={
+                        submittingIntent === "retry-failed-backfill-jobs"
+                      }
+                    >
+                      Retry failed jobs
+                    </Button>
+                  </Form>
                 </InlineStack>
               </BlockStack>
             </Card>
 
             <Card>
-              <BlockStack gap="400">
-                <BlockStack gap="100">
-                  <Text as="h2" variant="headingMd">
-                    Shopify install backfill
-                  </Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Queue or retry the DB-backed install backfill jobs for
-                    products, orders, inventory and derived insights.
-                  </Text>
-                </BlockStack>
-
-                {backfill?.historicalOrdersLimited ? (
-                  <Banner tone="warning">
-                    <Text as="p" variant="bodyMd">
-                      This store only has recent order access. Winback remains
-                      limited until read_all_orders is granted.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {backfillResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Backfill action queued: {JSON.stringify(backfillResult)}.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
-                  {backfill?.statuses.map((status) => (
-                    <BlockStack key={status.domain} gap="050">
-                      <Text as="p" variant="headingSm">
-                        {formatStatus(status.domain)}
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {formatStatus(status.status)} ·{" "}
-                        {status.recordsProcessed.toLocaleString("en-GB")}{" "}
-                        records
-                      </Text>
-                      {status.bulkOperationStatus ? (
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Bulk: {formatStatus(status.bulkOperationStatus)}
-                          {typeof status.bulkOperationObjectCount === "number"
-                            ? ` · ${status.bulkOperationObjectCount.toLocaleString(
-                                "en-GB",
-                              )} objects`
-                            : ""}
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Backfill status
+                </Text>
+                <BlockStack gap="200">
+                  {(data.backfill?.statuses ?? []).map((status) => (
+                    <InlineStack
+                      key={status.domain}
+                      align="space-between"
+                      blockAlign="start"
+                    >
+                      <BlockStack gap="050">
+                        <Text as="p" fontWeight="semibold">
+                          {status.domain}
                         </Text>
-                      ) : null}
-                      {status.fallbackUsed ? (
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Fallback used
+                        <Text as="p" tone="subdued">
+                          {status.recordsProcessed}
+                          {status.totalRecordsEstimate
+                            ? ` / ${status.totalRecordsEstimate}`
+                            : ""}{" "}
+                          record(s)
                         </Text>
-                      ) : null}
-                      {status.resultImportedAt ? (
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Imported {formatDateTime(status.resultImportedAt)}
-                        </Text>
-                      ) : null}
-                      {status.lastError ? (
-                        <Text as="p" variant="bodySm" tone="critical">
-                          {status.lastError}
-                        </Text>
-                      ) : null}
-                    </BlockStack>
+                        {status.lastError ? (
+                          <Text as="p" tone="critical">
+                            {status.lastError}
+                          </Text>
+                        ) : null}
+                      </BlockStack>
+                      <Badge tone={backfillStatusTone(status.status)}>
+                        {status.status ?? "unknown"}
+                      </Badge>
+                    </InlineStack>
                   ))}
-                </InlineGrid>
-
-                <InlineStack gap="200">
-                  <DevBackfillButton
-                    intent="run-full-shopify-backfill"
-                    label="Run full Shopify backfill"
-                    loading={isBackfillAction}
-                  />
-                  <DevBackfillButton
-                    intent="run-orders-backfill"
-                    label="Run 365-day orders backfill"
-                    loading={isBackfillAction}
-                  />
-                  <DevBackfillButton
-                    intent="run-delta-sync"
-                    label="Run delta sync"
-                    loading={isBackfillAction}
-                  />
-                  <DevBackfillButton
-                    intent="recompute-derived-metrics"
-                    label="Recompute derived metrics"
-                    loading={isBackfillAction}
-                  />
-                  <DevBackfillButton
-                    intent="retry-failed-backfill-jobs"
-                    label="Retry failed jobs"
-                    loading={isBackfillAction}
-                  />
-                </InlineStack>
+                </BlockStack>
               </BlockStack>
             </Card>
 
             <Card>
-              <BlockStack gap="400">
+              <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">
-                  Dummy store data
+                  Jobs
                 </Text>
-                <Text as="p" variant="bodyMd">
-                  Load Shopify ingestion seed data into {shop}:{" "}
-                  {dummyData.fixture.productCount} products,{" "}
-                  {dummyData.fixture.variantCount} variants,{" "}
-                  {dummyData.fixture.orderCount} test orders, and{" "}
-                  {dummyData.fixture.refundCount} refund.
-                </Text>
-
-                {dummyData.status.seeded ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Dummy data exists from {dummyData.status.seededAt}. The
-                    loader is disabled for this store to avoid duplicate fixture
-                    data.
-                  </Text>
-                ) : null}
-
-                {!dummyData.status.seeded && hasDummyProgress ? (
-                  <Banner
-                    tone={
-                      dummyData.status.progress.complete ? "success" : "warning"
-                    }
-                  >
-                    <Text as="p" variant="bodyMd">
-                      {fixtureProgressBannerText({
-                        label: "dummy data",
-                        progress: dummyData.status.progress,
-                      })}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {dummyData.missingScopes.length > 0 ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      Missing Shopify scopes:{" "}
-                      {dummyData.missingScopes.join(", ")}. Update the app
-                      scopes and reinstall this store.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {actionData && !actionData.ok ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      {actionData.error}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {seedResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Loaded {seedResult.productsCreated} products,{" "}
-                      {seedResult.variantsCreated} variants,{" "}
-                      {seedResult.ordersCreated} orders, and{" "}
-                      {seedResult.refundsCreated} refund. Current progress:{" "}
-                      {formatFixtureProgress(seedResult.progress)}.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="seed-dummy-store-data"
-                  />
-                  <Button
-                    submit
-                    variant="primary"
-                    disabled={seedButtonDisabled}
-                    loading={isSeedingDummyData}
-                  >
-                    {dummyStoreButtonText({
-                      isSubmitting: isSeedingDummyData,
-                      hasProgress: hasDummyProgress,
-                      progressComplete: dummyData.status.progress.complete,
-                    })}
-                  </Button>
-                </Form>
-              </BlockStack>
-            </Card>
-
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Watchdog scenario data
-                </Text>
-                <Text as="p" variant="bodyMd">
-                  Create {watchdogScenarios.fixture.scenarioCount} dev scenarios
-                  in {shop}: {watchdogScenarios.fixture.scenarios.join(", ")}.
-                  The fixture creates {watchdogScenarios.fixture.productCount}{" "}
-                  products, {watchdogScenarios.fixture.orderCount} test orders,
-                  and {watchdogScenarios.fixture.refundCount} refunds.
-                </Text>
-
-                {watchdogScenarios.fixture.notes.map((note) => (
-                  <Text key={note} as="p" variant="bodyMd" tone="subdued">
-                    {note}
-                  </Text>
-                ))}
-
-                {watchdogScenarios.status.seeded ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Watchdog scenario data exists from{" "}
-                    {watchdogScenarios.status.seededAt}. The loader is disabled
-                    for this store to avoid duplicate fixture data.
-                  </Text>
-                ) : null}
-
-                {!watchdogScenarios.status.seeded && hasScenarioProgress ? (
-                  <Banner
-                    tone={
-                      watchdogScenarios.status.progress.complete
-                        ? "success"
-                        : "warning"
-                    }
-                  >
-                    <Text as="p" variant="bodyMd">
-                      {fixtureProgressBannerText({
-                        label: "watchdog scenario data",
-                        progress: watchdogScenarios.status.progress,
-                      })}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {watchdogScenarios.missingScopes.length > 0 ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      Missing Shopify scopes:{" "}
-                      {watchdogScenarios.missingScopes.join(", ")}. Update the
-                      app scopes and reinstall this store.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {actionData && !actionData.ok ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      {actionData.error}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {scenarioResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Loaded {scenarioResult.scenariosLoaded} scenarios,{" "}
-                      {scenarioResult.productsCreated} products,{" "}
-                      {scenarioResult.ordersCreated} orders, and{" "}
-                      {scenarioResult.refundsCreated} refunds. Current progress:{" "}
-                      {formatFixtureProgress(scenarioResult.progress)}.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="seed-watchdog-scenarios"
-                  />
-                  <Button
-                    submit
-                    variant="primary"
-                    disabled={scenarioButtonDisabled}
-                    loading={isSeedingWatchdogScenarios}
-                  >
-                    {scenarioButtonText({
-                      isSubmitting: isSeedingWatchdogScenarios,
-                      hasProgress: hasScenarioProgress,
-                      progressComplete:
-                        watchdogScenarios.status.progress.complete,
-                    })}
-                  </Button>
-                </Form>
-              </BlockStack>
-            </Card>
-
-            <Card>
-              <BlockStack gap="400">
-                <Text as="h2" variant="headingMd">
-                  Klaviyo Winback scenario data
-                </Text>
-                <Text as="p" variant="bodyMd">
-                  Create {klaviyoWinbackScenarios.fixture.scenarioCount} winback
-                  scenarios in {shop}:{" "}
-                  {klaviyoWinbackScenarios.fixture.scenarios.join(", ")}. The
-                  fixture creates {klaviyoWinbackScenarios.fixture.productCount}{" "}
-                  products, {klaviyoWinbackScenarios.fixture.orderCount} orders
-                  aged 60-180 days, and{" "}
-                  {klaviyoWinbackScenarios.fixture.customerCount} customer
-                  profiles.
-                </Text>
-
-                {klaviyoWinbackScenarios.fixture.notes.map((note) => (
-                  <Text key={note} as="p" variant="bodyMd" tone="subdued">
-                    {note}
-                  </Text>
-                ))}
-
-                {klaviyoWinbackScenarios.status.seeded ? (
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    Klaviyo Winback scenario data exists from{" "}
-                    {klaviyoWinbackScenarios.status.seededAt}. The loader is
-                    disabled for this store to avoid duplicate fixture data.
-                  </Text>
-                ) : null}
-
-                {!klaviyoWinbackScenarios.status.seeded &&
-                hasWinbackScenarioProgress ? (
-                  <Banner
-                    tone={
-                      klaviyoWinbackScenarios.status.progress.complete
-                        ? "success"
-                        : "warning"
-                    }
-                  >
-                    <Text as="p" variant="bodyMd">
-                      {fixtureProgressBannerText({
-                        label: "Klaviyo Winback scenario data",
-                        progress: klaviyoWinbackScenarios.status.progress,
-                      })}
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {klaviyoWinbackScenarios.missingScopes.length > 0 ? (
-                  <Banner tone="critical">
-                    <Text as="p" variant="bodyMd">
-                      Missing Shopify scopes:{" "}
-                      {klaviyoWinbackScenarios.missingScopes.join(", ")}. Update
-                      the app scopes and reinstall this store.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                {winbackScenarioResult ? (
-                  <Banner tone="success">
-                    <Text as="p" variant="bodyMd">
-                      Loaded {winbackScenarioResult.scenariosLoaded} scenarios,{" "}
-                      {winbackScenarioResult.productsCreated} products,{" "}
-                      {winbackScenarioResult.ordersCreated} orders, and{" "}
-                      {winbackScenarioResult.refundsCreated} refunds. Current
-                      progress:{" "}
-                      {formatFixtureProgress(winbackScenarioResult.progress)}.
-                    </Text>
-                  </Banner>
-                ) : null}
-
-                <Form method="post">
-                  <input
-                    type="hidden"
-                    name="intent"
-                    value="seed-klaviyo-winback-scenarios"
-                  />
-                  <Button
-                    submit
-                    variant="primary"
-                    loading={isSeedingKlaviyoWinbackScenarios}
-                    disabled={winbackScenarioButtonDisabled}
-                  >
-                    {winbackScenarioButtonText({
-                      isSubmitting: isSeedingKlaviyoWinbackScenarios,
-                      hasProgress: hasWinbackScenarioProgress,
-                      progressComplete:
-                        klaviyoWinbackScenarios.status.progress.complete,
-                    })}
-                  </Button>
-                </Form>
+                <BlockStack gap="200">
+                  {(data.backfill?.jobs ?? []).map((job) => (
+                    <InlineStack
+                      key={job.jobType}
+                      align="space-between"
+                      blockAlign="start"
+                    >
+                      <BlockStack gap="050">
+                        <Text as="p" fontWeight="semibold">
+                          {job.jobType}
+                        </Text>
+                        <Text as="p" tone="subdued">
+                          Attempt {job.attemptCount}
+                        </Text>
+                        {job.lastError ? (
+                          <Text as="p" tone="critical">
+                            {job.lastError}
+                          </Text>
+                        ) : null}
+                      </BlockStack>
+                      <Badge tone={jobStatusTone(job.status)}>
+                        {job.status}
+                      </Badge>
+                    </InlineStack>
+                  ))}
+                </BlockStack>
               </BlockStack>
             </Card>
           </BlockStack>
@@ -928,170 +322,49 @@ export const headers: HeadersFunction = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
 
-function DevBackfillButton({
-  intent,
-  label,
-  loading,
-}: {
-  intent: string;
-  label: string;
-  loading: boolean;
-}) {
-  return (
-    <Form method="post">
-      <input type="hidden" name="intent" value={intent} />
-      <Button submit loading={loading} disabled={loading}>
-        {label}
-      </Button>
-    </Form>
-  );
+function serializeBackfillStatus(
+  domain: string,
+  status: BackfillStatusInput | null,
+) {
+  return {
+    domain,
+    status: status?.status ?? "missing",
+    recordsProcessed: status?.recordsProcessed ?? 0,
+    totalRecordsEstimate: status?.totalRecordsEstimate ?? null,
+    lastError: status?.lastError ?? null,
+  };
 }
 
-function MetricLine({ label, value }: { label: string; value: string }) {
+function Metric({ label, value }: { label: string; value: number }) {
   return (
     <BlockStack gap="050">
-      <Text as="p" variant="headingSm">
+      <Text as="p" variant="headingLg">
         {value}
       </Text>
-      <Text as="p" variant="bodySm" tone="subdued">
+      <Text as="p" tone="subdued">
         {label}
       </Text>
     </BlockStack>
   );
 }
 
-type FixtureProgress = {
-  complete: boolean;
-  productCount: number;
-  productsExisting: number;
-  orderCount: number;
-  ordersExisting: number;
-  refundCount: number;
-  refundsExisting: number;
-};
-
-type DummySeedResult = {
-  productsCreated: number;
-  variantsCreated: number;
-  ordersCreated: number;
-  refundsCreated: number;
-  progress: FixtureProgress;
-};
-
-type WatchdogScenarioSeedResult = {
-  scenariosLoaded: number;
-  productsCreated: number;
-  ordersCreated: number;
-  refundsCreated: number;
-  progress: FixtureProgress;
-};
-
-type KlaviyoWinbackScenarioSeedResult = WatchdogScenarioSeedResult;
-
-type TestBriefResult = {
-  generatedAt: string;
-  status: string;
-};
-
-function hasFixtureProgress(progress: FixtureProgress) {
-  return (
-    progress.productsExisting > 0 ||
-    progress.ordersExisting > 0 ||
-    progress.refundsExisting > 0
-  );
+function setupStatusTone(status: string) {
+  if (status === "ready") return "success";
+  if (status === "backfill_partial") return "warning";
+  if (status === "uninstalled") return "critical";
+  return "info";
 }
 
-function formatFixtureProgress(progress: FixtureProgress) {
-  return `${progress.productsExisting}/${progress.productCount} products, ${progress.ordersExisting}/${progress.orderCount} orders, ${progress.refundsExisting}/${progress.refundCount} refunds`;
+function backfillStatusTone(status: string | null) {
+  if (status === "complete") return "success";
+  if (status === "failed") return "critical";
+  if (status === "queued" || status === "running") return "info";
+  return "warning";
 }
 
-export function fixtureProgressBannerText(input: {
-  label: string;
-  progress: FixtureProgress;
-}) {
-  const progress = formatFixtureProgress(input.progress);
-
-  if (input.progress.complete) {
-    return `All ${input.label} records are present: ${progress}. The loader is disabled for this store to avoid duplicate fixture data.`;
-  }
-
-  return `Partial ${input.label} found: ${progress}. Run this again to resume from the missing records.`;
-}
-
-function dummyStoreButtonText(input: {
-  isSubmitting: boolean;
-  hasProgress: boolean;
-  progressComplete: boolean;
-}) {
-  if (input.isSubmitting) return "Loading data";
-  if (input.progressComplete) return "Dummy store data loaded";
-  if (input.hasProgress) return "Resume dummy store data";
-  return "Load dummy store data";
-}
-
-function scenarioButtonText(input: {
-  isSubmitting: boolean;
-  hasProgress: boolean;
-  progressComplete: boolean;
-}) {
-  if (input.isSubmitting) return "Creating scenarios";
-  if (input.progressComplete) return "Watchdog scenarios loaded";
-  if (input.hasProgress) return "Resume watchdog scenarios";
-  return "Create watchdog scenarios";
-}
-
-function winbackScenarioButtonText(input: {
-  isSubmitting: boolean;
-  hasProgress: boolean;
-  progressComplete: boolean;
-}) {
-  if (input.isSubmitting) return "Creating winback scenarios";
-  if (input.progressComplete) return "Winback scenarios loaded";
-  if (input.hasProgress) return "Resume winback scenarios";
-  return "Create winback scenarios";
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatStatus(status: string) {
-  const display = status.replace(/_/g, " ");
-  return display[0].toUpperCase() + display.slice(1);
-}
-
-function serializeBackfillStatus(
-  domain: string,
-  status: BackfillStatusInput | null | undefined,
-) {
-  const metadata = jsonObject(status?.metadata);
-  return {
-    domain,
-    status: status?.status ?? "queued",
-    recordsProcessed: status?.recordsProcessed ?? 0,
-    lastError: status?.lastError ?? null,
-    bulkOperationStatus: stringOrNull(metadata.bulkOperationStatus),
-    bulkOperationObjectCount: numberOrNull(metadata.bulkOperationObjectCount),
-    fallbackUsed: metadata.fallbackUsed === true,
-    resultImportedAt: stringOrNull(metadata.resultImportedAt),
-  };
-}
-
-function jsonObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function stringOrNull(value: unknown) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-function numberOrNull(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function jobStatusTone(status: string) {
+  if (status === "succeeded") return "success";
+  if (status === "failed") return "critical";
+  if (status === "queued" || status === "running") return "info";
+  return "warning";
 }

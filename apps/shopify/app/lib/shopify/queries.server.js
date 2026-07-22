@@ -1,45 +1,5 @@
 // @ts-check
 
-export const BULK_OPERATION_RUN_QUERY = `#graphql
-  mutation JefeBulkOperationRun($query: String!) {
-    bulkOperationRunQuery(query: $query) {
-      bulkOperation {
-        id
-        status
-        errorCode
-        createdAt
-        completedAt
-        objectCount
-        fileSize
-        url
-        partialDataUrl
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-export const BULK_OPERATION_NODE_QUERY = `#graphql
-  query JefeBulkOperationNode($id: ID!) {
-    node(id: $id) {
-      ... on BulkOperation {
-        id
-        status
-        errorCode
-        createdAt
-        completedAt
-        objectCount
-        fileSize
-        url
-        partialDataUrl
-      }
-    }
-  }
-`;
-
 export const PRODUCTS_COUNT_QUERY = `#graphql
   query JefeProductsCount {
     productsCount(limit: null) {
@@ -56,48 +16,6 @@ export const ORDERS_COUNT_QUERY = `#graphql
   }
 `;
 
-export const PRODUCTS_BULK_QUERY = `#graphql
-  {
-    products {
-      edges {
-        node {
-          __typename
-          id
-          title
-          handle
-          status
-          vendor
-          productType
-          tags
-          createdAt
-          updatedAt
-          variants {
-            edges {
-              node {
-                __typename
-                id
-                title
-                sku
-                price
-                createdAt
-                updatedAt
-                inventoryItem {
-                  id
-                  updatedAt
-                  unitCost {
-                    amount
-                    currencyCode
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
 /** @param {number} days */
 export function buildOrdersBackfillQueryFilter(days) {
   const boundedDays = Math.min(Math.max(days, 1), 365);
@@ -106,132 +24,6 @@ export function buildOrdersBackfillQueryFilter(days) {
     .slice(0, 10);
 
   return `created_at:>=${start}`;
-}
-
-/** @param {number} days */
-export function buildOrdersBulkQuery(days) {
-  const query = buildOrdersBackfillQueryFilter(days);
-
-  return `#graphql
-    {
-      orders(query: "${query}") {
-        edges {
-          node {
-            __typename
-            id
-            name
-            createdAt
-            processedAt
-            updatedAt
-            cancelledAt
-            closedAt
-            displayFinancialStatus
-            displayFulfillmentStatus
-            currencyCode
-            tags
-            sourceName
-            email
-            customer {
-              id
-              email
-            }
-            billingAddress {
-              country
-              province
-              city
-              zip
-            }
-            shippingAddress {
-              country
-              province
-              city
-              zip
-            }
-            currentSubtotalPriceSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            currentTotalPriceSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            currentTotalDiscountsSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            currentTotalTaxSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            totalShippingPriceSet {
-              shopMoney {
-                amount
-                currencyCode
-              }
-            }
-            lineItems {
-              edges {
-                node {
-                  __typename
-                  id
-                  sku
-                  title
-                  variantTitle
-                  quantity
-                  originalUnitPriceSet {
-                    shopMoney {
-                      amount
-                      currencyCode
-                    }
-                  }
-                  discountedTotalSet {
-                    shopMoney {
-                      amount
-                      currencyCode
-                    }
-                  }
-                  discountAllocations {
-                    allocatedAmountSet {
-                      shopMoney {
-                        amount
-                        currencyCode
-                      }
-                    }
-                  }
-                  product {
-                    id
-                  }
-                  variant {
-                    id
-                  }
-                }
-              }
-            }
-            refunds {
-              __typename
-              id
-              createdAt
-              note
-              totalRefundedSet {
-                shopMoney {
-                  amount
-                  currencyCode
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
 }
 
 export const PRODUCTS_QUERY = `#graphql
@@ -262,11 +54,42 @@ export const PRODUCTS_QUERY = `#graphql
                 updatedAt
                 inventoryItem {
                   id
-                  updatedAt
-                  unitCost {
-                    amount
-                    currencyCode
-                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+export const INVENTORY_ITEMS_QUERY = `#graphql
+  query JefeInventoryItemsBackfill($first: Int!, $after: String) {
+    inventoryItems(first: $first, after: $after) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          updatedAt
+          variant {
+            id
+          }
+          inventoryLevels(first: 50) {
+            edges {
+              node {
+                id
+                updatedAt
+                quantities(names: ["available", "committed", "incoming"]) {
+                  name
+                  quantity
+                }
+                location {
+                  id
+                  name
                 }
               }
             }
@@ -278,8 +101,8 @@ export const PRODUCTS_QUERY = `#graphql
 `;
 
 export const ORDERS_QUERY = `#graphql
-  query JefeOrdersBackfill($first: Int!, $after: String, $query: String) {
-    orders(first: $first, after: $after, sortKey: UPDATED_AT, query: $query) {
+  query JefeOrdersBackfill($first: Int!, $after: String, $query: String!) {
+    orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
       pageInfo {
         hasNextPage
         endCursor
@@ -289,20 +112,31 @@ export const ORDERS_QUERY = `#graphql
           id
           name
           createdAt
-          updatedAt
           processedAt
-          email
+          updatedAt
+          cancelledAt
+          closedAt
           displayFinancialStatus
           displayFulfillmentStatus
           currencyCode
+          tags
+          sourceName
+          email
           customer {
             id
             email
-            firstName
-            lastName
-            emailMarketingConsent {
-              marketingState
-            }
+          }
+          billingAddress {
+            country
+            province
+            city
+            zip
+          }
+          shippingAddress {
+            country
+            province
+            city
+            zip
           }
           currentSubtotalPriceSet {
             shopMoney {
@@ -340,6 +174,7 @@ export const ORDERS_QUERY = `#graphql
                 id
                 sku
                 title
+                variantTitle
                 quantity
                 originalUnitPriceSet {
                   shopMoney {
@@ -370,7 +205,7 @@ export const ORDERS_QUERY = `#graphql
               }
             }
           }
-          refunds(first: 50) {
+          refunds {
             id
             createdAt
             note
@@ -381,63 +216,6 @@ export const ORDERS_QUERY = `#graphql
               }
             }
           }
-        }
-      }
-    }
-  }
-`;
-
-export const INVENTORY_ITEMS_QUERY = `#graphql
-  query JefeInventoryBackfill($first: Int!, $after: String) {
-    inventoryItems(first: $first, after: $after) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      edges {
-        node {
-          id
-          updatedAt
-          unitCost {
-            amount
-            currencyCode
-          }
-          variant {
-            id
-          }
-          inventoryLevels(first: 100) {
-            edges {
-              node {
-                id
-                updatedAt
-                quantities(names: ["available", "committed", "incoming"]) {
-                  name
-                  quantity
-                }
-                location {
-                  id
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-export const INVENTORY_ITEM_COST_QUERY = `#graphql
-  query JefeInventoryItemCost($id: ID!) {
-    node(id: $id) {
-      ... on InventoryItem {
-        id
-        updatedAt
-        unitCost {
-          amount
-          currencyCode
-        }
-        variant {
-          id
         }
       }
     }

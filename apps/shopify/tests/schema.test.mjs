@@ -4,7 +4,7 @@ import { PrismaClient } from "@prisma/client";
 
 const databaseUrl = process.env.DATABASE_URL;
 
-test("inserts and reads core tenant, ledger, commerce and action rows", async (t) => {
+test("inserts and reads retained Shopify evidence foundation rows", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for schema tests");
     return;
@@ -19,7 +19,6 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
     const merchant = await prisma.merchant.create({
       data: {
         name: `Schema Test Merchant ${suffix}`,
-        primaryCurrency: "GBP",
         shops: {
           create: {
             shopDomain: `schema-test-${suffix}.myshopify.com`,
@@ -35,36 +34,23 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
     assert.ok(shop.id);
     assert.equal(shop.merchantId, merchant.id);
 
-    const user = await prisma.merchantUser.create({
+    await prisma.connectorAccount.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        email: `founder-${suffix}@example.com`,
-        name: "Founder",
-      },
-    });
-
-    const houseRule = await prisma.houseRule.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        title: "Hero product discount cap",
-        structuredRules: { maxDiscountBps: 2000 },
-        freeTextRules: "Never discount protected hero products beyond 20%.",
-        maxDiscountBps: 2000,
-        protectedProducts: [{ sku: "HERO-1" }],
-        lastEditedByUserId: user.id,
-      },
-    });
-
-    const goal = await prisma.goal.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        horizon: "THREE_MONTHS",
-        description: "Improve verified contribution margin",
-        metric: "incremental_margin",
-        targetValue: "5000",
+        connector: "shopify",
+        accountExternalId: shop.shopDomain,
+        scopes: [
+          "read_products",
+          "read_orders",
+          "read_all_orders",
+          "read_inventory",
+          "read_locations",
+        ],
+        readTokenRef: `shopify_session:${suffix}`,
+        authMetadata: { tokenStorage: "shopify_session_storage" },
+        rawPayload: { source: "test" },
+        connectedAt: new Date("2026-07-22T08:00:00Z"),
       },
     });
 
@@ -72,12 +58,12 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        eventType: "house_rules.updated",
-        source: "app",
+        eventType: "shopify.backfill.product",
+        source: "shopify",
         dedupeKey: `ledger-${suffix}`,
-        payload: { houseRuleId: houseRule.id },
+        payload: { productId: `product-${suffix}` },
         rawPayload: { test: true },
-        eventTs: new Date("2026-07-13T07:00:00Z"),
+        eventTs: new Date("2026-07-22T08:00:00Z"),
       },
     });
 
@@ -87,6 +73,10 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
         shopId: shop.id,
         externalId: `product-${suffix}`,
         title: "Hero Product",
+        handle: "hero-product",
+        status: "ACTIVE",
+        vendor: "Jefe",
+        productType: "Test",
         rawPayload: { source: "test" },
         variants: {
           create: {
@@ -96,48 +86,28 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
             sku: "HERO-1",
             title: "Default",
             price: "49.00",
+            inventoryItemExternalId: `inventory-${suffix}`,
             rawPayload: { source: "test" },
           },
         },
       },
       include: { variants: true },
     });
-
     const variant = product.variants[0];
-
-    await prisma.inventoryLevel.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        variantId: variant.id,
-        inventoryItemExternalId: `inventory-${suffix}`,
-        locationExternalId: `location-${suffix}`,
-        available: 20,
-        rawPayload: { source: "test" },
-      },
-    });
-
-    await prisma.cogsInput.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        productId: product.id,
-        variantId: variant.id,
-        sku: "HERO-1",
-        costAmount: "12.50",
-        source: "merchant_import",
-        effectiveFrom: new Date("2026-01-01T00:00:00Z"),
-      },
-    });
 
     const order = await prisma.order.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
         externalId: `order-${suffix}`,
-        orderName: "#1001",
+        orderName: `#${suffix.slice(0, 6)}`,
+        customerExternalId: `customer-${suffix}`,
+        financialStatus: "PAID",
+        fulfillmentStatus: "FULFILLED",
+        currency: "GBP",
         totalPrice: "49.00",
-        processedAt: new Date("2026-07-01T10:00:00Z"),
+        processedAt: new Date("2026-07-22T08:05:00Z"),
+        rawPayload: { source: "test" },
         lineItems: {
           create: {
             merchantId: merchant.id,
@@ -150,380 +120,121 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
             quantity: 1,
             unitPrice: "49.00",
             totalPrice: "49.00",
+            rawPayload: { source: "test" },
+          },
+        },
+        refunds: {
+          create: {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            externalId: `refund-${suffix}`,
+            amount: "5.00",
+            currency: "GBP",
+            processedAt: new Date("2026-07-22T08:10:00Z"),
+            rawPayload: { source: "test" },
           },
         },
       },
-      include: { lineItems: true },
+      include: { lineItems: true, refunds: true },
     });
 
-    await prisma.refund.create({
+    await prisma.customerIdentity.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        orderId: order.id,
-        externalId: `refund-${suffix}`,
-        amount: "5.00",
-        reason: "test_refund",
+        normalizedEmail: `buyer-${suffix}@example.com`,
+        emailHash: `hash-${suffix}`,
+        maskedEmail: "b***@example.com",
+        firstSeenOrderAt: new Date("2026-07-22T08:05:00Z"),
+        lastOrderAt: new Date("2026-07-22T08:05:00Z"),
+        orderCount: 1,
+        totalSpend: "49.00",
+        averageOrderValue: "49.00",
+        source: "shopify_order",
+        shopifyCustomerId: `customer-${suffix}`,
+        rawPayload: { source: "test" },
       },
     });
 
-    const brief = await prisma.dailyBrief.create({
+    await prisma.inventoryLevel.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        briefDate: new Date("2026-07-13T00:00:00Z"),
-        verdict: { summary: "Margin opportunity found" },
-        evidence: [{ ledgerEventId: ledgerEvent.id }],
-        idempotencyKey: `brief-${suffix}`,
-      },
-    });
-
-    const action = await prisma.action.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        dailyBriefId: brief.id,
-        actionType: "klaviyo_winback",
-        title: "Dormant customer winback",
-        summary: "Prepare a measured winback campaign.",
-        expectedValue: { lowMargin: 100, highMargin: 220, currency: "GBP" },
-        valueCurrency: "GBP",
-        valueType: "verified_margin",
-        confidence: "0.7000",
-        riskLevel: "medium",
-        approvalRequired: true,
-        evidence: [{ ledgerEventId: ledgerEvent.id }],
-        rulesConsulted: [{ houseRuleId: houseRule.id }],
-        ruleConstraintsApplied: [{ maxDiscountBps: 2000 }],
-        capsApplied: [{ maxDiscountBps: 2000 }],
-        provenanceReferences: [{ ledgerEventId: ledgerEvent.id }],
-        preview: { campaignName: "Dormant customer winback" },
-        verificationClass: "VERIFIED",
-        executionMode: "dry_run",
-        externalSystem: "klaviyo",
-        idempotencyKey: `action-${suffix}`,
-      },
-    });
-
-    const approvalEvent = await prisma.actionApprovalEvent.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: action.id,
-        previousStatus: "needs_approval",
-        newStatus: "approved",
-        actor: "schema-test",
-        actorType: "system",
-        reason: "schema coverage",
-        requestSnapshot: { source: "schema.test" },
-      },
-    });
-
-    const execution = await prisma.execution.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: action.id,
-        status: "dry_run",
-        connector: "klaviyo",
-        idempotencyKey: `execution-${suffix}`,
-        dryRun: true,
-        request: { previewOnly: true },
-      },
-    });
-
-    await prisma.feedback.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: action.id,
-        dailyBriefId: brief.id,
-        merchantUserId: user.id,
-        feedbackType: "text",
-        sentiment: "positive",
-        rawText: "This recommendation makes sense.",
-      },
-    });
-
-    await prisma.provenanceLink.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        entityType: "action",
-        entityId: action.id,
-        sourceEventId: ledgerEvent.id,
-        metadata: { reason: "action evidence" },
-      },
-    });
-
-    await prisma.holdoutAssignment.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: action.id,
         variantId: variant.id,
-        subjectType: "customer",
-        subjectExternalId: `customer-${suffix}`,
-        assignmentGroup: "holdout",
-        dedupeKey: `holdout-${suffix}`,
+        inventoryItemExternalId: `inventory-${suffix}`,
+        locationExternalId: `location-${suffix}`,
+        available: 12,
+        committed: 1,
+        incoming: 3,
+        observedAt: new Date("2026-07-22T08:15:00Z"),
+        rawPayload: { source: "test" },
       },
     });
 
-    await prisma.attributionResult.create({
+    await prisma.shopBackfillStatus.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        actionId: action.id,
-        verificationClass: "VERIFIED",
-        method: "holdout",
-        windowStart: new Date("2026-07-01T00:00:00Z"),
-        windowEnd: new Date("2026-07-08T00:00:00Z"),
-        incrementalRevenue: "120.00",
-        incrementalMargin: "60.00",
-        result: { confidence: "measured" },
+        domain: "orders",
+        status: "complete",
+        startedAt: new Date("2026-07-22T08:00:00Z"),
+        completedAt: new Date("2026-07-22T08:01:00Z"),
+        recordsProcessed: 1,
+        totalRecordsEstimate: 1,
       },
     });
 
-    await prisma.connectorAccount.create({
+    await prisma.backfillJob.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        connector: "shopify",
-        accountExternalId: shop.shopDomain,
-        scopes: [],
-        readTokenRef: "secret-manager://dev/shopify/read",
-        authMetadata: { tokenStorage: "reference_only" },
-      },
-    });
-
-    await prisma.merchantKlaviyoCredential.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        provider: "klaviyo",
-        encryptedPrivateKey: "v1:test",
-        keyPrefix: "pk_test",
-        lastFour: "1234",
-        scopesJson: ["profiles:write"],
-        connectionStatus: "active",
-      },
-    });
-
-    await prisma.externalActionArtifact.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: action.id,
-        provider: "klaviyo",
-        artifactType: "klaviyo_campaign",
-        externalId: `campaign-${suffix}`,
-        externalName: "Dormant customer winback",
-        externalStatus: "draft_created",
-        payloadSnapshotJson: { sendEnabled: false },
-      },
-    });
-
-    await prisma.costMetering.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        usageDate: new Date("2026-07-13T00:00:00Z"),
-        provider: "openai",
-        service: "responses",
-        operation: "classification",
-        quantity: "1",
-        unit: "request",
-        costAmount: "0.000100",
-        currency: "GBP",
-      },
-    });
-
-    const memoryDocument = await prisma.merchantMemoryDocument.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        title: "Merchant Memory",
-        status: "active",
-        metadata: { source: "schema.test" },
-      },
-    });
-
-    const memoryVersion = await prisma.merchantMemoryVersion.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        documentId: memoryDocument.id,
-        versionNumber: 1,
-        status: "draft",
-        generatedBy: "system",
-        generationReason: "schema_coverage",
-        documentJson: {
-          business_summary: "Schema test merchant sells one hero product.",
-        },
-        sourceSnapshot: { ledgerEventIds: [ledgerEvent.id] },
-        summary: "Initial memory draft",
-      },
-    });
-
-    const memoryEvidence = await prisma.merchantMemoryEvidenceItem.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        evidenceType: "deterministic_feature",
-        factKey: "product.hero_revenue",
-        summary: "Hero Product sold in the test period.",
-        valueJson: { sku: "HERO-1", units: 1 },
-        sourceSystem: "shopify",
-        sourceTable: "order_line_items",
-        sourceRecordId: order.lineItems[0].id,
-        ledgerEventId: ledgerEvent.id,
-        computedAt: new Date("2026-07-13T07:05:00Z"),
-      },
-    });
-
-    const memoryClaim = await prisma.merchantMemoryClaim.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        versionId: memoryVersion.id,
-        sectionKey: "products",
-        claimType: "observed_fact",
-        status: "observed_fact",
-        confidence: "0.9000",
-        statement: "Hero Product is represented in Shopify order data.",
-        normalizedValue: { sku: "HERO-1" },
-        evidenceSummary: [{ evidenceItemId: memoryEvidence.id }],
-      },
-    });
-
-    await prisma.merchantMemoryClaimEvidence.create({
-      data: {
-        claimId: memoryClaim.id,
-        evidenceItemId: memoryEvidence.id,
-        ledgerEventId: ledgerEvent.id,
-        relationship: "supports",
-      },
-    });
-
-    await prisma.merchantMemoryCorrection.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        versionId: memoryVersion.id,
-        claimId: memoryClaim.id,
-        merchantUserId: user.id,
-        correctionType: "confirmation",
-        originalText: memoryClaim.statement,
-        correctedText: memoryClaim.statement,
-      },
-    });
-
-    await prisma.merchantMemoryOpenQuestion.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        versionId: memoryVersion.id,
-        sectionKey: "commercial_model",
-        question: "Which products should be treated as protected hero products?",
-        reason: "Needed before recommendations can propose discounts.",
-        priority: 10,
-      },
-    });
-
-    await prisma.merchantMemoryDocument.update({
-      where: { id: memoryDocument.id },
-      data: {
-        currentVersionNumber: 1,
-        currentVersionId: memoryVersion.id,
+        jobType: "orders_backfill_365d",
+        status: "succeeded",
+        priority: 20,
+        resultJson: { products: 1 },
       },
     });
 
     const readBack = await prisma.merchant.findUniqueOrThrow({
       where: { id: merchant.id },
       include: {
-        shops: true,
-        houseRules: true,
-        goals: true,
-        ledgerEvents: true,
-        products: { include: { variants: true } },
-        orders: { include: { lineItems: true, refunds: true } },
-        actions: {
+        shops: {
           include: {
-            approvalEvents: true,
-            executions: true,
-            attributionResults: true,
+            connectorAccounts: true,
+            products: { include: { variants: true } },
+            orders: { include: { lineItems: true, refunds: true } },
+            customerIdentities: true,
+            inventoryLevels: true,
+            ledgerEvents: true,
+            backfillStatuses: true,
+            backfillJobs: true,
           },
         },
-        connectorAccounts: true,
-        klaviyoCredentials: true,
-        externalArtifacts: true,
-        costMetering: true,
-        memoryDocuments: true,
-        memoryVersions: {
-          include: {
-            claims: {
-              include: {
-                evidenceLinks: true,
-                corrections: true,
-              },
-            },
-            openQuestions: true,
-          },
-        },
-        memoryEvidenceItems: true,
       },
     });
 
-    assert.equal(readBack.shops.length, 1);
-    assert.equal(readBack.houseRules[0].maxDiscountBps, 2000);
-    assert.equal(readBack.goals[0].horizon, "THREE_MONTHS");
-    assert.equal(readBack.ledgerEvents[0].dedupeKey, `ledger-${suffix}`);
-    assert.equal(
-      readBack.ledgerEvents[0].eventTs.toISOString(),
-      "2026-07-13T07:00:00.000Z",
-    );
-    assert.equal(readBack.products[0].variants[0].sku, "HERO-1");
-    assert.equal(readBack.orders[0].lineItems[0].quantity, 1);
-    assert.equal(readBack.actions[0].verificationClass, "VERIFIED");
-    assert.equal(readBack.actions[0].title, "Dormant customer winback");
-    assert.equal(readBack.actions[0].valueType, "verified_margin");
-    assert.equal(
-      readBack.actions[0].approvalEvents[0].id,
-      approvalEvent.id,
-    );
-    assert.equal(readBack.actions[0].executions[0].id, execution.id);
-    assert.equal(
-      readBack.actions[0].attributionResults[0].verificationClass,
-      "VERIFIED",
-    );
-    assert.equal(
-      readBack.connectorAccounts[0].readTokenRef,
-      "secret-manager://dev/shopify/read",
-    );
-    assert.equal(readBack.klaviyoCredentials[0].connectionStatus, "active");
-    assert.equal(readBack.externalArtifacts[0].externalStatus, "draft_created");
-    assert.equal(readBack.costMetering[0].operation, "classification");
-    assert.equal(readBack.memoryDocuments[0].currentVersionNumber, 1);
-    assert.equal(readBack.memoryVersions[0].claims[0].status, "observed_fact");
-    assert.equal(
-      readBack.memoryVersions[0].claims[0].evidenceLinks[0].relationship,
-      "supports",
-    );
-    assert.equal(
-      readBack.memoryVersions[0].claims[0].corrections[0].correctionType,
-      "confirmation",
-    );
-    assert.equal(
-      readBack.memoryVersions[0].openQuestions[0].sectionKey,
-      "commercial_model",
-    );
-    assert.equal(
-      readBack.memoryEvidenceItems[0].ledgerEventId,
-      ledgerEvent.id,
-    );
+    const readShop = readBack.shops[0];
+    assert.equal(readShop.connectorAccounts[0].connector, "shopify");
+    assert.deepEqual(readShop.connectorAccounts[0].scopes, [
+      "read_products",
+      "read_orders",
+      "read_all_orders",
+      "read_inventory",
+      "read_locations",
+    ]);
+    assert.equal(readShop.ledgerEvents[0].id, ledgerEvent.id);
+    assert.equal(readShop.products[0].id, product.id);
+    assert.equal(readShop.products[0].variants[0].sku, "HERO-1");
+    assert.equal(readShop.orders[0].id, order.id);
+    assert.equal(readShop.orders[0].lineItems[0].sku, "HERO-1");
+    assert.equal(readShop.orders[0].refunds[0].externalId, `refund-${suffix}`);
+    assert.equal(readShop.customerIdentities[0].emailHash, `hash-${suffix}`);
+    assert.equal(readShop.inventoryLevels[0].available, 12);
+    assert.equal(readShop.backfillStatuses[0].domain, "orders");
+    assert.equal(readShop.backfillJobs[0].jobType, "orders_backfill_365d");
   } finally {
     await prisma.merchant.deleteMany({
-      where: { name: { startsWith: "Schema Test Merchant" } },
+      where: { name: `Schema Test Merchant ${suffix}` },
     });
     await prisma.$disconnect();
   }

@@ -7,6 +7,10 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 import { resolveShopifyAppUrl } from "./services/shopify-app-url.server";
+import {
+  queueInstallShopifyBackfill,
+  splitScopes,
+} from "./services/shopify-backfill-status.server";
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
@@ -31,6 +35,16 @@ const shopify = shopifyApp({
   distribution: AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
+  },
+  hooks: {
+    afterAuth: async ({ session }) => {
+      await queueInstallShopifyBackfill(prisma, {
+        shopDomain: session.shop,
+        sessionId: session.id,
+        scopes: splitScopes(session.scope),
+        rawPayload: { source: "oauth_after_auth" },
+      });
+    },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
