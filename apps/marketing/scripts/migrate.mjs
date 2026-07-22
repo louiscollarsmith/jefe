@@ -16,4 +16,8 @@ await sql`
   )
 `;
 
+await sql`
+  ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS store_url TEXT
+`;
+
 console.log("waitlist_signups ready");

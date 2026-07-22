@@ -3,70 +3,106 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>My name... Jefe. — the AI manager for your Shopify store</title>
-  <meta name="description" content="Jefe quietly runs the daily grind of your Shopify store, flags only what needs you, and gets things done. Join the waitlist." />
+  <title>Meet your new Jefe. — AI companion for Shopify e-commerce managers</title>
+  <meta name="description" content="Jefe watches your Shopify store and recommends the next move — and takes it for you. Join the Design Partner Program." />
 
-  <meta property="og:title" content="My name... Jefe." />
-  <meta property="og:description" content="The AI manager that quietly runs your Shopify store's daily grind, so you can focus on the parts you actually enjoy." />
+  <meta property="og:title" content="Meet your new Jefe." />
+  <meta property="og:description" content="Your AI companion in Shopify. He recommends the next move — and takes it for you." />
   <meta property="og:image" content="https://img.youtube.com/vi/FxeLLPPzEtQ/hqdefault.jpg" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
 
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Schibsted+Grotesk:wght@400;500;600;700;800&family=Bricolage+Grotesque:wght@600;700&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <main class="wrap">
-    <div class="badge fade-in" style="--d: 0s">JEFE</div>
-
-    <h1 class="fade-in" style="--d: 0.05s">My name<span class="ellipsis">...</span> <span class="accent">Jefe</span>.</h1>
-
-    <p class="subtext fade-in" style="--d: 0.1s">
-      The AI ecommerce manager that quietly runs the daily grind of your
-      Shopify store — so your to-do list stops running your life.
-    </p>
-
-    <div class="cta-card fade-in" style="--d: 0.15s">
-      <form id="waitlist-form" class="waitlist-form" novalidate>
-        <div class="honeypot" aria-hidden="true">
-          <label for="company">Company</label>
-          <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
-        </div>
-        <input
-          id="email"
-          name="email"
-          type="email"
-          placeholder="you@yourbrand.com"
-          required
-          autocomplete="email"
-        />
-        <button type="submit">Join the waitlist</button>
-      </form>
-      <p id="form-message" class="form-message" role="status"></p>
+  <nav class="nav">
+    <div class="nav-brand">
+      <span class="wordmark">Jefe</span>
+      <span class="dot"></span>
     </div>
+    <a href="#signup" class="nav-cta">Help Jefe</a>
+  </nav>
 
-    <ul class="points fade-in" style="--d: 0.2s">
-      <li>Runs quietly in the background — not another dashboard to check</li>
-      <li>Only surfaces what actually needs your call</li>
-      <li>Works alongside your team or agency, not around them</li>
-    </ul>
+  <header class="hero">
+    <h1 class="fade-up"><span class="d0">Meet your new <span class="accent-word">Jefe.</span></span></h1>
+    <p class="hero-sub fade-up d1">
+      Your AI companion in Shopify. He recommends the next move — and takes it for you.
+    </p>
+  </header>
 
-    <div class="story fade-in" style="--d: 0.25s">
-      <p class="story-caption">quick context on the name ↓</p>
-      <div class="video-block" id="video-block" data-yt="FxeLLPPzEtQ">
-        <img
-          class="video-thumb"
-          src="https://img.youtube.com/vi/FxeLLPPzEtQ/hqdefault.jpg"
-          alt="My name is Jeff"
-        />
-        <button class="play-button" id="play-button" aria-label="Play clip">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
-        </button>
+  <section class="showcase fade-up d2">
+    <div class="video-wrap">
+      <div class="video-shadow-card"></div>
+      <div class="video-card">
+        <iframe
+          src="https://www.youtube.com/embed/FxeLLPPzEtQ"
+          title="Jefe"
+          allow="autoplay; encrypted-media"
+          allowfullscreen
+        ></iframe>
       </div>
     </div>
-  </main>
 
-  <footer>&copy; <span id="year"></span> Jefe</footer>
+    <div class="feed">
+      <div class="feed-label"><span class="live-dot"></span>Jefe, on your store right now</div>
+      <div class="rec-card">
+        <div class="rec-header">
+          <span class="rec-avatar">J</span>
+          <span class="rec-name">Jefe</span>
+          <span class="rec-tag" id="rec-tag"></span>
+        </div>
+        <div class="rec-body" id="rec-body">
+          <div class="rec-text" id="rec-text"></div>
+          <div class="rec-actions">
+            <button class="rec-primary" id="rec-primary" type="button"></button>
+            <button class="rec-secondary" id="rec-secondary" type="button"></button>
+          </div>
+        </div>
+      </div>
+      <div class="rec-dots" id="rec-dots"></div>
+    </div>
+  </section>
+
+  <section class="partner-outer" id="partner">
+    <div class="partner-panel fade-up">
+      <div class="partner-eyebrow">Design Partner Program</div>
+      <h2>Jefe was just <span class="gold-italic">born.</span></h2>
+      <p class="partner-body">
+        He's got a lot to learn. We're looking for our first 100 e-commerce managers to
+        nurture him, teach him your store, and help him develop — our founding Design Partners.
+      </p>
+
+      <div id="signup" class="signup-wrap">
+        <form id="waitlist-form" class="signup-form" novalidate>
+          <div class="honeypot" aria-hidden="true">
+            <label for="company">Company</label>
+            <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
+          </div>
+          <input id="email" name="email" type="email" placeholder="you@yourstore.com" required autocomplete="email" />
+          <input id="storeUrl" name="storeUrl" type="text" placeholder="yourstore.myshopify.com" autocomplete="off" />
+          <button type="submit" class="signup-submit">Work with Jefe</button>
+          <p id="form-message" class="form-message" role="status"></p>
+          <div class="fine-print">No spam. Just Jefe, reaching out when he's ready for you.</div>
+        </form>
+        <div id="signup-success" class="signup-success" hidden>
+          <div class="success-title">You're in.</div>
+          <p class="success-body" id="success-body"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="footer-left"><span class="wordmark-sm">Jefe</span> — AI for Shopify e-commerce managers</div>
+    <div class="footer-right">&copy; <span id="year"></span> Jefe</div>
+  </footer>
 
   <script src="/app.js"></script>
 </body>
