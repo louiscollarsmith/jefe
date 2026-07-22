@@ -1,61 +1,60 @@
-# AI Ecom Manager v3 Context Pack
+# Jefe
 
-This context pack turns the final v3 plan into repo-ready markdown files for Conductor, Claude Code, Codex, Cursor and other coding agents.
+Jefe builds and maintains a living understanding of each merchant's business.
 
-## How to use
+The central product object is **Merchant Memory**: a durable, structured, versioned record of how the business works, what is known, what is inferred, what the merchant has confirmed, what remains uncertain, and what should happen next.
 
-1. Copy these files into the root of your project repo.
-2. Commit them before asking agents to build.
-3. Instruct agents to read `AGENTS.md` and `CLAUDE.md` first.
-4. Then ask them to read the relevant files in `/docs/context`.
-5. Use `/tickets` as the starting build backlog.
+The product is not an analytics dashboard, chatbot or generic autonomous agent. Deterministic systems calculate reliable commerce facts; LLMs interpret evidence into memory, questions and recommendations; merchants can inspect and correct the result.
 
-## Repository layout
+## Authoritative Context
 
-- `apps/shopify` — Shopify embedded App Bridge app scaffold.
-- `docs/context` — product, architecture and operating context.
-- `tickets` — implementation backlog.
-- `prompts` — reusable agent prompts and review checklists.
+- `context/` - current product and architecture context.
+- `docs/repository_reorientation_audit.md` - audit of the previous implementation and what to retain/adapt.
+- `docs/merchant_memory_data_model.md` - target Merchant Memory data model.
+- `docs/first_merchant_execution_plan.md` - shortest credible path for merchant one and Percival readiness.
+- `prompts/` - active prompts for memory synthesis, revision, questions, recommendations and consistency review.
 
-## First Conductor prompt
+Historical planning material from the previous product direction is archived under `docs/archive/previous_product_direction/`.
 
-```md
-You are working on the AI Ecom Manager / Jefe repo.
+## Application
 
-Before doing any implementation:
-1. Read AGENTS.md.
-2. Read CLAUDE.md.
-3. Read every file in /docs/context.
-4. Summarise the product, MVP, architecture, week-one plan, safety rules and what is explicitly out of scope.
-5. Then wait for my first implementation ticket.
+The main app lives in `apps/shopify`.
 
-Do not write code yet.
+It currently includes useful foundations for the new model:
+
+- Shopify embedded app shell.
+- Shopify OAuth, backfill, webhooks and HMAC verification.
+- Canonical commerce records and source event ledger.
+- COGS, House Rules, goals, Daily Brief, Watchdog, Inventory Guardian, Klaviyo draft and action-safety infrastructure.
+- Additive Merchant Memory persistence foundation.
+
+## Local Development
+
+```bash
+cd apps/shopify
+npm install
+npm run db:up
+npm run setup
+npm run dev
 ```
 
-## Recommended first tickets
+Useful checks:
 
-Start with:
+```bash
+cd apps/shopify
+npm run typecheck
+npm run lint
+npm test
+```
 
-1. `tickets/000_day_0_external_tracks.md`
-2. `tickets/001_shopify_app_scaffold.md`
-3. `tickets/002_schema_event_ledger_house_rules.md`
-4. `tickets/003_shopify_ingestion_backfill_webhooks.md`
-5. `tickets/004_onboarding_goals_house_rules_cogs.md`
+## Current Execution Focus
 
-## Source of truth
+Optimise for one complete Merchant Memory loop:
 
-The project north star is:
-
-> Holdout-verified incremental margin delivered per merchant per month.
-
-The product is not an analytics dashboard or chatbot. It is an accountable AI ecom manager for founder-run Shopify stores.
-
-## Staging deployment
-
-Merging or pushing to `main` deploys automatically to the single `staging` environment on Railway.
-
-- Staging app: Railway generated URL, then optionally `https://staging.usejefe.com`.
-- Database: Neon Postgres `staging` database.
-- Shopify app: `Jefe Staging`.
-- Deployment doc: `docs/ops/deployment_staging_railway_neon.md`.
-- Safety: live writes, Klaviyo sends and Daily Brief emails are disabled.
+1. Connect Shopify.
+2. Import enough data.
+3. Generate deterministic evidence.
+4. Produce initial Merchant Memory.
+5. Let the merchant confirm and correct it.
+6. Save a revised version.
+7. Generate one useful recommendation from confirmed memory.

@@ -2,109 +2,48 @@
 
 Claude Code and other coding agents should treat this file as operational instruction for the repo.
 
-## Operating mode
+## Role
 
-You are an implementation agent, not the product owner.
+You are an implementation agent. The founder owns product judgement, architecture decisions, security posture, customer relationships, merchant claims and merge approvals.
 
-The human founder owns:
-- product judgement
-- architecture decisions
-- security posture
-- customer relationships
-- merchant claims
-- merge approvals
+You may implement requested changes, create migrations, write tests, update docs and propose follow-ups.
 
-You may:
-- implement tickets
-- create migrations
-- write tests
-- create UI components
-- implement typed adapters
-- improve docs
-- propose follow-ups
+You may not expand product scope, auto-merge, access production secrets, broaden OAuth scopes, send real campaigns, mutate external merchant systems outside approved typed adapters, or present model inference as fact.
 
-You may not:
-- expand product scope without approval
-- auto-merge
-- access production secrets
-- broaden OAuth scopes without explicit approval
-- send real emails/campaigns without approval
-- mutate external merchant systems except through approved typed adapters and test/pilot flows
+## Current Product Model
 
-## Required reading order
+Jefe's core product object is Merchant Memory.
 
-Before any task:
-1. `AGENTS.md`
-2. `docs/context/00_north_star.md`
-3. `docs/context/01_product_scope.md`
-4. Relevant task-specific context docs
-5. Current ticket
+Read `context/` as the canonical product and architecture source. The previous Daily Verdict/operator roadmap is archived under `docs/archive/previous_product_direction/` and is historical only.
 
-## UI quality rule
+The application should follow:
 
-Before working on any UI/front-end/product-surface task, read:
+Commerce sources -> raw events/source records -> deterministic facts/features -> evidence -> Merchant Memory claims/beliefs/questions -> merchant confirmation/correction -> updated memory -> recommendations/actions.
 
-```txt
-docs/context/12_ui_quality_playbook.md
-```
+## Quality Bar
 
-For UI tasks, include a UI Preflight before coding:
+A change is not done unless it is scoped, typed, testable, safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
 
-### What is the page's job?
-### What is the one thing the user should do?
-### What should be visually dominant?
-### What can be secondary or hidden?
-### What should not be shown on this page?
-### Proposed layout
+## Product Truth
 
-Do not mark UI work complete unless it passes the UI completion checklist in the playbook.
+Every important claim must distinguish:
 
-## PR expectations
+- observed fact
+- merchant-confirmed fact
+- model inference
+- unresolved question
+- superseded or rejected belief
 
-Every PR must include:
+All inferred claims need provenance and confidence. Merchant corrections supersede model inference. Deterministic calculations belong in application code, not prompts.
+
+## PR Expectations
+
+Every PR summary should include:
+
 - summary
 - files changed
 - tests run
-- screenshots if UI changed
-- changelog entry added or a clear reason it was not needed
-- confirmation that the PR summary mentions the changelog update
+- changelog entry added
 - risks
 - assumptions
 - follow-up tasks
-
-Before finishing any ticket:
-- update `apps/shopify/CHANGELOG.md` using today's UK/London date
-- `apps/shopify/CHANGELOG.md` is the single source of truth for the in-app and production changelog; do not create or update a root `CHANGELOG.md`
-- if the current date section does not exist in `apps/shopify/CHANGELOG.md`, create it
-- add a concise entry under Added / Changed / Fixed / Removed / Security / Internal
-- do not duplicate entries
-- use merchant/operator-facing language, not noisy implementation details
-- mention the changelog update in the PR summary
-
-## Quality bar
-
-A feature is not done unless it is:
-- testable
-- typed
-- documented enough for the next agent
-- reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour
-- scoped to the ticket
-- safe around merchant/customer data
-- compatible with the event-ledger architecture
-
-## Shopify UI
-
-Merchant-facing embedded Shopify app UI should use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions. Avoid App Bridge web components, raw HTML controls and ad hoc CSS unless the ticket explicitly approves an exception.
-
-## Product truth
-
-The merchant should never have to trust “AI magic”.
-
-Every recommendation must show:
-- expected value
-- confidence
-- risk level
-- evidence
-- rules consulted
-- preview/diff where applicable
-- verification class: verified vs estimated

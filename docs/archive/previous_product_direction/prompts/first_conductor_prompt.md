@@ -17,6 +17,6 @@ Before doing any implementation:
    - holdout methodology
    - security constraints
    - explicit non-goals
-5. Then wait for my first implementation ticket.
+5. Then wait for my first implementation request.
 
 Do not write code yet.

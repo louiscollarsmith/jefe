@@ -338,6 +338,106 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
       },
     });
 
+    const memoryDocument = await prisma.merchantMemoryDocument.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        title: "Merchant Memory",
+        status: "active",
+        metadata: { source: "schema.test" },
+      },
+    });
+
+    const memoryVersion = await prisma.merchantMemoryVersion.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        documentId: memoryDocument.id,
+        versionNumber: 1,
+        status: "draft",
+        generatedBy: "system",
+        generationReason: "schema_coverage",
+        documentJson: {
+          business_summary: "Schema test merchant sells one hero product.",
+        },
+        sourceSnapshot: { ledgerEventIds: [ledgerEvent.id] },
+        summary: "Initial memory draft",
+      },
+    });
+
+    const memoryEvidence = await prisma.merchantMemoryEvidenceItem.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        evidenceType: "deterministic_feature",
+        factKey: "product.hero_revenue",
+        summary: "Hero Product sold in the test period.",
+        valueJson: { sku: "HERO-1", units: 1 },
+        sourceSystem: "shopify",
+        sourceTable: "order_line_items",
+        sourceRecordId: order.lineItems[0].id,
+        ledgerEventId: ledgerEvent.id,
+        computedAt: new Date("2026-07-13T07:05:00Z"),
+      },
+    });
+
+    const memoryClaim = await prisma.merchantMemoryClaim.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        versionId: memoryVersion.id,
+        sectionKey: "products",
+        claimType: "observed_fact",
+        status: "observed_fact",
+        confidence: "0.9000",
+        statement: "Hero Product is represented in Shopify order data.",
+        normalizedValue: { sku: "HERO-1" },
+        evidenceSummary: [{ evidenceItemId: memoryEvidence.id }],
+      },
+    });
+
+    await prisma.merchantMemoryClaimEvidence.create({
+      data: {
+        claimId: memoryClaim.id,
+        evidenceItemId: memoryEvidence.id,
+        ledgerEventId: ledgerEvent.id,
+        relationship: "supports",
+      },
+    });
+
+    await prisma.merchantMemoryCorrection.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        versionId: memoryVersion.id,
+        claimId: memoryClaim.id,
+        merchantUserId: user.id,
+        correctionType: "confirmation",
+        originalText: memoryClaim.statement,
+        correctedText: memoryClaim.statement,
+      },
+    });
+
+    await prisma.merchantMemoryOpenQuestion.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        versionId: memoryVersion.id,
+        sectionKey: "commercial_model",
+        question: "Which products should be treated as protected hero products?",
+        reason: "Needed before recommendations can propose discounts.",
+        priority: 10,
+      },
+    });
+
+    await prisma.merchantMemoryDocument.update({
+      where: { id: memoryDocument.id },
+      data: {
+        currentVersionNumber: 1,
+        currentVersionId: memoryVersion.id,
+      },
+    });
+
     const readBack = await prisma.merchant.findUniqueOrThrow({
       where: { id: merchant.id },
       include: {
@@ -358,6 +458,19 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
         klaviyoCredentials: true,
         externalArtifacts: true,
         costMetering: true,
+        memoryDocuments: true,
+        memoryVersions: {
+          include: {
+            claims: {
+              include: {
+                evidenceLinks: true,
+                corrections: true,
+              },
+            },
+            openQuestions: true,
+          },
+        },
+        memoryEvidenceItems: true,
       },
     });
 
@@ -390,6 +503,24 @@ test("inserts and reads core tenant, ledger, commerce and action rows", async (t
     assert.equal(readBack.klaviyoCredentials[0].connectionStatus, "active");
     assert.equal(readBack.externalArtifacts[0].externalStatus, "draft_created");
     assert.equal(readBack.costMetering[0].operation, "classification");
+    assert.equal(readBack.memoryDocuments[0].currentVersionNumber, 1);
+    assert.equal(readBack.memoryVersions[0].claims[0].status, "observed_fact");
+    assert.equal(
+      readBack.memoryVersions[0].claims[0].evidenceLinks[0].relationship,
+      "supports",
+    );
+    assert.equal(
+      readBack.memoryVersions[0].claims[0].corrections[0].correctionType,
+      "confirmation",
+    );
+    assert.equal(
+      readBack.memoryVersions[0].openQuestions[0].sectionKey,
+      "commercial_model",
+    );
+    assert.equal(
+      readBack.memoryEvidenceItems[0].ledgerEventId,
+      ledgerEvent.id,
+    );
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: { startsWith: "Schema Test Merchant" } },

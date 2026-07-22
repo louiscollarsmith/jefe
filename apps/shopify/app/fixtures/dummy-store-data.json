@@ -1,9 +1,9 @@
 {
-  "version": "2026-07-15.ticket-003-customers",
+  "version": "2026-07-15.shopify-ingestion-customers",
   "currency": "GBP",
   "tags": [
     "jefe-dummy",
-    "ticket-003"
+    "shopify-ingestion"
   ],
   "products": [
     {

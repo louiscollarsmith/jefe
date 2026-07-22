@@ -1,188 +1,71 @@
 # AGENTS.md
 
-## Project
+## Product
 
-We are building **Jefe**, an accountable AI ecom manager for founder-run Shopify brands.
+Jefe builds and maintains a living understanding of each merchant's business.
 
-The product is not:
-- a generic analytics dashboard
-- a chatbot
-- a Shopify Sidekick clone
-- a broad autonomous agent
-- a feature factory
+The central product object is **Merchant Memory**: a durable, structured, versioned record of facts, merchant-confirmed facts, model inferences, uncertainties, goals, constraints, operating rules, current priorities, corrections and history.
 
-It is an accountable ecommerce operator that reads the merchant's commerce stack, opens every day with a verdict and money at stake, executes bounded actions only with approval, obeys the merchant's written House Rules, and proves incremental margin using holdouts.
+Jefe is not an analytics dashboard, a chatbot, a generic autonomous agent, or a collection of ecommerce modules.
 
-## North star
+## North Star
 
-Holdout-verified incremental margin delivered per merchant per month.
+Produce Merchant Memory so accurate that the merchant says:
 
-Separate verified and estimated value:
-- **Verified lift** = holdout-measured or network-verified incremental revenue/margin.
-- **Estimated prevention** = Watchdog/stockout counterfactuals.
-- These must never be blended into one merchant-facing total.
+> Yes. That's exactly how my business works.
 
-## ICP
+Everything else exists to create, improve, inspect, correct or use that memory.
 
-Founder-run Shopify brands doing roughly **£30k–£250k/month GMV**.
+## Authoritative Context
 
-Ideal early customer:
-- founder/operator feels the pain directly
-- no dedicated ecommerce manager
-- enough volume for operational mistakes to matter
-- likely using Klaviyo and/or Gorgias
-- willing to grant read access and test a managed pilot
+Read in this order before coding:
 
-## Product identity
+1. `AGENTS.md`
+2. `CLAUDE.md`
+3. `context/00_north_star.md`
+4. Relevant files in `context/`
 
-Ambient assistants wait to be asked.
-A manager summons the merchant with a verdict.
+Historical context and prompts live under `docs/archive/previous_product_direction/`. They are not authoritative unless a founder explicitly reactivates a specific idea in current instructions.
 
-The embedded Shopify App Bridge app is the home base. The daily brief travels by email/Slack/WhatsApp at 7am and deep-links back into the app for evidence, previews and approvals.
+## Architecture Principles
 
-## MVP
+- Commerce sources feed raw events and source records.
+- Deterministic code computes facts and features.
+- Evidence items connect facts to source records and ledger events.
+- LLMs interpret evidence into claims, beliefs, questions and recommendations.
+- The application decides what is persisted.
+- Merchant corrections supersede model inference.
+- Memory updates create new versions; do not overwrite history.
+- Inferred claims need provenance and confidence.
+- Never allow inferred information to silently become fact.
+- Migrations must be additive, safe and reversible unless explicitly approved.
 
-The MVP is broad on reads and narrow on writes.
+## Implementation Rules
 
-Build:
+- Inspect existing code before replacing it.
+- Preserve useful Shopify ingestion, canonical commerce records, COGS, ledger, provenance, approval and action-safety infrastructure.
+- Do not expose production secrets or production customer data to AI tools.
+- Do not let any LLM directly mutate Shopify, Klaviyo or third-party systems.
+- External writes require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.
+- Use TypeScript types properly and keep changes scoped to the user's current request.
+- Shopify embedded merchant UI must use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions.
 
-1. Daily Verdict
-   - true contribution margin by SKU/channel where possible
-   - confidence ranges where COGS is missing
-   - evidence links
-   - plain-English conclusion, not just charts
+## Before Coding
 
-2. Inventory Guardian
-   - stockout/reorder radar
-   - velocity maths v0
-   - £ at risk
-   - PO/email draft later
+Restate the task, list files you expect to change, and state assumptions or blockers.
 
-3. Watchdog
-   - threshold/rules-based silent breakage detection
-   - conversion anomalies
-   - ad sets beyond CPA thresholds
-   - discount stacking
-   - refund/return spikes
-   - metric regressions
+For UI work, state:
 
-4. Klaviyo winback write loop
-   - merchant private key for pilot
-   - dormant customer segment
-   - randomised holdout
-   - staged send 10% → 90%
-   - blast-radius caps
-   - approve-in-app
-   - weekly verified P&L line
+- What is the page's job?
+- What is the one thing the user should do?
+- What should be visually dominant?
+- What can be secondary or hidden?
+- What should not be shown?
+- Proposed layout
 
-5. Feedback Engine
-   - capture screen/voice/text feedback
-   - LLM distils
-   - merchant confirms
-   - route to Linear
-   - £-weighted ordering
-   - changelog close-the-loop
+## Before Finishing
 
-6. House Rules + goals
-   - 3/6/12-month goals
-   - merchant constitution
-   - max discounts
-   - email frequency limits
-   - brand voice
-   - protected hero products
-   - margin vs volume priorities
-   - rules cited in every proposal
-
-## Explicit MVP non-goals
-
-Do not build in MVP:
-- ad-budget write paths
-- generic product-copy automation
-- generic merchandising/theme widgets
-- full internationalisation
-- full agency/multi-store RBAC
-- unbounded autopilot
-- online learning / online model weight updates
-- foundational model fine-tuning
-- dedicated vector DB
-- dedicated graph DB
-- Kubernetes
-- Redis unless proven necessary
-- broad MCP-based production writes
-- any LLM direct access to external APIs with broad tokens
-
-## Architecture principles
-
-- Event-first immutable ledger
-- Postgres-first
-- JSONB for connector payloads
-- pgvector only if needed later
-- Point-in-time rebuilds from ledger + snapshots
-- HMAC-verified webhooks
-- Dedupe keys
-- Queue-backed execution
-- Typed connector adapters
-- Idempotency keys on every write path
-- Dry-run previews where possible
-- Approval gates
-- Blast-radius caps
-- House Rules enforced by construction
-- Provenance links for every recommendation
-- Batch ranking/calibration updates only
-- No LLM may directly mutate Shopify, Klaviyo, Meta, Google or any third-party system
-
-## AI coding rules
-
-Before coding:
-1. Read AGENTS.md.
-2. Read CLAUDE.md.
-3. Read relevant files in `/docs/context`.
-4. Restate the task.
-5. List files you expect to change.
-6. State assumptions and blockers.
-
-## UI quality rule
-
-Before working on any UI/front-end/product-surface task, read:
-
-```txt
-docs/context/12_ui_quality_playbook.md
-```
-
-For UI tasks, include a UI Preflight before coding:
-
-### What is the page's job?
-### What is the one thing the user should do?
-### What should be visually dominant?
-### What can be secondary or hidden?
-### What should not be shown on this page?
-### Proposed layout
-
-Do not mark UI work complete unless it passes the UI completion checklist in the playbook.
-
-When coding:
-- Keep changes small.
-- Stay inside the ticket.
-- Add tests.
-- Use TypeScript types properly.
-- Avoid unnecessary dependencies.
-- Shopify embedded app UI must use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions. Do not build merchant-facing Shopify UI with App Bridge web components, raw HTML controls, or ad hoc CSS unless there is a written exception in the ticket.
-- Never add production secrets.
-- Never request broad Shopify scopes without a written reason.
-- Never expose production customer data to AI tools.
-- Never implement unapproved external write actions.
-
-Before finishing:
-- Before finishing any ticket, update `apps/shopify/CHANGELOG.md` using today's UK/London date.
-- `apps/shopify/CHANGELOG.md` is the single source of truth for the in-app and production changelog. Do not create or update a root `CHANGELOG.md`.
-- If the current date section does not exist in `apps/shopify/CHANGELOG.md`, create it.
-- Add a concise entry under Added / Changed / Fixed / Removed / Security / Internal.
-- Do not duplicate entries.
-- Use merchant/operator-facing language, not noisy implementation details.
-- Mention the changelog update in the PR summary.
-- Run typecheck.
-- Run lint.
-- Run tests.
-- Summarise changes.
-- List risks.
-- List follow-up tickets.
+- Update `apps/shopify/CHANGELOG.md` using today's UK/London date.
+- Use merchant/operator-facing language.
+- Run typecheck, lint and tests where available.
+- Summarise changes, risks, follow-up work and any checks that could not be run.

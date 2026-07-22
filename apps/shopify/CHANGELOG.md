@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-22
+
+### Internal
+
+- Added the Merchant Memory repository foundation so Jefe can store versioned business understanding, evidence, claims, corrections and open questions.
+- Removed repository planning files that implied a fixed execution queue so current work is driven directly from Merchant Memory context and founder instructions.
+- Updated the active repository context to the v3 Merchant Memory direction.
+
+---
+
 ## 2026-07-21
 
 ### Fixed
@@ -164,7 +174,7 @@
 - Added Inventory Guardian v0 with stockout risk, sales velocity, revenue-at-risk and reorder quantity estimates.
 - Added Watchdog v0 with read-only alerts for refund spikes, sales collapses, revenue drops, missing product costs and other operational anomalies.
 - Added Changelog v0 inside the Shopify app and made changelog updates part of the agent workflow.
-- Added changelog rules for future tickets and PRs.
+- Added changelog rules for future changes and PRs.
 - Added Shopify embedded app scaffold.
 - Added Today's Verdict page.
 - Added onboarding for goals, House Rules and COGS.

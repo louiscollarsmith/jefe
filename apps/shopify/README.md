@@ -33,7 +33,7 @@ Klaviyo private keys are encrypted before storage. `KLAVIYO_KEY_ENCRYPTION_SECRE
 
 ## Dummy Store Data
 
-For Ticket 003 ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The default development scope set includes the bounded write scopes needed by the fixture writer:
+For ingestion/backfill testing, local development can load Shopify dummy data from the app home page. The default development scope set includes the bounded write scopes needed by the fixture writer:
 
 ```shell
 SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
@@ -50,7 +50,7 @@ Write-scope reasons:
 - `write_customers`: create fixture customer profiles for customer-backed test orders.
 - `write_orders`: create test orders and the refund fixture.
 - `read_locations`: place inventory at the store's primary location.
-- `read_products`, `read_inventory`, `read_orders`: support Ticket 003 ingestion/backfill reads.
+- `read_products`, `read_inventory`, `read_orders`: support ingestion/backfill reads.
 
 Order and refund fixture creation also requires protected customer data access for the app in the Shopify Partner Dashboard. For development stores, select protected customer data for this app before loading dummy data; a full review submission is not required for apps installed only on development stores.
 
@@ -101,7 +101,7 @@ Implemented:
 - Placeholder cards for Daily Verdict, Inventory Guardian, Watchdog, Klaviyo Winback, Feedback Engine, and House Rules + Goals
 - Postgres-backed Prisma schema for Shopify sessions, tenant data, House Rules, goals, ledger events, commerce state, actions, executions, feedback, attribution, connectors, and cost metering
 - Founder-assisted onboarding for goals, House Rules, COGS inputs and completion state
-- Dev-only Shopify dummy store data loader for Ticket 003 seed data
+- Dev-only Shopify dummy store data loader for ingestion seed data
 - Shopify ingestion for products, variants, inventory levels, orders, line items and refunds
 - Install-time Shopify backfill queue with 365-day/60-day order access handling
 - HMAC-verified Shopify webhook ingestion with ledger dedupe

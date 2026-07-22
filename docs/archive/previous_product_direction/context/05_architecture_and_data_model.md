@@ -18,7 +18,7 @@ Implementation:
 ### 2. Canonical state
 
 Purpose:
-- normalise products, variants, orders, customers, inventory, campaigns, tickets, goals and House Rules
+- normalise products, variants, orders, customers, inventory, campaigns, support issues, goals and House Rules
 
 Implementation:
 - Postgres tables
