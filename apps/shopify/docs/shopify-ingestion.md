@@ -17,7 +17,8 @@ The worker then:
 - writes deduped source events to `ledger_events`;
 - upserts `products`, `variants`, `orders`, `order_line_items`, `refunds`, `customer_identities` and `inventory_levels`;
 - marks product, order, customer, refund and inventory domains complete;
-- finalises the shop as `ready` when evidence import completed.
+- finalises the shop as `ready` when evidence import completed;
+- queues the first Merchant Memory rebuild as independent retryable work.
 
 Manual/dev backfill can run:
 
@@ -34,8 +35,11 @@ Backfill progress is stored in:
 - `shops.backfill_completed_at`
 - `shop_backfill_statuses`
 - `backfill_jobs`
+- `merchant_memory_refresh_runs`
 
 The web service loop processes one queued job at a time. Failed jobs store `last_error` and can be retried from the Dev page.
+
+Merchant Memory build progress is tracked under the `merchant_memory` backfill-status domain. A failed memory build does not change the completed raw Shopify evidence backfill result.
 
 Bulk operation ingestion is intentionally not retained in this reset because the previous implementation was coupled to old product and derived-metric paths. A future scaling ticket should restore bulk evidence import without COGS, dashboards or recommendation assumptions.
 
@@ -53,6 +57,8 @@ Canonical evidence sync runs inline for:
 - `orders/cancelled`
 - `refunds/create`
 - `inventory_levels/update`
+
+After canonical evidence sync, relevant product, order, refund and inventory webhooks enqueue a debounced Merchant Memory refresh for affected categories. Memory derivation does not run inline in the webhook request.
 
 App lifecycle topics update retained install state:
 

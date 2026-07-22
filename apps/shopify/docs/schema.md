@@ -22,10 +22,16 @@ Jefe uses Postgres as the source of truth. Prisma owns the schema and Shopify se
 
 `inventory_levels` stores current Shopify inventory evidence by inventory item and location, with nullable variant links when the variant mirror exists.
 
-The evidence layer intentionally does not include product costs, recommendations, actions, dashboards or Merchant Memory tables.
+The evidence layer intentionally does not include product costs, recommendations, actions or dashboards.
+
+## Merchant Memory
+
+Merchant Memory sits above the raw commerce evidence layer. `merchant_memory_beliefs` stores structured beliefs with stable semantic keys, lifecycle status, confidence, timestamps and precedence. `merchant_memory_evidence` stores provenance for each belief without copying raw Shopify payloads or customer PII. `merchant_memory_belief_history` preserves value and status changes, including merchant confirmations, corrections, supersession and obsolescence. `merchant_memory_refresh_runs` records memory build attempts and failures.
+
+Merchant-authoritative statuses are not silently overwritten by deterministic recalculation.
 
 ## Evidence Backfill
 
-`shop_backfill_statuses` stores evidence backfill status by shop and domain. Current domains are `shop`, `webhooks`, `products`, `orders`, `customers`, `inventory` and `refunds`.
+`shop_backfill_statuses` stores evidence and memory build status by shop and domain. Current domains are `shop`, `webhooks`, `products`, `orders`, `customers`, `inventory`, `refunds` and `merchant_memory`.
 
-`backfill_jobs` stores queued evidence backfill work. Current job types are `shop_backfill_start`, `products_backfill`, `orders_backfill_365d`, `inventory_backfill`, `backfill_delta_sync` and `backfill_finalize`.
+`backfill_jobs` stores queued evidence backfill and memory refresh work. Current job types are `shop_backfill_start`, `products_backfill`, `orders_backfill_365d`, `inventory_backfill`, `backfill_delta_sync`, `backfill_finalize` and `merchant_memory_rebuild`.
