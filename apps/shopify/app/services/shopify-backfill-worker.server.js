@@ -15,6 +15,12 @@ import {
   splitScopes,
   upsertBackfillStatus,
 } from "./shopify-backfill-status.server.js";
+import {
+  MEMORY_BACKFILL_DOMAIN,
+  MEMORY_REFRESH_JOB_TYPE,
+} from "../lib/merchant-memory/constants.server.js";
+import { rebuildMerchantMemory } from "../lib/merchant-memory/service.server.js";
+import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const STALE_RUNNING_JOB_TIMEOUT_MS = 15 * 60_000;
@@ -124,10 +130,14 @@ export async function processNextBackfillJob(prisma, options = {}) {
         lastError: message.slice(0, 1000),
       },
     });
-    await prisma.shop.update({
-      where: { id: job.shopId },
-      data: { setupStatus: "backfill_partial" },
-    });
+    if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
+      await markMemoryFailed(prisma, job, message);
+    } else {
+      await prisma.shop.update({
+        where: { id: job.shopId },
+        data: { setupStatus: "backfill_partial" },
+      });
+    }
     return { status: "failed", jobType: job.jobType, error: message };
   }
 }
@@ -176,15 +186,18 @@ async function runBackfillJob(prisma, job, options) {
   const orderHistoryDays = hasReadAllOrders(scopes)
     ? DEFAULT_BACKFILL_DAYS
     : FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS;
+  const requiresShopifyToken = job.jobType !== MEMORY_REFRESH_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
     shopDomain: job.shop.shopDomain,
     sessionId: stringValue(payload.sessionId),
-    accessToken: await loadAccessToken(prisma, {
-      shopDomain: job.shop.shopDomain,
-      sessionId: stringValue(payload.sessionId),
-    }),
+    accessToken: requiresShopifyToken
+      ? await loadAccessToken(prisma, {
+          shopDomain: job.shop.shopDomain,
+          sessionId: stringValue(payload.sessionId),
+        })
+      : null,
     fetchImpl: options.fetchImpl,
     logger: options.logger ?? console,
     scopes,
@@ -215,6 +228,8 @@ async function runBackfillJob(prisma, job, options) {
       return handleDeltaSync(prisma, context);
     case "backfill_finalize":
       return handleFinalize(prisma, context);
+    case MEMORY_REFRESH_JOB_TYPE:
+      return handleMerchantMemoryRebuild(prisma, context, payload);
     default:
       return {};
   }
@@ -285,7 +300,7 @@ async function handleEvidenceBackfill(prisma, context, input) {
 
   const totals = await runShopifyBackfill(prisma, {
     shopDomain: context.shopDomain,
-    accessToken: context.accessToken,
+    accessToken: requireAccessToken(context),
     sessionId: context.sessionId,
     apiVersion: process.env.SHOPIFY_API_VERSION,
     logger: context.logger,
@@ -325,7 +340,7 @@ async function handleDeltaSync(prisma, context) {
   );
   const totals = await runShopifyBackfill(prisma, {
     shopDomain: context.shopDomain,
-    accessToken: context.accessToken,
+    accessToken: requireAccessToken(context),
     sessionId: context.sessionId,
     apiVersion: process.env.SHOPIFY_API_VERSION,
     logger: context.logger,
@@ -407,10 +422,83 @@ async function handleFinalize(prisma, context) {
     },
   });
 
+  if (requiredComplete) {
+    await enqueueMerchantMemoryRefresh(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      shopDomain: context.shopDomain,
+      categories: [],
+      reason: "shopify_backfill_completed",
+    });
+  }
+
   return {
     setupStatus: nextSetupStatus,
     failedDomains: failed.map((status) => status.domain),
   };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {BackfillContext} context
+ * @param {Record<string, any>} payload
+ */
+async function handleMerchantMemoryRebuild(prisma, context, payload) {
+  const categories = Array.isArray(payload.categories)
+    ? payload.categories.filter((category) => typeof category === "string")
+    : [];
+
+  await upsertBackfillStatus(prisma, {
+    merchantId: context.merchantId,
+    shopId: context.shopId,
+    domain: MEMORY_BACKFILL_DOMAIN,
+    status: "running",
+    startedAt: new Date(),
+    completedAt: null,
+    lastError: null,
+    metadata: {
+      reason: stringValue(payload.reason) ?? "merchant_memory_rebuild",
+      categories,
+    },
+  });
+
+  const result = await rebuildMerchantMemory(prisma, {
+    merchantId: context.merchantId,
+    shopId: context.shopId,
+    categories,
+    refreshType: categories.length > 0 ? "selective_refresh" : "full_rebuild",
+    logger: context.logger,
+  });
+
+  await upsertBackfillStatus(prisma, {
+    merchantId: context.merchantId,
+    shopId: context.shopId,
+    domain: MEMORY_BACKFILL_DOMAIN,
+    status: "complete",
+    completedAt: new Date(),
+    lastError: null,
+    recordsProcessed: result.createdOrUpdated,
+    metadata: result,
+  });
+
+  return result;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} job
+ * @param {string} message
+ */
+async function markMemoryFailed(prisma, job, message) {
+  await upsertBackfillStatus(prisma, {
+    merchantId: job.merchantId,
+    shopId: job.shopId,
+    domain: MEMORY_BACKFILL_DOMAIN,
+    status: "failed",
+    completedAt: null,
+    lastError: message.slice(0, 1000),
+    metadata: { failedAt: new Date().toISOString() },
+  });
 }
 
 /**
@@ -499,7 +587,7 @@ async function loadBackfillCountEstimate(context, domain) {
   try {
     const client = new ShopifyAdminGraphqlClient({
       shopDomain: context.shopDomain,
-      accessToken: context.accessToken,
+      accessToken: requireAccessToken(context),
       apiVersion: process.env.SHOPIFY_API_VERSION,
       logger: context.logger,
       fetchImpl: context.fetchImpl,
@@ -551,6 +639,14 @@ async function loadAccessToken(prisma, input) {
   return session.accessToken;
 }
 
+/** @param {BackfillContext} context */
+function requireAccessToken(context) {
+  if (!context.accessToken) {
+    throw new Error("No offline Shopify session token is available.");
+  }
+  return context.accessToken;
+}
+
 /** @param {number} attemptCount */
 function retryAfter(attemptCount) {
   return new Date(Date.now() + Math.min(5, attemptCount + 1) * 60_000);
@@ -600,7 +696,7 @@ function parseDate(value) {
  *   shopId: string;
  *   shopDomain: string;
  *   sessionId: string | null;
- *   accessToken: string;
+ *   accessToken: string | null;
  *   fetchImpl?: typeof fetch;
  *   logger: Pick<Console, "info" | "warn" | "error">;
  *   scopes: string[];

@@ -28,11 +28,11 @@ model Session {
 }
 
 model Merchant {
-  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                 String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name               String
-  status             String               @default("active")
-  createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  status             String                        @default("active")
+  createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   shops              Shop[]
   ledgerEvents       LedgerEvent[]
   products           Product[]
@@ -45,26 +45,30 @@ model Merchant {
   connectorAccounts  ConnectorAccount[]
   backfillStatuses   ShopBackfillStatus[]
   backfillJobs       BackfillJob[]
+  memoryBeliefs      MerchantMemoryBelief[]
+  memoryEvidence     MerchantMemoryEvidence[]
+  memoryHistory      MerchantMemoryBeliefHistory[]
+  memoryRefreshRuns  MerchantMemoryRefreshRun[]
 
   @@map("merchants")
 }
 
 model Shop {
-  id                        String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId                String               @map("merchant_id") @db.Uuid
-  platform                  String               @default("shopify")
-  shopDomain                String               @map("shop_domain")
-  externalShopId            String?              @map("external_shop_id")
-  status                    String               @default("active")
-  setupStatus               String               @default("installed") @map("setup_status")
-  historicalOrderAccess     String               @default("unknown") @map("historical_order_access")
-  availableOrderHistoryDays Int                  @default(0) @map("available_order_history_days")
-  backfillStartedAt         DateTime?            @map("backfill_started_at") @db.Timestamptz(6)
-  backfillCompletedAt       DateTime?            @map("backfill_completed_at") @db.Timestamptz(6)
-  rawPayload                Json                 @default("{}") @map("raw_payload")
-  createdAt                 DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                 DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant                  Merchant             @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                        String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId                String                        @map("merchant_id") @db.Uuid
+  platform                  String                        @default("shopify")
+  shopDomain                String                        @map("shop_domain")
+  externalShopId            String?                       @map("external_shop_id")
+  status                    String                        @default("active")
+  setupStatus               String                        @default("installed") @map("setup_status")
+  historicalOrderAccess     String                        @default("unknown") @map("historical_order_access")
+  availableOrderHistoryDays Int                           @default(0) @map("available_order_history_days")
+  backfillStartedAt         DateTime?                     @map("backfill_started_at") @db.Timestamptz(6)
+  backfillCompletedAt       DateTime?                     @map("backfill_completed_at") @db.Timestamptz(6)
+  rawPayload                Json                          @default("{}") @map("raw_payload")
+  createdAt                 DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                  Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   ledgerEvents              LedgerEvent[]
   products                  Product[]
   variants                  Variant[]
@@ -76,6 +80,10 @@ model Shop {
   connectorAccounts         ConnectorAccount[]
   backfillStatuses          ShopBackfillStatus[]
   backfillJobs              BackfillJob[]
+  memoryBeliefs             MerchantMemoryBelief[]
+  memoryEvidence            MerchantMemoryEvidence[]
+  memoryHistory             MerchantMemoryBeliefHistory[]
+  memoryRefreshRuns         MerchantMemoryRefreshRun[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -370,4 +378,107 @@ model BackfillJob {
   @@index([status, runAfter, priority])
   @@index([merchantId, status])
   @@map("backfill_jobs")
+}
+
+model MerchantMemoryBelief {
+  id                 String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId         String                        @map("merchant_id") @db.Uuid
+  shopId             String?                       @map("shop_id") @db.Uuid
+  category           String
+  key                String
+  value              Json                          @default("{}") @map("value_json")
+  valueType          String                        @map("value_type")
+  status             String                        @default("inferred")
+  confidence         Decimal?                      @db.Decimal(5, 4)
+  confidenceReason   String?                       @map("confidence_reason")
+  precedence         Int                           @default(20)
+  derivationVersion  String?                       @map("derivation_version")
+  firstObservedAt    DateTime?                     @map("first_observed_at") @db.Timestamptz(6)
+  lastObservedAt     DateTime?                     @map("last_observed_at") @db.Timestamptz(6)
+  lastEvaluatedAt    DateTime?                     @map("last_evaluated_at") @db.Timestamptz(6)
+  lastConfirmedAt    DateTime?                     @map("last_confirmed_at") @db.Timestamptz(6)
+  supersededAt       DateTime?                     @map("superseded_at") @db.Timestamptz(6)
+  supersedesBeliefId String?                       @map("supersedes_belief_id") @db.Uuid
+  createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant           Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop               Shop?                         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  supersedesBelief   MerchantMemoryBelief?         @relation("MerchantMemoryBeliefSupersession", fields: [supersedesBeliefId], references: [id], onDelete: SetNull)
+  supersededBy       MerchantMemoryBelief[]        @relation("MerchantMemoryBeliefSupersession")
+  evidence           MerchantMemoryEvidence[]
+  history            MerchantMemoryBeliefHistory[]
+
+  @@index([merchantId, category, key])
+  @@index([merchantId, status])
+  @@index([shopId])
+  @@index([supersedesBeliefId])
+  @@map("merchant_memory_beliefs")
+}
+
+model MerchantMemoryEvidence {
+  id              String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String                @map("merchant_id") @db.Uuid
+  shopId          String?               @map("shop_id") @db.Uuid
+  beliefId        String?               @map("belief_id") @db.Uuid
+  sourceType      String                @map("source_type")
+  sourceReference String?               @map("source_reference")
+  evidenceType    String                @map("evidence_type")
+  summary         String
+  metadata        Json                  @default("{}")
+  observedAt      DateTime?             @map("observed_at") @db.Timestamptz(6)
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant        Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop?                 @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  belief          MerchantMemoryBelief? @relation(fields: [beliefId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, evidenceType, createdAt])
+  @@index([beliefId, createdAt])
+  @@index([shopId])
+  @@map("merchant_memory_evidence")
+}
+
+model MerchantMemoryBeliefHistory {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String                @map("merchant_id") @db.Uuid
+  shopId         String?               @map("shop_id") @db.Uuid
+  beliefId       String?               @map("belief_id") @db.Uuid
+  key            String
+  previousStatus String?               @map("previous_status")
+  newStatus      String                @map("new_status")
+  previousValue  Json?                 @map("previous_value_json")
+  newValue       Json?                 @map("new_value_json")
+  changeReason   String                @map("change_reason")
+  changedBy      String                @default("system") @map("changed_by")
+  metadata       Json                  @default("{}")
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant       Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           Shop?                 @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  belief         MerchantMemoryBelief? @relation(fields: [beliefId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, key, createdAt])
+  @@index([beliefId, createdAt])
+  @@index([shopId])
+  @@map("merchant_memory_belief_history")
+}
+
+model MerchantMemoryRefreshRun {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId          String    @map("merchant_id") @db.Uuid
+  shopId              String?   @map("shop_id") @db.Uuid
+  refreshType         String    @map("refresh_type")
+  status              String    @default("pending")
+  requestedCategories String[]  @default([]) @map("requested_categories")
+  result              Json      @default("{}") @map("result_json")
+  lastError           String?   @map("last_error")
+  startedAt           DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt         DateTime? @map("completed_at") @db.Timestamptz(6)
+  failedAt            DateTime? @map("failed_at") @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant            Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status])
+  @@map("merchant_memory_refresh_runs")
 }

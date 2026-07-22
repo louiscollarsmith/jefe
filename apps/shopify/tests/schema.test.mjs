@@ -195,6 +195,66 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
       },
     });
 
+    const memoryBelief = await prisma.merchantMemoryBelief.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        category: "orders",
+        key: "orders.average_order_value.all_time",
+        value: {
+          amount: 49,
+          currency: "GBP",
+          window: "all_stored_history",
+        },
+        valueType: "currency_amount",
+        status: "inferred",
+        confidence: "0.9000",
+        confidenceReason: "Schema test deterministic calculation.",
+        firstObservedAt: new Date("2026-07-22T08:05:00Z"),
+        lastObservedAt: new Date("2026-07-22T08:05:00Z"),
+        lastEvaluatedAt: new Date("2026-07-22T08:20:00Z"),
+        evidence: {
+          create: {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            sourceType: "system_derivation",
+            sourceReference: "schema-test",
+            evidenceType: "deterministic_calculation",
+            summary: "Average order value calculated from stored orders.",
+            metadata: {
+              formula: "sum(order.total_price) / priced_order_count",
+              sourceRecordCounts: { orders: 1 },
+            },
+            observedAt: new Date("2026-07-22T08:05:00Z"),
+          },
+        },
+        history: {
+          create: {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            key: "orders.average_order_value.all_time",
+            newStatus: "inferred",
+            newValue: { amount: 49, currency: "GBP" },
+            changeReason: "derived_belief_created",
+          },
+        },
+      },
+      include: { evidence: true, history: true },
+    });
+
+    await prisma.merchantMemoryRefreshRun.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        refreshType: "full_rebuild",
+        status: "completed",
+        requestedCategories: [],
+        result: { createdOrUpdated: 1 },
+        startedAt: new Date("2026-07-22T08:20:00Z"),
+        completedAt: new Date("2026-07-22T08:20:01Z"),
+      },
+    });
+
     const readBack = await prisma.merchant.findUniqueOrThrow({
       where: { id: merchant.id },
       include: {
@@ -208,6 +268,13 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
             ledgerEvents: true,
             backfillStatuses: true,
             backfillJobs: true,
+            memoryBeliefs: {
+              include: {
+                evidence: true,
+                history: true,
+              },
+            },
+            memoryRefreshRuns: true,
           },
         },
       },
@@ -232,6 +299,10 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
     assert.equal(readShop.inventoryLevels[0].available, 12);
     assert.equal(readShop.backfillStatuses[0].domain, "orders");
     assert.equal(readShop.backfillJobs[0].jobType, "orders_backfill_365d");
+    assert.equal(readShop.memoryBeliefs[0].id, memoryBelief.id);
+    assert.equal(readShop.memoryBeliefs[0].evidence[0].sourceType, "system_derivation");
+    assert.equal(readShop.memoryBeliefs[0].history[0].changeReason, "derived_belief_created");
+    assert.equal(readShop.memoryRefreshRuns[0].status, "completed");
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Schema Test Merchant ${suffix}` },

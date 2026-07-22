@@ -1,6 +1,10 @@
 // @ts-check
 
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server.js";
+import {
+  MEMORY_BACKFILL_DOMAIN,
+  MEMORY_REFRESH_JOB_TYPE,
+} from "../lib/merchant-memory/constants.server.js";
 
 export const DEFAULT_BACKFILL_DAYS = 365;
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
@@ -12,6 +16,7 @@ export const BACKFILL_DOMAINS = [
   "customers",
   "inventory",
   "refunds",
+  MEMORY_BACKFILL_DOMAIN,
 ];
 
 const JOB_PRIORITIES = {
@@ -21,6 +26,7 @@ const JOB_PRIORITIES = {
   inventory_backfill: 40,
   backfill_delta_sync: 50,
   backfill_finalize: 70,
+  [MEMORY_REFRESH_JOB_TYPE]: 80,
 };
 
 /**

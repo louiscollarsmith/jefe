@@ -18,6 +18,7 @@ import {
   upsertShopifyProduct,
   upsertShopifyRefund,
 } from "./canonical.server.js";
+import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jobs.server.js";
 
 const COMPLIANCE_TOPICS = new Set([
   "customers/data_request",
@@ -135,6 +136,12 @@ export async function processShopifyWebhook(prisma, input) {
     shopId: shop.id,
     topic: input.topic,
     payload,
+  });
+  await enqueueMerchantMemoryRefreshForWebhook(prisma, {
+    merchantId: merchant.id,
+    shopId: shop.id,
+    shopDomain: shop.shopDomain,
+    topic: input.topic,
   });
 
   return { status: "processed", ledgerEventId: event.id };

@@ -364,6 +364,10 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
     });
+    const memory = await processNextBackfillJob(prisma, {
+      logger: silentLogger,
+      fetchImpl: createEvidenceBackfillFetch(suffix),
+    });
 
     const shop = await prisma.shop.findUniqueOrThrow({
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
@@ -382,6 +386,8 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
     assert.equal(inventory.jobType, "inventory_backfill");
     assert.equal(delta.jobType, "backfill_delta_sync");
     assert.equal(finalize.jobType, "backfill_finalize");
+    assert.equal(memory.jobType, "merchant_memory_rebuild");
+    assert.equal(memory.status, "succeeded");
     assert.equal(shop.setupStatus, "ready");
     assert.equal(shop.products.length, 1);
     assert.equal(shop.orders.length, 1);
@@ -395,7 +401,7 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       data: { status: "failed" },
     });
     const retry = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
-    assert.equal(retry.retried, 6);
+    assert.equal(retry.retried, 7);
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.session.deleteMany({ where: { shop: shopDomain } });
