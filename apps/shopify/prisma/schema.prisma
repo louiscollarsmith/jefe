@@ -43,14 +43,14 @@ model Session {
 }
 
 model Merchant {
-  id                   String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                   String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                 String
-  status               String                      @default("active")
-  primaryCurrency      String                      @default("GBP") @map("primary_currency")
-  timezone             String                      @default("Europe/London")
-  goalsJson            Json                        @default("{}") @map("goals_json")
-  createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt            DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  status               String                       @default("active")
+  primaryCurrency      String                       @default("GBP") @map("primary_currency")
+  timezone             String                       @default("Europe/London")
+  goalsJson            Json                         @default("{}") @map("goals_json")
+  createdAt            DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
   shops                Shop[]
   users                MerchantUser[]
   houseRules           HouseRule[]
@@ -78,38 +78,44 @@ model Merchant {
   costMetering         CostMetering[]
   backfillStatuses     ShopBackfillStatus[]
   backfillJobs         BackfillJob[]
+  memoryDocuments      MerchantMemoryDocument[]
+  memoryVersions       MerchantMemoryVersion[]
+  memoryEvidenceItems  MerchantMemoryEvidenceItem[]
+  memoryClaims         MerchantMemoryClaim[]
+  memoryCorrections    MerchantMemoryCorrection[]
+  memoryOpenQuestions  MerchantMemoryOpenQuestion[]
 
   @@map("merchants")
 }
 
 model Shop {
-  id                             String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId                     String                      @map("merchant_id") @db.Uuid
-  platform                       String                      @default("shopify")
-  shopDomain                     String                      @map("shop_domain")
-  externalShopId                 String?                     @map("external_shop_id")
-  status                         String                      @default("active")
-  setupStatus                    String                      @default("installed") @map("setup_status")
-  historicalOrderAccess          String                      @default("unknown") @map("historical_order_access")
-  availableOrderHistoryDays      Int                         @default(0) @map("available_order_history_days")
-  backfillStartedAt              DateTime?                   @map("backfill_started_at") @db.Timestamptz(6)
-  backfillCompletedAt            DateTime?                   @map("backfill_completed_at") @db.Timestamptz(6)
-  rawPayload                     Json                        @default("{}") @map("raw_payload")
-  onboardingStartedAt            DateTime?                   @map("onboarding_started_at") @db.Timestamptz(6)
-  onboardingCompletedAt          DateTime?                   @map("onboarding_completed_at") @db.Timestamptz(6)
-  goalsCompleted                 Boolean                     @default(false) @map("goals_completed")
-  houseRulesCompleted            Boolean                     @default(false) @map("house_rules_completed")
-  cogsCompletionPercentage       Decimal                     @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
-  cogsConfidenceLevel            String                      @default("missing") @map("cogs_confidence_level")
-  productCostsSkipped            Boolean                     @default(false) @map("product_costs_skipped")
-  lastSuccessfulCogsSyncAt       DateTime?                   @map("last_successful_cogs_sync_at") @db.Timestamptz(6)
-  lastInventoryItemCostWebhookAt DateTime?                   @map("last_inventory_item_cost_webhook_at") @db.Timestamptz(6)
-  lastCogsRecomputeAt            DateTime?                   @map("last_cogs_recompute_at") @db.Timestamptz(6)
-  lastCogsSyncError              String?                     @map("last_cogs_sync_error")
-  onboardingMetadata             Json                        @default("{}") @map("onboarding_metadata")
-  createdAt                      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant                       Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                             String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId                     String                       @map("merchant_id") @db.Uuid
+  platform                       String                       @default("shopify")
+  shopDomain                     String                       @map("shop_domain")
+  externalShopId                 String?                      @map("external_shop_id")
+  status                         String                       @default("active")
+  setupStatus                    String                       @default("installed") @map("setup_status")
+  historicalOrderAccess          String                       @default("unknown") @map("historical_order_access")
+  availableOrderHistoryDays      Int                          @default(0) @map("available_order_history_days")
+  backfillStartedAt              DateTime?                    @map("backfill_started_at") @db.Timestamptz(6)
+  backfillCompletedAt            DateTime?                    @map("backfill_completed_at") @db.Timestamptz(6)
+  rawPayload                     Json                         @default("{}") @map("raw_payload")
+  onboardingStartedAt            DateTime?                    @map("onboarding_started_at") @db.Timestamptz(6)
+  onboardingCompletedAt          DateTime?                    @map("onboarding_completed_at") @db.Timestamptz(6)
+  goalsCompleted                 Boolean                      @default(false) @map("goals_completed")
+  houseRulesCompleted            Boolean                      @default(false) @map("house_rules_completed")
+  cogsCompletionPercentage       Decimal                      @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
+  cogsConfidenceLevel            String                       @default("missing") @map("cogs_confidence_level")
+  productCostsSkipped            Boolean                      @default(false) @map("product_costs_skipped")
+  lastSuccessfulCogsSyncAt       DateTime?                    @map("last_successful_cogs_sync_at") @db.Timestamptz(6)
+  lastInventoryItemCostWebhookAt DateTime?                    @map("last_inventory_item_cost_webhook_at") @db.Timestamptz(6)
+  lastCogsRecomputeAt            DateTime?                    @map("last_cogs_recompute_at") @db.Timestamptz(6)
+  lastCogsSyncError              String?                      @map("last_cogs_sync_error")
+  onboardingMetadata             Json                         @default("{}") @map("onboarding_metadata")
+  createdAt                      DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant                       Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   users                          MerchantUser[]
   houseRules                     HouseRule[]
   goals                          Goal[]
@@ -136,6 +142,12 @@ model Shop {
   costMetering                   CostMetering[]
   backfillStatuses               ShopBackfillStatus[]
   backfillJobs                   BackfillJob[]
+  memoryDocuments                MerchantMemoryDocument[]
+  memoryVersions                 MerchantMemoryVersion[]
+  memoryEvidenceItems            MerchantMemoryEvidenceItem[]
+  memoryClaims                   MerchantMemoryClaim[]
+  memoryCorrections              MerchantMemoryCorrection[]
+  memoryOpenQuestions            MerchantMemoryOpenQuestion[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -143,20 +155,21 @@ model Shop {
 }
 
 model MerchantUser {
-  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId    String      @map("merchant_id") @db.Uuid
-  shopId        String?     @map("shop_id") @db.Uuid
-  email         String
-  name          String?
-  role          String      @default("owner")
-  status        String      @default("active")
-  rawPayload    Json        @default("{}") @map("raw_payload")
-  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant      Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop          Shop?       @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  editedRules   HouseRule[] @relation("HouseRuleEditor")
-  feedbackItems Feedback[]
+  id                String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId        String                     @map("merchant_id") @db.Uuid
+  shopId            String?                    @map("shop_id") @db.Uuid
+  email             String
+  name              String?
+  role              String                     @default("owner")
+  status            String                     @default("active")
+  rawPayload        Json                       @default("{}") @map("raw_payload")
+  createdAt         DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant          Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop              Shop?                      @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  editedRules       HouseRule[]                @relation("HouseRuleEditor")
+  feedbackItems     Feedback[]
+  memoryCorrections MerchantMemoryCorrection[]
 
   @@unique([merchantId, email])
   @@index([shopId])
@@ -220,23 +233,25 @@ model Goal {
 }
 
 model LedgerEvent {
-  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId      String           @map("merchant_id") @db.Uuid
-  shopId          String?          @map("shop_id") @db.Uuid
-  eventType       String           @map("event_type")
-  source          String
-  sourceEventId   String?          @map("source_event_id")
-  dedupeKey       String?          @map("dedupe_key")
-  idempotencyKey  String?          @map("idempotency_key")
-  actorType       String?          @map("actor_type")
-  actorId         String?          @map("actor_id")
-  payload         Json             @default("{}")
-  rawPayload      Json             @default("{}") @map("raw_payload")
-  eventTs         DateTime         @default(now()) @map("event_ts") @db.Timestamptz(6)
-  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  merchant        Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop            Shop?            @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  provenanceLinks ProvenanceLink[]
+  id                  String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId          String                        @map("merchant_id") @db.Uuid
+  shopId              String?                       @map("shop_id") @db.Uuid
+  eventType           String                        @map("event_type")
+  source              String
+  sourceEventId       String?                       @map("source_event_id")
+  dedupeKey           String?                       @map("dedupe_key")
+  idempotencyKey      String?                       @map("idempotency_key")
+  actorType           String?                       @map("actor_type")
+  actorId             String?                       @map("actor_id")
+  payload             Json                          @default("{}")
+  rawPayload          Json                          @default("{}") @map("raw_payload")
+  eventTs             DateTime                      @default(now()) @map("event_ts") @db.Timestamptz(6)
+  createdAt           DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant            Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop?                         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  provenanceLinks     ProvenanceLink[]
+  memoryEvidenceItems MerchantMemoryEvidenceItem[]
+  memoryClaimEvidence MerchantMemoryClaimEvidence[]
 
   @@unique([merchantId, dedupeKey])
   @@unique([merchantId, idempotencyKey])
@@ -843,4 +858,174 @@ model CostMetering {
   @@index([merchantId, usageDate])
   @@index([provider, service])
   @@map("cost_metering")
+}
+
+model MerchantMemoryDocument {
+  id                   String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId           String                  @map("merchant_id") @db.Uuid
+  shopId               String?                 @map("shop_id") @db.Uuid
+  title                String                  @default("Merchant Memory")
+  status               String                  @default("draft")
+  currentVersionNumber Int?                    @map("current_version_number")
+  currentVersionId     String?                 @map("current_version_id") @db.Uuid
+  metadata             Json                    @default("{}")
+  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant             Merchant                @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop?                   @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  versions             MerchantMemoryVersion[]
+
+  @@index([merchantId, status])
+  @@index([shopId])
+  @@map("merchant_memory_documents")
+}
+
+model MerchantMemoryVersion {
+  id               String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId       String                       @map("merchant_id") @db.Uuid
+  shopId           String?                      @map("shop_id") @db.Uuid
+  documentId       String                       @map("document_id") @db.Uuid
+  versionNumber    Int                          @map("version_number")
+  status           String                       @default("draft")
+  generatedBy      String                       @default("system") @map("generated_by")
+  generationReason String                       @default("initial_synthesis") @map("generation_reason")
+  documentJson     Json                         @default("{}") @map("document_json")
+  sourceSnapshot   Json                         @default("{}") @map("source_snapshot")
+  summary          String?
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt      DateTime?                    @map("published_at") @db.Timestamptz(6)
+  supersededAt     DateTime?                    @map("superseded_at") @db.Timestamptz(6)
+  merchant         Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop?                        @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  document         MerchantMemoryDocument       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  claims           MerchantMemoryClaim[]
+  corrections      MerchantMemoryCorrection[]
+  openQuestions    MerchantMemoryOpenQuestion[]
+
+  @@unique([documentId, versionNumber])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId])
+  @@map("merchant_memory_versions")
+}
+
+model MerchantMemoryEvidenceItem {
+  id             String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String                        @map("merchant_id") @db.Uuid
+  shopId         String?                       @map("shop_id") @db.Uuid
+  evidenceType   String                        @map("evidence_type")
+  factKey        String?                       @map("fact_key")
+  summary        String
+  valueJson      Json                          @default("{}") @map("value_json")
+  sourceSystem   String?                       @map("source_system")
+  sourceTable    String?                       @map("source_table")
+  sourceRecordId String?                       @map("source_record_id")
+  ledgerEventId  String?                       @map("ledger_event_id") @db.Uuid
+  observedAt     DateTime?                     @map("observed_at") @db.Timestamptz(6)
+  computedAt     DateTime?                     @map("computed_at") @db.Timestamptz(6)
+  metadata       Json                          @default("{}")
+  createdAt      DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant       Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           Shop?                         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  ledgerEvent    LedgerEvent?                  @relation(fields: [ledgerEventId], references: [id], onDelete: SetNull)
+  claimLinks     MerchantMemoryClaimEvidence[]
+
+  @@index([merchantId, evidenceType, createdAt])
+  @@index([shopId])
+  @@index([ledgerEventId])
+  @@map("merchant_memory_evidence_items")
+}
+
+model MerchantMemoryClaim {
+  id                 String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId         String                        @map("merchant_id") @db.Uuid
+  shopId             String?                       @map("shop_id") @db.Uuid
+  versionId          String                        @map("version_id") @db.Uuid
+  sectionKey         String                        @map("section_key")
+  claimType          String                        @map("claim_type")
+  status             String                        @default("model_inference")
+  confidence         Decimal?                      @db.Decimal(5, 4)
+  statement          String
+  normalizedValue    Json                          @default("{}") @map("normalized_value")
+  evidenceSummary    Json                          @default("[]") @map("evidence_summary")
+  supersedesClaimId  String?                       @map("supersedes_claim_id") @db.Uuid
+  createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant           Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop               Shop?                         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  version            MerchantMemoryVersion         @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  supersedesClaim    MerchantMemoryClaim?          @relation("MerchantMemoryClaimSupersession", fields: [supersedesClaimId], references: [id], onDelete: SetNull)
+  supersededByClaims MerchantMemoryClaim[]         @relation("MerchantMemoryClaimSupersession")
+  evidenceLinks      MerchantMemoryClaimEvidence[]
+  corrections        MerchantMemoryCorrection[]
+
+  @@index([merchantId, status, sectionKey])
+  @@index([versionId, sectionKey])
+  @@index([supersedesClaimId])
+  @@map("merchant_memory_claims")
+}
+
+model MerchantMemoryClaimEvidence {
+  id             String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  claimId        String                      @map("claim_id") @db.Uuid
+  evidenceItemId String?                     @map("evidence_item_id") @db.Uuid
+  ledgerEventId  String?                     @map("ledger_event_id") @db.Uuid
+  relationship   String                      @default("supports")
+  metadata       Json                        @default("{}")
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  claim          MerchantMemoryClaim         @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  evidenceItem   MerchantMemoryEvidenceItem? @relation(fields: [evidenceItemId], references: [id], onDelete: SetNull)
+  ledgerEvent    LedgerEvent?                @relation(fields: [ledgerEventId], references: [id], onDelete: SetNull)
+
+  @@index([claimId])
+  @@index([evidenceItemId])
+  @@index([ledgerEventId])
+  @@map("merchant_memory_claim_evidence")
+}
+
+model MerchantMemoryCorrection {
+  id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String                 @map("merchant_id") @db.Uuid
+  shopId         String?                @map("shop_id") @db.Uuid
+  versionId      String?                @map("version_id") @db.Uuid
+  claimId        String?                @map("claim_id") @db.Uuid
+  merchantUserId String?                @map("merchant_user_id") @db.Uuid
+  correctionType String                 @map("correction_type")
+  status         String                 @default("applied")
+  originalText   String?                @map("original_text")
+  correctedText  String?                @map("corrected_text")
+  correctionJson Json                   @default("{}") @map("correction_json")
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant       Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           Shop?                  @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  version        MerchantMemoryVersion? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  claim          MerchantMemoryClaim?   @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  merchantUser   MerchantUser?          @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, createdAt])
+  @@index([claimId])
+  @@index([versionId])
+  @@map("merchant_memory_corrections")
+}
+
+model MerchantMemoryOpenQuestion {
+  id         String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String                 @map("merchant_id") @db.Uuid
+  shopId     String?                @map("shop_id") @db.Uuid
+  versionId  String?                @map("version_id") @db.Uuid
+  sectionKey String                 @map("section_key")
+  question   String
+  reason     String?
+  priority   Int                    @default(100)
+  status     String                 @default("open")
+  answerJson Json                   @default("{}") @map("answer_json")
+  answeredAt DateTime?              @map("answered_at") @db.Timestamptz(6)
+  createdAt  DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant   Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop       Shop?                  @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  version    MerchantMemoryVersion? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, status, priority])
+  @@index([versionId])
+  @@map("merchant_memory_open_questions")
 }

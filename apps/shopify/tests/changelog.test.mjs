@@ -65,11 +65,11 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   const entries = await loadChangelog();
 
   assert.ok(entries.length >= 4);
-  assert.equal(entries[0].date, "2026-07-21");
+  assert.equal(entries[0].date, "2026-07-22");
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("Klaviyo private key saving"),
+        item.includes("Merchant Memory repository foundation"),
       ),
     ),
   );

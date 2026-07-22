@@ -1,6 +1,6 @@
 # Changelog Rules
 
-Every completed ticket or PR must update the changelog.
+Every completed product, workflow, data, security or operator-facing change must update the changelog.
 
 The source of truth is `apps/shopify/CHANGELOG.md`. This is the file rendered by the production Shopify app.
 

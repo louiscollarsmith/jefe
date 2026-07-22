@@ -5,7 +5,7 @@ import klaviyoWinbackFixture from "../app/fixtures/klaviyo-winback-scenario-data
 import watchdogFixture from "../app/fixtures/watchdog-scenario-data.json" with { type: "json" };
 import { getMissingShopifyScopes } from "../app/services/shopify-scopes.server.js";
 
-test("dummy store fixture covers Ticket 003 ingestion and downstream scenarios", () => {
+test("dummy store fixture covers Shopify ingestion and downstream scenarios", () => {
   const variants = fixture.products.flatMap((product) =>
     product.variants.map((variant) => ({
       ...variant,

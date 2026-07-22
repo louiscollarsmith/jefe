@@ -645,7 +645,7 @@ export default function Dev() {
                   Dummy store data
                 </Text>
                 <Text as="p" variant="bodyMd">
-                  Load Ticket 03 seed data into {shop}:{" "}
+                  Load Shopify ingestion seed data into {shop}:{" "}
                   {dummyData.fixture.productCount} products,{" "}
                   {dummyData.fixture.variantCount} variants,{" "}
                   {dummyData.fixture.orderCount} test orders, and{" "}

@@ -4,7 +4,7 @@ Use this when reviewing agent-generated PRs.
 
 ## Scope
 
-- Did the agent stay inside the ticket?
+- Did the agent stay inside the requested scope?
 - Did it add features not asked for?
 - Did it make architecture decisions without approval?
 
@@ -41,4 +41,4 @@ Use this when reviewing agent-generated PRs.
 
 - Approve
 - Request changes
-- Split follow-up ticket
+- Split follow-up work
