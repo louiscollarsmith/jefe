@@ -25,7 +25,7 @@ No staging branch, production branch, manual promotion, release tags, branch pro
 - Build command: `npx prisma generate && npm run typecheck && npm run lint && npm test && npm run build`.
 - Start command: `npm run start`.
 - Migration command: `npm run migrate`.
-- Seed command: no database seed script exists. Staging test data is loaded after app install from the authenticated Dev page when `ENABLE_DUMMY_STORE_LOADER=true`, or by running `npm run shopify:backfill -- --shop <dev-store>.myshopify.com`.
+- Seed command: no database seed script exists. Commerce evidence is imported after app install by the evidence backfill queue, or manually by running `npm run shopify:backfill -- --shop <dev-store>.myshopify.com`.
 - Reset command: no scripted reset exists. Reset by creating a fresh Neon branch/database or manually clearing staging test data, then run `npm run migrate`.
 - Docker required: no.
 - Railway Railpack/Nixpacks viable without Docker: yes, with the Railway service rooted at `apps/shopify` and `apps/shopify/railway.json` as the config file.
@@ -83,26 +83,21 @@ SHOPIFY_API_VERSION=2026-07
 SHOPIFY_API_KEY=
 SHOPIFY_API_SECRET=
 SHOPIFY_APP_URL=https://<railway-staging-url>
-SCOPES=read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers
+SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations
 SHOP_CUSTOM_DOMAIN=
 
 DATABASE_URL=
 SESSION_SECRET=
 
-ENABLE_DUMMY_STORE_LOADER=true
 ENABLE_DEV_TOOLS=true
-ENABLE_LIVE_WRITES=false
-ENABLE_KLAVIYO_SEND=false
-ENABLE_DAILY_BRIEF_EMAIL=false
-DAILY_BRIEF_EMAIL_TO=
+ENABLE_SHOPIFY_BACKFILL_LOOP=true
 ```
 
 Notes:
 
 - The app currently reads Shopify scopes from `SCOPES`, not `SHOPIFY_SCOPES`.
 - `SESSION_SECRET` is listed for staging hygiene, but the current app code does not read it yet.
-- Keep `ENABLE_LIVE_WRITES=false`, `ENABLE_KLAVIYO_SEND=false` and `ENABLE_DAILY_BRIEF_EMAIL=false`.
-- Do not add real Klaviyo sending or customer-facing email sending in staging.
+- The app currently requests read-only evidence scopes for products, orders, extended order history, inventory and locations.
 
 ## Shopify app
 
@@ -131,7 +126,10 @@ https://<railway-staging-url>/webhooks/app/uninstalled
 https://<railway-staging-url>/webhooks/inventory_levels/update
 https://<railway-staging-url>/webhooks/orders/create
 https://<railway-staging-url>/webhooks/orders/updated
+https://<railway-staging-url>/webhooks/orders/cancelled
+https://<railway-staging-url>/webhooks/products/create
 https://<railway-staging-url>/webhooks/products/update
+https://<railway-staging-url>/webhooks/products/delete
 https://<railway-staging-url>/webhooks/refunds/create
 ```
 
@@ -163,20 +161,20 @@ Use this against Neon staging only. Do not run migrations against any production
 
 There is no general `db:seed` or `db:reset` script yet.
 
-For staging test data:
+For staging evidence data:
 
 1. Install `Jefe Staging` on the Shopify development store.
-2. Set `ENABLE_DUMMY_STORE_LOADER=true`.
+2. Confirm `ENABLE_SHOPIFY_BACKFILL_LOOP=true`.
 3. Open the authenticated app Dev page.
-4. Load dummy store data and scenarios from the Dev page.
-5. Run `npm run shopify:backfill -- --shop <dev-store>.myshopify.com` if a CLI backfill is needed.
+4. Queue or process evidence backfill from the Dev page if needed.
+5. Run `npm run shopify:backfill -- --shop <dev-store>.myshopify.com` if a CLI evidence backfill is needed.
 
 For reset:
 
 1. Create a fresh Neon staging branch/database or manually clear staging dummy data.
 2. Update `DATABASE_URL` in Railway if the connection string changed.
 3. Trigger a Railway redeploy so `npm run migrate` runs.
-4. Reinstall or reopen the Shopify dev app and reload dummy data if needed.
+4. Reinstall or reopen the Shopify dev app and run evidence backfill if needed.
 
 Follow-up: add explicit `db:seed` and `db:reset` scripts once staging fixtures are stable.
 
@@ -240,10 +238,4 @@ If a migration caused the issue, write a forward-fix migration rather than manua
 
 ## Safety defaults
 
-Staging keeps product safety switches disabled:
-
-- Live writes: `ENABLE_LIVE_WRITES=false`
-- Klaviyo send: `ENABLE_KLAVIYO_SEND=false`
-- Daily Brief email: `ENABLE_DAILY_BRIEF_EMAIL=false`
-
-Verified lift and estimated prevention must remain separate in merchant-facing surfaces. Staging may contain dummy/test data only.
+Staging uses the read-only evidence-layer app foundation. It should contain development-store evidence data only and should not be connected to production merchant data.

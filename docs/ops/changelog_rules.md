@@ -23,10 +23,10 @@ Do not include noisy implementation details unless they matter for debugging, se
 
 ## Good examples
 
-- Added Daily Verdict v0 with revenue, margin confidence and product highlights.
-- Fixed COGS confidence so blank values are marked as Missing.
+- Added Shopify evidence backfill status on the Dev page.
+- Fixed Shopify webhook dedupe so repeated deliveries do not duplicate source events.
 - Added Shopify webhook HMAC verification.
-- Added House Rules fields for winback discount caps and campaign audience thresholds.
+- Reduced Shopify permissions to read-only evidence scopes.
 
 ## Bad examples
 

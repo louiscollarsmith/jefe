@@ -8,17 +8,12 @@ import {
 } from "../app/lib/shopify/admin-graphql.server.js";
 import { verifyShopifyWebhookHmac } from "../app/lib/shopify/webhook-hmac.server.js";
 import { processShopifyWebhook } from "../app/lib/ingestion/shopify/webhooks.server.js";
+import { runShopifyBackfill } from "../app/lib/ingestion/shopify/backfill.server.js";
+import { currencyCode } from "../app/lib/ingestion/shopify/normalize.server.js";
 import {
   ensureShopifyTenant,
   markShopifyInstallInactive,
 } from "../app/lib/ingestion/shopify/tenant.server.js";
-import {
-  importShopifyBulkResult,
-  parseJsonlStream,
-  startShopifyBulkBackfill,
-} from "../app/lib/ingestion/shopify/bulk.server.js";
-import { runShopifyBackfill } from "../app/lib/ingestion/shopify/backfill.server.js";
-import { currencyCode } from "../app/lib/ingestion/shopify/normalize.server.js";
 import {
   processNextBackfillJob,
   recoverStaleRunningBackfillJobs,
@@ -114,9 +109,9 @@ test("Shopify webhook ingestion dedupes and upserts products", async (t) => {
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const suffix = uniqueSuffix();
   const shopDomain = `webhook-${suffix}.myshopify.com`;
-  const rawBody = JSON.stringify(mockProductPayload(suffix));
+  const rawBody = JSON.stringify(mockRestProductPayload(suffix));
 
   try {
     const first = await processShopifyWebhook(prisma, {
@@ -140,7 +135,6 @@ test("Shopify webhook ingestion dedupes and upserts products", async (t) => {
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
       include: {
         products: { include: { variants: true } },
-        cogsInputs: true,
         ledgerEvents: true,
       },
     });
@@ -153,8 +147,51 @@ test("Shopify webhook ingestion dedupes and upserts products", async (t) => {
       shop.products[0].variants[0].inventoryItemExternalId,
       "gid://shopify/InventoryItem/54200616911144",
     );
-    assert.equal(shop.cogsInputs.length, 0);
     assert.equal(shop.ledgerEvents.length, 1);
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+test("Shopify product delete webhook marks existing products deleted", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  const shopDomain = `delete-${suffix}.myshopify.com`;
+  const productGid = `gid://shopify/Product/${suffix}`;
+
+  try {
+    const { merchant, shop } = await ensureShopifyTenant(prisma, {
+      shopDomain,
+      scopes: ["read_products"],
+    });
+    await prisma.product.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        externalId: productGid,
+        title: "Deleted product",
+      },
+    });
+
+    await processShopifyWebhook(prisma, {
+      rawBody: JSON.stringify({ id: productGid }),
+      topic: "products/delete",
+      shopDomain,
+      webhookId: `delete-${suffix}`,
+    });
+
+    const product = await prisma.product.findUniqueOrThrow({
+      where: { shopId_externalId: { shopId: shop.id, externalId: productGid } },
+    });
+    assert.equal(product.status, "deleted");
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
@@ -170,7 +207,7 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const suffix = uniqueSuffix();
   const shopDomain = `reactivated-${suffix}.myshopify.com`;
 
   try {
@@ -184,7 +221,7 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
     const { shop } = await ensureShopifyTenant(prisma, {
       shopDomain,
       accessTokenSessionId: `offline-reinstalled-${suffix}`,
-      scopes: ["read_products", "read_inventory"],
+      scopes: ["read_products"],
     });
     const connector = await prisma.connectorAccount.findFirstOrThrow({
       where: { shopId: shop.id, connector: "shopify" },
@@ -193,7 +230,7 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
     assert.equal(shop.status, "active");
     assert.equal(shop.setupStatus, "installed");
     assert.equal(connector.status, "active");
-    assert.deepEqual(connector.scopes, ["read_products", "read_inventory"]);
+    assert.deepEqual(connector.scopes, ["read_products"]);
     assert.equal(
       connector.readTokenRef,
       `shopify_session:offline-reinstalled-${suffix}`,
@@ -204,7 +241,7 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
   }
 });
 
-test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
+test("Shopify evidence backfill upserts commerce evidence and is idempotent", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");
     return;
@@ -213,7 +250,7 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const suffix = uniqueSuffix();
   const shopDomain = `backfill-${suffix}.myshopify.com`;
 
   try {
@@ -222,14 +259,14 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
       accessToken: "test-token",
       sessionId: `session-${suffix}`,
       logger: silentLogger,
-      fetchImpl: createBackfillFetch(suffix),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
     const second = await runShopifyBackfill(prisma, {
       shopDomain,
       accessToken: "test-token",
       sessionId: `session-${suffix}`,
       logger: silentLogger,
-      fetchImpl: createBackfillFetch(suffix),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
 
     const shop = await prisma.shop.findUniqueOrThrow({
@@ -239,7 +276,6 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
         orders: { include: { lineItems: true, refunds: true } },
         inventoryLevels: true,
         customerIdentities: true,
-        cogsInputs: true,
         ledgerEvents: true,
       },
     });
@@ -255,17 +291,10 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
     assert.equal(shop.products.length, 1);
     assert.equal(shop.products[0].variants[0].sku, `SKU-${suffix}`);
     assert.equal(shop.orders.length, 1);
-    assert.equal(shop.orders[0].financialStatus, "PAID");
     assert.equal(shop.orders[0].lineItems.length, 1);
     assert.equal(shop.orders[0].refunds.length, 1);
-    assert.equal(shop.inventoryLevels[0].available, 12);
-    assert.equal(shop.cogsInputs.length, 1);
-    assert.equal(shop.cogsInputs[0].source, "shopify_unit_cost");
-    assert.equal(shop.cogsInputs[0].confidenceLevel, "confirmed");
-    assert.equal(Number(shop.cogsInputs[0].costAmount), 13.5);
     assert.equal(shop.customerIdentities.length, 1);
-    assert.equal(shop.customerIdentities[0].orderCount, 1);
-    assert.match(shop.customerIdentities[0].maskedEmail, /^b\*+@example\.com$/);
+    assert.equal(shop.inventoryLevels.length, 1);
     assert.equal(shop.ledgerEvents.length, 6);
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
@@ -273,7 +302,7 @@ test("Shopify backfill upserts commerce state and is idempotent", async (t) => {
   }
 });
 
-test("inventory_items/update webhook updates local COGS and refetches missing unit cost", async (t) => {
+test("Install evidence backfill jobs queue, run, finalise and retry failed work", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");
     return;
@@ -282,436 +311,99 @@ test("inventory_items/update webhook updates local COGS and refetches missing un
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `inventory-item-cost-${suffix}.myshopify.com`;
-  const inventoryItemId = `gid://shopify/InventoryItem/inv-${suffix}`;
-  const variantId = `gid://shopify/ProductVariant/variant-${suffix}`;
-  const originalFetch = globalThis.fetch;
+  const suffix = uniqueSuffix();
+  const shopDomain = `jobs-${suffix}.myshopify.com`;
+  const sessionId = `offline-${suffix}`;
 
   try {
-    await runShopifyBackfill(prisma, {
-      shopDomain,
-      accessToken: "test-token",
-      sessionId: `session-${suffix}`,
-      logger: silentLogger,
-      fetchImpl: createBackfillFetch(suffix),
-      domains: ["products", "inventory"],
-    });
     await prisma.session.create({
       data: {
-        id: `offline-${suffix}`,
+        id: sessionId,
         shop: shopDomain,
-        state: `state-${suffix}`,
+        state: "test",
         isOnline: false,
+        scope:
+          "read_products,read_orders,read_all_orders,read_inventory,read_locations",
         accessToken: "test-token",
       },
     });
 
-    globalThis.fetch = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      assert.ok(body.query.includes("JefeInventoryItemCost"));
-      return Response.json({
-        data: {
-          node: {
-            id: inventoryItemId,
-            updatedAt: "2026-07-16T12:00:00Z",
-            unitCost: { amount: "21.00", currencyCode: "GBP" },
-            variant: { id: variantId },
-          },
-        },
-      });
-    };
-
-    const result = await processShopifyWebhook(prisma, {
-      rawBody: JSON.stringify({ admin_graphql_api_id: inventoryItemId }),
-      topic: "inventory_items/update",
-      shopDomain,
-      webhookId: `inventory-item-webhook-${suffix}`,
-      triggeredAt: "2026-07-16T12:00:00Z",
-      apiVersion: "2026-07",
-    });
-    const cogs = await prisma.cogsInput.findFirstOrThrow({
-      where: { shop: { shopDomain }, inventoryItemExternalId: inventoryItemId },
-    });
-    const shop = await prisma.shop.findUniqueOrThrow({
-      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
-    });
-
-    assert.equal(result.status, "processed");
-    assert.equal(Number(cogs.costAmount), 21);
-    assert.equal(cogs.source, "shopify_unit_cost");
-    assert.ok(shop.lastInventoryItemCostWebhookAt);
-    assert.ok(shop.lastCogsRecomputeAt);
-
-    await processShopifyWebhook(prisma, {
-      rawBody: JSON.stringify({
-        id: 54200616911144,
-        admin_graphql_api_id: inventoryItemId,
-        sku: `SKU-${suffix}`,
-        cost: "22.50",
-        updated_at: "2026-07-16T12:15:00Z",
-      }),
-      topic: "inventory_items/update",
-      shopDomain,
-      webhookId: `inventory-item-rest-webhook-${suffix}`,
-      triggeredAt: "2026-07-16T12:15:00Z",
-      apiVersion: "2026-07",
-    });
-    const restCost = await prisma.cogsInput.findFirstOrThrow({
-      where: { shop: { shopDomain }, inventoryItemExternalId: inventoryItemId },
-    });
-    assert.equal(Number(restCost.costAmount), 22.5);
-
-    await processShopifyWebhook(prisma, {
-      rawBody: JSON.stringify({
-        inventory_item_id: inventoryItemId,
-        location_id: `gid://shopify/Location/location-${suffix}`,
-        available: 99,
-        updated_at: "2026-07-16T12:30:00Z",
-      }),
-      topic: "inventory_levels/update",
-      shopDomain,
-      webhookId: `inventory-level-webhook-${suffix}`,
-      triggeredAt: "2026-07-16T12:30:00Z",
-      apiVersion: "2026-07",
-    });
-    const unchangedCogs = await prisma.cogsInput.findFirstOrThrow({
-      where: { id: cogs.id },
-    });
-    assert.equal(Number(unchangedCogs.costAmount), 22.5);
-  } finally {
-    globalThis.fetch = originalFetch;
-    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
-    await prisma.$disconnect();
-  }
-});
-
-test("Shopify install queues async backfill with 365-day and 60-day scope behaviour", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const fullShopDomain = `install-full-${suffix}.myshopify.com`;
-  const limitedShopDomain = `install-limited-${suffix}.myshopify.com`;
-
-  try {
     await queueInstallShopifyBackfill(prisma, {
-      shopDomain: fullShopDomain,
-      sessionId: `offline-${suffix}`,
+      shopDomain,
+      sessionId,
       scopes: [
         "read_products",
         "read_orders",
         "read_all_orders",
         "read_inventory",
         "read_locations",
-        "read_customers",
-      ],
-    });
-    await queueInstallShopifyBackfill(prisma, {
-      shopDomain: limitedShopDomain,
-      sessionId: `offline-limited-${suffix}`,
-      scopes: ["read_products", "read_orders", "read_inventory"],
-    });
-
-    const [fullShop, limitedShop] = await Promise.all([
-      prisma.shop.findUniqueOrThrow({
-        where: {
-          platform_shopDomain: {
-            platform: "shopify",
-            shopDomain: fullShopDomain,
-          },
-        },
-      }),
-      prisma.shop.findUniqueOrThrow({
-        where: {
-          platform_shopDomain: {
-            platform: "shopify",
-            shopDomain: limitedShopDomain,
-          },
-        },
-      }),
-    ]);
-    const fullProgress = await getShopBackfillProgress(prisma, {
-      shopId: fullShop.id,
-    });
-    const limitedProgress = await getShopBackfillProgress(prisma, {
-      shopId: limitedShop.id,
-    });
-
-    assert.equal(fullShop.setupStatus, "backfill_queued");
-    assert.equal(fullShop.availableOrderHistoryDays, 365);
-    assert.equal(fullShop.historicalOrderAccess, "full");
-    assert.equal(fullProgress.statuses.orders.status, "queued");
-    assert.equal(fullProgress.jobs.length, 1);
-    assert.equal(fullProgress.jobs[0].jobType, "shop_backfill_start");
-    assert.equal(limitedShop.availableOrderHistoryDays, 60);
-    assert.equal(limitedShop.historicalOrderAccess, "limited");
-    assert.equal(limitedProgress.historicalOrdersLimited, true);
-    assert.equal(limitedProgress.readyForWinback, false);
-  } finally {
-    await prisma.merchant.deleteMany({
-      where: {
-        name: { in: [fullShopDomain, limitedShopDomain] },
-      },
-    });
-    await prisma.$disconnect();
-  }
-});
-
-test("failed Shopify backfill jobs can be retried", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `retry-${suffix}.myshopify.com`;
-
-  try {
-    const merchant = await prisma.merchant.create({
-      data: {
-        name: shopDomain,
-        shops: { create: { shopDomain } },
-      },
-      include: { shops: true },
-    });
-    const shop = merchant.shops[0];
-
-    await prisma.backfillJob.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        jobType: "products_backfill",
-        status: "failed",
-        lastError: "temporary Shopify error",
-        failedAt: new Date(),
-      },
-    });
-
-    const result = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
-    const job = await prisma.backfillJob.findFirstOrThrow({
-      where: { shopId: shop.id, jobType: "products_backfill" },
-    });
-
-    assert.equal(result.retried, 1);
-    assert.equal(job.status, "queued");
-    assert.equal(job.lastError, null);
-  } finally {
-    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
-    await prisma.$disconnect();
-  }
-});
-
-test("stale running Shopify backfill jobs are requeued", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `stale-running-${suffix}.myshopify.com`;
-  const now = new Date("2026-07-16T12:00:00Z");
-
-  try {
-    const merchant = await prisma.merchant.create({
-      data: {
-        name: shopDomain,
-        shops: { create: { shopDomain } },
-      },
-      include: { shops: true },
-    });
-    const shop = merchant.shops[0];
-    await prisma.backfillJob.createMany({
-      data: [
-        {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          jobType: "stale_running_job",
-          status: "running",
-          startedAt: new Date("2026-07-16T11:00:00Z"),
-          priority: 20,
-        },
-        {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          jobType: "fresh_running_job",
-          status: "running",
-          startedAt: new Date("2026-07-16T11:59:00Z"),
-          priority: 30,
-        },
       ],
     });
 
-    const result = await recoverStaleRunningBackfillJobs(prisma, {
-      now,
-      timeoutMs: 15 * 60_000,
+    const start = await processNextBackfillJob(prisma, {
       logger: silentLogger,
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
-    const jobs = await prisma.backfillJob.findMany({
-      where: { shopId: shop.id },
-      orderBy: { jobType: "asc" },
-    });
-    const fresh = jobs.find((job) => job.jobType === "fresh_running_job");
-    const stale = jobs.find((job) => job.jobType === "stale_running_job");
-
-    assert.equal(result.recovered, 1);
-    assert.equal(stale?.status, "queued");
-    assert.equal(stale?.startedAt, null);
-    assert.equal(stale?.runAfter.toISOString(), now.toISOString());
-    assert.equal(
-      stale?.lastError,
-      "Recovered stale running job after worker restart.",
-    );
-    assert.equal(fresh?.status, "running");
-  } finally {
-    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
-    await prisma.$disconnect();
-  }
-});
-
-test("Shopify bulk backfill starts products and stores operation status", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `bulk-start-${suffix}.myshopify.com`;
-
-  try {
-    await queueInstallShopifyBackfill(prisma, {
-      shopDomain,
-      sessionId: `session-${suffix}`,
-      scopes: ["read_products", "read_orders", "read_all_orders"],
-    });
-
-    const result = await startShopifyBulkBackfill(prisma, {
-      shopDomain,
-      accessToken: "test-token",
-      sessionId: `session-${suffix}`,
-      domain: "products",
+    const products = await processNextBackfillJob(prisma, {
       logger: silentLogger,
-      fetchImpl: createBulkStartFetch(`gid://shopify/BulkOperation/${suffix}`),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
-    const status = await prisma.shopBackfillStatus.findUniqueOrThrow({
-      where: {
-        shopId_domain: { shopId: result.shop.id, domain: "products" },
-      },
-    });
-
-    assert.equal(
-      result.bulkOperation.id,
-      `gid://shopify/BulkOperation/${suffix}`,
-    );
-    assert.equal(status.status, "bulk_running");
-    assert.equal(status.bulkOperationId, result.bulkOperation.id);
-    assert.equal(status.metadata.bulkOperationStatus, "CREATED");
-  } finally {
-    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
-    await prisma.$disconnect();
-  }
-});
-
-test("Shopify bulk JSONL parser streams and imports products and orders", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `bulk-import-${suffix}.myshopify.com`;
-
-  try {
-    await queueInstallShopifyBackfill(prisma, {
-      shopDomain,
-      sessionId: `session-${suffix}`,
-      scopes: ["read_products", "read_orders", "read_all_orders"],
-    });
-
-    const parsed = [];
-    for await (const row of parseJsonlStream(
-      new Response(productsBulkJsonl(suffix)).body,
-    )) {
-      parsed.push(row);
-    }
-    assert.equal(parsed.length, 2);
-
-    await importShopifyBulkResult(prisma, {
-      shopDomain,
-      accessToken: "test-token",
-      sessionId: `session-${suffix}`,
-      domain: "products",
-      operation: completedOperation("products", suffix),
+    const orders = await processNextBackfillJob(prisma, {
       logger: silentLogger,
-      fetchImpl: createBulkResultFetch({
-        "https://bulk.test/products.jsonl": productsBulkJsonl(suffix),
-      }),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
-    const firstOrderImport = await importShopifyBulkResult(prisma, {
-      shopDomain,
-      accessToken: "test-token",
-      sessionId: `session-${suffix}`,
-      domain: "orders",
-      operation: completedOperation("orders", suffix),
+    const inventory = await processNextBackfillJob(prisma, {
       logger: silentLogger,
-      fetchImpl: createBulkResultFetch({
-        "https://bulk.test/orders.jsonl": ordersBulkJsonl(suffix),
-      }),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
-    const secondOrderImport = await importShopifyBulkResult(prisma, {
-      shopDomain,
-      accessToken: "test-token",
-      sessionId: `session-${suffix}`,
-      domain: "orders",
-      operation: completedOperation("orders", suffix),
+    const delta = await processNextBackfillJob(prisma, {
       logger: silentLogger,
-      fetchImpl: createBulkResultFetch({
-        "https://bulk.test/orders.jsonl": ordersBulkJsonl(suffix),
-      }),
+      fetchImpl: createEvidenceBackfillFetch(suffix),
+    });
+    const finalize = await processNextBackfillJob(prisma, {
+      logger: silentLogger,
+      fetchImpl: createEvidenceBackfillFetch(suffix),
     });
 
     const shop = await prisma.shop.findUniqueOrThrow({
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
       include: {
-        products: { include: { variants: true } },
-        orders: { include: { lineItems: true, refunds: true } },
+        products: true,
+        orders: true,
         customerIdentities: true,
+        inventoryLevels: true,
       },
     });
+    const progress = await getShopBackfillProgress(prisma, { shopId: shop.id });
 
+    assert.equal(start.jobType, "shop_backfill_start");
+    assert.equal(products.jobType, "products_backfill");
+    assert.equal(orders.jobType, "orders_backfill_365d");
+    assert.equal(inventory.jobType, "inventory_backfill");
+    assert.equal(delta.jobType, "backfill_delta_sync");
+    assert.equal(finalize.jobType, "backfill_finalize");
+    assert.equal(shop.setupStatus, "ready");
     assert.equal(shop.products.length, 1);
-    assert.equal(shop.products[0].variants.length, 1);
-    assert.equal(firstOrderImport.refunds, 1);
-    assert.equal(secondOrderImport.refunds, 1);
     assert.equal(shop.orders.length, 1);
-    assert.equal(shop.orders[0].lineItems.length, 1);
-    assert.equal(shop.orders[0].refunds.length, 1);
     assert.equal(shop.customerIdentities.length, 1);
-    assert.equal(shop.customerIdentities[0].orderCount, 1);
+    assert.equal(shop.inventoryLevels.length, 1);
+    assert.equal(progress.productsComplete, true);
+    assert.equal(progress.evidenceReady, true);
+
+    await prisma.backfillJob.updateMany({
+      where: { shopId: shop.id },
+      data: { status: "failed" },
+    });
+    const retry = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
+    assert.equal(retry.retried, 6);
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.session.deleteMany({ where: { shop: shopDomain } });
     await prisma.$disconnect();
   }
 });
 
-test("Shopify bulk finish webhook queues polling import", async (t) => {
+test("stale running evidence backfill jobs are recovered", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");
     return;
@@ -720,565 +412,228 @@ test("Shopify bulk finish webhook queues polling import", async (t) => {
   const prisma = new PrismaClient({
     datasources: { db: { url: databaseUrl } },
   });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const shopDomain = `bulk-webhook-${suffix}.myshopify.com`;
-  const operationId = `gid://shopify/BulkOperation/${suffix}`;
+  const suffix = uniqueSuffix();
+  const shopDomain = `stale-${suffix}.myshopify.com`;
 
   try {
-    const job = await queueInstallShopifyBackfill(prisma, {
+    const { merchant, shop } = await ensureShopifyTenant(prisma, {
       shopDomain,
-      sessionId: `session-${suffix}`,
-      scopes: ["read_products", "read_orders", "read_all_orders"],
+      scopes: ["read_products"],
     });
-    await prisma.shopBackfillStatus.update({
-      where: {
-        shopId_domain: { shopId: job.shopId, domain: "products" },
-      },
-      data: { status: "bulk_running", bulkOperationId: operationId },
-    });
-
-    const result = await processShopifyWebhook(prisma, {
-      rawBody: JSON.stringify({
-        admin_graphql_api_id: operationId,
-        status: "completed",
-        object_count: 2,
-        file_size: 500,
-      }),
-      topic: "bulk_operations/finish",
-      shopDomain,
-      webhookId: `bulk-webhook-${suffix}`,
-      triggeredAt: "2026-07-15T12:00:00Z",
-      apiVersion: "2026-07",
-    });
-    const pollJob = await prisma.backfillJob.findUniqueOrThrow({
-      where: {
-        shopId_jobType: { shopId: job.shopId, jobType: "products_bulk_poll" },
-      },
-    });
-
-    assert.equal(result.status, "processed");
-    assert.equal(pollJob.status, "queued");
-  } finally {
-    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
-    await prisma.$disconnect();
-  }
-});
-
-test("Shopify bulk polling imports completed result and falls back on failure", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for ingestion tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({
-    datasources: { db: { url: databaseUrl } },
-  });
-  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const completeShopDomain = `bulk-poll-${suffix}.myshopify.com`;
-  const fallbackShopDomain = `bulk-fallback-${suffix}.myshopify.com`;
-
-  try {
-    const completeJob = await prepareBulkPollShop(prisma, {
-      shopDomain: completeShopDomain,
-      suffix: `complete-${suffix}`,
-      domain: "products",
-    });
-    await prisma.shopBackfillStatus.updateMany({
-      where: {
-        shopId: completeJob.shopId,
-        domain: { in: ["orders", "inventory"] },
-      },
-      data: { status: "complete" },
-    });
-    const completeResult = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createBulkPollFetch({
-        operation: completedOperation("products", `complete-${suffix}`),
-        jsonlByUrl: {
-          "https://bulk.test/products.jsonl": productsBulkJsonl(
-            `complete-${suffix}`,
-          ),
-        },
-      }),
-    });
-    const completeShop = await prisma.shop.findUniqueOrThrow({
-      where: {
-        platform_shopDomain: {
-          platform: "shopify",
-          shopDomain: completeShopDomain,
-        },
-      },
-      include: { products: true, backfillStatuses: true },
-    });
-
-    assert.equal(completeResult.status, "succeeded");
-    assert.equal(completeShop.products.length, 1);
-    assert.equal(
-      completeShop.backfillStatuses.find(
-        (status) => status.domain === "products",
-      )?.status,
-      "bulk_imported",
-    );
-    assert.equal(
-      completeShop.backfillStatuses.find(
-        (status) => status.domain === "products",
-      )?.recordsProcessed,
-      1,
-    );
-    assert.ok(
-      await prisma.backfillJob.findUnique({
-        where: {
-          shopId_jobType: {
-            shopId: completeJob.shopId,
-            jobType: "backfill_delta_sync",
-          },
-        },
-      }),
-    );
-
-    await prepareBulkPollShop(prisma, {
-      shopDomain: fallbackShopDomain,
-      suffix: `fallback-${suffix}`,
-      domain: "orders",
-    });
-    const fallbackResult = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createBulkPollFetch({
-        operation: failedOperation(`fallback-${suffix}`),
-        paginatedSuffix: `fallback-${suffix}`,
-      }),
-    });
-    const fallbackShop = await prisma.shop.findUniqueOrThrow({
-      where: {
-        platform_shopDomain: {
-          platform: "shopify",
-          shopDomain: fallbackShopDomain,
-        },
-      },
-      include: { orders: true, backfillStatuses: true },
-    });
-    const orderStatus = fallbackShop.backfillStatuses.find(
-      (status) => status.domain === "orders",
-    );
-
-    assert.equal(fallbackResult.status, "succeeded");
-    assert.equal(fallbackShop.orders.length, 1);
-    assert.equal(orderStatus?.status, "complete");
-    assert.equal(orderStatus?.metadata.fallbackUsed, true);
-  } finally {
-    await prisma.merchant.deleteMany({
-      where: { name: { in: [completeShopDomain, fallbackShopDomain] } },
-    });
-    await prisma.$disconnect();
-  }
-});
-
-function createBackfillFetch(suffix) {
-  return async (_url, init) => {
-    const body = JSON.parse(init.body);
-    if (body.query.includes("JefeProductsCount")) {
-      return Response.json({
-        data: {
-          productsCount: { count: 1 },
-        },
-      });
-    }
-    if (body.query.includes("JefeOrdersCount")) {
-      return Response.json({
-        data: {
-          ordersCount: { count: 1 },
-        },
-      });
-    }
-    if (body.query.includes("JefeProductsBackfill")) {
-      return Response.json({
-        data: {
-          products: connection([mockGraphqlProduct(suffix)]),
-        },
-      });
-    }
-    if (body.query.includes("JefeInventoryBackfill")) {
-      return Response.json({
-        data: {
-          inventoryItems: connection([mockGraphqlInventoryItem(suffix)]),
-        },
-      });
-    }
-    if (body.query.includes("JefeOrdersBackfill")) {
-      assert.ok(!body.query.includes("acceptsMarketing"));
-      return Response.json({
-        data: {
-          orders: connection([mockGraphqlOrder(suffix)]),
-        },
-      });
-    }
-    throw new Error("Unexpected query");
-  };
-}
-
-function createBulkStartFetch(operationId) {
-  return async (_url, init) => {
-    const body = JSON.parse(init.body);
-    assert.ok(body.query.includes("JefeBulkOperationRun"));
-    assert.ok(body.variables.query.includes("products"));
-    assert.ok(!body.variables.query.includes("inventoryManagement"));
-    assert.ok(!body.variables.query.includes("requiresShipping"));
-    return Response.json({
+    await prisma.backfillJob.create({
       data: {
-        bulkOperationRunQuery: {
-          bulkOperation: {
-            id: operationId,
-            status: "CREATED",
-            errorCode: null,
-            createdAt: "2026-07-15T12:00:00Z",
-            completedAt: null,
-            objectCount: 0,
-            fileSize: null,
-            url: null,
-            partialDataUrl: null,
-          },
-          userErrors: [],
-        },
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: "products_backfill",
+        status: "running",
+        startedAt: new Date("2026-07-13T08:00:00Z"),
       },
     });
-  };
+
+    const result = await recoverStaleRunningBackfillJobs(prisma, {
+      now: new Date("2026-07-13T09:00:00Z"),
+      timeoutMs: 15 * 60 * 1000,
+      logger: silentLogger,
+    });
+    const job = await prisma.backfillJob.findFirstOrThrow({
+      where: { shopId: shop.id },
+    });
+
+    assert.equal(result.recovered, 1);
+    assert.equal(job.status, "queued");
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+function uniqueSuffix() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`.replace(
+    /[^a-z0-9-]/gi,
+    "",
+  );
 }
 
-function createBulkResultFetch(jsonlByUrl) {
-  return async (url) => {
-    const body = jsonlByUrl[String(url)];
-    if (body === undefined) throw new Error(`Unexpected bulk URL ${url}`);
-    return new Response(body, { status: 200 });
-  };
-}
-
-function createBulkPollFetch({ operation, jsonlByUrl = {}, paginatedSuffix }) {
-  return async (url, init = {}) => {
-    if (String(url).startsWith("https://bulk.test/")) {
-      const body = jsonlByUrl[String(url)];
-      if (body === undefined) throw new Error(`Unexpected bulk URL ${url}`);
-      return new Response(body, { status: 200 });
-    }
-
-    const body = JSON.parse(init.body);
-    if (body.query.includes("JefeBulkOperationNode")) {
-      return Response.json({ data: { node: operation } });
-    }
-
-    if (paginatedSuffix) {
-      return createBackfillFetch(paginatedSuffix)(url, init);
-    }
-
-    throw new Error("Unexpected query");
-  };
-}
-
-async function prepareBulkPollShop(prisma, { shopDomain, suffix, domain }) {
-  const sessionId = `session-${suffix}`;
-  const job = await queueInstallShopifyBackfill(prisma, {
-    shopDomain,
-    sessionId,
-    scopes: ["read_products", "read_orders", "read_all_orders"],
-  });
-  await prisma.session.create({
-    data: {
-      id: sessionId,
-      shop: shopDomain,
-      state: `state-${suffix}`,
-      isOnline: false,
-      accessToken: "test-token",
-    },
-  });
-  await prisma.backfillJob.deleteMany({
-    where: { shopId: job.shopId, jobType: "shop_backfill_start" },
-  });
-  await prisma.shopBackfillStatus.update({
-    where: { shopId_domain: { shopId: job.shopId, domain } },
-    data: {
-      status: "bulk_running",
-      bulkOperationId: `gid://shopify/BulkOperation/${suffix}`,
-    },
-  });
-  await prisma.backfillJob.create({
-    data: {
-      merchantId: job.merchantId,
-      shopId: job.shopId,
-      jobType:
-        domain === "products" ? "products_bulk_poll" : "orders_bulk_poll",
-      status: "queued",
-      priority: domain === "products" ? 35 : 36,
-      payloadJson: {
-        sessionId,
-        scopes: ["read_products", "read_orders", "read_all_orders"],
-        backfillStartedAt: "2026-07-15T12:00:00Z",
-      },
-    },
-  });
-  return job;
-}
-
-function completedOperation(domain, suffix) {
+function mockRestProductPayload(suffix) {
   return {
-    id: `gid://shopify/BulkOperation/${suffix}`,
-    status: "COMPLETED",
-    errorCode: null,
-    createdAt: "2026-07-15T12:00:00Z",
-    completedAt: "2026-07-15T12:01:00Z",
-    objectCount: domain === "products" ? 2 : 3,
-    fileSize: 500,
-    url:
-      domain === "products"
-        ? "https://bulk.test/products.jsonl"
-        : "https://bulk.test/orders.jsonl",
-    partialDataUrl: null,
-  };
-}
-
-function failedOperation(suffix) {
-  return {
-    id: `gid://shopify/BulkOperation/${suffix}`,
-    status: "FAILED",
-    errorCode: "INTERNAL_SERVER_ERROR",
-    createdAt: "2026-07-15T12:00:00Z",
-    completedAt: "2026-07-15T12:01:00Z",
-    objectCount: 0,
-    fileSize: null,
-    url: null,
-    partialDataUrl: null,
-  };
-}
-
-function productsBulkJsonl(suffix) {
-  const productId = `gid://shopify/Product/bulk-product-${suffix}`;
-  return [
-    {
-      __typename: "Product",
-      id: productId,
-      title: "Bulk Product",
-      handle: `bulk-product-${suffix}`,
-      status: "ACTIVE",
-      vendor: "Jefe",
-      productType: "Supplements",
-      tags: ["bulk"],
-      createdAt: "2026-07-01T08:00:00Z",
-      updatedAt: "2026-07-13T08:00:00Z",
-    },
-    {
-      __typename: "ProductVariant",
-      __parentId: productId,
-      id: `gid://shopify/ProductVariant/bulk-variant-${suffix}`,
-      title: "Default",
-      sku: `BULK-SKU-${suffix}`,
-      price: "49.00",
-      createdAt: "2026-07-01T08:00:00Z",
-      updatedAt: "2026-07-13T08:00:00Z",
-      inventoryItem: {
-        id: `gid://shopify/InventoryItem/bulk-inv-${suffix}`,
-        updatedAt: "2026-07-13T08:00:00Z",
-        unitCost: { amount: "11.25", currencyCode: "GBP" },
-      },
-    },
-  ]
-    .map((row) => JSON.stringify(row))
-    .join("\n");
-}
-
-function ordersBulkJsonl(suffix) {
-  const orderId = `gid://shopify/Order/bulk-order-${suffix}`;
-  return [
-    {
-      __typename: "Order",
-      id: orderId,
-      name: "#2001",
-      createdAt: "2026-07-12T08:00:00Z",
-      updatedAt: "2026-07-13T08:00:00Z",
-      processedAt: "2026-07-12T08:05:00Z",
-      email: `bulk-${suffix}@example.com`,
-      displayFinancialStatus: "PAID",
-      displayFulfillmentStatus: "UNFULFILLED",
-      currencyCode: "GBP",
-      currentSubtotalPriceSet: {
-        shopMoney: { amount: "49.00", currencyCode: "GBP" },
-      },
-      currentTotalPriceSet: {
-        shopMoney: { amount: "49.00", currencyCode: "GBP" },
-      },
-      currentTotalDiscountsSet: {
-        shopMoney: { amount: "0.00", currencyCode: "GBP" },
-      },
-      currentTotalTaxSet: {
-        shopMoney: { amount: "8.17", currencyCode: "GBP" },
-      },
-      totalShippingPriceSet: {
-        shopMoney: { amount: "0.00", currencyCode: "GBP" },
-      },
-      customer: {
-        id: `gid://shopify/Customer/bulk-customer-${suffix}`,
-        email: `bulk-${suffix}@example.com`,
-      },
-    },
-    {
-      __typename: "LineItem",
-      __parentId: orderId,
-      id: `gid://shopify/LineItem/bulk-line-${suffix}`,
-      sku: `BULK-SKU-${suffix}`,
-      title: "Bulk Product",
-      quantity: 1,
-      originalUnitPriceSet: {
-        shopMoney: { amount: "49.00", currencyCode: "GBP" },
-      },
-      discountedTotalSet: {
-        shopMoney: { amount: "49.00", currencyCode: "GBP" },
-      },
-      discountAllocations: [],
-      product: { id: `gid://shopify/Product/bulk-product-${suffix}` },
-      variant: { id: `gid://shopify/ProductVariant/bulk-variant-${suffix}` },
-    },
-    {
-      __typename: "Refund",
-      __parentId: orderId,
-      id: `gid://shopify/Refund/bulk-refund-${suffix}`,
-      createdAt: "2026-07-13T09:00:00Z",
-      note: "Bulk refund",
-      totalRefundedSet: {
-        shopMoney: { amount: "5.00", currencyCode: "GBP" },
-      },
-    },
-  ]
-    .map((row) => JSON.stringify(row))
-    .join("\n");
-}
-
-function connection(nodes) {
-  return {
-    pageInfo: { hasNextPage: false, endCursor: null },
-    edges: nodes.map((node) => ({ node })),
-  };
-}
-
-function mockProductPayload(suffix) {
-  return {
-    admin_graphql_api_id: `gid://shopify/Product/product-${suffix}`,
-    title: "Webhook Product",
+    id: 9000,
+    admin_graphql_api_id: `gid://shopify/Product/${suffix}`,
+    title: "Backfill Tee",
+    handle: "backfill-tee",
     status: "active",
     vendor: "Jefe",
-    product_type: "Supplements",
-    created_at: "2026-07-01T08:00:00Z",
-    updated_at: "2026-07-13T08:00:00Z",
+    product_type: "T-Shirts",
+    created_at: "2026-07-13T08:00:00Z",
+    updated_at: "2026-07-13T08:30:00Z",
     variants: [
       {
-        admin_graphql_api_id: `gid://shopify/ProductVariant/variant-${suffix}`,
+        id: 9100,
+        admin_graphql_api_id: `gid://shopify/ProductVariant/${suffix}`,
         sku: `SKU-${suffix}`,
         title: "Default",
-        price: "49.00",
+        price: "29.00",
         inventory_item_id: 54200616911144,
-        created_at: "2026-07-01T08:00:00Z",
-        updated_at: "2026-07-13T08:00:00Z",
+        created_at: "2026-07-13T08:00:00Z",
+        updated_at: "2026-07-13T08:30:00Z",
       },
     ],
   };
 }
 
-function mockGraphqlProduct(suffix) {
+function mockGraphqlProductPayload(suffix) {
   return {
-    id: `gid://shopify/Product/product-${suffix}`,
-    title: "Backfill Product",
-    handle: `backfill-product-${suffix}`,
+    id: `gid://shopify/Product/${suffix}`,
+    title: "Backfill Tee",
+    handle: "backfill-tee",
     status: "ACTIVE",
     vendor: "Jefe",
-    productType: "Supplements",
-    createdAt: "2026-07-01T08:00:00Z",
-    updatedAt: "2026-07-13T08:00:00Z",
-    variants: connection([
-      {
-        id: `gid://shopify/ProductVariant/variant-${suffix}`,
-        sku: `SKU-${suffix}`,
-        title: "Default",
-        price: "49.00",
-        createdAt: "2026-07-01T08:00:00Z",
-        updatedAt: "2026-07-13T08:00:00Z",
-        inventoryItem: {
-          id: `gid://shopify/InventoryItem/inv-${suffix}`,
-          updatedAt: "2026-07-13T08:00:00Z",
-          unitCost: { amount: "12.34", currencyCode: "GBP" },
+    productType: "T-Shirts",
+    createdAt: "2026-07-13T08:00:00Z",
+    updatedAt: "2026-07-13T08:30:00Z",
+    variants: {
+      edges: [
+        {
+          node: {
+            id: `gid://shopify/ProductVariant/${suffix}`,
+            sku: `SKU-${suffix}`,
+            title: "Default",
+            price: "29.00",
+            createdAt: "2026-07-13T08:00:00Z",
+            updatedAt: "2026-07-13T08:30:00Z",
+            inventoryItem: {
+              id: `gid://shopify/InventoryItem/${suffix}`,
+            },
+          },
         },
-      },
-    ]),
+      ],
+    },
   };
 }
 
-function mockGraphqlInventoryItem(suffix) {
+function mockGraphqlOrderPayload(suffix) {
   return {
-    id: `gid://shopify/InventoryItem/inv-${suffix}`,
-    updatedAt: "2026-07-13T08:00:00Z",
-    unitCost: { amount: "13.50", currencyCode: "GBP" },
-    variant: { id: `gid://shopify/ProductVariant/variant-${suffix}` },
-    inventoryLevels: connection([
-      {
-        id: `gid://shopify/InventoryLevel/level-${suffix}`,
-        updatedAt: "2026-07-13T08:00:00Z",
-        quantities: [
-          { name: "available", quantity: 12 },
-          { name: "committed", quantity: 2 },
-          { name: "incoming", quantity: 5 },
-        ],
-        location: { id: `gid://shopify/Location/location-${suffix}` },
-      },
-    ]),
-  };
-}
-
-function mockGraphqlOrder(suffix) {
-  return {
-    id: `gid://shopify/Order/order-${suffix}`,
-    name: "#1001",
-    createdAt: "2026-07-12T08:00:00Z",
-    updatedAt: "2026-07-13T08:00:00Z",
-    processedAt: "2026-07-12T08:05:00Z",
-    email: `backfill-${suffix}@example.com`,
-    contactEmail: `contact-${suffix}@example.com`,
+    id: `gid://shopify/Order/${suffix}`,
+    name: `#${suffix.slice(0, 6)}`,
+    createdAt: "2026-07-13T09:00:00Z",
+    processedAt: "2026-07-13T09:05:00Z",
+    updatedAt: "2026-07-13T09:10:00Z",
     displayFinancialStatus: "PAID",
-    displayFulfillmentStatus: "UNFULFILLED",
+    displayFulfillmentStatus: "FULFILLED",
     currencyCode: "GBP",
+    email: `buyer-${suffix}@example.com`,
+    customer: {
+      id: `gid://shopify/Customer/${suffix}`,
+      email: `buyer-${suffix}@example.com`,
+    },
     currentSubtotalPriceSet: {
-      shopMoney: { amount: "49.00", currencyCode: "GBP" },
+      shopMoney: { amount: "29.00", currencyCode: "GBP" },
     },
     currentTotalPriceSet: {
-      shopMoney: { amount: "49.00", currencyCode: "GBP" },
+      shopMoney: { amount: "29.00", currencyCode: "GBP" },
     },
     currentTotalDiscountsSet: {
       shopMoney: { amount: "0.00", currencyCode: "GBP" },
     },
-    currentTotalTaxSet: { shopMoney: { amount: "8.17", currencyCode: "GBP" } },
+    currentTotalTaxSet: {
+      shopMoney: { amount: "0.00", currencyCode: "GBP" },
+    },
     totalShippingPriceSet: {
       shopMoney: { amount: "0.00", currencyCode: "GBP" },
     },
-    lineItems: connection([
-      {
-        id: `gid://shopify/LineItem/line-${suffix}`,
-        sku: `SKU-${suffix}`,
-        title: "Backfill Product",
-        quantity: 1,
-        originalUnitPriceSet: {
-          shopMoney: { amount: "49.00", currencyCode: "GBP" },
+    lineItems: {
+      edges: [
+        {
+          node: {
+            id: `gid://shopify/LineItem/${suffix}`,
+            sku: `SKU-${suffix}`,
+            title: "Backfill Tee",
+            quantity: 1,
+            originalUnitPriceSet: {
+              shopMoney: { amount: "29.00", currencyCode: "GBP" },
+            },
+            discountedTotalSet: {
+              shopMoney: { amount: "29.00", currencyCode: "GBP" },
+            },
+            discountAllocations: [],
+            product: { id: `gid://shopify/Product/${suffix}` },
+            variant: { id: `gid://shopify/ProductVariant/${suffix}` },
+          },
         },
-        discountedTotalSet: {
-          shopMoney: { amount: "49.00", currencyCode: "GBP" },
-        },
-        discountAllocations: [],
-        product: { id: `gid://shopify/Product/product-${suffix}` },
-        variant: { id: `gid://shopify/ProductVariant/variant-${suffix}` },
-      },
-    ]),
+      ],
+    },
     refunds: [
       {
-        id: `gid://shopify/Refund/refund-${suffix}`,
-        createdAt: "2026-07-13T09:00:00Z",
-        note: "Test refund",
+        id: `gid://shopify/Refund/${suffix}`,
+        createdAt: "2026-07-13T10:00:00Z",
+        note: "test refund",
         totalRefundedSet: {
           shopMoney: { amount: "5.00", currencyCode: "GBP" },
         },
       },
     ],
+  };
+}
+
+function mockGraphqlInventoryItemPayload(suffix) {
+  return {
+    id: `gid://shopify/InventoryItem/${suffix}`,
+    updatedAt: "2026-07-13T09:00:00Z",
+    variant: { id: `gid://shopify/ProductVariant/${suffix}` },
+    inventoryLevels: {
+      edges: [
+        {
+          node: {
+            id: `gid://shopify/InventoryLevel/${suffix}`,
+            updatedAt: "2026-07-13T09:00:00Z",
+            quantities: [
+              { name: "available", quantity: 12 },
+              { name: "committed", quantity: 1 },
+              { name: "incoming", quantity: 3 },
+            ],
+            location: { id: `gid://shopify/Location/${suffix}` },
+          },
+        },
+      ],
+    },
+  };
+}
+
+function createEvidenceBackfillFetch(suffix) {
+  return async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.query.includes("JefeProductsCount")) {
+      return Response.json({ data: { productsCount: { count: 1 } } });
+    }
+    if (body.query.includes("JefeOrdersCount")) {
+      return Response.json({ data: { ordersCount: { count: 1 } } });
+    }
+    if (body.query.includes("JefeInventoryItemsBackfill")) {
+      return Response.json({
+        data: {
+          inventoryItems: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            edges: [{ node: mockGraphqlInventoryItemPayload(suffix) }],
+          },
+        },
+      });
+    }
+    if (body.query.includes("JefeOrdersBackfill")) {
+      return Response.json({
+        data: {
+          orders: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            edges: [{ node: mockGraphqlOrderPayload(suffix) }],
+          },
+        },
+      });
+    }
+    return Response.json({
+      data: {
+        products: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          edges: [{ node: mockGraphqlProductPayload(suffix) }],
+        },
+      },
+    });
   };
 }

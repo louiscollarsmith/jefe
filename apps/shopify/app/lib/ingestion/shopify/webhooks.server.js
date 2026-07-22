@@ -5,8 +5,6 @@ import {
   getShopifyWebhookHeaders,
   verifyShopifyWebhookHmac,
 } from "../../shopify/webhook-hmac.server.js";
-import { ShopifyAdminGraphqlClient } from "../../shopify/admin-graphql.server.js";
-import { INVENTORY_ITEM_COST_QUERY } from "../../shopify/queries.server.js";
 import { jsonObject, parseDate } from "./normalize.server.js";
 import {
   ensureShopifyTenant,
@@ -14,16 +12,12 @@ import {
 } from "./tenant.server.js";
 import { writeLedgerEvent } from "./ledger.server.js";
 import {
+  markShopifyProductDeleted,
   upsertShopifyInventoryLevel,
   upsertShopifyOrder,
   upsertShopifyProduct,
   upsertShopifyRefund,
 } from "./canonical.server.js";
-import {
-  recomputeCogsCoverage,
-  upsertShopifyUnitCostFromInventoryItem,
-} from "../../../services/cogs.server.js";
-import { generateDailyBrief } from "../../../services/daily-brief.server.js";
 
 const COMPLIANCE_TOPICS = new Set([
   "customers/data_request",
@@ -139,7 +133,6 @@ export async function processShopifyWebhook(prisma, input) {
   await processCanonicalWebhook(prisma, {
     merchantId: merchant.id,
     shopId: shop.id,
-    shopDomain: input.shopDomain,
     topic: input.topic,
     payload,
   });
@@ -149,7 +142,7 @@ export async function processShopifyWebhook(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; shopDomain: string; topic: string; payload: unknown }} input
+ * @param {{ merchantId: string; shopId: string; topic: string; payload: unknown }} input
  */
 async function processCanonicalWebhook(prisma, input) {
   switch (input.topic) {
@@ -174,7 +167,10 @@ async function processCanonicalWebhook(prisma, input) {
       });
       break;
     case "products/delete":
-      await markProductDeleted(prisma, input);
+      await markShopifyProductDeleted(prisma, {
+        shopId: input.shopId,
+        payload: input.payload,
+      });
       break;
     case "inventory_levels/update":
       await upsertShopifyInventoryLevel(prisma, {
@@ -183,185 +179,9 @@ async function processCanonicalWebhook(prisma, input) {
         inventoryLevel: input.payload,
       });
       break;
-    case "inventory_items/update":
-      await handleInventoryItemUpdate(prisma, input);
-      break;
-    case "bulk_operations/finish":
-      await handleBulkOperationFinish(prisma, input);
-      break;
     default:
       break;
   }
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; shopDomain: string; payload: unknown }} input
- */
-async function handleInventoryItemUpdate(prisma, input) {
-  const payload = jsonObject(input.payload);
-  const inventoryItemId =
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("InventoryItem", payload.inventory_item_id ?? payload.id);
-  if (!inventoryItemId) return;
-
-  let inventoryItem = payload;
-  if (!hasUnitCost(payload)) {
-    inventoryItem =
-      (await fetchInventoryItemForWebhook(prisma, {
-        shopDomain: input.shopDomain,
-        inventoryItemId,
-      })) ?? payload;
-  }
-
-  await upsertShopifyUnitCostFromInventoryItem(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    inventoryItem,
-  });
-  await prisma.shop.update({
-    where: { id: input.shopId },
-    data: {
-      lastInventoryItemCostWebhookAt: new Date(),
-      lastSuccessfulCogsSyncAt: new Date(),
-      lastCogsSyncError: null,
-    },
-  });
-  await recomputeCogsCoverage(prisma, input.shopId);
-  await generateDailyBrief(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    force: true,
-  });
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopDomain: string; inventoryItemId: string }} input
- */
-async function fetchInventoryItemForWebhook(prisma, input) {
-  const session = await prisma.session.findFirst({
-    where: { shop: input.shopDomain, isOnline: false },
-    orderBy: { expires: "desc" },
-  });
-  if (!session?.accessToken) return null;
-
-  const client = new ShopifyAdminGraphqlClient({
-    shopDomain: input.shopDomain,
-    accessToken: session.accessToken,
-    apiVersion: process.env.SHOPIFY_API_VERSION,
-  });
-  const data = /** @type {any} */ (
-    await client.request(INVENTORY_ITEM_COST_QUERY, {
-      id: input.inventoryItemId,
-    })
-  );
-  return data.node ?? null;
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; payload: unknown }} input
- */
-async function handleBulkOperationFinish(prisma, input) {
-  const payload = jsonObject(input.payload);
-  const operationId =
-    stringValue(payload.admin_graphql_api_id) || stringValue(payload.id);
-  if (!operationId) return;
-
-  const statuses = await prisma.shopBackfillStatus.findMany({
-    where: {
-      shopId: input.shopId,
-      bulkOperationId: operationId,
-      domain: { in: ["products", "orders"] },
-    },
-  });
-
-  await Promise.all(
-    statuses.map((status) =>
-      prisma.$transaction([
-        prisma.shopBackfillStatus.update({
-          where: { id: status.id },
-          data: {
-            status: "bulk_completed",
-            completedAt: new Date(),
-            metadata: {
-              ...(jsonObject(status.metadata) ?? {}),
-              bulkOperationStatus:
-                stringValue(payload.status) ?? "webhook_finished",
-              bulkOperationErrorCode: stringValue(payload.error_code),
-              bulkOperationObjectCount: numberValue(payload.object_count),
-              bulkOperationFileSize: numberValue(payload.file_size),
-              bulkOperationCompletedAt: stringValue(payload.completed_at),
-            },
-          },
-        }),
-        prisma.backfillJob.upsert({
-          where: {
-            shopId_jobType: {
-              shopId: input.shopId,
-              jobType:
-                status.domain === "products"
-                  ? "products_bulk_poll"
-                  : "orders_bulk_poll",
-            },
-          },
-          create: {
-            merchantId: input.merchantId,
-            shopId: input.shopId,
-            jobType:
-              status.domain === "products"
-                ? "products_bulk_poll"
-                : "orders_bulk_poll",
-            status: "queued",
-            priority: status.domain === "products" ? 35 : 36,
-            runAfter: new Date(),
-            payloadJson: {
-              domain: status.domain,
-              bulkOperationId: operationId,
-              source: "bulk_operations_finish_webhook",
-            },
-          },
-          update: {
-            status: "queued",
-            runAfter: new Date(),
-            failedAt: null,
-            lastError: null,
-            payloadJson: {
-              domain: status.domain,
-              bulkOperationId: operationId,
-              source: "bulk_operations_finish_webhook",
-            },
-          },
-        }),
-      ]),
-    ),
-  );
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopId: string; payload: unknown }} input
- */
-async function markProductDeleted(prisma, input) {
-  const payload = jsonObject(input.payload);
-  const externalId =
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("Product", payload.product_id ?? payload.id);
-  if (!externalId) return;
-
-  await prisma.product.updateMany({
-    where: {
-      shopId: input.shopId,
-      externalId,
-    },
-    data: {
-      status: "deleted",
-      rawPayload: payload,
-    },
-  });
 }
 
 /**
@@ -425,21 +245,6 @@ function safeJsonParse(rawBody) {
 /** @param {unknown} value */
 function stringValue(value) {
   return typeof value === "string" && value !== "" ? value : null;
-}
-
-/** @param {unknown} value */
-function numberValue(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-/** @param {Record<string, any>} payload */
-function hasUnitCost(payload) {
-  return Boolean(payload.unitCost || payload.unit_cost || payload.cost);
 }
 
 /**

@@ -3,10 +3,7 @@
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server.js";
 
 export const DEFAULT_BACKFILL_DAYS = 365;
-export const MINIMUM_BACKFILL_DAYS_FOR_WINBACK = 180;
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
-export const MAX_BACKFILL_DAYS = 365;
-
 export const BACKFILL_DOMAINS = [
   "shop",
   "webhooks",
@@ -15,18 +12,14 @@ export const BACKFILL_DOMAINS = [
   "customers",
   "inventory",
   "refunds",
-  "derived_metrics",
 ];
 
 const JOB_PRIORITIES = {
   shop_backfill_start: 10,
   products_backfill: 20,
   orders_backfill_365d: 30,
-  products_bulk_poll: 35,
-  orders_bulk_poll: 36,
   inventory_backfill: 40,
   backfill_delta_sync: 50,
-  derived_metrics_recompute: 60,
   backfill_finalize: 70,
 };
 
@@ -45,7 +38,7 @@ export async function queueInstallShopifyBackfill(prisma, input) {
     accessTokenSessionId: input.sessionId,
     scopes,
     rawPayload: Object.assign(
-      { source: "install_backfill_queue" },
+      { source: "install_evidence_backfill_queue" },
       jsonObject(input.rawPayload),
     ),
   });
@@ -199,24 +192,18 @@ export async function getShopBackfillProgress(prisma, input) {
       shop.backfillStatuses.find((status) => status.domain === domain) ?? null,
     ]),
   );
-  const productsComplete = isCompleteStatus(statusByDomain.products?.status);
-  const ordersComplete = isCompleteStatus(statusByDomain.orders?.status);
-  const inventoryComplete = isCompleteStatus(statusByDomain.inventory?.status);
-  const derivedComplete = isCompleteStatus(
-    statusByDomain.derived_metrics?.status,
-  );
-  const customersComplete = isCompleteStatus(statusByDomain.customers?.status);
 
   return {
     shop,
     statuses: statusByDomain,
     jobs: shop.backfillJobs,
-    readyForBasicBrief: productsComplete && ordersComplete && derivedComplete,
-    readyForInventoryGuardian: productsComplete && inventoryComplete,
-    readyForWinback:
-      ordersComplete &&
-      customersComplete &&
-      shop.availableOrderHistoryDays >= MINIMUM_BACKFILL_DAYS_FOR_WINBACK,
+    productsComplete: isCompleteStatus(statusByDomain.products?.status),
+    ordersComplete: isCompleteStatus(statusByDomain.orders?.status),
+    customersComplete: isCompleteStatus(statusByDomain.customers?.status),
+    inventoryComplete: isCompleteStatus(statusByDomain.inventory?.status),
+    evidenceReady: ["products", "orders", "customers", "inventory"].every(
+      (domain) => isCompleteStatus(statusByDomain[domain]?.status),
+    ),
     historicalOrdersLimited: shop.historicalOrderAccess === "limited",
   };
 }
@@ -268,7 +255,7 @@ function jobPriority(jobType) {
 
 /** @param {string | null | undefined} status */
 function isCompleteStatus(status) {
-  return status === "complete" || status === "bulk_imported";
+  return status === "complete";
 }
 
 /**

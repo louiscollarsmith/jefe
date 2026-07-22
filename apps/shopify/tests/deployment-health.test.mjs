@@ -5,7 +5,7 @@ import { buildHealthPayload } from "../app/services/deployment-health.server.js"
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
 
 const EXPECTED_SHOPIFY_SCOPES =
-  "read_products,write_products,read_orders,read_all_orders,write_orders,read_inventory,write_inventory,read_locations,read_customers,write_customers";
+  "read_products,read_orders,read_all_orders,read_inventory,read_locations";
 
 test("deployment health reports the configured app environment", () => {
   assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
@@ -64,9 +64,6 @@ test("tracked Shopify scope declarations stay in sync", async () => {
     "shopify.app.staging.toml",
     ".env.example",
     "README.md",
-    "../../docs/ops/deployment_staging_railway_neon.md",
-  ];
-  const proseScopeFiles = [
     "docs/shopify-ingestion.md",
   ];
 
@@ -74,11 +71,17 @@ test("tracked Shopify scope declarations stay in sync", async () => {
     const content = await readFile(file, "utf8");
     assert.match(content, new RegExp(EXPECTED_SHOPIFY_SCOPES));
   }
+});
 
-  for (const file of proseScopeFiles) {
-    const content = await readFile(file, "utf8");
-    for (const scope of EXPECTED_SHOPIFY_SCOPES.split(",")) {
-      assert.match(content, new RegExp(scope));
-    }
-  }
+test("OAuth completion queues install backfill from the Shopify afterAuth hook", async () => {
+  const shopifyServer = await readFile("app/shopify.server.ts", "utf8");
+  const authRoute = await readFile("app/routes/auth.$.tsx", "utf8");
+
+  assert.match(shopifyServer, /hooks:\s*{/);
+  assert.match(shopifyServer, /afterAuth:\s*async\s*\(\{\s*session\s*\}\)/);
+  assert.match(shopifyServer, /queueInstallShopifyBackfill\(prisma/);
+  assert.match(shopifyServer, /source: "oauth_after_auth"/);
+
+  assert.match(authRoute, /queueInstallShopifyBackfill\(prisma/);
+  assert.match(authRoute, /source: "oauth_callback"/);
 });

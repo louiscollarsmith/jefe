@@ -1,41 +1,31 @@
 # Database Schema
 
-Jefe uses Postgres as the source of truth. Prisma owns the initial schema and Shopify session storage is stored in the same database through the generated `Session` model.
+Jefe uses Postgres as the source of truth. Prisma owns the schema and Shopify session storage is stored in the same database through the generated `Session` model.
 
-## Tenancy
+## Tenancy And Install State
 
-`merchants` is the top-level tenant. `shops` belongs to a merchant and represents the connected Shopify store. Domain tables carry `merchant_id` and, where the data is store-specific, `shop_id`.
+`merchants` is the top-level tenant. `shops` belongs to a merchant and represents the connected Shopify store.
+
+`connector_accounts` stores the retained Shopify installation record for a shop: connector name, Shopify account domain, granted scopes, token reference and raw install metadata. It stores token references only; Shopify access tokens remain in Shopify session storage.
 
 ## Event Ledger
 
-`ledger_events` is the append-only event ledger by convention. Application code should only insert ledger rows, never update or delete them. Events include `event_ts`, dedupe and idempotency keys so ingestion, recommendations, approvals, execution steps, feedback, outcomes and attribution can be replayed without double counting.
+`ledger_events` records source events for evidence backfills and webhooks. Events include event timestamps plus dedupe and idempotency keys so retries and duplicate webhook deliveries do not double-write source events.
 
-## House Rules And Goals
+## Commerce Evidence
 
-`house_rules` and `goals` are first-class data. House Rules include structured JSON fields for enforceable constraints plus free-text rules for explanation and generation context. The winback-ready caps also have first-class columns for default/winback discount depth, audience size approval threshold, email cooldown, email frequency scope and BFCM freeze mode. Onboarding exposes these as a structured merchant policy context for future recommendation and approval code. Actions persist `rules_consulted` and `rule_constraints_applied` so each proposal can cite the constraints it obeyed.
+`products` and `variants` store Shopify product evidence. They keep Shopify source identifiers, product/variant display fields, source timestamps, variant inventory item IDs and raw source payloads for traceability.
 
-`shops` tracks onboarding state for the connected store: started/completed timestamps, goals completion, House Rules completion, COGS completion percentage and the overall COGS confidence level. This is shop-scoped because the Shopify install and commerce catalogue are shop-scoped, while each row still belongs to a merchant tenant.
+`orders`, `order_line_items` and `refunds` store order evidence from Shopify backfills and webhooks. Line items keep nullable product and variant links when the corresponding product evidence exists.
 
-## Commerce State
+`customer_identities` stores order-derived customer identity evidence, including normalized and hashed email fields, order counts and spend totals. It is evidence infrastructure, not a customer profile product surface.
 
-`products`, `variants`, `orders`, `order_line_items`, `refunds`, `inventory_levels` and `cogs_inputs` store canonical commerce state. Connector payloads are retained in JSONB `raw_payload` fields for traceability.
+`inventory_levels` stores current Shopify inventory evidence by inventory item and location, with nullable variant links when the variant mirror exists.
 
-Shopify ingestion normalises source IDs, source timestamps, order financial/fulfillment status, variant inventory item IDs and inventory quantities needed by Daily Verdict and Inventory Guardian. Rich connector-specific shapes remain in `raw_payload`.
+The evidence layer intentionally does not include product costs, recommendations, actions, dashboards or Merchant Memory tables.
 
-Manual onboarding COGS rows use `source = manual_onboarding`, keep raw entry metadata in `raw_payload`, and mark each cost as `missing`, `estimated` or `confirmed` through `confidence_level`. Missing COGS is intentionally non-blocking; Daily Verdict should display lower confidence ranges until enough variant costs are estimated or confirmed.
+## Evidence Backfill
 
-## Daily Briefs
+`shop_backfill_statuses` stores evidence backfill status by shop and domain. Current domains are `shop`, `webhooks`, `products`, `orders`, `customers`, `inventory` and `refunds`.
 
-`daily_briefs` stores deterministic Daily Verdict v0 output in JSONB. The `verdict` payload includes the analysed period, merchant-facing headline, structured operator brief sections, compatibility summary, revenue totals, sold-unit COGS coverage, margin confidence, typed highlights and evidence. The `metrics` payload duplicates the main numeric slices for easier querying. V0 confidence is based on sold-unit COGS coverage for the selected period, not catalogue-wide COGS completion.
-
-## Actions And Verification
-
-`actions` stores the shared action safety lifecycle: status, title, summary, expected value, value currency/type, confidence, risk level, approval requirement, evidence, rules consulted, caps applied, preview, execution mode, external system IDs and verification class. `verification_class` is a Postgres enum with only `verified` and `estimated`; verified lift and estimated prevention should be queried and displayed separately.
-
-Action statuses are deliberately separate: `draft_prepared` is not approved, `approved` is not executed, and `executed` is not verified. `verified` should only be set by later attribution/measurement code. `action_approval_events` records immutable approval, rejection, cancellation and safety-transition history with previous/new status, actor, actor type, reason/comment and request snapshot.
-
-`executions` records dry-run or approved execution attempts with idempotency keys. `holdout_assignments` and `attribution_results` support measured outcomes. `provenance_links` ties recommendations and outputs back to ledger events or source records.
-
-## Connectors And Costs
-
-`connector_accounts` stores connector metadata and secret references only, not raw secrets. `cost_metering` tracks provider/service usage per merchant so pilot economics can be inspected.
+`backfill_jobs` stores queued evidence backfill work. Current job types are `shop_backfill_start`, `products_backfill`, `orders_backfill_365d`, `inventory_backfill`, `backfill_delta_sync` and `backfill_finalize`.

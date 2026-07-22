@@ -2,9 +2,24 @@
 
 ## 2026-07-22
 
+### Removed
+
+- Removed the previous Daily Brief, revenue and margin, inventory, Watchdog, Klaviyo, onboarding, product-cost, recommendation, action and Merchant Memory implementation surfaces so Jefe is a blank canvas for the revised product.
+- Removed Shopify bulk operation, COGS and write-scope ingestion paths from the retained app foundation.
+- Removed the legacy Merchant Operating Map fact table from the reduced database schema.
+
+### Changed
+
+- Simplified Jefe to Shopify installation, read-only commerce evidence backfills, evidence storage, evidence webhooks, the main Jefe page, Dev and Changelog.
+- Restored Shopify products, orders, customer identities, refunds and inventory as the retained evidence layer for future Merchant Memory work.
+- Reduced Shopify permissions to `read_products,read_orders,read_all_orders,read_inventory,read_locations` for the retained evidence layer.
+
+### Fixed
+
+- Fixed OAuth completion so Shopify install backfill is queued from the Shopify `afterAuth` hook after merchant and shop records are created.
+
 ### Internal
 
-- Added the Merchant Memory repository foundation so Jefe can store versioned business understanding, evidence, claims, corrections and open questions.
 - Removed repository planning files that implied a fixed execution queue so current work is driven directly from Merchant Memory context and founder instructions.
 - Updated the active repository context to the v3 Merchant Memory direction.
 

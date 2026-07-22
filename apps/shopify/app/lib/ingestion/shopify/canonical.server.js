@@ -9,7 +9,6 @@ import {
   moneyAmount,
   parseDate,
 } from "./normalize.server.js";
-import { upsertShopifyUnitCostFromVariant } from "../../../services/cogs.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -47,22 +46,13 @@ export async function upsertShopifyProduct(prisma, input) {
     },
   });
 
-  const variants = extractVariants(product);
-  for (const variant of variants) {
-    const savedVariant = await upsertShopifyVariant(prisma, {
+  for (const variant of extractVariants(product)) {
+    await upsertShopifyVariant(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       productId: savedProduct.id,
       variant,
     });
-    if (savedVariant && variantHasCostPayload(variant)) {
-      await upsertShopifyUnitCostFromVariant(prisma, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        productId: savedProduct.id,
-        variant,
-      });
-    }
   }
 
   return savedProduct;
@@ -105,6 +95,29 @@ export async function upsertShopifyVariant(prisma, input) {
       rawPayload: variant,
     },
   });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string; payload: unknown }} input
+ */
+export async function markShopifyProductDeleted(prisma, input) {
+  const payload = jsonObject(input.payload);
+  const externalId = productExternalId(payload);
+  if (!externalId) return { matched: 0 };
+
+  const result = await prisma.product.updateMany({
+    where: {
+      shopId: input.shopId,
+      externalId,
+    },
+    data: {
+      status: "deleted",
+      rawPayload: payload,
+    },
+  });
+
+  return { matched: result.count };
 }
 
 /**
@@ -252,8 +265,6 @@ export async function upsertShopifyOrderLineItem(prisma, input) {
       ? (lineItem.discountAllocations ?? lineItem.discount_allocations)
       : [];
 
-  const discountTotal = sumDiscountAllocations(discountAllocations);
-
   return prisma.orderLineItem.upsert({
     where: { orderId_externalId: { orderId: input.orderId, externalId } },
     create: {
@@ -272,7 +283,7 @@ export async function upsertShopifyOrderLineItem(prisma, input) {
       totalPrice: moneyAmount(
         lineItem.discountedTotalSet?.shopMoney ?? lineItem.total_discount,
       ),
-      discount: discountTotal,
+      discount: sumDiscountAllocations(discountAllocations),
       discountAllocations,
       rawPayload: lineItem,
     },
@@ -288,7 +299,7 @@ export async function upsertShopifyOrderLineItem(prisma, input) {
       totalPrice: moneyAmount(
         lineItem.discountedTotalSet?.shopMoney ?? lineItem.total_discount,
       ),
-      discount: discountTotal,
+      discount: sumDiscountAllocations(discountAllocations),
       discountAllocations,
       rawPayload: lineItem,
     },
@@ -416,6 +427,125 @@ export async function upsertShopifyInventoryLevel(prisma, input) {
   });
 }
 
+/** @param {unknown} product */
+function extractVariants(product) {
+  const payload = jsonObject(product);
+  if (Array.isArray(payload.variants)) return payload.variants;
+  return edgesToNodes(payload.variants);
+}
+
+/** @param {unknown} order */
+function extractLineItems(order) {
+  const payload = jsonObject(order);
+  if (Array.isArray(payload.line_items)) return payload.line_items;
+  return edgesToNodes(payload.lineItems);
+}
+
+/** @param {unknown} order */
+function extractRefunds(order) {
+  const payload = jsonObject(order);
+  if (Array.isArray(payload.refunds)) return payload.refunds;
+  return [];
+}
+
+/** @param {unknown} value */
+function stringValue(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** @param {unknown} value */
+function numberValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** @param {unknown} product */
+function productExternalId(product) {
+  const payload = jsonObject(product);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("Product", payload.product_id ?? payload.id)
+  );
+}
+
+/** @param {unknown} variant */
+function variantExternalId(variant) {
+  const payload = jsonObject(variant);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("ProductVariant", payload.variant_id ?? payload.id)
+  );
+}
+
+/** @param {unknown} order */
+function orderExternalId(order) {
+  const payload = jsonObject(order);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("Order", payload.order_id ?? payload.id)
+  );
+}
+
+/** @param {unknown} lineItem */
+function lineItemExternalId(lineItem) {
+  const payload = jsonObject(lineItem);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("LineItem", payload.line_item_id ?? payload.id)
+  );
+}
+
+/** @param {unknown} refund */
+function refundExternalId(refund) {
+  const payload = jsonObject(refund);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("Refund", payload.refund_id ?? payload.id)
+  );
+}
+
+/** @param {unknown} variant */
+function inventoryItemExternalId(variant) {
+  const payload = jsonObject(variant);
+  return (
+    stringValue(payload.inventoryItem?.id) ||
+    stringValue(payload.inventory_item?.admin_graphql_api_id) ||
+    shopifyGid("InventoryItem", payload.inventory_item_id)
+  );
+}
+
+/** @param {unknown} customer */
+function customerExternalId(customer) {
+  const payload = jsonObject(customer);
+  return (
+    stringValue(payload.admin_graphql_api_id) ||
+    stringValue(payload.id) ||
+    shopifyGid("Customer", payload.customer_id)
+  );
+}
+
+/**
+ * @param {string} resource
+ * @param {unknown} value
+ */
+function shopifyGid(resource, value) {
+  if (typeof value === "string" && value.startsWith("gid://")) return value;
+  const id =
+    typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : gidToId(value);
+  return id ? `gid://shopify/${resource}/${id}` : null;
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; order: unknown }} input
@@ -501,139 +631,6 @@ async function upsertCustomerIdentityFromOrder(prisma, input) {
       },
     },
   });
-}
-
-/** @param {unknown} product */
-function extractVariants(product) {
-  const payload = jsonObject(product);
-  if (Array.isArray(payload.variants)) return payload.variants;
-  return edgesToNodes(payload.variants);
-}
-
-/** @param {unknown} variant */
-function variantHasCostPayload(variant) {
-  const payload = jsonObject(variant);
-  const inventoryItem = jsonObject(
-    payload.inventoryItem ?? payload.inventory_item,
-  );
-  return (
-    Object.prototype.hasOwnProperty.call(payload, "cost") ||
-    Object.prototype.hasOwnProperty.call(inventoryItem, "cost") ||
-    Object.prototype.hasOwnProperty.call(inventoryItem, "unitCost") ||
-    Object.prototype.hasOwnProperty.call(inventoryItem, "unit_cost")
-  );
-}
-
-/** @param {unknown} order */
-function extractLineItems(order) {
-  const payload = jsonObject(order);
-  if (Array.isArray(payload.line_items)) return payload.line_items;
-  return edgesToNodes(payload.lineItems);
-}
-
-/** @param {unknown} order */
-function extractRefunds(order) {
-  const payload = jsonObject(order);
-  if (Array.isArray(payload.refunds)) return payload.refunds;
-  return Array.isArray(payload.refunds) ? payload.refunds : [];
-}
-
-/** @param {unknown} value */
-function stringValue(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-/** @param {unknown} value */
-function numberValue(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-/** @param {unknown} product */
-function productExternalId(product) {
-  const payload = jsonObject(product);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("Product", payload.product_id ?? payload.id)
-  );
-}
-
-/** @param {unknown} variant */
-function variantExternalId(variant) {
-  const payload = jsonObject(variant);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("ProductVariant", payload.variant_id ?? payload.id)
-  );
-}
-
-/** @param {unknown} order */
-function orderExternalId(order) {
-  const payload = jsonObject(order);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("Order", payload.order_id ?? payload.id)
-  );
-}
-
-/** @param {unknown} lineItem */
-function lineItemExternalId(lineItem) {
-  const payload = jsonObject(lineItem);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("LineItem", payload.line_item_id ?? payload.id)
-  );
-}
-
-/** @param {unknown} refund */
-function refundExternalId(refund) {
-  const payload = jsonObject(refund);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("Refund", payload.refund_id ?? payload.id)
-  );
-}
-
-/** @param {unknown} variant */
-function inventoryItemExternalId(variant) {
-  const payload = jsonObject(variant);
-  return (
-    stringValue(payload.inventoryItem?.id) ||
-    stringValue(payload.inventory_item?.admin_graphql_api_id) ||
-    shopifyGid("InventoryItem", payload.inventory_item_id)
-  );
-}
-
-/**
- * @param {string} resource
- * @param {unknown} value
- */
-function shopifyGid(resource, value) {
-  if (typeof value === "string" && value.startsWith("gid://")) return value;
-  const id =
-    typeof value === "number" && Number.isFinite(value)
-      ? String(value)
-      : gidToId(value);
-  return id ? `gid://shopify/${resource}/${id}` : null;
-}
-
-/** @param {unknown} customer */
-function customerExternalId(customer) {
-  const payload = jsonObject(customer);
-  return (
-    stringValue(payload.admin_graphql_api_id) ||
-    stringValue(payload.id) ||
-    shopifyGid("Customer", payload.customer_id)
-  );
 }
 
 /** @param {Record<string, any>} order */
