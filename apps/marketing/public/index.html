@@ -3,41 +3,68 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Jefe — the AI manager for your Shopify store</title>
-  <meta name="description" content="Jefe learns how your Shopify store actually works, tells you what to do next, and eventually does it for you. Join the waitlist." />
+  <title>My name... Jefe. — the AI manager for your Shopify store</title>
+  <meta name="description" content="Jefe quietly runs the daily grind of your Shopify store, flags only what needs you, and gets things done. Join the waitlist." />
+
+  <meta property="og:title" content="My name... Jefe." />
+  <meta property="og:description" content="The AI manager that quietly runs your Shopify store's daily grind, so you can focus on the parts you actually enjoy." />
+  <meta property="og:image" content="https://img.youtube.com/vi/FxeLLPPzEtQ/hqdefault.jpg" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <main class="card">
-    <div class="wordmark">Jefe</div>
-    <h1>The AI manager for your Shopify store.</h1>
-    <p class="subtext">
-      Jefe learns how your business actually works, tells you what needs attention,
-      and — when you're ready — takes care of it for you.
+  <main class="wrap">
+    <div class="badge fade-in" style="--d: 0s">JEFE</div>
+
+    <h1 class="fade-in" style="--d: 0.05s">My name<span class="ellipsis">...</span> <span class="accent">Jefe</span>.</h1>
+
+    <p class="subtext fade-in" style="--d: 0.1s">
+      The AI ecommerce manager that quietly runs the daily grind of your
+      Shopify store — so your to-do list stops running your life.
     </p>
 
-    <form id="waitlist-form" class="waitlist-form" novalidate>
-      <div class="honeypot" aria-hidden="true">
-        <label for="company">Company</label>
-        <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
-      </div>
-      <input
-        id="email"
-        name="email"
-        type="email"
-        placeholder="you@yourstore.com"
-        required
-        autocomplete="email"
-      />
-      <button type="submit">Join the waitlist</button>
-    </form>
-    <p id="form-message" class="form-message" role="status"></p>
+    <div class="cta-card fade-in" style="--d: 0.15s">
+      <form id="waitlist-form" class="waitlist-form" novalidate>
+        <div class="honeypot" aria-hidden="true">
+          <label for="company">Company</label>
+          <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
+        </div>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          placeholder="you@yourbrand.com"
+          required
+          autocomplete="email"
+        />
+        <button type="submit">Join the waitlist</button>
+      </form>
+      <p id="form-message" class="form-message" role="status"></p>
+    </div>
 
-    <ul class="points">
-      <li>Understands your store, not just your dashboard</li>
-      <li>Surfaces what actually matters, not everything</li>
-      <li>Acts on your behalf, with your approval</li>
+    <ul class="points fade-in" style="--d: 0.2s">
+      <li>Runs quietly in the background — not another dashboard to check</li>
+      <li>Only surfaces what actually needs your call</li>
+      <li>Works alongside your team or agency, not around them</li>
     </ul>
+
+    <div class="story fade-in" style="--d: 0.25s">
+      <p class="story-caption">quick context on the name ↓</p>
+      <div class="video-block" id="video-block" data-yt="FxeLLPPzEtQ">
+        <img
+          class="video-thumb"
+          src="https://img.youtube.com/vi/FxeLLPPzEtQ/hqdefault.jpg"
+          alt="22 Jump Street — My Name is Jeff scene"
+        />
+        <button class="play-button" id="play-button" aria-label="Play clip">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+      </div>
+      <p class="video-hint">yes, that's really where it comes from</p>
+    </div>
   </main>
 
   <footer>&copy; <span id="year"></span> Jefe</footer>
