@@ -1,0 +1,154 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0c0f;
+  --card: #14161b;
+  --border: #23262e;
+  --text: #f2f3f5;
+  --muted: #9aa0ac;
+  --accent: #6d5bff;
+  --accent-hover: #7f6fff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(circle at 50% -10%, #1a1b3a 0%, var(--bg) 55%);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.card {
+  width: 100%;
+  max-width: 460px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 32px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.wordmark {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hover);
+  margin-bottom: 20px;
+}
+
+h1 {
+  font-size: 28px;
+  line-height: 1.25;
+  margin: 0 0 12px;
+}
+
+.subtext {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0 0 28px;
+}
+
+.waitlist-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#email {
+  flex: 1 1 220px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0f1013;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+}
+
+#email:focus {
+  border-color: var(--accent);
+}
+
+button[type="submit"] {
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button[type="submit"]:hover {
+  background: var(--accent-hover);
+}
+
+button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.form-message {
+  min-height: 20px;
+  font-size: 14px;
+  margin: 14px 0 0;
+}
+
+.form-message.success {
+  color: #6ee7b7;
+}
+
+.form-message.error {
+  color: #f87171;
+}
+
+.points {
+  list-style: none;
+  margin: 32px 0 0;
+  padding: 20px 0 0;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  color: var(--muted);
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.points li::before {
+  content: "— ";
+  color: var(--accent-hover);
+}
+
+footer {
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 12px;
+}

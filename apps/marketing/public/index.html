@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jefe — the AI manager for your Shopify store</title>
+  <meta name="description" content="Jefe learns how your Shopify store actually works, tells you what to do next, and eventually does it for you. Join the waitlist." />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="wordmark">Jefe</div>
+    <h1>The AI manager for your Shopify store.</h1>
+    <p class="subtext">
+      Jefe learns how your business actually works, tells you what needs attention,
+      and — when you're ready — takes care of it for you.
+    </p>
+
+    <form id="waitlist-form" class="waitlist-form" novalidate>
+      <div class="honeypot" aria-hidden="true">
+        <label for="company">Company</label>
+        <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
+      </div>
+      <input
+        id="email"
+        name="email"
+        type="email"
+        placeholder="you@yourstore.com"
+        required
+        autocomplete="email"
+      />
+      <button type="submit">Join the waitlist</button>
+    </form>
+    <p id="form-message" class="form-message" role="status"></p>
+
+    <ul class="points">
+      <li>Understands your store, not just your dashboard</li>
+      <li>Surfaces what actually matters, not everything</li>
+      <li>Acts on your behalf, with your approval</li>
+    </ul>
+  </main>
+
+  <footer>&copy; <span id="year"></span> Jefe</footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
