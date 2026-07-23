@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "shepherd": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "--package=@korso/shepherd",
+        "shepherd-mcp"
+      ],
+      "env": {
+        "HUB_URL": "https://jefe-shepherd-production.up.railway.app",
+        "TEAM_TOKEN": "${SHEPHERD_TEAM_TOKEN}"
+      }
+    }
+  }
+}
