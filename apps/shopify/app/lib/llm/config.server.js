@@ -1,7 +1,7 @@
 // @ts-check
 
 export const DEFAULT_LLM_PROVIDER = "gemini";
-export const DEFAULT_LLM_MODEL = "gemini-2.5-flash-lite";
+export const DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite";
 export const DEFAULT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;

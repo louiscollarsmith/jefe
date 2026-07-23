@@ -73,7 +73,7 @@ Runtime configuration:
 
 ```bash
 LLM_PROVIDER=gemini
-LLM_MODEL=gemini-2.5-flash-lite
+LLM_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=...
 LLM_ENABLED=true
 LLM_TIMEOUT_MS=8000

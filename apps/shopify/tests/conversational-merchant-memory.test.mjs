@@ -253,7 +253,7 @@ test("LLM kill switch falls back to deterministic interpretation", async () => {
     llmProvider: createDisabledProvider({
       enabled: false,
       provider: "gemini",
-      model: "gemini-2.5-flash-lite",
+      model: "gemini-3.1-flash-lite",
       geminiApiKey: "",
       timeoutMs: 8000,
       maxInputTokens: 6000,

@@ -8,6 +8,7 @@ import {
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
 import { deriveMerchantMemoryBeliefs } from "./shopify-derivations.server.js";
+import { runStoreUnderstandingPass } from "./store-understanding.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -544,7 +545,7 @@ export async function revertLatestMerchantSuppliedChange(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function rebuildMerchantMemory(prisma, input) {
   return refreshBeliefs(prisma, {
@@ -555,7 +556,7 @@ export async function rebuildMerchantMemory(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function refreshBeliefs(prisma, input) {
   const logger = input.logger ?? console;
@@ -588,11 +589,22 @@ export async function refreshBeliefs(prisma, input) {
       else createdOrUpdated += 1;
     }
     const durationMs = Date.now() - startedAt.getTime();
+    const storeUnderstanding =
+      (input.refreshType ?? "selective_refresh") === "full_rebuild"
+        ? await runStoreUnderstandingPass(prisma, {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            trigger: "post_memory_rebuild",
+            llmProvider: input.llmProvider,
+            logger,
+          })
+        : null;
     const result = {
       derivations: derivations.length,
       createdOrUpdated,
       skipped,
       durationMs,
+      storeUnderstanding,
     };
 
     await prisma.merchantMemoryRefreshRun.update({
