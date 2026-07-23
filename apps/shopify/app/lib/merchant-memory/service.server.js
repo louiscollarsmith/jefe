@@ -7,6 +7,7 @@ import {
   BELIEF_STATUS,
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
+import { isDerivationVersionChange } from "./derivation-versioning.server.js";
 import { deriveMerchantMemoryBeliefs } from "./shopify-derivations.server.js";
 import { runStoreUnderstandingPass } from "./store-understanding.server.js";
 
@@ -60,6 +61,8 @@ export async function getBelief(prisma, input) {
  */
 export async function upsertDerivedBelief(prisma, input) {
   const now = input.evaluatedAt ?? new Date();
+  const nextDerivationVersion =
+    input.derivationVersion ?? MEMORY_DERIVATION_VERSION;
   const existing = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
@@ -89,6 +92,88 @@ export async function upsertDerivedBelief(prisma, input) {
     return { belief: existing, changed: false, skipped: true };
   }
 
+  if (
+    existing &&
+    existing.status === BELIEF_STATUS.inferred &&
+    isDerivationVersionChange(existing.derivationVersion, nextDerivationVersion)
+  ) {
+    return prisma.$transaction(async (tx) => {
+      const belief = await tx.merchantMemoryBelief.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? existing.shopId,
+          category: input.category,
+          key: input.key,
+          value: input.value,
+          valueType: input.valueType,
+          status: BELIEF_STATUS.inferred,
+          confidence: String(input.confidence.toFixed(4)),
+          confidenceReason: input.confidenceReason,
+          precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
+          derivationVersion: nextDerivationVersion,
+          firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
+          lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
+          lastEvaluatedAt: now,
+          supersedesBeliefId: existing.id,
+        },
+      });
+      await tx.merchantMemoryBelief.update({
+        where: { id: existing.id },
+        data: {
+          status: BELIEF_STATUS.superseded,
+          supersededAt: now,
+        },
+      });
+      await recordHistory(tx, {
+        merchantId: existing.merchantId,
+        shopId: existing.shopId,
+        beliefId: existing.id,
+        key: existing.key,
+        previousStatus: existing.status,
+        newStatus: BELIEF_STATUS.superseded,
+        previousValue: existing.value,
+        newValue: existing.value,
+        changeReason: "derived_belief_superseded_by_new_derivation_version",
+        changedBy: "system",
+        metadata: {
+          previousDerivationVersion: existing.derivationVersion,
+          newDerivationVersion: nextDerivationVersion,
+          supersededByBeliefId: belief.id,
+        },
+      });
+      await recordHistory(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? existing.shopId,
+        beliefId: belief.id,
+        key: input.key,
+        previousStatus: null,
+        newStatus: belief.status,
+        previousValue: null,
+        newValue: input.value,
+        changeReason: "derived_belief_created_for_new_derivation_version",
+        changedBy: "system",
+        metadata: {
+          confidence: input.confidence,
+          previousDerivationVersion: existing.derivationVersion,
+          newDerivationVersion: nextDerivationVersion,
+          supersedesBeliefId: existing.id,
+        },
+      });
+      await recordEvidence(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? existing.shopId,
+        beliefId: belief.id,
+        ...input.evidence,
+      });
+      return {
+        belief,
+        changed: true,
+        skipped: false,
+        superseded: true,
+      };
+    });
+  }
+
   if (!existing) {
     const belief = await prisma.merchantMemoryBelief.create({
       data: {
@@ -102,8 +187,7 @@ export async function upsertDerivedBelief(prisma, input) {
         confidence: String(input.confidence.toFixed(4)),
         confidenceReason: input.confidenceReason,
         precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
-        derivationVersion:
-          input.derivationVersion ?? MEMORY_DERIVATION_VERSION,
+        derivationVersion: nextDerivationVersion,
         firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
         lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
         lastEvaluatedAt: now,
@@ -144,7 +228,7 @@ export async function upsertDerivedBelief(prisma, input) {
       confidenceReason: input.confidenceReason,
       precedence: input.precedence ?? existing.precedence,
       derivationVersion:
-        input.derivationVersion ?? MEMORY_DERIVATION_VERSION,
+        nextDerivationVersion,
       firstObservedAt:
         existing.firstObservedAt ?? input.firstObservedAt ?? input.observedAt,
       lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
@@ -176,7 +260,7 @@ export async function upsertDerivedBelief(prisma, input) {
 }
 
 /**
- * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} prisma
  * @param {EvidenceInput} input
  */
 export async function recordEvidence(prisma, input) {
@@ -580,9 +664,24 @@ export async function refreshBeliefs(prisma, input) {
   });
 
   try {
-    const derivations = await deriveMerchantMemoryBeliefs(prisma, input);
+    const derivationResult = await deriveMerchantMemoryBeliefs(prisma, input);
+    const derivations = Array.isArray(derivationResult)
+      ? derivationResult
+      : derivationResult.derivations;
+    const skippedOutcomes = Array.isArray(derivationResult)
+      ? []
+      : derivationResult.skippedOutcomes;
+    const derivationReport = Array.isArray(derivationResult)
+      ? {
+          attempted: derivations.length,
+          published: derivations.length,
+          suppressed: 0,
+          statusCounts: { CALCULATED: derivations.length },
+          suppressedReasonCounts: {},
+        }
+      : derivationResult.derivationReport;
     let createdOrUpdated = 0;
-    let skipped = 0;
+    let skipped = skippedOutcomes.length;
     for (const derivation of derivations) {
       const result = await upsertDerivedBelief(prisma, derivation);
       if (result.skipped) skipped += 1;
@@ -603,6 +702,11 @@ export async function refreshBeliefs(prisma, input) {
       derivations: derivations.length,
       createdOrUpdated,
       skipped,
+      skippedOutcomes,
+      derivationReport,
+      registryDefinitionCount: Array.isArray(derivationResult)
+        ? derivations.length
+        : derivationResult.registryDefinitionCount,
       durationMs,
       storeUnderstanding,
     };
@@ -644,7 +748,7 @@ export async function refreshBeliefs(prisma, input) {
 }
 
 /**
- * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} prisma
  * @param {HistoryInput} input
  */
 async function recordHistory(prisma, input) {

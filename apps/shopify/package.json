@@ -4,6 +4,9 @@
   "scripts": {
     "build": "react-router build",
     "dev": "shopify app dev",
+    "dev:split-worker": "node scripts/dev-with-worker.mjs",
+    "dev:web": "ENABLE_SHOPIFY_BACKFILL_LOOP=false shopify app dev",
+    "worker": "node scripts/shopify-backfill-worker.mjs",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy",

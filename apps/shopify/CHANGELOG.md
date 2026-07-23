@@ -12,6 +12,15 @@
 - Increased the Store Understanding LLM output budget and bounded requested inferences so Gemini can return complete structured JSON instead of truncating mid-response.
 - Added Store Understanding run history, confidence ceilings, provenance evidence and privacy safeguards so model inferences stay lower-authority than merchant-confirmed or deterministic memory.
 - Updated the default Gemini model to the available low-cost `gemini-3.1-flash-lite` model so LLM-backed memory and interview flows can run again.
+- Expanded deterministic Merchant Memory with the first registry-driven Shopify belief tranches so operators can inspect current-state, data-quality and rolling-window beliefs without waiting for LLM interpretation.
+- Recalibrated the 104 deterministic belief definitions to use the registry-provided confidence templates, components, publish policies, data-quality flags and per-belief derivation versions.
+- Refactored deterministic Merchant Memory internals around named confidence templates, shared calculation primitives, reusable evidence builders and per-belief derivation versions so future belief changes are easier to audit and recalibrate.
+- Added derived-belief version supersession so material formula changes create a linked lineage while same-version refreshes remain idempotent and merchant-corrected memory stays authoritative.
+- Added refresh-run diagnostics for deterministic registry rows skipped because data is insufficient, not applicable or blocked by data quality, keeping them separate from the raw Merchant Memory JSON dump once memory is ready.
+- Updated deterministic derivations to record explicit `CALCULATED`, `INSUFFICIENT_DATA`, `NOT_APPLICABLE` and `BLOCKED_BY_MISSING_SOURCE` outcomes, publish rebuild reports, band final confidence, cap inventory confidence by freshness, suppress duplicate inventory unit beliefs and mark Store Understanding inferences for merchant confirmation.
+- Corrected Shopify-derived memory semantics for product variant detection, all-stored-history labelling, order value policy, refund amount gating, inventory state separation and customer-history sample requirements.
+- Added an optional split-worker local development command so operators can run the Shopify web process and import worker separately when debugging first-install backfill timeouts.
+- Delayed the first automatic Shopify import-worker tick on app startup so install and first page-load requests can return before queued backfills begin.
 - Replaced the raw Merchant Memory dump on the main Jefe page with the first adaptive Jefe Interview so merchants answer one onboarding question at a time and Jefe stores validated merchant-provided context in Merchant Memory.
 - Added persisted interview state, topic coverage, turn history, deterministic readiness scoring, pause/resume/skip/complete controls and merchant-interview evidence for saved memory updates.
 - Extended the controlled merchant belief registry with onboarding context for business description, positioning, customers, marketing, operations and recommendation restrictions.
