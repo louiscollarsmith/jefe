@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Added canonical onboarding product design-language context and reference mockups so future Merchant Memory onboarding work follows the intended merchant-facing experience.
 - Added a Store Understanding pass after deterministic Merchant Memory rebuilds so Jefe forms cautious LLM-derived business-context beliefs from bounded Shopify catalogue and order summaries before the first interview.
 - Updated the Jefe Interview to use Store Understanding beliefs as provisional context, ask confirmation or correction questions when confidence is sufficient, and keep open-ended questions for unknown topics.
 - Replaced deterministic Jefe Interview question wording with an LLM question planner that writes the next question from current Merchant Memory, recent turns and allowed open topics.
