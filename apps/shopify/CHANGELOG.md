@@ -1,11 +1,34 @@
 # Changelog
 
+## 2026-07-23
+
+### Changed
+
+- Stripped the main Jefe page back to a backfill status while data is loading and a raw Merchant Memory JSON dump once memory is ready, removing the early chat/question interface from the UI.
+
+---
+
 ## 2026-07-22
 
 ### Added
 
+- Added the first conversational Merchant Memory workspace on the main Jefe page so merchants can ask what Jefe knows, ask why, confirm understanding, correct assumptions and add business context in natural language.
+- Added persisted Merchant Memory conversations, conversation messages and open questions so Jefe can keep recent conversational context, pending memory updates and question answers across page reloads.
+- Added a controlled conversational belief registry and structured operation validation so natural-language updates are checked before Merchant Memory is changed.
+- Added a Gemini LLM provider boundary for conversational Merchant Memory with server-side configuration, structured JSON output validation, timeout, retry limits, token caps, usage logging, a kill switch and mocked model tests.
 - Added the Merchant Memory foundation with structured beliefs, evidence, lifecycle history, confidence, refresh runs and deterministic Shopify-derived business understanding.
 - Added independent Merchant Memory rebuild jobs after Shopify backfill completion and debounced refreshes after relevant Shopify webhooks.
+
+### Changed
+
+- Updated merchant-supplied confirmations, corrections and new context to record conversational provenance and memory history through the existing Merchant Memory service.
+- Simplified the Jefe page into a chat-first Merchant Memory surface that shows current backfill progress first, only presents memory once it exists and unlocks chat after memory is ready.
+- Added automatic Jefe page polling while Shopify backfill or Merchant Memory build is active so merchants do not need to refresh manually.
+- Updated the conversation interpreter to use Gemini when enabled while preserving deterministic fallback and Merchant Memory validation boundaries.
+- Updated the Merchant Memory retry action so Shopify evidence backfill is queued first whenever stored evidence is not ready, preventing page-triggered belief creation before backfill completion.
+- Simplified Jefe to Shopify installation, read-only commerce evidence backfills, evidence storage, evidence webhooks, the main Jefe page, Dev and Changelog.
+- Restored Shopify products, orders, customer identities, refunds and inventory as the retained evidence layer for future Merchant Memory work.
+- Reduced Shopify permissions to `read_products,read_orders,read_all_orders,read_inventory,read_locations` for the retained evidence layer.
 
 ### Removed
 
@@ -13,14 +36,11 @@
 - Removed Shopify bulk operation, COGS and write-scope ingestion paths from the retained app foundation.
 - Removed the legacy Merchant Operating Map fact table from the reduced database schema.
 
-### Changed
-
-- Simplified Jefe to Shopify installation, read-only commerce evidence backfills, evidence storage, evidence webhooks, the main Jefe page, Dev and Changelog.
-- Restored Shopify products, orders, customer identities, refunds and inventory as the retained evidence layer for future Merchant Memory work.
-- Reduced Shopify permissions to `read_products,read_orders,read_all_orders,read_inventory,read_locations` for the retained evidence layer.
-
 ### Fixed
 
+- Fixed Shopify orders backfill for stores without `read_customers` by avoiding protected customer subfields and deriving customer identities from order-level data.
+- Fixed failed evidence backfills to record the first Shopify GraphQL error on the affected backfill domains instead of leaving those domains marked as running.
+- Fixed a post-wipe app load crash by making Shopify tenant creation safe when the app shell and page loader create the same shop concurrently.
 - Fixed OAuth completion so Shopify install backfill is queued from the Shopify `afterAuth` hook after merchant and shop records are created.
 
 ### Internal
