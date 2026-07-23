@@ -4,7 +4,14 @@
 
 ### Changed
 
-- Stripped the main Jefe page back to a backfill status while data is loading and a raw Merchant Memory JSON dump once memory is ready, removing the early chat/question interface from the UI.
+- Replaced the raw Merchant Memory dump on the main Jefe page with the first adaptive Jefe Interview so merchants answer one onboarding question at a time and Jefe stores validated merchant-provided context in Merchant Memory.
+- Added persisted interview state, topic coverage, turn history, deterministic readiness scoring, pause/resume/skip/complete controls and merchant-interview evidence for saved memory updates.
+- Extended the controlled merchant belief registry with onboarding context for business description, positioning, customers, marketing, operations and recommendation restrictions.
+- Removed ready-made answer buttons and the finish-later control from the Jefe Interview answer box so merchants respond in their own words.
+- Fixed the Jefe Interview Send button so merchants can submit after typing an answer.
+- Added a compact current-beliefs code panel beside the Jefe Interview so operators can inspect active keys, values, confidence, reasons and latest evidence while the merchant answers.
+- Fixed the Jefe Interview route so client UI code no longer imports server-only interview constants during Vite builds.
+- Fixed the Jefe Interview answer box so it clears after a submitted answer advances to the next question.
 
 ---
 

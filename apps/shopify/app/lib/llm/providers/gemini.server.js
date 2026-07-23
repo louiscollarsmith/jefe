@@ -23,110 +23,160 @@ export function createGeminiProvider(input) {
      * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
      */
     async generateStructuredOperation(request) {
-      const startedAt = Date.now();
-      const promptText = `${request.systemPrompt}\n\n${request.prompt}`;
-      const estimatedInputTokens = estimateTokens(promptText);
-      const maxInputTokens =
-        request.maxInputTokens ?? input.config.maxInputTokens;
-      if (estimatedInputTokens > maxInputTokens) {
-        throw new LlmInputLimitError(
-          `Estimated ${estimatedInputTokens} input tokens exceeds ${maxInputTokens}.`,
-        );
+      const result = await generateStructuredJson({
+        client,
+        config: input.config,
+        logger,
+        request,
+      });
+      const parsed = /** @type {any} */ (parseAndValidateStructuredOperation(
+        result.json,
+      ));
+      if (!parsed.ok) {
+        throw new LlmOutputValidationError(parsed.error);
       }
 
-      const maxAttempts = input.config.maxRetries + 1;
-      let lastError = /** @type {unknown} */ (null);
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        const controller = new AbortController();
-        const timeout = setTimeout(
-          () => controller.abort(),
-          request.timeoutMs ?? input.config.timeoutMs,
-        );
-
-        try {
-          const response = await client.models.generateContent({
-            model: input.config.model,
-            contents: request.prompt,
-            config: {
-              systemInstruction: request.systemPrompt,
-              temperature: 0,
-              topP: 0.1,
-              candidateCount: 1,
-              maxOutputTokens:
-                request.maxOutputTokens ?? input.config.maxOutputTokens,
-              responseMimeType: "application/json",
-              responseSchema: request.schema,
-              abortSignal: controller.signal,
-            },
-          });
-          clearTimeout(timeout);
-
-          const parsed = /** @type {any} */ (parseAndValidateStructuredOperation(
-            response.text ?? "",
-          ));
-          if (!parsed.ok) {
-            throw new LlmOutputValidationError(parsed.error);
-          }
-
-          const durationMs = Date.now() - startedAt;
-          const usage = {
-            inputTokens: response.usageMetadata?.promptTokenCount ?? null,
-            outputTokens: response.usageMetadata?.candidatesTokenCount ?? null,
-            totalTokens: response.usageMetadata?.totalTokenCount ?? null,
-            estimatedInputTokens,
-          };
-          logUsage(logger, {
-            status: "success",
-            provider: "gemini",
-            model: input.config.model,
-            attempts: attempt,
-            durationMs,
-            usage,
-            maxInputTokens,
-            maxOutputTokens:
-              request.maxOutputTokens ?? input.config.maxOutputTokens,
-          });
-
-          return {
-            operation: parsed.operation,
-            usage,
-            attempts: attempt,
-            durationMs,
-          };
-        } catch (error) {
-          clearTimeout(timeout);
-          lastError = error;
-          if (attempt >= maxAttempts || !isRetryableError(error)) {
-            const durationMs = Date.now() - startedAt;
-            logUsage(logger, {
-              status: "failed",
-              provider: "gemini",
-              model: input.config.model,
-              attempts: attempt,
-              durationMs,
-              usage: {
-                estimatedInputTokens,
-                inputTokens: null,
-                outputTokens: null,
-                totalTokens: null,
-              },
-              maxInputTokens,
-              maxOutputTokens:
-                request.maxOutputTokens ?? input.config.maxOutputTokens,
-              error: safeErrorName(error),
-            });
-            throw error;
-          }
-          await wait(backoffMs(attempt));
-        }
-      }
-
-      throw lastError instanceof Error
-        ? lastError
-        : new Error("Gemini request failed.");
+      return {
+        operation: parsed.operation,
+        usage: result.usage,
+        attempts: result.attempts,
+        durationMs: result.durationMs,
+      };
+    },
+    /**
+     * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
+     */
+    async generateStructuredJson(request) {
+      return generateStructuredJson({
+        client,
+        config: input.config,
+        logger,
+        request,
+      });
     },
   };
+}
+
+/**
+ * @param {{
+ *   client: GoogleGenAI;
+ *   config: import("../config.server.js").getLlmConfig extends () => infer T ? T : never;
+ *   logger: Pick<Console, "info" | "warn" | "error">;
+ *   request: { systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number };
+ * }} input
+ */
+async function generateStructuredJson(input) {
+  const startedAt = Date.now();
+  const promptText = `${input.request.systemPrompt}\n\n${input.request.prompt}`;
+  const estimatedInputTokens = estimateTokens(promptText);
+  const maxInputTokens =
+    input.request.maxInputTokens ?? input.config.maxInputTokens;
+  if (estimatedInputTokens > maxInputTokens) {
+    throw new LlmInputLimitError(
+      `Estimated ${estimatedInputTokens} input tokens exceeds ${maxInputTokens}.`,
+    );
+  }
+
+  const maxAttempts = input.config.maxRetries + 1;
+  let lastError = /** @type {unknown} */ (null);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      input.request.timeoutMs ?? input.config.timeoutMs,
+    );
+
+    try {
+      const response = await input.client.models.generateContent({
+        model: input.config.model,
+        contents: input.request.prompt,
+        config: {
+          systemInstruction: input.request.systemPrompt,
+          temperature: 0,
+          topP: 0.1,
+          candidateCount: 1,
+          maxOutputTokens:
+            input.request.maxOutputTokens ?? input.config.maxOutputTokens,
+          responseMimeType: "application/json",
+          responseSchema: input.request.schema,
+          abortSignal: controller.signal,
+        },
+      });
+      clearTimeout(timeout);
+
+      const json = parseJson(response.text ?? "");
+      if (json === null) {
+        throw new LlmOutputValidationError("Model output must be JSON.");
+      }
+
+      const durationMs = Date.now() - startedAt;
+      const usage = {
+        inputTokens: response.usageMetadata?.promptTokenCount ?? null,
+        outputTokens: response.usageMetadata?.candidatesTokenCount ?? null,
+        totalTokens: response.usageMetadata?.totalTokenCount ?? null,
+        estimatedInputTokens,
+      };
+      logUsage(input.logger, {
+        status: "success",
+        provider: "gemini",
+        model: input.config.model,
+        attempts: attempt,
+        durationMs,
+        usage,
+        maxInputTokens,
+        maxOutputTokens:
+          input.request.maxOutputTokens ?? input.config.maxOutputTokens,
+      });
+
+      return {
+        json,
+        usage,
+        attempts: attempt,
+        durationMs,
+      };
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryableError(error)) {
+        const durationMs = Date.now() - startedAt;
+        logUsage(input.logger, {
+          status: "failed",
+          provider: "gemini",
+          model: input.config.model,
+          attempts: attempt,
+          durationMs,
+          usage: {
+            estimatedInputTokens,
+            inputTokens: null,
+            outputTokens: null,
+            totalTokens: null,
+          },
+          maxInputTokens,
+          maxOutputTokens:
+            input.request.maxOutputTokens ?? input.config.maxOutputTokens,
+          error: safeErrorName(error),
+        });
+        throw error;
+      }
+      await wait(backoffMs(attempt));
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Gemini request failed.");
+}
+
+/**
+ * @param {string} value
+ */
+function parseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -1,15 +1,23 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useEffect } from "react";
-import { useLoaderData, useRevalidator } from "react-router";
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
+import { Form, useActionData, useLoaderData, useRevalidator } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Badge,
   BlockStack,
   Box,
+  Button,
+  Divider,
   InlineStack,
   Page,
   Spinner,
   Text,
+  TextField,
 } from "@shopify/polaris";
 
 import prisma from "../db.server";
@@ -18,6 +26,11 @@ import {
   MEMORY_BACKFILL_DOMAIN,
 } from "../lib/merchant-memory/constants.server";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
+import {
+  getMerchantInterviewExperience,
+  submitInterviewAnswer,
+  updateInterviewStatus,
+} from "../lib/merchant-memory/interview.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -27,6 +40,59 @@ import {
 } from "../services/shopify-backfill-status.server";
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
+const UI_INTERVIEW_STATUS = {
+  inProgress: "in_progress",
+  paused: "paused",
+  completed: "completed",
+  skipped: "skipped",
+};
+const UI_TURN_STATUS = {
+  pending: "pending",
+  committed: "committed",
+  clarificationRequired: "clarification_required",
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const { merchant, shop } = await ensureShopifyTenant(prisma, {
+    shopDomain: session.shop,
+    accessTokenSessionId: session.id,
+    scopes: splitScopes(session.scope),
+    rawPayload: { source: "jefe_interview_action" },
+  });
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") ?? "");
+
+  if (intent === "answer") {
+    const result = await submitInterviewAnswer(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      turnId: String(formData.get("turnId") ?? ""),
+      answer: String(formData.get("answer") ?? ""),
+      idempotencyKey: String(formData.get("idempotencyKey") ?? "") || null,
+      logger: console,
+    });
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
+  }
+
+  if (
+    intent === "pause" ||
+    intent === "resume" ||
+    intent === "complete" ||
+    intent === "skip" ||
+    intent === "tell_more"
+  ) {
+    const result = await updateInterviewStatus(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      intent,
+      logger: console,
+    });
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
+  }
+
+  return { ok: false, error: "Unsupported action." };
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -51,24 +117,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       merchantName: merchant.name,
       memoryReady: false,
       backfill: summarizeBackfill(readiness),
-      memoryDump: null,
+      interview: null,
+      beliefs: null,
     };
   }
+
+  const [interview, beliefs] = await Promise.all([
+    getMerchantInterviewExperience(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    }),
+    getCompactBeliefSnapshot({
+      merchantId: merchant.id,
+      shopId: shop.id,
+    }),
+  ]);
 
   return {
     shop: session.shop,
     merchantName: merchant.name,
     memoryReady: true,
     backfill: summarizeBackfill(readiness),
-    memoryDump: await getRawMerchantMemoryDump({
-      merchantId: merchant.id,
-      shopId: shop.id,
-    }),
+    interview,
+    beliefs,
   };
 };
 
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const revalidator = useRevalidator();
 
   useEffect(() => {
@@ -85,17 +162,365 @@ export default function AppIndex() {
 
   return (
     <Page title="Jefe" fullWidth>
-      <div style={{ margin: "0 auto", maxWidth: 1040 }}>
+      <div style={{ margin: "0 auto", maxWidth: 1680 }}>
         <BlockStack gap="500">
           {!data.memoryReady ? <BackfillStatus backfill={data.backfill} /> : null}
 
-          {data.memoryReady && data.memoryDump ? (
-            <RawMemoryDump dump={data.memoryDump} />
+          {data.memoryReady && data.interview ? (
+            <InterviewWorkspace
+              experience={data.interview}
+              beliefs={data.beliefs ?? []}
+              actionError={
+                actionData && "error" in actionData ? actionData.error : null
+              }
+            />
           ) : null}
         </BlockStack>
       </div>
     </Page>
   );
+}
+
+function InterviewWorkspace({
+  experience,
+  beliefs,
+  actionError,
+}: {
+  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>;
+  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
+  actionError?: string | null;
+}) {
+  return (
+    <>
+      <style>
+        {`
+          .jefe-interview-workspace {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+            gap: 20px;
+            align-items: start;
+          }
+
+          @media (max-width: 960px) {
+            .jefe-interview-workspace {
+              grid-template-columns: minmax(0, 1fr);
+            }
+          }
+        `}
+      </style>
+      <div className="jefe-interview-workspace">
+        <InterviewPanel experience={experience} actionError={actionError} />
+        <BeliefSnapshotPanel beliefs={beliefs} />
+      </div>
+    </>
+  );
+}
+
+function InterviewPanel({
+  experience,
+  actionError,
+}: {
+  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>;
+  actionError?: string | null;
+}) {
+  const status = experience.interview.status;
+
+  return (
+    <Box
+      padding="500"
+      background="bg-surface"
+      borderColor="border"
+      borderRadius="200"
+      borderWidth="025"
+    >
+      <BlockStack gap="500">
+        <InlineStack align="space-between" blockAlign="center" gap="300">
+          <BlockStack gap="100">
+            <Text as="h1" variant="headingLg">
+              Jefe Interview
+            </Text>
+            <Text as="p" tone="subdued">
+              I’ve studied the Shopify basics. Now I need the context only you can give me.
+            </Text>
+          </BlockStack>
+          <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
+        </InlineStack>
+
+        {actionError ? (
+          <Box padding="300" background="bg-surface-critical" borderRadius="200">
+            <Text as="p" tone="critical">
+              {actionError}
+            </Text>
+          </Box>
+        ) : null}
+
+        <Divider />
+
+        <ConversationThread turns={experience.turns} />
+
+        {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
+
+        {status === UI_INTERVIEW_STATUS.inProgress && experience.currentTurn ? (
+          <AnswerBox turn={experience.currentTurn} />
+        ) : null}
+
+        {experience.completionMessage &&
+        status === UI_INTERVIEW_STATUS.inProgress ? (
+          <CompletionControls message={experience.completionMessage} />
+        ) : null}
+
+        {status === UI_INTERVIEW_STATUS.completed ? (
+          <Text as="p">
+            Jefe is ready to start looking for opportunities. The interview history and memory updates are saved.
+          </Text>
+        ) : null}
+
+        {status === UI_INTERVIEW_STATUS.skipped ? (
+          <Text as="p">
+            The interview is skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
+          </Text>
+        ) : null}
+      </BlockStack>
+    </Box>
+  );
+}
+
+function BeliefSnapshotPanel({
+  beliefs,
+}: {
+  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
+}) {
+  return (
+    <Box
+      padding="400"
+      background="bg-surface"
+      borderColor="border"
+      borderRadius="200"
+      borderWidth="025"
+    >
+      <BlockStack gap="300">
+        <BlockStack gap="050">
+          <Text as="h2" variant="headingMd">
+            Current Beliefs
+          </Text>
+          <Text as="p" tone="subdued">
+            Active Merchant Memory, trimmed to the fields that explain current understanding.
+          </Text>
+        </BlockStack>
+        <Box
+          background="bg-surface-secondary"
+          borderColor="border"
+          borderRadius="200"
+          borderWidth="025"
+        >
+          <pre
+            style={{
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              fontSize: 12,
+              lineHeight: 1.45,
+              margin: 0,
+              maxHeight: "calc(100vh - 220px)",
+              overflow: "auto",
+              padding: 16,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            <code>{JSON.stringify(beliefs, null, 2)}</code>
+          </pre>
+        </Box>
+      </BlockStack>
+    </Box>
+  );
+}
+
+function ConversationThread({
+  turns,
+}: {
+  turns: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["turns"];
+}) {
+  if (turns.length === 0) {
+    return (
+      <AssistantBubble>
+        <Text as="p">
+          I’ll ask one question at a time and turn your answers into Merchant Memory.
+        </Text>
+      </AssistantBubble>
+    );
+  }
+
+  return (
+    <BlockStack gap="400">
+      <AssistantBubble>
+        <Text as="p">
+          I already understand the basics, but there are a few things only you can tell me.
+        </Text>
+      </AssistantBubble>
+      {turns.map((turn) => (
+        <BlockStack gap="300" key={turn.id}>
+          <AssistantBubble>
+            <BlockStack gap="200">
+              {turn.acknowledgement ? (
+                <Text as="p" tone="subdued">
+                  {turn.acknowledgement}
+                </Text>
+              ) : null}
+              <Text as="p">{turn.question}</Text>
+              {turn.operationStatus === UI_TURN_STATUS.committed ? (
+                <Text as="p" tone="success">
+                  Memory updated.
+                </Text>
+              ) : null}
+              {turn.operationStatus ===
+              UI_TURN_STATUS.clarificationRequired ? (
+                <Text as="p" tone="subdued">
+                  I need one more detail before I remember that.
+                </Text>
+              ) : null}
+            </BlockStack>
+          </AssistantBubble>
+          {turn.merchantAnswer ? (
+            <MerchantBubble>
+              <Text as="p">{turn.merchantAnswer}</Text>
+            </MerchantBubble>
+          ) : null}
+        </BlockStack>
+      ))}
+    </BlockStack>
+  );
+}
+
+function AnswerBox({
+  turn,
+}: {
+  turn: NonNullable<
+    Awaited<ReturnType<typeof getMerchantInterviewExperience>>["currentTurn"]
+  >;
+}) {
+  const [answer, setAnswer] = useState("");
+
+  useEffect(() => {
+    setAnswer("");
+  }, [turn.id]);
+
+  return (
+    <BlockStack gap="300">
+      <Form method="post">
+        <BlockStack gap="300">
+          <input type="hidden" name="intent" value="answer" />
+          <input type="hidden" name="turnId" value={turn.id} />
+          <input
+            type="hidden"
+            name="idempotencyKey"
+            value={`${turn.id}:${turn.createdAt}`}
+          />
+          <TextField
+            label="Your answer"
+            name="answer"
+            value={answer}
+            onChange={setAnswer}
+            autoComplete="off"
+            multiline={4}
+          />
+          <InlineStack align="end" blockAlign="center" gap="300">
+            <Button submit variant="primary">
+              Send
+            </Button>
+          </InlineStack>
+        </BlockStack>
+      </Form>
+    </BlockStack>
+  );
+}
+
+function CompletionControls({ message }: { message: string }) {
+  return (
+    <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+      <BlockStack gap="300">
+        <Text as="p">{message}</Text>
+        <InlineStack gap="200">
+          <Form method="post">
+            <input type="hidden" name="intent" value="complete" />
+            <Button submit variant="primary">
+              Finish for now
+            </Button>
+          </Form>
+          <Form method="post">
+            <input type="hidden" name="intent" value="tell_more" />
+            <Button submit>Tell you more</Button>
+          </Form>
+        </InlineStack>
+      </BlockStack>
+    </Box>
+  );
+}
+
+function PausedControls() {
+  return (
+    <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+      <InlineStack align="space-between" blockAlign="center" gap="300">
+        <Text as="p">The interview is paused. Your answers are saved.</Text>
+        <InlineStack gap="200">
+          <Form method="post">
+            <input type="hidden" name="intent" value="resume" />
+            <Button submit variant="primary">
+              Resume
+            </Button>
+          </Form>
+          <Form method="post">
+            <input type="hidden" name="intent" value="skip" />
+            <Button submit>Skip</Button>
+          </Form>
+        </InlineStack>
+      </InlineStack>
+    </Box>
+  );
+}
+
+function AssistantBubble({ children }: { children: ReactNode }) {
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <Box
+        padding="300"
+        background="bg-surface-secondary"
+        borderRadius="200"
+      >
+        {children}
+      </Box>
+    </div>
+  );
+}
+
+function MerchantBubble({ children }: { children: ReactNode }) {
+  return (
+    <InlineStack align="end">
+      <div style={{ maxWidth: 720 }}>
+        <Box
+          padding="300"
+          background="bg-fill-info-secondary"
+          borderRadius="200"
+        >
+          {children}
+        </Box>
+      </div>
+    </InlineStack>
+  );
+}
+
+function statusLabel(status: string) {
+  if (status === UI_INTERVIEW_STATUS.inProgress) return "In progress";
+  if (status === UI_INTERVIEW_STATUS.paused) return "Paused";
+  if (status === UI_INTERVIEW_STATUS.completed) return "Complete";
+  if (status === UI_INTERVIEW_STATUS.skipped) return "Skipped";
+  return "Preparing";
+}
+
+function statusTone(status: string) {
+  if (status === UI_INTERVIEW_STATUS.completed) return "success" as const;
+  if (status === UI_INTERVIEW_STATUS.paused) return "attention" as const;
+  if (status === UI_INTERVIEW_STATUS.skipped) return "info" as const;
+  return "info" as const;
 }
 
 function BackfillStatus({
@@ -132,30 +557,6 @@ function BackfillStatus({
         </InlineStack>
         <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
       </InlineStack>
-    </Box>
-  );
-}
-
-function RawMemoryDump({ dump }: { dump: unknown }) {
-  return (
-    <Box
-      background="bg-surface"
-      borderColor="border"
-      borderRadius="200"
-      borderWidth="025"
-    >
-      <pre
-        style={{
-          margin: 0,
-          maxHeight: "calc(100vh - 180px)",
-          overflow: "auto",
-          padding: 20,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
-      >
-        <code>{JSON.stringify(dump, null, 2)}</code>
-      </pre>
     </Box>
   );
 }
@@ -228,96 +629,66 @@ async function getActiveBeliefCount(merchantId: string) {
   });
 }
 
-async function getRawMerchantMemoryDump({
+async function getCompactBeliefSnapshot({
   merchantId,
   shopId,
 }: {
   merchantId: string;
   shopId: string;
 }) {
-  const [merchant, shop, latestRefresh, beliefs] = await Promise.all([
-    prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { id: true, name: true, status: true, createdAt: true },
-    }),
-    prisma.shop.findUnique({
-      where: { id: shopId },
-      select: {
-        id: true,
-        shopDomain: true,
-        status: true,
-        setupStatus: true,
-        backfillCompletedAt: true,
-      },
-    }),
-    prisma.merchantMemoryRefreshRun.findFirst({
-      where: { merchantId, shopId },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        refreshType: true,
-        status: true,
-        requestedCategories: true,
-        result: true,
-        lastError: true,
-        startedAt: true,
-        completedAt: true,
-        createdAt: true,
-      },
-    }),
-    prisma.merchantMemoryBelief.findMany({
-      where: {
-        merchantId,
-        shopId,
-        status: { in: ACTIVE_BELIEF_STATUSES },
-      },
-      orderBy: [{ category: "asc" }, { key: "asc" }],
-      include: {
-        evidence: {
-          orderBy: { createdAt: "asc" },
-          select: {
-            sourceType: true,
-            sourceReference: true,
-            evidenceType: true,
-            summary: true,
-            metadata: true,
-            observedAt: true,
-            createdAt: true,
-          },
+  const beliefs = await prisma.merchantMemoryBelief.findMany({
+    where: {
+      merchantId,
+      shopId,
+      status: { in: ACTIVE_BELIEF_STATUSES },
+    },
+    orderBy: [{ category: "asc" }, { key: "asc" }],
+    take: 80,
+    select: {
+      category: true,
+      key: true,
+      value: true,
+      valueType: true,
+      status: true,
+      confidence: true,
+      confidenceReason: true,
+      precedence: true,
+      lastEvaluatedAt: true,
+      lastConfirmedAt: true,
+      evidence: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          sourceType: true,
+          evidenceType: true,
+          summary: true,
+          observedAt: true,
         },
       },
-    }),
-  ]);
+    },
+  });
 
-  return {
-    generatedAt: new Date().toISOString(),
-    merchant: serializeDateFields(merchant),
-    shop: serializeDateFields(shop),
-    latestRefresh: serializeDateFields(latestRefresh),
-    activeBeliefCount: beliefs.length,
-    beliefs: beliefs.map((belief) => ({
-      id: belief.id,
-      category: belief.category,
-      key: belief.key,
-      value: belief.value,
-      valueType: belief.valueType,
-      status: belief.status,
-      confidence:
-        belief.confidence === null ? null : Number(belief.confidence),
-      confidenceReason: belief.confidenceReason,
-      precedence: belief.precedence,
-      derivationVersion: belief.derivationVersion,
-      firstObservedAt: belief.firstObservedAt?.toISOString() ?? null,
-      lastObservedAt: belief.lastObservedAt?.toISOString() ?? null,
-      lastEvaluatedAt: belief.lastEvaluatedAt?.toISOString() ?? null,
-      lastConfirmedAt: belief.lastConfirmedAt?.toISOString() ?? null,
-      supersededAt: belief.supersededAt?.toISOString() ?? null,
-      supersedesBeliefId: belief.supersedesBeliefId,
-      createdAt: belief.createdAt.toISOString(),
-      updatedAt: belief.updatedAt.toISOString(),
-      evidence: belief.evidence.map(serializeDateFields),
-    })),
-  };
+  return beliefs.map((belief) => ({
+    key: belief.key,
+    category: belief.category,
+    value: belief.value,
+    value_type: belief.valueType,
+    status: belief.status,
+    confidence:
+      belief.confidence === null ? null : Number(belief.confidence),
+    confidence_reason: belief.confidenceReason,
+    precedence: belief.precedence,
+    last_evaluated_at: belief.lastEvaluatedAt?.toISOString() ?? null,
+    last_confirmed_at: belief.lastConfirmedAt?.toISOString() ?? null,
+    latest_evidence: belief.evidence[0]
+      ? {
+          source_type: belief.evidence[0].sourceType,
+          evidence_type: belief.evidence[0].evidenceType,
+          summary: belief.evidence[0].summary,
+          observed_at: belief.evidence[0].observedAt?.toISOString() ?? null,
+        }
+      : null,
+  }));
 }
 
 function summarizeBackfill(
@@ -426,17 +797,6 @@ function jobLabel(jobType: string) {
   if (jobType === "backfill_finalize") return "Finalising backfill";
   if (jobType === "merchant_memory_rebuild") return "Building merchant memory";
   return "Running backfill";
-}
-
-function serializeDateFields<T>(value: T): T {
-  if (!value || typeof value !== "object") return value;
-
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
-      key,
-      entry instanceof Date ? entry.toISOString() : entry,
-    ]),
-  ) as T;
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
