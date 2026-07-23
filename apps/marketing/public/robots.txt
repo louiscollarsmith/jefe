@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mynamejefe.com/sitemap.xml
