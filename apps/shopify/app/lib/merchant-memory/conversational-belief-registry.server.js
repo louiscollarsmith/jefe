@@ -5,6 +5,7 @@ export const CONVERSATIONAL_CATEGORIES = [
   "catalog",
   "orders",
   "customers",
+  "marketing",
   "inventory",
   "goals",
   "operations",
@@ -48,6 +49,32 @@ const REGISTRY = {
     confirmable: true,
     kind: "observation",
     guidance: "Use ISO 4217 currency codes such as GBP, EUR or USD.",
+  },
+  "business.description": {
+    key: "business.description",
+    category: "business",
+    label: "Business description",
+    description: "How the merchant describes what the business sells.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.string,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "merchant_statement",
+    guidance:
+      "Use the merchant's own business-level description. Do not include customer PII.",
+  },
+  "business.market_positioning": {
+    key: "business.market_positioning",
+    category: "business",
+    label: "Market positioning",
+    description: "How the merchant positions the brand in the market.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.enum,
+    allowedValues: ["premium", "value", "specialist", "convenience", "other"],
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "merchant_statement",
+    guidance: "Map explicit positioning such as premium, value-focused or specialist.",
   },
   "catalog.active_product_count": {
     key: "catalog.active_product_count",
@@ -196,6 +223,30 @@ const REGISTRY = {
     kind: "inference",
     guidance: "Do not store customer PII. Use aggregate customer descriptions only.",
   },
+  "customers.primary_purchase_reason": {
+    key: "customers.primary_purchase_reason",
+    category: "customers",
+    label: "Primary purchase reason",
+    description: "The main reason the merchant believes customers buy.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.string,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "inference",
+    guidance: "Use aggregate buying reasons such as gifting, replenishment or quality.",
+  },
+  "marketing.primary_acquisition_channel": {
+    key: "marketing.primary_acquisition_channel",
+    category: "marketing",
+    label: "Primary acquisition channel",
+    description: "Where the merchant says most new customers currently come from.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.string,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "merchant_statement",
+    guidance: "Examples include Instagram, paid search, SEO, wholesale referrals or email.",
+  },
   "operations.fulfilment_model": {
     key: "operations.fulfilment_model",
     category: "operations",
@@ -207,6 +258,18 @@ const REGISTRY = {
     confirmable: true,
     kind: "policy",
     guidance: "Examples include one warehouse, dropshipped or mixed fulfilment.",
+  },
+  "operations.biggest_operational_pain": {
+    key: "operations.biggest_operational_pain",
+    category: "operations",
+    label: "Biggest operational problem",
+    description: "The operational issue the merchant most wants Jefe to understand.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.string,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "constraint",
+    guidance: "Use the merchant's stated pain point without inventing a solution.",
   },
   "preferences.optimisation_priority": {
     key: "preferences.optimisation_priority",
@@ -259,6 +322,18 @@ const REGISTRY = {
     confirmable: true,
     kind: "policy",
     guidance: "Keep the merchant's product group description, not customer PII.",
+  },
+  "policies.never_recommend": {
+    key: "policies.never_recommend",
+    category: "policies",
+    label: "Recommendations to avoid",
+    description: "Recommendation types the merchant says Jefe should not make.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.string,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "policy",
+    guidance: "Use only explicit merchant restrictions or strong preferences.",
   },
 };
 
@@ -523,7 +598,7 @@ function humanize(value) {
  *   merchantCreatable: boolean;
  *   merchantCorrectable: boolean;
  *   confirmable: boolean;
- *   kind: "observation" | "inference" | "policy" | "preference" | "goal";
+ *   kind: "observation" | "inference" | "policy" | "preference" | "goal" | "merchant_statement" | "constraint";
  *   min?: number;
  *   max?: number;
  *   guidance: string;

@@ -35,6 +35,12 @@ export function createDisabledProvider(config) {
     async generateStructuredOperation() {
       throw new LlmDisabledError();
     },
+    /**
+     * @returns {Promise<never>}
+     */
+    async generateStructuredJson() {
+      throw new LlmDisabledError();
+    },
   };
 }
 
@@ -65,6 +71,25 @@ export function createMockLlmProvider(input) {
         durationMs: input.delayMs ?? 0,
       };
     },
+    /**
+     */
+    async generateStructuredJson() {
+      if (input.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+      }
+      if (input.error) throw input.error;
+      return {
+        json: input.operation,
+        usage: input.usage ?? {
+          inputTokens: 10,
+          outputTokens: 20,
+          totalTokens: 30,
+          estimatedInputTokens: 10,
+        },
+        attempts: 1,
+        durationMs: input.delayMs ?? 0,
+      };
+    },
   };
 }
 
@@ -82,6 +107,24 @@ export function createMockLlmProvider(input) {
  *     timeoutMs?: number;
  *   }) => Promise<{
  *     operation: any;
+ *     usage: {
+ *       inputTokens?: number | null;
+ *       outputTokens?: number | null;
+ *       totalTokens?: number | null;
+ *       estimatedInputTokens: number;
+ *     };
+ *     attempts: number;
+ *     durationMs: number;
+ *   }>;
+ *   generateStructuredJson?: (request: {
+ *     systemPrompt: string;
+ *     prompt: string;
+ *     schema: any;
+ *     maxInputTokens?: number;
+ *     maxOutputTokens?: number;
+ *     timeoutMs?: number;
+ *   }) => Promise<{
+ *     json: any;
  *     usage: {
  *       inputTokens?: number | null;
  *       outputTokens?: number | null;

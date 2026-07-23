@@ -52,6 +52,9 @@ model Merchant {
   memoryConversations        MerchantMemoryConversation[]
   memoryConversationMessages MerchantMemoryConversationMessage[]
   memoryOpenQuestions        MerchantMemoryOpenQuestion[]
+  merchantInterviews         MerchantInterview[]
+  merchantInterviewTopics    MerchantInterviewTopic[]
+  merchantInterviewTurns     MerchantInterviewTurn[]
 
   @@map("merchants")
 }
@@ -90,6 +93,9 @@ model Shop {
   memoryConversations        MerchantMemoryConversation[]
   memoryConversationMessages MerchantMemoryConversationMessage[]
   memoryOpenQuestions        MerchantMemoryOpenQuestion[]
+  merchantInterviews         MerchantInterview[]
+  merchantInterviewTopics    MerchantInterviewTopic[]
+  merchantInterviewTurns     MerchantInterviewTurn[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -554,4 +560,78 @@ model MerchantMemoryOpenQuestion {
   @@index([merchantId, status, priority])
   @@index([shopId, status])
   @@map("merchant_memory_open_questions")
+}
+
+model MerchantInterview {
+  id             String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String                   @map("merchant_id") @db.Uuid
+  shopId         String?                  @map("shop_id") @db.Uuid
+  status         String                   @default("not_started")
+  readinessScore Int                      @default(0) @map("readiness_score")
+  startedAt      DateTime?                @map("started_at") @db.Timestamptz(6)
+  completedAt    DateTime?                @map("completed_at") @db.Timestamptz(6)
+  pausedAt       DateTime?                @map("paused_at") @db.Timestamptz(6)
+  currentTopic   String?                  @map("current_topic")
+  currentQuestion String?                 @map("current_question")
+  createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant       Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           Shop?                    @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  topics         MerchantInterviewTopic[]
+  turns          MerchantInterviewTurn[]
+
+  @@index([merchantId, status, updatedAt])
+  @@index([shopId, status])
+  @@map("merchant_interviews")
+}
+
+model MerchantInterviewTopic {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  interviewId      String            @map("interview_id") @db.Uuid
+  merchantId       String            @map("merchant_id") @db.Uuid
+  shopId           String?           @map("shop_id") @db.Uuid
+  topicKey         String            @map("topic_key")
+  beliefKey        String            @map("belief_key")
+  status           String            @default("open")
+  priority         Int               @default(100)
+  source           String            @default("registry")
+  answeredAt       DateTime?         @map("answered_at") @db.Timestamptz(6)
+  relatedBeliefIds String[]          @default([]) @map("related_belief_ids")
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  interview        MerchantInterview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop?             @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  @@unique([interviewId, topicKey])
+  @@index([merchantId, status, priority])
+  @@index([shopId, status])
+  @@map("merchant_interview_topics")
+}
+
+model MerchantInterviewTurn {
+  id                       String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  interviewId              String            @map("interview_id") @db.Uuid
+  merchantId               String            @map("merchant_id") @db.Uuid
+  shopId                   String?           @map("shop_id") @db.Uuid
+  topicKey                 String?           @map("topic_key")
+  question                 String
+  acknowledgement          String?
+  answerSuggestions        Json              @default("[]") @map("answer_suggestions_json")
+  merchantAnswer           String?           @map("merchant_answer")
+  structuredInterpretation Json?             @map("structured_interpretation_json")
+  operationStatus          String            @default("pending") @map("operation_status")
+  relatedBeliefIds         String[]          @default([]) @map("related_belief_ids")
+  idempotencyKey           String?           @map("idempotency_key")
+  createdAt                DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  answeredAt               DateTime?         @map("answered_at") @db.Timestamptz(6)
+  interview                MerchantInterview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  merchant                 Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                     Shop?             @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  @@unique([interviewId, idempotencyKey])
+  @@index([interviewId, createdAt])
+  @@index([merchantId, createdAt])
+  @@index([shopId, createdAt])
+  @@map("merchant_interview_turns")
 }
