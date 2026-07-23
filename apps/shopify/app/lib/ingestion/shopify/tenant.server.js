@@ -8,27 +8,33 @@ import { normalizeShopDomain } from "../../shopify/admin-graphql.server.js";
  */
 export async function ensureShopifyTenant(prisma, input) {
   const shopDomain = normalizeShopDomain(input.shopDomain);
-  const existingShop = await prisma.shop.findUnique({
-    where: { platform_shopDomain: { platform: "shopify", shopDomain } },
-    include: { merchant: true },
-  });
+  const existingShop = await findShopifyShop(prisma, shopDomain);
 
   if (existingShop) {
-    const shop =
-      existingShop.status === "uninstalled" ||
-      existingShop.setupStatus === "uninstalled"
-        ? await prisma.shop.update({
-            where: { id: existingShop.id },
-            data: {
-              status: "active",
-              setupStatus: "installed",
-            },
-            include: { merchant: true },
-          })
-        : existingShop;
+    return activateExistingShopifyTenant(prisma, existingShop, {
+      ...input,
+      shopDomain,
+    });
+  }
+
+  try {
+    const merchant = await prisma.merchant.create({
+      data: {
+        name: shopDomain,
+        shops: {
+          create: {
+            platform: "shopify",
+            shopDomain,
+            rawPayload: input.rawPayload ?? {},
+          },
+        },
+      },
+      include: { shops: true },
+    });
+    const shop = merchant.shops[0];
 
     await upsertConnectorAccount(prisma, {
-      merchantId: shop.merchant.id,
+      merchantId: merchant.id,
       shopId: shop.id,
       shopDomain,
       accessTokenSessionId: input.accessTokenSessionId,
@@ -36,34 +42,60 @@ export async function ensureShopifyTenant(prisma, input) {
       rawPayload: input.rawPayload,
     });
 
-    return { merchant: shop.merchant, shop };
-  }
+    return { merchant, shop };
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
 
-  const merchant = await prisma.merchant.create({
-    data: {
-      name: shopDomain,
-      shops: {
-        create: {
-          platform: "shopify",
-          shopDomain,
-          rawPayload: input.rawPayload ?? {},
-        },
-      },
-    },
-    include: { shops: true },
+    const racedShop = await findShopifyShop(prisma, shopDomain);
+    if (!racedShop) throw error;
+
+    return activateExistingShopifyTenant(prisma, racedShop, {
+      ...input,
+      shopDomain,
+    });
+  }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {string} shopDomain
+ */
+async function findShopifyShop(prisma, shopDomain) {
+  return prisma.shop.findUnique({
+    where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+    include: { merchant: true },
   });
-  const shop = merchant.shops[0];
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {NonNullable<Awaited<ReturnType<typeof findShopifyShop>>>} existingShop
+ * @param {{ shopDomain: string; accessTokenSessionId?: string | null; scopes?: string[]; rawPayload?: unknown }} input
+ */
+async function activateExistingShopifyTenant(prisma, existingShop, input) {
+  const shop =
+    existingShop.status === "uninstalled" ||
+    existingShop.setupStatus === "uninstalled"
+      ? await prisma.shop.update({
+          where: { id: existingShop.id },
+          data: {
+            status: "active",
+            setupStatus: "installed",
+          },
+          include: { merchant: true },
+        })
+      : existingShop;
 
   await upsertConnectorAccount(prisma, {
-    merchantId: merchant.id,
+    merchantId: shop.merchant.id,
     shopId: shop.id,
-    shopDomain,
+    shopDomain: input.shopDomain,
     accessTokenSessionId: input.accessTokenSessionId,
     scopes: input.scopes,
     rawPayload: input.rawPayload,
   });
 
-  return { merchant, shop };
+  return { merchant: shop.merchant, shop };
 }
 
 /**
@@ -105,6 +137,16 @@ async function upsertConnectorAccount(prisma, input) {
       connectedAt: new Date(),
     },
   });
+}
+
+/** @param {unknown} error */
+function isUniqueConstraintError(error) {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "P2002"
+  );
 }
 
 /**

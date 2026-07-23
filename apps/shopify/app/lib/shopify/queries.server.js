@@ -122,10 +122,6 @@ export const ORDERS_QUERY = `#graphql
           tags
           sourceName
           email
-          customer {
-            id
-            email
-          }
           billingAddress {
             country
             province

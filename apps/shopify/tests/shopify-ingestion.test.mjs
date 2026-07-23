@@ -241,6 +241,54 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
   }
 });
 
+test("Shopify tenant creation is idempotent under concurrent requests", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  const shopDomain = `concurrent-${suffix}.myshopify.com`;
+
+  try {
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        ensureShopifyTenant(prisma, {
+          shopDomain,
+          accessTokenSessionId: `offline-concurrent-${index}`,
+          scopes: ["read_products"],
+          rawPayload: { source: `concurrent-${index}` },
+        }),
+      ),
+    );
+
+    assert.equal(new Set(results.map(({ merchant }) => merchant.id)).size, 1);
+    assert.equal(new Set(results.map(({ shop }) => shop.id)).size, 1);
+    assert.equal(
+      await prisma.merchant.count({ where: { name: shopDomain } }),
+      1,
+    );
+    assert.equal(
+      await prisma.shop.count({
+        where: { platform: "shopify", shopDomain },
+      }),
+      1,
+    );
+    assert.equal(
+      await prisma.connectorAccount.count({
+        where: { connector: "shopify", accountExternalId: shopDomain },
+      }),
+      1,
+    );
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
 test("Shopify evidence backfill upserts commerce evidence and is idempotent", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");

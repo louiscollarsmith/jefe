@@ -116,8 +116,8 @@ export async function processNextBackfillJob(prisma, options = {}) {
     });
     return { status: "succeeded", jobType: job.jobType, result };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Backfill job failed.";
+    const failure = backfillFailureDetails(error);
+    const message = failure.message;
     const failedPermanently = job.attemptCount + 1 >= job.maxAttempts;
     await prisma.backfillJob.update({
       where: { id: job.id },
@@ -131,7 +131,13 @@ export async function processNextBackfillJob(prisma, options = {}) {
       },
     });
     if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
-      await markMemoryFailed(prisma, job, message);
+      await markMemoryFailed(prisma, job, failure);
+    } else if (failedPermanently) {
+      await markEvidenceFailed(prisma, job, failure);
+      await prisma.shop.update({
+        where: { id: job.shopId },
+        data: { setupStatus: "backfill_partial" },
+      });
     } else {
       await prisma.shop.update({
         where: { id: job.shopId },
@@ -487,18 +493,39 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string }} job
- * @param {string} message
+ * @param {{ message: string; metadata: Record<string, any> }} failure
  */
-async function markMemoryFailed(prisma, job, message) {
+async function markMemoryFailed(prisma, job, failure) {
   await upsertBackfillStatus(prisma, {
     merchantId: job.merchantId,
     shopId: job.shopId,
     domain: MEMORY_BACKFILL_DOMAIN,
     status: "failed",
     completedAt: null,
-    lastError: message.slice(0, 1000),
-    metadata: { failedAt: new Date().toISOString() },
+    lastError: failure.message.slice(0, 1000),
+    metadata: { failedAt: new Date().toISOString(), ...failure.metadata },
   });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; jobType: string }} job
+ * @param {{ message: string; metadata: Record<string, any> }} failure
+ */
+async function markEvidenceFailed(prisma, job, failure) {
+  await Promise.all(
+    failedDomainsForJob(job.jobType).map((domain) =>
+      upsertBackfillStatus(prisma, {
+        merchantId: job.merchantId,
+        shopId: job.shopId,
+        domain,
+        status: "failed",
+        completedAt: null,
+        lastError: failure.message.slice(0, 1000),
+        metadata: { failedAt: new Date().toISOString(), ...failure.metadata },
+      }),
+    ),
+  );
 }
 
 /**
@@ -661,6 +688,62 @@ function domainTotal(totals, domain) {
   if (domain === "orders") return totals.orders;
   if (domain === "inventory") return totals.inventoryLevels;
   return 0;
+}
+
+/** @param {string} jobType */
+function failedDomainsForJob(jobType) {
+  if (jobType === "products_backfill") return ["products"];
+  if (jobType === "orders_backfill_365d") {
+    return ["orders", "refunds", "customers"];
+  }
+  if (jobType === "inventory_backfill") return ["inventory"];
+  if (jobType === "backfill_delta_sync") return ["orders", "refunds", "customers"];
+  return [];
+}
+
+/** @param {unknown} error */
+function backfillFailureDetails(error) {
+  const baseMessage =
+    error instanceof Error ? error.message : "Backfill job failed.";
+  const shopifyErrors =
+    error && typeof error === "object" && "errors" in error
+      ? error.errors
+      : null;
+  const firstShopifyMessage = firstGraphqlErrorMessage(shopifyErrors);
+  const requestId =
+    error && typeof error === "object" && "requestId" in error
+      ? error.requestId
+      : null;
+  const message = firstShopifyMessage
+    ? `${baseMessage}: ${firstShopifyMessage}`
+    : baseMessage;
+
+  return {
+    message,
+    metadata: {
+      requestId: typeof requestId === "string" ? requestId : null,
+      shopifyErrors: safeJsonValue(shopifyErrors),
+    },
+  };
+}
+
+/** @param {unknown} errors */
+function firstGraphqlErrorMessage(errors) {
+  if (!Array.isArray(errors)) return null;
+  const first = errors.find(
+    (error) => typeof error?.message === "string" && error.message !== "",
+  );
+  return first?.message ?? null;
+}
+
+/** @param {unknown} value */
+function safeJsonValue(value) {
+  if (value === undefined) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return String(value);
+  }
 }
 
 /** @param {string | null | undefined} status */
