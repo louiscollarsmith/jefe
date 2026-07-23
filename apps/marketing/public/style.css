@@ -513,6 +513,35 @@ a:hover {
   border-color: var(--on-panel-gold);
 }
 
+.store-url-field {
+  display: flex;
+  align-items: center;
+  background: var(--on-panel-input-fill);
+  border: 1px solid var(--on-panel-input-border);
+  border-radius: 12px;
+  padding: 0 16px;
+}
+
+.store-url-field:focus-within {
+  border-color: var(--on-panel-gold);
+}
+
+.store-url-field input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 15px 0;
+}
+
+.store-url-suffix {
+  color: var(--on-panel-placeholder);
+  font-size: 15px;
+  white-space: nowrap;
+  padding-left: 2px;
+  user-select: none;
+}
+
 .signup-submit {
   font-family: "Bricolage Grotesque", sans-serif;
   text-align: center;

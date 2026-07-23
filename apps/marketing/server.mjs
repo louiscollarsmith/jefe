@@ -14,6 +14,28 @@ if (!DATABASE_URL) {
 const sql = neon(DATABASE_URL);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+
+async function notifySlack(email, storeUrl) {
+  if (!SLACK_WEBHOOK_URL) return;
+
+  const text = storeUrl
+    ? `:wave: New Design Partner signup — *${email}* (${storeUrl})`
+    : `:wave: New Design Partner signup — *${email}* (no store URL given)`;
+
+  try {
+    const res = await fetch(SLACK_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      console.error("slack notify failed", res.status, await res.text());
+    }
+  } catch (err) {
+    console.error("slack notify failed", err);
+  }
+}
 
 const app = express();
 app.use(express.json());
@@ -38,11 +60,17 @@ app.post("/api/waitlist", async (req, res) => {
   }
 
   try {
-    await sql`
+    const [row] = await sql`
       INSERT INTO waitlist_signups (email, source, store_url)
       VALUES (${email}, 'mynamejefe.com', ${storeUrl})
       ON CONFLICT (email) DO UPDATE SET store_url = COALESCE(waitlist_signups.store_url, EXCLUDED.store_url)
+      RETURNING (xmax = 0) AS inserted
     `;
+
+    if (row?.inserted) {
+      notifySlack(email, storeUrl);
+    }
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("waitlist insert failed", err);

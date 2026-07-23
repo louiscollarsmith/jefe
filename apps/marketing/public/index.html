@@ -86,7 +86,10 @@
             <input id="company" name="company" type="text" tabindex="-1" autocomplete="off" />
           </div>
           <input id="email" name="email" type="email" placeholder="you@yourstore.com" required autocomplete="email" />
-          <input id="storeUrl" name="storeUrl" type="text" placeholder="yourstore.myshopify.com" autocomplete="off" />
+          <div class="store-url-field">
+            <input id="storeUrl" name="storeUrl" type="text" placeholder="yourstore" autocomplete="off" />
+            <span class="store-url-suffix">.myshopify.com</span>
+          </div>
           <button type="submit" class="signup-submit">Work with Jefe</button>
           <p id="form-message" class="form-message" role="status"></p>
           <div class="fine-print">No spam. Just Jefe, reaching out when he's ready for you.</div>

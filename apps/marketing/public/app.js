@@ -98,8 +98,14 @@ const submitButton = form.querySelector("button[type=submit]");
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const email = form.email.value.trim();
-  const storeUrl = form.storeUrl.value.trim();
   const company = form.company.value;
+
+  const storePrefix = form.storeUrl.value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\.myshopify\.com.*$/i, "")
+    .replace(/\/.*$/, "");
+  const storeUrl = storePrefix ? `${storePrefix}.myshopify.com` : "";
 
   message.textContent = "";
   submitButton.disabled = true;
