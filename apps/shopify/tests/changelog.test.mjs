@@ -69,7 +69,7 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("raw Merchant Memory JSON dump once memory is ready"),
+        item.includes("Store Understanding pass after deterministic Merchant Memory rebuilds"),
       ),
     ),
   );

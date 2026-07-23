@@ -14,23 +14,31 @@ The interview can be `in_progress`, `paused`, `completed`, `skipped` or `failed`
 
 ## Topic And Belief Registries
 
-Topics live in `app/lib/merchant-memory/interview-registry.server.js`. Each topic points at one registered Merchant Memory belief key, a default question, answer suggestions, priority and readiness weight.
+Topics live in `app/lib/merchant-memory/interview-registry.server.js`. Each topic points at one registered Merchant Memory belief key, planning guidance, priority and readiness weight. Registry text is not used as a merchant-facing fallback question.
 
 Merchant-created belief definitions live in `app/lib/merchant-memory/conversational-belief-registry.server.js`. The LLM may only propose those keys. The application rejects unsupported keys, non-merchant-creatable beliefs, invalid values and likely customer PII.
 
 To add a topic:
 
 1. Add or confirm a merchant-creatable belief definition.
-2. Add a topic entry with a stable `topicKey`, `beliefKey`, question, priority and weight.
-3. Add deterministic extraction or a mocked LLM test for the expected answer shape.
+2. Add a topic entry with a stable `topicKey`, `beliefKey`, planning guidance, priority and weight.
+3. Add mocked LLM question-planner and answer-interpretation tests for the expected flow.
 
 ## Question Selection
 
-Question selection is controlled by application code:
+## Question Planning
 
-Merchant Memory + interview topic state + readiness coverage + priority rules = next question.
+Question wording is produced by the LLM question planner. The application supplies:
 
-The LLM can interpret answers and suggest a next topic, but it does not create the agenda. A topic already covered by active Merchant Memory is marked answered and skipped.
+- active Merchant Memory beliefs;
+- Store Understanding inferences and confidence;
+- recent interview turns;
+- readiness coverage;
+- the allowed open or provisional topics.
+
+The LLM returns strict JSON containing `topic_key`, `question`, `question_intent`, `answer_suggestions` and `rationale`. The application validates that the topic is allowed, the question is merchant-safe and the text does not copy registry wording.
+
+If the LLM question planner is disabled, times out or returns invalid output, Jefe does not create a deterministic fallback question. The interview waits until LLM question planning is available.
 
 ## Structured Interpretation
 
@@ -46,7 +54,7 @@ The LLM returns strict JSON with:
 
 Each candidate belief includes `belief_key`, `value`, `value_type`, `merchant_statement_summary` and `confidence`. The application validates every candidate before writing.
 
-If the LLM is disabled, times out or returns invalid structure, deterministic fallback interpretation is used.
+If the answer-interpretation LLM is disabled, times out or returns invalid structure, deterministic fallback interpretation is still used for committing answers safely. That fallback does not generate the next merchant-facing interview question.
 
 ## Commit Flow
 

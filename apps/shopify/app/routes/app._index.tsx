@@ -46,12 +46,6 @@ const UI_INTERVIEW_STATUS = {
   completed: "completed",
   skipped: "skipped",
 };
-const UI_TURN_STATUS = {
-  pending: "pending",
-  committed: "committed",
-  clarificationRequired: "clarification_required",
-};
-
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
@@ -240,7 +234,7 @@ function InterviewPanel({
               Jefe Interview
             </Text>
             <Text as="p" tone="subdued">
-              I’ve studied the Shopify basics. Now I need the context only you can give me.
+              Help Jefe confirm, correct and complete Merchant Memory.
             </Text>
           </BlockStack>
           <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
@@ -256,12 +250,20 @@ function InterviewPanel({
 
         <Divider />
 
-        <ConversationThread turns={experience.turns} />
+        <ConversationThread messages={experience.messages} />
 
         {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
 
         {status === UI_INTERVIEW_STATUS.inProgress && experience.currentTurn ? (
-          <AnswerBox turn={experience.currentTurn} />
+          <AnswerBox key={experience.currentTurn.id} turn={experience.currentTurn} />
+        ) : null}
+
+        {status === UI_INTERVIEW_STATUS.inProgress &&
+        !experience.currentTurn &&
+        experience.plannerUnavailableMessage ? (
+          <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+            <Text as="p">{experience.plannerUnavailableMessage}</Text>
+          </Box>
         ) : null}
 
         {experience.completionMessage &&
@@ -270,9 +272,7 @@ function InterviewPanel({
         ) : null}
 
         {status === UI_INTERVIEW_STATUS.completed ? (
-          <Text as="p">
-            Jefe is ready to start looking for opportunities. The interview history and memory updates are saved.
-          </Text>
+          <Text as="p">I think I understand enough to start helping.</Text>
         ) : null}
 
         {status === UI_INTERVIEW_STATUS.skipped ? (
@@ -336,11 +336,11 @@ function BeliefSnapshotPanel({
 }
 
 function ConversationThread({
-  turns,
+  messages,
 }: {
-  turns: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["turns"];
+  messages: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["messages"];
 }) {
-  if (turns.length === 0) {
+  if (messages.length === 0) {
     return (
       <AssistantBubble>
         <Text as="p">
@@ -354,38 +354,28 @@ function ConversationThread({
     <BlockStack gap="400">
       <AssistantBubble>
         <Text as="p">
-          I already understand the basics, but there are a few things only you can tell me.
+          I’ll ask one question at a time and turn your answers into Merchant Memory.
         </Text>
       </AssistantBubble>
-      {turns.map((turn) => (
-        <BlockStack gap="300" key={turn.id}>
-          <AssistantBubble>
-            <BlockStack gap="200">
-              {turn.acknowledgement ? (
-                <Text as="p" tone="subdued">
-                  {turn.acknowledgement}
-                </Text>
-              ) : null}
-              <Text as="p">{turn.question}</Text>
-              {turn.operationStatus === UI_TURN_STATUS.committed ? (
-                <Text as="p" tone="success">
-                  Memory updated.
-                </Text>
-              ) : null}
-              {turn.operationStatus ===
-              UI_TURN_STATUS.clarificationRequired ? (
-                <Text as="p" tone="subdued">
-                  I need one more detail before I remember that.
-                </Text>
-              ) : null}
-            </BlockStack>
+      {messages.map((message) => (
+        message.role === "merchant" ? (
+          <MerchantBubble key={message.id}>
+            <Text as="p">{message.content}</Text>
+          </MerchantBubble>
+        ) : (
+          <AssistantBubble key={message.id}>
+            <Text
+              as="p"
+              tone={
+                message.type === "assistant_acknowledgement"
+                  ? "subdued"
+                  : undefined
+              }
+            >
+              {message.content}
+            </Text>
           </AssistantBubble>
-          {turn.merchantAnswer ? (
-            <MerchantBubble>
-              <Text as="p">{turn.merchantAnswer}</Text>
-            </MerchantBubble>
-          ) : null}
-        </BlockStack>
+        )
       ))}
     </BlockStack>
   );
@@ -399,10 +389,6 @@ function AnswerBox({
   >;
 }) {
   const [answer, setAnswer] = useState("");
-
-  useEffect(() => {
-    setAnswer("");
-  }, [turn.id]);
 
   return (
     <BlockStack gap="300">

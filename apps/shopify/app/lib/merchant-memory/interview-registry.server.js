@@ -11,6 +11,8 @@ export const INTERVIEW_STATUS = {
 
 export const INTERVIEW_TOPIC_STATUS = {
   open: "open",
+  provisionallyCovered: "provisionally_covered",
+  confirmationNeeded: "confirmation_needed",
   answered: "answered",
   partiallyAnswered: "partially_answered",
   unknown: "unknown",

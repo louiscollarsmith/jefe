@@ -105,6 +105,13 @@ async function generateStructuredJson(input) {
       });
       clearTimeout(timeout);
 
+      const finishReason = response.candidates?.[0]?.finishReason ?? null;
+      if (finishReason === "MAX_TOKENS") {
+        throw new LlmOutputValidationError(
+          "Model output exceeded max output tokens before valid JSON was complete.",
+        );
+      }
+
       const json = parseJson(response.text ?? "");
       if (json === null) {
         throw new LlmOutputValidationError("Model output must be JSON.");

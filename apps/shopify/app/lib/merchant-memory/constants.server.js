@@ -22,6 +22,7 @@ export const AUTHORITATIVE_BELIEF_STATUSES = [
 ];
 
 export const BELIEF_PRECEDENCE = {
+  llmInference: 10,
   systemInference: 20,
   directObservation: 40,
   merchantConfirmation: 60,
@@ -31,4 +32,3 @@ export const BELIEF_PRECEDENCE = {
 
 export const MEMORY_REFRESH_JOB_TYPE = "merchant_memory_rebuild";
 export const MEMORY_BACKFILL_DOMAIN = "merchant_memory";
-

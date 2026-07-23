@@ -1,5 +1,6 @@
 // @ts-check
 
+import { randomUUID } from "node:crypto";
 import { createLlmProvider } from "../llm/provider.server.js";
 import {
   INTERVIEW_ANSWER_STATUSES,
@@ -7,13 +8,27 @@ import {
   parseAndValidateInterviewInterpretation,
 } from "../llm/interview-interpretation-schema.server.js";
 import {
+  INTERVIEW_QUESTION_SCHEMA,
+  parseAndValidateInterviewQuestion,
+} from "../llm/interview-question-schema.server.js";
+import {
   BELIEF_PRECEDENCE,
+  BELIEF_STATUS,
   ACTIVE_BELIEF_STATUSES,
+  AUTHORITATIVE_BELIEF_STATUSES,
 } from "./constants.server.js";
 import {
+  confirmBelief,
   getBeliefsForMerchant,
   upsertMerchantSuppliedBelief,
 } from "./service.server.js";
+import {
+  STORE_UNDERSTANDING_DERIVATION_VERSION,
+  formatInferenceValue,
+  getStoreUnderstandingDefinition,
+  inferenceCoverageStatus,
+} from "./store-understanding-registry.server.js";
+import { runStoreUnderstandingPass } from "./store-understanding.server.js";
 import {
   formatBeliefValue,
   getBeliefDefinition,
@@ -39,9 +54,10 @@ export {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function getMerchantInterviewExperience(prisma, input) {
+  await ensureStoreUnderstandingBeforeFirstInterview(prisma, input);
   const interview = await getOrCreateInterview(prisma, input);
   await seedInterviewTopics(prisma, interview);
   await syncTopicsFromActiveBeliefs(prisma, interview);
@@ -53,13 +69,17 @@ export async function getMerchantInterviewExperience(prisma, input) {
     readiness.score < INTERVIEW_READINESS_THRESHOLD &&
     !latest?.merchantAnswer
   ) {
-    await ensureCurrentTurn(prisma, interview, readiness);
+    await ensureCurrentTurn(prisma, interview, readiness, {
+      llmProvider: input.llmProvider,
+      logger: input.logger,
+    });
   }
 
   const fresh = await prisma.merchantInterview.findFirstOrThrow({
     where: { id: interview.id, merchantId: input.merchantId },
   });
   const turns = await listInterviewTurns(prisma, fresh);
+  const messages = await listInterviewMessages(prisma, fresh);
   const currentTurn =
     fresh.status === INTERVIEW_STATUS.inProgress
       ? turns.find((turn) => turn.operationStatus === INTERVIEW_TURN_STATUS.pending)
@@ -69,11 +89,18 @@ export async function getMerchantInterviewExperience(prisma, input) {
     interview: serializeInterview(fresh),
     readiness,
     turns,
+    messages,
     currentTurn: currentTurn ?? null,
     canComplete: readiness.score >= INTERVIEW_READINESS_THRESHOLD,
     completionMessage:
       readiness.score >= INTERVIEW_READINESS_THRESHOLD && !currentTurn
-        ? buildCompletionMessage(readiness)
+        ? buildCompletionMessage()
+        : null,
+    plannerUnavailableMessage:
+      fresh.status === INTERVIEW_STATUS.inProgress &&
+      readiness.score < INTERVIEW_READINESS_THRESHOLD &&
+      !currentTurn
+        ? "Jefe needs the LLM question planner before the interview can continue."
         : null,
   };
 }
@@ -116,6 +143,89 @@ export async function submitInterviewAnswer(prisma, input) {
       idempotencyKey: input.idempotencyKey ?? null,
     },
   });
+  const answerMessage = await createInterviewMessage(prisma, turn.interview, {
+    turnId: turn.id,
+    sourceTurnId: turn.id,
+    type: "merchant_answer",
+    role: "merchant",
+    content: answer,
+    topicKey: turn.topicKey,
+  });
+  await prisma.merchantInterviewTurn.update({
+    where: { id: turn.id },
+    data: { answerMessageId: answerMessage.id },
+  });
+
+  const confirmation = await maybeCommitInferenceConfirmation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    turn,
+    answer,
+  });
+  if (confirmation.handled) {
+    const committedConfirmation = /** @type {any} */ (confirmation);
+    const acknowledgement = await buildTurnAcknowledgement(prisma, {
+      status: committedConfirmation.operationStatus,
+      committedBeliefIds: committedConfirmation.relatedBeliefIds,
+      answer,
+      fallback: committedConfirmation.acknowledgement,
+    });
+    const interpretationResultId = randomUUID();
+    await prisma.merchantInterviewTurn.update({
+      where: { id: turn.id },
+      data: {
+        structuredInterpretation: committedConfirmation.structuredInterpretation,
+        interpretationResultId,
+        operationStatus: committedConfirmation.operationStatus,
+        relatedBeliefIds: committedConfirmation.relatedBeliefIds,
+        committedBeliefIds: committedConfirmation.relatedBeliefIds,
+        acknowledgement,
+      },
+    });
+    const acknowledgementMessage = await createInterviewMessage(
+      prisma,
+      turn.interview,
+      {
+        turnId: turn.id,
+        sourceTurnId: turn.id,
+        interpretationResultId,
+        type: "assistant_acknowledgement",
+        role: "assistant",
+        content: acknowledgement,
+        topicKey: turn.topicKey,
+        committedBeliefIds: committedConfirmation.relatedBeliefIds,
+        operationStatus: committedConfirmation.operationStatus,
+      },
+    );
+    await prisma.merchantInterviewTurn.update({
+      where: { id: turn.id },
+      data: { acknowledgementMessageId: acknowledgementMessage.id },
+    });
+    await markTopicsFromInterpretation(prisma, {
+      interview: turn.interview,
+      interpretation: committedConfirmation.interpretation,
+      committedBeliefIds: committedConfirmation.relatedBeliefIds,
+      committedBeliefKeys: committedConfirmation.committedBeliefKeys,
+    });
+    const readiness = await recalculateInterviewReadiness(prisma, turn.interview);
+    if (readiness.score < INTERVIEW_READINESS_THRESHOLD) {
+      await ensureCurrentTurn(prisma, turn.interview, readiness, {
+        llmProvider: input.llmProvider,
+        logger: input.logger,
+        sourceTurnId: turn.id,
+      });
+    } else {
+      await prisma.merchantInterview.update({
+        where: { id: turn.interviewId },
+        data: {
+          currentTopic: null,
+          currentQuestion: null,
+          readinessScore: readiness.score,
+        },
+      });
+    }
+    return { ok: true };
+  }
 
   const beliefs = await getBeliefsForMerchant(prisma, {
     merchantId: input.merchantId,
@@ -140,6 +250,13 @@ export async function submitInterviewAnswer(prisma, input) {
     answer,
     interpretation,
   });
+  const acknowledgement = await buildTurnAcknowledgement(prisma, {
+    status: commit.status,
+    committedBeliefIds: commit.beliefIds,
+    answer,
+    fallback: commit.acknowledgement,
+  });
+  const interpretationResultId = randomUUID();
 
   await prisma.merchantInterviewTurn.update({
     where: { id: turn.id },
@@ -148,10 +265,27 @@ export async function submitInterviewAnswer(prisma, input) {
         ...interpretation,
         validation_errors: commit.errors,
       },
+      interpretationResultId,
       operationStatus: commit.status,
       relatedBeliefIds: commit.beliefIds,
-      acknowledgement: commit.acknowledgement,
+      committedBeliefIds: commit.beliefIds,
+      acknowledgement,
     },
+  });
+  const acknowledgementMessage = await createInterviewMessage(prisma, turn.interview, {
+    turnId: turn.id,
+    sourceTurnId: turn.id,
+    interpretationResultId,
+    type: "assistant_acknowledgement",
+    role: "assistant",
+    content: acknowledgement,
+    topicKey: turn.topicKey,
+    committedBeliefIds: commit.beliefIds,
+    operationStatus: commit.status,
+  });
+  await prisma.merchantInterviewTurn.update({
+    where: { id: turn.id },
+    data: { acknowledgementMessageId: acknowledgementMessage.id },
   });
 
   await markTopicsFromInterpretation(prisma, {
@@ -169,13 +303,15 @@ export async function submitInterviewAnswer(prisma, input) {
     await createPendingTurn(prisma, turn.interview, {
       topicKey: turn.topicKey,
       question: interpretation.clarification_question,
-      acknowledgement:
-        interpretation.merchant_visible_acknowledgement ||
-        "I’m not completely sure I understood that.",
       suggestions: [],
+      sourceTurnId: turn.id,
     });
   } else if (readiness.score < INTERVIEW_READINESS_THRESHOLD) {
-    await ensureCurrentTurn(prisma, turn.interview, readiness);
+    await ensureCurrentTurn(prisma, turn.interview, readiness, {
+      llmProvider: input.llmProvider,
+      logger: input.logger,
+      sourceTurnId: turn.id,
+    });
   } else {
     await prisma.merchantInterview.update({
       where: { id: turn.interviewId },
@@ -271,7 +407,10 @@ export async function updateInterviewStatus(prisma, input) {
       data: { status: INTERVIEW_STATUS.inProgress, pausedAt: null },
     });
     const readiness = await recalculateInterviewReadiness(prisma, interview);
-    await ensureCurrentTurn(prisma, interview, readiness, { allowOptional: true });
+    await ensureCurrentTurn(prisma, interview, readiness, {
+      allowOptional: true,
+      logger: input.logger,
+    });
     return { ok: true };
   }
 
@@ -530,6 +669,168 @@ async function validateAndCommitInterpretation(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function ensureStoreUnderstandingBeforeFirstInterview(prisma, input) {
+  const existingInterview = await prisma.merchantInterview.findFirst({
+    where: { merchantId: input.merchantId, shopId: input.shopId ?? undefined },
+    select: { id: true },
+  });
+  if (existingInterview) return;
+
+  await runStoreUnderstandingPass(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    trigger: "before_first_interview",
+    llmProvider: input.llmProvider,
+    logger: input.logger,
+  });
+}
+
+/**
+ * @param {any} belief
+ */
+function topicStatusForBelief(belief) {
+  if (AUTHORITATIVE_BELIEF_STATUSES.includes(belief.status)) {
+    return INTERVIEW_TOPIC_STATUS.answered;
+  }
+  if (belief.derivationVersion === STORE_UNDERSTANDING_DERIVATION_VERSION) {
+    const confidence = belief.confidence === null ? 0 : Number(belief.confidence);
+    return inferenceCoverageStatus(confidence);
+  }
+  return INTERVIEW_TOPIC_STATUS.answered;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; turn: any; answer: string }} input
+ */
+async function maybeCommitInferenceConfirmation(prisma, input) {
+  const relatedBeliefId = Array.isArray(input.turn.relatedBeliefIds)
+    ? input.turn.relatedBeliefIds[0]
+    : null;
+  if (!relatedBeliefId) return { handled: false };
+  const belief = await prisma.merchantMemoryBelief.findFirst({
+    where: {
+      id: relatedBeliefId,
+      merchantId: input.merchantId,
+      status: BELIEF_STATUS.inferred,
+      derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+    },
+  });
+  if (!belief) return { handled: false };
+
+  const normalized = normalize(input.answer);
+  if (isAffirmative(normalized)) {
+    const confirmed = await confirmBelief(prisma, {
+      merchantId: input.merchantId,
+      key: belief.key,
+      confirmedBy: "merchant_interview",
+      evidenceSummary: "Merchant confirmed Jefe's initial store interpretation.",
+      evidenceSourceType: "merchant_interview",
+      evidenceSourceReference: `interview:${input.turn.interviewId}:turn:${input.turn.id}`,
+      metadata: {
+        interviewId: input.turn.interviewId,
+        turnId: input.turn.id,
+        confirmedInferenceId: belief.id,
+      },
+    });
+    return {
+      handled: true,
+      operationStatus: INTERVIEW_TURN_STATUS.committed,
+      relatedBeliefIds: [confirmed.id],
+      committedBeliefKeys: [belief.key],
+      acknowledgement: "Understood. I’ll treat that as confirmed.",
+      structuredInterpretation: {
+        answer_status: INTERVIEW_ANSWER_STATUSES.accepted,
+        candidate_beliefs: [],
+        covered_topics: [input.turn.topicKey].filter(Boolean),
+        inference_confirmation: true,
+      },
+      interpretation: {
+        answer_status: INTERVIEW_ANSWER_STATUSES.accepted,
+        candidate_beliefs: [],
+        covered_topics: [input.turn.topicKey].filter(Boolean),
+      },
+    };
+  }
+
+  if (isNegativeOrCorrection(normalized)) {
+    const correctionText = correctionFromAnswer(input.answer);
+    if (!correctionText) {
+      return {
+        handled: true,
+        operationStatus: INTERVIEW_TURN_STATUS.noMemoryChange,
+        relatedBeliefIds: [belief.id],
+        committedBeliefKeys: [],
+        acknowledgement: "Understood. I won’t treat that interpretation as confirmed.",
+        structuredInterpretation: {
+          answer_status: INTERVIEW_ANSWER_STATUSES.partiallyUnderstood,
+          candidate_beliefs: [],
+          covered_topics: [input.turn.topicKey].filter(Boolean),
+          inference_rejected: true,
+        },
+        interpretation: {
+          answer_status: INTERVIEW_ANSWER_STATUSES.partiallyUnderstood,
+          candidate_beliefs: [],
+          covered_topics: [input.turn.topicKey].filter(Boolean),
+        },
+      };
+    }
+    const definition = getBeliefDefinition(belief.key);
+    if (!definition?.merchantCorrectable) return { handled: false };
+    const result = await upsertMerchantSuppliedBelief(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      category: definition.category,
+      key: belief.key,
+      value: { text: correctionText },
+      valueType: definition.valueType,
+      suppliedBy: "merchant_interview",
+      evidenceSummary: "Merchant corrected Jefe's initial store interpretation.",
+      evidenceSourceType: "merchant_interview",
+      evidenceSourceReference: `interview:${input.turn.interviewId}:turn:${input.turn.id}`,
+      metadata: {
+        interviewId: input.turn.interviewId,
+        turnId: input.turn.id,
+        correctedInferenceId: belief.id,
+      },
+      precedence: BELIEF_PRECEDENCE.merchantCorrection,
+    });
+    return {
+      handled: true,
+      operationStatus: INTERVIEW_TURN_STATUS.committed,
+      relatedBeliefIds: [result.belief.id],
+      committedBeliefKeys: [belief.key],
+      acknowledgement: "Understood. I’ve corrected that interpretation.",
+      structuredInterpretation: {
+        answer_status: INTERVIEW_ANSWER_STATUSES.accepted,
+        candidate_beliefs: [
+          {
+            belief_key: belief.key,
+            value: { text: correctionText },
+            value_type: definition.valueType,
+            merchant_statement_summary:
+              "Merchant corrected Jefe's initial store interpretation.",
+            confidence: 1,
+          },
+        ],
+        covered_topics: [input.turn.topicKey].filter(Boolean),
+        inference_correction: true,
+      },
+      interpretation: {
+        answer_status: INTERVIEW_ANSWER_STATUSES.accepted,
+        candidate_beliefs: [],
+        covered_topics: [input.turn.topicKey].filter(Boolean),
+      },
+    };
+  }
+
+  return { handled: false };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null }} input
  */
 async function getOrCreateInterview(prisma, input) {
@@ -619,22 +920,41 @@ async function syncTopicsFromActiveBeliefs(prisma, interview) {
     where: {
       merchantId: interview.merchantId,
       status: { in: ACTIVE_BELIEF_STATUSES },
-      key: { in: getInterviewTopics().map((topic) => topic.beliefKey) },
     },
-    select: { id: true, key: true },
+    select: {
+      id: true,
+      key: true,
+      status: true,
+      confidence: true,
+      derivationVersion: true,
+    },
   });
   for (const belief of beliefs) {
-    const topic = getTopicForBeliefKey(belief.key);
+    const topic =
+      getTopicForBeliefKey(belief.key) ??
+      getInterviewTopic(
+        getStoreUnderstandingDefinition(belief.key)?.interviewTopicKey ?? "",
+      );
     if (!topic) continue;
+    const nextStatus = topicStatusForBelief(belief);
     await prisma.merchantInterviewTopic.updateMany({
       where: {
         interviewId: interview.id,
         topicKey: topic.topicKey,
-        status: { in: [INTERVIEW_TOPIC_STATUS.open, INTERVIEW_TOPIC_STATUS.partiallyAnswered] },
+        status: {
+          in: [
+            INTERVIEW_TOPIC_STATUS.open,
+            INTERVIEW_TOPIC_STATUS.partiallyAnswered,
+            INTERVIEW_TOPIC_STATUS.unknown,
+            INTERVIEW_TOPIC_STATUS.confirmationNeeded,
+            INTERVIEW_TOPIC_STATUS.provisionallyCovered,
+          ],
+        },
       },
       data: {
-        status: INTERVIEW_TOPIC_STATUS.answered,
-        answeredAt: new Date(),
+        status: nextStatus,
+        answeredAt:
+          nextStatus === INTERVIEW_TOPIC_STATUS.answered ? new Date() : null,
         relatedBeliefIds: [belief.id],
       },
     });
@@ -659,6 +979,10 @@ export async function recalculateInterviewReadiness(prisma, interview) {
     const contribution =
       status === INTERVIEW_TOPIC_STATUS.answered
         ? definition.weight
+        : status === INTERVIEW_TOPIC_STATUS.provisionallyCovered
+          ? Math.floor(definition.weight * 0.6)
+          : status === INTERVIEW_TOPIC_STATUS.confirmationNeeded
+            ? Math.floor(definition.weight * 0.3)
         : [
               INTERVIEW_TOPIC_STATUS.partiallyAnswered,
               INTERVIEW_TOPIC_STATUS.unknown,
@@ -676,6 +1000,9 @@ export async function recalculateInterviewReadiness(prisma, interview) {
       weight: definition.weight,
       contribution,
       required: definition.required,
+      relatedBeliefIds: Array.isArray(topic?.relatedBeliefIds)
+        ? topic.relatedBeliefIds
+        : [],
     });
   }
 
@@ -696,7 +1023,7 @@ export async function recalculateInterviewReadiness(prisma, interview) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {any} interview
  * @param {any} readiness
- * @param {{ allowOptional?: boolean }} [options]
+ * @param {{ allowOptional?: boolean; sourceTurnId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
  */
 async function ensureCurrentTurn(prisma, interview, readiness, options = {}) {
   const pending = await prisma.merchantInterviewTurn.findFirst({
@@ -710,13 +1037,29 @@ async function ensureCurrentTurn(prisma, interview, readiness, options = {}) {
   });
   if (pending) return pending;
 
-  const next = selectNextTopic(readiness, options);
-  if (!next) return null;
+  const turnCount = await prisma.merchantInterviewTurn.count({
+    where: { interviewId: interview.id, merchantId: interview.merchantId },
+  });
+  const candidateTopics = candidateTopicsForQuestion(readiness, options);
+  if (candidateTopics.length === 0) return null;
+  const prompt = await planNextInterviewQuestion(prisma, {
+    interview,
+    readiness,
+    candidateTopics,
+    llmProvider: options.llmProvider,
+    logger: options.logger,
+  });
+  if (!prompt) return null;
   return createPendingTurn(prisma, interview, {
-    topicKey: next.topicKey,
-    question: next.question,
-    acknowledgement: null,
-    suggestions: next.suggestions,
+    topicKey: prompt.topicKey,
+    question: prompt.question,
+    context:
+      turnCount === 0
+        ? await buildOpeningAcknowledgement(prisma, interview)
+        : null,
+    suggestions: prompt.suggestions,
+    relatedBeliefIds: prompt.relatedBeliefIds,
+    sourceTurnId: options.sourceTurnId ?? null,
   });
 }
 
@@ -724,19 +1067,248 @@ async function ensureCurrentTurn(prisma, interview, readiness, options = {}) {
  * @param {any} readiness
  * @param {{ allowOptional?: boolean }} options
  */
-function selectNextTopic(readiness, options) {
-  const open = readiness.coverage
-    .filter((/** @type {any} */ item) => item.status === INTERVIEW_TOPIC_STATUS.open)
-    .map((/** @type {any} */ item) => getInterviewTopic(item.topicKey))
+function candidateTopicsForQuestion(readiness, options) {
+  return readiness.coverage
+    .filter((/** @type {any} */ item) =>
+      [
+        INTERVIEW_TOPIC_STATUS.provisionallyCovered,
+        INTERVIEW_TOPIC_STATUS.confirmationNeeded,
+        INTERVIEW_TOPIC_STATUS.open,
+      ].includes(item.status),
+    )
+    .map((/** @type {any} */ item) => {
+      const topic = getInterviewTopic(item.topicKey);
+      return topic ? { ...topic, coverage: item } : null;
+    })
     .filter(Boolean)
-    .filter((/** @type {any} */ topic) => options.allowOptional || topic.required);
-  return open.sort((/** @type {any} */ a, /** @type {any} */ b) => a.priority - b.priority)[0] ?? null;
+    .filter((/** @type {any} */ topic) => options.allowOptional || topic.required)
+    .sort((/** @type {any} */ a, /** @type {any} */ b) => a.priority - b.priority);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ interview: any; readiness: any; candidateTopics: any[]; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function planNextInterviewQuestion(prisma, input) {
+  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger);
+  if (!provider?.enabled || !provider.generateStructuredJson) {
+    input.logger?.warn?.("Interview question planner unavailable", {
+      interviewId: input.interview.id,
+      reason: "llm_disabled",
+    });
+    return null;
+  }
+
+  const [beliefs, recentTurns] = await Promise.all([
+    getBeliefsForMerchant(prisma, {
+      merchantId: input.interview.merchantId,
+      includeEvidence: false,
+    }),
+    listInterviewTurns(prisma, input.interview, 8),
+  ]);
+  const relatedBeliefIds = Array.from(
+    new Set(
+      input.candidateTopics.flatMap((topic) =>
+        Array.isArray(topic.coverage?.relatedBeliefIds)
+          ? topic.coverage.relatedBeliefIds
+          : [],
+      ),
+    ),
+  );
+  const relatedBeliefs = relatedBeliefIds.length
+    ? await prisma.merchantMemoryBelief.findMany({
+        where: {
+          id: { in: relatedBeliefIds },
+          merchantId: input.interview.merchantId,
+        },
+        select: {
+          id: true,
+          key: true,
+          value: true,
+          status: true,
+          confidence: true,
+          confidenceReason: true,
+          derivationVersion: true,
+        },
+      })
+    : [];
+
+  try {
+    const result = await provider.generateStructuredJson({
+      systemPrompt: buildQuestionPlannerSystemPrompt(),
+      prompt: buildQuestionPlannerPrompt({
+        readiness: input.readiness,
+        candidateTopics: input.candidateTopics,
+        beliefs,
+        relatedBeliefs,
+        recentTurns,
+      }),
+      schema: INTERVIEW_QUESTION_SCHEMA,
+      maxInputTokens: 5000,
+      maxOutputTokens: 700,
+      timeoutMs: 8_000,
+    });
+    const parsed = /** @type {any} */ (
+      parseAndValidateInterviewQuestion(result.json)
+    );
+    if (!parsed.ok) {
+      input.logger?.warn?.("Invalid interview question planner response", {
+        interviewId: input.interview.id,
+        error: parsed.error,
+      });
+      return null;
+    }
+    const allowedTopic = input.candidateTopics.find(
+      (topic) => topic.topicKey === parsed.plan.topicKey,
+    );
+    if (!allowedTopic) {
+      input.logger?.warn?.("Interview question planner selected unsupported topic", {
+        interviewId: input.interview.id,
+        topicKey: parsed.plan.topicKey,
+      });
+      return null;
+    }
+    if (containsLikelyPii(parsed.plan.question)) {
+      input.logger?.warn?.("Interview question planner returned unsafe question", {
+        interviewId: input.interview.id,
+        topicKey: parsed.plan.topicKey,
+      });
+      return null;
+    }
+    if (sameQuestion(parsed.plan.question, allowedTopic.question)) {
+      input.logger?.warn?.("Interview question planner copied registry question", {
+        interviewId: input.interview.id,
+        topicKey: parsed.plan.topicKey,
+      });
+      return null;
+    }
+    return {
+      topicKey: allowedTopic.topicKey,
+      question: parsed.plan.question,
+      suggestions: parsed.plan.answerSuggestions,
+      relatedBeliefIds: Array.isArray(allowedTopic.coverage?.relatedBeliefIds)
+        ? allowedTopic.coverage.relatedBeliefIds
+        : [],
+    };
+  } catch (error) {
+    input.logger?.warn?.("Interview question planner failed", {
+      interviewId: input.interview.id,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return null;
+  }
 }
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {any} interview
- * @param {{ topicKey?: string | null; question: string; acknowledgement?: string | null; suggestions?: string[] }} input
+ */
+async function buildOpeningAcknowledgement(prisma, interview) {
+  const beliefs = await prisma.merchantMemoryBelief.findMany({
+    where: {
+      merchantId: interview.merchantId,
+      shopId: interview.shopId ?? undefined,
+      status: BELIEF_STATUS.inferred,
+      derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+    },
+    orderBy: [{ confidence: "desc" }, { updatedAt: "desc" }],
+    take: 4,
+  });
+  if (beliefs.length === 0) return null;
+  const observations = beliefs
+    .slice(0, 3)
+    .map((belief) => formatInferenceValue(belief.value));
+  return [
+    "I’ve studied your catalogue and order history.",
+    `My initial read is: ${observations.join("; ")}.`,
+    "Some of that is clear from Shopify. Some of it is my interpretation, so I may have misunderstood.",
+  ].join(" ");
+}
+
+function buildQuestionPlannerSystemPrompt() {
+  return [
+    "You plan the next merchant interview question for Jefe Merchant Memory.",
+    "Return exactly one JSON object matching the supplied schema.",
+    "You must choose one topic_key from allowedTopics.",
+    "Write the merchant-facing question yourself from current beliefs, topic coverage and recent turns.",
+    "Do not copy stock or registry question wording.",
+    "Use Store Understanding inferences cautiously: ask merchants to confirm or correct them.",
+    "Do not ask for customer names, emails, phone numbers, addresses or other personal data.",
+    "Ask exactly one concise question. The question must end with a question mark.",
+  ].join("\n");
+}
+
+/**
+ * @param {{ readiness: any; candidateTopics: any[]; beliefs: any[]; relatedBeliefs: any[]; recentTurns: any[] }} input
+ */
+function buildQuestionPlannerPrompt(input) {
+  const relatedById = new Map(input.relatedBeliefs.map((belief) => [belief.id, belief]));
+  return JSON.stringify({
+    promptVersion: "interview-question-planner-v1",
+    objective:
+      "Choose and write the next best interview question using current Merchant Memory. The application will validate the topic and store only merchant-safe answers.",
+    readiness: {
+      score: input.readiness.score,
+      threshold: input.readiness.threshold,
+      coverage: input.readiness.coverage.map((/** @type {any} */ item) => ({
+        topicKey: item.topicKey,
+        beliefKey: item.beliefKey,
+        label: item.label,
+        status: item.status,
+        contribution: item.contribution,
+        required: item.required,
+      })),
+    },
+    allowedTopics: input.candidateTopics.slice(0, 8).map((topic) => ({
+      topicKey: topic.topicKey,
+      beliefKey: topic.beliefKey,
+      category: topic.category,
+      label: topic.label,
+      guidance: topic.guidance,
+      status: topic.coverage?.status ?? INTERVIEW_TOPIC_STATUS.open,
+      required: topic.required,
+      priority: topic.priority,
+      existingRelatedBeliefs: (topic.coverage?.relatedBeliefIds ?? [])
+        .map((/** @type {string} */ id) => relatedById.get(id))
+        .filter(Boolean)
+        .map((/** @type {any} */ belief) => ({
+          key: belief.key,
+          value: formatBeliefValue(belief.value),
+          status: belief.status,
+          confidence:
+            belief.confidence === null ? null : Number(belief.confidence),
+          derivationVersion: belief.derivationVersion,
+          confidenceReason: belief.confidenceReason,
+        })),
+    })),
+    activeBeliefs: input.beliefs.slice(0, 50).map((belief) => ({
+      key: belief.key,
+      category: belief.category,
+      value: formatBeliefValue(belief.value),
+      status: belief.status,
+      confidence: belief.confidence,
+      derivationVersion: belief.derivationVersion,
+    })),
+    recentTurns: input.recentTurns.slice(-8).map((turn) => ({
+      topicKey: turn.topicKey,
+      question: turn.question,
+      merchantAnswer: turn.merchantAnswer,
+      operationStatus: turn.operationStatus,
+    })),
+    rules: {
+      noStockQuestions: true,
+      noCustomerPii: true,
+      oneQuestionOnly: true,
+      preferConfirmingHighConfidenceInferences: true,
+      askOpenEndedOnlyWhenNoUsefulInferenceExists: true,
+    },
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} interview
+ * @param {{ topicKey?: string | null; question: string; context?: string | null; suggestions?: string[]; relatedBeliefIds?: string[]; sourceTurnId?: string | null }} input
  */
 async function createPendingTurn(prisma, interview, input) {
   await prisma.merchantInterview.update({
@@ -746,18 +1318,51 @@ async function createPendingTurn(prisma, interview, input) {
       currentQuestion: input.question,
     },
   });
-  return prisma.merchantInterviewTurn.create({
+  const turn = await prisma.merchantInterviewTurn.create({
     data: {
       interviewId: interview.id,
       merchantId: interview.merchantId,
       shopId: interview.shopId,
       topicKey: input.topicKey ?? null,
       question: input.question,
-      acknowledgement: input.acknowledgement ?? null,
       answerSuggestions: input.suggestions ?? [],
+      relatedBeliefIds: input.relatedBeliefIds ?? [],
       operationStatus: INTERVIEW_TURN_STATUS.pending,
     },
   });
+  if (input.context) {
+    await createInterviewMessage(prisma, interview, {
+      turnId: turn.id,
+      sourceTurnId: input.sourceTurnId ?? null,
+      type: "assistant_context",
+      role: "assistant",
+      content: input.context,
+      topicKey: input.topicKey ?? null,
+    });
+  }
+  const questionMessage = await createInterviewMessage(prisma, interview, {
+    turnId: turn.id,
+    sourceTurnId: input.sourceTurnId ?? null,
+    type: "assistant_question",
+    role: "assistant",
+    content: input.question,
+    topicKey: input.topicKey ?? null,
+  });
+  await prisma.merchantInterviewTurn.update({
+    where: { id: turn.id },
+    data: { questionMessageId: questionMessage.id },
+  });
+  if (input.sourceTurnId) {
+    await prisma.merchantInterviewTurn.updateMany({
+      where: {
+        id: input.sourceTurnId,
+        interviewId: interview.id,
+        merchantId: interview.merchantId,
+      },
+      data: { nextTurnId: turn.id },
+    });
+  }
+  return turn;
 }
 
 /**
@@ -767,7 +1372,11 @@ async function createPendingTurn(prisma, interview, input) {
 async function markTopicsFromInterpretation(prisma, input) {
   const topicUpdates = new Map();
   for (const key of input.committedBeliefKeys) {
-    const topic = getTopicForBeliefKey(key);
+    const topic =
+      getTopicForBeliefKey(key) ??
+      getInterviewTopic(
+        getStoreUnderstandingDefinition(key)?.interviewTopicKey ?? "",
+      );
     if (topic) topicUpdates.set(topic.topicKey, INTERVIEW_TOPIC_STATUS.answered);
   }
   for (const topicKey of input.interpretation.covered_topics ?? []) {
@@ -835,6 +1444,147 @@ async function listInterviewTurns(prisma, interview, take) {
     take,
   });
   return turns.map(serializeTurn);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} interview
+ */
+async function listInterviewMessages(prisma, interview) {
+  const messages = await prisma.merchantInterviewMessage.findMany({
+    where: {
+      interviewId: interview.id,
+      merchantId: interview.merchantId,
+    },
+    orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
+  });
+  if (messages.length > 0) return messages.map(serializeMessage);
+  const turns = await prisma.merchantInterviewTurn.findMany({
+    where: { interviewId: interview.id, merchantId: interview.merchantId },
+    orderBy: { createdAt: "asc" },
+  });
+  return legacyMessagesFromTurns(turns);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} interview
+ * @param {{ turnId?: string | null; sourceTurnId?: string | null; interpretationResultId?: string | null; type: string; role: string; content: string; topicKey?: string | null; committedBeliefIds?: string[]; operationStatus?: string | null; metadata?: any }} input
+ */
+async function createInterviewMessage(prisma, interview, input) {
+  const latest = await prisma.merchantInterviewMessage.aggregate({
+    where: { interviewId: interview.id },
+    _max: { sequence: true },
+  });
+  const sequence = (latest._max.sequence ?? 0) + 1;
+  return prisma.merchantInterviewMessage.create({
+    data: {
+      interviewId: interview.id,
+      merchantId: interview.merchantId,
+      shopId: interview.shopId,
+      turnId: input.turnId ?? null,
+      sourceTurnId: input.sourceTurnId ?? null,
+      interpretationResultId: input.interpretationResultId ?? null,
+      type: input.type,
+      role: input.role,
+      content: input.content,
+      topicKey: input.topicKey ?? null,
+      sequence,
+      committedBeliefIds: input.committedBeliefIds ?? [],
+      operationStatus: input.operationStatus ?? null,
+      metadata: input.metadata ?? {},
+    },
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ status: string; committedBeliefIds: string[]; answer: string; fallback?: string | null }} input
+ */
+async function buildTurnAcknowledgement(prisma, input) {
+  if (input.status === INTERVIEW_TURN_STATUS.failed) {
+    return "I couldn’t safely store that yet.";
+  }
+  if (input.status === INTERVIEW_TURN_STATUS.clarificationRequired) {
+    return "I need one more detail before I remember that.";
+  }
+  if (input.status === INTERVIEW_TURN_STATUS.noMemoryChange) {
+    return input.fallback || "Understood.";
+  }
+  if (input.committedBeliefIds.length === 0) {
+    return input.fallback || "Understood.";
+  }
+
+  const beliefs = await prisma.merchantMemoryBelief.findMany({
+    where: { id: { in: input.committedBeliefIds } },
+    select: { id: true, key: true, value: true },
+  });
+  const byId = new Map(beliefs.map((belief) => [belief.id, belief]));
+  const ordered = [];
+  for (const id of input.committedBeliefIds) {
+    const belief = byId.get(id);
+    if (belief) ordered.push(belief);
+  }
+  ordered.sort(
+    (a, b) => acknowledgementPriority(a.key) - acknowledgementPriority(b.key),
+  );
+  const belief = ordered[0];
+  if (!belief) return input.fallback || "Understood.";
+
+  const value = acknowledgementValue(belief.value);
+  if (belief.key === "goals.primary_business_goal" && value) {
+    if (/doubl(e|ing)\s+(our\s+)?revenue/i.test(input.answer) || /doubl(e|ing)\s+revenue/i.test(value)) {
+      return "Understood — doubling revenue is the main goal.";
+    }
+    return `Understood — ${sentenceFragment(value)} is the main goal.`;
+  }
+  if (belief.key === "marketing.primary_acquisition_channel" && value) {
+    return `Got it — you’ve said ${sentenceFragment(value)} is currently your best channel.`;
+  }
+  if (belief.key === "customers.primary_customer_type" && value) {
+    return `Understood — your typical customer is ${sentenceFragment(value)}.`;
+  }
+  if (belief.key === "preferences.optimisation_priority" && value) {
+    return `Understood — ${sentenceFragment(value)} is the current optimisation priority.`;
+  }
+  if (belief.key === "business.description" && value) {
+    return `Understood — you’ve described the business as ${sentenceFragment(value)}.`;
+  }
+
+  return input.fallback || "Understood.";
+}
+
+/** @param {string} key */
+function acknowledgementPriority(key) {
+  return [
+    "goals.primary_business_goal",
+    "marketing.primary_acquisition_channel",
+    "customers.primary_customer_type",
+    "business.description",
+    "preferences.optimisation_priority",
+  ].indexOf(key) === -1
+    ? 100
+    : [
+        "goals.primary_business_goal",
+        "marketing.primary_acquisition_channel",
+        "customers.primary_customer_type",
+        "business.description",
+        "preferences.optimisation_priority",
+      ].indexOf(key);
+}
+
+/** @param {any} value */
+function acknowledgementValue(value) {
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.option === "string") return value.option.replace(/_/g, " ");
+  if (typeof value.boolean === "boolean") return value.boolean ? "yes" : "no";
+  return null;
+}
+
+/** @param {string} value */
+function sentenceFragment(value) {
+  return value.trim().replace(/[.?!]+$/g, "");
 }
 
 function buildInterviewSystemPrompt() {
@@ -933,6 +1683,44 @@ function isDecline(value) {
     value.includes("not sure");
 }
 
+/** @param {string} value */
+function isAffirmative(value) {
+  return /^(yes|yep|yeah|correct|accurate|that's right|that is right|exactly|pretty much|mostly)\b/.test(
+    value,
+  );
+}
+
+/** @param {string} value */
+function isNegativeOrCorrection(value) {
+  return /^(no|not quite|incorrect|wrong|not really|actually)\b/.test(value) ||
+    value.includes("i'd describe") ||
+    value.includes("i would describe") ||
+    value.includes("more like");
+}
+
+/** @param {string} value */
+function correctionFromAnswer(value) {
+  const trimmed = cleanBusinessStatement(value);
+  if (/^(no|not quite|incorrect|wrong|not really)\.?$/i.test(trimmed)) {
+    return null;
+  }
+  return trimmed
+    .replace(/^(no|not quite|incorrect|wrong|not really|actually)[,\s]+/i, "")
+    .slice(0, 300);
+}
+
+/** @param {string} value */
+function containsLikelyPii(value) {
+  return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(value) ||
+    /\+?\d[\d\s().-]{8,}\d/.test(value);
+}
+
+/** @param {string} a @param {string} b */
+function sameQuestion(a, b) {
+  return normalize(a).replace(/[^\w\s]/g, "").trim() ===
+    normalize(b).replace(/[^\w\s]/g, "").trim();
+}
+
 /**
  * @param {string} value
  */
@@ -997,15 +1785,8 @@ function dedupeCandidates(candidates) {
   });
 }
 
-/**
- * @param {any} readiness
- */
-function buildCompletionMessage(readiness) {
-  const understood = readiness.coverage
-    .filter((/** @type {any} */ item) => item.contribution > 0)
-    .slice(0, 4)
-    .map((/** @type {any} */ item) => item.label.toLowerCase());
-  return `That gives me a much clearer picture. I understand enough about ${understood.join(", ")} to start helping. I’ll keep refining this as we work together.`;
+function buildCompletionMessage() {
+  return "I think I understand enough to start helping.";
 }
 
 /**
@@ -1038,9 +1819,105 @@ function serializeTurn(turn) {
       : [],
     merchantAnswer: turn.merchantAnswer,
     structuredInterpretation: turn.structuredInterpretation,
+    interpretationResultId: turn.interpretationResultId,
     operationStatus: turn.operationStatus,
     relatedBeliefIds: turn.relatedBeliefIds,
+    committedBeliefIds: turn.committedBeliefIds ?? [],
+    questionMessageId: turn.questionMessageId,
+    answerMessageId: turn.answerMessageId,
+    acknowledgementMessageId: turn.acknowledgementMessageId,
+    nextTurnId: turn.nextTurnId,
     createdAt: turn.createdAt.toISOString(),
     answeredAt: turn.answeredAt?.toISOString?.() ?? null,
   };
+}
+
+/**
+ * @param {any} message
+ */
+function serializeMessage(message) {
+  return {
+    id: message.id,
+    interviewId: message.interviewId,
+    turnId: message.turnId,
+    sourceTurnId: message.sourceTurnId,
+    interpretationResultId: message.interpretationResultId,
+    type: message.type,
+    role: message.role,
+    content: message.content,
+    topicKey: message.topicKey,
+    sequence: message.sequence,
+    committedBeliefIds: message.committedBeliefIds ?? [],
+    operationStatus: message.operationStatus,
+    metadata: message.metadata,
+    createdAt: message.createdAt.toISOString(),
+  };
+}
+
+/**
+ * @param {any[]} turns
+ */
+function legacyMessagesFromTurns(turns) {
+  let sequence = 0;
+  const messages = [];
+  for (const turn of turns) {
+    sequence += 1;
+    messages.push({
+      id: `${turn.id}:question`,
+      interviewId: turn.interviewId,
+      turnId: turn.id,
+      sourceTurnId: null,
+      interpretationResultId: turn.interpretationResultId ?? null,
+      type: "assistant_question",
+      role: "assistant",
+      content: turn.question,
+      topicKey: turn.topicKey,
+      sequence,
+      committedBeliefIds: [],
+      operationStatus: null,
+      metadata: {},
+      createdAt: turn.createdAt.toISOString(),
+    });
+    if (turn.merchantAnswer) {
+      sequence += 1;
+      messages.push({
+        id: `${turn.id}:answer`,
+        interviewId: turn.interviewId,
+        turnId: turn.id,
+        sourceTurnId: turn.id,
+        interpretationResultId: turn.interpretationResultId ?? null,
+        type: "merchant_answer",
+        role: "merchant",
+        content: turn.merchantAnswer,
+        topicKey: turn.topicKey,
+        sequence,
+        committedBeliefIds: [],
+        operationStatus: turn.operationStatus,
+        metadata: {},
+        createdAt:
+          turn.answeredAt?.toISOString?.() ?? turn.createdAt.toISOString(),
+      });
+    }
+    if (turn.merchantAnswer && turn.acknowledgement) {
+      sequence += 1;
+      messages.push({
+        id: `${turn.id}:acknowledgement`,
+        interviewId: turn.interviewId,
+        turnId: turn.id,
+        sourceTurnId: turn.id,
+        interpretationResultId: turn.interpretationResultId ?? null,
+        type: "assistant_acknowledgement",
+        role: "assistant",
+        content: turn.acknowledgement,
+        topicKey: turn.topicKey,
+        sequence,
+        committedBeliefIds: turn.committedBeliefIds ?? turn.relatedBeliefIds ?? [],
+        operationStatus: turn.operationStatus,
+        metadata: {},
+        createdAt:
+          turn.answeredAt?.toISOString?.() ?? turn.createdAt.toISOString(),
+      });
+    }
+  }
+  return messages;
 }

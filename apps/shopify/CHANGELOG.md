@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Added a Store Understanding pass after deterministic Merchant Memory rebuilds so Jefe forms cautious LLM-derived business-context beliefs from bounded Shopify catalogue and order summaries before the first interview.
+- Updated the Jefe Interview to use Store Understanding beliefs as provisional context, ask confirmation or correction questions when confidence is sufficient, and keep open-ended questions for unknown topics.
+- Replaced deterministic Jefe Interview question wording with an LLM question planner that writes the next question from current Merchant Memory, recent turns and allowed open topics.
+- Fixed Jefe Interview message ordering so merchant answers appear before the acknowledgement and next question they trigger, with acknowledgements based only on successfully committed beliefs.
+- Increased the Store Understanding LLM output budget and bounded requested inferences so Gemini can return complete structured JSON instead of truncating mid-response.
+- Added Store Understanding run history, confidence ceilings, provenance evidence and privacy safeguards so model inferences stay lower-authority than merchant-confirmed or deterministic memory.
+- Updated the default Gemini model to the available low-cost `gemini-3.1-flash-lite` model so LLM-backed memory and interview flows can run again.
 - Replaced the raw Merchant Memory dump on the main Jefe page with the first adaptive Jefe Interview so merchants answer one onboarding question at a time and Jefe stores validated merchant-provided context in Merchant Memory.
 - Added persisted interview state, topic coverage, turn history, deterministic readiness scoring, pause/resume/skip/complete controls and merchant-interview evidence for saved memory updates.
 - Extended the controlled merchant belief registry with onboarding context for business description, positioning, customers, marketing, operations and recommendation restrictions.
