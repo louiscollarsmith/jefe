@@ -1,5 +1,6 @@
 // @ts-check
 
+import { PrismaClient } from "@prisma/client";
 import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server.js";
 import {
@@ -23,15 +24,18 @@ import { rebuildMerchantMemory } from "../lib/merchant-memory/service.server.js"
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
+const INITIAL_LOOP_DELAY_MS = 5_000;
 const STALE_RUNNING_JOB_TIMEOUT_MS = 15 * 60_000;
 const DELTA_SYNC_OVERLAP_HOURS = 24;
 
 let loopStarted = false;
 let loopRunning = false;
+/** @type {PrismaClient | null} */
+let loopPrisma = null;
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ intervalMs?: number; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
+ * @param {{ intervalMs?: number; initialDelayMs?: number; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
  */
 export function startShopifyBackfillLoop(prisma, options = {}) {
   if (loopStarted || process.env.ENABLE_SHOPIFY_BACKFILL_LOOP === "false") {
@@ -41,11 +45,16 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   loopStarted = true;
   const logger = options.logger ?? console;
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
+  const workerPrisma = createWorkerPrismaClient() ?? prisma;
+  loopPrisma = workerPrisma;
+  const initialDelayMs =
+    options.initialDelayMs ??
+    positiveInteger(process.env.SHOPIFY_BACKFILL_INITIAL_DELAY_MS, INITIAL_LOOP_DELAY_MS);
   const tick = async () => {
     if (loopRunning) return;
     loopRunning = true;
     try {
-      await processNextBackfillJob(prisma, { logger });
+      await processNextBackfillJob(workerPrisma, { logger });
     } catch (error) {
       logger.error("Shopify evidence backfill loop failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -55,10 +64,13 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     }
   };
 
-  void tick();
+  setTimeout(() => {
+    void tick();
+  }, initialDelayMs).unref?.();
   setInterval(() => {
     void tick();
   }, intervalMs).unref?.();
+  registerWorkerPrismaShutdown();
 }
 
 /**
@@ -771,6 +783,37 @@ function parseDate(value) {
   if (typeof value !== "string") return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** @param {unknown} value @param {number} fallback */
+function positiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : fallback;
+}
+
+function createWorkerPrismaClient() {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) return null;
+
+  try {
+    const url = new URL(databaseUrl);
+    url.searchParams.set("connection_limit", "1");
+    return new PrismaClient({
+      datasources: { db: { url: url.toString() } },
+    });
+  } catch {
+    return null;
+  }
+}
+
+function registerWorkerPrismaShutdown() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      if (loopPrisma && typeof loopPrisma.$disconnect === "function") {
+        void loopPrisma.$disconnect();
+      }
+    });
+  }
 }
 
 /**

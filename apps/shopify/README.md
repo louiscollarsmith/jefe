@@ -33,11 +33,12 @@ SHOPIFY_API_VERSION="2026-07"
 SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations
 ENABLE_DEV_TOOLS=true
 ENABLE_SHOPIFY_BACKFILL_LOOP=true
+SHOPIFY_BACKFILL_INITIAL_DELAY_MS=5000
 ```
 
 ## Shopify Evidence Backfill
 
-After OAuth, Jefe queues an evidence backfill instead of blocking the callback. The web service processes queued jobs from Postgres in a lightweight background loop.
+After OAuth, Jefe queues an evidence backfill instead of blocking the callback. The web service processes queued jobs from Postgres in a lightweight background loop; `SHOPIFY_BACKFILL_INITIAL_DELAY_MS` gives install and first page-load requests a short grace window before the first automatic job starts.
 
 The retained Shopify scope set is:
 
