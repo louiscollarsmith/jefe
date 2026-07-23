@@ -2,6 +2,31 @@ document.getElementById("year").textContent = new Date().getFullYear();
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// Click-to-play facade: the YouTube player (and its chrome) only loads after an
+// explicit click. Params trim what YouTube still lets us trim — related videos,
+// annotations, keyboard grabbing. Title/branding can't be removed anymore, but
+// this keeps the default state fully Jefe-branded with no YouTube UI at all.
+const videoFacade = document.getElementById("video-facade");
+if (videoFacade) {
+  videoFacade.addEventListener("click", () => {
+    const id = videoFacade.dataset.yt;
+    const params = new URLSearchParams({
+      autoplay: "1",
+      rel: "0",
+      playsinline: "1",
+      iv_load_policy: "3",
+      modestbranding: "1",
+      color: "white",
+    });
+    const iframe = document.createElement("iframe");
+    iframe.src = `https://www.youtube.com/embed/${id}?${params.toString()}`;
+    iframe.title = "my name is Jefe";
+    iframe.allow = "autoplay; encrypted-media; fullscreen";
+    iframe.allowFullscreen = true;
+    videoFacade.replaceWith(iframe);
+  });
+}
+
 const RECS = [
   {
     text: "Heads up — you'll run out of the Blue Tee in about 6 days. Want me to reorder 200 units?",

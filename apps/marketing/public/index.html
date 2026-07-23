@@ -54,12 +54,13 @@
     <div class="video-wrap">
       <div class="video-shadow-card"></div>
       <div class="video-card">
-        <iframe
-          src="https://www.youtube.com/embed/FxeLLPPzEtQ"
-          title="Jefe"
-          allow="autoplay; encrypted-media"
-          allowfullscreen
-        ></iframe>
+        <button class="video-facade" id="video-facade" data-yt="FxeLLPPzEtQ" aria-label="Play the clip — my name is Jefe" type="button">
+          <img class="video-poster" src="https://img.youtube.com/vi/FxeLLPPzEtQ/oardefault.jpg" alt="" loading="lazy" />
+          <span class="video-play" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          </span>
+          <span class="video-caption">my name is… <em>Jefe</em></span>
+        </button>
       </div>
     </div>
 
