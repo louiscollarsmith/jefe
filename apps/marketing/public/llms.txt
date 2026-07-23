@@ -1,0 +1,16 @@
+# Jefe
+
+> Jefe is an AI manager for Shopify stores. It learns how a store actually operates, then recommends the next move — with the evidence behind it — and can action it directly once a merchant trusts it to.
+
+## What Jefe does
+
+Jefe connects to a Shopify store and builds a structured, evolving understanding of how the business runs: its products, orders, customers, goals and constraints. It uses that understanding to make recommendations that are specific to the merchant rather than generic ecommerce advice, and — within limits the merchant sets per action — can carry out the recommended action itself.
+
+## Status
+
+Jefe is pre-launch and running a Design Partner Program for its first 100 e-commerce managers, who help teach Jefe their store in exchange for early access.
+
+## Links
+
+- Website: https://mynamejefe.com/
+- Join the Design Partner Program: https://mynamejefe.com/#signup
