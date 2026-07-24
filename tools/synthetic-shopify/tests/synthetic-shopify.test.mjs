@@ -14,6 +14,7 @@ import { ShopifyAdminGraphqlError } from "../../../apps/shopify/app/lib/shopify/
 import {
   DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS,
   ShopifyMutationUserError,
+  createRefreshableClient,
   createProductWithRecoveredHandle,
   estimateImportProgress,
   hydrateExistingSyntheticMappings,
@@ -815,6 +816,72 @@ test("credential resolver defaults to local DB source", async () => {
   }
 });
 
+test("refreshable Shopify client re-resolves expiring local DB credentials before a request", async () => {
+  const tokensUsed = [];
+  const client = createRefreshableClient({
+    shopDomain: "jefe-wine-test.myshopify.com",
+    credentialSource: "db",
+    credential: {
+      accessToken: "old_token",
+      source: "local_prisma_session",
+      expires: new Date(Date.now() - 1000).toISOString(),
+    },
+    logger: silentLogger(),
+    refreshGraceMs: 5 * 60 * 1000,
+    tokenResolver: async () => ({
+      accessToken: "new_token",
+      source: "local_prisma_session",
+      expires: null,
+      refreshed: true,
+    }),
+    requestClientFactory: ({ accessToken }) => ({
+      request: async () => {
+        tokensUsed.push(accessToken);
+        return { ok: true };
+      },
+    }),
+  });
+
+  const result = await client.request("query SyntheticShopInspection { shop { id } }");
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(tokensUsed, ["new_token"]);
+});
+
+test("refreshable Shopify client retries once after an auth failure when credentials change", async () => {
+  const tokensUsed = [];
+  const client = createRefreshableClient({
+    shopDomain: "jefe-wine-test.myshopify.com",
+    credentialSource: "db",
+    credential: {
+      accessToken: "old_token",
+      source: "local_prisma_session",
+      expires: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    },
+    logger: silentLogger(),
+    tokenResolver: async () => ({
+      accessToken: "new_token",
+      source: "local_prisma_session",
+      expires: null,
+      refreshed: true,
+    }),
+    requestClientFactory: ({ accessToken }) => ({
+      request: async () => {
+        tokensUsed.push(accessToken);
+        if (accessToken === "old_token") {
+          throw new ShopifyAdminGraphqlError("Shopify GraphQL HTTP error", {
+            status: 401,
+          });
+        }
+        return { ok: true };
+      },
+    }),
+  });
+
+  const result = await client.request("query SyntheticShopInspection { shop { id } }");
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(tokensUsed, ["old_token", "new_token"]);
+});
+
 test("coverage command reads the active deterministic belief registry", () => {
   const dataset = generateSyntheticShopifyDataset({
     profile: "realistic",
@@ -863,4 +930,12 @@ test("CLI error formatter prints Shopify mutation userErrors", () => {
 
 function round(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function silentLogger() {
+  return {
+    info() {},
+    warn() {},
+    error() {},
+  };
 }

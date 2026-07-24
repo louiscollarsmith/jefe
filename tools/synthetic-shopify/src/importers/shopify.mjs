@@ -1,7 +1,7 @@
 // @ts-check
 import { ShopifyAdminGraphqlClient, normalizeShopDomain } from "../../../../apps/shopify/app/lib/shopify/admin-graphql.server.js";
 import { persistRun, markPhase, recordFailure, recordMapping } from "./manifest.mjs";
-import { resolveShopifyAccessToken } from "./credentials.mjs";
+import { resolveShopifyAccessToken, shopifyTokenRefreshGraceMs } from "./credentials.mjs";
 import { assertWriteSafety } from "./safety.mjs";
 import { runDirectory, writeJson } from "../output-paths.mjs";
 import { validateSyntheticDataset } from "../validators/dataset.mjs";
@@ -69,7 +69,7 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
     shopDomain: manifest.shopDomain,
     allowNonemptyStore,
   });
-  const { accessToken, source } = await resolveShopifyAccessToken({
+  const credential = await resolveShopifyAccessToken({
     shopDomain: safe.shopDomain,
     source: credentialSource,
   });
@@ -77,10 +77,10 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
     () =>
       ensureEmptyOrAllowed({
         shopDomain: safe.shopDomain,
-        accessToken,
+        accessToken: credential.accessToken,
         allowNonemptyStore,
       }),
-    { shopDomain: safe.shopDomain, credentialSource: source },
+    { shopDomain: safe.shopDomain, credentialSource: credential.source },
   );
   markPhase(manifest, "create_manifest", "completed", 1);
   markPhase(manifest, "generate_dataset", "completed", 1);
@@ -97,12 +97,19 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
       orders: inspection.ordersCount?.count,
     },
     customerInspectionUnavailable: inspection.customerInspectionUnavailable,
-    credentialSource: source,
+    credentialSource: credential.source,
+    credentialExpires: credential.expires,
+    credentialRefreshed: credential.refreshed,
   });
 
   if (dryRun) return { dryRun: true, manifest, inspection };
 
-  const client = createClient({ shopDomain: safe.shopDomain, accessToken });
+  const client = createRefreshableClient({
+    shopDomain: safe.shopDomain,
+    credentialSource,
+    credential,
+    logger,
+  });
   await hydrateExistingSyntheticMappings(client, dataset, manifest, inspection, logger, () => persistRun({ dataset, manifest }));
   await importProducts(client, dataset, manifest, () => persistRun({ dataset, manifest }));
   await importCollections(client, dataset, manifest, () => persistRun({ dataset, manifest }));
@@ -646,6 +653,80 @@ function createClient({ shopDomain, accessToken }) {
     accessToken,
     apiVersion: process.env.SHOPIFY_API_VERSION || "2026-07",
   });
+}
+
+/**
+ * @param {{
+ *   shopDomain: string;
+ *   credentialSource: string;
+ *   credential: { accessToken: string; source: string; expires?: string | null };
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   tokenResolver?: typeof resolveShopifyAccessToken;
+ *   requestClientFactory?: typeof createClient;
+ *   refreshGraceMs?: number;
+ * }} input
+ */
+export function createRefreshableClient(input) {
+  const shopDomain = normalizeShopDomain(input.shopDomain);
+  const logger = input.logger || console;
+  const tokenResolver = input.tokenResolver || resolveShopifyAccessToken;
+  const requestClientFactory = input.requestClientFactory || createClient;
+  const refreshGraceMs = input.refreshGraceMs ?? shopifyTokenRefreshGraceMs();
+  let credential = input.credential;
+  let client = requestClientFactory({ shopDomain, accessToken: credential.accessToken });
+
+  async function refreshCredential(reason) {
+    const previousAccessToken = credential.accessToken;
+    const nextCredential = await tokenResolver({
+      shopDomain,
+      source: input.credentialSource,
+    });
+    if (nextCredential.accessToken === previousAccessToken && nextCredential.expires === credential.expires) {
+      return false;
+    }
+
+    credential = nextCredential;
+    client = requestClientFactory({ shopDomain, accessToken: credential.accessToken });
+    logger.info("Synthetic Shopify credential refreshed", {
+      shopDomain,
+      reason,
+      credentialSource: credential.source,
+      expires: credential.expires || null,
+      refreshed: credential.refreshed || false,
+    });
+    return true;
+  }
+
+  async function refreshIfExpiring() {
+    if (!shouldRefreshCredential(credential, refreshGraceMs)) return;
+    await refreshCredential("expiring");
+  }
+
+  return {
+    async request(query, variables = {}) {
+      await refreshIfExpiring();
+      try {
+        return await client.request(query, variables);
+      } catch (error) {
+        if (!isShopifyAuthError(error)) throw error;
+        const refreshed = await refreshCredential("auth_failure");
+        if (refreshed) {
+          return client.request(query, variables);
+        }
+        throw accessTokenRejectedError({
+          shopDomain,
+          credentialSource: credential.source,
+          cause: error,
+        });
+      }
+    },
+  };
+}
+
+function shouldRefreshCredential(credential, refreshGraceMs) {
+  if (credential.source !== "local_prisma_session" || !credential.expires) return false;
+  const expiresAt = new Date(credential.expires).getTime();
+  return Number.isFinite(expiresAt) && expiresAt - Date.now() <= refreshGraceMs;
 }
 
 async function importProducts(client, dataset, manifest, persist) {
@@ -1409,11 +1490,27 @@ async function withAuthContext(operation, context) {
   try {
     return await operation();
   } catch (error) {
-    if (error?.status === 401) {
-      throw new Error(`Shopify rejected the stored access token for ${context.shopDomain} with HTTP 401. Credential source was ${context.credentialSource}. Reopen/reinstall the local Shopify app for this shop to refresh the offline session, or pass --credential-source env with SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN.`);
+    if (isShopifyAuthError(error)) {
+      throw accessTokenRejectedError({
+        shopDomain: context.shopDomain,
+        credentialSource: context.credentialSource,
+        cause: error,
+      });
     }
     throw error;
   }
+}
+
+function isShopifyAuthError(error) {
+  return error?.status === 401;
+}
+
+function accessTokenRejectedError({ shopDomain, credentialSource, cause }) {
+  const error = new Error(
+    `Shopify rejected the stored access token for ${shopDomain} with HTTP 401. Credential source was ${credentialSource}. If using local DB credentials, make sure the app has an expiring offline session with a valid refresh token; otherwise reopen/reinstall the local Shopify app for this shop, or pass --credential-source env with SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN.`,
+  );
+  error.cause = cause;
+  return error;
 }
 
 const PRODUCT_CREATE = `mutation SyntheticProductCreate($product: ProductCreateInput!) {
