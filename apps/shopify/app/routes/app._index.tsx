@@ -379,7 +379,6 @@ export default function AppIndex() {
   const shouldPollConnect =
     data.activeStep === "connect" && data.connected && !canContinueToChannels;
 
-  useTopLevelRedirect(getActionRedirectUrl(actionData));
   useConnectStatusPolling(shouldPollConnect);
 
   return (
@@ -406,14 +405,7 @@ export default function AppIndex() {
   );
 }
 
-function useTopLevelRedirect(url: string | null) {
-  useEffect(() => {
-    if (!url) return;
-    openOAuthWindow(url);
-  }, [url]);
-}
-
-function openOAuthWindow(url: string) {
+function prepareOAuthWindow() {
   const width = 560;
   const height = 720;
   const screenLeft =
@@ -443,7 +435,7 @@ function openOAuthWindow(url: string) {
     "resizable=yes",
     "scrollbars=yes",
   ].join(",");
-  globalThis.open(url, "jefe-slack-oauth", features);
+  globalThis.open("", "jefe-slack-oauth", features);
 }
 
 function OnboardingShell({
@@ -820,6 +812,7 @@ function ChannelCard({
 }) {
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
+  const location = useLocation();
   const startsSlackOAuth =
     provider === "slack" &&
     !([
@@ -871,13 +864,18 @@ function ChannelCard({
 
   if (startsSlackOAuth) {
     return (
-      <Form method="post" className="JefeChannelCardForm">
-        <input type="hidden" name="intent" value="channel.slack.start" />
+      <form
+        method="post"
+        action={slackStartPath(location.search)}
+        target="jefe-slack-oauth"
+        className="JefeChannelCardForm"
+        onSubmit={prepareOAuthWindow}
+      >
         <input type="hidden" name="provider" value="slack" />
         <button type="submit" className={className} aria-pressed={active}>
           {content}
         </button>
-      </Form>
+      </form>
     );
   }
 
@@ -1797,16 +1795,6 @@ function getSafeActionError(actionData: unknown): SafeActionError {
   return "That action could not be completed.";
 }
 
-function getActionRedirectUrl(actionData: unknown) {
-  if (!actionData || typeof actionData !== "object" || !("redirectUrl" in actionData)) {
-    return null;
-  }
-  const data = actionData as { redirectUrl?: unknown };
-  return typeof data.redirectUrl === "string" && data.redirectUrl.startsWith("https://")
-    ? data.redirectUrl
-    : null;
-}
-
 function channelStatusLabel(status: string) {
   if (status === CHANNEL_STATUS.startingConnection) return "Starting";
   if (status === CHANNEL_STATUS.authorising) return "Authorising";
@@ -1852,6 +1840,12 @@ function channelProviderUrl(
     channelMode: mode ?? null,
     channelNotice: null,
   });
+}
+
+function slackStartPath(search: string) {
+  const params = new URLSearchParams(search);
+  const nextSearch = params.toString();
+  return nextSearch ? `/channels/slack/start?${nextSearch}` : "/channels/slack/start";
 }
 
 function appPathFromSearch(

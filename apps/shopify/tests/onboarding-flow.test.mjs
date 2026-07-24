@@ -10,6 +10,10 @@ const slackCallbackSource = fs.readFileSync(
   new URL("../app/routes/channels.slack.callback.tsx", import.meta.url),
   "utf8",
 );
+const slackStartSource = fs.readFileSync(
+  new URL("../app/routes/channels.slack.start.tsx", import.meta.url),
+  "utf8",
+);
 const rootSource = fs.readFileSync(
   new URL("../app/root.tsx", import.meta.url),
   "utf8",
@@ -84,13 +88,14 @@ test("channels onboarding exposes only Slack and WhatsApp provider cards", () =>
 test("channel cards use app logos and expose connector panels on click", () => {
   assert.match(appIndexSource, /\/channels\/\$\{provider\}\.webp/);
   assert.match(appIndexSource, /className="JefeChannelLogo"/);
-  assert.match(appIndexSource, /name="intent" value="channel\.slack\.start"/);
-  assert.match(appIndexSource, /redirectUrl: result\.authoriseUrl/);
-  assert.match(appIndexSource, /useTopLevelRedirect\(getActionRedirectUrl\(actionData\)\)/);
-  assert.match(appIndexSource, /openOAuthWindow\(url\)/);
+  assert.match(appIndexSource, /action=\{slackStartPath\(location\.search\)\}/);
+  assert.match(appIndexSource, /target="jefe-slack-oauth"/);
+  assert.match(appIndexSource, /onSubmit=\{prepareOAuthWindow\}/);
+  assert.match(slackStartSource, /startSlackConnection/);
+  assert.match(slackStartSource, /redirect\(result\.authoriseUrl\)/);
   assert.match(appIndexSource, /width = 560/);
   assert.match(appIndexSource, /height = 720/);
-  assert.match(appIndexSource, /globalThis\.open\(url, "jefe-slack-oauth", features\)/);
+  assert.match(appIndexSource, /globalThis\.open\("", "jefe-slack-oauth", features\)/);
   assert.match(appIndexSource, /channelProviderUrl\(location\.search, "slack"\)/);
   assert.match(appIndexSource, /channelProviderUrl\(location\.search, "whatsapp"\)/);
   assert.match(appIndexSource, /href=\{selectUrl\}/);
