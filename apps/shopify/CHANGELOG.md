@@ -10,6 +10,8 @@
 
 ### Changed
 
+- Reduced the realistic synthetic Shopify dataset to 600 total orders so disposable development-store seeds finish within Shopify order-create limits.
+- Updated synthetic Shopify order pacing to default to 4.8 created orders per minute, staying below Shopify development-store order limits without operator overrides.
 - Updated synthetic Shopify seeding so rerunning the deterministic `seed` command reloads the existing run manifest, maps already-created Shopify records and reports estimated remaining work before continuing.
 - Updated synthetic Shopify resume checks so invalid local manifest mappings for products, variants and inventory items are refreshed from Shopify instead of reusing IDs that Shopify reports as missing during inventory stocking.
 - Updated synthetic Shopify inventory quantity batches so Shopify "inventory item could not be found" errors recover the affected source inventory levels and retry the batch with current inventory item IDs.

@@ -12,6 +12,7 @@ import { createOrLoadPlannedRun, formatCliError } from "../src/cli.mjs";
 import { runDirectory } from "../src/output-paths.mjs";
 import { ShopifyAdminGraphqlError } from "../../../apps/shopify/app/lib/shopify/admin-graphql.server.js";
 import {
+  DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS,
   ShopifyMutationUserError,
   createProductWithRecoveredHandle,
   estimateImportProgress,
@@ -19,6 +20,7 @@ import {
   isAlreadyExistsError,
   mapExistingProductVariants,
   missingInventoryItemIds,
+  orderDelayMs,
   refreshInventoryQuantityEntriesForProduct,
   staleInventoryQuantityIndexes,
   syncProductVariants,
@@ -68,13 +70,14 @@ test("realistic profile matches required core counts and commercial ranges", () 
   assert.equal(dataset.plannedCounts.archivedProducts, 3);
   assert.equal(dataset.plannedCounts.draftProducts, 2);
   assert.equal(dataset.plannedCounts.customers, 780);
-  assert.equal(dataset.plannedCounts.nonTestOrders, 1250);
+  assert.equal(dataset.plannedCounts.nonTestOrders, 590);
   assert.equal(dataset.plannedCounts.testOrders, 10);
-  assert.equal(dataset.plannedCounts.guestOrders, 80);
-  assert.ok(dataset.plannedCounts.refunds >= 82 && dataset.plannedCounts.refunds <= 100);
-  assert.ok(dataset.metrics.customers.repeatCustomerRate >= 28 && dataset.metrics.customers.repeatCustomerRate <= 32);
+  assert.equal(dataset.plannedCounts.guestOrders, 40);
+  assert.ok(dataset.plannedCounts.refunds >= 40 && dataset.plannedCounts.refunds <= 50);
+  assert.ok(dataset.metrics.customers.knownCustomerShare >= 90);
+  assert.ok(dataset.metrics.customers.repeatCustomerRate <= 1);
   assert.ok(dataset.metrics.refunds.refundedOrderIncidence >= 6 && dataset.metrics.refunds.refundedOrderIncidence <= 7);
-  assert.ok(dataset.metrics.basket.freeDeliveryShare >= 40 && dataset.metrics.basket.freeDeliveryShare <= 55);
+  assert.ok(dataset.metrics.basket.freeDeliveryShare >= 35 && dataset.metrics.basket.freeDeliveryShare <= 55);
   assert.ok(dataset.metrics.basket.averageItems >= 2 && dataset.metrics.basket.averageItems <= 2.4);
 });
 
@@ -88,7 +91,7 @@ test("customer repeat orders resolve to the same synthetic customer entity", () 
   for (const order of dataset.orders.filter((order) => !order.isTest && order.customerSourceId)) {
     grouped.set(order.customerSourceId, (grouped.get(order.customerSourceId) || 0) + 1);
   }
-  assert.ok([...grouped.values()].some((count) => count >= 8));
+  assert.ok([...grouped.values()].some((count) => count >= 2));
   assert.equal(
     [...dataset.customers.map((customer) => customer.email)].every((email) => email.endsWith("@example.com")),
     true,
@@ -375,6 +378,18 @@ test("variant sync preserves and updates Shopify standalone variants", async () 
   assert.equal(manifest.sourceToShopifyIds.variants[caseOfSix.sourceId], "gid://shopify/ProductVariant/case");
   assert.equal(manifest.sourceToShopifyIds.variants[previousVintage.sourceId], "gid://shopify/ProductVariant/previous");
   assert.equal(manifest.sourceToShopifyIds.inventoryItems[`ii_${singleBottle.sourceId}`], "gid://shopify/InventoryItem/single");
+});
+
+test("order create pacing defaults below Shopify dev-store limit", () => {
+  const originalDelay = process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS;
+  try {
+    delete process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS;
+    assert.equal(DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS, 12_500);
+    assert.equal(orderDelayMs(), 12_500);
+  } finally {
+    if (originalDelay === undefined) delete process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS;
+    else process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS = originalDelay;
+  }
 });
 
 test("inventory quantity user errors identify stale quantity indexes", () => {

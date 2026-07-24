@@ -7,6 +7,8 @@ import { runDirectory, writeJson } from "../output-paths.mjs";
 import { validateSyntheticDataset } from "../validators/dataset.mjs";
 import { buildBeliefCoverageReport } from "../validators/coverage.mjs";
 
+export const DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS = 12_500;
+
 export class ShopifyMutationUserError extends Error {
   constructor(operationName, sourceId, userErrors) {
     super(`Shopify user errors for ${sourceId}`);
@@ -1382,11 +1384,11 @@ function isRetriableUserErrors(errors) {
   );
 }
 
-function orderDelayMs() {
-  return readPositiveIntegerEnv("SYNTHETIC_SHOPIFY_ORDER_DELAY_MS", 2500);
+export function orderDelayMs() {
+  return readPositiveIntegerEnv("SYNTHETIC_SHOPIFY_ORDER_DELAY_MS", DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS);
 }
 
-function orderRetryDelayMs() {
+export function orderRetryDelayMs() {
   return readPositiveIntegerEnv("SYNTHETIC_SHOPIFY_ORDER_RETRY_DELAY_MS", 10000);
 }
 
