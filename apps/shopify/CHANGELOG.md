@@ -55,6 +55,7 @@
 
 ### Fixed
 
+- Fixed production Slack connection from the Shopify embedded Channels page by launching OAuth through a native popup POST route instead of the embedded `/app.data` action request.
 - Fixed Channels onboarding development loads by moving shared channel status labels out of the server-only channel service so the embedded route can build for the browser.
 - Fixed Slack OAuth launch from the embedded Channels page so Slack opens in a separate browser window instead of being blocked inside Shopify's iframe.
 - Fixed Slack OAuth callback handling so Slack uses a stable app callback URL while Shopify embedded return context is stored in OAuth state.
