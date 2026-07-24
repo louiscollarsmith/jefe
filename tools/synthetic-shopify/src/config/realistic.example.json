@@ -5,9 +5,9 @@
   "bundleInventoryModel": "independently_stocked_synthetic_skus",
   "counts": {
     "knownCustomers": 780,
-    "nonTestOrders": 1250,
-    "guestOrders": 80,
-    "refundedOrders": 83,
-    "refundRecords": 89
+    "nonTestOrders": 590,
+    "guestOrders": 40,
+    "refundedOrders": 40,
+    "refundRecords": 43
   }
 }

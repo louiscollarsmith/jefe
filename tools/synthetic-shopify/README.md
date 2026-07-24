@@ -51,7 +51,7 @@ Live writes refuse to run unless all of these are true:
 - `--shop` is listed in `SYNTHETIC_SHOPIFY_ALLOWED_SHOPS`
 - `SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN` is present, or the tool can read a local offline Shopify session from the app database
 - Destination inspection succeeds
-- The destination has no meaningful orders or customers, unless `--allow-nonempty-store` is passed for a disposable synthetic store
+- Existing synthetic records are mapped back into the run manifest before new writes continue. `--allow-nonempty-store` is still reserved for disposable stores when unrelated data may be present.
 
 All generated records use reserved synthetic identities such as `synthetic.customer.0001@example.com`. Phone numbers are omitted.
 
@@ -103,7 +103,7 @@ The manifest is the resume boundary and stores source-to-Shopify ID mappings.
 ## Profiles
 
 - `smoke`: 250 non-test orders, 180 customers, 365 days.
-- `realistic`: 1,250 non-test orders, 780 customers, 730 days, 24 active products, 3 archived products, 2 draft products.
+- `realistic`: 590 non-test orders, 780 customers, 730 days, 24 active products, 3 archived products, 2 draft products.
 - `load`: 3,000 non-test orders, 1,850 customers, 730 days.
 
 The same `--seed` and `--as-of` reproduce the same source dataset.
@@ -113,6 +113,8 @@ The same `--seed` and `--as-of` reproduce the same source dataset.
 The generator, planner, manifest/resume bookkeeping, validation, belief-coverage report and live Shopify import phases are implemented and tested.
 
 Live Shopify writes are fail-closed and can create products, collections, variants, locations, inventory levels, customers, historical orders and refunds against the Admin GraphQL 2026-07 API. Inventory and refund mutations use Shopify idempotency keys, order creation is paced/retried for Shopify attempt limits, and failed mutation responses are printed with GraphQL `errors` or mutation `userErrors`.
+
+Order creation defaults to a 12.5 second delay between successful orders (`4.8` orders/minute) to stay below Shopify development-store limits. Override with `SYNTHETIC_SHOPIFY_ORDER_DELAY_MS` only when the target store has a higher confirmed order-create limit.
 
 ## Wiping a Disposable Store
 

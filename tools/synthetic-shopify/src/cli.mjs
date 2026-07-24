@@ -63,8 +63,8 @@ async function plan(args) {
 }
 
 async function seed(args) {
-  const { dataset, manifest } = createPlannedRun(args);
-  persistRun({ dataset, manifest });
+  const { dataset, manifest, loadedExistingRun } = createOrLoadPlannedRun(args);
+  if (!loadedExistingRun) persistRun({ dataset, manifest });
   const validation = validateSyntheticDataset(dataset);
   if (!validation.ok) {
     throw new Error(`Generated dataset failed validation:\n${validation.failures.join("\n")}`);
@@ -80,6 +80,7 @@ async function seed(args) {
     command: "seed",
     dryRun: Boolean(args["dry-run"]),
     runId: manifest.runId,
+    loadedExistingRun,
     manifestPath: manifestPath(manifest.shopDomain, manifest.runId),
     phaseStatus: result.manifest.phaseStatus,
   }, null, 2));
@@ -160,6 +161,22 @@ function createPlannedRun(args) {
   });
   const manifest = createManifest({ dataset, shopDomain });
   return { dataset, manifest };
+}
+
+export function createOrLoadPlannedRun(args) {
+  const planned = createPlannedRun(args);
+  const existingManifestPath = manifestPath(planned.manifest.shopDomain, planned.manifest.runId);
+  const existingSourcePath = sourcePath(planned.manifest.shopDomain, planned.manifest.runId);
+  if (fs.existsSync(existingManifestPath) && fs.existsSync(existingSourcePath)) {
+    return {
+      ...loadRun({
+        shopDomain: planned.manifest.shopDomain,
+        runId: planned.manifest.runId,
+      }),
+      loadedExistingRun: true,
+    };
+  }
+  return { ...planned, loadedExistingRun: false };
 }
 
 function getExistingOrGeneratedRun(args) {
