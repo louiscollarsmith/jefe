@@ -4,17 +4,26 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
-import { Form, useActionData, useLoaderData, useRevalidator } from "react-router";
+import { useMemo, useState } from "react";
+import {
+  Form,
+  redirect,
+  useActionData,
+  useLocation,
+  useLoaderData,
+  useNavigate,
+  useNavigation,
+} from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Badge,
   BlockStack,
   Box,
   Button,
-  Divider,
+  Card,
+  InlineGrid,
   InlineStack,
-  Page,
+  SkeletonBodyText,
   Spinner,
   Text,
   TextField,
@@ -39,6 +48,14 @@ import {
   splitScopes,
 } from "../services/shopify-backfill-status.server";
 
+export const ONBOARDING_STEPS = ["connect", "interview"] as const;
+const REMOVED_ONBOARDING_STEPS = new Set([
+  "integrations",
+  "goals",
+  "channels",
+  "insights",
+  "plan",
+]);
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const UI_INTERVIEW_STATUS = {
   inProgress: "in_progress",
@@ -46,13 +63,14 @@ const UI_INTERVIEW_STATUS = {
   completed: "completed",
   skipped: "skipped",
 };
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: splitScopes(session.scope),
-    rawPayload: { source: "jefe_interview_action" },
+    rawPayload: { source: "jefe_onboarding_action" },
   });
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
@@ -72,7 +90,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (
     intent === "pause" ||
     intent === "resume" ||
-    intent === "complete" ||
     intent === "skip" ||
     intent === "tell_more"
   ) {
@@ -85,6 +102,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return result.ok ? { ok: true } : { ok: false, error: result.error };
   }
 
+  if (intent === "complete") {
+    const result = await updateInterviewStatus(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      intent,
+      logger: console,
+    });
+    return result.ok
+      ? redirect(appPathFromRequest(request, { view: "memory", step: null }))
+      : { ok: false, error: result.error };
+  }
+
   return { ok: false, error: "Unsupported action." };
 };
 
@@ -94,7 +123,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: splitScopes(session.scope),
-    rawPayload: { source: "merchant_memory_raw_dump_loader" },
+    rawPayload: { source: "jefe_onboarding_loader" },
   });
 
   const readiness = await getMerchantMemoryReadiness({
@@ -104,15 +133,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     sessionId: session.id,
     scopes: splitScopes(session.scope),
   });
+  const metrics = await getStoreMetrics({
+    merchantId: merchant.id,
+    shopId: shop.id,
+  });
+  const backfill = summarizeBackfill(readiness, metrics);
+  const url = new URL(request.url);
+  const requestedStep = url.searchParams.get("step");
+  const connected = await hasActiveShopifyConnection({
+    merchantId: merchant.id,
+    shopDomain: session.shop,
+  });
 
   if (!readiness.memoryReady) {
     return {
       shop: session.shop,
       merchantName: merchant.name,
+      storeName: displayStoreName(merchant.name, session.shop),
+      activeStep: "connect" as const,
+      view: "onboarding" as const,
+      connected,
       memoryReady: false,
-      backfill: summarizeBackfill(readiness),
+      backfill,
+      metrics,
       interview: null,
-      beliefs: null,
+      beliefs: [],
     };
   }
 
@@ -126,12 +171,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop.id,
     }),
   ]);
+  const onboardingComplete = [
+    UI_INTERVIEW_STATUS.completed,
+    UI_INTERVIEW_STATUS.skipped,
+  ].includes(interview.interview.status);
+  const view = onboardingComplete ? ("memory" as const) : ("onboarding" as const);
 
   return {
     shop: session.shop,
     merchantName: merchant.name,
+    storeName: displayStoreName(merchant.name, session.shop),
+    activeStep: normalizeOnboardingStep(requestedStep, readiness.memoryReady),
+    view,
+    connected,
     memoryReady: true,
-    backfill: summarizeBackfill(readiness),
+    backfill,
+    metrics,
     interview,
     beliefs,
   };
@@ -140,77 +195,239 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const revalidator = useRevalidator();
 
-  useEffect(() => {
-    if (data.memoryReady || !data.backfill.spinning) return;
-
-    const intervalId = window.setInterval(() => {
-      if (revalidator.state === "idle") {
-        revalidator.revalidate();
-      }
-    }, 3000);
-
-    return () => window.clearInterval(intervalId);
-  }, [data.backfill.spinning, data.memoryReady, revalidator]);
+  if (data.view === "memory") {
+    return <MerchantMemoryView storeName={data.storeName} beliefs={data.beliefs} />;
+  }
 
   return (
-    <Page title="Jefe" fullWidth>
-      <div style={{ margin: "0 auto", maxWidth: 1680 }}>
-        <BlockStack gap="500">
-          {!data.memoryReady ? <BackfillStatus backfill={data.backfill} /> : null}
+    <OnboardingShell activeStep={data.activeStep}>
+      {data.activeStep === "connect" || !data.memoryReady ? (
+        <ConnectStep
+          storeName={data.storeName}
+          backfill={data.backfill}
+          metrics={data.metrics}
+          connected={data.connected}
+          canContinue={data.memoryReady}
+        />
+      ) : null}
 
-          {data.memoryReady && data.interview ? (
-            <InterviewWorkspace
-              experience={data.interview}
-              beliefs={data.beliefs ?? []}
-              actionError={
-                actionData && "error" in actionData ? actionData.error : null
-              }
-            />
-          ) : null}
-        </BlockStack>
-      </div>
-    </Page>
+      {data.activeStep === "interview" && data.memoryReady && data.interview ? (
+        <InterviewStep
+          experience={data.interview}
+          actionError={actionData && "error" in actionData ? actionData.error : null}
+        />
+      ) : null}
+    </OnboardingShell>
   );
 }
 
-function InterviewWorkspace({
-  experience,
-  beliefs,
-  actionError,
+function OnboardingShell({
+  activeStep,
+  children,
 }: {
-  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>;
-  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
-  actionError?: string | null;
+  activeStep: (typeof ONBOARDING_STEPS)[number];
+  children: ReactNode;
 }) {
   return (
-    <>
-      <style>
-        {`
-          .jefe-interview-workspace {
-            display: grid;
-            grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
-            gap: 20px;
-            align-items: start;
-          }
-
-          @media (max-width: 960px) {
-            .jefe-interview-workspace {
-              grid-template-columns: minmax(0, 1fr);
-            }
-          }
-        `}
-      </style>
-      <div className="jefe-interview-workspace">
-        <InterviewPanel experience={experience} actionError={actionError} />
-        <BeliefSnapshotPanel beliefs={beliefs} />
-      </div>
-    </>
+    <main className="JefeOnboardingShell">
+      <OnboardingStepper activeStep={activeStep} />
+      <section className="JefeOnboardingScene">{children}</section>
+    </main>
   );
 }
 
-function InterviewPanel({
+function OnboardingStepper({
+  activeStep,
+}: {
+  activeStep: (typeof ONBOARDING_STEPS)[number];
+}) {
+  const appNavigate = useEmbeddedAppNavigate();
+
+  return (
+    <nav className="JefeStepper" aria-label="Onboarding progress">
+      {ONBOARDING_STEPS.map((step, index) => {
+        const active = step === activeStep;
+        const complete = ONBOARDING_STEPS.indexOf(step) < ONBOARDING_STEPS.indexOf(activeStep);
+        return (
+          <button
+            type="button"
+            key={step}
+            className={`JefeStepperItem ${active ? "is-active" : ""} ${
+              complete ? "is-complete" : ""
+            }`}
+            aria-current={active ? "step" : undefined}
+            onClick={() => appNavigate({ step, view: null })}
+          >
+            <span className="JefeStepperNumber">{index + 1}</span>
+            <span className="JefeStepperLabel">{step === "connect" ? "Connect" : "Interview"}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function ConnectStep({
+  storeName,
+  backfill,
+  metrics,
+  connected,
+  canContinue,
+}: {
+  storeName: string;
+  backfill: ReturnType<typeof summarizeBackfill>;
+  metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
+  connected: boolean;
+  canContinue: boolean;
+}) {
+  const appNavigate = useEmbeddedAppNavigate();
+
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <JefeMark />
+      <BlockStack gap="200" inlineAlign="center">
+        <h1 className="JefeDisplayHeading">Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...</h1>
+      </BlockStack>
+      <Card padding="500">
+        <BlockStack gap="500">
+          <MetricGrid metrics={metrics} />
+          <LearningMilestones backfill={backfill} metrics={metrics} />
+          <Box aria-live="polite">
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <InlineStack blockAlign="center" gap="300">
+                {backfill.spinning ? <Spinner size="small" accessibilityLabel={backfill.statusLabel} /> : null}
+                <BlockStack gap="050">
+                  <Text as="p" fontWeight="semibold">
+                    {backfill.title}
+                  </Text>
+                  <Text as="p" tone="subdued">
+                    {backfill.detail}
+                  </Text>
+                </BlockStack>
+              </InlineStack>
+              <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
+            </InlineStack>
+          </Box>
+          <InlineStack align="end">
+            {canContinue ? (
+              <Button onClick={() => appNavigate({ step: "interview", view: null })} variant="primary">
+                Continue to Interview
+              </Button>
+            ) : connected ? (
+              <Button onClick={() => appNavigate({ step: "connect", view: null })}>
+                Check status
+              </Button>
+            ) : (
+              <Button url="/auth/login" variant="primary">
+                Connect Shopify
+              </Button>
+            )}
+          </InlineStack>
+        </BlockStack>
+      </Card>
+    </BlockStack>
+  );
+}
+
+function MetricGrid({
+  metrics,
+}: {
+  metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
+}) {
+  const visible = [
+    metrics.orders > 0
+      ? { label: "orders", value: formatInteger(metrics.orders) }
+      : null,
+    metrics.products > 0
+      ? { label: "products", value: formatInteger(metrics.products) }
+      : null,
+    metrics.customers > 0
+      ? { label: "customers", value: formatInteger(metrics.customers) }
+      : null,
+    metrics.revenue
+      ? { label: "revenue", value: formatCurrency(metrics.revenue, metrics.currency) }
+      : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+
+  if (visible.length === 0) {
+    return (
+      <InlineGrid columns={{ xs: 2, sm: 4 }} gap="300">
+        {[0, 1, 2, 3].map((item) => (
+          <Box key={item} padding="300" background="bg-surface-secondary" borderRadius="200">
+            <SkeletonBodyText lines={2} />
+          </Box>
+        ))}
+      </InlineGrid>
+    );
+  }
+
+  return (
+    <InlineGrid columns={{ xs: 2, sm: Math.min(visible.length, 4) }} gap="300">
+      {visible.map((metric) => (
+        <Box key={metric.label} padding="300" background="bg-surface-secondary" borderRadius="200">
+          <BlockStack gap="050">
+            <Text as="p" variant="headingLg">
+              {metric.value}
+            </Text>
+            <Text as="p" tone="subdued">
+              {metric.label}
+            </Text>
+          </BlockStack>
+        </Box>
+      ))}
+    </InlineGrid>
+  );
+}
+
+function LearningMilestones({
+  backfill,
+  metrics,
+}: {
+  backfill: ReturnType<typeof summarizeBackfill>;
+  metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
+}) {
+  return (
+    <BlockStack gap="200">
+      <Milestone complete>Connected to Shopify</Milestone>
+      {metrics.orders > 0 ? (
+        <Milestone complete>Read {formatInteger(metrics.orders)} orders</Milestone>
+      ) : null}
+      {metrics.products > 0 ? (
+        <Milestone complete>
+          Indexed {formatInteger(metrics.products)} products
+          {metrics.variants > 0 ? ` and ${formatInteger(metrics.variants)} variants` : ""}
+        </Milestone>
+      ) : null}
+      <Milestone current={!backfill.complete} complete={backfill.complete}>
+        Looking for patterns worth talking about...
+      </Milestone>
+    </BlockStack>
+  );
+}
+
+function Milestone({
+  children,
+  complete,
+  current,
+}: {
+  children: ReactNode;
+  complete?: boolean;
+  current?: boolean;
+}) {
+  return (
+    <InlineStack gap="200" blockAlign="center">
+      <span className={`JefeMilestoneIcon ${complete ? "is-complete" : ""}`}>
+        {current && !complete ? <Spinner size="small" accessibilityLabel="In progress" /> : "✓"}
+      </span>
+      <Text as="p" fontWeight={current ? "semibold" : undefined}>
+        {children}
+      </Text>
+    </InlineStack>
+  );
+}
+
+function InterviewStep({
   experience,
   actionError,
 }: {
@@ -218,170 +435,101 @@ function InterviewPanel({
   actionError?: string | null;
 }) {
   const status = experience.interview.status;
+  const appNavigate = useEmbeddedAppNavigate();
 
   return (
-    <Box
-      padding="500"
-      background="bg-surface"
-      borderColor="border"
-      borderRadius="200"
-      borderWidth="025"
-    >
-      <BlockStack gap="500">
-        <InlineStack align="space-between" blockAlign="center" gap="300">
-          <BlockStack gap="100">
-            <Text as="h1" variant="headingLg">
-              Jefe Interview
-            </Text>
+    <BlockStack gap="500" inlineAlign="center">
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold">
+          A FEW QUESTIONS
+        </Text>
+        <h1 className="JefeDisplayHeading">Help me understand how your business works.</h1>
+        <Text as="p" tone="subdued" alignment="center">
+          I&apos;ve learned what I can from your store. I&apos;ll only ask about things that could change what I recommend.
+        </Text>
+      </BlockStack>
+
+      <Card padding="500">
+        <BlockStack gap="500">
+          <InlineStack align="space-between" blockAlign="center" gap="300">
             <Text as="p" tone="subdued">
-              Help Jefe confirm, correct and complete Merchant Memory.
+              {interviewProgressLabel(experience)}
             </Text>
-          </BlockStack>
-          <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
-        </InlineStack>
+            <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
+          </InlineStack>
 
-        {actionError ? (
-          <Box padding="300" background="bg-surface-critical" borderRadius="200">
-            <Text as="p" tone="critical">
-              {actionError}
-            </Text>
-          </Box>
-        ) : null}
+          {actionError ? (
+            <Box padding="300" background="bg-surface-critical" borderRadius="200">
+              <Text as="p" tone="critical">
+                {actionError}
+              </Text>
+            </Box>
+          ) : null}
 
-        <Divider />
+          <LatestInterviewContext messages={experience.messages} />
 
-        <ConversationThread messages={experience.messages} />
+          {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
 
-        {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
+          {status === UI_INTERVIEW_STATUS.inProgress && experience.currentTurn ? (
+            <InterviewQuestion turn={experience.currentTurn} />
+          ) : null}
 
-        {status === UI_INTERVIEW_STATUS.inProgress && experience.currentTurn ? (
-          <AnswerBox key={experience.currentTurn.id} turn={experience.currentTurn} />
-        ) : null}
+          {status === UI_INTERVIEW_STATUS.inProgress &&
+          !experience.currentTurn &&
+          experience.plannerUnavailableMessage ? (
+            <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+              <Text as="p">{experience.plannerUnavailableMessage}</Text>
+            </Box>
+          ) : null}
 
-        {status === UI_INTERVIEW_STATUS.inProgress &&
-        !experience.currentTurn &&
-        experience.plannerUnavailableMessage ? (
-          <Box padding="400" background="bg-surface-secondary" borderRadius="200">
-            <Text as="p">{experience.plannerUnavailableMessage}</Text>
-          </Box>
-        ) : null}
+          {experience.completionMessage && status === UI_INTERVIEW_STATUS.inProgress ? (
+            <CompletionControls message={experience.completionMessage} />
+          ) : null}
 
-        {experience.completionMessage &&
-        status === UI_INTERVIEW_STATUS.inProgress ? (
-          <CompletionControls message={experience.completionMessage} />
-        ) : null}
+          {status === UI_INTERVIEW_STATUS.completed ? (
+            <Button onClick={() => appNavigate({ view: "memory", step: null })} variant="primary">
+              View Merchant Memory
+            </Button>
+          ) : null}
 
-        {status === UI_INTERVIEW_STATUS.completed ? (
-          <Text as="p">I think I understand enough to start helping.</Text>
-        ) : null}
-
-        {status === UI_INTERVIEW_STATUS.skipped ? (
-          <Text as="p">
-            The interview is skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
-          </Text>
-        ) : null}
-      </BlockStack>
-    </Box>
-  );
-}
-
-function BeliefSnapshotPanel({
-  beliefs,
-}: {
-  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
-}) {
-  return (
-    <Box
-      padding="400"
-      background="bg-surface"
-      borderColor="border"
-      borderRadius="200"
-      borderWidth="025"
-    >
-      <BlockStack gap="300">
-        <BlockStack gap="050">
-          <Text as="h2" variant="headingMd">
-            Current Beliefs
-          </Text>
-          <Text as="p" tone="subdued">
-            Active Merchant Memory, trimmed to the fields that explain current understanding.
-          </Text>
+          {status === UI_INTERVIEW_STATUS.skipped ? (
+            <BlockStack gap="300">
+              <Text as="p">
+                The interview is skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
+              </Text>
+              <Button onClick={() => appNavigate({ view: "memory", step: null })} variant="primary">
+                View Merchant Memory
+              </Button>
+            </BlockStack>
+          ) : null}
         </BlockStack>
-        <Box
-          background="bg-surface-secondary"
-          borderColor="border"
-          borderRadius="200"
-          borderWidth="025"
-        >
-          <pre
-            style={{
-              fontFamily:
-                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-              fontSize: 12,
-              lineHeight: 1.45,
-              margin: 0,
-              maxHeight: "calc(100vh - 220px)",
-              overflow: "auto",
-              padding: 16,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            <code>{JSON.stringify(beliefs, null, 2)}</code>
-          </pre>
-        </Box>
-      </BlockStack>
-    </Box>
-  );
-}
-
-function ConversationThread({
-  messages,
-}: {
-  messages: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["messages"];
-}) {
-  if (messages.length === 0) {
-    return (
-      <AssistantBubble>
-        <Text as="p">
-          I’ll ask one question at a time and turn your answers into Merchant Memory.
-        </Text>
-      </AssistantBubble>
-    );
-  }
-
-  return (
-    <BlockStack gap="400">
-      <AssistantBubble>
-        <Text as="p">
-          I’ll ask one question at a time and turn your answers into Merchant Memory.
-        </Text>
-      </AssistantBubble>
-      {messages.map((message) => (
-        message.role === "merchant" ? (
-          <MerchantBubble key={message.id}>
-            <Text as="p">{message.content}</Text>
-          </MerchantBubble>
-        ) : (
-          <AssistantBubble key={message.id}>
-            <Text
-              as="p"
-              tone={
-                message.type === "assistant_acknowledgement"
-                  ? "subdued"
-                  : undefined
-              }
-            >
-              {message.content}
-            </Text>
-          </AssistantBubble>
-        )
-      ))}
+      </Card>
     </BlockStack>
   );
 }
 
-function AnswerBox({
+function LatestInterviewContext({
+  messages,
+}: {
+  messages: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["messages"];
+}) {
+  const latest = [...messages]
+    .reverse()
+    .find((message) =>
+      ["assistant_context", "assistant_acknowledgement"].includes(message.type),
+    );
+  if (!latest) return null;
+
+  return (
+    <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+      <Text as="p" tone="subdued">
+        {latest.content}
+      </Text>
+    </Box>
+  );
+}
+
+function InterviewQuestion({
   turn,
 }: {
   turn: NonNullable<
@@ -389,38 +537,87 @@ function AnswerBox({
   >;
 }) {
   const [answer, setAnswer] = useState("");
+  const navigation = useNavigation();
+  const appNavigate = useEmbeddedAppNavigate();
+  const submitting = navigation.state !== "idle";
+  const suggestions = useMemo(
+    () =>
+      Array.isArray(turn.answerSuggestions)
+        ? turn.answerSuggestions.filter((item): item is string => typeof item === "string")
+        : [],
+    [turn.answerSuggestions],
+  );
 
   return (
-    <BlockStack gap="300">
-      <Form method="post">
-        <BlockStack gap="300">
-          <input type="hidden" name="intent" value="answer" />
-          <input type="hidden" name="turnId" value={turn.id} />
-          <input
-            type="hidden"
-            name="idempotencyKey"
-            value={`${turn.id}:${turn.createdAt}`}
-          />
-          <TextField
-            label="Your answer"
-            name="answer"
-            value={answer}
-            onChange={setAnswer}
-            autoComplete="off"
-            multiline={4}
-          />
-          <InlineStack align="end" blockAlign="center" gap="300">
-            <Button submit variant="primary">
-              Send
+    <BlockStack gap="400">
+      <BlockStack gap="200">
+        <Text as="h2" variant="headingLg">
+          {turn.question}
+        </Text>
+        {turn.relatedBeliefIds?.length ? (
+          <Text as="p" tone="subdued">
+            I have an initial belief here, but I need you to confirm or correct it.
+          </Text>
+        ) : null}
+      </BlockStack>
+
+      {suggestions.length > 0 ? (
+        <InlineStack gap="200">
+          {suggestions.slice(0, 4).map((suggestion) => (
+            <Button key={suggestion} onClick={() => setAnswer(suggestion)}>
+              {suggestion}
             </Button>
-          </InlineStack>
-        </BlockStack>
-      </Form>
+          ))}
+        </InlineStack>
+      ) : null}
+
+      {turn.relatedBeliefIds?.length ? (
+        <InlineStack gap="200">
+          <Button onClick={() => setAnswer("Yes, that is right.")}>Confirm</Button>
+          <Button onClick={() => setAnswer("No, that is not right. ")}>Correct</Button>
+          <Button onClick={() => setAnswer("Here is the context: ")}>Explain</Button>
+        </InlineStack>
+      ) : null}
+
+      <BlockStack gap="300">
+        <Form method="post">
+          <BlockStack gap="300">
+            <input type="hidden" name="intent" value="answer" />
+            <input type="hidden" name="turnId" value={turn.id} />
+            <input type="hidden" name="idempotencyKey" value={`${turn.id}:${turn.createdAt}`} />
+            <TextField
+              label="Your answer"
+              name="answer"
+              value={answer}
+              onChange={setAnswer}
+              autoComplete="off"
+              multiline={4}
+            />
+            <InlineStack align="space-between" blockAlign="center" gap="300">
+              <Button onClick={() => appNavigate({ step: "connect", view: null })}>Back</Button>
+              <Button submit variant="primary" disabled={!answer.trim() || submitting}>
+                Continue
+              </Button>
+            </InlineStack>
+          </BlockStack>
+        </Form>
+        <InlineStack align="end">
+          <Form method="post">
+            <input type="hidden" name="intent" value="skip" />
+            <Button submit disabled={submitting}>
+              Skip
+            </Button>
+          </Form>
+        </InlineStack>
+      </BlockStack>
     </BlockStack>
   );
 }
 
 function CompletionControls({ message }: { message: string }) {
+  const navigation = useNavigation();
+  const submitting = navigation.state !== "idle";
+
   return (
     <Box padding="400" background="bg-surface-secondary" borderRadius="200">
       <BlockStack gap="300">
@@ -428,13 +625,15 @@ function CompletionControls({ message }: { message: string }) {
         <InlineStack gap="200">
           <Form method="post">
             <input type="hidden" name="intent" value="complete" />
-            <Button submit variant="primary">
-              Finish for now
+            <Button submit variant="primary" disabled={submitting}>
+              View Merchant Memory
             </Button>
           </Form>
           <Form method="post">
             <input type="hidden" name="intent" value="tell_more" />
-            <Button submit>Tell you more</Button>
+            <Button submit disabled={submitting}>
+              Tell you more
+            </Button>
           </Form>
         </InlineStack>
       </BlockStack>
@@ -447,103 +646,80 @@ function PausedControls() {
     <Box padding="400" background="bg-surface-secondary" borderRadius="200">
       <InlineStack align="space-between" blockAlign="center" gap="300">
         <Text as="p">The interview is paused. Your answers are saved.</Text>
-        <InlineStack gap="200">
-          <Form method="post">
-            <input type="hidden" name="intent" value="resume" />
-            <Button submit variant="primary">
-              Resume
-            </Button>
-          </Form>
-          <Form method="post">
-            <input type="hidden" name="intent" value="skip" />
-            <Button submit>Skip</Button>
-          </Form>
-        </InlineStack>
+        <Form method="post">
+          <input type="hidden" name="intent" value="resume" />
+          <Button submit variant="primary">
+            Resume
+          </Button>
+        </Form>
       </InlineStack>
     </Box>
   );
 }
 
-function AssistantBubble({ children }: { children: ReactNode }) {
-  return (
-    <div style={{ maxWidth: 720 }}>
-      <Box
-        padding="300"
-        background="bg-surface-secondary"
-        borderRadius="200"
-      >
-        {children}
-      </Box>
-    </div>
-  );
-}
-
-function MerchantBubble({ children }: { children: ReactNode }) {
-  return (
-    <InlineStack align="end">
-      <div style={{ maxWidth: 720 }}>
-        <Box
-          padding="300"
-          background="bg-fill-info-secondary"
-          borderRadius="200"
-        >
-          {children}
-        </Box>
-      </div>
-    </InlineStack>
-  );
-}
-
-function statusLabel(status: string) {
-  if (status === UI_INTERVIEW_STATUS.inProgress) return "In progress";
-  if (status === UI_INTERVIEW_STATUS.paused) return "Paused";
-  if (status === UI_INTERVIEW_STATUS.completed) return "Complete";
-  if (status === UI_INTERVIEW_STATUS.skipped) return "Skipped";
-  return "Preparing";
-}
-
-function statusTone(status: string) {
-  if (status === UI_INTERVIEW_STATUS.completed) return "success" as const;
-  if (status === UI_INTERVIEW_STATUS.paused) return "attention" as const;
-  if (status === UI_INTERVIEW_STATUS.skipped) return "info" as const;
-  return "info" as const;
-}
-
-function BackfillStatus({
-  backfill,
+function MerchantMemoryView({
+  storeName,
+  beliefs,
 }: {
-  backfill: {
-    title: string;
-    detail: string;
-    statusLabel: string;
-    complete: boolean;
-    spinning: boolean;
-    tone: "success" | "attention" | "critical" | "info";
-  };
+  storeName: string;
+  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
 }) {
   return (
-    <Box
-      padding="400"
-      background="bg-surface"
-      borderColor="border"
-      borderRadius="200"
-      borderWidth="025"
-    >
-      <InlineStack align="space-between" blockAlign="center" gap="300">
-        <InlineStack blockAlign="center" gap="300">
-          {backfill.spinning ? <Spinner size="small" /> : null}
-          <BlockStack gap="050">
-            <Text as="h2" variant="headingMd">
-              {backfill.title}
-            </Text>
-            <Text as="p" tone="subdued">
-              {backfill.detail}
-            </Text>
-          </BlockStack>
-        </InlineStack>
-        <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
-      </InlineStack>
-    </Box>
+    <main className="JefeMemoryView">
+      <BlockStack gap="600">
+        <BlockStack gap="200">
+          <Text as="p" fontWeight="bold">
+            MERCHANT MEMORY
+          </Text>
+          <h1 className="JefeDisplayHeading">What Jefe knows about {storeName}</h1>
+          <Text as="p" tone="subdued">
+            Merchant-confirmed answers stay authoritative. Shopify facts and model inferences remain labelled by status and confidence.
+          </Text>
+        </BlockStack>
+        <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
+          {beliefs.slice(0, 12).map((belief) => (
+            <Box
+              key={belief.key}
+              padding="400"
+              background="bg-surface"
+              borderColor="border"
+              borderRadius="200"
+              borderWidth="025"
+            >
+              <BlockStack gap="200">
+                <InlineStack align="space-between" gap="200">
+                  <Text as="h2" variant="headingMd">
+                    {humanizeBeliefKey(belief.key)}
+                  </Text>
+                  <Badge tone={belief.status.includes("merchant") ? "success" : "info"}>
+                    {humanizeStatus(belief.status)}
+                  </Badge>
+                </InlineStack>
+                <Text as="p">{formatBeliefValueForUi(belief.value)}</Text>
+                {belief.confidence_reason ? (
+                  <Text as="p" tone="subdued">
+                    {belief.confidence_reason}
+                  </Text>
+                ) : null}
+              </BlockStack>
+            </Box>
+          ))}
+        </InlineGrid>
+        {beliefs.length === 0 ? (
+          <Box padding="400" background="bg-surface" borderRadius="200">
+            <Text as="p">Jefe is still building the first Merchant Memory.</Text>
+          </Box>
+        ) : null}
+      </BlockStack>
+    </main>
+  );
+}
+
+function JefeMark() {
+  return (
+    <div className="JefeMark" aria-hidden="true">
+      J
+    </div>
   );
 }
 
@@ -568,7 +744,7 @@ async function getMerchantMemoryReadiness({
       shopDomain,
       sessionId,
       scopes,
-      rawPayload: { source: "merchant_memory_raw_dump_requires_backfill" },
+      rawPayload: { source: "jefe_onboarding_requires_backfill" },
     });
     progress = await getShopBackfillProgress(prisma, { shopId });
   }
@@ -589,7 +765,7 @@ async function getMerchantMemoryReadiness({
       shopId,
       shopDomain,
       categories: [],
-      reason: "merchant_memory_raw_dump_evidence_ready",
+      reason: "jefe_onboarding_evidence_ready",
     });
     progress = await getShopBackfillProgress(prisma, { shopId });
   }
@@ -602,7 +778,7 @@ async function getMerchantMemoryReadiness({
     progress,
     beliefCount: updatedBeliefCount,
     memoryStatus: updatedMemoryStatus,
-    memoryReady: updatedMemoryStatus === "complete" && updatedBeliefCount > 0,
+    memoryReady: updatedBeliefCount > 0,
   };
 }
 
@@ -613,6 +789,58 @@ async function getActiveBeliefCount(merchantId: string) {
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
   });
+}
+
+async function hasActiveShopifyConnection({
+  merchantId,
+  shopDomain,
+}: {
+  merchantId: string;
+  shopDomain: string;
+}) {
+  const connector = await prisma.connectorAccount.findFirst({
+    where: {
+      merchantId,
+      connector: "shopify",
+      accountExternalId: shopDomain,
+      status: "active",
+    },
+    select: { id: true },
+  });
+  return Boolean(connector);
+}
+
+async function getStoreMetrics({
+  merchantId,
+  shopId,
+}: {
+  merchantId: string;
+  shopId: string;
+}) {
+  const [orders, products, variants, customers, revenue] = await Promise.all([
+    prisma.order.count({ where: { merchantId, shopId } }),
+    prisma.product.count({ where: { merchantId, shopId } }),
+    prisma.variant.count({ where: { merchantId, shopId } }),
+    prisma.customerIdentity.count({ where: { merchantId, shopId } }),
+    prisma.order.aggregate({
+      where: { merchantId, shopId },
+      _sum: { totalPrice: true },
+      _min: { currency: true },
+    }),
+  ]);
+
+  const revenueValue = revenue._sum.totalPrice
+    ? Number(revenue._sum.totalPrice)
+    : null;
+
+  return {
+    orders,
+    products,
+    variants,
+    customers,
+    revenue: revenueValue && revenueValue > 0 ? revenueValue : null,
+    currency: revenue._min.currency ?? "GBP",
+  };
 }
 
 async function getCompactBeliefSnapshot({
@@ -628,7 +856,11 @@ async function getCompactBeliefSnapshot({
       shopId,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
-    orderBy: [{ category: "asc" }, { key: "asc" }],
+    orderBy: [
+      { lastConfirmedAt: "desc" },
+      { confidence: "desc" },
+      { updatedAt: "desc" },
+    ],
     take: 80,
     select: {
       category: true,
@@ -679,17 +911,24 @@ async function getCompactBeliefSnapshot({
 
 function summarizeBackfill(
   readiness: Awaited<ReturnType<typeof getMerchantMemoryReadiness>>,
+  metrics: Awaited<ReturnType<typeof getStoreMetrics>>,
 ) {
   const progress = readiness.progress;
   const memoryStatus = readiness.memoryStatus;
 
   if (readiness.memoryReady) {
     return {
-      title: "Backfill complete",
-      detail: "Merchant memory is ready to inspect.",
-      statusLabel: "Complete",
-      complete: true,
-      spinning: false,
+      title:
+        progress?.evidenceReady || memoryStatus === "complete"
+          ? "First memory ready"
+          : "First memory ready. Shopify import is still running.",
+      detail:
+        progress?.evidenceReady || memoryStatus === "complete"
+          ? "Jefe has enough context to start the interview."
+          : "You can continue while Jefe keeps learning in the background.",
+      statusLabel: "Ready",
+      complete: progress?.evidenceReady && memoryStatus === "complete",
+      spinning: !(progress?.evidenceReady && memoryStatus === "complete"),
       tone: "success" as const,
     };
   }
@@ -699,7 +938,7 @@ function summarizeBackfill(
     return {
       title: jobLabel(failedJob.jobType),
       detail: failedJob.lastError ?? "The current backfill job failed.",
-      statusLabel: "Needs retry",
+      statusLabel: "Failed",
       complete: false,
       spinning: false,
       tone: "critical" as const,
@@ -713,7 +952,10 @@ function summarizeBackfill(
   if (activeJob) {
     return {
       title: jobLabel(activeJob.jobType),
-      detail: activeJob.status === "running" ? "Running now." : "Queued to run.",
+      detail:
+        activeJob.status === "running"
+          ? "Running now."
+          : "Queued to run. This page will update automatically.",
       statusLabel: activeJob.status === "running" ? "Running" : "Queued",
       complete: false,
       spinning: true,
@@ -723,9 +965,9 @@ function summarizeBackfill(
 
   if (progress?.evidenceReady && memoryStatus !== "complete") {
     return {
-      title: "Building merchant memory",
-      detail: "Shopify backfill is complete. Memory rebuild is running.",
-      statusLabel: memoryStatus === "failed" ? "Needs retry" : "Building",
+      title: "Building Merchant Memory",
+      detail: "Shopify data is ready. Jefe is generating the first belief set.",
+      statusLabel: memoryStatus === "failed" ? "Failed" : "Building",
       complete: false,
       spinning: memoryStatus !== "failed",
       tone:
@@ -735,9 +977,9 @@ function summarizeBackfill(
 
   if (progress) {
     return {
-      title: "Backfilling Shopify data",
-      detail: backfillDetail(progress),
-      statusLabel: "Importing",
+      title: "Reading Shopify data",
+      detail: backfillDetail(progress, metrics),
+      statusLabel: "Learning",
       complete: false,
       spinning: true,
       tone: "attention" as const,
@@ -745,8 +987,8 @@ function summarizeBackfill(
   }
 
   return {
-    title: "Preparing backfill",
-    detail: "Preparing the Shopify import before memory can be built.",
+    title: "Preparing Shopify connection",
+    detail: "Jefe is checking the Shopify connection before starting the import.",
     statusLabel: "Preparing",
     complete: false,
     spinning: true,
@@ -764,14 +1006,21 @@ function hasAnyBackfillState(
 
 function backfillDetail(
   progress: NonNullable<Awaited<ReturnType<typeof getShopBackfillProgress>>>,
+  metrics: Awaited<ReturnType<typeof getStoreMetrics>>,
 ) {
   const parts = [
-    progress.productsComplete ? "products complete" : "products pending",
-    progress.ordersComplete ? "orders complete" : "orders pending",
-    progress.customersComplete ? "customers complete" : "customers pending",
-    progress.inventoryComplete ? "inventory complete" : "inventory pending",
+    progress.productsComplete
+      ? `${formatInteger(metrics.products)} products read`
+      : "products pending",
+    progress.ordersComplete
+      ? `${formatInteger(metrics.orders)} orders read`
+      : "orders pending",
+    progress.customersComplete
+      ? `${formatInteger(metrics.customers)} customers indexed`
+      : "customers pending",
+    progress.inventoryComplete ? "inventory read" : "inventory pending",
   ];
-  return `Waiting for ${parts.join(", ")}.`;
+  return parts.join(", ");
 }
 
 function jobLabel(jobType: string) {
@@ -781,8 +1030,113 @@ function jobLabel(jobType: string) {
   if (jobType === "inventory_backfill") return "Importing inventory";
   if (jobType === "backfill_delta_sync") return "Checking recent changes";
   if (jobType === "backfill_finalize") return "Finalising backfill";
-  if (jobType === "merchant_memory_rebuild") return "Building merchant memory";
-  return "Running backfill";
+  if (jobType === "merchant_memory_rebuild") return "Building Merchant Memory";
+  return "Running Shopify import";
+}
+
+function normalizeOnboardingStep(
+  requested: string | null,
+  memoryReady: boolean,
+): (typeof ONBOARDING_STEPS)[number] {
+  if (!memoryReady) return "connect";
+  if (requested && REMOVED_ONBOARDING_STEPS.has(requested)) return "interview";
+  return requested === "interview" ? "interview" : "connect";
+}
+
+function statusLabel(status: string) {
+  if (status === UI_INTERVIEW_STATUS.inProgress) return "In progress";
+  if (status === UI_INTERVIEW_STATUS.paused) return "Paused";
+  if (status === UI_INTERVIEW_STATUS.completed) return "Complete";
+  if (status === UI_INTERVIEW_STATUS.skipped) return "Skipped";
+  return "Preparing";
+}
+
+function statusTone(status: string) {
+  if (status === UI_INTERVIEW_STATUS.completed) return "success" as const;
+  if (status === UI_INTERVIEW_STATUS.paused) return "attention" as const;
+  if (status === UI_INTERVIEW_STATUS.skipped) return "info" as const;
+  return "info" as const;
+}
+
+function interviewProgressLabel(
+  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>,
+) {
+  const answered = experience.turns.filter((turn) => turn.merchantAnswer).length;
+  const current = answered + (experience.currentTurn ? 1 : 0);
+  if (experience.canComplete) return "Enough context to create the first Merchant Memory";
+  if (current > 0) return `Question ${current} of about 6`;
+  return "A few things to clarify";
+}
+
+function displayStoreName(merchantName: string, shopDomain: string) {
+  const fallback = shopDomain.replace(".myshopify.com", "");
+  return merchantName && merchantName !== shopDomain ? merchantName : fallback;
+}
+
+function useEmbeddedAppNavigate() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  return (updates: Record<string, string | null>) => {
+    navigate(appPathFromSearch(location.search, updates));
+  };
+}
+
+function appPathFromRequest(
+  request: Request,
+  updates: Record<string, string | null>,
+) {
+  return appPathFromSearch(new URL(request.url).search, updates);
+}
+
+function appPathFromSearch(
+  search: string,
+  updates: Record<string, string | null>,
+) {
+  const params = new URLSearchParams(search);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const nextSearch = params.toString();
+  return nextSearch ? `/app?${nextSearch}` : "/app";
+}
+
+function formatInteger(value: number) {
+  return new Intl.NumberFormat("en-GB").format(value);
+}
+
+function formatCurrency(value: number, currency: string) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatBeliefValueForUi(value: unknown) {
+  if (value === null || value === undefined) return "Unknown";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.option === "string") return humanizeStatus(record.option);
+    if (typeof record.boolean === "boolean") return record.boolean ? "Yes" : "No";
+  }
+  return JSON.stringify(value);
+}
+
+function humanizeBeliefKey(key: string) {
+  return key
+    .split(".")
+    .slice(-1)[0]
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function humanizeStatus(status: string) {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export const headers: HeadersFunction = (headersArgs) => {

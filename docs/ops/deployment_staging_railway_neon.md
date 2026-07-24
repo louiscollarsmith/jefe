@@ -83,7 +83,7 @@ SHOPIFY_API_VERSION=2026-07
 SHOPIFY_API_KEY=
 SHOPIFY_API_SECRET=
 SHOPIFY_APP_URL=https://<railway-staging-url>
-SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations
+SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations
 SHOP_CUSTOM_DOMAIN=
 
 DATABASE_URL=
@@ -97,7 +97,7 @@ Notes:
 
 - The app currently reads Shopify scopes from `SCOPES`, not `SHOPIFY_SCOPES`.
 - `SESSION_SECRET` is listed for staging hygiene, but the current app code does not read it yet.
-- The app currently requests read-only evidence scopes for products, orders, extended order history, inventory and locations.
+- The app requests evidence-read scopes plus product, customer, order, inventory and location write scopes for approved Shopify action previews and execution.
 
 ## Shopify app
 

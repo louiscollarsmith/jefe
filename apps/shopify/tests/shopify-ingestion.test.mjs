@@ -371,7 +371,7 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
         state: "test",
         isOnline: false,
         scope:
-          "read_products,read_orders,read_all_orders,read_inventory,read_locations",
+          "read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations",
         accessToken: "test-token",
       },
     });
@@ -381,10 +381,16 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       sessionId,
       scopes: [
         "read_products",
+        "write_products",
         "read_orders",
+        "write_orders",
         "read_all_orders",
+        "read_customers",
+        "write_customers",
         "read_inventory",
+        "write_inventory",
         "read_locations",
+        "write_locations",
       ],
     });
 

@@ -1,0 +1,149 @@
+.JefeOnboardingShell {
+  min-height: 100vh;
+  padding: 28px 20px 64px;
+  background:
+    radial-gradient(circle, rgba(33, 43, 54, 0.08) 1px, transparent 1px),
+    #fbfaf7;
+  background-size: 22px 22px;
+}
+
+.JefeStepper {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  align-items: center;
+}
+
+.JefeStepperItem {
+  background: transparent;
+  border: 0;
+  color: #6d7175;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: none;
+}
+
+.JefeStepperItem:focus-visible,
+.JefeOnboardingShell a:focus-visible,
+.JefeMemoryView a:focus-visible {
+  outline: 2px solid #1f3a63;
+  outline-offset: 3px;
+}
+
+.JefeStepperNumber {
+  align-items: center;
+  border: 1px solid #c9c3ba;
+  border-radius: 999px;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.JefeStepperItem.is-active {
+  color: #1f3a63;
+}
+
+.JefeStepperItem.is-active .JefeStepperNumber,
+.JefeStepperItem.is-complete .JefeStepperNumber {
+  background: #1f3a63;
+  border-color: #1f3a63;
+  color: #fff;
+}
+
+.JefeOnboardingScene {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  margin: 0 auto;
+  max-width: 760px;
+  min-height: calc(100vh - 120px);
+  padding: 72px 0 24px;
+}
+
+.JefeOnboardingScene > * {
+  width: 100%;
+}
+
+.JefeDisplayHeading {
+  color: #1f2933;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0;
+  text-align: center;
+}
+
+.JefeDisplayHeading span {
+  color: #1f3a63;
+  font-style: italic;
+  font-weight: 700;
+}
+
+.JefeMark {
+  align-items: center;
+  background: #1f3a63;
+  border-radius: 10px;
+  color: #f7e1db;
+  display: inline-flex;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  font-weight: 700;
+  height: 54px;
+  justify-content: center;
+  line-height: 1;
+  width: 54px;
+}
+
+.JefeMilestoneIcon {
+  align-items: center;
+  color: #1f3a63;
+  display: inline-flex;
+  font-weight: 700;
+  min-height: 20px;
+  min-width: 20px;
+}
+
+.JefeMilestoneIcon.is-complete {
+  color: #108043;
+}
+
+.JefeMemoryView {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 56px 24px 96px;
+}
+
+@media (max-width: 640px) {
+  .JefeOnboardingShell {
+    padding-inline: 14px;
+  }
+
+  .JefeOnboardingScene {
+    min-height: auto;
+    padding-top: 58px;
+  }
+
+  .JefeDisplayHeading {
+    font-size: 28px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

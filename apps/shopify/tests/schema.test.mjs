@@ -42,10 +42,16 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
         accountExternalId: shop.shopDomain,
         scopes: [
           "read_products",
+          "write_products",
           "read_orders",
+          "write_orders",
           "read_all_orders",
+          "read_customers",
+          "write_customers",
           "read_inventory",
+          "write_inventory",
           "read_locations",
+          "write_locations",
         ],
         readTokenRef: `shopify_session:${suffix}`,
         authMetadata: { tokenStorage: "shopify_session_storage" },
@@ -284,10 +290,16 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
     assert.equal(readShop.connectorAccounts[0].connector, "shopify");
     assert.deepEqual(readShop.connectorAccounts[0].scopes, [
       "read_products",
+      "write_products",
       "read_orders",
+      "write_orders",
       "read_all_orders",
+      "read_customers",
+      "write_customers",
       "read_inventory",
+      "write_inventory",
       "read_locations",
+      "write_locations",
     ]);
     assert.equal(readShop.ledgerEvents[0].id, ledgerEvent.id);
     assert.equal(readShop.products[0].id, product.id);

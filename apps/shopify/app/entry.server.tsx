@@ -5,6 +5,7 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { getShopifyStandaloneDocumentResponse } from "./services/shopify-document-response.server";
 
 export const streamTimeout = 5000;
 
@@ -15,6 +16,13 @@ export default async function handleRequest(
   reactRouterContext: EntryContext
 ) {
   addDocumentResponseHeaders(request, responseHeaders);
+  const standaloneShopifyResponse = getShopifyStandaloneDocumentResponse({
+    responseStatusCode,
+    responseHeaders,
+    reactRouterContext,
+  });
+  if (standaloneShopifyResponse) return standaloneShopifyResponse;
+
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? '')
     ? "onAllReady"
