@@ -10,6 +10,10 @@
 
 ### Changed
 
+- Updated synthetic Shopify seeding so rerunning the deterministic `seed` command reloads the existing run manifest, maps already-created Shopify records and reports estimated remaining work before continuing.
+- Updated synthetic Shopify resume checks so invalid local manifest mappings for products, variants and inventory items are refreshed from Shopify instead of reusing IDs that Shopify reports as missing during inventory stocking.
+- Updated synthetic Shopify inventory quantity batches so Shopify "inventory item could not be found" errors recover the affected source inventory levels and retry the batch with current inventory item IDs.
+- Updated synthetic Shopify product resume recovery so Shopify handle conflicts reported as "already in use" are resolved by searching for and mapping the existing product, or by creating with a deterministic recovered handle when Shopify has reserved a deleted product handle.
 - Updated the Connect loading state so merchants see Shopify reading progress for SKUs, orders and first-memory work, with labelled metric skeletons instead of anonymous placeholder tiles.
 - Updated Connect to reveal Shopify reading milestones one at a time and poll route data while first memory is still being built.
 - Updated Connect metric tiles to fill with zero values once the matching Shopify import has completed.
@@ -29,6 +33,8 @@
 
 ### Fixed
 
+- Fixed synthetic Shopify inventory resume so deleted inventory item IDs are detected before quantity writes, affected products are rebuilt under deterministic recovery handles, and every queued level for a recovered product is refreshed before bounded retries.
+- Fixed synthetic Shopify seeding so resumed product variant imports map variants already present in Shopify before creating missing variants, and corrected generated duplicate previous-vintage options and quality-edge order totals before long live runs.
 - Fixed the remaining embedded onboarding hydration failure by loading Jefe's route styles from a stylesheet instead of hydration-sensitive inline style text, so Connect and Interview keep their Polaris layout on first load and refresh.
 - Fixed embedded Shopify onboarding loads so App Bridge session bootstrap and empty Shopify auth responses are served without React hydration, preventing the large warning screen and hydration mismatch overlay from replacing Jefe onboarding.
 - Fixed embedded app failure states so genuine route errors render as a readable Polaris error page instead of raw Shopify boundary output or an oversized warning icon.

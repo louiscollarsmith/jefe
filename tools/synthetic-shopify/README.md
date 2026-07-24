@@ -51,7 +51,7 @@ Live writes refuse to run unless all of these are true:
 - `--shop` is listed in `SYNTHETIC_SHOPIFY_ALLOWED_SHOPS`
 - `SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN` is present, or the tool can read a local offline Shopify session from the app database
 - Destination inspection succeeds
-- The destination has no meaningful orders or customers, unless `--allow-nonempty-store` is passed for a disposable synthetic store
+- Existing synthetic records are mapped back into the run manifest before new writes continue. `--allow-nonempty-store` is still reserved for disposable stores when unrelated data may be present.
 
 All generated records use reserved synthetic identities such as `synthetic.customer.0001@example.com`. Phone numbers are omitted.
 

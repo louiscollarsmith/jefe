@@ -41,8 +41,7 @@ export async function inspectDestination({ shopDomain, accessToken }) {
       return {
         ...inspection,
         customersCount: null,
-        customerInspectionUnavailable:
-          "Missing read_customers scope; customersCount inspection skipped.",
+        customerInspectionUnavailable: "Missing read_customers scope; customersCount inspection skipped.",
       };
     }
     throw error;
@@ -54,26 +53,20 @@ export async function ensureEmptyOrAllowed({ shopDomain, accessToken, allowNonem
   const meaningfulProducts = inspection.productsCount?.count || 0;
   const meaningfulOrders = inspection.ordersCount?.count || 0;
   const meaningfulCustomers = inspection.customersCount?.count || 0;
-  if (
-    !allowNonemptyStore &&
-    (meaningfulProducts > 0 || meaningfulOrders > 0 || meaningfulCustomers > 0)
-  ) {
-    throw new Error(
-      `Refusing to seed non-empty store: found ${meaningfulProducts} products, ${meaningfulOrders} orders and ${meaningfulCustomers} customers. Pass --allow-nonempty-store only for disposable synthetic stores.`,
-    );
+  if (!allowNonemptyStore && (meaningfulProducts > 0 || meaningfulOrders > 0 || meaningfulCustomers > 0)) {
+    return {
+      ...inspection,
+      nonemptyResumeNotice: `Found ${meaningfulProducts} products, ${meaningfulOrders} orders and ${meaningfulCustomers} customers. Seed will try to resume by mapping existing synthetic records before writing missing records.`,
+    };
   }
   return inspection;
 }
 
-export async function importDatasetToShopify({
-  dataset,
-  manifest,
-  dryRun = false,
-  allowNonemptyStore = false,
-  credentialSource = "db",
-  logger = console,
-}) {
-  const safe = assertWriteSafety({ shopDomain: manifest.shopDomain, allowNonemptyStore });
+export async function importDatasetToShopify({ dataset, manifest, dryRun = false, allowNonemptyStore = false, credentialSource = "db", logger = console }) {
+  const safe = assertWriteSafety({
+    shopDomain: manifest.shopDomain,
+    allowNonemptyStore,
+  });
   const { accessToken, source } = await resolveShopifyAccessToken({
     shopDomain: safe.shopDomain,
     source: credentialSource,
@@ -108,42 +101,515 @@ export async function importDatasetToShopify({
   if (dryRun) return { dryRun: true, manifest, inspection };
 
   const client = createClient({ shopDomain: safe.shopDomain, accessToken });
-  await importProducts(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importCollections(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importVariants(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importLocations(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importInventory(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importCustomers(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importOrders(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await importRefunds(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
+  await hydrateExistingSyntheticMappings(client, dataset, manifest, inspection, logger, () => persistRun({ dataset, manifest }));
+  await importProducts(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importCollections(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importVariants(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importLocations(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importInventory(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importCustomers(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importOrders(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await importRefunds(client, dataset, manifest, () => persistRun({ dataset, manifest }));
   resolveCompletedFailures(manifest);
-  await validateShopifyCounts(client, dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await writeCommercialReconciliation(dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
-  await writeBeliefCoverage(dataset, manifest, () =>
-    persistRun({ dataset, manifest }),
-  );
+  await validateShopifyCounts(client, dataset, manifest, () => persistRun({ dataset, manifest }));
+  await writeCommercialReconciliation(dataset, manifest, () => persistRun({ dataset, manifest }));
+  await writeBeliefCoverage(dataset, manifest, () => persistRun({ dataset, manifest }));
   persistRun({ dataset, manifest });
   return { dryRun: false, manifest };
+}
+
+export async function hydrateExistingSyntheticMappings(client, dataset, manifest, inspection, logger, persist) {
+  const before = estimateImportProgress(dataset, manifest);
+  await removeStaleProductMappings(client, dataset, manifest, logger, persist);
+  await hydrateExistingProducts(client, dataset, manifest, persist);
+  await hydrateExistingCollections(client, dataset, manifest, persist);
+  if ((inspection.customersCount?.count || 0) > 0) {
+    await hydrateExistingCustomers(client, dataset, manifest, logger, persist);
+  }
+  if ((inspection.ordersCount?.count || 0) > 0) {
+    await hydrateExistingOrders(client, dataset, manifest, persist);
+  }
+  const after = estimateImportProgress(dataset, manifest);
+  manifest.resumeProgress = {
+    estimatedAt: new Date().toISOString(),
+    before,
+    after,
+    existingCounts: {
+      products: inspection.productsCount?.count ?? null,
+      customers: inspection.customersCount?.count ?? null,
+      orders: inspection.ordersCount?.count ?? null,
+    },
+    notice: inspection.nonemptyResumeNotice || null,
+  };
+  persist();
+  if (inspection.nonemptyResumeNotice || after.percentComplete > before.percentComplete) {
+    logger.info("Synthetic Shopify resume progress", manifest.resumeProgress);
+  }
+}
+
+async function removeStaleProductMappings(client, dataset, manifest, logger, persist) {
+  for (const product of dataset.products) {
+    const productId = manifest.sourceToShopifyIds.products[product.sourceId];
+    if (!productId) continue;
+    const data = await client.request(PRODUCT_RESUME_STATE_QUERY, {
+      productId,
+    });
+    if (!data.product?.id) {
+      clearProductMappings(manifest, product);
+      logger.warn("Synthetic Shopify resume dropped stale product mapping because Shopify no longer returns the product.", {
+        productSourceId: product.sourceId,
+        productId,
+      });
+      persist();
+      continue;
+    }
+    mapExistingProductVariants({
+      manifest,
+      product,
+      shopifyVariants: data.product.variants?.nodes || [],
+    });
+    persist();
+  }
+}
+
+async function hydrateExistingProducts(client, dataset, manifest, persist) {
+  for (const product of dataset.products) {
+    if (manifest.sourceToShopifyIds.products[product.sourceId]) continue;
+    const shopifyProduct =
+      (await findExistingProductByHandle(client, product.handle)) ||
+      (await findExistingProductByHandle(client, recoveredProductHandle(manifest, product))) ||
+      (manifest.inventoryRecoveryHandles?.[product.sourceId]
+        ? await findExistingProductByHandle(client, manifest.inventoryRecoveryHandles[product.sourceId])
+        : null);
+    if (!shopifyProduct?.id) continue;
+    recordMapping(manifest, "products", product.sourceId, shopifyProduct.id);
+    mapExistingProductVariants({
+      manifest,
+      product,
+      shopifyVariants: shopifyProduct.variants?.nodes || [],
+    });
+    persist();
+  }
+}
+
+async function hydrateExistingCollections(client, dataset, manifest, persist) {
+  for (const collection of dataset.collections) {
+    if (manifest.sourceToShopifyIds.collections[collection.sourceId]) continue;
+    const data = await client.request(COLLECTION_BY_HANDLE_QUERY, {
+      handle: collection.handle,
+    });
+    const shopifyCollection = data.collectionByHandle;
+    if (!shopifyCollection?.id || shopifyCollection.handle !== collection.handle) continue;
+    recordMapping(manifest, "collections", collection.sourceId, shopifyCollection.id);
+    persist();
+  }
+}
+
+async function hydrateExistingCustomers(client, dataset, manifest, logger, persist) {
+  try {
+    for (const customer of dataset.customers) {
+      if (manifest.sourceToShopifyIds.customers[customer.sourceId]) continue;
+      const data = await client.request(CUSTOMER_BY_EMAIL_QUERY, {
+        query: `email:${customer.email}`,
+      });
+      const shopifyCustomer = (data.customers?.nodes || []).find((candidate) => sameEmail(candidate.email, customer.email));
+      if (!shopifyCustomer?.id) continue;
+      recordMapping(manifest, "customers", customer.sourceId, shopifyCustomer.id);
+      persist();
+    }
+  } catch (error) {
+    if (hasAccessDenied(error, "customers")) {
+      logger.warn("Synthetic Shopify customer resume mapping skipped because read_customers is unavailable.");
+      return;
+    }
+    throw error;
+  }
+}
+
+async function hydrateExistingOrders(client, dataset, manifest, persist) {
+  for (const order of dataset.orders) {
+    if (manifest.sourceToShopifyIds.orders[order.sourceId]) continue;
+    const data = await client.request(ORDER_BY_NAME_QUERY, {
+      query: `name:${escapeSearchValue(order.name)}`,
+    });
+    const shopifyOrder = (data.orders?.nodes || []).find((candidate) => candidate.name === order.name);
+    if (!shopifyOrder?.id) continue;
+    recordExistingOrderMapping(manifest, order, shopifyOrder);
+    persist();
+  }
+}
+
+async function mapExistingProductAfterCreateFailure(client, manifest, product, error) {
+  if (!isAlreadyExistsError(error)) return false;
+  const shopifyProduct = await findExistingProductByHandle(client, product.handle);
+  if (!shopifyProduct?.id) return false;
+  recordMapping(manifest, "products", product.sourceId, shopifyProduct.id);
+  mapExistingProductVariants({
+    manifest,
+    product,
+    shopifyVariants: shopifyProduct.variants?.nodes || [],
+  });
+  return true;
+}
+
+export async function createProductWithRecoveredHandle(client, manifest, product, error) {
+  if (!isProductHandleConflictError(error)) return false;
+  const handle = recoveredProductHandle(manifest, product);
+  await createOrMapProductWithHandle(client, manifest, product, handle);
+  manifest.recoveredProductHandles = {
+    ...(manifest.recoveredProductHandles || {}),
+    [product.sourceId]: handle,
+  };
+  return true;
+}
+
+async function createOrMapProductWithHandle(client, manifest, product, handle) {
+  const existing = await findExistingProductByHandle(client, handle);
+  if (existing?.id) {
+    recordMapping(manifest, "products", product.sourceId, existing.id);
+    mapExistingProductVariants({
+      manifest,
+      product,
+      shopifyVariants: existing.variants?.nodes || [],
+    });
+    return;
+  }
+  const data = await client.request(PRODUCT_CREATE, {
+    product: productCreateInput(product, handle),
+  });
+  assertUserErrors("productCreate", product.sourceId, data.productCreate?.userErrors);
+  recordMapping(manifest, "products", product.sourceId, data.productCreate.product.id);
+}
+
+function recoveredProductHandle(manifest, product) {
+  if (manifest.recoveredProductHandles?.[product.sourceId]) {
+    return manifest.recoveredProductHandles[product.sourceId];
+  }
+  return `${product.handle}-${String(manifest.runId || "resume").replace(/^synth_/, "").slice(0, 8)}`;
+}
+
+async function findExistingProductByHandle(client, handle) {
+  const direct = await client.request(PRODUCT_BY_HANDLE_QUERY, {
+    handle,
+  });
+  if (direct.productByHandle?.id && direct.productByHandle.handle === handle) {
+    return direct.productByHandle;
+  }
+  const search = await client.request(PRODUCT_BY_HANDLE_SEARCH_QUERY, {
+    query: `handle:${escapeSearchToken(handle)}`,
+  });
+  return (search.products?.nodes || []).find((product) => product.handle === handle) || null;
+}
+
+async function mapExistingCollectionAfterCreateFailure(client, manifest, collection, error) {
+  if (!isAlreadyExistsError(error)) return false;
+  const data = await client.request(COLLECTION_BY_HANDLE_QUERY, {
+    handle: collection.handle,
+  });
+  const shopifyCollection = data.collectionByHandle;
+  if (!shopifyCollection?.id || shopifyCollection.handle !== collection.handle) return false;
+  recordMapping(manifest, "collections", collection.sourceId, shopifyCollection.id);
+  return true;
+}
+
+async function mapExistingCustomerAfterCreateFailure(client, manifest, customer, error) {
+  if (!isAlreadyExistsError(error)) return false;
+  const data = await client.request(CUSTOMER_BY_EMAIL_QUERY, {
+    query: `email:${customer.email}`,
+  });
+  const shopifyCustomer = (data.customers?.nodes || []).find((candidate) => sameEmail(candidate.email, customer.email));
+  if (!shopifyCustomer?.id) return false;
+  recordMapping(manifest, "customers", customer.sourceId, shopifyCustomer.id);
+  return true;
+}
+
+function recordExistingOrderMapping(manifest, order, shopifyOrder) {
+  recordMapping(manifest, "orders", order.sourceId, shopifyOrder.id);
+  for (const [index, line] of order.lineItems.entries()) {
+    const createdLine = shopifyOrder.lineItems?.nodes?.[index];
+    if (createdLine?.id) {
+      recordMapping(manifest, "lineItems", line.sourceId, createdLine.id);
+    }
+  }
+  const transaction = shopifyOrder.transactions?.[0];
+  if (transaction?.id) {
+    recordMapping(manifest, "transactions", order.sourceId, transaction.id);
+  }
+}
+
+function clearProductMappings(manifest, product) {
+  delete manifest.sourceToShopifyIds.products[product.sourceId];
+  for (const variant of product.variants) {
+    clearVariantMapping(manifest, variant);
+  }
+}
+
+function clearVariantMapping(manifest, variant) {
+  const variantId = manifest.sourceToShopifyIds.variants[variant.sourceId];
+  const inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[`ii_${variant.sourceId}`];
+  delete manifest.sourceToShopifyIds.variants[variant.sourceId];
+  delete manifest.sourceToShopifyIds.inventoryItems[`ii_${variant.sourceId}`];
+  clearInventoryActivationsForIds(manifest, [variantId, inventoryItemId].filter(Boolean));
+}
+
+function clearInventoryActivationsForIds(manifest, ids) {
+  if (!manifest.sourceToShopifyIds.inventoryActivations || !ids.length) return;
+  for (const activationKey of Object.keys(manifest.sourceToShopifyIds.inventoryActivations)) {
+    if (ids.some((id) => activationKey.includes(id))) {
+      delete manifest.sourceToShopifyIds.inventoryActivations[activationKey];
+    }
+  }
+}
+
+async function ensureInventoryActivation(client, dataset, manifest, level, inventoryItemId, locationId, persist, allowRecovery = true) {
+  const activationKey = `${inventoryItemId}:${locationId}`;
+  if (!manifest.sourceToShopifyIds.inventoryActivations) {
+    manifest.sourceToShopifyIds.inventoryActivations = {};
+  }
+  if (manifest.sourceToShopifyIds.inventoryActivations[activationKey]) {
+    return inventoryItemId;
+  }
+  const activated = await client.request(INVENTORY_ACTIVATE, {
+    inventoryItemId,
+    locationId,
+    available: level.available,
+    idempotencyKey: ["synthetic-shopify", manifest.runId, level.sourceId, gidTail(inventoryItemId), gidTail(locationId)].join(":"),
+  });
+  try {
+    assertUserErrors("inventoryActivate", level.sourceId, activated.inventoryActivate?.userErrors);
+  } catch (error) {
+    if (!allowRecovery || (!isDeletedProductInventoryError(error) && !isMissingInventoryItemError(error))) throw error;
+    const recoveredInventoryItemId = await recoverProductWithValidInventory(client, dataset, manifest, level, persist);
+    return ensureInventoryActivation(client, dataset, manifest, level, recoveredInventoryItemId, locationId, persist, false);
+  }
+  manifest.sourceToShopifyIds.inventoryActivations[activationKey] = activationKey;
+  persist();
+  return inventoryItemId;
+}
+
+async function recoverInventoryQuantityBatch(client, dataset, manifest, quantityEntries, batch, staleIndexes, persist) {
+  const recoveredProducts = new Map();
+  for (const index of staleIndexes) {
+    const entry = batch[index];
+    if (!entry) continue;
+    const product = sourceProductForInventoryLevel(dataset, entry.level);
+    if (!product) {
+      throw new Error(`Could not find source product for stale inventory mapping ${entry.level.inventoryItemSourceId}`);
+    }
+    if (!recoveredProducts.has(product.sourceId)) {
+      recoveredProducts.set(product.sourceId, product);
+      await recoverProductWithValidInventory(client, dataset, manifest, entry.level, persist);
+    }
+  }
+
+  for (const product of recoveredProducts.values()) {
+    await refreshInventoryQuantityEntriesForProduct({
+      client,
+      dataset,
+      manifest,
+      quantityEntries,
+      product,
+      persist,
+    });
+  }
+}
+
+export async function refreshInventoryQuantityEntriesForProduct({ client, dataset, manifest, quantityEntries, product, persist }) {
+  for (const entry of quantityEntries) {
+    const entryProduct = sourceProductForInventoryLevel(dataset, entry.level);
+    if (entryProduct?.sourceId !== product.sourceId) continue;
+    const locationId = manifest.sourceToShopifyIds.locations[entry.level.locationSourceId];
+    if (!locationId) {
+      throw new Error(`Missing location mapping while recovering ${entry.level.sourceId}`);
+    }
+    const inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[entry.level.inventoryItemSourceId];
+    if (!inventoryItemId) {
+      throw new Error(`Could not recover Shopify inventory item for ${entry.level.inventoryItemSourceId}`);
+    }
+    const activatedInventoryItemId = await ensureInventoryActivation(client, dataset, manifest, entry.level, inventoryItemId, locationId, persist);
+    entry.quantity.inventoryItemId = activatedInventoryItemId;
+    entry.quantity.locationId = locationId;
+    persist();
+  }
+}
+
+export function staleInventoryQuantityIndexes(userErrors) {
+  return [
+    ...new Set(
+      (userErrors || [])
+        .filter(
+          (error) =>
+            error?.code === "INVALID_INVENTORY_ITEM" ||
+            /inventory item could not be found/i.test(String(error?.message || "")),
+        )
+        .map((error) => {
+          const quantitiesIndex = error?.field?.findIndex((field) => field === "quantities");
+          const index = quantitiesIndex >= 0 ? Number(error.field[quantitiesIndex + 1]) : NaN;
+          return Number.isInteger(index) ? index : null;
+        })
+        .filter((index) => index !== null),
+    ),
+  ];
+}
+
+function inventorySetQuantitiesIdempotencyKey(manifest, batchIndex, batch) {
+  return [
+    "synthetic-shopify",
+    manifest.runId,
+    "set-quantities",
+    batchIndex,
+    batch.length,
+    gidTail(batch[0]?.quantity?.inventoryItemId),
+    gidTail(batch.at(-1)?.quantity?.inventoryItemId),
+  ].join(":");
+}
+
+async function recoverProductWithValidInventory(client, dataset, manifest, level, persist) {
+  const product = sourceProductForInventoryLevel(dataset, level);
+  if (!product) {
+    throw new Error(`Could not find source product for stale inventory mapping ${level.inventoryItemSourceId}`);
+  }
+
+  const currentRecoveryHandle = manifest.inventoryRecoveryHandles?.[product.sourceId];
+  if (currentRecoveryHandle) {
+    await rebuildProductAtHandle(client, dataset, manifest, product, currentRecoveryHandle, persist);
+    if (!(await missingInventoryItemIds(client, inventoryItemIdsForProduct(dataset, manifest, product))).length) {
+      return inventoryItemIdForLevel(manifest, level);
+    }
+  }
+
+  for (let offset = 1; offset <= 3; offset += 1) {
+    const attempt = Number(manifest.inventoryRecoveryAttempts?.[product.sourceId] || 0) + 1;
+    const handle = inventoryRecoveryProductHandle(manifest, product, attempt);
+    manifest.inventoryRecoveryAttempts = {
+      ...(manifest.inventoryRecoveryAttempts || {}),
+      [product.sourceId]: attempt,
+    };
+    manifest.inventoryRecoveryHandles = {
+      ...(manifest.inventoryRecoveryHandles || {}),
+      [product.sourceId]: handle,
+    };
+    persist();
+    await rebuildProductAtHandle(client, dataset, manifest, product, handle, persist);
+    if (!(await missingInventoryItemIds(client, inventoryItemIdsForProduct(dataset, manifest, product))).length) {
+      return inventoryItemIdForLevel(manifest, level);
+    }
+  }
+
+  throw new Error(`Shopify returned missing inventory items for ${product.sourceId} after three deterministic recovery attempts.`);
+}
+
+async function rebuildProductAtHandle(client, dataset, manifest, product, handle, persist) {
+  clearProductMappings(manifest, product);
+  persist();
+  await createOrMapProductWithHandle(client, manifest, product, handle);
+  persist();
+  const productDataset = {
+    ...dataset,
+    products: [product],
+  };
+  await importVariants(client, productDataset, manifest, persist);
+  await importCollections(
+    client,
+    {
+      ...dataset,
+      collections: dataset.collections.filter((collection) => collection.productSourceIds.includes(product.sourceId)),
+    },
+    manifest,
+    persist,
+  );
+}
+
+function inventoryRecoveryProductHandle(manifest, product, attempt) {
+  const runId = String(manifest.runId || "resume")
+    .replace(/^synth_/, "")
+    .slice(0, 8);
+  return `${product.handle}-${runId}-stock-${attempt}`;
+}
+
+function inventoryItemIdsForProduct(dataset, manifest, product) {
+  const productVariantSourceIds = new Set(product.variants.map((variant) => variant.sourceId));
+  return [
+    ...new Set(
+      dataset.inventoryLevels
+        .filter((level) => productVariantSourceIds.has(level.inventoryItemSourceId.replace(/^ii_/, "")))
+        .map((level) => manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId])
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function inventoryItemIdForLevel(manifest, level) {
+  const inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId];
+  if (!inventoryItemId) {
+    throw new Error(`Could not recover Shopify inventory item for ${level.inventoryItemSourceId}`);
+  }
+  return inventoryItemId;
+}
+
+export async function missingInventoryItemIds(client, inventoryItemIds) {
+  const expectedIds = [...new Set(inventoryItemIds.filter(Boolean))];
+  const existingIds = new Set();
+  for (const ids of chunk(expectedIds, 100)) {
+    const data = await client.request(INVENTORY_ITEMS_BY_IDS_QUERY, { ids });
+    for (const node of data.nodes || []) {
+      if (node?.id) existingIds.add(node.id);
+    }
+  }
+  return expectedIds.filter((id) => !existingIds.has(id));
+}
+
+async function repairMissingInventoryMappings(client, dataset, manifest, persist) {
+  const inventoryItemIds = dataset.inventoryLevels
+    .map((level) => manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId])
+    .filter(Boolean);
+  const missingIds = new Set(await missingInventoryItemIds(client, inventoryItemIds));
+  if (!missingIds.size) return;
+
+  const recoveredProducts = new Set();
+  for (const level of dataset.inventoryLevels) {
+    const inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId];
+    if (!missingIds.has(inventoryItemId)) continue;
+    const product = sourceProductForInventoryLevel(dataset, level);
+    if (!product || recoveredProducts.has(product.sourceId)) continue;
+    recoveredProducts.add(product.sourceId);
+    await recoverProductWithValidInventory(client, dataset, manifest, level, persist);
+  }
+}
+
+function sourceProductForInventoryLevel(dataset, level) {
+  const variantSourceId = level.inventoryItemSourceId.replace(/^ii_/, "");
+  return dataset.products.find((candidate) => candidate.variants.some((variant) => variant.sourceId === variantSourceId));
+}
+
+export function estimateImportProgress(dataset, manifest) {
+  const planned = {
+    products: dataset.products.length,
+    variants: dataset.products.flatMap((product) => product.variants).length,
+    collections: dataset.collections.length,
+    locations: dataset.inventoryLocations.length,
+    customers: dataset.customers.length,
+    orders: dataset.orders.length,
+    refunds: dataset.refunds.length,
+  };
+  const mapped = {
+    products: Object.keys(manifest.sourceToShopifyIds.products).length,
+    variants: Object.keys(manifest.sourceToShopifyIds.variants).length,
+    collections: Object.keys(manifest.sourceToShopifyIds.collections).length,
+    locations: Object.keys(manifest.sourceToShopifyIds.locations).length,
+    customers: Object.keys(manifest.sourceToShopifyIds.customers).length,
+    orders: Object.keys(manifest.sourceToShopifyIds.orders).length,
+    refunds: Object.keys(manifest.sourceToShopifyIds.refunds).length,
+  };
+  const remaining = Object.fromEntries(Object.entries(planned).map(([key, count]) => [key, Math.max(0, count - (mapped[key] || 0))]));
+  const totalPlanned = Object.values(planned).reduce((sum, count) => sum + count, 0);
+  const totalMapped = Object.values(mapped).reduce((sum, count) => sum + count, 0);
+  return {
+    planned,
+    mapped,
+    remaining,
+    percentComplete: totalPlanned > 0 ? Math.round((Math.min(totalMapped, totalPlanned) / totalPlanned) * 1000) / 10 : 100,
+  };
 }
 
 function createClient({ shopDomain, accessToken }) {
@@ -160,32 +626,22 @@ async function importProducts(client, dataset, manifest, persist) {
     if (manifest.sourceToShopifyIds.products[product.sourceId]) continue;
     try {
       const data = await client.request(PRODUCT_CREATE, {
-        product: {
-          title: product.title,
-          handle: product.handle,
-          descriptionHtml: product.descriptionHtml,
-          vendor: product.vendor,
-          productType: product.productType,
-          status: product.status,
-          tags: product.tags,
-          productOptions: [
-            {
-              name: "Format",
-              position: 1,
-              values: unique(product.variants.map((variant) => variant.optionValue))
-                .map((name) => ({ name })),
-            },
-          ],
-        },
+        product: productCreateInput(product),
       });
-      assertUserErrors(
-        "productCreate",
-        product.sourceId,
-        data.productCreate?.userErrors,
-      );
+      assertUserErrors("productCreate", product.sourceId, data.productCreate?.userErrors);
       recordMapping(manifest, "products", product.sourceId, data.productCreate.product.id);
       persist();
     } catch (error) {
+      const mapped = await mapExistingProductAfterCreateFailure(client, manifest, product, error);
+      if (mapped) {
+        persist();
+        continue;
+      }
+      const recovered = await createProductWithRecoveredHandle(client, manifest, product, error);
+      if (recovered) {
+        persist();
+        continue;
+      }
       recordFailure(manifest, "product", product.sourceId, error, true);
       persist();
       throw error;
@@ -193,6 +649,25 @@ async function importProducts(client, dataset, manifest, persist) {
   }
   markPhase(manifest, "create_products", "completed", Object.keys(manifest.sourceToShopifyIds.products).length);
   persist();
+}
+
+function productCreateInput(product, handle = product.handle) {
+  return {
+    title: product.title,
+    handle,
+    descriptionHtml: product.descriptionHtml,
+    vendor: product.vendor,
+    productType: product.productType,
+    status: product.status,
+    tags: product.tags,
+    productOptions: [
+      {
+        name: "Format",
+        position: 1,
+        values: unique(product.variants.map((variant) => variant.optionValue)).map((name) => ({ name })),
+      },
+    ],
+  };
 }
 
 async function importCollections(client, dataset, manifest, persist) {
@@ -207,19 +682,15 @@ async function importCollections(client, dataset, manifest, persist) {
           descriptionHtml: `<p>Synthetic ${collection.title} collection for Jefe testing.</p>`,
         },
       });
-      assertUserErrors(
-        "collectionCreate",
-        collection.sourceId,
-        data.collectionCreate?.userErrors,
-      );
-      recordMapping(
-        manifest,
-        "collections",
-        collection.sourceId,
-        data.collectionCreate.collection.id,
-      );
+      assertUserErrors("collectionCreate", collection.sourceId, data.collectionCreate?.userErrors);
+      recordMapping(manifest, "collections", collection.sourceId, data.collectionCreate.collection.id);
       persist();
     } catch (error) {
+      const mapped = await mapExistingCollectionAfterCreateFailure(client, manifest, collection, error);
+      if (mapped) {
+        persist();
+        continue;
+      }
       recordFailure(manifest, "collection", collection.sourceId, error, true);
       persist();
       throw error;
@@ -228,9 +699,7 @@ async function importCollections(client, dataset, manifest, persist) {
 
   for (const collection of dataset.collections) {
     const collectionId = manifest.sourceToShopifyIds.collections[collection.sourceId];
-    const productIds = collection.productSourceIds
-      .map((sourceId) => manifest.sourceToShopifyIds.products[sourceId])
-      .filter(Boolean);
+    const productIds = collection.productSourceIds.map((sourceId) => manifest.sourceToShopifyIds.products[sourceId]).filter(Boolean);
     for (const productId of productIds) {
       const data = await client.request(PRODUCT_UPDATE_COLLECTIONS, {
         product: {
@@ -238,20 +707,11 @@ async function importCollections(client, dataset, manifest, persist) {
           collectionsToJoin: [collectionId],
         },
       });
-      assertUserErrors(
-        "productUpdate.collectionsToJoin",
-        `${collection.sourceId}:${productId}`,
-        data.productUpdate?.userErrors,
-      );
+      assertUserErrors("productUpdate.collectionsToJoin", `${collection.sourceId}:${productId}`, data.productUpdate?.userErrors);
     }
     persist();
   }
-  markPhase(
-    manifest,
-    "create_collections",
-    "completed",
-    Object.keys(manifest.sourceToShopifyIds.collections).length,
-  );
+  markPhase(manifest, "create_collections", "completed", Object.keys(manifest.sourceToShopifyIds.collections).length);
   persist();
 }
 
@@ -260,16 +720,25 @@ async function importVariants(client, dataset, manifest, persist) {
   for (const product of dataset.products) {
     const productId = manifest.sourceToShopifyIds.products[product.sourceId];
     if (!productId) throw new Error(`Missing Shopify product ID for ${product.sourceId}`);
-    const missingVariants = product.variants.filter(
-      (variant) => !manifest.sourceToShopifyIds.variants[variant.sourceId],
-    );
-    if (!missingVariants.length) continue;
 
     try {
+      const existing = await client.request(PRODUCT_VARIANTS_QUERY, {
+        productId,
+      });
+      mapExistingProductVariants({
+        manifest,
+        product,
+        shopifyVariants: existing.product?.variants?.nodes || [],
+      });
+      persist();
+
+      const missingVariants = product.variants.filter((variant) => !manifest.sourceToShopifyIds.variants[variant.sourceId]);
+      if (!missingVariants.length) continue;
+
       const data = await client.request(PRODUCT_VARIANTS_BULK_CREATE, {
         productId,
         strategy: "REMOVE_STANDALONE_VARIANT",
-        variants: product.variants.map((variant) => ({
+        variants: missingVariants.map((variant) => ({
           barcode: variant.barcode,
           compareAtPrice: variant.compareAtPrice == null ? null : String(variant.compareAtPrice),
           inventoryItem: {
@@ -288,32 +757,14 @@ async function importVariants(client, dataset, manifest, persist) {
           taxable: Boolean(variant.taxable),
         })),
       });
-      assertUserErrors(
-        "productVariantsBulkCreate",
-        product.sourceId,
-        data.productVariantsBulkCreate?.userErrors,
-      );
+      assertUserErrors("productVariantsBulkCreate", product.sourceId, data.productVariantsBulkCreate?.userErrors);
       const returned = data.productVariantsBulkCreate?.productVariants || [];
-      for (const variant of product.variants) {
-        const match =
-          returned.find((item) => item.sku && item.sku === variant.sku) ||
-          returned.find((item) =>
-            item.selectedOptions?.some(
-              (option) => option.value === variant.optionValue,
-            ),
-          );
+      for (const variant of missingVariants) {
+        const match = findShopifyVariantMatch(returned, variant);
         if (!match) {
           throw new Error(`Could not map Shopify variant for ${variant.sourceId}`);
         }
-        recordMapping(manifest, "variants", variant.sourceId, match.id);
-        if (match.inventoryItem?.id) {
-          recordMapping(
-            manifest,
-            "inventoryItems",
-            `ii_${variant.sourceId}`,
-            match.inventoryItem.id,
-          );
-        }
+        recordVariantMapping(manifest, variant, match);
       }
       persist();
     } catch (error) {
@@ -322,31 +773,47 @@ async function importVariants(client, dataset, manifest, persist) {
       throw error;
     }
   }
-  markPhase(
-    manifest,
-    "create_variants",
-    "completed",
-    Object.keys(manifest.sourceToShopifyIds.variants).length,
-  );
+  markPhase(manifest, "create_variants", "completed", Object.keys(manifest.sourceToShopifyIds.variants).length);
   persist();
+}
+
+export function mapExistingProductVariants({ manifest, product, shopifyVariants }) {
+  for (const variant of product.variants) {
+    const match = findShopifyVariantMatch(shopifyVariants, variant);
+    if (match) {
+      recordVariantMapping(manifest, variant, match);
+    } else {
+      clearVariantMapping(manifest, variant);
+    }
+  }
+}
+
+function findShopifyVariantMatch(shopifyVariants, variant) {
+  return shopifyVariants.find((item) => item.sku && variant.sku && item.sku === variant.sku) || shopifyVariants.find((item) => item.selectedOptions?.some((option) => option.value === variant.optionValue));
+}
+
+function recordVariantMapping(manifest, variant, shopifyVariant) {
+  const previousVariantId = manifest.sourceToShopifyIds.variants[variant.sourceId];
+  const previousInventoryItemId = manifest.sourceToShopifyIds.inventoryItems[`ii_${variant.sourceId}`];
+  recordMapping(manifest, "variants", variant.sourceId, shopifyVariant.id);
+  if (shopifyVariant.inventoryItem?.id) {
+    recordMapping(manifest, "inventoryItems", `ii_${variant.sourceId}`, shopifyVariant.inventoryItem.id);
+  }
+  clearInventoryActivationsForIds(
+    manifest,
+    [previousVariantId, previousInventoryItemId].filter((id) => id && id !== shopifyVariant.id && id !== shopifyVariant.inventoryItem?.id),
+  );
 }
 
 async function importLocations(client, dataset, manifest, persist) {
   markPhase(manifest, "create_locations", "running", 0);
   const existing = await client.request(LOCATIONS_QUERY);
-  const existingByName = new Map(
-    (existing.locations?.nodes || []).map((location) => [location.name, location.id]),
-  );
+  const existingByName = new Map((existing.locations?.nodes || []).map((location) => [location.name, location.id]));
 
   for (const location of dataset.inventoryLocations) {
     if (manifest.sourceToShopifyIds.locations[location.sourceId]) continue;
     if (existingByName.has(location.name)) {
-      recordMapping(
-        manifest,
-        "locations",
-        location.sourceId,
-        existingByName.get(location.name),
-      );
+      recordMapping(manifest, "locations", location.sourceId, existingByName.get(location.name));
       persist();
       continue;
     }
@@ -355,19 +822,20 @@ async function importLocations(client, dataset, manifest, persist) {
         input: {
           name: location.name,
           fulfillsOnlineOrders: location.name === "London Warehouse",
-          address: location.name === "London Warehouse"
-            ? {
-                address1: "1 Synthetic Warehouse Yard",
-                city: "London",
-                zip: "E1 1AA",
-                countryCode: "GB",
-              }
-            : {
-                address1: "2 Synthetic Sampling Mews",
-                city: "London",
-                zip: "E2 2BB",
-                countryCode: "GB",
-              },
+          address:
+            location.name === "London Warehouse"
+              ? {
+                  address1: "1 Synthetic Warehouse Yard",
+                  city: "London",
+                  zip: "E1 1AA",
+                  countryCode: "GB",
+                }
+              : {
+                  address1: "2 Synthetic Sampling Mews",
+                  city: "London",
+                  zip: "E2 2BB",
+                  countryCode: "GB",
+                },
         },
       });
       assertUserErrors("locationAdd", location.sourceId, data.locationAdd?.userErrors);
@@ -379,84 +847,55 @@ async function importLocations(client, dataset, manifest, persist) {
       throw error;
     }
   }
-  markPhase(
-    manifest,
-    "create_locations",
-    "completed",
-    Object.keys(manifest.sourceToShopifyIds.locations).length,
-  );
+  markPhase(manifest, "create_locations", "completed", Object.keys(manifest.sourceToShopifyIds.locations).length);
   persist();
 }
 
 async function importInventory(client, dataset, manifest, persist) {
   markPhase(manifest, "set_inventory", "running", 0);
-  const quantities = [];
+  await repairMissingInventoryMappings(client, dataset, manifest, persist);
+  const quantityEntries = [];
   for (const level of dataset.inventoryLevels) {
-    const inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId];
+    let inventoryItemId = manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId];
     const locationId = manifest.sourceToShopifyIds.locations[level.locationSourceId];
     if (!inventoryItemId || !locationId) {
       throw new Error(`Missing inventory mapping for ${level.sourceId}`);
     }
-    const activationKey = `${inventoryItemId}:${locationId}`;
-    if (!manifest.sourceToShopifyIds.inventoryActivations) {
-      manifest.sourceToShopifyIds.inventoryActivations = {};
-    }
-    if (!manifest.sourceToShopifyIds.inventoryActivations[activationKey]) {
-      const activated = await client.request(INVENTORY_ACTIVATE, {
+    inventoryItemId = await ensureInventoryActivation(client, dataset, manifest, level, inventoryItemId, locationId, persist);
+    quantityEntries.push({
+      level,
+      quantity: {
         inventoryItemId,
         locationId,
-        available: level.available,
-        idempotencyKey: [
-          "synthetic-shopify",
-          manifest.runId,
-          level.sourceId,
-          gidTail(inventoryItemId),
-          gidTail(locationId),
-        ].join(":"),
-      });
-      assertUserErrors(
-        "inventoryActivate",
-        level.sourceId,
-        activated.inventoryActivate?.userErrors,
-      );
-      manifest.sourceToShopifyIds.inventoryActivations[activationKey] = activationKey;
-      persist();
-    }
-    quantities.push({
-      inventoryItemId,
-      locationId,
-      quantity: level.available,
-      changeFromQuantity: level.available,
+        quantity: level.available,
+        changeFromQuantity: level.available,
+      },
     });
   }
 
-  for (const [batchIndex, batch] of chunk(quantities, 100).entries()) {
-    const data = await client.request(INVENTORY_SET_QUANTITIES, {
-      input: {
-        name: "available",
-        reason: "correction",
-        referenceDocumentUri: `jefe://synthetic-shopify/${manifest.runId}`,
-        quantities: batch,
-      },
-      idempotencyKey: [
-        "synthetic-shopify",
-        manifest.runId,
-        "set-quantities",
-        batchIndex,
-        batch.length,
-        gidTail(batch[0]?.inventoryItemId),
-        gidTail(batch.at(-1)?.inventoryItemId),
-      ].join(":"),
-    });
-    assertUserErrors(
-      "inventorySetQuantities",
-      manifest.runId,
-      data.inventorySetQuantities?.userErrors,
-    );
+  for (const [batchIndex, batch] of chunk(quantityEntries, 100).entries()) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const data = await client.request(INVENTORY_SET_QUANTITIES, {
+        input: {
+          name: "available",
+          reason: "correction",
+          referenceDocumentUri: `jefe://synthetic-shopify/${manifest.runId}`,
+          quantities: batch.map((entry) => entry.quantity),
+        },
+        idempotencyKey: inventorySetQuantitiesIdempotencyKey(manifest, `${batchIndex}:${attempt}`, batch),
+      });
+      const userErrors = data.inventorySetQuantities?.userErrors || [];
+      if (!userErrors.length) break;
+      const staleIndexes = staleInventoryQuantityIndexes(userErrors);
+      if (!staleIndexes.length || attempt === 2) {
+        assertUserErrors("inventorySetQuantities", manifest.runId, userErrors);
+      }
+      await recoverInventoryQuantityBatch(client, dataset, manifest, quantityEntries, batch, staleIndexes, persist);
+    }
     persist();
   }
 
-  markPhase(manifest, "set_inventory", "completed", quantities.length);
+  markPhase(manifest, "set_inventory", "completed", quantityEntries.length);
   persist();
 }
 
@@ -474,14 +913,15 @@ async function importCustomers(client, dataset, manifest, persist) {
           addresses: [customer.defaultAddress],
         },
       });
-      assertUserErrors(
-        "customerCreate",
-        customer.sourceId,
-        data.customerCreate?.userErrors,
-      );
+      assertUserErrors("customerCreate", customer.sourceId, data.customerCreate?.userErrors);
       recordMapping(manifest, "customers", customer.sourceId, data.customerCreate.customer.id);
       persist();
     } catch (error) {
+      const mapped = await mapExistingCustomerAfterCreateFailure(client, manifest, customer, error);
+      if (mapped) {
+        persist();
+        continue;
+      }
       recordFailure(manifest, "customer", customer.sourceId, error, true);
       persist();
       throw error;
@@ -534,12 +974,7 @@ async function importOrders(client, dataset, manifest, persist) {
       throw error;
     }
   }
-  markPhase(
-    manifest,
-    "create_orders",
-    "completed",
-    Object.keys(manifest.sourceToShopifyIds.orders).length,
-  );
+  markPhase(manifest, "create_orders", "completed", Object.keys(manifest.sourceToShopifyIds.orders).length);
   persist();
 }
 
@@ -557,15 +992,15 @@ async function importRefunds(client, dataset, manifest, persist) {
         note: refund.note,
         notify: false,
         processedAt: refund.processedAt,
-        refundLineItems: refund.refundLineItems.map((item) => ({
-          lineItemId: manifest.sourceToShopifyIds.lineItems[item.orderLineItemSourceId],
-          quantity: item.quantity,
-          restockType: item.restockType,
-          locationId: item.restockType === "NO_RESTOCK" ? null : mainLocationId,
-        })).filter((item) => item.lineItemId),
-        shipping: refund.shippingRefund
-          ? { amount: String(refund.shippingRefund.amount) }
-          : null,
+        refundLineItems: refund.refundLineItems
+          .map((item) => ({
+            lineItemId: manifest.sourceToShopifyIds.lineItems[item.orderLineItemSourceId],
+            quantity: item.quantity,
+            restockType: item.restockType,
+            locationId: item.restockType === "NO_RESTOCK" ? null : mainLocationId,
+          }))
+          .filter((item) => item.lineItemId),
+        shipping: refund.shippingRefund ? { amount: String(refund.shippingRefund.amount) } : null,
         transactions: refund.transactions.map((transaction) => ({
           orderId,
           parentId: manifest.sourceToShopifyIds.transactions[refund.orderSourceId] || null,
@@ -576,12 +1011,7 @@ async function importRefunds(client, dataset, manifest, persist) {
       };
       const data = await client.request(REFUND_CREATE, {
         input,
-        idempotencyKey: [
-          "synthetic-shopify",
-          manifest.runId,
-          refund.sourceId,
-          gidTail(orderId),
-        ].join(":"),
+        idempotencyKey: ["synthetic-shopify", manifest.runId, refund.sourceId, gidTail(orderId)].join(":"),
       });
       assertUserErrors("refundCreate", refund.sourceId, data.refundCreate?.userErrors);
       recordMapping(manifest, "refunds", refund.sourceId, data.refundCreate.refund.id);
@@ -592,12 +1022,7 @@ async function importRefunds(client, dataset, manifest, persist) {
       throw error;
     }
   }
-  markPhase(
-    manifest,
-    "create_refunds",
-    "completed",
-    Object.keys(manifest.sourceToShopifyIds.refunds).length,
-  );
+  markPhase(manifest, "create_refunds", "completed", Object.keys(manifest.sourceToShopifyIds.refunds).length);
   persist();
 }
 
@@ -661,8 +1086,7 @@ async function inspectDestinationWithClient(client) {
       return {
         ...inspection,
         customersCount: null,
-        customerInspectionUnavailable:
-          "Missing read_customers scope; customersCount inspection skipped.",
+        customerInspectionUnavailable: "Missing read_customers scope; customersCount inspection skipped.",
       };
     }
     throw error;
@@ -694,9 +1118,7 @@ async function writeBeliefCoverage(dataset, manifest, persist) {
 
 function buildOrderInput(order, dataset, manifest, mainLocationId) {
   const products = new Map(dataset.products.map((product) => [product.sourceId, product]));
-  const customerId = order.customerSourceId
-    ? manifest.sourceToShopifyIds.customers[order.customerSourceId]
-    : null;
+  const customerId = order.customerSourceId ? manifest.sourceToShopifyIds.customers[order.customerSourceId] : null;
   const input = {
     name: order.name,
     email: order.email,
@@ -705,12 +1127,8 @@ function buildOrderInput(order, dataset, manifest, mainLocationId) {
     processedAt: order.processedAt,
     financialStatus: order.financialStatus,
     lineItems: order.lineItems.map((line) => ({
-      productId: line.productSourceId
-        ? manifest.sourceToShopifyIds.products[line.productSourceId]
-        : null,
-      variantId: line.variantSourceId
-        ? manifest.sourceToShopifyIds.variants[line.variantSourceId]
-        : null,
+      productId: line.productSourceId ? manifest.sourceToShopifyIds.products[line.productSourceId] : null,
+      variantId: line.variantSourceId ? manifest.sourceToShopifyIds.variants[line.variantSourceId] : null,
       quantity: line.quantity,
       sku: line.sku || null,
       title: line.title,
@@ -819,6 +1237,40 @@ function gidTail(id) {
   return String(id).split("/").pop();
 }
 
+function sameEmail(left, right) {
+  return String(left || "").toLowerCase() === String(right || "").toLowerCase();
+}
+
+function escapeSearchValue(value) {
+  return `"${String(value).replace(/["\\]/g, "\\$&")}"`;
+}
+
+function escapeSearchToken(value) {
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+export function isAlreadyExistsError(error) {
+  if (!(error instanceof ShopifyMutationUserError)) return false;
+  return error.userErrors.some((entry) =>
+    /(already exists|already been taken|has already been taken|already in use|in use|taken)/i.test(String(entry?.message || "")),
+  );
+}
+
+function isDeletedProductInventoryError(error) {
+  if (!(error instanceof ShopifyMutationUserError)) return false;
+  return error.operationName === "inventoryActivate" && error.userErrors.some((entry) => /product was deleted/i.test(String(entry?.message || "")));
+}
+
+function isMissingInventoryItemError(error) {
+  if (!(error instanceof ShopifyMutationUserError)) return false;
+  return error.userErrors.some((entry) => /inventory item could not be found/i.test(String(entry?.message || "")));
+}
+
+function isProductHandleConflictError(error) {
+  if (!(error instanceof ShopifyMutationUserError)) return false;
+  return error.operationName === "productCreate" && error.userErrors.some((entry) => entry?.field?.includes("handle") && /in use|taken|exists/i.test(String(entry?.message || "")));
+}
+
 function assertUserErrors(operationName, sourceId, errors) {
   if (Array.isArray(errors) && errors.length) {
     throw new ShopifyMutationUserError(operationName, sourceId, errors);
@@ -854,16 +1306,7 @@ function resolveCompletedFailures(manifest) {
   }
 }
 
-async function requestMutationWithUserErrorRetry({
-  client,
-  query,
-  variables,
-  dataPath,
-  operationName,
-  sourceId,
-  maxAttempts,
-  initialDelayMs,
-}) {
+async function requestMutationWithUserErrorRetry({ client, query, variables, dataPath, operationName, sourceId, maxAttempts, initialDelayMs }) {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const data = await client.request(query, variables);
     const userErrors = data[dataPath]?.userErrors || [];
@@ -877,8 +1320,13 @@ async function requestMutationWithUserErrorRetry({
 }
 
 function isRetriableUserErrors(errors) {
-  return Array.isArray(errors) && errors.some((error) =>
-    String(error?.message || "").toLowerCase().includes("too many attempts"),
+  return (
+    Array.isArray(errors) &&
+    errors.some((error) =>
+      String(error?.message || "")
+        .toLowerCase()
+        .includes("too many attempts"),
+    )
   );
 }
 
@@ -900,13 +1348,7 @@ function sleep(ms) {
 }
 
 function hasAccessDenied(error, fieldName) {
-  return Array.isArray(error?.errors)
-    ? error.errors.some(
-        (item) =>
-          item?.extensions?.code === "ACCESS_DENIED" &&
-          item?.path?.includes(fieldName),
-      )
-    : false;
+  return Array.isArray(error?.errors) ? error.errors.some((item) => item?.extensions?.code === "ACCESS_DENIED" && item?.path?.includes(fieldName)) : false;
 }
 
 async function withAuthContext(operation, context) {
@@ -914,9 +1356,7 @@ async function withAuthContext(operation, context) {
     return await operation();
   } catch (error) {
     if (error?.status === 401) {
-      throw new Error(
-        `Shopify rejected the stored access token for ${context.shopDomain} with HTTP 401. Credential source was ${context.credentialSource}. Reopen/reinstall the local Shopify app for this shop to refresh the offline session, or pass --credential-source env with SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN.`,
-      );
+      throw new Error(`Shopify rejected the stored access token for ${context.shopDomain} with HTTP 401. Credential source was ${context.credentialSource}. Reopen/reinstall the local Shopify app for this shop to refresh the offline session, or pass --credential-source env with SYNTHETIC_SHOPIFY_ADMIN_ACCESS_TOKEN.`);
     }
     throw error;
   }
@@ -926,6 +1366,52 @@ const PRODUCT_CREATE = `mutation SyntheticProductCreate($product: ProductCreateI
   productCreate(product: $product) {
     product { id }
     userErrors { field message }
+  }
+}`;
+
+const PRODUCT_BY_HANDLE_QUERY = `query SyntheticProductByHandle($handle: String!) {
+  productByHandle(handle: $handle) {
+    id
+    handle
+    variants(first: 100) {
+      nodes {
+        id
+        sku
+        selectedOptions { name value }
+        inventoryItem { id tracked }
+      }
+    }
+  }
+}`;
+
+const PRODUCT_BY_HANDLE_SEARCH_QUERY = `query SyntheticProductByHandleSearch($query: String!) {
+  products(first: 5, query: $query) {
+    nodes {
+      id
+      handle
+      variants(first: 100) {
+        nodes {
+          id
+          sku
+          selectedOptions { name value }
+          inventoryItem { id tracked }
+        }
+      }
+    }
+  }
+}`;
+
+const PRODUCT_RESUME_STATE_QUERY = `query SyntheticProductResumeState($productId: ID!) {
+  product(id: $productId) {
+    id
+    variants(first: 100) {
+      nodes {
+        id
+        sku
+        selectedOptions { name value }
+        inventoryItem { id tracked }
+      }
+    }
   }
 }`;
 
@@ -950,10 +1436,30 @@ const PRODUCT_VARIANTS_BULK_CREATE = `mutation SyntheticProductVariantsBulkCreat
   }
 }`;
 
+const PRODUCT_VARIANTS_QUERY = `query SyntheticProductVariants($productId: ID!) {
+  product(id: $productId) {
+    variants(first: 100) {
+      nodes {
+        id
+        sku
+        selectedOptions { name value }
+        inventoryItem { id tracked }
+      }
+    }
+  }
+}`;
+
 const COLLECTION_CREATE = `mutation SyntheticCollectionCreate($collection: CollectionCreateInput!) {
   collectionCreate(collection: $collection) {
     collection { id }
     userErrors { field message }
+  }
+}`;
+
+const COLLECTION_BY_HANDLE_QUERY = `query SyntheticCollectionByHandle($handle: String!) {
+  collectionByHandle(handle: $handle) {
+    id
+    handle
   }
 }`;
 
@@ -993,13 +1499,21 @@ const INVENTORY_ACTIVATE = `mutation SyntheticInventoryActivate(
   }
 }`;
 
+const INVENTORY_ITEMS_BY_IDS_QUERY = `query SyntheticInventoryItemsByIds($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on InventoryItem {
+      id
+    }
+  }
+}`;
+
 const INVENTORY_SET_QUANTITIES = `mutation SyntheticInventorySetQuantities(
   $input: InventorySetQuantitiesInput!
   $idempotencyKey: String!
 ) {
   inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
     inventoryAdjustmentGroup { id }
-    userErrors { field message }
+    userErrors { code field message }
   }
 }`;
 
@@ -1032,5 +1546,31 @@ const CUSTOMER_CREATE = `mutation SyntheticCustomerCreate($input: CustomerInput!
   customerCreate(input: $input) {
     customer { id }
     userErrors { field message }
+  }
+}`;
+
+const CUSTOMER_BY_EMAIL_QUERY = `query SyntheticCustomerByEmail($query: String!) {
+  customers(first: 1, query: $query) {
+    nodes {
+      id
+      email
+    }
+  }
+}`;
+
+const ORDER_BY_NAME_QUERY = `query SyntheticOrderByName($query: String!) {
+  orders(first: 1, query: $query) {
+    nodes {
+      id
+      name
+      lineItems(first: 100) {
+        nodes { id sku quantity title variant { id } }
+      }
+      transactions(first: 20) {
+        id
+        kind
+        status
+      }
+    }
   }
 }`;

@@ -8,17 +8,45 @@ const BRAND = "Elsewhere Wine Co.";
 const CURRENCY = "GBP";
 
 const REGIONS = [
-  { area: "Greater London", weight: 42, postcodes: ["E5", "N16", "SE15", "E17", "SW9", "NW6", "Walthamstow E17"] },
-  { area: "South East England", weight: 12, postcodes: ["Brighton BN1", "Lewes BN7", "Canterbury CT1"] },
-  { area: "South West England", weight: 8, postcodes: ["Bristol BS6", "Bath BA1", "Totnes TQ9"] },
-  { area: "North West England", weight: 8, postcodes: ["Manchester M20", "Liverpool L17", "Chorlton M21"] },
-  { area: "West Midlands", weight: 7, postcodes: ["Birmingham B13", "Leamington Spa CV32"] },
-  { area: "East of England", weight: 6, postcodes: ["Norwich NR2", "Cambridge CB4"] },
+  {
+    area: "Greater London",
+    weight: 42,
+    postcodes: ["E5", "N16", "SE15", "E17", "SW9", "NW6", "Walthamstow E17"],
+  },
+  {
+    area: "South East England",
+    weight: 12,
+    postcodes: ["Brighton BN1", "Lewes BN7", "Canterbury CT1"],
+  },
+  {
+    area: "South West England",
+    weight: 8,
+    postcodes: ["Bristol BS6", "Bath BA1", "Totnes TQ9"],
+  },
+  {
+    area: "North West England",
+    weight: 8,
+    postcodes: ["Manchester M20", "Liverpool L17", "Chorlton M21"],
+  },
+  {
+    area: "West Midlands",
+    weight: 7,
+    postcodes: ["Birmingham B13", "Leamington Spa CV32"],
+  },
+  {
+    area: "East of England",
+    weight: 6,
+    postcodes: ["Norwich NR2", "Cambridge CB4"],
+  },
   { area: "Yorkshire", weight: 5, postcodes: ["Leeds LS6", "York YO30"] },
   { area: "Scotland", weight: 4, postcodes: ["Glasgow G12", "Edinburgh EH6"] },
   { area: "Wales", weight: 3, postcodes: ["Cardiff CF24", "Swansea SA1"] },
   { area: "Northern Ireland", weight: 2, postcodes: ["Belfast BT9"] },
-  { area: "Elsewhere UK", weight: 3, postcodes: ["Newcastle NE2", "Nottingham NG7", "Oxford OX4"] },
+  {
+    area: "Elsewhere UK",
+    weight: 3,
+    postcodes: ["Newcastle NE2", "Nottingham NG7", "Oxford OX4"],
+  },
 ];
 
 const FIRST_NAMES = ["Ada", "Maya", "Rory", "Sam", "Leah", "Nina", "Iris", "Theo", "Jude", "Imani", "Eli", "Mina", "Arlo", "Zara", "Kit", "Noah", "Tess", "Milo", "Asha", "Finn"];
@@ -71,7 +99,13 @@ export function generateSyntheticShopifyDataset(input = {}) {
   if (Number.isNaN(asOf.getTime())) throw new Error(`Invalid --as-of timestamp: ${input.asOf}`);
   const randomSeed = Number(input.seed ?? 1042026);
   const rng = new SeededRandom(`${randomSeed}:${profile.name}:${scenario}:${asOf.toISOString()}`);
-  const runId = createRunId({ randomSeed, profile: profile.name, scenario, asOf: asOf.toISOString(), shopDomain: input.shopDomain || "unbound" });
+  const runId = createRunId({
+    randomSeed,
+    profile: profile.name,
+    scenario,
+    asOf: asOf.toISOString(),
+    shopDomain: input.shopDomain || "unbound",
+  });
 
   const products = buildProducts(profile, rng, scenario);
   const variants = products.flatMap((product) => product.variants);
@@ -80,8 +114,16 @@ export function generateSyntheticShopifyDataset(input = {}) {
   const orders = buildOrders(profile, rng, asOf, products, customers, scenario);
   const refunds = buildRefunds(profile, rng, asOf, orders);
   const inventoryLocations = [
-    { sourceId: "loc_london_warehouse", name: "London Warehouse", tags: syntheticTags(runId, profile.name, scenario) },
-    { sourceId: "loc_events_sampling", name: "Events & Sampling", tags: syntheticTags(runId, profile.name, scenario) },
+    {
+      sourceId: "loc_london_warehouse",
+      name: "London Warehouse",
+      tags: syntheticTags(runId, profile.name, scenario),
+    },
+    {
+      sourceId: "loc_events_sampling",
+      name: "Events & Sampling",
+      tags: syntheticTags(runId, profile.name, scenario),
+    },
   ];
   const inventoryLevels = buildInventory(profile, rng, variants, inventoryLocations, scenario, asOf);
 
@@ -108,7 +150,14 @@ export function generateSyntheticShopifyDataset(input = {}) {
     inventoryLocations,
     inventoryLevels,
     capabilityReport: "apps/shopify/scripts/synthetic-shopify/capability-report.md",
-    metrics: summarizeDataset({ products, variants, customers, orders, refunds, inventoryLevels }),
+    metrics: summarizeDataset({
+      products,
+      variants,
+      customers,
+      orders,
+      refunds,
+      inventoryLevels,
+    }),
   };
 }
 
@@ -124,7 +173,14 @@ function buildProducts(profile, rng, scenario) {
     const variants = Array.from({ length: variantCount }, (_, variantIndex) => {
       const caseVariant = variantIndex === 1;
       const variantPrice = caseVariant ? money(Number(price) * 6 * rng.float(0.88, 0.93)) : Number(price);
-      const sku = skuFor({ category: String(category), country: String(country), vintage: Number(vintage), index, isBundle, caseVariant });
+      const sku = skuFor({
+        category: String(category),
+        country: String(country),
+        vintage: Number(vintage),
+        index,
+        isBundle,
+        caseVariant,
+      });
       return {
         sourceId: `var_${String(index + 1).padStart(3, "0")}_${variantIndex + 1}`,
         productSourceId: sourceId,
@@ -158,7 +214,16 @@ function buildProducts(profile, rng, scenario) {
       vintage,
       grape,
       tags: [...syntheticTags("source", profile.name, scenario), String(category), String(country), `scenario:${scenario}`],
-      descriptionHtml: productDescription({ category: String(category), country: String(country), region: String(region), producer: String(producer), title: String(title), grape: String(grape), vintage: Number(vintage), rng }),
+      descriptionHtml: productDescription({
+        category: String(category),
+        country: String(country),
+        region: String(region),
+        producer: String(producer),
+        title: String(title),
+        grape: String(grape),
+        vintage: Number(vintage),
+        rng,
+      }),
       sourceCreatedAt: daysAgoIso(rng.int(45, profile.historyDays - 20), new Date("2026-07-23T12:00:00Z")),
       variants,
       demandRole: index < 3 ? "hero" : index === DECLINING_HERO_INDEX ? "former_hero" : index === LAUNCH_PRODUCT_INDEX ? "recent_launch" : index === NO_RECENT_SALES_INDEX ? "dormant" : isBundle ? "bundle" : index > 20 ? "long_tail" : "core",
@@ -167,7 +232,7 @@ function buildProducts(profile, rng, scenario) {
 
   const activeVariants = products.filter((product) => product.status === "ACTIVE").flatMap((product) => product.variants);
   while (activeVariants.length < profile.activeVariants) {
-    const product = products.find((candidate) => candidate.status === "ACTIVE" && candidate.category !== "bundle" && candidate.variants.length < 3);
+    const product = products.find((candidate) => candidate.status === "ACTIVE" && candidate.category !== "bundle" && candidate.variants.length < 3 && !candidate.variants.some((variant) => variant.optionValue === "Previous vintage"));
     if (!product) break;
     const first = product.variants[0];
     product.variants.push({
@@ -255,49 +320,55 @@ function buildOrders(profile, rng, asOf, products, customers, scenario) {
     const count = customerOrderCounts[customerIndex] || 0;
     const customerDates = Array.from({ length: count }, () => datedOrders[dateIndex++] || randomOrderDate(rng, asOf, profile.historyDays)).sort();
     for (const placedAt of customerDates) {
-      orders.push(buildOrder({
-        sourceId: `ord_${String(orderNumber).padStart(5, "0")}`,
-        orderNumber: orderNumber++,
-        customer,
-        placedAt,
-        rng,
-        products: activeProducts,
-        asOf,
-        isGuest: false,
-        isTest: false,
-        scenario,
-      }));
+      orders.push(
+        buildOrder({
+          sourceId: `ord_${String(orderNumber).padStart(5, "0")}`,
+          orderNumber: orderNumber++,
+          customer,
+          placedAt,
+          rng,
+          products: activeProducts,
+          asOf,
+          isGuest: false,
+          isTest: false,
+          scenario,
+        }),
+      );
     }
   });
 
   for (let index = 0; index < profile.guestOrders; index += 1) {
-    orders.push(buildOrder({
-      sourceId: `ord_${String(orderNumber).padStart(5, "0")}`,
-      orderNumber: orderNumber++,
-      customer: null,
-      placedAt: datedOrders[dateIndex++] || randomOrderDate(rng, asOf, profile.historyDays),
-      rng,
-      products: activeProducts,
-      asOf,
-      isGuest: true,
-      isTest: false,
-      scenario,
-    }));
+    orders.push(
+      buildOrder({
+        sourceId: `ord_${String(orderNumber).padStart(5, "0")}`,
+        orderNumber: orderNumber++,
+        customer: null,
+        placedAt: datedOrders[dateIndex++] || randomOrderDate(rng, asOf, profile.historyDays),
+        rng,
+        products: activeProducts,
+        asOf,
+        isGuest: true,
+        isTest: false,
+        scenario,
+      }),
+    );
   }
 
   for (let index = 0; index < profile.testOrders; index += 1) {
-    orders.push(buildOrder({
-      sourceId: `test_${String(index + 1).padStart(3, "0")}`,
-      orderNumber: orderNumber++,
-      customer: rng.pick(customers),
-      placedAt: datedOrders[dateIndex++] || daysAgoIso(rng.int(1, 120), asOf),
-      rng,
-      products: activeProducts,
-      asOf,
-      isGuest: false,
-      isTest: true,
-      scenario,
-    }));
+    orders.push(
+      buildOrder({
+        sourceId: `test_${String(index + 1).padStart(3, "0")}`,
+        orderNumber: orderNumber++,
+        customer: rng.pick(customers),
+        placedAt: datedOrders[dateIndex++] || daysAgoIso(rng.int(1, 120), asOf),
+        rng,
+        products: activeProducts,
+        asOf,
+        isGuest: false,
+        isTest: true,
+        scenario,
+      }),
+    );
   }
 
   // Clearly marked goodwill or replacement orders that should not be hidden behind test-order filters.
@@ -311,8 +382,22 @@ function buildOrders(profile, rng, asOf, products, customers, scenario) {
       order.totalTax = 0;
       order.totalPrice = 0;
       order.financialStatus = "PAID";
-      order.lineItems = order.lineItems.map((line) => ({ ...line, unitPrice: 0, totalPrice: 0, discount: 0 }));
-      order.transactions = [{ kind: "SALE", status: "SUCCESS", gateway: "manual", amount: 0, currency: CURRENCY, processedAt: order.processedAt }];
+      order.lineItems = order.lineItems.map((line) => ({
+        ...line,
+        unitPrice: 0,
+        totalPrice: 0,
+        discount: 0,
+      }));
+      order.transactions = [
+        {
+          kind: "SALE",
+          status: "SUCCESS",
+          gateway: "manual",
+          amount: 0,
+          currency: CURRENCY,
+          processedAt: order.processedAt,
+        },
+      ];
     }
   }
 
@@ -333,9 +418,7 @@ function buildOrder({ sourceId, orderNumber, customer, placedAt, rng, products, 
   let subtotal = money(basket.reduce((sum, line) => sum + line.quantity * line.variant.price, 0));
   const discountCode = chooseDiscount({ customer, rng, date, subtotal });
   const totalDiscount = discountCode ? discountAmount(discountCode, subtotal) : 0;
-  const shipping = discountCode === "SHIPFREE" ? 0 : shippingForMerchandise(money(subtotal - totalDiscount));
   const totalTax = 0;
-  const totalPrice = money(subtotal - totalDiscount + shipping + totalTax);
   const cancelled = !isTest && dayAge > 7 && rng.chance(0.028);
   const recent = dayAge < 4;
   const fulfilled = !cancelled && !recent && rng.chance(0.91);
@@ -351,7 +434,7 @@ function buildOrder({ sourceId, orderNumber, customer, placedAt, rng, products, 
     quantity: line.quantity,
     unitPrice: line.variant.price,
     totalPrice: money(line.quantity * line.variant.price),
-    discount: totalDiscount ? money((line.quantity * line.variant.price / subtotal) * totalDiscount) : 0,
+    discount: totalDiscount ? money(((line.quantity * line.variant.price) / subtotal) * totalDiscount) : 0,
   }));
 
   if (scenario === "quality_edge_cases" && rng.chance(0.018)) {
@@ -370,11 +453,14 @@ function buildOrder({ sourceId, orderNumber, customer, placedAt, rng, products, 
     subtotal = money(subtotal + 3);
   }
 
+  const shipping = discountCode === "SHIPFREE" ? 0 : shippingForMerchandise(money(subtotal - totalDiscount));
+  const totalPrice = money(subtotal - totalDiscount + shipping + totalTax);
+
   return {
     sourceId,
     name: `#EWC${orderNumber}`,
-    customerSourceId: isGuest ? null : customer?.sourceId ?? null,
-    email: isGuest ? `synthetic.guest.${sourceId}@example.com` : customer?.email ?? null,
+    customerSourceId: isGuest ? null : (customer?.sourceId ?? null),
+    email: isGuest ? `synthetic.guest.${sourceId}@example.com` : (customer?.email ?? null),
     currency: scenario === "quality_edge_cases" && rng.chance(0.03) ? "EUR" : CURRENCY,
     processedAt: date.toISOString(),
     sourceCreatedAt: date.toISOString(),
@@ -391,8 +477,24 @@ function buildOrder({ sourceId, orderNumber, customer, placedAt, rng, products, 
     totalTax,
     totalPrice,
     lineItems,
-    transactions: financialStatus === "PAID" ? [{ kind: "SALE", status: "SUCCESS", gateway: "manual", amount: totalPrice, currency: CURRENCY, processedAt: date.toISOString() }] : [],
-    shippingLine: { title: "Standard UK Delivery", price: shipping, code: shipping === 0 ? "FREE_OVER_60" : "UK_STANDARD_1_3_DAY" },
+    transactions:
+      financialStatus === "PAID"
+        ? [
+            {
+              kind: "SALE",
+              status: "SUCCESS",
+              gateway: "manual",
+              amount: totalPrice,
+              currency: CURRENCY,
+              processedAt: date.toISOString(),
+            },
+          ]
+        : [],
+    shippingLine: {
+      title: "Standard UK Delivery",
+      price: shipping,
+      code: shipping === 0 ? "FREE_OVER_60" : "UK_STANDARD_1_3_DAY",
+    },
     billingAddress: customer?.defaultAddress ?? null,
     shippingAddress: customer?.defaultAddress ?? null,
   };
@@ -409,7 +511,11 @@ function buildBasket(products, rng, date) {
     const bundle = weightedProduct(bundleProducts, rng, date);
     lines.push({ product: bundle, variant: bundle.variants[0], quantity: 1 });
     if (rng.chance(0.22)) {
-      const extra = weightedProduct(products.filter((product) => product.category !== "bundle"), rng, date);
+      const extra = weightedProduct(
+        products.filter((product) => product.category !== "bundle"),
+        rng,
+        date,
+      );
       lines.push({ product: extra, variant: extra.variants[0], quantity: 1 });
     }
     return lines;
@@ -417,7 +523,11 @@ function buildBasket(products, rng, date) {
 
   let remaining = bottleQuantity;
   while (remaining > 0) {
-    const product = weightedProduct(products.filter((candidate) => candidate.category !== "bundle"), rng, date);
+    const product = weightedProduct(
+      products.filter((candidate) => candidate.category !== "bundle"),
+      rng,
+      date,
+    );
     const variant = rng.chance(0.08) ? product.variants[product.variants.length - 1] : product.variants[0];
     const existing = lines.find((line) => line.variant.sourceId === variant.sourceId);
     const quantity = Math.min(remaining, rng.chance(0.72) ? 1 : rng.int(1, remaining));
@@ -426,8 +536,16 @@ function buildBasket(products, rng, date) {
     remaining -= quantity;
 
     if (product.category === "orange" && rng.chance(0.42) && remaining > 0) {
-      const partner = weightedProduct(products.filter((candidate) => ["orange", "chilled_red"].includes(candidate.category)), rng, date);
-      lines.push({ product: partner, variant: partner.variants[0], quantity: 1 });
+      const partner = weightedProduct(
+        products.filter((candidate) => ["orange", "chilled_red"].includes(candidate.category)),
+        rng,
+        date,
+      );
+      lines.push({
+        product: partner,
+        variant: partner.variants[0],
+        quantity: 1,
+      });
       remaining -= 1;
     }
   }
@@ -437,17 +555,19 @@ function buildBasket(products, rng, date) {
 function weightedProduct(products, rng, date) {
   const month = date.getUTCMonth() + 1;
   const ageDaysFromLaunch = Math.floor((date.getTime() - Date.UTC(2026, 4, 1)) / 86_400_000);
-  return rng.weighted(products.map((product, index) => {
-    let weight = product.demandRole === "hero" ? 12 : product.demandRole === "former_hero" ? 10 : product.demandRole === "bundle" ? 5 : product.demandRole === "long_tail" ? 1.4 : 4;
-    if (product.category === "white" && month >= 5 && month <= 8) weight *= 1.35;
-    if (product.category === "orange" && month >= 5 && month <= 8) weight *= 1.45;
-    if (product.category === "chilled_red" && month >= 5 && month <= 8) weight *= 1.55;
-    if (product.category === "bundle" && (month === 11 || month === 12)) weight *= 1.8;
-    if (product.demandRole === "recent_launch") weight *= ageDaysFromLaunch > 0 ? 1.7 : 0.15;
-    if (product.demandRole === "former_hero" && date >= new Date("2026-04-01T00:00:00Z")) weight *= 0.25;
-    if (index === NO_RECENT_SALES_INDEX && date >= new Date("2026-04-24T00:00:00Z")) weight = 0.01;
-    return { value: product, weight };
-  }));
+  return rng.weighted(
+    products.map((product, index) => {
+      let weight = product.demandRole === "hero" ? 12 : product.demandRole === "former_hero" ? 10 : product.demandRole === "bundle" ? 5 : product.demandRole === "long_tail" ? 1.4 : 4;
+      if (product.category === "white" && month >= 5 && month <= 8) weight *= 1.35;
+      if (product.category === "orange" && month >= 5 && month <= 8) weight *= 1.45;
+      if (product.category === "chilled_red" && month >= 5 && month <= 8) weight *= 1.55;
+      if (product.category === "bundle" && (month === 11 || month === 12)) weight *= 1.8;
+      if (product.demandRole === "recent_launch") weight *= ageDaysFromLaunch > 0 ? 1.7 : 0.15;
+      if (product.demandRole === "former_hero" && date >= new Date("2026-04-01T00:00:00Z")) weight *= 0.25;
+      if (index === NO_RECENT_SALES_INDEX && date >= new Date("2026-04-24T00:00:00Z")) weight = 0.01;
+      return { value: product, weight };
+    }),
+  );
 }
 
 function buildRefunds(profile, rng, asOf, orders) {
@@ -464,13 +584,7 @@ function buildRefunds(profile, rng, asOf, orders) {
       const shippingOnly = !isFull && order.totalShipping > 0 && rng.chance(0.1);
       const goodwill = !isFull && !shippingOnly && rng.chance(0.08);
       const lineQuantity = isFull ? line.quantity : Math.max(1, Math.min(line.quantity, 1));
-      const lineAmount = shippingOnly
-        ? 0
-        : goodwill
-          ? money(rng.float(3, 12))
-          : isFull
-            ? order.subtotalPrice
-            : money(Math.max(0.01, line.unitPrice * lineQuantity - line.discount));
+      const lineAmount = shippingOnly ? 0 : goodwill ? money(rng.float(3, 12)) : isFull ? order.subtotalPrice : money(Math.max(0.01, line.unitPrice * lineQuantity - line.discount));
       const shippingAmount = isFull || shippingOnly ? order.totalShipping : 0;
       const amount = money(lineAmount + shippingAmount);
       if (amount <= 0) continue;
@@ -484,14 +598,28 @@ function buildRefunds(profile, rng, asOf, orders) {
         processedAt,
         note: `${reason}. Synthetic refund event.`,
         notify: false,
-        refundLineItems: shippingOnly || goodwill ? [] : [{
-          orderLineItemSourceId: line.sourceId,
-          quantity: lineQuantity,
-          subtotal: lineAmount,
-          restockType: shouldRestock(reason, rng) ? "RETURN" : "NO_RESTOCK",
-        }],
+        refundLineItems:
+          shippingOnly || goodwill
+            ? []
+            : [
+                {
+                  orderLineItemSourceId: line.sourceId,
+                  quantity: lineQuantity,
+                  subtotal: lineAmount,
+                  restockType: shouldRestock(reason, rng) ? "RETURN" : "NO_RESTOCK",
+                },
+              ],
         shippingRefund: shippingAmount > 0 ? { amount: shippingAmount } : null,
-        transactions: [{ kind: "REFUND", status: "SUCCESS", gateway: "manual", amount, currency: CURRENCY, processedAt }],
+        transactions: [
+          {
+            kind: "REFUND",
+            status: "SUCCESS",
+            gateway: "manual",
+            amount,
+            currency: CURRENCY,
+            processedAt,
+          },
+        ],
         idempotencyKey: `synthetic:${order.sourceId}:refund:${eventIndex + 1}`,
       });
     }
@@ -501,7 +629,11 @@ function buildRefunds(profile, rng, asOf, orders) {
 
 function buildInventory(profile, rng, variants, locations, scenario, asOf) {
   const activeVariants = variants.filter((variant) => variant.price > 0);
-  const untracked = new Set(shuffle(activeVariants, rng).slice(0, Math.max(2, Math.round(activeVariants.length * 0.08))).map((variant) => variant.sourceId));
+  const untracked = new Set(
+    shuffle(activeVariants, rng)
+      .slice(0, Math.max(2, Math.round(activeVariants.length * 0.08)))
+      .map((variant) => variant.sourceId),
+  );
   const levels = [];
   let trackedOrdinal = 0;
   for (const variant of activeVariants) {
@@ -544,7 +676,10 @@ function allocateCustomerOrderCounts(customerCount, linkedOrders, rng) {
   let repeatCount = customerCount - oneOrderCount;
   while (oneOrderCount + repeatCount * 2 > linkedOrders && repeatCount > 0) repeatCount -= 1;
   const counts = Array(customerCount).fill(0);
-  const indices = shuffle(Array.from({ length: customerCount }, (_, index) => index), rng);
+  const indices = shuffle(
+    Array.from({ length: customerCount }, (_, index) => index),
+    rng,
+  );
   for (const index of indices.slice(0, oneOrderCount)) counts[index] = 1;
   for (const index of indices.slice(oneOrderCount, oneOrderCount + repeatCount)) counts[index] = 2;
   let total = counts.reduce((sum, count) => sum + count, 0);
@@ -552,9 +687,7 @@ function allocateCustomerOrderCounts(customerCount, linkedOrders, rng) {
   const vipIndices = repeatIndices.slice(0, Math.max(1, Math.round(customerCount * 0.02)));
   let cursor = 0;
   while (total < linkedOrders && cursor < repeatIndices.length * 20) {
-    const index = cursor < vipIndices.length * 8
-      ? vipIndices[cursor % vipIndices.length]
-      : repeatIndices[cursor % repeatIndices.length];
+    const index = cursor < vipIndices.length * 8 ? vipIndices[cursor % vipIndices.length] : repeatIndices[cursor % repeatIndices.length];
     const cap = vipIndices.includes(index) ? 15 : 4;
     if (counts[index] < cap) {
       counts[index] += 1;
@@ -594,16 +727,7 @@ function expandedBlueprints(totalProducts, rng) {
     ]);
     const country = rng.pick(countries);
     const grape = rng.pick(grapes);
-    blueprints.push([
-      category,
-      country,
-      rng.pick(regions),
-      rng.pick(producers),
-      `${rng.pick(["Lantern", "Market", "Hill", "Copper", "Sunday"])} ${grape}`,
-      grape,
-      rng.int(2021, 2024),
-      rng.int(16, 34),
-    ]);
+    blueprints.push([category, country, rng.pick(regions), rng.pick(producers), `${rng.pick(["Lantern", "Market", "Hill", "Copper", "Sunday"])} ${grape}`, grape, rng.int(2021, 2024), rng.int(16, 34)]);
   }
   return blueprints.slice(0, totalProducts);
 }
@@ -614,7 +738,7 @@ function weightedOrderDates(count, rng, asOf, historyDays) {
     const date = new Date(asOf.getTime() - daysAgo * 86_400_000);
     const month = date.getUTCMonth() + 1;
     const dow = date.getUTCDay();
-    let weight = 1 + (historyDays - daysAgo) / historyDays * 0.28;
+    let weight = 1 + ((historyDays - daysAgo) / historyDays) * 0.28;
     if (month === 1) weight *= 0.74;
     if ([5, 6, 7, 8].includes(month)) weight *= 1.12;
     if ([11, 12].includes(month)) weight *= 1.56;
@@ -733,7 +857,15 @@ function skuFor({ category, country, vintage, index, isBundle, caseVariant }) {
 }
 
 function productType(category) {
-  return { white: "White Wine", red: "Red Wine", orange: "Orange Wine", chilled_red: "Chilled Red", bundle: "Wine Bundle" }[category] || "Wine";
+  return (
+    {
+      white: "White Wine",
+      red: "Red Wine",
+      orange: "Orange Wine",
+      chilled_red: "Chilled Red",
+      bundle: "Wine Bundle",
+    }[category] || "Wine"
+  );
 }
 
 function chooseDiscount({ customer, rng, date, subtotal }) {
@@ -781,7 +913,10 @@ function syntheticPostcode(area, rng) {
 }
 
 function slugify(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 function daysAgoIso(days, asOf) {
