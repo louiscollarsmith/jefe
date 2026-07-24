@@ -4,6 +4,14 @@
 
 ### Changed
 
+- Removed the Connect waiting-state Check status action so connected stores see no handoff button until Goals is ready.
+- Fixed the Connect handoff so Continue to Goals only appears after the noticing row has completed.
+- Updated the onboarding stepper so completed steps use a quieter outlined style and only the current step appears active.
+- Centred the Goals Back and Continue buttons below the main card.
+- Updated the second onboarding step to appear as Goals, with Connect-style card styling and Back/Continue actions below the main card.
+- Removed the duplicate "First memory ready" panel from Connect once the first memory is ready, leaving the completed noticing row and Goals action as the handoff.
+- Updated onboarding to use a fixed full-viewport canvas so Connect and Goals fit the embedded app frame without document-level scrolling.
+- Updated Connect onboarding so Jefe uses the Shopify store name when available, saves that metadata for Merchant Memory, softens the learning-status styling, and shows the Goals action below the card once the first memory is ready.
 - Added Shopify write scopes for approved product, customer, order, inventory and location actions across local, staging and production app configuration.
 - Added the Shopify `read_customers` scope to the retained evidence-layer app configuration so Jefe can request customer identity access consistently across local, staging and production installs.
 
