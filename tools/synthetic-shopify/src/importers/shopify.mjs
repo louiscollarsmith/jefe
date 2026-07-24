@@ -559,6 +559,15 @@ export async function missingInventoryItemIds(client, inventoryItemIds) {
   return expectedIds.filter((id) => !existingIds.has(id));
 }
 
+async function waitForInventoryItems(client, inventoryItemIds) {
+  let missing = await missingInventoryItemIds(client, inventoryItemIds);
+  for (let attempt = 1; missing.length && attempt < 6; attempt += 1) {
+    await sleep(1000 * attempt);
+    missing = await missingInventoryItemIds(client, inventoryItemIds);
+  }
+  return missing;
+}
+
 async function repairMissingInventoryMappings(client, dataset, manifest, persist) {
   const inventoryItemIds = dataset.inventoryLevels
     .map((level) => manifest.sourceToShopifyIds.inventoryItems[level.inventoryItemSourceId])
@@ -573,8 +582,25 @@ async function repairMissingInventoryMappings(client, dataset, manifest, persist
     const product = sourceProductForInventoryLevel(dataset, level);
     if (!product || recoveredProducts.has(product.sourceId)) continue;
     recoveredProducts.add(product.sourceId);
+    if (await repairMappedProductInventory(client, dataset, manifest, product, persist)) continue;
     await recoverProductWithValidInventory(client, dataset, manifest, level, persist);
   }
+}
+
+async function repairMappedProductInventory(client, dataset, manifest, product, persist) {
+  const productId = manifest.sourceToShopifyIds.products[product.sourceId];
+  if (!productId) return false;
+  const data = await client.request(PRODUCT_RESUME_STATE_QUERY, { productId });
+  if (!data.product?.id) return false;
+  mapExistingProductVariants({
+    manifest,
+    product,
+    shopifyVariants: data.product.variants?.nodes || [],
+  });
+  persist();
+  await syncProductVariants(client, product, manifest, persist);
+  const missing = await waitForInventoryItems(client, inventoryItemIdsForProduct(dataset, manifest, product));
+  return missing.length === 0;
 }
 
 function sourceProductForInventoryLevel(dataset, level) {
@@ -718,55 +744,8 @@ async function importCollections(client, dataset, manifest, persist) {
 async function importVariants(client, dataset, manifest, persist) {
   markPhase(manifest, "create_variants", "running", 0);
   for (const product of dataset.products) {
-    const productId = manifest.sourceToShopifyIds.products[product.sourceId];
-    if (!productId) throw new Error(`Missing Shopify product ID for ${product.sourceId}`);
-
     try {
-      const existing = await client.request(PRODUCT_VARIANTS_QUERY, {
-        productId,
-      });
-      mapExistingProductVariants({
-        manifest,
-        product,
-        shopifyVariants: existing.product?.variants?.nodes || [],
-      });
-      persist();
-
-      const missingVariants = product.variants.filter((variant) => !manifest.sourceToShopifyIds.variants[variant.sourceId]);
-      if (!missingVariants.length) continue;
-
-      const data = await client.request(PRODUCT_VARIANTS_BULK_CREATE, {
-        productId,
-        strategy: "REMOVE_STANDALONE_VARIANT",
-        variants: missingVariants.map((variant) => ({
-          barcode: variant.barcode,
-          compareAtPrice: variant.compareAtPrice == null ? null : String(variant.compareAtPrice),
-          inventoryItem: {
-            sku: variant.sku || null,
-            tracked: Boolean(variant.inventoryTracked),
-            requiresShipping: Boolean(variant.requiresShipping),
-          },
-          inventoryPolicy: variant.inventoryPolicy,
-          optionValues: [
-            {
-              optionName: variant.optionName || "Format",
-              name: variant.optionValue || variant.title || "Default",
-            },
-          ],
-          price: String(variant.price),
-          taxable: Boolean(variant.taxable),
-        })),
-      });
-      assertUserErrors("productVariantsBulkCreate", product.sourceId, data.productVariantsBulkCreate?.userErrors);
-      const returned = data.productVariantsBulkCreate?.productVariants || [];
-      for (const variant of missingVariants) {
-        const match = findShopifyVariantMatch(returned, variant);
-        if (!match) {
-          throw new Error(`Could not map Shopify variant for ${variant.sourceId}`);
-        }
-        recordVariantMapping(manifest, variant, match);
-      }
-      persist();
+      await syncProductVariants(client, product, manifest, persist);
     } catch (error) {
       recordFailure(manifest, "variant", product.sourceId, error, true);
       persist();
@@ -775,6 +754,79 @@ async function importVariants(client, dataset, manifest, persist) {
   }
   markPhase(manifest, "create_variants", "completed", Object.keys(manifest.sourceToShopifyIds.variants).length);
   persist();
+}
+
+export async function syncProductVariants(client, product, manifest, persist) {
+  const productId = manifest.sourceToShopifyIds.products[product.sourceId];
+  if (!productId) throw new Error(`Missing Shopify product ID for ${product.sourceId}`);
+
+  const existing = await client.request(PRODUCT_VARIANTS_QUERY, {
+    productId,
+  });
+  mapExistingProductVariants({
+    manifest,
+    product,
+    shopifyVariants: existing.product?.variants?.nodes || [],
+  });
+  persist();
+
+  const existingVariants = product.variants.filter((variant) => manifest.sourceToShopifyIds.variants[variant.sourceId]);
+  if (existingVariants.length) {
+    const data = await client.request(PRODUCT_VARIANTS_BULK_UPDATE, {
+      productId,
+      variants: existingVariants.map((variant) =>
+        variantBulkInput(variant, manifest.sourceToShopifyIds.variants[variant.sourceId]),
+      ),
+    });
+    assertUserErrors("productVariantsBulkUpdate", product.sourceId, data.productVariantsBulkUpdate?.userErrors);
+  }
+
+  const missingVariants = product.variants.filter((variant) => !manifest.sourceToShopifyIds.variants[variant.sourceId]);
+  if (missingVariants.length) {
+    const data = await client.request(PRODUCT_VARIANTS_BULK_CREATE, {
+      productId,
+      strategy: "PRESERVE_STANDALONE_VARIANT",
+      variants: missingVariants.map((variant) => variantBulkInput(variant)),
+    });
+    assertUserErrors("productVariantsBulkCreate", product.sourceId, data.productVariantsBulkCreate?.userErrors);
+  }
+
+  const refreshed = await client.request(PRODUCT_VARIANTS_QUERY, {
+    productId,
+  });
+  mapExistingProductVariants({
+    manifest,
+    product,
+    shopifyVariants: refreshed.product?.variants?.nodes || [],
+  });
+  persist();
+
+  const stillMissing = product.variants.filter((variant) => !manifest.sourceToShopifyIds.variants[variant.sourceId]);
+  if (stillMissing.length) {
+    throw new Error(`Could not map Shopify variants for ${product.sourceId}: ${stillMissing.map((variant) => variant.sourceId).join(", ")}`);
+  }
+}
+
+function variantBulkInput(variant, id = null) {
+  return removeNulls({
+    id,
+    barcode: variant.barcode,
+    compareAtPrice: variant.compareAtPrice == null ? null : String(variant.compareAtPrice),
+    inventoryItem: {
+      sku: variant.sku || null,
+      tracked: Boolean(variant.inventoryTracked),
+      requiresShipping: Boolean(variant.requiresShipping),
+    },
+    inventoryPolicy: variant.inventoryPolicy,
+    optionValues: [
+      {
+        optionName: variant.optionName || "Format",
+        name: variant.optionValue || variant.title || "Default",
+      },
+    ],
+    price: String(variant.price),
+    taxable: Boolean(variant.taxable),
+  });
 }
 
 export function mapExistingProductVariants({ manifest, product, shopifyVariants }) {
@@ -1424,6 +1476,25 @@ const PRODUCT_VARIANTS_BULK_CREATE = `mutation SyntheticProductVariantsBulkCreat
     productId: $productId
     variants: $variants
     strategy: $strategy
+  ) {
+    productVariants {
+      id
+      sku
+      title
+      selectedOptions { name value }
+      inventoryItem { id tracked }
+    }
+    userErrors { field message }
+  }
+}`;
+
+const PRODUCT_VARIANTS_BULK_UPDATE = `mutation SyntheticProductVariantsBulkUpdate(
+  $productId: ID!
+  $variants: [ProductVariantsBulkInput!]!
+) {
+  productVariantsBulkUpdate(
+    productId: $productId
+    variants: $variants
   ) {
     productVariants {
       id

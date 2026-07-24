@@ -33,6 +33,7 @@
 
 ### Fixed
 
+- Fixed synthetic Shopify variant creation so the Shopify standalone variant is preserved and updated instead of being deleted, preventing duplicate recovery products and stale inventory item mappings during long seed runs.
 - Fixed synthetic Shopify inventory resume so deleted inventory item IDs are detected before quantity writes, affected products are rebuilt under deterministic recovery handles, and every queued level for a recovered product is refreshed before bounded retries.
 - Fixed synthetic Shopify seeding so resumed product variant imports map variants already present in Shopify before creating missing variants, and corrected generated duplicate previous-vintage options and quality-edge order totals before long live runs.
 - Fixed the remaining embedded onboarding hydration failure by loading Jefe's route styles from a stylesheet instead of hydration-sensitive inline style text, so Connect and Interview keep their Polaris layout on first load and refresh.

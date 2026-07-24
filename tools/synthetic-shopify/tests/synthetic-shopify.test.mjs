@@ -21,6 +21,7 @@ import {
   missingInventoryItemIds,
   refreshInventoryQuantityEntriesForProduct,
   staleInventoryQuantityIndexes,
+  syncProductVariants,
 } from "../src/importers/shopify.mjs";
 
 const asOf = "2026-07-23T12:00:00+01:00";
@@ -290,6 +291,90 @@ test("variant resume refreshes stale inventory item mappings", () => {
   assert.equal(manifest.sourceToShopifyIds.variants[variant.sourceId], "gid://shopify/ProductVariant/current");
   assert.equal(manifest.sourceToShopifyIds.inventoryItems[`ii_${variant.sourceId}`], "gid://shopify/InventoryItem/current");
   assert.deepEqual(manifest.sourceToShopifyIds.inventoryActivations, {});
+});
+
+test("variant sync preserves and updates Shopify standalone variants", async () => {
+  const dataset = generateSyntheticShopifyDataset({
+    profile: "smoke",
+    seed: 1042026,
+    asOf,
+    shopDomain: "jefe-wine-test.myshopify.com",
+  });
+  const product = dataset.products[0];
+  const [singleBottle, caseOfSix, previousVintage] = product.variants;
+  const manifest = createManifest({
+    dataset,
+    shopDomain: "jefe-wine-test.myshopify.com",
+  });
+  recordMapping(manifest, "products", product.sourceId, "gid://shopify/Product/salt-road");
+  const calls = [];
+  const refreshedVariants = [
+    {
+      id: "gid://shopify/ProductVariant/single",
+      sku: singleBottle.sku,
+      selectedOptions: [{ name: "Format", value: singleBottle.optionValue }],
+      inventoryItem: { id: "gid://shopify/InventoryItem/single", tracked: true },
+    },
+    {
+      id: "gid://shopify/ProductVariant/case",
+      sku: caseOfSix.sku,
+      selectedOptions: [{ name: "Format", value: caseOfSix.optionValue }],
+      inventoryItem: { id: "gid://shopify/InventoryItem/case", tracked: true },
+    },
+    {
+      id: "gid://shopify/ProductVariant/previous",
+      sku: previousVintage.sku,
+      selectedOptions: [{ name: "Format", value: previousVintage.optionValue }],
+      inventoryItem: { id: "gid://shopify/InventoryItem/previous", tracked: false },
+    },
+  ];
+  const client = {
+    async request(query, variables) {
+      calls.push({ query, variables });
+      if (query.includes("SyntheticProductVariantsBulkUpdate")) {
+        assert.equal(variables.variants[0].id, "gid://shopify/ProductVariant/single");
+        assert.equal(variables.variants[0].inventoryItem.sku, singleBottle.sku);
+        assert.equal(variables.variants[0].inventoryItem.tracked, true);
+        return { productVariantsBulkUpdate: { productVariants: [], userErrors: [] } };
+      }
+      if (query.includes("SyntheticProductVariantsBulkCreate")) {
+        assert.equal(variables.strategy, "PRESERVE_STANDALONE_VARIANT");
+        assert.deepEqual(
+          variables.variants.map((variant) => variant.inventoryItem.sku),
+          [caseOfSix.sku, previousVintage.sku],
+        );
+        return { productVariantsBulkCreate: { productVariants: [], userErrors: [] } };
+      }
+      if (query.includes("SyntheticProductVariants")) {
+        const priorQueries = calls.filter((call) => call.query.includes("SyntheticProductVariants(")).length;
+        return {
+          product: {
+            variants: {
+              nodes:
+                priorQueries === 1
+                  ? [
+                      {
+                        id: "gid://shopify/ProductVariant/single",
+                        sku: "",
+                        selectedOptions: [{ name: "Format", value: singleBottle.optionValue }],
+                        inventoryItem: { id: "gid://shopify/InventoryItem/single", tracked: false },
+                      },
+                    ]
+                  : refreshedVariants,
+            },
+          },
+        };
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
+  };
+
+  await syncProductVariants(client, product, manifest, () => {});
+
+  assert.equal(manifest.sourceToShopifyIds.variants[singleBottle.sourceId], "gid://shopify/ProductVariant/single");
+  assert.equal(manifest.sourceToShopifyIds.variants[caseOfSix.sourceId], "gid://shopify/ProductVariant/case");
+  assert.equal(manifest.sourceToShopifyIds.variants[previousVintage.sourceId], "gid://shopify/ProductVariant/previous");
+  assert.equal(manifest.sourceToShopifyIds.inventoryItems[`ii_${singleBottle.sourceId}`], "gid://shopify/InventoryItem/single");
 });
 
 test("inventory quantity user errors identify stale quantity indexes", () => {
