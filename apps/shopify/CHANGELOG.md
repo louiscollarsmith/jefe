@@ -1,6 +1,26 @@
 # Changelog
 
+## 2026-07-24
+
+### Added
+
+- Built out the standalone synthetic Shopify tool so disposable stores can now import products, collections, variants, locations, inventory, customers, orders and refunds from `tools/synthetic-shopify`.
+- Added post-import Shopify count validation, commercial reconciliation and Merchant Memory belief-coverage reports to the synthetic Shopify run manifest.
+- Added clearer Shopify GraphQL and mutation user-error output so operators can see the exact API response when a seed or wipe fails.
+
+### Changed
+
+- Updated synthetic Shopify live writes for Shopify Admin API 2026-07, including idempotent inventory and refund mutations, order pacing/retry handling and positive refund transaction validation.
+- Expanded disposable-store wiping to remove collections, customers attached to deleted orders and test orders when `--include-orders` is passed.
+- Tightened refund generation and validation so the tool does not try to create zero-value Shopify refunds.
+
 ## 2026-07-23
+
+### Added
+
+- Added a standalone `tools/synthetic-shopify` operator package that plans deterministic fictional Shopify wine-store datasets for Merchant Memory and Shopify backfill testing, with source artifacts, manifests, validation, belief-coverage reporting and fail-closed live-write safety gates.
+- Updated the synthetic Shopify tool to use the local app database as the default credential source and report expired offline Shopify sessions clearly.
+- Added a guarded synthetic Shopify wipe command for disposable stores, with dry-run-by-default previews and explicit live confirmation.
 
 ### Changed
 

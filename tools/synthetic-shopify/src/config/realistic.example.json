@@ -1,0 +1,13 @@
+{
+  "profile": "realistic",
+  "scenario": "healthy_gbp",
+  "brand": "Elsewhere Wine Co.",
+  "bundleInventoryModel": "independently_stocked_synthetic_skus",
+  "counts": {
+    "knownCustomers": 780,
+    "nonTestOrders": 1250,
+    "guestOrders": 80,
+    "refundedOrders": 83,
+    "refundRecords": 89
+  }
+}
