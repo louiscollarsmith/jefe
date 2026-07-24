@@ -31,13 +31,13 @@ const backfillStatusSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes only Connect and Interview as production steps", () => {
+test("onboarding exposes only Connect and Goals as production steps", () => {
   assert.match(
     appIndexSource,
     /export const ONBOARDING_STEPS = \["connect", "interview"\] as const;/,
   );
   assert.match(appIndexSource, /"Connect"/);
-  assert.match(appIndexSource, /"Interview"/);
+  assert.match(appIndexSource, /"Goals"/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=goals/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=channels/);
@@ -78,7 +78,7 @@ test("connect waiting state does not poll or auto-refresh the embedded app docum
   assert.doesNotMatch(appIndexSource, /\.revalidate\(/);
   assert.doesNotMatch(appIndexSource, /window\.location\.reload\(\)/);
   assert.doesNotMatch(appIndexSource, /setInterval/);
-  assert.match(appIndexSource, /Check status/);
+  assert.doesNotMatch(appIndexSource, /Check status/);
 });
 
 test("Shopify App Bridge bootstrap responses skip React hydration", () => {

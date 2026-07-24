@@ -41,6 +41,7 @@ import {
   updateInterviewStatus,
 } from "../lib/merchant-memory/interview.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticate } from "../shopify.server";
 import {
   getShopBackfillProgress,
@@ -63,6 +64,17 @@ const UI_INTERVIEW_STATUS = {
   completed: "completed",
   skipped: "skipped",
 };
+const SHOP_METADATA_QUERY = `#graphql
+  query JefeShopMetadata {
+    shop {
+      id
+      name
+      myshopifyDomain
+      currencyCode
+      ianaTimezone
+    }
+  }
+`;
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -125,6 +137,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: splitScopes(session.scope),
     rawPayload: { source: "jefe_onboarding_loader" },
   });
+  const storeName = await getPersistedStoreName({
+    shop,
+    merchantName: merchant.name,
+    shopDomain: session.shop,
+    accessToken: session.accessToken,
+  });
 
   const readiness = await getMerchantMemoryReadiness({
     merchantId: merchant.id,
@@ -149,7 +167,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return {
       shop: session.shop,
       merchantName: merchant.name,
-      storeName: displayStoreName(merchant.name, session.shop),
+      storeName,
       activeStep: "connect" as const,
       view: "onboarding" as const,
       connected,
@@ -177,11 +195,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ].includes(interview.interview.status);
   const view = onboardingComplete ? ("memory" as const) : ("onboarding" as const);
 
+  const canContinueToGoals = readiness.memoryReady && Boolean(backfill.complete);
+
   return {
     shop: session.shop,
     merchantName: merchant.name,
-    storeName: displayStoreName(merchant.name, session.shop),
-    activeStep: normalizeOnboardingStep(requestedStep, readiness.memoryReady),
+    storeName,
+    activeStep: normalizeOnboardingStep(requestedStep, canContinueToGoals),
     view,
     connected,
     memoryReady: true,
@@ -195,6 +215,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const canContinueToGoals = data.memoryReady && Boolean(data.backfill.complete);
 
   if (data.view === "memory") {
     return <MerchantMemoryView storeName={data.storeName} beliefs={data.beliefs} />;
@@ -208,11 +229,12 @@ export default function AppIndex() {
           backfill={data.backfill}
           metrics={data.metrics}
           connected={data.connected}
-          canContinue={data.memoryReady}
+          memoryReady={data.memoryReady}
+          canContinue={canContinueToGoals}
         />
       ) : null}
 
-      {data.activeStep === "interview" && data.memoryReady && data.interview ? (
+      {data.activeStep === "interview" && canContinueToGoals && data.interview ? (
         <InterviewStep
           experience={data.interview}
           actionError={actionData && "error" in actionData ? actionData.error : null}
@@ -260,7 +282,7 @@ function OnboardingStepper({
             onClick={() => appNavigate({ step, view: null })}
           >
             <span className="JefeStepperNumber">{index + 1}</span>
-            <span className="JefeStepperLabel">{step === "connect" ? "Connect" : "Interview"}</span>
+            <span className="JefeStepperLabel">{step === "connect" ? "Connect" : "Goals"}</span>
           </button>
         );
       })}
@@ -273,12 +295,14 @@ function ConnectStep({
   backfill,
   metrics,
   connected,
+  memoryReady,
   canContinue,
 }: {
   storeName: string;
   backfill: ReturnType<typeof summarizeBackfill>;
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
   connected: boolean;
+  memoryReady: boolean;
   canContinue: boolean;
 }) {
   const appNavigate = useEmbeddedAppNavigate();
@@ -289,43 +313,45 @@ function ConnectStep({
       <BlockStack gap="200" inlineAlign="center">
         <h1 className="JefeDisplayHeading">Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...</h1>
       </BlockStack>
-      <Card padding="500">
-        <BlockStack gap="500">
-          <MetricGrid metrics={metrics} />
-          <LearningMilestones backfill={backfill} metrics={metrics} />
-          <Box aria-live="polite">
-            <InlineStack align="space-between" blockAlign="center" gap="300">
-              <InlineStack blockAlign="center" gap="300">
-                {backfill.spinning ? <Spinner size="small" accessibilityLabel={backfill.statusLabel} /> : null}
-                <BlockStack gap="050">
-                  <Text as="p" fontWeight="semibold">
-                    {backfill.title}
-                  </Text>
-                  <Text as="p" tone="subdued">
-                    {backfill.detail}
-                  </Text>
-                </BlockStack>
-              </InlineStack>
-              <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
-            </InlineStack>
-          </Box>
-          <InlineStack align="end">
-            {canContinue ? (
-              <Button onClick={() => appNavigate({ step: "interview", view: null })} variant="primary">
-                Continue to Interview
-              </Button>
-            ) : connected ? (
-              <Button onClick={() => appNavigate({ step: "connect", view: null })}>
-                Check status
-              </Button>
-            ) : (
-              <Button url="/auth/login" variant="primary">
-                Connect Shopify
-              </Button>
-            )}
-          </InlineStack>
-        </BlockStack>
-      </Card>
+      <div className="JefeLearningCard">
+        <Card padding="500">
+          <BlockStack gap="500">
+            <MetricGrid metrics={metrics} />
+            <LearningMilestones backfill={backfill} metrics={metrics} />
+            {!canContinue && !memoryReady ? (
+              <Box aria-live="polite">
+                <InlineStack align="space-between" blockAlign="center" gap="300">
+                  <InlineStack blockAlign="center" gap="300">
+                    {backfill.spinning ? <Spinner size="small" accessibilityLabel={backfill.statusLabel} /> : null}
+                    <BlockStack gap="050">
+                      <Text as="p" fontWeight="semibold">
+                        {backfill.title}
+                      </Text>
+                      <Text as="p" tone="subdued">
+                        {backfill.detail}
+                      </Text>
+                    </BlockStack>
+                  </InlineStack>
+                  <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
+                </InlineStack>
+              </Box>
+            ) : null}
+          </BlockStack>
+        </Card>
+      </div>
+      <div className="JefeConnectAction">
+        {canContinue ? (
+          <Button onClick={() => appNavigate({ step: "interview", view: null })} variant="primary">
+            Continue to Goals
+          </Button>
+        ) : !connected ? (
+          <Button url="/auth/login" variant="primary">
+            Connect Shopify
+          </Button>
+        ) : (
+          <span aria-hidden="true" />
+        )}
+      </div>
     </BlockStack>
   );
 }
@@ -339,8 +365,10 @@ function MetricGrid({
     metrics.orders > 0
       ? { label: "orders", value: formatInteger(metrics.orders) }
       : null,
-    metrics.products > 0
-      ? { label: "products", value: formatInteger(metrics.products) }
+    metrics.skus > 0
+      ? { label: "SKUs", value: formatInteger(metrics.skus) }
+      : metrics.products > 0
+        ? { label: "products", value: formatInteger(metrics.products) }
       : null,
     metrics.customers > 0
       ? { label: "customers", value: formatInteger(metrics.customers) }
@@ -389,18 +417,20 @@ function LearningMilestones({
 }) {
   return (
     <BlockStack gap="200">
-      <Milestone complete>Connected to Shopify</Milestone>
+      <Milestone complete>Connected to your Shopify store</Milestone>
       {metrics.orders > 0 ? (
         <Milestone complete>Read {formatInteger(metrics.orders)} orders</Milestone>
       ) : null}
-      {metrics.products > 0 ? (
+      {metrics.products > 0 || metrics.variants > 0 ? (
         <Milestone complete>
-          Indexed {formatInteger(metrics.products)} products
+          {metrics.skus > 0
+            ? `Mapped ${formatInteger(metrics.skus)} SKUs`
+            : `Mapped ${formatInteger(metrics.products)} products`}
           {metrics.variants > 0 ? ` and ${formatInteger(metrics.variants)} variants` : ""}
         </Milestone>
       ) : null}
       <Milestone current={!backfill.complete} complete={backfill.complete}>
-        Looking for patterns worth talking about...
+        Noticing a few things worth talking about...
       </Milestone>
     </BlockStack>
   );
@@ -416,14 +446,16 @@ function Milestone({
   current?: boolean;
 }) {
   return (
-    <InlineStack gap="200" blockAlign="center">
+    <div
+      className={`JefeMilestone ${complete ? "is-complete" : ""} ${
+        current ? "is-current" : ""
+      }`}
+    >
       <span className={`JefeMilestoneIcon ${complete ? "is-complete" : ""}`}>
         {current && !complete ? <Spinner size="small" accessibilityLabel="In progress" /> : "✓"}
       </span>
-      <Text as="p" fontWeight={current ? "semibold" : undefined}>
-        {children}
-      </Text>
-    </InlineStack>
+      <span className="JefeMilestoneText">{children}</span>
+    </div>
   );
 }
 
@@ -436,19 +468,14 @@ function InterviewStep({
 }) {
   const status = experience.interview.status;
   const appNavigate = useEmbeddedAppNavigate();
+  const [answer, setAnswer] = useState("");
+  const navigation = useNavigation();
+  const submitting = navigation.state !== "idle";
+  const currentTurn =
+    status === UI_INTERVIEW_STATUS.inProgress ? experience.currentTurn : null;
 
-  return (
-    <BlockStack gap="500" inlineAlign="center">
-      <BlockStack gap="150" inlineAlign="center">
-        <Text as="p" fontWeight="bold">
-          A FEW QUESTIONS
-        </Text>
-        <h1 className="JefeDisplayHeading">Help me understand how your business works.</h1>
-        <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve learned what I can from your store. I&apos;ll only ask about things that could change what I recommend.
-        </Text>
-      </BlockStack>
-
+  const cardContent = (
+    <div className="JefeLearningCard">
       <Card padding="500">
         <BlockStack gap="500">
           <InlineStack align="space-between" blockAlign="center" gap="300">
@@ -470,12 +497,16 @@ function InterviewStep({
 
           {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
 
-          {status === UI_INTERVIEW_STATUS.inProgress && experience.currentTurn ? (
-            <InterviewQuestion turn={experience.currentTurn} />
+          {currentTurn ? (
+            <InterviewQuestion
+              turn={currentTurn}
+              answer={answer}
+              setAnswer={setAnswer}
+            />
           ) : null}
 
           {status === UI_INTERVIEW_STATUS.inProgress &&
-          !experience.currentTurn &&
+          !currentTurn &&
           experience.plannerUnavailableMessage ? (
             <Box padding="400" background="bg-surface-secondary" borderRadius="200">
               <Text as="p">{experience.plannerUnavailableMessage}</Text>
@@ -495,7 +526,7 @@ function InterviewStep({
           {status === UI_INTERVIEW_STATUS.skipped ? (
             <BlockStack gap="300">
               <Text as="p">
-                The interview is skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
+                Goals are skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
               </Text>
               <Button onClick={() => appNavigate({ view: "memory", step: null })} variant="primary">
                 View Merchant Memory
@@ -504,6 +535,37 @@ function InterviewStep({
           ) : null}
         </BlockStack>
       </Card>
+    </div>
+  );
+
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold">
+          GOALS
+        </Text>
+        <h1 className="JefeDisplayHeading">Tell me what winning looks like.</h1>
+        <Text as="p" tone="subdued" alignment="center">
+          I&apos;ve learned what I can from your store. I&apos;ll only ask about things that could change what I recommend.
+        </Text>
+      </BlockStack>
+
+      {currentTurn ? (
+        <Form method="post" className="JefeGoalsForm">
+          <input type="hidden" name="intent" value="answer" />
+          <input type="hidden" name="turnId" value={currentTurn.id} />
+          <input type="hidden" name="idempotencyKey" value={`${currentTurn.id}:${currentTurn.createdAt}`} />
+          {cardContent}
+          <div className="JefeGoalsActionRow">
+            <Button onClick={() => appNavigate({ step: "connect", view: null })}>Back</Button>
+            <Button submit variant="primary" disabled={!answer.trim() || submitting}>
+              Continue
+            </Button>
+          </div>
+        </Form>
+      ) : (
+        cardContent
+      )}
     </BlockStack>
   );
 }
@@ -531,15 +593,15 @@ function LatestInterviewContext({
 
 function InterviewQuestion({
   turn,
+  answer,
+  setAnswer,
 }: {
   turn: NonNullable<
     Awaited<ReturnType<typeof getMerchantInterviewExperience>>["currentTurn"]
   >;
+  answer: string;
+  setAnswer: (value: string) => void;
 }) {
-  const [answer, setAnswer] = useState("");
-  const navigation = useNavigation();
-  const appNavigate = useEmbeddedAppNavigate();
-  const submitting = navigation.state !== "idle";
   const suggestions = useMemo(
     () =>
       Array.isArray(turn.answerSuggestions)
@@ -579,37 +641,14 @@ function InterviewQuestion({
         </InlineStack>
       ) : null}
 
-      <BlockStack gap="300">
-        <Form method="post">
-          <BlockStack gap="300">
-            <input type="hidden" name="intent" value="answer" />
-            <input type="hidden" name="turnId" value={turn.id} />
-            <input type="hidden" name="idempotencyKey" value={`${turn.id}:${turn.createdAt}`} />
-            <TextField
-              label="Your answer"
-              name="answer"
-              value={answer}
-              onChange={setAnswer}
-              autoComplete="off"
-              multiline={4}
-            />
-            <InlineStack align="space-between" blockAlign="center" gap="300">
-              <Button onClick={() => appNavigate({ step: "connect", view: null })}>Back</Button>
-              <Button submit variant="primary" disabled={!answer.trim() || submitting}>
-                Continue
-              </Button>
-            </InlineStack>
-          </BlockStack>
-        </Form>
-        <InlineStack align="end">
-          <Form method="post">
-            <input type="hidden" name="intent" value="skip" />
-            <Button submit disabled={submitting}>
-              Skip
-            </Button>
-          </Form>
-        </InlineStack>
-      </BlockStack>
+      <TextField
+        label="Your answer"
+        name="answer"
+        value={answer}
+        onChange={setAnswer}
+        autoComplete="off"
+        multiline={4}
+      />
     </BlockStack>
   );
 }
@@ -645,7 +684,7 @@ function PausedControls() {
   return (
     <Box padding="400" background="bg-surface-secondary" borderRadius="200">
       <InlineStack align="space-between" blockAlign="center" gap="300">
-        <Text as="p">The interview is paused. Your answers are saved.</Text>
+        <Text as="p">Goals are paused. Your answers are saved.</Text>
         <Form method="post">
           <input type="hidden" name="intent" value="resume" />
           <Button submit variant="primary">
@@ -817,10 +856,17 @@ async function getStoreMetrics({
   merchantId: string;
   shopId: string;
 }) {
-  const [orders, products, variants, customers, revenue] = await Promise.all([
+  const [orders, products, variants, skus, customers, revenue] = await Promise.all([
     prisma.order.count({ where: { merchantId, shopId } }),
     prisma.product.count({ where: { merchantId, shopId } }),
     prisma.variant.count({ where: { merchantId, shopId } }),
+    prisma.variant.count({
+      where: {
+        merchantId,
+        shopId,
+        AND: [{ sku: { not: null } }, { sku: { not: "" } }],
+      },
+    }),
     prisma.customerIdentity.count({ where: { merchantId, shopId } }),
     prisma.order.aggregate({
       where: { merchantId, shopId },
@@ -837,6 +883,7 @@ async function getStoreMetrics({
     orders,
     products,
     variants,
+    skus,
     customers,
     revenue: revenueValue && revenueValue > 0 ? revenueValue : null,
     currency: revenue._min.currency ?? "GBP",
@@ -1068,9 +1115,121 @@ function interviewProgressLabel(
   return "A few things to clarify";
 }
 
+async function getPersistedStoreName({
+  shop,
+  merchantName,
+  shopDomain,
+  accessToken,
+}: {
+  shop: { id: string; rawPayload: unknown };
+  merchantName: string;
+  shopDomain: string;
+  accessToken?: string | null;
+}) {
+  const storedName = storeNameFromPayload(shop.rawPayload);
+  if (storedName) return storedName;
+
+  if (accessToken) {
+    const metadata = await fetchShopMetadata({
+      shopDomain,
+      accessToken,
+    }).catch((error) => {
+      console.warn("Unable to load Shopify shop metadata", {
+        shopDomain,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+
+    if (metadata?.name) {
+      const rawPayload = mergeShopRawPayload(shop.rawPayload, metadata);
+      await prisma.shop.update({
+        where: { id: shop.id },
+        data: { rawPayload },
+      });
+      return metadata.name;
+    }
+  }
+
+  return displayStoreName(merchantName, shopDomain);
+}
+
+async function fetchShopMetadata({
+  shopDomain,
+  accessToken,
+}: {
+  shopDomain: string;
+  accessToken: string;
+}) {
+  const client = new ShopifyAdminGraphqlClient({
+    shopDomain,
+    accessToken,
+    logger: console,
+    maxRetries: 1,
+  });
+  const data = await client.request<{
+    shop?: {
+      id?: string | null;
+      name?: string | null;
+      myshopifyDomain?: string | null;
+      currencyCode?: string | null;
+      ianaTimezone?: string | null;
+    } | null;
+  }>(SHOP_METADATA_QUERY);
+
+  const name = data.shop?.name?.trim();
+  if (!name) return null;
+
+  return {
+    shop: {
+      id: data.shop?.id ?? null,
+      name,
+      myshopifyDomain: data.shop?.myshopifyDomain ?? shopDomain,
+      currencyCode: data.shop?.currencyCode ?? null,
+      ianaTimezone: data.shop?.ianaTimezone ?? null,
+    },
+    name,
+    shopName: name,
+    myshopifyDomain: data.shop?.myshopifyDomain ?? shopDomain,
+    shopifyMetadataSource: "shopify_admin_graphql",
+  };
+}
+
+function mergeShopRawPayload(
+  rawPayload: unknown,
+  metadata: NonNullable<Awaited<ReturnType<typeof fetchShopMetadata>>>,
+) {
+  const existing = jsonObject(rawPayload);
+  return {
+    ...existing,
+    ...metadata,
+    shop: {
+      ...jsonObject(existing.shop),
+      ...metadata.shop,
+    },
+  };
+}
+
+function storeNameFromPayload(rawPayload: unknown) {
+  const payload = jsonObject(rawPayload);
+  const shopPayload = jsonObject(payload.shop);
+  const candidates = [payload.name, shopPayload.name, payload.shopName];
+  return candidates.find(isNonEmptyString)?.trim();
+}
+
 function displayStoreName(merchantName: string, shopDomain: string) {
   const fallback = shopDomain.replace(".myshopify.com", "");
   return merchantName && merchantName !== shopDomain ? merchantName : fallback;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function jsonObject(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function useEmbeddedAppNavigate() {
