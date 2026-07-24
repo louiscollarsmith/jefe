@@ -10,6 +10,9 @@
 
 ### Changed
 
+- Updated the Connect loading state so merchants see Shopify reading progress for SKUs, orders and first-memory work, with labelled metric skeletons instead of anonymous placeholder tiles.
+- Updated Connect to reveal Shopify reading milestones one at a time and poll route data while first memory is still being built.
+- Updated Connect metric tiles to fill with zero values once the matching Shopify import has completed.
 - Updated synthetic Shopify live writes for Shopify Admin API 2026-07, including idempotent inventory and refund mutations, order pacing/retry handling and positive refund transaction validation.
 - Expanded disposable-store wiping to remove collections, customers attached to deleted orders and test orders when `--include-orders` is passed.
 - Tightened refund generation and validation so the tool does not try to create zero-value Shopify refunds.
