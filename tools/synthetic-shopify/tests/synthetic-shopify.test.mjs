@@ -14,6 +14,7 @@ import { ShopifyAdminGraphqlError } from "../../../apps/shopify/app/lib/shopify/
 import {
   DEFAULT_SHOPIFY_DEV_STORE_ORDER_DELAY_MS,
   ShopifyMutationUserError,
+  createRefundWithFallback,
   createRefreshableClient,
   createProductWithRecoveredHandle,
   estimateImportProgress,
@@ -402,6 +403,67 @@ test("order create pacing defaults below Shopify dev-store limit", () => {
     if (originalDelay === undefined) delete process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS;
     else process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS = originalDelay;
   }
+});
+
+test("refund create falls back to payment-only input after Shopify calculation errors", async () => {
+  const calls = [];
+  const client = {
+    request: async (_mutation, variables) => {
+      calls.push(variables);
+      if (calls.length === 1) {
+        return {
+          refundCreate: {
+            refund: null,
+            userErrors: [
+              {
+                field: null,
+                message: "The refund could not be processed.",
+              },
+            ],
+          },
+        };
+      }
+      return {
+        refundCreate: {
+          refund: { id: "gid://shopify/Refund/1" },
+          userErrors: [],
+        },
+      };
+    },
+  };
+
+  const data = await createRefundWithFallback(client, {
+    manifest: { runId: "synth_test" },
+    refund: { sourceId: "ref_ord_001_1" },
+    orderId: "gid://shopify/Order/1",
+    detailedInput: {
+      orderId: "gid://shopify/Order/1",
+      currency: "GBP",
+      note: "Synthetic refund event.",
+      notify: false,
+      processedAt: "2026-01-01T00:00:00.000Z",
+      refundLineItems: [{ lineItemId: "gid://shopify/LineItem/1", quantity: 1 }],
+      shipping: { amount: "5.95" },
+      transactions: [
+        {
+          orderId: "gid://shopify/Order/1",
+          parentId: "gid://shopify/OrderTransaction/1",
+          gateway: "manual",
+          kind: "REFUND",
+          amount: "28.45",
+        },
+      ],
+    },
+  });
+
+  assert.equal(data.refundCreate.refund.id, "gid://shopify/Refund/1");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].idempotencyKey.endsWith("detailed-v1"), true);
+  assert.equal(calls[1].idempotencyKey.endsWith("payment-only-v1"), true);
+  assert.deepEqual(calls[1].input.refundLineItems, []);
+  assert.equal(calls[1].input.shipping, null);
+  assert.equal(calls[1].input.discrepancyReason, "OTHER");
+  assert.deepEqual(calls[1].input.transactions, calls[0].input.transactions);
 });
 
 test("inventory quantity user errors identify stale quantity indexes", () => {

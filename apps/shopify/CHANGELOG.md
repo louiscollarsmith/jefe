@@ -14,6 +14,7 @@
 - Updated synthetic Shopify order pacing to default to 4.8 created orders per minute, staying below Shopify development-store order limits without operator overrides.
 - Updated synthetic Shopify DB credential handling so expiring offline Shopify access tokens are refreshed, persisted to the local session table and reused during long seed/resume runs.
 - Updated synthetic Shopify refund generation so discounts, prior refunds and purchased line quantities cap every refund before live Shopify writes.
+- Updated synthetic Shopify refund imports to retry Shopify refund-calculation failures as payment-only refunds so discounted synthetic orders can resume cleanly.
 - Updated synthetic Shopify seeding so rerunning the deterministic `seed` command reloads the existing run manifest, maps already-created Shopify records and reports estimated remaining work before continuing.
 - Updated synthetic Shopify resume checks so invalid local manifest mappings for products, variants and inventory items are refreshed from Shopify instead of reusing IDs that Shopify reports as missing during inventory stocking.
 - Updated synthetic Shopify inventory quantity batches so Shopify "inventory item could not be found" errors recover the affected source inventory levels and retry the batch with current inventory item IDs.

@@ -1144,11 +1144,12 @@ async function importRefunds(client, dataset, manifest, persist) {
           amount: String(transaction.amount),
         })),
       };
-      const data = await client.request(REFUND_CREATE, {
-        input,
-        idempotencyKey: ["synthetic-shopify", manifest.runId, refund.sourceId, gidTail(orderId)].join(":"),
+      const data = await createRefundWithFallback(client, {
+        manifest,
+        refund,
+        orderId,
+        detailedInput: input,
       });
-      assertUserErrors("refundCreate", refund.sourceId, data.refundCreate?.userErrors);
       recordMapping(manifest, "refunds", refund.sourceId, data.refundCreate.refund.id);
       persist();
     } catch (error) {
@@ -1159,6 +1160,45 @@ async function importRefunds(client, dataset, manifest, persist) {
   }
   markPhase(manifest, "create_refunds", "completed", Object.keys(manifest.sourceToShopifyIds.refunds).length);
   persist();
+}
+
+export async function createRefundWithFallback(client, { manifest, refund, orderId, detailedInput }) {
+  const detailedData = await client.request(REFUND_CREATE, {
+    input: detailedInput,
+    idempotencyKey: refundIdempotencyKey(manifest, refund, orderId, "detailed-v1"),
+  });
+  try {
+    assertUserErrors("refundCreate", refund.sourceId, detailedData.refundCreate?.userErrors);
+    return detailedData;
+  } catch (error) {
+    if (!isRecoverableRefundCreateError(error)) throw error;
+  }
+
+  const fallbackInput = paymentOnlyRefundInput(detailedInput);
+  const fallbackData = await client.request(REFUND_CREATE, {
+    input: fallbackInput,
+    idempotencyKey: refundIdempotencyKey(manifest, refund, orderId, "payment-only-v1"),
+  });
+  assertUserErrors("refundCreate", refund.sourceId, fallbackData.refundCreate?.userErrors);
+  return fallbackData;
+}
+
+function paymentOnlyRefundInput(input) {
+  return {
+    orderId: input.orderId,
+    currency: input.currency,
+    note: input.note,
+    notify: input.notify,
+    processedAt: input.processedAt,
+    refundLineItems: [],
+    shipping: null,
+    discrepancyReason: "OTHER",
+    transactions: input.transactions,
+  };
+}
+
+function refundIdempotencyKey(manifest, refund, orderId, mode) {
+  return ["synthetic-shopify", manifest.runId, refund.sourceId, gidTail(orderId), mode].join(":");
 }
 
 async function validateShopifyCounts(client, dataset, manifest, persist) {
@@ -1404,6 +1444,13 @@ function isMissingInventoryItemError(error) {
 function isProductHandleConflictError(error) {
   if (!(error instanceof ShopifyMutationUserError)) return false;
   return error.operationName === "productCreate" && error.userErrors.some((entry) => entry?.field?.includes("handle") && /in use|taken|exists/i.test(String(entry?.message || "")));
+}
+
+function isRecoverableRefundCreateError(error) {
+  if (!(error instanceof ShopifyMutationUserError) || error.operationName !== "refundCreate") return false;
+  return error.userErrors.some((entry) =>
+    /(greater than net payment received|refund could not be processed)/i.test(String(entry?.message || "")),
+  );
 }
 
 function assertUserErrors(operationName, sourceId, errors) {
