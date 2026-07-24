@@ -74,15 +74,25 @@ test("tracked Shopify scope declarations stay in sync", async () => {
   }
 });
 
-test("OAuth completion queues install backfill from the Shopify afterAuth hook", async () => {
+test("OAuth completion queues install backfill and worker can process jobs", async () => {
   const shopifyServer = await readFile("app/shopify.server.ts", "utf8");
   const authRoute = await readFile("app/routes/auth.$.tsx", "utf8");
+  const backfillStatus = await readFile(
+    "app/services/shopify-backfill-status.server.js",
+    "utf8",
+  );
+  const backfillWorker = await readFile(
+    "app/services/shopify-backfill-worker.server.js",
+    "utf8",
+  );
+  const backfillScript = await readFile("scripts/shopify-backfill.mjs", "utf8");
 
   assert.match(shopifyServer, /hooks:\s*{/);
   assert.match(shopifyServer, /afterAuth:\s*async\s*\(\{\s*session\s*\}\)/);
-  assert.match(shopifyServer, /queueInstallShopifyBackfill\(prisma/);
-  assert.match(shopifyServer, /source: "oauth_after_auth"/);
-
-  assert.match(authRoute, /queueInstallShopifyBackfill\(prisma/);
-  assert.match(authRoute, /source: "oauth_callback"/);
+  assert.match(shopifyServer, /await queueInstallShopifyBackfill\(prisma/);
+  assert.match(shopifyServer, /startShopifyBackfillLoop\(prisma\)/);
+  assert.match(authRoute, /await queueInstallShopifyBackfill\(prisma/);
+  assert.doesNotMatch(backfillStatus, /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/);
+  assert.doesNotMatch(backfillWorker, /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/);
+  assert.doesNotMatch(backfillScript, /Shopify backfill is temporarily disabled/);
 });

@@ -26,31 +26,24 @@ import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const { shop } = await ensureShopifyTenant(prisma, {
+  await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "app_shell" },
   });
-  const completedInterview = await prisma.merchantInterview.findFirst({
-    where: {
-      shopId: shop.id,
-      status: { in: ["completed", "skipped"] },
-    },
-    select: { id: true },
-  });
 
   return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     showDevTools: process.env.ENABLE_DEV_TOOLS !== "false",
-    onboardingComplete: Boolean(completedInterview),
   };
 };
 
 export default function App() {
-  const { apiKey, showDevTools, onboardingComplete } = useLoaderData<typeof loader>();
+  const { apiKey, showDevTools } = useLoaderData<typeof loader>();
   const location = useLocation();
   const navigate = useNavigate();
+  const focusedOnboarding = location.pathname === "/app";
   const navigationItems = [
     {
       label: "Jefe",
@@ -76,7 +69,7 @@ export default function App() {
     <AppProvider embedded apiKey={apiKey}>
       <Frame
         navigation={
-          location.pathname === "/app" && !onboardingComplete ? undefined : (
+          focusedOnboarding ? undefined : (
             <Navigation location={location.pathname}>
               <Navigation.Section items={navigationItems} />
             </Navigation>

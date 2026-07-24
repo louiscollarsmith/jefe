@@ -7,6 +7,10 @@
 - Built out the standalone synthetic Shopify tool so disposable stores can now import products, collections, variants, locations, inventory, customers, orders and refunds from `tools/synthetic-shopify`.
 - Added post-import Shopify count validation, commercial reconciliation and Merchant Memory belief-coverage reports to the synthetic Shopify run manifest.
 - Added clearer Shopify GraphQL and mutation user-error output so operators can see the exact API response when a seed or wipe fails.
+- Added the Channels onboarding step after Goals so merchants choose and verify where Jefe should contact them before continuing to Insights.
+- Added Slack channel onboarding with server-side OAuth, tenant-bound single-use state, workspace storage, backend destination selection, test-message verification and disconnect support.
+- Added WhatsApp channel onboarding with explicit operational-message consent, E.164 number normalisation, hashed short-lived verification codes, attempt limits, confirmation messages and masked-number display.
+- Added encrypted channel credential storage, safe channel connection summaries and provider-neutral test message delivery tracking for Slack and WhatsApp.
 
 ### Changed
 
@@ -16,6 +20,19 @@
 - Updated synthetic Shopify live writes for Shopify Admin API 2026-07, including idempotent inventory and refund mutations, order pacing/retry handling and positive refund transaction validation.
 - Expanded disposable-store wiping to remove collections, customers attached to deleted orders and test orders when `--include-orders` is passed.
 - Tightened refund generation and validation so the tool does not try to create zero-value Shopify refunds.
+- Temporarily focused onboarding on Channels only, with Slack and WhatsApp connector panels exposed directly, real provider logo assets and no Shopify backfill started from `/app`.
+- Temporarily disabled Shopify backfill queueing and processing on this Channels-focused branch.
+- Updated Channels onboarding so Slack starts OAuth immediately, Slack channel selection sends the first Jefe test message, and WhatsApp verification stays as a simple phone-number flow with a welcome message after confirmation.
+- Updated the channel onboarding environment example and WhatsApp adapter to use Meta WhatsApp Cloud API as the only WhatsApp provider for this branch.
+- Temporarily greyed out WhatsApp on Channels as coming soon while Slack remains the active connection path.
+- Removed duplicate card-level channel status badges so provider cards show only the relevant action state.
+- Updated Slack authorisation so pending OAuth uses a small popup window, disables only the Slack action button while waiting, removes the old pending/failed panel, and resets abandoned authorisation attempts on page reload.
+- Fixed Slack OAuth retry from stale error URLs so route revalidation after pressing Connect Slack does not consume the new OAuth state before Slack calls back.
+- Moved post-OAuth Slack channel selection into a modal with workspace context, in-place channel refresh, private-channel guidance and separate Test and Save actions.
+- Removed the stale `slack_ready` URL notice after saving a Slack channel.
+- Restored the temporary onboarding route to Connect then Channels while keeping Goals disabled.
+- Restored the Connect learning counters, progress milestones and Shopify backfill processing before the Channels step.
+- Updated onboarding progression to Connect, Goals, Channels and Insights, including safe handling for older `interview` step links.
 - Removed the Connect waiting-state Check status action so connected stores see no handoff button until Goals is ready.
 - Fixed the Connect handoff so Continue to Goals only appears after the noticing row has completed.
 - Updated the onboarding stepper so completed steps use a quieter outlined style and only the current step appears active.
@@ -29,6 +46,11 @@
 
 ### Fixed
 
+- Fixed Channels onboarding development loads by moving shared channel status labels out of the server-only channel service so the embedded route can build for the browser.
+- Fixed Slack OAuth launch from the embedded Channels page so Slack opens in a separate browser window instead of being blocked inside Shopify's iframe.
+- Fixed Slack OAuth callback handling so Slack uses a stable app callback URL while Shopify embedded return context is stored in OAuth state.
+- Fixed Slack OAuth completion so the callback popup refreshes the embedded Channels page and closes instead of loading Shopify's session-token relay as a blank standalone page.
+- Fixed WhatsApp verification consent submission so a checked consent box is reliably accepted by the Channels action.
 - Fixed the remaining embedded onboarding hydration failure by loading Jefe's route styles from a stylesheet instead of hydration-sensitive inline style text, so Connect and Interview keep their Polaris layout on first load and refresh.
 - Fixed embedded Shopify onboarding loads so App Bridge session bootstrap and empty Shopify auth responses are served without React hydration, preventing the large warning screen and hydration mismatch overlay from replacing Jefe onboarding.
 - Fixed embedded app failure states so genuine route errors render as a readable Polaris error page instead of raw Shopify boundary output or an oversized warning icon.
