@@ -30,7 +30,7 @@ Local `.env` defaults:
 ```shell
 DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
 SHOPIFY_API_VERSION="2026-07"
-SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations
+SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations
 ENABLE_DEV_TOOLS=true
 ENABLE_SHOPIFY_BACKFILL_LOOP=true
 SHOPIFY_BACKFILL_INITIAL_DELAY_MS=5000
@@ -43,7 +43,7 @@ After OAuth, Jefe queues an evidence backfill instead of blocking the callback. 
 The retained Shopify scope set is:
 
 ```shell
-SCOPES=read_products,read_orders,read_all_orders,read_inventory,read_locations
+SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations
 ```
 
 After installing the app on a development store, run a local evidence backfill with:

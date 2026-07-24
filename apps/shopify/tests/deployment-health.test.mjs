@@ -5,7 +5,7 @@ import { buildHealthPayload } from "../app/services/deployment-health.server.js"
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
 
 const EXPECTED_SHOPIFY_SCOPES =
-  "read_products,read_orders,read_all_orders,read_inventory,read_locations";
+  "read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations";
 
 test("deployment health reports the configured app environment", () => {
   assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
@@ -65,6 +65,7 @@ test("tracked Shopify scope declarations stay in sync", async () => {
     ".env.example",
     "README.md",
     "docs/shopify-ingestion.md",
+    "../../docs/ops/deployment_staging_railway_neon.md",
   ];
 
   for (const file of exactScopeFiles) {
