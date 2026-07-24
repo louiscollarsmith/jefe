@@ -5,6 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { normalizeShopDomain } from "../../../../apps/shopify/app/lib/shopify/admin-graphql.server.js";
 import { readAccessTokenFromEnv } from "./safety.mjs";
 
+export const DEFAULT_SHOPIFY_TOKEN_REFRESH_GRACE_MS = 5 * 60 * 1000;
+
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../..",
@@ -12,7 +14,7 @@ const REPO_ROOT = path.resolve(
 
 /**
  * @param {{ shopDomain: string; source?: string }} input
- * @returns {Promise<{ accessToken: string; source: string }>}
+ * @returns {Promise<{ accessToken: string; source: string; sessionId?: string | null; expires?: string | null; refreshed?: boolean }>}
  */
 export async function resolveShopifyAccessToken(input) {
   const source = input.source || process.env.SYNTHETIC_SHOPIFY_CREDENTIAL_SOURCE || "db";
@@ -39,12 +41,18 @@ export async function resolveShopifyAccessToken(input) {
   if (source === "db" || source === "auto") {
     const sessionResult = await readAccessTokenFromLocalDb(shopDomain);
     if (sessionResult.accessToken) {
-      return { accessToken: sessionResult.accessToken, source: "local_prisma_session" };
+      return {
+        accessToken: sessionResult.accessToken,
+        source: "local_prisma_session",
+        sessionId: sessionResult.sessionId,
+        expires: sessionResult.expires,
+        refreshed: sessionResult.refreshed,
+      };
     }
     if (source === "db") {
       if (sessionResult.expiredSession) {
         throw new Error(
-          `Found an offline Shopify session for ${shopDomain}, but it expired at ${sessionResult.expiredSession.expires}. Reopen or reinstall the local Shopify app for that shop so OAuth stores a fresh offline session, then retry.`,
+          `Found an offline Shopify session for ${shopDomain}, but it expired at ${sessionResult.expiredSession.expires} and could not be refreshed. Reopen or reinstall the local Shopify app for that shop so OAuth stores a fresh offline session, then retry.`,
         );
       }
       throw new Error(
@@ -107,14 +115,27 @@ async function readAccessTokenFromLocalDb(shopDomain) {
       },
     });
     const now = Date.now();
-    const usable = sessions.find(
-      (session) => !session.expires || new Date(session.expires).getTime() > now,
-    );
-    const expiredSession = sessions.find(
-      (session) => session.expires && new Date(session.expires).getTime() <= now,
-    );
+    const sorted = sortOfflineSessions(sessions);
+    const usable = sorted.find((session) => !session.expires || new Date(session.expires).getTime() > now);
+    const expiredSession = sorted.find((session) => session.expires && new Date(session.expires).getTime() <= now);
+    const candidate = usable || expiredSession;
+
+    if (candidate?.refreshToken && shouldRefreshSession(candidate, now)) {
+      const refreshed = await refreshOfflineSession(prisma, candidate, shopDomain);
+      return {
+        accessToken: refreshed.accessToken,
+        sessionId: refreshed.id,
+        expires: refreshed.expires ? refreshed.expires.toISOString() : null,
+        refreshed: true,
+        expiredSession: null,
+      };
+    }
+
     return {
       accessToken: usable?.accessToken || null,
+      sessionId: usable?.id || null,
+      expires: usable?.expires ? usable.expires.toISOString() : null,
+      refreshed: false,
       expiredSession: expiredSession
         ? { id: expiredSession.id, expires: expiredSession.expires.toISOString() }
         : null,
@@ -122,4 +143,80 @@ async function readAccessTokenFromLocalDb(shopDomain) {
   } finally {
     await prisma.$disconnect();
   }
+}
+
+function sortOfflineSessions(sessions) {
+  return [...sessions].sort((left, right) => sessionExpiryValue(right) - sessionExpiryValue(left));
+}
+
+function sessionExpiryValue(session) {
+  return session.expires ? new Date(session.expires).getTime() : Number.POSITIVE_INFINITY;
+}
+
+function shouldRefreshSession(session, now = Date.now()) {
+  if (!session.expires) return false;
+  if (session.refreshTokenExpires && new Date(session.refreshTokenExpires).getTime() <= now) {
+    throw new Error(
+      `Offline Shopify session ${session.id} expired at ${session.expires.toISOString()}, and its refresh token expired at ${session.refreshTokenExpires.toISOString()}. Reopen or reinstall the local Shopify app for that shop so OAuth stores a fresh offline session, then retry.`,
+    );
+  }
+  return new Date(session.expires).getTime() - now <= shopifyTokenRefreshGraceMs();
+}
+
+export function shopifyTokenRefreshGraceMs() {
+  const value = Number(process.env.SYNTHETIC_SHOPIFY_TOKEN_REFRESH_GRACE_MS);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_SHOPIFY_TOKEN_REFRESH_GRACE_MS;
+}
+
+async function refreshOfflineSession(prisma, session, shopDomain) {
+  const apiKey = process.env.SHOPIFY_API_KEY;
+  const apiSecret = process.env.SHOPIFY_API_SECRET;
+  if (!apiKey || !apiSecret) {
+    throw new Error(
+      `Offline Shopify session ${session.id} is expired or close to expiry, but SHOPIFY_API_KEY and SHOPIFY_API_SECRET are not available to refresh it.`,
+    );
+  }
+
+  const response = await fetch(`https://${shopDomain}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      client_id: apiKey,
+      client_secret: apiSecret,
+      refresh_token: session.refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+  const responseBody = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = responseBody ? `: ${JSON.stringify(responseBody)}` : "";
+    throw new Error(
+      `Shopify rejected refresh for offline session ${session.id} with HTTP ${response.status}${detail}. Reopen or reinstall the local Shopify app for that shop so OAuth stores a fresh offline session, then retry.`,
+    );
+  }
+
+  if (!responseBody?.access_token) {
+    throw new Error(`Shopify refresh for offline session ${session.id} did not return an access token.`);
+  }
+
+  const expires = responseBody.expires_in ? new Date(Date.now() + Number(responseBody.expires_in) * 1000) : null;
+  const refreshTokenExpires =
+    responseBody.refresh_token_expires_in ? new Date(Date.now() + Number(responseBody.refresh_token_expires_in) * 1000) : session.refreshTokenExpires;
+
+  return prisma.session.update({
+    where: { id: session.id },
+    data: {
+      shop: shopDomain,
+      state: session.state || "",
+      isOnline: false,
+      accessToken: responseBody.access_token,
+      scope: responseBody.scope || session.scope,
+      expires,
+      refreshToken: responseBody.refresh_token || session.refreshToken,
+      refreshTokenExpires,
+    },
+  });
 }

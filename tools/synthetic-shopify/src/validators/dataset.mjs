@@ -11,6 +11,31 @@ export function validateSyntheticDataset(dataset) {
   const productsById = new Map(dataset.products.map((product) => [product.sourceId, product]));
   const variantsById = new Map(dataset.products.flatMap((product) => product.variants.map((variant) => [variant.sourceId, variant])));
   const customersById = new Map(dataset.customers.map((customer) => [customer.sourceId, customer]));
+  expectUnique(
+    failures,
+    "product source IDs",
+    dataset.products.map((product) => product.sourceId),
+  );
+  expectUnique(
+    failures,
+    "product handles",
+    dataset.products.map((product) => product.handle),
+  );
+  expectUnique(
+    failures,
+    "variant source IDs",
+    dataset.products.flatMap((product) => product.variants.map((variant) => variant.sourceId)),
+  );
+  expectUnique(
+    failures,
+    "customer emails",
+    dataset.customers.map((customer) => customer.email),
+  );
+  expectUnique(
+    failures,
+    "order source IDs",
+    dataset.orders.map((order) => order.sourceId),
+  );
 
   expectEqual(failures, "active product count", dataset.plannedCounts.activeProducts, dataset.products.filter((product) => product.status === "ACTIVE").length);
   expectEqual(failures, "archived product count", dataset.plannedCounts.archivedProducts, dataset.products.filter((product) => product.status === "ARCHIVED").length);
@@ -20,6 +45,14 @@ export function validateSyntheticDataset(dataset) {
   for (const customer of dataset.customers) {
     if (!customer.email.endsWith("@example.com")) failures.push(`Customer ${customer.sourceId} uses a non-reserved email address`);
     if (customer.phone) failures.push(`Customer ${customer.sourceId} unexpectedly has a phone number`);
+  }
+
+  for (const product of dataset.products) {
+    expectUnique(
+      failures,
+      `${product.sourceId} option values`,
+      product.variants.map((variant) => variant.optionValue),
+    );
   }
 
   for (const order of dataset.orders) {
@@ -51,6 +84,18 @@ export function validateSyntheticDataset(dataset) {
     if (Math.abs(transactionTotal - refund.amount) > 0.02) failures.push(`Refund ${refund.sourceId} does not reconcile to successful refund transactions`);
     for (const item of refund.refundLineItems) {
       if (!order.lineItems.some((line) => line.sourceId === item.orderLineItemSourceId)) failures.push(`Refund ${refund.sourceId} references unknown original line item ${item.orderLineItemSourceId}`);
+    }
+  }
+  for (const order of dataset.orders) {
+    const orderRefunds = dataset.refunds.filter((refund) => refund.orderSourceId === order.sourceId);
+    const refundedTotal = money(orderRefunds.reduce((sum, refund) => sum + refund.amount, 0));
+    if (refundedTotal - order.totalPrice > 0.02) failures.push(`Refunds for ${order.sourceId} total ${refundedTotal}, greater than order payment ${order.totalPrice}`);
+    for (const line of order.lineItems) {
+      const refundedQuantity = orderRefunds
+        .flatMap((refund) => refund.refundLineItems)
+        .filter((item) => item.orderLineItemSourceId === line.sourceId)
+        .reduce((sum, item) => sum + item.quantity, 0);
+      if (refundedQuantity > line.quantity) failures.push(`Refunds for ${order.sourceId} line ${line.sourceId} refund quantity ${refundedQuantity}, greater than purchased quantity ${line.quantity}`);
     }
   }
 
@@ -100,6 +145,20 @@ export function assertDatasetValid(dataset) {
 
 function expectEqual(failures, label, expected, actual) {
   if (expected !== actual) failures.push(`${label}: expected ${expected}, found ${actual}`);
+}
+
+function expectUnique(failures, label, values) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const value of values) {
+    const key = String(value || "")
+      .trim()
+      .toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) duplicates.add(value);
+    seen.add(key);
+  }
+  if (duplicates.size) failures.push(`${label} must be unique: ${[...duplicates].join(", ")}`);
 }
 
 function groupSum(rows, key, valueKey) {
