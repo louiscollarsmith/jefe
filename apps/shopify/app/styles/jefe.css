@@ -9,7 +9,8 @@
   height: 100dvh;
   inset: 0;
   max-height: 100dvh;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 28px 20px;
   position: fixed;
   width: 100%;
@@ -82,13 +83,12 @@
   margin: 0 auto;
   max-width: 760px;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   padding: 32px 0 0;
   width: 100%;
 }
 
 .JefeOnboardingScene > * {
-  max-height: 100%;
   width: 100%;
 }
 
@@ -158,6 +158,212 @@
   justify-content: center;
   min-height: 36px;
   width: 100%;
+}
+
+.JefeChannelGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+.JefeChannelCardForm {
+  display: flex;
+  margin: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.JefeChannelCard {
+  align-items: center;
+  appearance: none;
+  background: #fffdfa;
+  border: 1px solid #d8d0c8;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(39, 55, 77, 0.06);
+  color: #27231f;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 10px;
+  min-height: 196px;
+  padding: 18px;
+  text-align: center;
+  text-decoration: none;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+  width: 100%;
+}
+
+.JefeChannelCard:hover,
+.JefeChannelCard:focus-visible {
+  border-color: #1f3a63;
+  box-shadow: 0 16px 34px rgba(31, 58, 99, 0.12);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.JefeChannelCard.is-active,
+.JefeChannelCard.is-connected {
+  border-color: #1f3a63;
+}
+
+.JefeChannelCard.is-unavailable {
+  background: #f2f0ed;
+  border-color: #d6d0c8;
+  box-shadow: none;
+  color: #746d65;
+  cursor: default;
+}
+
+.JefeChannelCard.is-unavailable:hover,
+.JefeChannelCard.is-unavailable:focus-visible {
+  border-color: #d6d0c8;
+  box-shadow: none;
+  outline: none;
+  transform: none;
+}
+
+.JefeChannelCard.is-inert {
+  cursor: default;
+}
+
+.JefeChannelCard.is-inert:hover,
+.JefeChannelCard.is-inert:focus-visible {
+  border-color: #1f3a63;
+  box-shadow: 0 12px 30px rgba(39, 55, 77, 0.06);
+  outline: none;
+  transform: none;
+}
+
+.JefeChannelIcon {
+  align-items: center;
+  border-radius: 8px;
+  display: inline-flex;
+  height: 52px;
+  justify-content: center;
+  width: 52px;
+}
+
+.JefeChannelIcon.is-slack {
+  background: #fff;
+  border: 1px solid #ebe5df;
+}
+
+.JefeChannelIcon.is-whatsapp {
+  background: #fff;
+  border: 1px solid #ebe5df;
+}
+
+.JefeChannelLogo {
+  display: block;
+  height: 44px;
+  object-fit: contain;
+  width: 44px;
+}
+
+.JefeChannelIcon.is-whatsapp .JefeChannelLogo {
+  height: 40px;
+  width: 40px;
+}
+
+.JefeChannelCard.is-unavailable .JefeChannelLogo {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
+.JefeChannelCard.is-unavailable .JefeChannelDescription,
+.JefeChannelCard.is-unavailable .JefeChannelSummary {
+  color: #857d75;
+}
+
+.JefeChannelName {
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.JefeChannelDescription {
+  color: #6d625b;
+  font-size: 13px;
+  line-height: 1.35;
+  max-width: 24ch;
+}
+
+.JefeChannelSummary {
+  color: #4d463f;
+  font-size: 12px;
+  line-height: 1.35;
+  min-height: 18px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.JefeChannelPrimaryActionForm {
+  display: flex;
+  justify-content: center;
+  margin-top: auto;
+  width: 100%;
+}
+
+.JefeChannelActionText {
+  background: #1f3a63;
+  border: 0;
+  border-radius: 6px;
+  color: #fffdfa;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  justify-content: center;
+  line-height: 1.2;
+  margin-top: auto;
+  min-height: 34px;
+  min-width: 132px;
+  padding: 10px 12px;
+}
+
+.JefeChannelCard.is-unavailable .JefeChannelActionText {
+  background: #85807a;
+  color: #fffdfa;
+}
+
+.JefeChannelActionText.is-disabled {
+  background: #d5d1cb;
+  color: #6f6860;
+}
+
+.JefeChannelPanelSlot {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  width: 100%;
+}
+
+.JefeChannelPanelSlot:empty {
+  display: none;
+}
+
+.JefeChannelForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.JefeSlackDestinationControl {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+}
+
+.JefeSlackDestinationSelect {
+  min-width: 0;
 }
 
 .JefeMark {
@@ -230,6 +436,10 @@
 
   .JefeOnboardingScene {
     padding-top: 24px;
+  }
+
+  .JefeChannelGrid {
+    grid-template-columns: 1fr;
   }
 
   .JefeDisplayHeading {

@@ -4,11 +4,12 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Form,
   redirect,
   useActionData,
+  useFetcher,
   useLocation,
   useLoaderData,
   useNavigate,
@@ -22,8 +23,11 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   InlineGrid,
   InlineStack,
+  Modal,
+  Select,
   Spinner,
   Text,
   TextField,
@@ -31,16 +35,27 @@ import {
 
 import prisma from "../db.server";
 import {
+  channelActionError,
+  completeSlackConnection,
+  confirmWhatsAppVerification,
+  disconnectChannelConnection,
+  hasVerifiedChannelConnection,
+  listChannelConnections,
+  listSlackDestinations,
+  resetPendingSlackAuthorisations,
+  selectSlackDestination,
+  selectSlackDestinationAndSendWelcome,
+  sendChannelTestMessage,
+  startSlackConnection,
+  startWhatsAppVerification,
+} from "../lib/channels/service.server.js";
+import { CHANNEL_STATUS } from "../lib/channels/status.js";
+import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
 } from "../lib/merchant-memory/constants.server";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
-import {
-  getMerchantInterviewExperience,
-  submitInterviewAnswer,
-  updateInterviewStatus,
-} from "../lib/merchant-memory/interview.server";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -49,21 +64,9 @@ import {
   splitScopes,
 } from "../services/shopify-backfill-status.server";
 
-export const ONBOARDING_STEPS = ["connect", "interview"] as const;
-const REMOVED_ONBOARDING_STEPS = new Set([
-  "integrations",
-  "goals",
-  "channels",
-  "insights",
-  "plan",
-]);
+export const ONBOARDING_STEPS = ["connect", "channels"] as const;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
-const UI_INTERVIEW_STATUS = {
-  inProgress: "in_progress",
-  paused: "paused",
-  completed: "completed",
-  skipped: "skipped",
-};
+const WHATSAPP_COMING_SOON: boolean = true;
 const SHOP_METADATA_QUERY = `#graphql
   query JefeShopMetadata {
     shop {
@@ -75,6 +78,40 @@ const SHOP_METADATA_QUERY = `#graphql
     }
   }
 `;
+const WHATSAPP_COUNTRY_OPTIONS = [
+  { label: "United Kingdom (+44)", value: "GB" },
+  { label: "United States / Canada (+1)", value: "US" },
+  { label: "Ireland (+353)", value: "IE" },
+  { label: "Australia (+61)", value: "AU" },
+  { label: "France (+33)", value: "FR" },
+  { label: "Germany (+49)", value: "DE" },
+  { label: "Italy (+39)", value: "IT" },
+  { label: "Netherlands (+31)", value: "NL" },
+  { label: "Spain (+34)", value: "ES" },
+];
+
+type SafeActionError =
+  | string
+  | { provider?: string | null; code?: string | null; message: string }
+  | null;
+type ChannelConnectionView = {
+  id?: string | null;
+  provider: string;
+  status: string;
+  connected: boolean;
+  verified: boolean;
+  accountName?: string | null;
+  destinationId?: string | null;
+  destinationLabel?: string | null;
+  maskedDestination?: string | null;
+  lastSuccessfulMessageAt?: string | null;
+};
+type SlackDestinationView = {
+  id: string;
+  label: string;
+  isPrivate?: boolean;
+  isMember?: boolean | null;
+};
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -87,43 +124,125 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
 
-  if (intent === "answer") {
-    const result = await submitInterviewAnswer(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      turnId: String(formData.get("turnId") ?? ""),
-      answer: String(formData.get("answer") ?? ""),
-      idempotencyKey: String(formData.get("idempotencyKey") ?? "") || null,
-      logger: console,
-    });
-    return result.ok ? { ok: true } : { ok: false, error: result.error };
-  }
+  if (intent.startsWith("channel.")) {
+    try {
+      if (intent === "channel.slack.start") {
+        const result = await startSlackConnection(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          requestUrl: request.url,
+        });
+        return {
+          ok: true,
+          provider: "slack",
+          redirectUrl: result.authoriseUrl,
+        };
+      }
 
-  if (
-    intent === "pause" ||
-    intent === "resume" ||
-    intent === "skip" ||
-    intent === "tell_more"
-  ) {
-    const result = await updateInterviewStatus(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      intent,
-      logger: console,
-    });
-    return result.ok ? { ok: true } : { ok: false, error: result.error };
-  }
+      if (intent === "channel.slack.test_destination") {
+        await selectSlackDestinationAndSendWelcome(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          destinationId: String(formData.get("destinationId") ?? ""),
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "channels",
+            channelProvider: "slack",
+            channelMode: null,
+            channelNotice: "slack_test_sent",
+          }),
+        );
+      }
 
-  if (intent === "complete") {
-    const result = await updateInterviewStatus(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      intent,
-      logger: console,
-    });
-    return result.ok
-      ? redirect(appPathFromRequest(request, { view: "memory", step: null }))
-      : { ok: false, error: result.error };
+      if (intent === "channel.slack.refresh_destinations") {
+        const destinations = await listSlackDestinations(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        });
+        return {
+          ok: true,
+          provider: "slack",
+          slackDestinations: destinations,
+        };
+      }
+
+      if (intent === "channel.slack.select_destination") {
+        await selectSlackDestination(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          destinationId: String(formData.get("destinationId") ?? ""),
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "channels",
+            channelProvider: null,
+            channelMode: null,
+            channelNotice: null,
+          }),
+        );
+      }
+
+      if (intent === "channel.whatsapp.start_verification") {
+        await startWhatsAppVerification(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          countryCode: String(formData.get("countryCode") ?? ""),
+          phoneNumber: String(formData.get("phoneNumber") ?? ""),
+          consentAccepted: formDataHasTruthyValue(formData, "consentAccepted"),
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "channels",
+            channelProvider: "whatsapp",
+            channelMode: null,
+            channelNotice: "whatsapp_code_sent",
+          }),
+        );
+      }
+
+      if (intent === "channel.whatsapp.confirm") {
+        await confirmWhatsAppVerification(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          code: String(formData.get("verificationCode") ?? ""),
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "channels",
+            channelProvider: null,
+            channelMode: null,
+            channelNotice: "whatsapp_ready",
+          }),
+        );
+      }
+
+      if (intent === "channel.send_test") {
+        await sendChannelTestMessage(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          provider: String(formData.get("provider") ?? ""),
+          idempotencyKey: String(formData.get("idempotencyKey") ?? "") || null,
+          appUrl: process.env.SHOPIFY_APP_URL || new URL(request.url).origin,
+        });
+        return { ok: true };
+      }
+
+      if (intent === "channel.disconnect") {
+        await disconnectChannelConnection(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          provider: String(formData.get("provider") ?? ""),
+        });
+        return { ok: true };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        provider: String(formData.get("provider") ?? ""),
+        error: channelActionError(error),
+      };
+    }
   }
 
   return { ok: false, error: "Unsupported action." };
@@ -137,124 +256,194 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: splitScopes(session.scope),
     rawPayload: { source: "jefe_onboarding_loader" },
   });
+  const url = new URL(request.url);
+  const scopes = splitScopes(session.scope);
   const storeName = await getPersistedStoreName({
     shop,
     merchantName: merchant.name,
     shopDomain: session.shop,
     accessToken: session.accessToken,
   });
-
   const readiness = await getMerchantMemoryReadiness({
     merchantId: merchant.id,
     shopId: shop.id,
     shopDomain: session.shop,
     sessionId: session.id,
-    scopes: splitScopes(session.scope),
+    scopes,
   });
   const metrics = await getStoreMetrics({
     merchantId: merchant.id,
     shopId: shop.id,
   });
   const backfill = summarizeBackfill(readiness, metrics);
-  const url = new URL(request.url);
-  const requestedStep = url.searchParams.get("step");
   const connected = await hasActiveShopifyConnection({
     merchantId: merchant.id,
     shopDomain: session.shop,
   });
 
-  if (!readiness.memoryReady) {
-    return {
-      shop: session.shop,
-      merchantName: merchant.name,
-      storeName,
-      activeStep: "connect" as const,
-      view: "onboarding" as const,
-      connected,
-      memoryReady: false,
-      backfill,
-      metrics,
-      interview: null,
-      beliefs: [],
-    };
+  if (
+    url.searchParams.get("channelProvider") === "slack" &&
+    (url.searchParams.has("code") || url.searchParams.has("error"))
+  ) {
+    try {
+      await completeSlackConnection(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        state: url.searchParams.get("state"),
+        code: url.searchParams.get("code"),
+        error: url.searchParams.get("error"),
+      });
+      return redirect(
+        appPathFromSearch(url.search, {
+          code: null,
+          error: null,
+          state: null,
+          step: "channels",
+          channelProvider: "slack",
+          channelNotice: "slack_connected",
+        }),
+      );
+    } catch (error) {
+      const safeError = channelActionError(error);
+      return redirect(
+        appPathFromSearch(url.search, {
+          code: null,
+          error: null,
+          state: null,
+          step: "channels",
+          channelProvider: "slack",
+          channelNotice: safeError.code,
+        }),
+      );
+    }
   }
 
-  const [interview, beliefs] = await Promise.all([
-    getMerchantInterviewExperience(prisma, {
+  if (shouldResetPendingSlackAuthorisations(request, url)) {
+    await resetPendingSlackAuthorisations(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+  }
+  const [channelConnections, hasVerifiedChannel] = await Promise.all([
+    listChannelConnections(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
     }),
-    getCompactBeliefSnapshot({
+    hasVerifiedChannelConnection(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
     }),
   ]);
-  const onboardingComplete = [
-    UI_INTERVIEW_STATUS.completed,
-    UI_INTERVIEW_STATUS.skipped,
-  ].includes(interview.interview.status);
-  const view = onboardingComplete
-    ? ("memory" as const)
-    : ("onboarding" as const);
-
-  const canContinueToGoals =
-    readiness.memoryReady && Boolean(backfill.complete);
+  const slackConnection = channelConnections.find((item) => item.provider === "slack");
+  const shouldLoadSlackDestinations =
+    slackConnection &&
+    [
+      CHANNEL_STATUS.needsConfiguration,
+      CHANNEL_STATUS.connected,
+      CHANNEL_STATUS.degraded,
+    ].includes(slackConnection.status);
+  const slackDestinationResult = shouldLoadSlackDestinations
+    ? await listSlackDestinations(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      })
+        .then((destinations) => ({ destinations, error: null }))
+        .catch((error) => ({
+          destinations: [],
+          error: channelActionError(error).message,
+        }))
+    : { destinations: [], error: null };
 
   return {
     shop: session.shop,
     merchantName: merchant.name,
     storeName,
-    activeStep: normalizeOnboardingStep(requestedStep, canContinueToGoals),
-    view,
+    activeStep: normalizeOnboardingStep(url, readiness.memoryReady, backfill.complete),
     connected,
-    memoryReady: true,
+    memoryReady: readiness.memoryReady,
     backfill,
     metrics,
-    interview,
-    beliefs,
+    channelConnections,
+    slackDestinations: slackDestinationResult.destinations,
+    slackDestinationError: slackDestinationResult.error,
+    hasVerifiedChannel,
   };
 };
 
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const canContinueToGoals =
+  const safeActionError = getSafeActionError(actionData);
+  const canContinueToChannels =
     data.memoryReady && Boolean(data.backfill.complete);
   const shouldPollConnect =
-    data.view === "onboarding" && data.connected && !canContinueToGoals;
+    data.activeStep === "connect" && data.connected && !canContinueToChannels;
 
+  useTopLevelRedirect(getActionRedirectUrl(actionData));
   useConnectStatusPolling(shouldPollConnect);
-
-  if (data.view === "memory") {
-    return (
-      <MerchantMemoryView storeName={data.storeName} beliefs={data.beliefs} />
-    );
-  }
 
   return (
     <OnboardingShell activeStep={data.activeStep}>
-      {data.activeStep === "connect" || !data.memoryReady ? (
+      {data.activeStep === "connect" ? (
         <ConnectStep
           storeName={data.storeName}
           backfill={data.backfill}
           metrics={data.metrics}
           connected={data.connected}
-          canContinue={canContinueToGoals}
+          canContinue={canContinueToChannels}
         />
-      ) : null}
-
-      {data.activeStep === "interview" &&
-      canContinueToGoals &&
-      data.interview ? (
-        <InterviewStep
-          experience={data.interview}
-          actionError={
-            actionData && "error" in actionData ? actionData.error : null
-          }
+      ) : (
+        <ChannelsStep
+          merchantName={data.merchantName}
+          connections={data.channelConnections}
+          slackDestinations={data.slackDestinations}
+          slackDestinationError={data.slackDestinationError}
+          hasVerifiedChannel={data.hasVerifiedChannel}
+          actionError={safeActionError}
         />
-      ) : null}
+      )}
     </OnboardingShell>
   );
+}
+
+function useTopLevelRedirect(url: string | null) {
+  useEffect(() => {
+    if (!url) return;
+    openOAuthWindow(url);
+  }, [url]);
+}
+
+function openOAuthWindow(url: string) {
+  const width = 560;
+  const height = 720;
+  const screenLeft =
+    "screenLeft" in globalThis && typeof globalThis.screenLeft === "number"
+      ? globalThis.screenLeft
+      : 0;
+  const screenTop =
+    "screenTop" in globalThis && typeof globalThis.screenTop === "number"
+      ? globalThis.screenTop
+      : 0;
+  const outerWidth =
+    "outerWidth" in globalThis && typeof globalThis.outerWidth === "number"
+      ? globalThis.outerWidth
+      : width;
+  const outerHeight =
+    "outerHeight" in globalThis && typeof globalThis.outerHeight === "number"
+      ? globalThis.outerHeight
+      : height;
+  const left = Math.max(0, Math.round(screenLeft + (outerWidth - width) / 2));
+  const top = Math.max(0, Math.round(screenTop + (outerHeight - height) / 2));
+  const features = [
+    `width=${width}`,
+    `height=${height}`,
+    `left=${left}`,
+    `top=${top}`,
+    "popup=yes",
+    "resizable=yes",
+    "scrollbars=yes",
+  ].join(",");
+  globalThis.open(url, "jefe-slack-oauth", features);
 }
 
 function OnboardingShell({
@@ -277,7 +466,8 @@ function OnboardingStepper({
 }: {
   activeStep: (typeof ONBOARDING_STEPS)[number];
 }) {
-  const appNavigate = useEmbeddedAppNavigate();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   return (
     <nav className="JefeStepper" aria-label="Onboarding progress">
@@ -293,12 +483,19 @@ function OnboardingStepper({
               complete ? "is-complete" : ""
             }`}
             aria-current={active ? "step" : undefined}
-            onClick={() => appNavigate({ step, view: null })}
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step,
+                  channelProvider: step === "connect" ? null : undefined,
+                  channelMode: step === "connect" ? null : undefined,
+                  channelNotice: step === "connect" ? null : undefined,
+                }),
+              )
+            }
           >
             <span className="JefeStepperNumber">{index + 1}</span>
-            <span className="JefeStepperLabel">
-              {step === "connect" ? "Connect" : "Goals"}
-            </span>
+            <span className="JefeStepperLabel">{onboardingStepLabel(step)}</span>
           </button>
         );
       })}
@@ -319,7 +516,8 @@ function ConnectStep({
   connected: boolean;
   canContinue: boolean;
 }) {
-  const appNavigate = useEmbeddedAppNavigate();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   return (
     <BlockStack gap="500" inlineAlign="center">
@@ -329,6 +527,7 @@ function ConnectStep({
           Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...
         </h1>
       </BlockStack>
+
       <div className="JefeLearningCard">
         <Card padding="500">
           <BlockStack gap="500">
@@ -337,13 +536,23 @@ function ConnectStep({
           </BlockStack>
         </Card>
       </div>
+
       <div className="JefeConnectAction">
         {canContinue ? (
           <Button
-            onClick={() => appNavigate({ step: "interview", view: null })}
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "channels",
+                  channelProvider: null,
+                  channelMode: null,
+                  channelNotice: null,
+                }),
+              )
+            }
             variant="primary"
           >
-            Continue to Goals
+            Continue to Channels
           </Button>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
@@ -470,347 +679,591 @@ function Milestone({
   );
 }
 
-function InterviewStep({
-  experience,
+function ChannelsStep({
+  merchantName,
+  connections,
+  slackDestinations,
+  slackDestinationError,
+  hasVerifiedChannel,
   actionError,
 }: {
-  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>;
-  actionError?: string | null;
+  merchantName: string;
+  connections: ChannelConnectionView[];
+  slackDestinations: SlackDestinationView[];
+  slackDestinationError?: string | null;
+  hasVerifiedChannel: boolean;
+  actionError: SafeActionError;
 }) {
-  const status = experience.interview.status;
-  const appNavigate = useEmbeddedAppNavigate();
-  const [answer, setAnswer] = useState("");
-  const navigation = useNavigation();
-  const submitting = navigation.state !== "idle";
-  const currentTurn =
-    status === UI_INTERVIEW_STATUS.inProgress ? experience.currentTurn : null;
-
-  const cardContent = (
-    <div className="JefeLearningCard">
-      <Card padding="500">
-        <BlockStack gap="500">
-          <InlineStack align="space-between" blockAlign="center" gap="300">
-            <Text as="p" tone="subdued">
-              {interviewProgressLabel(experience)}
-            </Text>
-            <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
-          </InlineStack>
-
-          {actionError ? (
-            <Box
-              padding="300"
-              background="bg-surface-critical"
-              borderRadius="200"
-            >
-              <Text as="p" tone="critical">
-                {actionError}
-              </Text>
-            </Box>
-          ) : null}
-
-          <LatestInterviewContext messages={experience.messages} />
-
-          {status === UI_INTERVIEW_STATUS.paused ? <PausedControls /> : null}
-
-          {currentTurn ? (
-            <InterviewQuestion
-              turn={currentTurn}
-              answer={answer}
-              setAnswer={setAnswer}
-            />
-          ) : null}
-
-          {status === UI_INTERVIEW_STATUS.inProgress &&
-          !currentTurn &&
-          experience.plannerUnavailableMessage ? (
-            <Box
-              padding="400"
-              background="bg-surface-secondary"
-              borderRadius="200"
-            >
-              <Text as="p">{experience.plannerUnavailableMessage}</Text>
-            </Box>
-          ) : null}
-
-          {experience.completionMessage &&
-          status === UI_INTERVIEW_STATUS.inProgress ? (
-            <CompletionControls message={experience.completionMessage} />
-          ) : null}
-
-          {status === UI_INTERVIEW_STATUS.completed ? (
-            <Button
-              onClick={() => appNavigate({ view: "memory", step: null })}
-              variant="primary"
-            >
-              View Merchant Memory
-            </Button>
-          ) : null}
-
-          {status === UI_INTERVIEW_STATUS.skipped ? (
-            <BlockStack gap="300">
-              <Text as="p">
-                Goals are skipped for now. Jefe will keep using Shopify-derived
-                memory until more context is added.
-              </Text>
-              <Button
-                onClick={() => appNavigate({ view: "memory", step: null })}
-                variant="primary"
-              >
-                View Merchant Memory
-              </Button>
-            </BlockStack>
-          ) : null}
-        </BlockStack>
-      </Card>
-    </div>
-  );
+  const location = useLocation();
+  const navigate = useNavigate();
+  const searchParams = new URLSearchParams(location.search);
+  const providerFromUrl = searchParams.get("channelProvider");
+  const channelMode = searchParams.get("channelMode");
+  const actionErrorProvider =
+    actionError && typeof actionError === "object" ? actionError.provider : null;
+  let activeProvider: "slack" | "whatsapp" | null = null;
+  if (
+    providerFromUrl === "slack" ||
+    (!WHATSAPP_COMING_SOON && providerFromUrl === "whatsapp")
+  ) {
+    activeProvider = providerFromUrl;
+  } else if (
+    actionErrorProvider === "slack" ||
+    (!WHATSAPP_COMING_SOON && actionErrorProvider === "whatsapp")
+  ) {
+    activeProvider = actionErrorProvider;
+  }
+  const slack = channelConnection(connections, "slack");
+  const whatsapp = channelConnection(connections, "whatsapp");
+  const slackUrl = channelProviderUrl(location.search, "slack");
+  const whatsappUrl = channelProviderUrl(location.search, "whatsapp");
+  const showSlackModal =
+    activeProvider === "slack" &&
+    ([
+      CHANNEL_STATUS.needsConfiguration,
+      CHANNEL_STATUS.connected,
+      CHANNEL_STATUS.degraded,
+    ] as string[]).includes(slack.status);
+  const closeSlackModal = () => {
+    navigate(
+      appPathFromSearch(location.search, {
+        channelProvider: null,
+        channelMode: null,
+        channelNotice: null,
+      }),
+    );
+  };
 
   return (
     <BlockStack gap="500" inlineAlign="center">
       <BlockStack gap="150" inlineAlign="center">
         <Text as="p" fontWeight="bold">
-          GOALS
+          STAY IN TOUCH
         </Text>
-        <h1 className="JefeDisplayHeading">Tell me what winning looks like.</h1>
+        <h1 className="JefeDisplayHeading">How should I reach you?</h1>
         <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve learned what I can from your store. I&apos;ll only ask about
-          things that could change what I recommend.
+          Connect Slack now. WhatsApp is coming soon.
         </Text>
       </BlockStack>
 
-      {currentTurn ? (
-        <Form method="post" className="JefeGoalsForm">
-          <input type="hidden" name="intent" value="answer" />
-          <input type="hidden" name="turnId" value={currentTurn.id} />
-          <input
-            type="hidden"
-            name="idempotencyKey"
-            value={`${currentTurn.id}:${currentTurn.createdAt}`}
-          />
-          {cardContent}
-          <div className="JefeGoalsActionRow">
-            <Button
-              onClick={() => appNavigate({ step: "connect", view: null })}
-            >
-              Back
-            </Button>
-            <Button
-              submit
-              variant="primary"
-              disabled={!answer.trim() || submitting}
-            >
-              Continue
-            </Button>
-          </div>
-        </Form>
-      ) : (
-        cardContent
-      )}
+      <div className="JefeChannelGrid">
+        <ChannelCard
+          provider="slack"
+          name="Slack"
+          description="Get Jefe updates in a channel your team already uses."
+          connection={slack}
+          merchantName={merchantName}
+          active={activeProvider === "slack"}
+          selectUrl={slackUrl}
+        />
+        <ChannelCard
+          provider="whatsapp"
+          name="WhatsApp"
+          description="Get important updates sent directly to your phone."
+          connection={whatsapp}
+          merchantName={merchantName}
+          active={activeProvider === "whatsapp"}
+          selectUrl={whatsappUrl}
+          unavailable={WHATSAPP_COMING_SOON}
+          unavailableLabel="Coming soon"
+        />
+      </div>
+
+      {!hasVerifiedChannel ? (
+        <Text as="p" tone="subdued" alignment="center">
+          Verify Slack to continue.
+        </Text>
+      ) : null}
+
+      {showSlackModal ? (
+        <SlackConnectionModal
+          open={showSlackModal}
+          onClose={closeSlackModal}
+          connection={slack}
+          destinations={slackDestinations}
+          destinationError={slackDestinationError}
+          actionError={providerActionError(actionError, "slack")}
+        />
+      ) : null}
+
+      {!WHATSAPP_COMING_SOON && activeProvider === "whatsapp" ? (
+        <WhatsAppConnectionPanel
+          connection={whatsapp}
+          startWithNumberForm={channelMode === "change_number"}
+          actionError={providerActionError(actionError, "whatsapp")}
+        />
+      ) : null}
     </BlockStack>
   );
 }
 
-function LatestInterviewContext({
-  messages,
+function ChannelCard({
+  provider,
+  name,
+  description,
+  connection,
+  merchantName,
+  active,
+  selectUrl,
+  unavailable = false,
+  unavailableLabel = null,
 }: {
-  messages: Awaited<
-    ReturnType<typeof getMerchantInterviewExperience>
-  >["messages"];
+  provider: "slack" | "whatsapp";
+  name: string;
+  description: string;
+  connection: ChannelConnectionView;
+  merchantName: string;
+  active: boolean;
+  selectUrl: string;
+  unavailable?: boolean;
+  unavailableLabel?: string | null;
 }) {
-  const latest = [...messages]
-    .reverse()
-    .find((message) =>
-      ["assistant_context", "assistant_acknowledgement"].includes(message.type),
-    );
-  if (!latest) return null;
-
-  return (
-    <Box padding="300" background="bg-surface-secondary" borderRadius="200">
-      <Text as="p" tone="subdued">
-        {latest.content}
-      </Text>
-    </Box>
-  );
-}
-
-function InterviewQuestion({
-  turn,
-  answer,
-  setAnswer,
-}: {
-  turn: NonNullable<
-    Awaited<ReturnType<typeof getMerchantInterviewExperience>>["currentTurn"]
-  >;
-  answer: string;
-  setAnswer: (value: string) => void;
-}) {
-  const suggestions = useMemo(
-    () =>
-      Array.isArray(turn.answerSuggestions)
-        ? turn.answerSuggestions.filter(
-            (item): item is string => typeof item === "string",
-          )
-        : [],
-    [turn.answerSuggestions],
-  );
-
-  return (
-    <BlockStack gap="400">
-      <BlockStack gap="200">
-        <Text as="h2" variant="headingLg">
-          {turn.question}
-        </Text>
-        {turn.relatedBeliefIds?.length ? (
-          <Text as="p" tone="subdued">
-            I have an initial belief here, but I need you to confirm or correct
-            it.
-          </Text>
-        ) : null}
-      </BlockStack>
-
-      {suggestions.length > 0 ? (
-        <InlineStack gap="200">
-          {suggestions.slice(0, 4).map((suggestion) => (
-            <Button key={suggestion} onClick={() => setAnswer(suggestion)}>
-              {suggestion}
-            </Button>
-          ))}
-        </InlineStack>
-      ) : null}
-
-      {turn.relatedBeliefIds?.length ? (
-        <InlineStack gap="200">
-          <Button onClick={() => setAnswer("Yes, that is right.")}>
-            Confirm
-          </Button>
-          <Button onClick={() => setAnswer("No, that is not right. ")}>
-            Correct
-          </Button>
-          <Button onClick={() => setAnswer("Here is the context: ")}>
-            Explain
-          </Button>
-        </InlineStack>
-      ) : null}
-
-      <TextField
-        label="Your answer"
-        name="answer"
-        value={answer}
-        onChange={setAnswer}
-        autoComplete="off"
-        multiline={4}
-      />
-    </BlockStack>
-  );
-}
-
-function CompletionControls({ message }: { message: string }) {
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
+  const startsSlackOAuth =
+    provider === "slack" &&
+    !([
+      CHANNEL_STATUS.startingConnection,
+      CHANNEL_STATUS.authorising,
+      CHANNEL_STATUS.needsConfiguration,
+      CHANNEL_STATUS.connected,
+      CHANNEL_STATUS.degraded,
+    ] as string[]).includes(connection.status);
+  const actionDisabled = connection.status === CHANNEL_STATUS.authorising;
+  const className = `JefeChannelCard ${active ? "is-active" : ""} ${
+    connection.verified ? "is-connected" : ""
+  } ${unavailable ? "is-unavailable" : ""} ${actionDisabled ? "is-inert" : ""}`;
+  const content = (
+    <>
+      <ChannelCardContent
+        provider={provider}
+        name={name}
+        description={description}
+        connection={connection}
+        merchantName={merchantName}
+        actionLabel={unavailableLabel ?? channelCardActionLabel(provider, connection)}
+        actionDisabled={actionDisabled}
+      />
+    </>
+  );
+
+  if (unavailable || actionDisabled) {
+    return (
+      <div className={className} aria-disabled="true">
+        {content}
+      </div>
+    );
+  }
+
+  if (connection.verified) {
+    return (
+      <div className={className} aria-current={active ? "true" : undefined}>
+        {content}
+        <DisconnectChannelForm
+          provider={provider}
+          disabled={submitting}
+          className="JefeChannelPrimaryActionForm"
+          label="Disconnect"
+        />
+      </div>
+    );
+  }
+
+  if (startsSlackOAuth) {
+    return (
+      <Form method="post" className="JefeChannelCardForm">
+        <input type="hidden" name="intent" value="channel.slack.start" />
+        <input type="hidden" name="provider" value="slack" />
+        <button type="submit" className={className} aria-pressed={active}>
+          {content}
+        </button>
+      </Form>
+    );
+  }
 
   return (
-    <Box padding="400" background="bg-surface-secondary" borderRadius="200">
-      <BlockStack gap="300">
-        <Text as="p">{message}</Text>
-        <InlineStack gap="200">
-          <Form method="post">
-            <input type="hidden" name="intent" value="complete" />
-            <Button submit variant="primary" disabled={submitting}>
-              View Merchant Memory
-            </Button>
-          </Form>
-          <Form method="post">
-            <input type="hidden" name="intent" value="tell_more" />
-            <Button submit disabled={submitting}>
-              Tell you more
-            </Button>
-          </Form>
-        </InlineStack>
-      </BlockStack>
-    </Box>
+    <a className={className} href={selectUrl} aria-current={active ? "true" : undefined}>
+      {content}
+    </a>
   );
 }
 
-function PausedControls() {
-  return (
-    <Box padding="400" background="bg-surface-secondary" borderRadius="200">
-      <InlineStack align="space-between" blockAlign="center" gap="300">
-        <Text as="p">Goals are paused. Your answers are saved.</Text>
-        <Form method="post">
-          <input type="hidden" name="intent" value="resume" />
-          <Button submit variant="primary">
-            Resume
-          </Button>
-        </Form>
-      </InlineStack>
-    </Box>
-  );
-}
-
-function MerchantMemoryView({
-  storeName,
-  beliefs,
+function ChannelCardContent({
+  provider,
+  name,
+  description,
+  connection,
+  merchantName,
+  actionLabel,
+  actionDisabled = false,
 }: {
-  storeName: string;
-  beliefs: Awaited<ReturnType<typeof getCompactBeliefSnapshot>>;
+  provider: "slack" | "whatsapp";
+  name: string;
+  description: string;
+  connection: ChannelConnectionView;
+  merchantName: string;
+  actionLabel?: string | null;
+  actionDisabled?: boolean;
+}) {
+  const summary = channelConnectionSummary(provider, connection, merchantName);
+  return (
+    <>
+      <span className={`JefeChannelIcon is-${provider}`} aria-hidden="true">
+        <img
+          className="JefeChannelLogo"
+          src={`/channels/${provider}.webp`}
+          alt=""
+          width={44}
+          height={44}
+        />
+      </span>
+      <span className="JefeChannelName">{name}</span>
+      <span className="JefeChannelDescription">{description}</span>
+      {summary ? <span className="JefeChannelSummary">{summary}</span> : null}
+      {actionLabel ? (
+        <span
+          className={`JefeChannelActionText ${
+            actionDisabled ? "is-disabled" : ""
+          }`}
+        >
+          {actionLabel}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+function SlackConnectionModal({
+  open,
+  onClose,
+  connection,
+  destinations,
+  destinationError,
+  actionError,
+}: {
+  open: boolean;
+  onClose: () => void;
+  connection: ChannelConnectionView;
+  destinations: SlackDestinationView[];
+  destinationError?: string | null;
+  actionError?: string | null;
+}) {
+  const navigation = useNavigation();
+  const fetcher = useFetcher();
+  const latestDestinations =
+    getSlackDestinationsFromFetcher(fetcher.data) ?? destinations;
+  const submitting = navigation.state !== "idle" || fetcher.state !== "idle";
+  const [requestedDestinationId, setRequestedDestinationId] = useState(
+    connection.destinationId ?? "",
+  );
+  const requestedDestinationAvailable = latestDestinations.some(
+    (destination) => destination.id === requestedDestinationId,
+  );
+  const connectionDestinationAvailable = latestDestinations.some(
+    (destination) => destination.id === connection.destinationId,
+  );
+  const destinationId = requestedDestinationAvailable
+    ? requestedDestinationId
+    : connectionDestinationAvailable
+      ? (connection.destinationId ?? "")
+      : (latestDestinations[0]?.id ?? "");
+  const destinationOptions = latestDestinations.map((destination) => ({
+    label: destination.label,
+    value: destination.id,
+  }));
+  const selectedDestination = latestDestinations.find(
+    (destination) => destination.id === destinationId,
+  );
+  const selectedDestinationTested =
+    connection.verified && connection.destinationId === destinationId;
+
+  return (
+    <Modal open={open} onClose={onClose} title="Choose a Slack channel">
+      <Modal.Section>
+        <BlockStack gap="400">
+          {actionError ? <InlineError message={actionError} /> : null}
+          {destinationError ? <InlineError message={destinationError} /> : null}
+
+          <BlockStack gap="300">
+            <Text as="p" fontWeight="semibold">
+              {slackWorkspaceLabel(connection.accountName)}
+            </Text>
+
+            {destinationOptions.length > 0 ? (
+              <BlockStack gap="200">
+                <div className="JefeSlackDestinationControl">
+                  <div className="JefeSlackDestinationSelect">
+                    <Select
+                      label="Channel"
+                      options={destinationOptions}
+                      value={destinationId}
+                      onChange={setRequestedDestinationId}
+                    />
+                  </div>
+                  <fetcher.Form method="post">
+                    <input
+                      type="hidden"
+                      name="intent"
+                      value="channel.slack.refresh_destinations"
+                    />
+                    <input type="hidden" name="provider" value="slack" />
+                    <Button submit disabled={submitting}>
+                      Refresh channels
+                    </Button>
+                  </fetcher.Form>
+                </div>
+                <Text as="p" tone="subdued">
+                  For private channels, invite the Jefe Slack app to that channel in
+                  Slack, then refresh this list.
+                </Text>
+              </BlockStack>
+            ) : (
+              <BlockStack gap="200">
+                <Text as="p" tone="subdued">
+                  No Slack channels are available yet.
+                </Text>
+                <fetcher.Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="channel.slack.refresh_destinations"
+                  />
+                  <input type="hidden" name="provider" value="slack" />
+                  <Button submit disabled={submitting}>
+                    Refresh channels
+                  </Button>
+                </fetcher.Form>
+              </BlockStack>
+            )}
+
+            {selectedDestinationTested && selectedDestination ? (
+              <Text as="p" tone="success">
+                Test sent to {selectedDestination.label}. Save to use this channel.
+              </Text>
+            ) : null}
+
+            <InlineStack gap="200" align="end">
+              <Form method="post">
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="channel.slack.test_destination"
+                />
+                <input type="hidden" name="provider" value="slack" />
+                <input type="hidden" name="destinationId" value={destinationId} />
+                <Button
+                  submit
+                  disabled={!destinationId || submitting || destinationOptions.length === 0}
+                >
+                  Test
+                </Button>
+              </Form>
+              <Form method="post">
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="channel.slack.select_destination"
+                />
+                <input type="hidden" name="provider" value="slack" />
+                <input type="hidden" name="destinationId" value={destinationId} />
+                <Button
+                  submit
+                  variant="primary"
+                  disabled={!selectedDestinationTested || submitting}
+                >
+                  Save
+                </Button>
+              </Form>
+            </InlineStack>
+          </BlockStack>
+        </BlockStack>
+      </Modal.Section>
+    </Modal>
+  );
+}
+
+function WhatsAppConnectionPanel({
+  connection,
+  startWithNumberForm,
+  actionError,
+}: {
+  connection: ChannelConnectionView;
+  startWithNumberForm: boolean;
+  actionError?: string | null;
+}) {
+  const navigation = useNavigation();
+  const submitting = navigation.state !== "idle";
+  const [countryCode, setCountryCode] = useState("GB");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [changingNumber, setChangingNumber] = useState(startWithNumberForm);
+  const showNumberForm =
+    changingNumber ||
+    !([
+      CHANNEL_STATUS.connected,
+      CHANNEL_STATUS.verifying,
+      CHANNEL_STATUS.degraded,
+    ] as string[]).includes(connection.status);
+
+  return (
+    <div className="JefeLearningCard">
+      <Card padding="500">
+        <BlockStack gap="400">
+          <InlineStack align="space-between" blockAlign="center" gap="300">
+            <BlockStack gap="050">
+              <Text as="h2" variant="headingMd">
+                WhatsApp
+              </Text>
+              <Text as="p" tone="subdued">
+                Verify the mobile number where Jefe should send important updates.
+              </Text>
+            </BlockStack>
+            <StatusBadge status={connection.status} />
+          </InlineStack>
+
+          {actionError ? <InlineError message={actionError} /> : null}
+
+          {connection.maskedDestination ? (
+            <SummaryRow label="Number" value={connection.maskedDestination} />
+          ) : null}
+
+          {showNumberForm ? (
+            <Form method="post" className="JefeChannelForm">
+              <input
+                type="hidden"
+                name="intent"
+                value="channel.whatsapp.start_verification"
+              />
+              <input type="hidden" name="provider" value="whatsapp" />
+              <input
+                type="hidden"
+                name="consentAccepted"
+                value={consentAccepted ? "true" : "false"}
+              />
+              <Select
+                label="Country"
+                name="countryCode"
+                options={WHATSAPP_COUNTRY_OPTIONS}
+                value={countryCode}
+                onChange={setCountryCode}
+              />
+              <TextField
+                label="Mobile number"
+                name="phoneNumber"
+                value={phoneNumber}
+                onChange={setPhoneNumber}
+                autoComplete="tel"
+                inputMode="tel"
+                placeholder="7123 456789"
+              />
+              <Checkbox
+                label="I agree to receive operational messages and recommendations from Jefe on WhatsApp."
+                name="consentAccepted"
+                checked={consentAccepted}
+                onChange={setConsentAccepted}
+              />
+              <Button
+                submit
+                variant="primary"
+                disabled={!phoneNumber.trim() || !consentAccepted || submitting}
+              >
+                Send verification message
+              </Button>
+            </Form>
+          ) : null}
+
+          {connection.status === CHANNEL_STATUS.verifying ? (
+            <Form method="post" className="JefeChannelForm">
+              <input type="hidden" name="intent" value="channel.whatsapp.confirm" />
+              <input type="hidden" name="provider" value="whatsapp" />
+              <TextField
+                label="Verification code"
+                name="verificationCode"
+                value={verificationCode}
+                onChange={setVerificationCode}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                maxLength={6}
+              />
+              <Button
+                submit
+                variant="primary"
+                disabled={verificationCode.trim().length < 6 || submitting}
+              >
+                Confirm WhatsApp
+              </Button>
+            </Form>
+          ) : null}
+
+          {connection.verified && !changingNumber ? (
+            <InlineStack gap="200">
+              <Form method="post">
+                <input type="hidden" name="intent" value="channel.send_test" />
+                <input type="hidden" name="provider" value="whatsapp" />
+                <input
+                  type="hidden"
+                  name="idempotencyKey"
+                  value={testMessageIdempotencyKey(connection)}
+                />
+                <Button submit disabled={submitting}>
+                  Send test message
+                </Button>
+              </Form>
+              <Button onClick={() => setChangingNumber(true)} disabled={submitting}>
+                Change number
+              </Button>
+              <DisconnectChannelForm provider="whatsapp" disabled={submitting} />
+            </InlineStack>
+          ) : null}
+        </BlockStack>
+      </Card>
+    </div>
+  );
+}
+
+function DisconnectChannelForm({
+  provider,
+  disabled,
+  className,
+  label = "Disconnect",
+}: {
+  provider: string;
+  disabled: boolean;
+  className?: string;
+  label?: string;
 }) {
   return (
-    <main className="JefeMemoryView">
-      <BlockStack gap="600">
-        <BlockStack gap="200">
-          <Text as="p" fontWeight="bold">
-            MERCHANT MEMORY
-          </Text>
-          <h1 className="JefeDisplayHeading">
-            What Jefe knows about {storeName}
-          </h1>
-          <Text as="p" tone="subdued">
-            Merchant-confirmed answers stay authoritative. Shopify facts and
-            model inferences remain labelled by status and confidence.
-          </Text>
-        </BlockStack>
-        <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-          {beliefs.slice(0, 12).map((belief) => (
-            <Box
-              key={belief.key}
-              padding="400"
-              background="bg-surface"
-              borderColor="border"
-              borderRadius="200"
-              borderWidth="025"
-            >
-              <BlockStack gap="200">
-                <InlineStack align="space-between" gap="200">
-                  <Text as="h2" variant="headingMd">
-                    {humanizeBeliefKey(belief.key)}
-                  </Text>
-                  <Badge
-                    tone={
-                      belief.status.includes("merchant") ? "success" : "info"
-                    }
-                  >
-                    {humanizeStatus(belief.status)}
-                  </Badge>
-                </InlineStack>
-                <Text as="p">{formatBeliefValueForUi(belief.value)}</Text>
-                {belief.confidence_reason ? (
-                  <Text as="p" tone="subdued">
-                    {belief.confidence_reason}
-                  </Text>
-                ) : null}
-              </BlockStack>
-            </Box>
-          ))}
-        </InlineGrid>
-        {beliefs.length === 0 ? (
-          <Box padding="400" background="bg-surface" borderRadius="200">
-            <Text as="p">
-              Jefe is still building the first Merchant Memory.
-            </Text>
-          </Box>
-        ) : null}
-      </BlockStack>
-    </main>
+    <Form method="post" className={className}>
+      <input type="hidden" name="intent" value="channel.disconnect" />
+      <input type="hidden" name="provider" value={provider} />
+      <Button submit tone="critical" disabled={disabled}>
+        {label}
+      </Button>
+    </Form>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <InlineStack align="space-between" gap="300">
+      <Text as="span" tone="subdued">
+        {label}
+      </Text>
+      <Text as="span" fontWeight="semibold">
+        {value}
+      </Text>
+    </InlineStack>
+  );
+}
+
+function InlineError({ message }: { message: string }) {
+  return (
+    <Box padding="300" background="bg-surface-critical" borderRadius="200">
+      <Text as="p" tone="critical">
+        {message}
+      </Text>
+    </Box>
   );
 }
 
@@ -972,71 +1425,6 @@ async function getStoreMetrics({
   };
 }
 
-async function getCompactBeliefSnapshot({
-  merchantId,
-  shopId,
-}: {
-  merchantId: string;
-  shopId: string;
-}) {
-  const beliefs = await prisma.merchantMemoryBelief.findMany({
-    where: {
-      merchantId,
-      shopId,
-      status: { in: ACTIVE_BELIEF_STATUSES },
-    },
-    orderBy: [
-      { lastConfirmedAt: "desc" },
-      { confidence: "desc" },
-      { updatedAt: "desc" },
-    ],
-    take: 80,
-    select: {
-      category: true,
-      key: true,
-      value: true,
-      valueType: true,
-      status: true,
-      confidence: true,
-      confidenceReason: true,
-      precedence: true,
-      lastEvaluatedAt: true,
-      lastConfirmedAt: true,
-      evidence: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          sourceType: true,
-          evidenceType: true,
-          summary: true,
-          observedAt: true,
-        },
-      },
-    },
-  });
-
-  return beliefs.map((belief) => ({
-    key: belief.key,
-    category: belief.category,
-    value: belief.value,
-    value_type: belief.valueType,
-    status: belief.status,
-    confidence: belief.confidence === null ? null : Number(belief.confidence),
-    confidence_reason: belief.confidenceReason,
-    precedence: belief.precedence,
-    last_evaluated_at: belief.lastEvaluatedAt?.toISOString() ?? null,
-    last_confirmed_at: belief.lastConfirmedAt?.toISOString() ?? null,
-    latest_evidence: belief.evidence[0]
-      ? {
-          source_type: belief.evidence[0].sourceType,
-          evidence_type: belief.evidence[0].evidenceType,
-          summary: belief.evidence[0].summary,
-          observed_at: belief.evidence[0].observedAt?.toISOString() ?? null,
-        }
-      : null,
-  }));
-}
-
 function summarizeBackfill(
   readiness: Awaited<ReturnType<typeof getMerchantMemoryReadiness>>,
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>,
@@ -1052,10 +1440,10 @@ function summarizeBackfill(
           : "First memory ready. Shopify import is still running.",
       detail:
         progress?.evidenceReady || memoryStatus === "complete"
-          ? "Jefe has enough context to start the interview."
+          ? "Jefe has enough context to set up channels."
           : "You can continue while Jefe keeps learning in the background.",
       statusLabel: "Ready",
-      complete: progress?.evidenceReady && memoryStatus === "complete",
+      complete: Boolean(progress?.evidenceReady && memoryStatus === "complete"),
       spinning: !(progress?.evidenceReady && memoryStatus === "complete"),
       productsComplete: Boolean(progress?.productsComplete),
       customersComplete: Boolean(progress?.customersComplete),
@@ -1183,43 +1571,6 @@ function jobLabel(jobType: string) {
   return "Running Shopify import";
 }
 
-function normalizeOnboardingStep(
-  requested: string | null,
-  memoryReady: boolean,
-): (typeof ONBOARDING_STEPS)[number] {
-  if (!memoryReady) return "connect";
-  if (requested && REMOVED_ONBOARDING_STEPS.has(requested)) return "interview";
-  return requested === "interview" ? "interview" : "connect";
-}
-
-function statusLabel(status: string) {
-  if (status === UI_INTERVIEW_STATUS.inProgress) return "In progress";
-  if (status === UI_INTERVIEW_STATUS.paused) return "Paused";
-  if (status === UI_INTERVIEW_STATUS.completed) return "Complete";
-  if (status === UI_INTERVIEW_STATUS.skipped) return "Skipped";
-  return "Preparing";
-}
-
-function statusTone(status: string) {
-  if (status === UI_INTERVIEW_STATUS.completed) return "success" as const;
-  if (status === UI_INTERVIEW_STATUS.paused) return "attention" as const;
-  if (status === UI_INTERVIEW_STATUS.skipped) return "info" as const;
-  return "info" as const;
-}
-
-function interviewProgressLabel(
-  experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>,
-) {
-  const answered = experience.turns.filter(
-    (turn) => turn.merchantAnswer,
-  ).length;
-  const current = answered + (experience.currentTurn ? 1 : 0);
-  if (experience.canComplete)
-    return "Enough context to create the first Merchant Memory";
-  if (current > 0) return `Question ${current} of about 6`;
-  return "A few things to clarify";
-}
-
 async function getPersistedStoreName({
   shop,
   merchantName,
@@ -1279,105 +1630,288 @@ async function fetchShopMetadata({
       myshopifyDomain?: string | null;
       currencyCode?: string | null;
       ianaTimezone?: string | null;
-    } | null;
+    };
   }>(SHOP_METADATA_QUERY);
+  return data.shop ?? null;
+}
 
-  const name = data.shop?.name?.trim();
-  if (!name) return null;
-
-  return {
-    shop: {
-      id: data.shop?.id ?? null,
-      name,
-      myshopifyDomain: data.shop?.myshopifyDomain ?? shopDomain,
-      currencyCode: data.shop?.currencyCode ?? null,
-      ianaTimezone: data.shop?.ianaTimezone ?? null,
-    },
-    name,
-    shopName: name,
-    myshopifyDomain: data.shop?.myshopifyDomain ?? shopDomain,
-    shopifyMetadataSource: "shopify_admin_graphql",
-  };
+function storeNameFromPayload(payload: unknown) {
+  if (!payload || typeof payload !== "object") return null;
+  const shopify = (payload as { shopify?: unknown }).shopify;
+  if (!shopify || typeof shopify !== "object") return null;
+  const name = (shopify as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
 function mergeShopRawPayload(
-  rawPayload: unknown,
+  payload: unknown,
   metadata: NonNullable<Awaited<ReturnType<typeof fetchShopMetadata>>>,
 ) {
-  const existing = jsonObject(rawPayload);
+  const current =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const currentShopify =
+    current.shopify &&
+    typeof current.shopify === "object" &&
+    !Array.isArray(current.shopify)
+      ? (current.shopify as Record<string, unknown>)
+      : {};
   return {
-    ...existing,
-    ...metadata,
-    shop: {
-      ...jsonObject(existing.shop),
-      ...metadata.shop,
+    ...current,
+    shopify: {
+      ...currentShopify,
+      id: metadata.id ?? currentShopify.id ?? null,
+      name: metadata.name ?? currentShopify.name ?? null,
+      myshopifyDomain:
+        metadata.myshopifyDomain ?? currentShopify.myshopifyDomain ?? null,
+      currencyCode: metadata.currencyCode ?? currentShopify.currencyCode ?? null,
+      ianaTimezone: metadata.ianaTimezone ?? currentShopify.ianaTimezone ?? null,
     },
   };
 }
 
-function storeNameFromPayload(rawPayload: unknown) {
-  const payload = jsonObject(rawPayload);
-  const shopPayload = jsonObject(payload.shop);
-  const candidates = [payload.name, shopPayload.name, payload.shopName];
-  return candidates.find(isNonEmptyString)?.trim();
-}
-
 function displayStoreName(merchantName: string, shopDomain: string) {
-  const fallback = shopDomain.replace(".myshopify.com", "");
-  return merchantName && merchantName !== shopDomain ? merchantName : fallback;
+  const cleanedMerchantName = merchantName.trim();
+  if (cleanedMerchantName && cleanedMerchantName !== shopDomain) {
+    return cleanedMerchantName;
+  }
+  const domainPrefix = shopDomain.split(".")[0]?.trim();
+  if (!domainPrefix) return "your store";
+  return domainPrefix
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+function StatusBadge({ status }: { status: string }) {
+  return <Badge tone={channelStatusTone(status)}>{channelStatusLabel(status)}</Badge>;
 }
 
-function jsonObject(value: unknown) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
+  return step === "connect" ? "Connect" : "Channels";
+}
+
+function channelConnection(
+  connections: ChannelConnectionView[],
+  provider: string,
+): ChannelConnectionView {
+  return (
+    connections.find((connection) => connection.provider === provider) ?? {
+      provider,
+      status: CHANNEL_STATUS.notConnected,
+      connected: false,
+      verified: false,
+      accountName: null,
+      destinationId: null,
+      destinationLabel: null,
+      maskedDestination: null,
+      lastSuccessfulMessageAt: null,
+    }
+  );
+}
+
+function providerActionError(error: SafeActionError, provider: string) {
+  if (!error || typeof error === "string") return null;
+  if (error.provider && error.provider !== provider) return null;
+  return error.message;
+}
+
+function channelConnectionSummary(
+  provider: "slack" | "whatsapp",
+  connection: ChannelConnectionView,
+  merchantName: string,
+) {
+  if (provider === "slack" && connection.destinationLabel) {
+    return `${connection.accountName ?? merchantName} · ${connection.destinationLabel}`;
+  }
+  if (provider === "whatsapp" && connection.maskedDestination) {
+    return connection.maskedDestination;
+  }
+  return null;
+}
+
+function slackWorkspaceLabel(accountName?: string | null) {
+  const name = accountName?.trim() || "Slack";
+  return /workspace$/i.test(name) ? name : `${name} Workspace`;
+}
+
+function getSlackDestinationsFromFetcher(data: unknown) {
+  if (!data || typeof data !== "object" || !("slackDestinations" in data)) {
+    return null;
+  }
+  const destinations = (data as { slackDestinations?: unknown }).slackDestinations;
+  if (!Array.isArray(destinations)) return null;
+  return destinations.filter(isSlackDestinationView);
+}
+
+function isSlackDestinationView(destination: unknown): destination is SlackDestinationView {
+  return (
+    Boolean(destination) &&
+    typeof destination === "object" &&
+    typeof (destination as { id?: unknown }).id === "string" &&
+    typeof (destination as { label?: unknown }).label === "string"
+  );
+}
+
+function channelCardActionLabel(
+  provider: "slack" | "whatsapp",
+  connection: ChannelConnectionView,
+) {
+  if (connection.verified) return null;
+  if (
+    provider === "slack" &&
+    ([CHANNEL_STATUS.needsConfiguration, CHANNEL_STATUS.degraded] as string[]).includes(
+      connection.status,
+    )
+  ) {
+    return "Select channel";
+  }
+  if (provider === "slack" && connection.status === CHANNEL_STATUS.authorising) {
+    return "Authorising";
+  }
+  if (provider === "whatsapp" && connection.status === CHANNEL_STATUS.verifying) {
+    return "Enter code";
+  }
+  return provider === "slack" ? "Connect Slack" : "Coming soon";
+}
+
+function getSafeActionError(actionData: unknown): SafeActionError {
+  if (!actionData || typeof actionData !== "object" || !("error" in actionData)) {
+    return null;
+  }
+  const data = actionData as { error?: unknown; provider?: unknown };
+  if (typeof data.error === "string") return data.error;
+  if (data.error && typeof data.error === "object" && "message" in data.error) {
+    const error = data.error as { code?: unknown; message?: unknown };
+    return {
+      provider: typeof data.provider === "string" ? data.provider : null,
+      code: typeof error.code === "string" ? error.code : null,
+      message:
+        typeof error.message === "string"
+          ? error.message
+          : "That channel action could not be completed.",
+    };
+  }
+  return "That action could not be completed.";
+}
+
+function getActionRedirectUrl(actionData: unknown) {
+  if (!actionData || typeof actionData !== "object" || !("redirectUrl" in actionData)) {
+    return null;
+  }
+  const data = actionData as { redirectUrl?: unknown };
+  return typeof data.redirectUrl === "string" && data.redirectUrl.startsWith("https://")
+    ? data.redirectUrl
+    : null;
+}
+
+function channelStatusLabel(status: string) {
+  if (status === CHANNEL_STATUS.startingConnection) return "Starting";
+  if (status === CHANNEL_STATUS.authorising) return "Authorising";
+  if (status === CHANNEL_STATUS.needsConfiguration) return "Needs setup";
+  if (status === CHANNEL_STATUS.verifying) return "Verifying";
+  if (status === CHANNEL_STATUS.connected) return "Connected";
+  if (status === CHANNEL_STATUS.degraded) return "Needs attention";
+  if (status === CHANNEL_STATUS.expired) return "Expired";
+  if (status === CHANNEL_STATUS.failed) return "Failed";
+  if (status === CHANNEL_STATUS.disconnected) return "Disconnected";
+  return "Not connected";
+}
+
+function channelStatusTone(status: string) {
+  if (status === CHANNEL_STATUS.connected) return "success" as const;
+  if (status === CHANNEL_STATUS.failed || status === CHANNEL_STATUS.expired) {
+    return "critical" as const;
+  }
+  if (
+    status === CHANNEL_STATUS.needsConfiguration ||
+    status === CHANNEL_STATUS.verifying ||
+    status === CHANNEL_STATUS.degraded
+  ) {
+    return "attention" as const;
+  }
+  return "info" as const;
+}
+
+function testMessageIdempotencyKey(connection: ChannelConnectionView) {
+  return `channel-test:${connection.provider}:${connection.id ?? "new"}:${
+    connection.lastSuccessfulMessageAt ?? "initial"
+  }`;
+}
+
+function channelProviderUrl(
+  search: string,
+  provider: "slack" | "whatsapp",
+  mode?: string,
+) {
+  return appPathFromSearch(search, {
+    step: "channels",
+    channelProvider: provider,
+    channelMode: mode ?? null,
+    channelNotice: null,
+  });
+}
+
+function appPathFromSearch(
+  search: string,
+  updates: Record<string, string | null | undefined>,
+) {
+  const params = new URLSearchParams(search);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue;
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const nextSearch = params.toString();
+  return nextSearch ? `/app?${nextSearch}` : "/app";
+}
+
+function normalizeOnboardingStep(
+  url: URL,
+  memoryReady: boolean,
+  backfillComplete: boolean,
+): (typeof ONBOARDING_STEPS)[number] {
+  if (url.searchParams.get("channelProvider")) return "channels";
+  if (!memoryReady || !backfillComplete) return "connect";
+  return url.searchParams.get("step") === "channels" ? "channels" : "connect";
 }
 
 function useConnectStatusPolling(enabled: boolean) {
   const revalidator = useRevalidator();
 
   useEffect(() => {
-    if (!enabled || revalidator.state !== "idle") return;
-
-    const timeoutId = setTimeout(() => {
+    if (!enabled) return;
+    const timer = setInterval(() => {
       revalidator.revalidate();
-    }, 2500);
-
-    return () => clearTimeout(timeoutId);
+    }, 5000);
+    return () => clearInterval(timer);
   }, [enabled, revalidator]);
 }
 
-function useEmbeddedAppNavigate() {
-  const location = useLocation();
-  const navigate = useNavigate();
+function shouldResetPendingSlackAuthorisations(request: Request, url: URL) {
+  if (url.searchParams.has("code") || url.searchParams.has("error")) return false;
+  if (url.searchParams.has("_data")) return false;
+  if (request.headers.has("X-React-Router-Request")) return false;
+  if (request.headers.has("X-Remix-Request")) return false;
 
-  return (updates: Record<string, string | null>) => {
-    navigate(appPathFromSearch(location.search, updates));
-  };
+  const secFetchDest = request.headers.get("Sec-Fetch-Dest") ?? "";
+  const secFetchMode = request.headers.get("Sec-Fetch-Mode") ?? "";
+  const accept = request.headers.get("Accept") ?? "";
+  const htmlFetchDest = ["doc", "ument"].join("");
+  return (
+    secFetchDest === htmlFetchDest ||
+    secFetchMode === "navigate" ||
+    accept.includes("text/html")
+  );
 }
 
-function appPathFromRequest(
-  request: Request,
-  updates: Record<string, string | null>,
-) {
-  return appPathFromSearch(new URL(request.url).search, updates);
-}
-
-function appPathFromSearch(
-  search: string,
-  updates: Record<string, string | null>,
-) {
-  const params = new URLSearchParams(search);
-  for (const [key, value] of Object.entries(updates)) {
-    if (value === null) params.delete(key);
-    else params.set(key, value);
-  }
-  const nextSearch = params.toString();
-  return nextSearch ? `/app?${nextSearch}` : "/app";
+function formDataHasTruthyValue(formData: FormData, name: string) {
+  return formData.getAll(name).some((value) => {
+    const normalised = String(value).trim().toLowerCase();
+    return normalised === "on" || normalised === "true" || normalised === "1";
+  });
 }
 
 function formatInteger(value: number) {
@@ -1390,35 +1924,6 @@ function formatCurrency(value: number, currency: string) {
     currency,
     maximumFractionDigits: 0,
   }).format(value);
-}
-
-function formatBeliefValueForUi(value: unknown) {
-  if (value === null || value === undefined) return "Unknown";
-  if (typeof value === "string" || typeof value === "number")
-    return String(value);
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (typeof record.text === "string") return record.text;
-    if (typeof record.option === "string") return humanizeStatus(record.option);
-    if (typeof record.boolean === "boolean")
-      return record.boolean ? "Yes" : "No";
-  }
-  return JSON.stringify(value);
-}
-
-function humanizeBeliefKey(key: string) {
-  return key
-    .split(".")
-    .slice(-1)[0]
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function humanizeStatus(status: string) {
-  return status
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
