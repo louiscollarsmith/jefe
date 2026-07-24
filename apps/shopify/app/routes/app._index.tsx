@@ -4,7 +4,7 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Form,
   redirect,
@@ -13,6 +13,7 @@ import {
   useLoaderData,
   useNavigate,
   useNavigation,
+  useRevalidator,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
@@ -23,7 +24,6 @@ import {
   Card,
   InlineGrid,
   InlineStack,
-  SkeletonBodyText,
   Spinner,
   Text,
   TextField,
@@ -193,9 +193,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     UI_INTERVIEW_STATUS.completed,
     UI_INTERVIEW_STATUS.skipped,
   ].includes(interview.interview.status);
-  const view = onboardingComplete ? ("memory" as const) : ("onboarding" as const);
+  const view = onboardingComplete
+    ? ("memory" as const)
+    : ("onboarding" as const);
 
-  const canContinueToGoals = readiness.memoryReady && Boolean(backfill.complete);
+  const canContinueToGoals =
+    readiness.memoryReady && Boolean(backfill.complete);
 
   return {
     shop: session.shop,
@@ -215,10 +218,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const canContinueToGoals = data.memoryReady && Boolean(data.backfill.complete);
+  const canContinueToGoals =
+    data.memoryReady && Boolean(data.backfill.complete);
+  const shouldPollConnect =
+    data.view === "onboarding" && data.connected && !canContinueToGoals;
+
+  useConnectStatusPolling(shouldPollConnect);
 
   if (data.view === "memory") {
-    return <MerchantMemoryView storeName={data.storeName} beliefs={data.beliefs} />;
+    return (
+      <MerchantMemoryView storeName={data.storeName} beliefs={data.beliefs} />
+    );
   }
 
   return (
@@ -229,15 +239,18 @@ export default function AppIndex() {
           backfill={data.backfill}
           metrics={data.metrics}
           connected={data.connected}
-          memoryReady={data.memoryReady}
           canContinue={canContinueToGoals}
         />
       ) : null}
 
-      {data.activeStep === "interview" && canContinueToGoals && data.interview ? (
+      {data.activeStep === "interview" &&
+      canContinueToGoals &&
+      data.interview ? (
         <InterviewStep
           experience={data.interview}
-          actionError={actionData && "error" in actionData ? actionData.error : null}
+          actionError={
+            actionData && "error" in actionData ? actionData.error : null
+          }
         />
       ) : null}
     </OnboardingShell>
@@ -270,7 +283,8 @@ function OnboardingStepper({
     <nav className="JefeStepper" aria-label="Onboarding progress">
       {ONBOARDING_STEPS.map((step, index) => {
         const active = step === activeStep;
-        const complete = ONBOARDING_STEPS.indexOf(step) < ONBOARDING_STEPS.indexOf(activeStep);
+        const complete =
+          ONBOARDING_STEPS.indexOf(step) < ONBOARDING_STEPS.indexOf(activeStep);
         return (
           <button
             type="button"
@@ -282,7 +296,9 @@ function OnboardingStepper({
             onClick={() => appNavigate({ step, view: null })}
           >
             <span className="JefeStepperNumber">{index + 1}</span>
-            <span className="JefeStepperLabel">{step === "connect" ? "Connect" : "Goals"}</span>
+            <span className="JefeStepperLabel">
+              {step === "connect" ? "Connect" : "Goals"}
+            </span>
           </button>
         );
       })}
@@ -295,14 +311,12 @@ function ConnectStep({
   backfill,
   metrics,
   connected,
-  memoryReady,
   canContinue,
 }: {
   storeName: string;
   backfill: ReturnType<typeof summarizeBackfill>;
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
   connected: boolean;
-  memoryReady: boolean;
   canContinue: boolean;
 }) {
   const appNavigate = useEmbeddedAppNavigate();
@@ -311,37 +325,24 @@ function ConnectStep({
     <BlockStack gap="500" inlineAlign="center">
       <JefeMark />
       <BlockStack gap="200" inlineAlign="center">
-        <h1 className="JefeDisplayHeading">Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...</h1>
+        <h1 className="JefeDisplayHeading">
+          Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...
+        </h1>
       </BlockStack>
       <div className="JefeLearningCard">
         <Card padding="500">
           <BlockStack gap="500">
-            <MetricGrid metrics={metrics} />
+            <MetricGrid backfill={backfill} metrics={metrics} />
             <LearningMilestones backfill={backfill} metrics={metrics} />
-            {!canContinue && !memoryReady ? (
-              <Box aria-live="polite">
-                <InlineStack align="space-between" blockAlign="center" gap="300">
-                  <InlineStack blockAlign="center" gap="300">
-                    {backfill.spinning ? <Spinner size="small" accessibilityLabel={backfill.statusLabel} /> : null}
-                    <BlockStack gap="050">
-                      <Text as="p" fontWeight="semibold">
-                        {backfill.title}
-                      </Text>
-                      <Text as="p" tone="subdued">
-                        {backfill.detail}
-                      </Text>
-                    </BlockStack>
-                  </InlineStack>
-                  <Badge tone={backfill.tone}>{backfill.statusLabel}</Badge>
-                </InlineStack>
-              </Box>
-            ) : null}
           </BlockStack>
         </Card>
       </div>
       <div className="JefeConnectAction">
         {canContinue ? (
-          <Button onClick={() => appNavigate({ step: "interview", view: null })} variant="primary">
+          <Button
+            onClick={() => appNavigate({ step: "interview", view: null })}
+            variant="primary"
+          >
             Continue to Goals
           </Button>
         ) : !connected ? (
@@ -357,47 +358,47 @@ function ConnectStep({
 }
 
 function MetricGrid({
+  backfill,
   metrics,
 }: {
+  backfill: ReturnType<typeof summarizeBackfill>;
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
 }) {
-  const visible = [
-    metrics.orders > 0
-      ? { label: "orders", value: formatInteger(metrics.orders) }
-      : null,
-    metrics.skus > 0
+  const tiles = [
+    backfill.productsComplete || metrics.skus > 0 || metrics.variants > 0
       ? { label: "SKUs", value: formatInteger(metrics.skus) }
-      : metrics.products > 0
-        ? { label: "products", value: formatInteger(metrics.products) }
-      : null,
-    metrics.customers > 0
+      : { label: "SKUs", value: null },
+    backfill.customersComplete || metrics.customers > 0
       ? { label: "customers", value: formatInteger(metrics.customers) }
-      : null,
-    metrics.revenue
-      ? { label: "revenue", value: formatCurrency(metrics.revenue, metrics.currency) }
-      : null,
-  ].filter(Boolean) as Array<{ label: string; value: string }>;
-
-  if (visible.length === 0) {
-    return (
-      <InlineGrid columns={{ xs: 2, sm: 4 }} gap="300">
-        {[0, 1, 2, 3].map((item) => (
-          <Box key={item} padding="300" background="bg-surface-secondary" borderRadius="200">
-            <SkeletonBodyText lines={2} />
-          </Box>
-        ))}
-      </InlineGrid>
-    );
-  }
+      : { label: "customers", value: null },
+    backfill.ordersComplete || metrics.orders > 0
+      ? { label: "orders", value: formatInteger(metrics.orders) }
+      : { label: "orders", value: null },
+    backfill.ordersComplete || metrics.monthlyRevenue
+      ? {
+          label: "revenue/month",
+          value: formatCurrency(metrics.monthlyRevenue ?? 0, metrics.currency),
+        }
+      : { label: "revenue/month", value: null },
+  ];
 
   return (
-    <InlineGrid columns={{ xs: 2, sm: Math.min(visible.length, 4) }} gap="300">
-      {visible.map((metric) => (
-        <Box key={metric.label} padding="300" background="bg-surface-secondary" borderRadius="200">
+    <InlineGrid columns={{ xs: 2, sm: 4 }} gap="300">
+      {tiles.map((metric) => (
+        <Box
+          key={metric.label}
+          padding="300"
+          background="bg-surface-secondary"
+          borderRadius="200"
+        >
           <BlockStack gap="050">
-            <Text as="p" variant="headingLg">
-              {metric.value}
-            </Text>
+            {metric.value ? (
+              <Text as="p" variant="headingLg">
+                {metric.value}
+              </Text>
+            ) : (
+              <span className="JefeMetricSkeleton" aria-hidden="true" />
+            )}
             <Text as="p" tone="subdued">
               {metric.label}
             </Text>
@@ -415,23 +416,29 @@ function LearningMilestones({
   backfill: ReturnType<typeof summarizeBackfill>;
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
 }) {
+  const skusComplete =
+    backfill.productsComplete || metrics.skus > 0 || metrics.variants > 0;
+  const ordersComplete = backfill.ordersComplete || metrics.orders > 0;
+  const noticingComplete = backfill.complete;
+
   return (
     <BlockStack gap="200">
       <Milestone complete>Connected to your Shopify store</Milestone>
-      {metrics.orders > 0 ? (
-        <Milestone complete>Read {formatInteger(metrics.orders)} orders</Milestone>
-      ) : null}
-      {metrics.products > 0 || metrics.variants > 0 ? (
-        <Milestone complete>
-          {metrics.skus > 0
-            ? `Mapped ${formatInteger(metrics.skus)} SKUs`
-            : `Mapped ${formatInteger(metrics.products)} products`}
-          {metrics.variants > 0 ? ` and ${formatInteger(metrics.variants)} variants` : ""}
+      <Milestone current={!skusComplete} complete={skusComplete}>
+        {skusComplete ? "Mapped every SKU and variant" : "Reading your SKUs"}
+      </Milestone>
+      {skusComplete ? (
+        <Milestone current={!ordersComplete} complete={ordersComplete}>
+          {ordersComplete
+            ? "Read 365 days of orders and refunds"
+            : "Reading your orders"}
         </Milestone>
       ) : null}
-      <Milestone current={!backfill.complete} complete={backfill.complete}>
-        Noticing a few things worth talking about...
-      </Milestone>
+      {ordersComplete ? (
+        <Milestone current={!noticingComplete} complete={noticingComplete}>
+          Noticing a few things worth talking about...
+        </Milestone>
+      ) : null}
     </BlockStack>
   );
 }
@@ -452,7 +459,11 @@ function Milestone({
       }`}
     >
       <span className={`JefeMilestoneIcon ${complete ? "is-complete" : ""}`}>
-        {current && !complete ? <Spinner size="small" accessibilityLabel="In progress" /> : "✓"}
+        {current && !complete ? (
+          <Spinner size="small" accessibilityLabel="In progress" />
+        ) : (
+          "✓"
+        )}
       </span>
       <span className="JefeMilestoneText">{children}</span>
     </div>
@@ -486,7 +497,11 @@ function InterviewStep({
           </InlineStack>
 
           {actionError ? (
-            <Box padding="300" background="bg-surface-critical" borderRadius="200">
+            <Box
+              padding="300"
+              background="bg-surface-critical"
+              borderRadius="200"
+            >
               <Text as="p" tone="critical">
                 {actionError}
               </Text>
@@ -508,17 +523,25 @@ function InterviewStep({
           {status === UI_INTERVIEW_STATUS.inProgress &&
           !currentTurn &&
           experience.plannerUnavailableMessage ? (
-            <Box padding="400" background="bg-surface-secondary" borderRadius="200">
+            <Box
+              padding="400"
+              background="bg-surface-secondary"
+              borderRadius="200"
+            >
               <Text as="p">{experience.plannerUnavailableMessage}</Text>
             </Box>
           ) : null}
 
-          {experience.completionMessage && status === UI_INTERVIEW_STATUS.inProgress ? (
+          {experience.completionMessage &&
+          status === UI_INTERVIEW_STATUS.inProgress ? (
             <CompletionControls message={experience.completionMessage} />
           ) : null}
 
           {status === UI_INTERVIEW_STATUS.completed ? (
-            <Button onClick={() => appNavigate({ view: "memory", step: null })} variant="primary">
+            <Button
+              onClick={() => appNavigate({ view: "memory", step: null })}
+              variant="primary"
+            >
               View Merchant Memory
             </Button>
           ) : null}
@@ -526,9 +549,13 @@ function InterviewStep({
           {status === UI_INTERVIEW_STATUS.skipped ? (
             <BlockStack gap="300">
               <Text as="p">
-                Goals are skipped for now. Jefe will keep using Shopify-derived memory until more context is added.
+                Goals are skipped for now. Jefe will keep using Shopify-derived
+                memory until more context is added.
               </Text>
-              <Button onClick={() => appNavigate({ view: "memory", step: null })} variant="primary">
+              <Button
+                onClick={() => appNavigate({ view: "memory", step: null })}
+                variant="primary"
+              >
                 View Merchant Memory
               </Button>
             </BlockStack>
@@ -546,7 +573,8 @@ function InterviewStep({
         </Text>
         <h1 className="JefeDisplayHeading">Tell me what winning looks like.</h1>
         <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve learned what I can from your store. I&apos;ll only ask about things that could change what I recommend.
+          I&apos;ve learned what I can from your store. I&apos;ll only ask about
+          things that could change what I recommend.
         </Text>
       </BlockStack>
 
@@ -554,11 +582,23 @@ function InterviewStep({
         <Form method="post" className="JefeGoalsForm">
           <input type="hidden" name="intent" value="answer" />
           <input type="hidden" name="turnId" value={currentTurn.id} />
-          <input type="hidden" name="idempotencyKey" value={`${currentTurn.id}:${currentTurn.createdAt}`} />
+          <input
+            type="hidden"
+            name="idempotencyKey"
+            value={`${currentTurn.id}:${currentTurn.createdAt}`}
+          />
           {cardContent}
           <div className="JefeGoalsActionRow">
-            <Button onClick={() => appNavigate({ step: "connect", view: null })}>Back</Button>
-            <Button submit variant="primary" disabled={!answer.trim() || submitting}>
+            <Button
+              onClick={() => appNavigate({ step: "connect", view: null })}
+            >
+              Back
+            </Button>
+            <Button
+              submit
+              variant="primary"
+              disabled={!answer.trim() || submitting}
+            >
               Continue
             </Button>
           </div>
@@ -573,7 +613,9 @@ function InterviewStep({
 function LatestInterviewContext({
   messages,
 }: {
-  messages: Awaited<ReturnType<typeof getMerchantInterviewExperience>>["messages"];
+  messages: Awaited<
+    ReturnType<typeof getMerchantInterviewExperience>
+  >["messages"];
 }) {
   const latest = [...messages]
     .reverse()
@@ -605,7 +647,9 @@ function InterviewQuestion({
   const suggestions = useMemo(
     () =>
       Array.isArray(turn.answerSuggestions)
-        ? turn.answerSuggestions.filter((item): item is string => typeof item === "string")
+        ? turn.answerSuggestions.filter(
+            (item): item is string => typeof item === "string",
+          )
         : [],
     [turn.answerSuggestions],
   );
@@ -618,7 +662,8 @@ function InterviewQuestion({
         </Text>
         {turn.relatedBeliefIds?.length ? (
           <Text as="p" tone="subdued">
-            I have an initial belief here, but I need you to confirm or correct it.
+            I have an initial belief here, but I need you to confirm or correct
+            it.
           </Text>
         ) : null}
       </BlockStack>
@@ -635,9 +680,15 @@ function InterviewQuestion({
 
       {turn.relatedBeliefIds?.length ? (
         <InlineStack gap="200">
-          <Button onClick={() => setAnswer("Yes, that is right.")}>Confirm</Button>
-          <Button onClick={() => setAnswer("No, that is not right. ")}>Correct</Button>
-          <Button onClick={() => setAnswer("Here is the context: ")}>Explain</Button>
+          <Button onClick={() => setAnswer("Yes, that is right.")}>
+            Confirm
+          </Button>
+          <Button onClick={() => setAnswer("No, that is not right. ")}>
+            Correct
+          </Button>
+          <Button onClick={() => setAnswer("Here is the context: ")}>
+            Explain
+          </Button>
         </InlineStack>
       ) : null}
 
@@ -710,9 +761,12 @@ function MerchantMemoryView({
           <Text as="p" fontWeight="bold">
             MERCHANT MEMORY
           </Text>
-          <h1 className="JefeDisplayHeading">What Jefe knows about {storeName}</h1>
+          <h1 className="JefeDisplayHeading">
+            What Jefe knows about {storeName}
+          </h1>
           <Text as="p" tone="subdued">
-            Merchant-confirmed answers stay authoritative. Shopify facts and model inferences remain labelled by status and confidence.
+            Merchant-confirmed answers stay authoritative. Shopify facts and
+            model inferences remain labelled by status and confidence.
           </Text>
         </BlockStack>
         <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
@@ -730,7 +784,11 @@ function MerchantMemoryView({
                   <Text as="h2" variant="headingMd">
                     {humanizeBeliefKey(belief.key)}
                   </Text>
-                  <Badge tone={belief.status.includes("merchant") ? "success" : "info"}>
+                  <Badge
+                    tone={
+                      belief.status.includes("merchant") ? "success" : "info"
+                    }
+                  >
                     {humanizeStatus(belief.status)}
                   </Badge>
                 </InlineStack>
@@ -746,7 +804,9 @@ function MerchantMemoryView({
         </InlineGrid>
         {beliefs.length === 0 ? (
           <Box padding="400" background="bg-surface" borderRadius="200">
-            <Text as="p">Jefe is still building the first Merchant Memory.</Text>
+            <Text as="p">
+              Jefe is still building the first Merchant Memory.
+            </Text>
           </Box>
         ) : null}
       </BlockStack>
@@ -856,7 +916,15 @@ async function getStoreMetrics({
   merchantId: string;
   shopId: string;
 }) {
-  const [orders, products, variants, skus, customers, revenue] = await Promise.all([
+  const [
+    orders,
+    products,
+    variants,
+    skus,
+    customers,
+    revenue,
+    monthlyRevenueRows,
+  ] = await Promise.all([
     prisma.order.count({ where: { merchantId, shopId } }),
     prisma.product.count({ where: { merchantId, shopId } }),
     prisma.variant.count({ where: { merchantId, shopId } }),
@@ -873,10 +941,20 @@ async function getStoreMetrics({
       _sum: { totalPrice: true },
       _min: { currency: true },
     }),
+    prisma.$queryRaw<Array<{ total: unknown }>>`
+      SELECT SUM(total_price) AS total
+      FROM orders
+      WHERE merchant_id = CAST(${merchantId} AS uuid)
+        AND shop_id = CAST(${shopId} AS uuid)
+        AND processed_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+    `,
   ]);
 
   const revenueValue = revenue._sum.totalPrice
     ? Number(revenue._sum.totalPrice)
+    : null;
+  const monthlyRevenueValue = monthlyRevenueRows[0]?.total
+    ? Number(monthlyRevenueRows[0].total)
     : null;
 
   return {
@@ -886,6 +964,10 @@ async function getStoreMetrics({
     skus,
     customers,
     revenue: revenueValue && revenueValue > 0 ? revenueValue : null,
+    monthlyRevenue:
+      monthlyRevenueValue && monthlyRevenueValue > 0
+        ? monthlyRevenueValue
+        : null,
     currency: revenue._min.currency ?? "GBP",
   };
 }
@@ -939,8 +1021,7 @@ async function getCompactBeliefSnapshot({
     value: belief.value,
     value_type: belief.valueType,
     status: belief.status,
-    confidence:
-      belief.confidence === null ? null : Number(belief.confidence),
+    confidence: belief.confidence === null ? null : Number(belief.confidence),
     confidence_reason: belief.confidenceReason,
     precedence: belief.precedence,
     last_evaluated_at: belief.lastEvaluatedAt?.toISOString() ?? null,
@@ -976,6 +1057,9 @@ function summarizeBackfill(
       statusLabel: "Ready",
       complete: progress?.evidenceReady && memoryStatus === "complete",
       spinning: !(progress?.evidenceReady && memoryStatus === "complete"),
+      productsComplete: Boolean(progress?.productsComplete),
+      customersComplete: Boolean(progress?.customersComplete),
+      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "success" as const,
     };
   }
@@ -988,6 +1072,9 @@ function summarizeBackfill(
       statusLabel: "Failed",
       complete: false,
       spinning: false,
+      productsComplete: Boolean(progress?.productsComplete),
+      customersComplete: Boolean(progress?.customersComplete),
+      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "critical" as const,
     };
   }
@@ -1006,6 +1093,9 @@ function summarizeBackfill(
       statusLabel: activeJob.status === "running" ? "Running" : "Queued",
       complete: false,
       spinning: true,
+      productsComplete: Boolean(progress?.productsComplete),
+      customersComplete: Boolean(progress?.customersComplete),
+      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "attention" as const,
     };
   }
@@ -1017,8 +1107,13 @@ function summarizeBackfill(
       statusLabel: memoryStatus === "failed" ? "Failed" : "Building",
       complete: false,
       spinning: memoryStatus !== "failed",
+      productsComplete: Boolean(progress?.productsComplete),
+      customersComplete: Boolean(progress?.customersComplete),
+      ordersComplete: Boolean(progress?.ordersComplete),
       tone:
-        memoryStatus === "failed" ? ("critical" as const) : ("attention" as const),
+        memoryStatus === "failed"
+          ? ("critical" as const)
+          : ("attention" as const),
     };
   }
 
@@ -1029,16 +1124,23 @@ function summarizeBackfill(
       statusLabel: "Learning",
       complete: false,
       spinning: true,
+      productsComplete: Boolean(progress.productsComplete),
+      customersComplete: Boolean(progress.customersComplete),
+      ordersComplete: Boolean(progress.ordersComplete),
       tone: "attention" as const,
     };
   }
 
   return {
     title: "Preparing Shopify connection",
-    detail: "Jefe is checking the Shopify connection before starting the import.",
+    detail:
+      "Jefe is checking the Shopify connection before starting the import.",
     statusLabel: "Preparing",
     complete: false,
     spinning: true,
+    productsComplete: false,
+    customersComplete: false,
+    ordersComplete: false,
     tone: "info" as const,
   };
 }
@@ -1071,10 +1173,10 @@ function backfillDetail(
 }
 
 function jobLabel(jobType: string) {
-  if (jobType === "shop_backfill_start") return "Preparing Shopify import";
-  if (jobType === "products_backfill") return "Importing products";
-  if (jobType === "orders_backfill_365d") return "Importing orders";
-  if (jobType === "inventory_backfill") return "Importing inventory";
+  if (jobType === "shop_backfill_start") return "Reading Shopify data";
+  if (jobType === "products_backfill") return "Reading your SKUs";
+  if (jobType === "orders_backfill_365d") return "Reading your orders";
+  if (jobType === "inventory_backfill") return "Reading inventory";
   if (jobType === "backfill_delta_sync") return "Checking recent changes";
   if (jobType === "backfill_finalize") return "Finalising backfill";
   if (jobType === "merchant_memory_rebuild") return "Building Merchant Memory";
@@ -1108,9 +1210,12 @@ function statusTone(status: string) {
 function interviewProgressLabel(
   experience: Awaited<ReturnType<typeof getMerchantInterviewExperience>>,
 ) {
-  const answered = experience.turns.filter((turn) => turn.merchantAnswer).length;
+  const answered = experience.turns.filter(
+    (turn) => turn.merchantAnswer,
+  ).length;
   const current = answered + (experience.currentTurn ? 1 : 0);
-  if (experience.canComplete) return "Enough context to create the first Merchant Memory";
+  if (experience.canComplete)
+    return "Enough context to create the first Merchant Memory";
   if (current > 0) return `Question ${current} of about 6`;
   return "A few things to clarify";
 }
@@ -1232,6 +1337,20 @@ function jsonObject(value: unknown) {
     : {};
 }
 
+function useConnectStatusPolling(enabled: boolean) {
+  const revalidator = useRevalidator();
+
+  useEffect(() => {
+    if (!enabled || revalidator.state !== "idle") return;
+
+    const timeoutId = setTimeout(() => {
+      revalidator.revalidate();
+    }, 2500);
+
+    return () => clearTimeout(timeoutId);
+  }, [enabled, revalidator]);
+}
+
 function useEmbeddedAppNavigate() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -1275,13 +1394,15 @@ function formatCurrency(value: number, currency: string) {
 
 function formatBeliefValueForUi(value: unknown) {
   if (value === null || value === undefined) return "Unknown";
-  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "string" || typeof value === "number")
+    return String(value);
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     if (typeof record.text === "string") return record.text;
     if (typeof record.option === "string") return humanizeStatus(record.option);
-    if (typeof record.boolean === "boolean") return record.boolean ? "Yes" : "No";
+    if (typeof record.boolean === "boolean")
+      return record.boolean ? "Yes" : "No";
   }
   return JSON.stringify(value);
 }
@@ -1295,7 +1416,9 @@ function humanizeBeliefKey(key: string) {
 }
 
 function humanizeStatus(status: string) {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return status
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export const headers: HeadersFunction = (headersArgs) => {

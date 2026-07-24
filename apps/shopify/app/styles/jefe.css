@@ -124,6 +124,18 @@
   border-color: #ded8d3;
 }
 
+.JefeMetricSkeleton {
+  animation: JefeSkeletonPulse 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, #dedbd6 0%, #f1eee9 48%, #dedbd6 100%);
+  background-size: 220% 100%;
+  border-radius: 6px;
+  display: block;
+  height: 25px;
+  margin-bottom: 8px;
+  max-width: 96px;
+  width: 72%;
+}
+
 .JefeConnectAction {
   display: flex;
   justify-content: center;
@@ -193,6 +205,16 @@
 
 .JefeMilestoneText {
   min-width: 0;
+}
+
+@keyframes JefeSkeletonPulse {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 .JefeMemoryView {

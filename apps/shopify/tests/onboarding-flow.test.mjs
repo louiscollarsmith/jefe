@@ -23,7 +23,10 @@ const entryServerSource = fs.readFileSync(
   "utf8",
 );
 const shopifyDocumentResponseSource = fs.readFileSync(
-  new URL("../app/services/shopify-document-response.server.js", import.meta.url),
+  new URL(
+    "../app/services/shopify-document-response.server.js",
+    import.meta.url,
+  ),
   "utf8",
 );
 const backfillStatusSource = fs.readFileSync(
@@ -62,20 +65,29 @@ test("interview onboarding reuses the Merchant Interview and memory persistence 
 
 test("standard app navigation is hidden while onboarding is active", () => {
   assert.match(appShellSource, /onboardingComplete/);
-  assert.match(appShellSource, /location\.pathname === "\/app" && !onboardingComplete/);
+  assert.match(
+    appShellSource,
+    /location\.pathname === "\/app" && !onboardingComplete/,
+  );
 });
 
 test("embedded onboarding navigation preserves current Shopify query context", () => {
   assert.match(appIndexSource, /useEmbeddedAppNavigate/);
-  assert.match(appIndexSource, /appPathFromRequest\(request, \{ view: "memory", step: null \}\)/);
+  assert.match(
+    appIndexSource,
+    /appPathFromRequest\(request, \{ view: "memory", step: null \}\)/,
+  );
   assert.doesNotMatch(appIndexSource, /url="\/app\?/);
-  assert.doesNotMatch(appIndexSource, /href=\{step === "connect" \? "\/app\?step=connect"/);
+  assert.doesNotMatch(
+    appIndexSource,
+    /href=\{step === "connect" \? "\/app\?step=connect"/,
+  );
   assert.match(appShellSource, /navigate\(`\/app\$\{location\.search\}`\)/);
 });
 
-test("connect waiting state does not poll or auto-refresh the embedded app document", () => {
-  assert.doesNotMatch(appIndexSource, /useRevalidator/);
-  assert.doesNotMatch(appIndexSource, /\.revalidate\(/);
+test("connect waiting state polls route data without refreshing the embedded app document", () => {
+  assert.match(appIndexSource, /useRevalidator/);
+  assert.match(appIndexSource, /\.revalidate\(/);
   assert.doesNotMatch(appIndexSource, /window\.location\.reload\(\)/);
   assert.doesNotMatch(appIndexSource, /setInterval/);
   assert.doesNotMatch(appIndexSource, /Check status/);
@@ -126,7 +138,10 @@ test("onboarding render does not read browser-only or non-deterministic values",
 test("onboarding route keeps CSS out of hydration-sensitive inline style text", () => {
   assert.match(rootSource, /import "\.\/styles\/jefe\.css";/);
   assert.match(jefeStylesSource, /\.JefeOnboardingScene > \*/);
-  assert.match(jefeStylesSource, /font-family: Georgia, "Times New Roman", serif;/);
+  assert.match(
+    jefeStylesSource,
+    /font-family: Georgia, "Times New Roman", serif;/,
+  );
   assert.doesNotMatch(appIndexSource, /<style(?:\s|>)/);
   assert.doesNotMatch(appIndexSource, /onboardingStyles|memoryStyles/);
 });
