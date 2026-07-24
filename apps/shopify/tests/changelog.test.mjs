@@ -65,11 +65,11 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   const entries = await loadChangelog();
 
   assert.ok(entries.length >= 4);
-  assert.equal(entries[0].date, "2026-07-23");
+  assert.equal(entries[0].date, "2026-07-24");
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("Store Understanding pass after deterministic Merchant Memory rebuilds"),
+        item.includes("App Bridge session bootstrap and empty Shopify auth responses"),
       ),
     ),
   );

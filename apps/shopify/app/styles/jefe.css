@@ -1,0 +1,248 @@
+.JefeOnboardingShell {
+  background:
+    radial-gradient(circle, rgba(33, 43, 54, 0.08) 1px, transparent 1px),
+    #fbfaf7;
+  background-size: 22px 22px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  inset: 0;
+  max-height: 100dvh;
+  overflow: hidden;
+  padding: 28px 20px;
+  position: fixed;
+  width: 100%;
+}
+
+.JefeStepper {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  align-items: center;
+}
+
+.JefeStepperItem {
+  background: transparent;
+  border: 0;
+  color: #6d7175;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 650;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: none;
+}
+
+.JefeStepperItem:focus-visible,
+.JefeOnboardingShell a:focus-visible,
+.JefeMemoryView a:focus-visible {
+  outline: 2px solid #1f3a63;
+  outline-offset: 3px;
+}
+
+.JefeStepperNumber {
+  align-items: center;
+  border: 1px solid #c9c3ba;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  height: 17px;
+  justify-content: center;
+  line-height: 1;
+  width: 17px;
+}
+
+.JefeStepperItem.is-active {
+  color: #1f3a63;
+  font-weight: 750;
+}
+
+.JefeStepperItem.is-complete .JefeStepperNumber {
+  background: #e9f1fc;
+  border-color: #7d98bf;
+  color: #263e68;
+}
+
+.JefeStepperItem.is-active .JefeStepperNumber {
+  background: #1f3a63;
+  border-color: #1f3a63;
+  color: #fff;
+}
+
+.JefeOnboardingScene {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  margin: 0 auto;
+  max-width: 760px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 32px 0 0;
+  width: 100%;
+}
+
+.JefeOnboardingScene > * {
+  max-height: 100%;
+  width: 100%;
+}
+
+.JefeDisplayHeading {
+  color: #1f2933;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0;
+  text-align: center;
+}
+
+.JefeDisplayHeading span {
+  color: #1f3a63;
+  font-style: italic;
+  font-weight: 700;
+}
+
+.JefeLearningCard {
+  width: 100%;
+}
+
+.JefeLearningCard .Polaris-ShadowBevel {
+  --pc-shadow-bevel-border-radius: 16px;
+  box-shadow:
+    0 16px 42px rgba(39, 55, 77, 0.08),
+    0 1px 2px rgba(39, 55, 77, 0.08);
+}
+
+.JefeLearningCard .Polaris-Box {
+  border-color: #ded8d3;
+}
+
+.JefeConnectAction {
+  display: flex;
+  justify-content: center;
+  min-height: 36px;
+  padding-top: 2px;
+  width: 100%;
+}
+
+.JefeGoalsForm {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+.JefeGoalsActionRow {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  min-height: 36px;
+  width: 100%;
+}
+
+.JefeMark {
+  align-items: center;
+  background: #1f3a63;
+  border-radius: 10px;
+  color: #f7e1db;
+  display: inline-flex;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  font-weight: 700;
+  height: 54px;
+  justify-content: center;
+  line-height: 1;
+  width: 54px;
+}
+
+.JefeMilestone {
+  align-items: center;
+  color: #27231f;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 8px;
+  line-height: 1.35;
+}
+
+.JefeMilestone.is-current {
+  color: #263e68;
+  font-weight: 700;
+}
+
+.JefeMilestoneIcon {
+  align-items: center;
+  color: #263e68;
+  display: inline-flex;
+  font-weight: 700;
+  min-height: 20px;
+  min-width: 20px;
+}
+
+.JefeMilestoneIcon.is-complete {
+  color: #287a48;
+}
+
+.JefeMilestoneText {
+  min-width: 0;
+}
+
+.JefeMemoryView {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 56px 24px 96px;
+}
+
+@media (max-width: 640px) {
+  .JefeOnboardingShell {
+    padding: 18px 14px;
+  }
+
+  .JefeOnboardingScene {
+    padding-top: 24px;
+  }
+
+  .JefeDisplayHeading {
+    font-size: 28px;
+  }
+}
+
+@media (max-height: 720px) {
+  .JefeOnboardingShell {
+    padding-block: 16px;
+  }
+
+  .JefeOnboardingScene {
+    padding-top: 18px;
+  }
+
+  .JefeDisplayHeading {
+    font-size: 30px;
+  }
+
+  .JefeMark {
+    border-radius: 8px;
+    font-size: 28px;
+    height: 46px;
+    width: 46px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

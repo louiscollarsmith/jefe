@@ -13,6 +13,24 @@
 - Updated synthetic Shopify live writes for Shopify Admin API 2026-07, including idempotent inventory and refund mutations, order pacing/retry handling and positive refund transaction validation.
 - Expanded disposable-store wiping to remove collections, customers attached to deleted orders and test orders when `--include-orders` is passed.
 - Tightened refund generation and validation so the tool does not try to create zero-value Shopify refunds.
+- Removed the Connect waiting-state Check status action so connected stores see no handoff button until Goals is ready.
+- Fixed the Connect handoff so Continue to Goals only appears after the noticing row has completed.
+- Updated the onboarding stepper so completed steps use a quieter outlined style and only the current step appears active.
+- Centred the Goals Back and Continue buttons below the main card.
+- Updated the second onboarding step to appear as Goals, with Connect-style card styling and Back/Continue actions below the main card.
+- Removed the duplicate "First memory ready" panel from Connect once the first memory is ready, leaving the completed noticing row and Goals action as the handoff.
+- Updated onboarding to use a fixed full-viewport canvas so Connect and Goals fit the embedded app frame without document-level scrolling.
+- Updated Connect onboarding so Jefe uses the Shopify store name when available, saves that metadata for Merchant Memory, softens the learning-status styling, and shows the Goals action below the card once the first memory is ready.
+- Added Shopify write scopes for approved product, customer, order, inventory and location actions across local, staging and production app configuration.
+- Added the Shopify `read_customers` scope to the retained evidence-layer app configuration so Jefe can request customer identity access consistently across local, staging and production installs.
+
+### Fixed
+
+- Fixed the remaining embedded onboarding hydration failure by loading Jefe's route styles from a stylesheet instead of hydration-sensitive inline style text, so Connect and Interview keep their Polaris layout on first load and refresh.
+- Fixed embedded Shopify onboarding loads so App Bridge session bootstrap and empty Shopify auth responses are served without React hydration, preventing the large warning screen and hydration mismatch overlay from replacing Jefe onboarding.
+- Fixed embedded app failure states so genuine route errors render as a readable Polaris error page instead of raw Shopify boundary output or an oversized warning icon.
+
+---
 
 ## 2026-07-23
 
@@ -24,6 +42,12 @@
 
 ### Changed
 
+- Replaced the main Jefe onboarding experience with a two-step Connect and Interview flow so merchants first see Shopify learning progress, then answer Merchant Memory questions.
+- Updated Connect to use real Shopify import and Merchant Memory readiness states, showing only real store metrics and allowing Interview once the first belief set exists while remaining imports continue.
+- Restyled the Merchant Interview into the centred onboarding shell, removed the operator-facing current-beliefs code panel, and routed completion into a Merchant Memory view.
+- Hid the standard app navigation during active onboarding so merchants stay focused until the interview is completed or skipped.
+- Fixed onboarding and app navigation so internal route changes preserve Shopify embedded-app query context instead of dropping into the Shopify route error boundary.
+- Removed automatic Connect polling/refreshing in the embedded app and added an explicit status check so Shopify import progress no longer injects route-boundary markup above onboarding after a few seconds.
 - Added canonical onboarding product design-language context and reference mockups so future Merchant Memory onboarding work follows the intended merchant-facing experience.
 - Added a Store Understanding pass after deterministic Merchant Memory rebuilds so Jefe forms cautious LLM-derived business-context beliefs from bounded Shopify catalogue and order summaries before the first interview.
 - Updated the Jefe Interview to use Store Understanding beliefs as provisional context, ask confirmation or correction questions when confidence is sufficient, and keep open-ended questions for unknown topics.
@@ -72,7 +96,7 @@
 - Updated the Merchant Memory retry action so Shopify evidence backfill is queued first whenever stored evidence is not ready, preventing page-triggered belief creation before backfill completion.
 - Simplified Jefe to Shopify installation, read-only commerce evidence backfills, evidence storage, evidence webhooks, the main Jefe page, Dev and Changelog.
 - Restored Shopify products, orders, customer identities, refunds and inventory as the retained evidence layer for future Merchant Memory work.
-- Reduced Shopify permissions to `read_products,read_orders,read_all_orders,read_inventory,read_locations` for the retained evidence layer.
+- Reduced Shopify permissions to the retained evidence-layer read scopes used by the Shopify import foundation.
 
 ### Removed
 

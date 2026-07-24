@@ -1,6 +1,6 @@
 # Shopify Evidence Ingestion
 
-Shopify ingestion is currently limited to the evidence layer needed for future Merchant Memory work: products, orders, order line items, refunds, customer identities derived from orders, and inventory levels. The retained app scope set is `read_products,read_orders,read_all_orders,read_inventory,read_locations`.
+Shopify ingestion is currently limited to the evidence layer needed for future Merchant Memory work: products, orders, order line items, refunds, customer identities derived from orders, and inventory levels. The retained app scope set is `read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations`.
 
 ## Admin GraphQL Client
 
