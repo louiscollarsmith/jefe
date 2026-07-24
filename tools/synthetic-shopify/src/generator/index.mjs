@@ -576,19 +576,54 @@ function buildRefunds(profile, rng, asOf, orders) {
   const multiRefundOrders = new Set(selected.slice(0, Math.max(1, profile.refundRecords - selected.length)).map((order) => order.sourceId));
   const refunds = [];
   for (const order of selected) {
+    const state = createRefundState(order);
     const events = multiRefundOrders.has(order.sourceId) ? 2 : 1;
     for (let eventIndex = 0; eventIndex < events; eventIndex += 1) {
+      if (state.remainingPayment <= 0) break;
       const reason = chooseRefundReason(rng);
-      const line = rng.pick(order.lineItems);
-      const isFull = eventIndex === 0 && rng.chance(0.2);
-      const shippingOnly = !isFull && order.totalShipping > 0 && rng.chance(0.1);
+      const refundableLines = remainingRefundableLines(order, state);
+      const isFull = events === 1 && eventIndex === 0 && rng.chance(0.2);
+      const shippingOnly = !isFull && state.remainingShipping > 0 && rng.chance(0.1);
       const goodwill = !isFull && !shippingOnly && rng.chance(0.08);
-      const lineQuantity = isFull ? line.quantity : Math.max(1, Math.min(line.quantity, 1));
-      const lineAmount = shippingOnly ? 0 : goodwill ? money(rng.float(3, 12)) : isFull ? order.subtotalPrice : money(Math.max(0.01, line.unitPrice * lineQuantity - line.discount));
-      const shippingAmount = isFull || shippingOnly ? order.totalShipping : 0;
+      let refundLineItems = [];
+      let lineAmount = 0;
+      let shippingAmount = 0;
+
+      if (isFull) {
+        refundLineItems = refundableLines.map((line) => ({
+          orderLineItemSourceId: line.sourceId,
+          quantity: line.remainingQuantity,
+          subtotal: refundableLineAmount(line, line.remainingQuantity),
+          restockType: shouldRestock(reason, rng) ? "RETURN" : "NO_RESTOCK",
+        }));
+        lineAmount = money(refundLineItems.reduce((sum, item) => sum + item.subtotal, 0));
+        shippingAmount = state.remainingShipping;
+      } else if (shippingOnly) {
+        shippingAmount = state.remainingShipping;
+      } else if (goodwill) {
+        lineAmount = money(Math.min(state.remainingPayment, rng.float(3, 12)));
+      } else if (refundableLines.length > 0) {
+        const line = rng.pick(refundableLines);
+        const lineQuantity = Math.max(1, Math.min(line.remainingQuantity, 1));
+        lineAmount = refundableLineAmount(line, lineQuantity);
+        refundLineItems = [
+          {
+            orderLineItemSourceId: line.sourceId,
+            quantity: lineQuantity,
+            subtotal: lineAmount,
+            restockType: shouldRestock(reason, rng) ? "RETURN" : "NO_RESTOCK",
+          },
+        ];
+      } else if (state.remainingShipping > 0) {
+        shippingAmount = state.remainingShipping;
+      } else {
+        continue;
+      }
+
       const amount = money(lineAmount + shippingAmount);
-      if (amount <= 0) continue;
+      if (amount <= 0 || amount - state.remainingPayment > 0.02) continue;
       const processedAt = new Date(new Date(order.processedAt).getTime() + rng.int(2, rng.chance(0.88) ? 14 : 30) * 86_400_000 + rng.int(1, 16) * 3_600_000).toISOString();
+      applyRefundState(state, refundLineItems, shippingAmount, amount);
       refunds.push({
         sourceId: `ref_${order.sourceId}_${eventIndex + 1}`,
         orderSourceId: order.sourceId,
@@ -598,17 +633,7 @@ function buildRefunds(profile, rng, asOf, orders) {
         processedAt,
         note: `${reason}. Synthetic refund event.`,
         notify: false,
-        refundLineItems:
-          shippingOnly || goodwill
-            ? []
-            : [
-                {
-                  orderLineItemSourceId: line.sourceId,
-                  quantity: lineQuantity,
-                  subtotal: lineAmount,
-                  restockType: shouldRestock(reason, rng) ? "RETURN" : "NO_RESTOCK",
-                },
-              ],
+        refundLineItems,
         shippingRefund: shippingAmount > 0 ? { amount: shippingAmount } : null,
         transactions: [
           {
@@ -625,6 +650,39 @@ function buildRefunds(profile, rng, asOf, orders) {
     }
   }
   return refunds.slice(0, profile.refundRecords);
+}
+
+function createRefundState(order) {
+  return {
+    remainingPayment: order.totalPrice,
+    remainingShipping: order.totalShipping,
+    refundedLineQuantities: new Map(),
+  };
+}
+
+function remainingRefundableLines(order, state) {
+  return order.lineItems
+    .map((line) => ({
+      ...line,
+      remainingQuantity: line.quantity - (state.refundedLineQuantities.get(line.sourceId) || 0),
+    }))
+    .filter((line) => line.remainingQuantity > 0);
+}
+
+function refundableLineAmount(line, quantity) {
+  const netLineAmount = money(line.totalPrice - line.discount);
+  return money(netLineAmount * (quantity / line.quantity));
+}
+
+function applyRefundState(state, refundLineItems, shippingAmount, amount) {
+  state.remainingPayment = money(Math.max(0, state.remainingPayment - amount));
+  state.remainingShipping = money(Math.max(0, state.remainingShipping - shippingAmount));
+  for (const item of refundLineItems) {
+    state.refundedLineQuantities.set(
+      item.orderLineItemSourceId,
+      (state.refundedLineQuantities.get(item.orderLineItemSourceId) || 0) + item.quantity,
+    );
+  }
 }
 
 function buildInventory(profile, rng, variants, locations, scenario, asOf) {

@@ -145,6 +145,17 @@ test("orders and refunds reconcile financially", () => {
     );
     assert.ok(refund.transactions.every((transaction) => transaction.amount > 0));
   }
+  for (const order of dataset.orders) {
+    const refunds = dataset.refunds.filter((refund) => refund.orderSourceId === order.sourceId);
+    assert.ok(round(refunds.reduce((sum, refund) => sum + refund.amount, 0)) <= order.totalPrice);
+    for (const line of order.lineItems) {
+      const refundedQuantity = refunds
+        .flatMap((refund) => refund.refundLineItems)
+        .filter((item) => item.orderLineItemSourceId === line.sourceId)
+        .reduce((sum, item) => sum + item.quantity, 0);
+      assert.ok(refundedQuantity <= line.quantity);
+    }
+  }
 });
 
 test("inventory states include tracked, zero, low and negative availability without offsetting positive stock", () => {

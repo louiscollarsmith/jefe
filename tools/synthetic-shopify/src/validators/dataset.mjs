@@ -86,6 +86,18 @@ export function validateSyntheticDataset(dataset) {
       if (!order.lineItems.some((line) => line.sourceId === item.orderLineItemSourceId)) failures.push(`Refund ${refund.sourceId} references unknown original line item ${item.orderLineItemSourceId}`);
     }
   }
+  for (const order of dataset.orders) {
+    const orderRefunds = dataset.refunds.filter((refund) => refund.orderSourceId === order.sourceId);
+    const refundedTotal = money(orderRefunds.reduce((sum, refund) => sum + refund.amount, 0));
+    if (refundedTotal - order.totalPrice > 0.02) failures.push(`Refunds for ${order.sourceId} total ${refundedTotal}, greater than order payment ${order.totalPrice}`);
+    for (const line of order.lineItems) {
+      const refundedQuantity = orderRefunds
+        .flatMap((refund) => refund.refundLineItems)
+        .filter((item) => item.orderLineItemSourceId === line.sourceId)
+        .reduce((sum, item) => sum + item.quantity, 0);
+      if (refundedQuantity > line.quantity) failures.push(`Refunds for ${order.sourceId} line ${line.sourceId} refund quantity ${refundedQuantity}, greater than purchased quantity ${line.quantity}`);
+    }
+  }
 
   const values = normalOrders.map((order) => order.totalPrice);
   const itemCounts = normalOrders.map((order) => order.lineItems.reduce((sum, line) => sum + line.quantity, 0));
