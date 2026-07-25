@@ -128,8 +128,6 @@ interpreter or future LLM prompt to emit it.
 
 Initial merchant-created types include:
 
-- `goals.primary_business_goal`
-- `goals.current_priority`
 - `business.primary_sales_channel`
 - `business.business_model`
 - `customers.primary_customer_type`

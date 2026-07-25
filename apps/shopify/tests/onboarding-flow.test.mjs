@@ -66,7 +66,7 @@ test("Connect step starts Shopify backfill and shows learning progress", () => {
   assert.doesNotMatch(appIndexSource, /runShopifyBackfill/);
 });
 
-test("temporary channels focus does not expose the Goals interview path", () => {
+test("onboarding does not expose the retired Goals or interview path", () => {
   assert.doesNotMatch(appIndexSource, /getMerchantInterviewExperience/);
   assert.doesNotMatch(appIndexSource, /submitInterviewAnswer/);
   assert.doesNotMatch(appIndexSource, /updateInterviewStatus/);

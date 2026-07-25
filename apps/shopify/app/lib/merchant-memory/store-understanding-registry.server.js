@@ -31,7 +31,6 @@ const REGISTRY = {
     confidenceCeiling: 0.72,
     highConfidenceThreshold: 0.68,
     mediumConfidenceThreshold: 0.45,
-    interviewTopicKey: "business.description",
     promptGuidance:
       "Infer only from catalogue names, product types, tags, vendors and safe aggregate metrics.",
   },
@@ -46,7 +45,6 @@ const REGISTRY = {
     confidenceCeiling: 0.85,
     highConfidenceThreshold: 0.75,
     mediumConfidenceThreshold: 0.5,
-    interviewTopicKey: "business.description",
     promptGuidance:
       "Use broad merchant-safe categories, not a generated ontology.",
   },
@@ -62,9 +60,8 @@ const REGISTRY = {
     confidenceCeiling: 0.85,
     highConfidenceThreshold: 0.72,
     mediumConfidenceThreshold: 0.48,
-    interviewTopicKey: "business.description",
     promptGuidance:
-      "Use product/category concentration and assortment spread. Do not infer merchant strategy goals.",
+      "Use product/category concentration and assortment spread. Do not infer merchant strategy objectives.",
   },
   "business.business_model": {
     key: "business.business_model",
@@ -77,7 +74,6 @@ const REGISTRY = {
     confidenceCeiling: 0.65,
     highConfidenceThreshold: 0.58,
     mediumConfidenceThreshold: 0.4,
-    interviewTopicKey: "business.description",
     promptGuidance:
       "Infer only when catalogue and commerce aggregates support it. Avoid claims about channels not present in Shopify data.",
   },
@@ -92,7 +88,6 @@ const REGISTRY = {
     confidenceCeiling: 0.6,
     highConfidenceThreshold: 0.56,
     mediumConfidenceThreshold: 0.38,
-    interviewTopicKey: "customers.primary_customer_type",
     promptGuidance:
       "Never use customer PII. Infer only aggregate customer type from product wording and baskets.",
   },
@@ -107,7 +102,6 @@ const REGISTRY = {
     confidenceCeiling: 0.65,
     highConfidenceThreshold: 0.58,
     mediumConfidenceThreshold: 0.4,
-    interviewTopicKey: "customers.primary_customer_type",
     promptGuidance:
       "Use aggregate order count, repeat rate, AOV and items per order only.",
   },
@@ -122,7 +116,6 @@ const REGISTRY = {
     confidenceCeiling: 0.75,
     highConfidenceThreshold: 0.68,
     mediumConfidenceThreshold: 0.45,
-    interviewTopicKey: "business.description",
     promptGuidance:
       "Ground in product counts, active statuses, vendors, product types and sampled titles.",
   },
@@ -138,7 +131,6 @@ const REGISTRY = {
     confidenceCeiling: 0.65,
     highConfidenceThreshold: 0.58,
     mediumConfidenceThreshold: 0.4,
-    interviewTopicKey: "business.description",
     promptGuidance:
       "Use price distribution and product language. Do not overstate subjective positioning.",
   },
@@ -245,28 +237,6 @@ export function cappedStoreUnderstandingConfidence(
   );
 }
 
-/** @param {number} confidence */
-export function inferenceCoverageStatus(confidence) {
-  if (confidence >= 0.68) return "provisionally_covered";
-  if (confidence >= 0.4) return "confirmation_needed";
-  return "unknown";
-}
-
-/**
- * @param {{ key: string; value: any; confidence: number; confidenceReason?: string | null }} belief
- * @param {StoreUnderstandingBeliefDefinition} definition
- */
-export function buildInferenceQuestion(belief, definition) {
-  const value = formatInferenceValue(belief.value);
-  if (belief.confidence >= definition.highConfidenceThreshold) {
-    return `My initial read is that ${confirmationSubject(definition.key)} ${value}. Is that accurate?`;
-  }
-  if (belief.confidence >= definition.mediumConfidenceThreshold) {
-    return `It looks like ${confirmationSubject(definition.key)} may be ${value}, although I may have misunderstood. How would you describe it?`;
-  }
-  return null;
-}
-
 /** @param {any} value */
 export function formatInferenceValue(value) {
   const objectValue = asRecord(value);
@@ -275,15 +245,6 @@ export function formatInferenceValue(value) {
   if (typeof objectValue.option === "string") return humanize(objectValue.option);
   if (Array.isArray(objectValue.items)) return objectValue.items.join(", ");
   return JSON.stringify(value);
-}
-
-/** @param {string} key */
-function confirmationSubject(key) {
-  if (key.startsWith("customers.")) return "your main customer";
-  if (key === "business.catalogue_strategy") return "your catalogue strategy is";
-  if (key === "brand.apparent_positioning") return "your positioning is";
-  if (key.startsWith("catalog.")) return "your catalogue is";
-  return "your business is";
 }
 
 /** @param {unknown} value */
@@ -326,7 +287,6 @@ function humanize(value) {
  *   confidenceCeiling: number;
  *   highConfidenceThreshold: number;
  *   mediumConfidenceThreshold: number;
- *   interviewTopicKey?: string;
  *   promptGuidance: string;
  * }} StoreUnderstandingBeliefDefinition
  */

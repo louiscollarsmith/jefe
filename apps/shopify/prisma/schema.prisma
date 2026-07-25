@@ -53,10 +53,6 @@ model Merchant {
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
-  merchantInterviews            MerchantInterview[]
-  merchantInterviewTopics       MerchantInterviewTopic[]
-  merchantInterviewTurns        MerchantInterviewTurn[]
-  merchantInterviewMessages     MerchantInterviewMessage[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -101,10 +97,6 @@ model Shop {
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
-  merchantInterviews            MerchantInterview[]
-  merchantInterviewTopics       MerchantInterviewTopic[]
-  merchantInterviewTurns        MerchantInterviewTurn[]
-  merchantInterviewMessages     MerchantInterviewMessage[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -732,117 +724,4 @@ model MerchantMemoryOpenQuestion {
   @@index([merchantId, status, priority])
   @@index([shopId, status])
   @@map("merchant_memory_open_questions")
-}
-
-model MerchantInterview {
-  id              String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId      String                     @map("merchant_id") @db.Uuid
-  shopId          String?                    @map("shop_id") @db.Uuid
-  status          String                     @default("not_started")
-  readinessScore  Int                        @default(0) @map("readiness_score")
-  startedAt       DateTime?                  @map("started_at") @db.Timestamptz(6)
-  completedAt     DateTime?                  @map("completed_at") @db.Timestamptz(6)
-  pausedAt        DateTime?                  @map("paused_at") @db.Timestamptz(6)
-  currentTopic    String?                    @map("current_topic")
-  currentQuestion String?                    @map("current_question")
-  createdAt       DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant        Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop            Shop?                      @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  topics          MerchantInterviewTopic[]
-  turns           MerchantInterviewTurn[]
-  messages        MerchantInterviewMessage[]
-
-  @@index([merchantId, status, updatedAt])
-  @@index([shopId, status])
-  @@map("merchant_interviews")
-}
-
-model MerchantInterviewTopic {
-  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  interviewId      String            @map("interview_id") @db.Uuid
-  merchantId       String            @map("merchant_id") @db.Uuid
-  shopId           String?           @map("shop_id") @db.Uuid
-  topicKey         String            @map("topic_key")
-  beliefKey        String            @map("belief_key")
-  status           String            @default("open")
-  priority         Int               @default(100)
-  source           String            @default("registry")
-  answeredAt       DateTime?         @map("answered_at") @db.Timestamptz(6)
-  relatedBeliefIds String[]          @default([]) @map("related_belief_ids")
-  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
-  interview        MerchantInterview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
-  merchant         Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop             Shop?             @relation(fields: [shopId], references: [id], onDelete: SetNull)
-
-  @@unique([interviewId, topicKey])
-  @@index([merchantId, status, priority])
-  @@index([shopId, status])
-  @@map("merchant_interview_topics")
-}
-
-model MerchantInterviewTurn {
-  id                       String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  interviewId              String                     @map("interview_id") @db.Uuid
-  merchantId               String                     @map("merchant_id") @db.Uuid
-  shopId                   String?                    @map("shop_id") @db.Uuid
-  topicKey                 String?                    @map("topic_key")
-  question                 String
-  acknowledgement          String?
-  answerSuggestions        Json                       @default("[]") @map("answer_suggestions_json")
-  merchantAnswer           String?                    @map("merchant_answer")
-  structuredInterpretation Json?                      @map("structured_interpretation_json")
-  interpretationResultId   String?                    @map("interpretation_result_id") @db.Uuid
-  operationStatus          String                     @default("pending") @map("operation_status")
-  relatedBeliefIds         String[]                   @default([]) @map("related_belief_ids")
-  committedBeliefIds       String[]                   @default([]) @map("committed_belief_ids")
-  questionMessageId        String?                    @map("question_message_id") @db.Uuid
-  answerMessageId          String?                    @map("answer_message_id") @db.Uuid
-  acknowledgementMessageId String?                    @map("acknowledgement_message_id") @db.Uuid
-  nextTurnId               String?                    @map("next_turn_id") @db.Uuid
-  idempotencyKey           String?                    @map("idempotency_key")
-  createdAt                DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  answeredAt               DateTime?                  @map("answered_at") @db.Timestamptz(6)
-  interview                MerchantInterview          @relation(fields: [interviewId], references: [id], onDelete: Cascade)
-  merchant                 Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                     Shop?                      @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  messages                 MerchantInterviewMessage[]
-
-  @@unique([interviewId, idempotencyKey])
-  @@index([interviewId, createdAt])
-  @@index([merchantId, createdAt])
-  @@index([shopId, createdAt])
-  @@map("merchant_interview_turns")
-}
-
-model MerchantInterviewMessage {
-  id                     String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  interviewId            String                 @map("interview_id") @db.Uuid
-  merchantId             String                 @map("merchant_id") @db.Uuid
-  shopId                 String?                @map("shop_id") @db.Uuid
-  turnId                 String?                @map("turn_id") @db.Uuid
-  sourceTurnId           String?                @map("source_turn_id") @db.Uuid
-  interpretationResultId String?                @map("interpretation_result_id") @db.Uuid
-  type                   String
-  role                   String
-  content                String
-  topicKey               String?                @map("topic_key")
-  sequence               Int
-  committedBeliefIds     String[]               @default([]) @map("committed_belief_ids")
-  operationStatus        String?                @map("operation_status")
-  metadata               Json                   @default("{}")
-  createdAt              DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
-  interview              MerchantInterview      @relation(fields: [interviewId], references: [id], onDelete: Cascade)
-  merchant               Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                   Shop?                  @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  turn                   MerchantInterviewTurn? @relation(fields: [turnId], references: [id], onDelete: Cascade)
-
-  @@unique([interviewId, sequence])
-  @@index([interviewId, createdAt])
-  @@index([turnId, type])
-  @@index([sourceTurnId])
-  @@index([merchantId, createdAt])
-  @@index([shopId, createdAt])
-  @@map("merchant_interview_messages")
 }
