@@ -53,6 +53,8 @@ model Merchant {
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
+  merchantInsightRuns           MerchantInsightRun[]
+  merchantInsightFindings       MerchantInsightFinding[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -74,6 +76,13 @@ model Shop {
   availableOrderHistoryDays     Int                                 @default(0) @map("available_order_history_days")
   backfillStartedAt             DateTime?                           @map("backfill_started_at") @db.Timestamptz(6)
   backfillCompletedAt           DateTime?                           @map("backfill_completed_at") @db.Timestamptz(6)
+  onboardingStartedAt           DateTime?                           @map("onboarding_started_at") @db.Timestamptz(6)
+  onboardingCompletedAt         DateTime?                           @map("onboarding_completed_at") @db.Timestamptz(6)
+  goalsCompleted                Boolean                             @default(false) @map("goals_completed")
+  houseRulesCompleted           Boolean                             @default(false) @map("house_rules_completed")
+  cogsCompletionPercentage      Decimal                             @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
+  cogsConfidenceLevel           String                              @default("missing") @map("cogs_confidence_level")
+  onboardingMetadata            Json                                @default("{}") @map("onboarding_metadata")
   rawPayload                    Json                                @default("{}") @map("raw_payload")
   createdAt                     DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -97,6 +106,8 @@ model Shop {
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
+  merchantInsightRuns           MerchantInsightRun[]
+  merchantInsightFindings       MerchantInsightFinding[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -724,4 +735,65 @@ model MerchantMemoryOpenQuestion {
   @@index([merchantId, status, priority])
   @@index([shopId, status])
   @@map("merchant_memory_open_questions")
+}
+
+model MerchantInsightRun {
+  id                    String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId            String                   @map("merchant_id") @db.Uuid
+  shopId                String                   @map("shop_id") @db.Uuid
+  status                String                   @default("queued")
+  beliefSnapshotVersion String                   @map("belief_snapshot_version")
+  beliefSnapshotHash    String                   @map("belief_snapshot_hash")
+  relevantBeliefIds     String[]                 @default([]) @map("relevant_belief_ids")
+  memoryRefreshRunId    String?                  @map("memory_refresh_run_id") @db.Uuid
+  promptVersion         String                   @map("prompt_version")
+  schemaVersion         String                   @map("schema_version")
+  provider              String?
+  modelIdentifier       String?                  @map("model_identifier")
+  safeErrorCode         String?                  @map("safe_error_code")
+  lastError             String?                  @map("last_error")
+  startedAt             DateTime?                @map("started_at") @db.Timestamptz(6)
+  completedAt           DateTime?                @map("completed_at") @db.Timestamptz(6)
+  failedAt              DateTime?                @map("failed_at") @db.Timestamptz(6)
+  supersededAt          DateTime?                @map("superseded_at") @db.Timestamptz(6)
+  result                Json                     @default("{}") @map("result_json")
+  createdAt             DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant              Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                  Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  findings              MerchantInsightFinding[]
+
+  @@unique([shopId, beliefSnapshotHash, promptVersion, schemaVersion])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([beliefSnapshotHash])
+  @@map("merchant_insight_runs")
+}
+
+model MerchantInsightFinding {
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId               String             @map("run_id") @db.Uuid
+  merchantId          String             @map("merchant_id") @db.Uuid
+  shopId              String             @map("shop_id") @db.Uuid
+  orderIndex          Int                @map("order_index")
+  title               String
+  finding             String
+  whyItMatters        String             @map("why_it_matters")
+  confidence          String
+  category            String
+  caveat              String?
+  supportingBeliefIds String[]           @default([]) @map("supporting_belief_ids")
+  reviewStatus        String             @default("unreviewed") @map("review_status")
+  reviewedAt          DateTime?          @map("reviewed_at") @db.Timestamptz(6)
+  correctedAt         DateTime?          @map("corrected_at") @db.Timestamptz(6)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  run                 MerchantInsightRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  merchant            Merchant           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, orderIndex])
+  @@index([merchantId, reviewStatus])
+  @@index([shopId, reviewStatus])
+  @@map("merchant_insight_findings")
 }

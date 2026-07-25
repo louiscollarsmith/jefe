@@ -455,7 +455,7 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       data: { status: "failed" },
     });
     const retry = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
-    assert.equal(retry.retried, 7);
+    assert.equal(retry.retried, 8);
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.session.deleteMany({ where: { shop: shopDomain } });

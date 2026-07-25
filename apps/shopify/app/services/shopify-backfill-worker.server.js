@@ -22,6 +22,12 @@ import {
 } from "../lib/merchant-memory/constants.server.js";
 import { rebuildMerchantMemory } from "../lib/merchant-memory/service.server.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server.js";
+import {
+  ensureMerchantInsightsQueued,
+  generateMerchantInsights,
+  markMerchantInsightsJobFailed,
+} from "../lib/merchant-insights/service.server.js";
+import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -49,7 +55,10 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   loopPrisma = workerPrisma;
   const initialDelayMs =
     options.initialDelayMs ??
-    positiveInteger(process.env.SHOPIFY_BACKFILL_INITIAL_DELAY_MS, INITIAL_LOOP_DELAY_MS);
+    positiveInteger(
+      process.env.SHOPIFY_BACKFILL_INITIAL_DELAY_MS,
+      INITIAL_LOOP_DELAY_MS,
+    );
   const tick = async () => {
     if (loopRunning) return;
     loopRunning = true;
@@ -79,7 +88,10 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
-  await recoverStaleRunningBackfillJobs(prisma, { now, logger: options.logger });
+  await recoverStaleRunningBackfillJobs(prisma, {
+    now,
+    logger: options.logger,
+  });
   const job = await prisma.backfillJob.findFirst({
     where: {
       status: "queued",
@@ -144,6 +156,13 @@ export async function processNextBackfillJob(prisma, options = {}) {
     });
     if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
       await markMemoryFailed(prisma, job, failure);
+    } else if (job.jobType === MERCHANT_INSIGHTS_JOB_TYPE) {
+      await markMerchantInsightsJobFailed(prisma, {
+        merchantId: job.merchantId,
+        shopId: job.shopId,
+        runId: stringValue(jsonObject(job.payloadJson).runId),
+        message,
+      });
     } else if (failedPermanently) {
       await markEvidenceFailed(prisma, job, failure);
       await prisma.shop.update({
@@ -204,7 +223,9 @@ async function runBackfillJob(prisma, job, options) {
   const orderHistoryDays = hasReadAllOrders(scopes)
     ? DEFAULT_BACKFILL_DAYS
     : FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS;
-  const requiresShopifyToken = job.jobType !== MEMORY_REFRESH_JOB_TYPE;
+  const requiresShopifyToken =
+    job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
+    job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
@@ -248,6 +269,13 @@ async function runBackfillJob(prisma, job, options) {
       return handleFinalize(prisma, context);
     case MEMORY_REFRESH_JOB_TYPE:
       return handleMerchantMemoryRebuild(prisma, context, payload);
+    case MERCHANT_INSIGHTS_JOB_TYPE:
+      return generateMerchantInsights(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        runId: stringValue(payload.runId),
+        logger: context.logger,
+      });
     default:
       return {};
   }
@@ -419,11 +447,15 @@ async function handleFinalize(prisma, context) {
     where: { shopId: context.shopId },
   });
   const failed = statuses.filter((status) => status.status === "failed");
-  const requiredComplete = ["products", "orders", "customers", "inventory"].every(
-    (domain) =>
-      isCompleteStatus(
-        statuses.find((status) => status.domain === domain)?.status,
-      ),
+  const requiredComplete = [
+    "products",
+    "orders",
+    "customers",
+    "inventory",
+  ].every((domain) =>
+    isCompleteStatus(
+      statuses.find((status) => status.domain === domain)?.status,
+    ),
   );
   const nextSetupStatus =
     failed.length > 0
@@ -498,6 +530,13 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
     recordsProcessed: result.createdOrUpdated,
     metadata: result,
   });
+
+  if (categories.length === 0) {
+    await ensureMerchantInsightsQueued(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+    });
+  }
 
   return result;
 }
@@ -609,9 +648,7 @@ async function applyBackfillCountEstimates(prisma, context) {
             },
           },
           data: {
-            totalRecordsEstimate: /** @type {number} */ (
-              totalRecordsEstimate
-            ),
+            totalRecordsEstimate: /** @type {number} */ (totalRecordsEstimate),
           },
         }),
       ),
@@ -709,7 +746,8 @@ function failedDomainsForJob(jobType) {
     return ["orders", "refunds", "customers"];
   }
   if (jobType === "inventory_backfill") return ["inventory"];
-  if (jobType === "backfill_delta_sync") return ["orders", "refunds", "customers"];
+  if (jobType === "backfill_delta_sync")
+    return ["orders", "refunds", "customers"];
   return [];
 }
 

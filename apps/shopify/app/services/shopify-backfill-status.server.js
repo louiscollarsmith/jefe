@@ -5,6 +5,7 @@ import {
   MEMORY_BACKFILL_DOMAIN,
   MEMORY_REFRESH_JOB_TYPE,
 } from "../lib/merchant-memory/constants.server.js";
+import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 
 export const DEFAULT_BACKFILL_DAYS = 365;
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
@@ -27,6 +28,7 @@ const JOB_PRIORITIES = {
   backfill_delta_sync: 50,
   backfill_finalize: 70,
   [MEMORY_REFRESH_JOB_TYPE]: 80,
+  [MERCHANT_INSIGHTS_JOB_TYPE]: 90,
 };
 
 /**
