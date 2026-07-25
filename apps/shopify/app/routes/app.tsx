@@ -26,7 +26,7 @@ import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  await ensureShopifyTenant(prisma, {
+  const { shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
@@ -36,14 +36,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     showDevTools: process.env.ENABLE_DEV_TOOLS !== "false",
+    onboardingComplete: Boolean(shop.onboardingCompletedAt),
   };
 };
 
 export default function App() {
-  const { apiKey, showDevTools } = useLoaderData<typeof loader>();
+  const { apiKey, showDevTools, onboardingComplete } =
+    useLoaderData<typeof loader>();
   const location = useLocation();
   const navigate = useNavigate();
-  const focusedOnboarding = location.pathname === "/app";
+  const focusedOnboarding = location.pathname === "/app" && !onboardingComplete;
   const navigationItems = [
     {
       label: "Jefe",

@@ -19,11 +19,13 @@ import {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Button,
   Card,
   Checkbox,
+  Collapsible,
   InlineGrid,
   InlineStack,
   Modal,
@@ -55,7 +57,19 @@ import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
 } from "../lib/merchant-memory/constants.server";
+import {
+  confirmMerchantInsightFinding,
+  correctMerchantInsightFinding,
+  ensureMerchantInsightsQueued,
+  getMerchantInsightsExperience,
+} from "../lib/merchant-insights/service.server.js";
+import {
+  INSIGHT_REVIEW_STATUS,
+  INSIGHT_RUN_STATUS,
+} from "../lib/merchant-insights/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
+import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
+import { getBeliefDefinition } from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -63,8 +77,9 @@ import {
   queueInstallShopifyBackfill,
   splitScopes,
 } from "../services/shopify-backfill-status.server";
+import { completeInsightsOnboarding } from "../services/onboarding.server.js";
 
-export const ONBOARDING_STEPS = ["connect", "channels"] as const;
+export const ONBOARDING_STEPS = ["connect", "insights"] as const;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
 const SHOP_METADATA_QUERY = `#graphql
@@ -245,6 +260,86 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent.startsWith("insights.")) {
+    try {
+      if (intent === "insights.retry") {
+        await ensureMerchantInsightsQueued(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          resetAttempts: true,
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "insights",
+            channelProvider: null,
+            channelMode: null,
+            channelNotice: null,
+          }),
+        );
+      }
+
+      if (intent === "insights.confirm") {
+        await confirmMerchantInsightFinding(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          findingId: String(formData.get("findingId") ?? ""),
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "insights",
+            insightNotice: "confirmed",
+          }),
+        );
+      }
+
+      if (intent === "insights.correct") {
+        const result = await correctMerchantInsightFinding(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          findingId: String(formData.get("findingId") ?? ""),
+          beliefId: String(formData.get("beliefId") ?? ""),
+          correction: String(formData.get("correction") ?? ""),
+        });
+        if (!result.ok) {
+          return {
+            ok: false,
+            error: result.error,
+            intent,
+            findingId: String(formData.get("findingId") ?? ""),
+          };
+        }
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "insights",
+            insightNotice: "corrected",
+          }),
+        );
+      }
+
+      if (intent === "insights.finish") {
+        await completeInsightsOnboarding(prisma, {
+          shopId: shop.id,
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: null,
+            channelProvider: null,
+            channelMode: null,
+            channelNotice: null,
+            insightNotice: null,
+          }),
+        );
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: safeMerchantFacingError(error),
+        intent,
+        findingId: String(formData.get("findingId") ?? ""),
+      };
+    }
+  }
+
   return { ok: false, error: "Unsupported action." };
 };
 
@@ -264,6 +359,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shopDomain: session.shop,
     accessToken: session.accessToken,
   });
+
+  if (shop.onboardingCompletedAt) {
+    return {
+      appMode: "memory" as const,
+      shop: session.shop,
+      merchantName: merchant.name,
+      storeName,
+      memory: await getMerchantMemoryView({
+        merchantId: merchant.id,
+        shopId: shop.id,
+      }),
+    };
+  }
+
   const readiness = await getMerchantMemoryReadiness({
     merchantId: merchant.id,
     shopId: shop.id,
@@ -334,7 +443,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop.id,
     }),
   ]);
-  const slackConnection = channelConnections.find((item) => item.provider === "slack");
+  const slackConnection = channelConnections.find(
+    (item) => item.provider === "slack",
+  );
   const shouldLoadSlackDestinations =
     slackConnection &&
     [
@@ -353,12 +464,48 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           error: channelActionError(error).message,
         }))
     : { destinations: [], error: null };
+  const activeStep = normalizeOnboardingStep(
+    url,
+    readiness.memoryReady,
+    backfill.complete,
+  );
+  if (activeStep === "insights" && readiness.memoryReady && backfill.complete) {
+    await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+  }
+  const insights =
+    readiness.memoryReady && backfill.complete
+      ? await getMerchantInsightsExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        })
+      : null;
+  const insightEvidence = insights?.selectedRun?.findings?.length
+    ? await getInsightEvidenceView({
+        merchantId: merchant.id,
+        shopId: shop.id,
+        beliefIds: Array.from(
+          new Set<string>(
+            insights.selectedRun.findings.flatMap(
+              (finding: { supportingBeliefIds: unknown[] }) =>
+                finding.supportingBeliefIds.filter(
+                  (beliefId): beliefId is string =>
+                    typeof beliefId === "string",
+                ),
+            ),
+          ),
+        ),
+      })
+    : [];
 
   return {
+    appMode: "onboarding" as const,
     shop: session.shop,
     merchantName: merchant.name,
     storeName,
-    activeStep: normalizeOnboardingStep(url, readiness.memoryReady, backfill.complete),
+    activeStep,
     connected,
     memoryReady: readiness.memoryReady,
     backfill,
@@ -367,6 +514,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     slackDestinations: slackDestinationResult.destinations,
     slackDestinationError: slackDestinationResult.error,
     hasVerifiedChannel,
+    insights,
+    insightEvidence,
   };
 };
 
@@ -374,12 +523,32 @@ export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const safeActionError = getSafeActionError(actionData);
-  const canContinueToChannels =
-    data.memoryReady && Boolean(data.backfill.complete);
+  const canContinueToInsights =
+    data.appMode === "onboarding"
+      ? data.memoryReady && Boolean(data.backfill.complete)
+      : false;
   const shouldPollConnect =
-    data.activeStep === "connect" && data.connected && !canContinueToChannels;
+    data.appMode === "onboarding" &&
+    data.activeStep === "connect" &&
+    data.connected &&
+    !canContinueToInsights;
+  const shouldPollInsights =
+    data.appMode === "onboarding" &&
+    data.activeStep === "insights" &&
+    shouldPollMerchantInsights(data.insights);
 
   useConnectStatusPolling(shouldPollConnect);
+  useConnectStatusPolling(shouldPollInsights);
+
+  if (data.appMode === "memory") {
+    return (
+      <MerchantMemoryView
+        storeName={data.storeName}
+        merchantName={data.merchantName}
+        memory={data.memory}
+      />
+    );
+  }
 
   return (
     <OnboardingShell activeStep={data.activeStep}>
@@ -389,16 +558,16 @@ export default function AppIndex() {
           backfill={data.backfill}
           metrics={data.metrics}
           connected={data.connected}
-          canContinue={canContinueToChannels}
+          canContinue={canContinueToInsights}
         />
       ) : (
-        <ChannelsStep
-          merchantName={data.merchantName}
-          connections={data.channelConnections}
-          slackDestinations={data.slackDestinations}
-          slackDestinationError={data.slackDestinationError}
-          hasVerifiedChannel={data.hasVerifiedChannel}
+        <InsightsStep
+          backfill={data.backfill}
+          memoryReady={data.memoryReady}
+          insights={data.insights}
+          evidence={data.insightEvidence}
           actionError={safeActionError}
+          rawActionData={actionData}
         />
       )}
     </OnboardingShell>
@@ -446,7 +615,7 @@ function OnboardingShell({
   children: ReactNode;
 }) {
   return (
-    <main className="JefeOnboardingShell">
+    <main className={`JefeOnboardingShell is-${activeStep}`}>
       <OnboardingStepper activeStep={activeStep} />
       <section className="JefeOnboardingScene">{children}</section>
     </main>
@@ -487,7 +656,9 @@ function OnboardingStepper({
             }
           >
             <span className="JefeStepperNumber">{index + 1}</span>
-            <span className="JefeStepperLabel">{onboardingStepLabel(step)}</span>
+            <span className="JefeStepperLabel">
+              {onboardingStepLabel(step)}
+            </span>
           </button>
         );
       })}
@@ -535,7 +706,7 @@ function ConnectStep({
             onClick={() =>
               navigate(
                 appPathFromSearch(location.search, {
-                  step: "channels",
+                  step: "insights",
                   channelProvider: null,
                   channelMode: null,
                   channelNotice: null,
@@ -544,7 +715,7 @@ function ConnectStep({
             }
             variant="primary"
           >
-            Continue to Channels
+            Continue to insights
           </Button>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
@@ -671,6 +842,8 @@ function Milestone({
   );
 }
 
+// Channels onboarding is temporarily skipped, but the implementation is retained for reactivation.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ChannelsStep({
   merchantName,
   connections,
@@ -692,7 +865,9 @@ function ChannelsStep({
   const providerFromUrl = searchParams.get("channelProvider");
   const channelMode = searchParams.get("channelMode");
   const actionErrorProvider =
-    actionError && typeof actionError === "object" ? actionError.provider : null;
+    actionError && typeof actionError === "object"
+      ? actionError.provider
+      : null;
   let activeProvider: "slack" | "whatsapp" | null = null;
   if (
     providerFromUrl === "slack" ||
@@ -711,11 +886,13 @@ function ChannelsStep({
   const whatsappUrl = channelProviderUrl(location.search, "whatsapp");
   const showSlackModal =
     activeProvider === "slack" &&
-    ([
-      CHANNEL_STATUS.needsConfiguration,
-      CHANNEL_STATUS.connected,
-      CHANNEL_STATUS.degraded,
-    ] as string[]).includes(slack.status);
+    (
+      [
+        CHANNEL_STATUS.needsConfiguration,
+        CHANNEL_STATUS.connected,
+        CHANNEL_STATUS.degraded,
+      ] as string[]
+    ).includes(slack.status);
   const closeSlackModal = () => {
     navigate(
       appPathFromSearch(location.search, {
@@ -767,6 +944,25 @@ function ChannelsStep({
         </Text>
       ) : null}
 
+      <InlineStack gap="300" align="center">
+        <Button
+          variant="primary"
+          disabled={!hasVerifiedChannel}
+          onClick={() =>
+            navigate(
+              appPathFromSearch(location.search, {
+                step: "insights",
+                channelProvider: null,
+                channelMode: null,
+                channelNotice: null,
+              }),
+            )
+          }
+        >
+          Continue to insights
+        </Button>
+      </InlineStack>
+
       {showSlackModal ? (
         <SlackConnectionModal
           open={showSlackModal}
@@ -786,6 +982,416 @@ function ChannelsStep({
         />
       ) : null}
     </BlockStack>
+  );
+}
+
+function InsightsStep({
+  backfill,
+  memoryReady,
+  insights,
+  evidence,
+  actionError,
+  rawActionData,
+}: {
+  backfill: ReturnType<typeof summarizeBackfill>;
+  memoryReady: boolean;
+  insights: Awaited<ReturnType<typeof getMerchantInsightsExperience>> | null;
+  evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
+  actionError: SafeActionError;
+  rawActionData: unknown;
+}) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const selectedRun = insights?.selectedRun;
+  const currentRun = insights?.currentRun;
+  const findings = selectedRun?.findings ?? [];
+  const correctionError =
+    rawActionData &&
+    typeof rawActionData === "object" &&
+    "findingId" in rawActionData
+      ? {
+          findingId: String(
+            (rawActionData as { findingId?: unknown }).findingId ?? "",
+          ),
+          message: getSafeActionError(rawActionData),
+        }
+      : null;
+
+  if (!memoryReady || !backfill.complete) {
+    return (
+      <InsightStatusScene
+        title="I'm turning your store data into a first understanding of the business."
+        detail={backfill.detail}
+        action={
+          <Button
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "connect",
+                  channelProvider: null,
+                  channelMode: null,
+                }),
+              )
+            }
+          >
+            Back
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (
+    currentRun?.status === INSIGHT_RUN_STATUS.queued ||
+    currentRun?.status === INSIGHT_RUN_STATUS.running ||
+    insights?.activeJob?.status === "queued" ||
+    insights?.activeJob?.status === "running"
+  ) {
+    return (
+      <InsightStatusScene
+        title="I'm choosing the patterns that seem most important."
+        detail="This page will update when the first insight set is ready."
+        skeleton
+        action={
+          <Button
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "connect",
+                  channelProvider: null,
+                  channelMode: null,
+                }),
+              )
+            }
+          >
+            Back
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (
+    currentRun?.status === INSIGHT_RUN_STATUS.insufficientData ||
+    (!selectedRun && (insights?.candidateCount ?? 0) < 3)
+  ) {
+    return (
+      <InsightStatusScene
+        title="I don't have enough supported signals for useful findings yet."
+        detail="The available Merchant Memory is still too thin or uncertain, so I won't make up insights."
+        action={
+          <InlineStack gap="300" align="center">
+            <Button
+              onClick={() =>
+                navigate(
+                  appPathFromSearch(location.search, {
+                    step: "connect",
+                    channelProvider: null,
+                    channelMode: null,
+                  }),
+                )
+              }
+            >
+              Back
+            </Button>
+            <Form method="post">
+              <input type="hidden" name="intent" value="insights.retry" />
+              <Button submit variant="primary">
+                Retry insights
+              </Button>
+            </Form>
+          </InlineStack>
+        }
+      />
+    );
+  }
+
+  if (
+    !selectedRun &&
+    (currentRun?.status === INSIGHT_RUN_STATUS.failed ||
+      currentRun?.status === INSIGHT_RUN_STATUS.modelDisabled)
+  ) {
+    return (
+      <InsightStatusScene
+        title="I couldn't generate a trustworthy insight set."
+        detail={merchantInsightErrorCopy(currentRun)}
+        action={
+          <InlineStack gap="300" align="center">
+            <Button
+              onClick={() =>
+                navigate(
+                  appPathFromSearch(location.search, {
+                    step: "connect",
+                    channelProvider: null,
+                    channelMode: null,
+                  }),
+                )
+              }
+            >
+              Back
+            </Button>
+            <Form method="post">
+              <input type="hidden" name="intent" value="insights.retry" />
+              <Button submit variant="primary">
+                Retry insights
+              </Button>
+            </Form>
+          </InlineStack>
+        }
+      />
+    );
+  }
+
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold">
+          WHAT I&apos;VE LEARNED
+        </Text>
+        <h1 className="JefeDisplayHeading">Here&apos;s what stands out.</h1>
+        <Text as="p" tone="subdued" alignment="center">
+          I&apos;ve looked across your store and pulled out the things that seem
+          most important about how your business works.
+        </Text>
+      </BlockStack>
+
+      {insights?.stale ? (
+        <Banner tone="warning">
+          <Text as="p">
+            These insights are from the previous valid memory set. I&apos;ll
+            replace them after the latest generation succeeds.
+          </Text>
+        </Banner>
+      ) : null}
+      {actionError ? (
+        <InlineError message={safeActionErrorMessage(actionError)} />
+      ) : null}
+
+      <div className="JefeInsightList">
+        {findings.map((finding: (typeof findings)[number]) => (
+          <InsightCard
+            key={finding.id}
+            finding={finding}
+            evidence={evidence.filter((item) =>
+              finding.supportingBeliefIds.includes(item.id),
+            )}
+            correctionError={
+              correctionError && correctionError.findingId === finding.id
+                ? correctionError.message
+                : null
+            }
+          />
+        ))}
+      </div>
+
+      <InlineStack gap="300" align="center">
+        <Button
+          onClick={() =>
+            navigate(
+              appPathFromSearch(location.search, {
+                step: "connect",
+                channelProvider: null,
+                channelMode: null,
+                channelNotice: null,
+              }),
+            )
+          }
+        >
+          Back
+        </Button>
+        <Form method="post">
+          <input type="hidden" name="intent" value="insights.finish" />
+          <Button submit variant="primary">
+            Finish onboarding
+          </Button>
+        </Form>
+      </InlineStack>
+    </BlockStack>
+  );
+}
+
+function InsightStatusScene({
+  title,
+  detail,
+  action,
+  skeleton = false,
+}: {
+  title: string;
+  detail: string;
+  action: ReactNode;
+  skeleton?: boolean;
+}) {
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold">
+          WHAT I&apos;VE LEARNED
+        </Text>
+        <h1 className="JefeDisplayHeading">{title}</h1>
+        <Text as="p" tone="subdued" alignment="center">
+          {detail}
+        </Text>
+      </BlockStack>
+      {skeleton ? (
+        <div className="JefeInsightList" aria-live="polite">
+          {[1, 2, 3].map((item) => (
+            <div
+              key={item}
+              className="JefeInsightSkeleton"
+              aria-hidden="true"
+            />
+          ))}
+        </div>
+      ) : null}
+      {action}
+    </BlockStack>
+  );
+}
+
+function InsightCard({
+  finding,
+  evidence,
+  correctionError,
+}: {
+  finding: NonNullable<
+    Awaited<ReturnType<typeof getMerchantInsightsExperience>>["selectedRun"]
+  >["findings"][number];
+  evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
+  correctionError: SafeActionError;
+}) {
+  const [open, setOpen] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+  const [selectedBeliefId, setSelectedBeliefId] = useState(
+    evidence[0]?.id ?? "",
+  );
+  const confirmed = finding.reviewStatus === INSIGHT_REVIEW_STATUS.confirmed;
+  const corrected = finding.reviewStatus === INSIGHT_REVIEW_STATUS.corrected;
+
+  return (
+    <div className="JefeInsightCard">
+      <div className="JefeInsightRank" aria-hidden="true">
+        {finding.orderIndex}
+      </div>
+      <BlockStack gap="300">
+        <InlineStack align="space-between" gap="300" blockAlign="start">
+          <BlockStack gap="100">
+            <Text as="h2" variant="headingMd">
+              {finding.title}
+            </Text>
+            <Text as="p">{finding.finding}</Text>
+          </BlockStack>
+          <Badge
+            tone={corrected ? "attention" : confirmed ? "success" : "info"}
+          >
+            {corrected
+              ? "Corrected"
+              : confirmed
+                ? "Confirmed"
+                : confidenceLabel(finding.confidence)}
+          </Badge>
+        </InlineStack>
+        <Text as="p" tone="subdued">
+          {finding.whyItMatters}
+        </Text>
+        {finding.caveat ? (
+          <Text as="p" tone="subdued">
+            {finding.caveat}
+          </Text>
+        ) : null}
+        <InlineStack gap="200" align="space-between" blockAlign="center">
+          <Button
+            variant="plain"
+            onClick={() => setOpen((value) => !value)}
+            ariaExpanded={open}
+            ariaControls={`insight-evidence-${finding.id}`}
+          >
+            Why Jefe thinks this
+          </Button>
+          {!confirmed && !corrected ? (
+            <InlineStack gap="200">
+              <Form method="post">
+                <input type="hidden" name="intent" value="insights.confirm" />
+                <input type="hidden" name="findingId" value={finding.id} />
+                <Button submit>Confirm</Button>
+              </Form>
+              <Button onClick={() => setCorrecting((value) => !value)}>
+                Correct
+              </Button>
+            </InlineStack>
+          ) : null}
+        </InlineStack>
+        <Collapsible
+          open={open}
+          id={`insight-evidence-${finding.id}`}
+          transition={{ duration: "150ms", timingFunction: "ease" }}
+        >
+          <BlockStack gap="200">
+            {evidence.map((item) => (
+              <Box
+                key={item.id}
+                padding="300"
+                background="bg-surface-secondary"
+                borderRadius="200"
+              >
+                <BlockStack gap="100">
+                  <Text as="p" fontWeight="semibold">
+                    {item.title}
+                  </Text>
+                  <Text as="p" tone="subdued">
+                    {item.value}
+                  </Text>
+                  {item.evidenceSummary ? (
+                    <Text as="p" tone="subdued">
+                      {item.evidenceSummary}
+                    </Text>
+                  ) : null}
+                  <Text as="p" tone="subdued">
+                    {item.sourceLabel}
+                    {item.lastEvaluatedAt
+                      ? ` · Checked ${item.lastEvaluatedAt}`
+                      : ""}
+                  </Text>
+                </BlockStack>
+              </Box>
+            ))}
+          </BlockStack>
+        </Collapsible>
+        {correcting ? (
+          <Form method="post" className="JefeInsightCorrectionForm">
+            <input type="hidden" name="intent" value="insights.correct" />
+            <input type="hidden" name="findingId" value={finding.id} />
+            <Select
+              label="What should I correct?"
+              name="beliefId"
+              options={evidence.map((item) => ({
+                label: item.title,
+                value: item.id,
+                disabled: !item.correctable,
+              }))}
+              value={selectedBeliefId}
+              onChange={setSelectedBeliefId}
+            />
+            <TextField
+              label="Correction"
+              name="correction"
+              autoComplete="off"
+              multiline={3}
+              error={
+                correctionError
+                  ? safeActionErrorMessage(correctionError)
+                  : undefined
+              }
+            />
+            <InlineStack gap="200">
+              <Button submit variant="primary">
+                Save correction
+              </Button>
+              <Button onClick={() => setCorrecting(false)}>Cancel</Button>
+            </InlineStack>
+          </Form>
+        ) : null}
+      </BlockStack>
+    </div>
   );
 }
 
@@ -815,13 +1421,15 @@ function ChannelCard({
   const location = useLocation();
   const startsSlackOAuth =
     provider === "slack" &&
-    !([
-      CHANNEL_STATUS.startingConnection,
-      CHANNEL_STATUS.authorising,
-      CHANNEL_STATUS.needsConfiguration,
-      CHANNEL_STATUS.connected,
-      CHANNEL_STATUS.degraded,
-    ] as string[]).includes(connection.status);
+    !(
+      [
+        CHANNEL_STATUS.startingConnection,
+        CHANNEL_STATUS.authorising,
+        CHANNEL_STATUS.needsConfiguration,
+        CHANNEL_STATUS.connected,
+        CHANNEL_STATUS.degraded,
+      ] as string[]
+    ).includes(connection.status);
   const actionDisabled = connection.status === CHANNEL_STATUS.authorising;
   const className = `JefeChannelCard ${active ? "is-active" : ""} ${
     connection.verified ? "is-connected" : ""
@@ -834,7 +1442,9 @@ function ChannelCard({
         description={description}
         connection={connection}
         merchantName={merchantName}
-        actionLabel={unavailableLabel ?? channelCardActionLabel(provider, connection)}
+        actionLabel={
+          unavailableLabel ?? channelCardActionLabel(provider, connection)
+        }
         actionDisabled={actionDisabled}
       />
     </>
@@ -880,7 +1490,11 @@ function ChannelCard({
   }
 
   return (
-    <a className={className} href={selectUrl} aria-current={active ? "true" : undefined}>
+    <a
+      className={className}
+      href={selectUrl}
+      aria-current={active ? "true" : undefined}
+    >
       {content}
     </a>
   );
@@ -1011,8 +1625,8 @@ function SlackConnectionModal({
                   </fetcher.Form>
                 </div>
                 <Text as="p" tone="subdued">
-                  For private channels, invite the Jefe Slack app to that channel in
-                  Slack, then refresh this list.
+                  For private channels, invite the Jefe Slack app to that
+                  channel in Slack, then refresh this list.
                 </Text>
               </BlockStack>
             ) : (
@@ -1036,7 +1650,8 @@ function SlackConnectionModal({
 
             {selectedDestinationTested && selectedDestination ? (
               <Text as="p" tone="success">
-                Test sent to {selectedDestination.label}. Save to use this channel.
+                Test sent to {selectedDestination.label}. Save to use this
+                channel.
               </Text>
             ) : null}
 
@@ -1048,10 +1663,18 @@ function SlackConnectionModal({
                   value="channel.slack.test_destination"
                 />
                 <input type="hidden" name="provider" value="slack" />
-                <input type="hidden" name="destinationId" value={destinationId} />
+                <input
+                  type="hidden"
+                  name="destinationId"
+                  value={destinationId}
+                />
                 <Button
                   submit
-                  disabled={!destinationId || submitting || destinationOptions.length === 0}
+                  disabled={
+                    !destinationId ||
+                    submitting ||
+                    destinationOptions.length === 0
+                  }
                 >
                   Test
                 </Button>
@@ -1063,7 +1686,11 @@ function SlackConnectionModal({
                   value="channel.slack.select_destination"
                 />
                 <input type="hidden" name="provider" value="slack" />
-                <input type="hidden" name="destinationId" value={destinationId} />
+                <input
+                  type="hidden"
+                  name="destinationId"
+                  value={destinationId}
+                />
                 <Button
                   submit
                   variant="primary"
@@ -1098,11 +1725,13 @@ function WhatsAppConnectionPanel({
   const [changingNumber, setChangingNumber] = useState(startWithNumberForm);
   const showNumberForm =
     changingNumber ||
-    !([
-      CHANNEL_STATUS.connected,
-      CHANNEL_STATUS.verifying,
-      CHANNEL_STATUS.degraded,
-    ] as string[]).includes(connection.status);
+    !(
+      [
+        CHANNEL_STATUS.connected,
+        CHANNEL_STATUS.verifying,
+        CHANNEL_STATUS.degraded,
+      ] as string[]
+    ).includes(connection.status);
 
   return (
     <div className="JefeLearningCard">
@@ -1114,7 +1743,8 @@ function WhatsAppConnectionPanel({
                 WhatsApp
               </Text>
               <Text as="p" tone="subdued">
-                Verify the mobile number where Jefe should send important updates.
+                Verify the mobile number where Jefe should send important
+                updates.
               </Text>
             </BlockStack>
             <StatusBadge status={connection.status} />
@@ -1173,7 +1803,11 @@ function WhatsAppConnectionPanel({
 
           {connection.status === CHANNEL_STATUS.verifying ? (
             <Form method="post" className="JefeChannelForm">
-              <input type="hidden" name="intent" value="channel.whatsapp.confirm" />
+              <input
+                type="hidden"
+                name="intent"
+                value="channel.whatsapp.confirm"
+              />
               <input type="hidden" name="provider" value="whatsapp" />
               <TextField
                 label="Verification code"
@@ -1208,10 +1842,16 @@ function WhatsAppConnectionPanel({
                   Send test message
                 </Button>
               </Form>
-              <Button onClick={() => setChangingNumber(true)} disabled={submitting}>
+              <Button
+                onClick={() => setChangingNumber(true)}
+                disabled={submitting}
+              >
                 Change number
               </Button>
-              <DisconnectChannelForm provider="whatsapp" disabled={submitting} />
+              <DisconnectChannelForm
+                provider="whatsapp"
+                disabled={submitting}
+              />
             </InlineStack>
           ) : null}
         </BlockStack>
@@ -1270,6 +1910,82 @@ function JefeMark() {
     <div className="JefeMark" aria-hidden="true">
       J
     </div>
+  );
+}
+
+function MerchantMemoryView({
+  storeName,
+  merchantName,
+  memory,
+}: {
+  storeName: string;
+  merchantName: string;
+  memory: Awaited<ReturnType<typeof getMerchantMemoryView>>;
+}) {
+  return (
+    <main className="JefeMemoryView">
+      <BlockStack gap="600">
+        <BlockStack gap="150">
+          <Text as="p" tone="subdued">
+            {merchantName}
+          </Text>
+          <Text as="h1" variant="heading2xl">
+            What Jefe knows about {storeName}
+          </Text>
+          <Text as="p" tone="subdued">
+            Merchant Memory is built from Shopify evidence, merchant corrections
+            and lower-authority inferences that stay clearly labelled.
+          </Text>
+        </BlockStack>
+        {memory.groups.length === 0 ? (
+          <Card>
+            <Text as="p">
+              Merchant Memory is still being built. Come back once Shopify
+              import and memory generation have finished.
+            </Text>
+          </Card>
+        ) : (
+          <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
+            {memory.groups.map((group) => (
+              <Card key={group.category}>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    {group.label}
+                  </Text>
+                  <BlockStack gap="200">
+                    {group.beliefs.map((belief) => (
+                      <Box
+                        key={belief.id}
+                        paddingBlockEnd="200"
+                        borderBlockEndWidth="025"
+                        borderColor="border"
+                      >
+                        <BlockStack gap="100">
+                          <InlineStack align="space-between" gap="300">
+                            <Text as="p" fontWeight="semibold">
+                              {belief.title}
+                            </Text>
+                            <Badge tone={memoryStatusTone(belief.status)}>
+                              {memoryStatusLabel(belief.status)}
+                            </Badge>
+                          </InlineStack>
+                          <Text as="p">{belief.value}</Text>
+                          {belief.evidenceSummary ? (
+                            <Text as="p" tone="subdued">
+                              {belief.evidenceSummary}
+                            </Text>
+                          ) : null}
+                        </BlockStack>
+                      </Box>
+                    ))}
+                  </BlockStack>
+                </BlockStack>
+              </Card>
+            ))}
+          </InlineGrid>
+        )}
+      </BlockStack>
+    </main>
   );
 }
 
@@ -1421,6 +2137,93 @@ async function getStoreMetrics({
         : null,
     currency: revenue._min.currency ?? "GBP",
   };
+}
+
+async function getMerchantMemoryView({
+  merchantId,
+  shopId,
+}: {
+  merchantId: string;
+  shopId: string;
+}) {
+  const beliefs = await getBeliefsForMerchant(prisma, {
+    merchantId,
+    includeEvidence: true,
+  });
+  const scoped = beliefs.filter(
+    (belief) => !belief.shopId || belief.shopId === shopId,
+  );
+  const groups = new Map<
+    string,
+    Array<{
+      id: string;
+      title: string;
+      value: string;
+      status: string;
+      evidenceSummary: string | null;
+    }>
+  >();
+  for (const belief of scoped.slice(0, 80)) {
+    const definition = getBeliefDefinition(belief.key);
+    const category = belief.category ?? "other";
+    const rows = groups.get(category) ?? [];
+    rows.push({
+      id: belief.id,
+      title: definition?.label ?? humanizeLabel(belief.key),
+      value: formatMemoryValue(belief.value),
+      status: belief.status,
+      evidenceSummary: belief.evidence?.[0]?.summary ?? null,
+    });
+    groups.set(category, rows);
+  }
+  return {
+    groups: [...groups.entries()].map(([category, beliefsForCategory]) => ({
+      category,
+      label: categoryLabel(category),
+      beliefs: beliefsForCategory,
+    })),
+  };
+}
+
+async function getInsightEvidenceView({
+  merchantId,
+  shopId,
+  beliefIds,
+}: {
+  merchantId: string;
+  shopId: string;
+  beliefIds: string[];
+}) {
+  if (beliefIds.length === 0) return [];
+  const beliefs = await prisma.merchantMemoryBelief.findMany({
+    where: {
+      merchantId,
+      shopId,
+      id: { in: beliefIds },
+      status: { in: ACTIVE_BELIEF_STATUSES },
+    },
+    include: { evidence: { take: 3, orderBy: { createdAt: "desc" } } },
+  });
+  return beliefs.map((belief) => {
+    const definition = getBeliefDefinition(belief.key);
+    return {
+      id: belief.id,
+      key: belief.key,
+      title: definition?.label ?? humanizeLabel(belief.key),
+      value: formatMemoryValue(belief.value),
+      status: belief.status,
+      correctable: Boolean(definition?.merchantCorrectable),
+      sourceLabel: insightEvidenceSourceLabel(belief),
+      evidenceSummary: belief.evidence[0]?.summary ?? null,
+      lastEvaluatedAt: belief.lastEvaluatedAt
+        ? new Intl.DateTimeFormat("en-GB", {
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+          }).format(belief.lastEvaluatedAt)
+        : null,
+    };
+  });
 }
 
 function summarizeBackfill(
@@ -1663,8 +2466,10 @@ function mergeShopRawPayload(
       name: metadata.name ?? currentShopify.name ?? null,
       myshopifyDomain:
         metadata.myshopifyDomain ?? currentShopify.myshopifyDomain ?? null,
-      currencyCode: metadata.currencyCode ?? currentShopify.currencyCode ?? null,
-      ianaTimezone: metadata.ianaTimezone ?? currentShopify.ianaTimezone ?? null,
+      currencyCode:
+        metadata.currencyCode ?? currentShopify.currencyCode ?? null,
+      ianaTimezone:
+        metadata.ianaTimezone ?? currentShopify.ianaTimezone ?? null,
     },
   };
 }
@@ -1684,11 +2489,126 @@ function displayStoreName(merchantName: string, shopDomain: string) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <Badge tone={channelStatusTone(status)}>{channelStatusLabel(status)}</Badge>;
+  return (
+    <Badge tone={channelStatusTone(status)}>{channelStatusLabel(status)}</Badge>
+  );
 }
 
 function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
-  return step === "connect" ? "Connect" : "Channels";
+  if (step === "connect") return "Connect";
+  return "Insights";
+}
+
+function confidenceLabel(confidence: string) {
+  if (confidence === "high") return "Strong signal";
+  if (confidence === "medium") return "Well supported";
+  if (confidence === "emerging") return "Emerging pattern";
+  return "Some uncertainty remains";
+}
+
+function merchantInsightErrorCopy(
+  run: { safeErrorCode?: string | null } | null,
+) {
+  if (run?.safeErrorCode === "llm_disabled") {
+    return "Insight generation is currently disabled, so I cannot create a trustworthy first set yet.";
+  }
+  if (run?.safeErrorCode === "invalid_model_output") {
+    return "The model response did not pass Jefe's grounding checks, so I rejected it.";
+  }
+  if (run?.safeErrorCode === "llm_timeout") {
+    return "The model took too long to respond. You can retry without losing current setup progress.";
+  }
+  return "The insight job failed safely. I have not shown any untrusted or sample findings.";
+}
+
+function shouldPollMerchantInsights(
+  insights: Awaited<ReturnType<typeof getMerchantInsightsExperience>> | null,
+) {
+  if (!insights) return false;
+  const currentStatus = insights.currentRun?.status;
+  const jobStatus = insights.activeJob?.status;
+  return (
+    currentStatus === INSIGHT_RUN_STATUS.queued ||
+    currentStatus === INSIGHT_RUN_STATUS.running ||
+    jobStatus === "queued" ||
+    jobStatus === "running"
+  );
+}
+
+function memoryStatusLabel(status: string) {
+  if (status === "merchant_confirmed") return "Confirmed";
+  if (status === "merchant_corrected") return "Corrected";
+  if (status === "inferred") return "Inferred";
+  return humanizeLabel(status);
+}
+
+function memoryStatusTone(status: string) {
+  if (status === "merchant_confirmed") return "success" as const;
+  if (status === "merchant_corrected") return "attention" as const;
+  return "info" as const;
+}
+
+function insightEvidenceSourceLabel(belief: {
+  status: string;
+  evidence: Array<{ sourceType: string; evidenceType: string }>;
+}) {
+  if (belief.status === "merchant_confirmed") return "Merchant confirmed";
+  if (belief.status === "merchant_corrected") return "Merchant corrected";
+  if (
+    belief.evidence.some(
+      (item) =>
+        item.sourceType === "system_derivation" ||
+        item.evidenceType === "deterministic_calculation",
+    )
+  ) {
+    return "Calculated from stored Shopify evidence";
+  }
+  if (
+    belief.evidence.some((item) => item.sourceType === "llm_store_analysis")
+  ) {
+    return "Lower-authority inference";
+  }
+  return "Supported by Merchant Memory evidence";
+}
+
+function categoryLabel(category: string) {
+  const labels: Record<string, string> = {
+    business: "Business",
+    catalog: "Products",
+    orders: "Orders",
+    customers: "Customers",
+    inventory: "Inventory",
+    refunds: "Refunds",
+    marketing: "Marketing",
+    operations: "Operations",
+    policies: "Rules",
+    preferences: "Preferences",
+  };
+  return labels[category] ?? humanizeLabel(category);
+}
+
+function formatMemoryValue(value: unknown): string {
+  if (!value || typeof value !== "object") return String(value ?? "");
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.option === "string") return humanizeLabel(record.option);
+  if (typeof record.currency === "string") return record.currency;
+  if (typeof record.boolean === "boolean") return record.boolean ? "Yes" : "No";
+  if (typeof record.count === "number") return formatInteger(record.count);
+  if (typeof record.number === "number") return formatInteger(record.number);
+  if (typeof record.percentage === "number") return `${record.percentage}%`;
+  if (typeof record.amount === "number") {
+    return formatCurrency(record.amount, String(record.currency ?? "GBP"));
+  }
+  return JSON.stringify(value);
+}
+
+function humanizeLabel(value: string) {
+  return value
+    .split(".")
+    .pop()!
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function channelConnection(
@@ -1739,12 +2659,15 @@ function getSlackDestinationsFromFetcher(data: unknown) {
   if (!data || typeof data !== "object" || !("slackDestinations" in data)) {
     return null;
   }
-  const destinations = (data as { slackDestinations?: unknown }).slackDestinations;
+  const destinations = (data as { slackDestinations?: unknown })
+    .slackDestinations;
   if (!Array.isArray(destinations)) return null;
   return destinations.filter(isSlackDestinationView);
 }
 
-function isSlackDestinationView(destination: unknown): destination is SlackDestinationView {
+function isSlackDestinationView(
+  destination: unknown,
+): destination is SlackDestinationView {
   return (
     Boolean(destination) &&
     typeof destination === "object" &&
@@ -1760,23 +2683,33 @@ function channelCardActionLabel(
   if (connection.verified) return null;
   if (
     provider === "slack" &&
-    ([CHANNEL_STATUS.needsConfiguration, CHANNEL_STATUS.degraded] as string[]).includes(
-      connection.status,
-    )
+    (
+      [CHANNEL_STATUS.needsConfiguration, CHANNEL_STATUS.degraded] as string[]
+    ).includes(connection.status)
   ) {
     return "Select channel";
   }
-  if (provider === "slack" && connection.status === CHANNEL_STATUS.authorising) {
+  if (
+    provider === "slack" &&
+    connection.status === CHANNEL_STATUS.authorising
+  ) {
     return "Authorising";
   }
-  if (provider === "whatsapp" && connection.status === CHANNEL_STATUS.verifying) {
+  if (
+    provider === "whatsapp" &&
+    connection.status === CHANNEL_STATUS.verifying
+  ) {
     return "Enter code";
   }
   return provider === "slack" ? "Connect Slack" : "Coming soon";
 }
 
 function getSafeActionError(actionData: unknown): SafeActionError {
-  if (!actionData || typeof actionData !== "object" || !("error" in actionData)) {
+  if (
+    !actionData ||
+    typeof actionData !== "object" ||
+    !("error" in actionData)
+  ) {
     return null;
   }
   const data = actionData as { error?: unknown; provider?: unknown };
@@ -1793,6 +2726,12 @@ function getSafeActionError(actionData: unknown): SafeActionError {
     };
   }
   return "That action could not be completed.";
+}
+
+function safeActionErrorMessage(error: SafeActionError) {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  return error.message;
 }
 
 function channelStatusLabel(status: string) {
@@ -1845,7 +2784,9 @@ function channelProviderUrl(
 function slackStartPath(search: string) {
   const params = new URLSearchParams(search);
   const nextSearch = params.toString();
-  return nextSearch ? `/channels/slack/start?${nextSearch}` : "/channels/slack/start";
+  return nextSearch
+    ? `/channels/slack/start?${nextSearch}`
+    : "/channels/slack/start";
 }
 
 function appPathFromSearch(
@@ -1867,9 +2808,20 @@ function normalizeOnboardingStep(
   memoryReady: boolean,
   backfillComplete: boolean,
 ): (typeof ONBOARDING_STEPS)[number] {
-  if (url.searchParams.get("channelProvider")) return "channels";
   if (!memoryReady || !backfillComplete) return "connect";
-  return url.searchParams.get("step") === "channels" ? "channels" : "connect";
+  const requested = url.searchParams.get("step");
+  if (requested === "insights") return "insights";
+  if (requested === "channels" || url.searchParams.get("channelProvider")) {
+    return "insights";
+  }
+  return "connect";
+}
+
+function safeMerchantFacingError(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.slice(0, 300);
+  }
+  return "That action could not be completed.";
 }
 
 function useConnectStatusPolling(enabled: boolean) {
@@ -1885,7 +2837,8 @@ function useConnectStatusPolling(enabled: boolean) {
 }
 
 function shouldResetPendingSlackAuthorisations(request: Request, url: URL) {
-  if (url.searchParams.has("code") || url.searchParams.has("error")) return false;
+  if (url.searchParams.has("code") || url.searchParams.has("error"))
+    return false;
   if (url.searchParams.has("_data")) return false;
   if (request.headers.has("X-React-Router-Request")) return false;
   if (request.headers.has("X-Remix-Request")) return false;

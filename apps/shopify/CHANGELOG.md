@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Bounded Merchant Insight generation snapshots by prompt size so oversized Merchant Memory evidence cannot leave the Insights onboarding screen stuck in a queued state.
+- Changed Merchant Insight generation to send the full active Merchant Memory belief set in a compact form instead of a capped candidate subset.
+- Temporarily skipped Channels in onboarding so merchants move from Connect directly to Insights while the channel setup code remains available for later reactivation.
+- Added the Insights onboarding step after Channels, with persisted Merchant Memory-backed insight generation, evidence disclosure, merchant confirm/correct review controls and a final handoff into the Merchant Memory view.
 - Removed the retired Goals and Merchant Interview workflow, including the old interview tables, services, tests and documentation.
 - Removed goal-specific Merchant Memory keys and open questions so merchants are no longer asked for or stored against the old Goals model.
 - Kept Store Understanding as a provisional memory pass while removing its interview-confirmation output.

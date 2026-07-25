@@ -38,17 +38,22 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("temporary onboarding focus exposes Connect then Channels", () => {
+test("onboarding exposes Connect and Insights while skipping Channels", () => {
   assert.match(
     appIndexSource,
-    /export const ONBOARDING_STEPS = \["connect", "channels"\] as const;/,
+    /export const ONBOARDING_STEPS = \["connect", "insights"\] as const;/,
   );
   assert.match(appIndexSource, /"Connect"/);
-  assert.match(appIndexSource, /"Channels"/);
-  assert.match(appIndexSource, /Continue to Channels/);
+  assert.match(appIndexSource, /"Insights"/);
+  assert.match(appIndexSource, /Continue to insights/);
+  assert.match(appIndexSource, /Finish onboarding/);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
+  assert.match(
+    appIndexSource,
+    /requested === "channels" \|\| url\.searchParams\.get\("channelProvider"\)/,
+  );
+  assert.doesNotMatch(appIndexSource, /Continue to Channels/);
   assert.doesNotMatch(appIndexSource, /Continue to Goals/);
-  assert.doesNotMatch(appIndexSource, /Continue to insights/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=plan/);
 });
@@ -95,19 +100,37 @@ test("channel cards use app logos and expose connector panels on click", () => {
   assert.match(slackStartSource, /redirect\(result\.authoriseUrl\)/);
   assert.match(appIndexSource, /width = 560/);
   assert.match(appIndexSource, /height = 720/);
-  assert.match(appIndexSource, /globalThis\.open\("", "jefe-slack-oauth", features\)/);
-  assert.match(appIndexSource, /channelProviderUrl\(location\.search, "slack"\)/);
-  assert.match(appIndexSource, /channelProviderUrl\(location\.search, "whatsapp"\)/);
+  assert.match(
+    appIndexSource,
+    /globalThis\.open\("", "jefe-slack-oauth", features\)/,
+  );
+  assert.match(
+    appIndexSource,
+    /channelProviderUrl\(location\.search, "slack"\)/,
+  );
+  assert.match(
+    appIndexSource,
+    /channelProviderUrl\(location\.search, "whatsapp"\)/,
+  );
   assert.match(appIndexSource, /href=\{selectUrl\}/);
   assert.match(appIndexSource, /<SlackConnectionModal/);
-  assert.match(appIndexSource, /<Modal open=\{open\} onClose=\{onClose\} title="Choose a Slack channel">/);
+  assert.match(
+    appIndexSource,
+    /<Modal open=\{open\} onClose=\{onClose\} title="Choose a Slack channel">/,
+  );
   assert.match(appIndexSource, /const showSlackModal =/);
   assert.match(appIndexSource, /CHANNEL_STATUS\.needsConfiguration/);
-  assert.match(appIndexSource, /connection\.status === CHANNEL_STATUS\.authorising/);
+  assert.match(
+    appIndexSource,
+    /connection\.status === CHANNEL_STATUS\.authorising/,
+  );
   assert.match(appIndexSource, /actionDisabled/);
   assert.match(appIndexSource, /is-inert/);
   assert.match(appIndexSource, /resetPendingSlackAuthorisations/);
-  assert.match(appIndexSource, /shouldResetPendingSlackAuthorisations\(request, url\)/);
+  assert.match(
+    appIndexSource,
+    /shouldResetPendingSlackAuthorisations\(request, url\)/,
+  );
   assert.match(appIndexSource, /X-React-Router-Request/);
   assert.match(appIndexSource, /Sec-Fetch-Dest/);
   assert.match(appIndexSource, /<WhatsAppConnectionPanel/);
@@ -137,13 +160,19 @@ test("connected channel cards expose a single disconnect action", () => {
   assert.match(appIndexSource, /getSlackDestinationsFromFetcher/);
   assert.match(appIndexSource, /slackWorkspaceLabel/);
   assert.match(appIndexSource, /Refresh channels/);
-  assert.match(appIndexSource, /For private channels, invite the Jefe Slack app/);
+  assert.match(
+    appIndexSource,
+    /For private channels, invite the Jefe Slack app/,
+  );
   assert.match(appIndexSource, /selectedDestinationTested/);
   assert.match(appIndexSource, /Select channel/);
   assert.match(appIndexSource, /Enter code/);
   assert.match(appIndexSource, /Send verification message/);
   assert.match(appIndexSource, /Confirm WhatsApp/);
-  assert.match(appIndexSource, /formDataHasTruthyValue\(formData, "consentAccepted"\)/);
+  assert.match(
+    appIndexSource,
+    /formDataHasTruthyValue\(formData, "consentAccepted"\)/,
+  );
   assert.match(appIndexSource, /value=\{consentAccepted \? "true" : "false"\}/);
   assert.match(appIndexSource, /channelConnectionSummary/);
   assert.match(appIndexSource, /accountName \?\? merchantName/);
@@ -151,16 +180,19 @@ test("connected channel cards expose a single disconnect action", () => {
 
 test("channel logo image assets are bundled locally", () => {
   assert.ok(
-    fs.statSync(new URL("../public/channels/slack.webp", import.meta.url)).size > 0,
+    fs.statSync(new URL("../public/channels/slack.webp", import.meta.url))
+      .size > 0,
   );
   assert.ok(
-    fs.statSync(new URL("../public/channels/whatsapp.webp", import.meta.url)).size > 0,
+    fs.statSync(new URL("../public/channels/whatsapp.webp", import.meta.url))
+      .size > 0,
   );
 });
 
 test("standard app navigation is hidden while onboarding is active", () => {
   assert.match(appShellSource, /focusedOnboarding/);
   assert.match(appShellSource, /location\.pathname === "\/app"/);
+  assert.match(appShellSource, /!onboardingComplete/);
 });
 
 test("Slack OAuth callback navigation preserves current Shopify query context", () => {
@@ -255,7 +287,10 @@ test("embedded route components do not render document structure or invalid nest
   assert.doesNotMatch(routeSources, /<html\b/);
   assert.doesNotMatch(routeSources, /<head\b/);
   assert.doesNotMatch(routeSources, /<body\b/);
-  assert.doesNotMatch(routeSources, /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+  assert.doesNotMatch(
+    routeSources,
+    /<button\b(?:(?!<\/button>)[\s\S])*<button\b/,
+  );
   assert.doesNotMatch(routeSources, /<a\b(?:(?!<\/a>)[\s\S])*<a\b/);
 
   for (const block of textParagraphBlocks) {
