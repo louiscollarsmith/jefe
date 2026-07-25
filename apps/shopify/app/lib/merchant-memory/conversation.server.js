@@ -34,20 +34,11 @@ export { OPERATION_STATUS, OPERATION_TYPES };
 
 const INITIAL_OPEN_QUESTIONS = [
   {
-    category: "goals",
-    questionKey: "goals.primary_business_goal",
-    question: "What is the main goal you want Jefe to help with first?",
-    reason: "Jefe needs one clear target before recommendations can become useful.",
-    priority: 10,
-    answerType: "text",
-    answerOptions: [],
-  },
-  {
     category: "preferences",
     questionKey: "preferences.optimisation_priority",
     question: "What should Jefe optimise for: growth, profit, cash flow, or something else?",
     reason: "This affects how Jefe should evaluate tradeoffs.",
-    priority: 20,
+    priority: 10,
     answerType: "option",
     answerOptions: ["growth", "profit", "cash_flow", "retention", "revenue"],
   },
@@ -56,7 +47,7 @@ const INITIAL_OPEN_QUESTIONS = [
     questionKey: "policies.business_rules",
     question: "Are there any business rules Jefe should never break?",
     reason: "Hard constraints prevent unsafe or unsuitable future recommendations.",
-    priority: 30,
+    priority: 20,
     answerType: "text",
     answerOptions: [],
   },
@@ -582,11 +573,18 @@ export function interpretMerchantMessage(input) {
     };
   }
 
-  const extracted = extractSupportedChange(normalized, message, target, currentQuestion);
+  const extracted = extractSupportedChange(
+    normalized,
+    message,
+    target,
+    currentQuestion,
+    input.context,
+  );
   if (extracted) return extracted;
 
   if (currentQuestion && !isQuestion(normalized) && message.length > 8) {
-    return operationForOpenQuestion(currentQuestion, message);
+    const openQuestionOperation = operationForOpenQuestion(currentQuestion, message);
+    if (openQuestionOperation) return openQuestionOperation;
   }
 
   if (normalized.includes("wrong") || normalized.includes("not right")) {
@@ -1237,8 +1235,9 @@ function findTargetBelief(normalized, beliefs, context) {
  * @param {string} message
  * @param {any} target
  * @param {any} currentQuestion
+ * @param {any} context
  */
-function extractSupportedChange(normalized, message, target, currentQuestion) {
+function extractSupportedChange(normalized, message, target, currentQuestion, context) {
   const currency = extractCurrency(normalized);
   if (currency && target?.key === "business.primary_currency") {
     return {
@@ -1297,7 +1296,8 @@ function extractSupportedChange(normalized, message, target, currentQuestion) {
   }
 
   if (currentQuestion && !isQuestion(normalized) && message.length > 8) {
-    return operationForOpenQuestion(currentQuestion, message);
+    const openQuestionOperation = operationForOpenQuestion(currentQuestion, message);
+    if (openQuestionOperation) return openQuestionOperation;
   }
 
   if (
@@ -1338,14 +1338,13 @@ function extractSupportedChange(normalized, message, target, currentQuestion) {
         currentQuestion,
       );
     }
-    return merchantBelief(
-      "goals.current_priority",
-      "goals",
-      { text: cleanBusinessStatement(message) },
-      "Merchant stated the current priority.",
+    return clarification(
+      "Which optimisation priority should I remember: growth, profit, cash flow, retention or revenue?",
       message,
-      false,
-      currentQuestion,
+      {
+        ...context,
+        lastDiscussedBeliefKeys: ["preferences.optimisation_priority"],
+      },
     );
   }
 
@@ -1404,18 +1403,15 @@ function operationForOpenQuestion(question, message) {
         question,
       );
     }
+    return clarification(
+      "Which optimisation priority should I remember: growth, profit, cash flow, retention or revenue?",
+      message,
+      { lastDiscussedBeliefKeys: ["preferences.optimisation_priority"] },
+    );
   }
 
-  if (question.questionKey === "goals.primary_business_goal") {
-    return merchantBelief(
-      "goals.primary_business_goal",
-      "goals",
-      { text: cleanBusinessStatement(message) },
-      "Merchant answered Jefe’s primary goal question.",
-      message,
-      false,
-      question,
-    );
+  if (question.questionKey !== "policies.business_rules") {
+    return null;
   }
 
   return merchantBelief(
@@ -1475,7 +1471,7 @@ function clarification(reason, message, context) {
  * @param {string} value
  */
 function categoryFromMessage(value) {
-  return ["business", "catalog", "orders", "customers", "inventory", "goals", "operations", "preferences", "policies"].find(
+  return ["business", "catalog", "orders", "customers", "inventory", "operations", "preferences", "policies"].find(
     (category) => value.includes(category),
   ) ?? (value.includes("stock") ? "inventory" : null);
 }

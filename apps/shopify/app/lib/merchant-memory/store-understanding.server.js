@@ -169,8 +169,6 @@ export async function runStoreUnderstandingPass(prisma, input) {
           acceptedKeys: persisted.map((belief) => belief.key),
           rejected: validation.rejected.slice(0, 20),
           uncertainties: output.uncertainties,
-          suggestedInterviewConfirmations:
-            output.suggestedInterviewConfirmations,
           usage: llmResult.usage,
           attempts: llmResult.attempts,
           durationMs,
@@ -209,7 +207,7 @@ export async function runStoreUnderstandingPass(prisma, input) {
         result: { errorName: error instanceof Error ? error.name : "Error" },
       },
     });
-    logger.warn("Store Understanding failed; interview will continue without provisional inferences", {
+    logger.warn("Store Understanding failed; Merchant Memory will continue without provisional inferences", {
       merchantId: input.merchantId,
       shopId: input.shopId ?? null,
       runId: run.id,
@@ -406,7 +404,7 @@ function buildStoreUnderstandingSystemPrompt() {
     "Return exactly one JSON object matching the supplied schema.",
     "Use only the registered belief keys supplied in the prompt.",
     "Every candidate must be grounded in the bounded store summary.",
-    "Do not infer merchant goals, private strategy, or anything about individual customers.",
+    "Do not infer private strategy or anything about individual customers.",
     "Do not include customer names, email addresses, phone numbers or postal addresses.",
     "Use cautious language. These are provisional LLM-derived inferences for merchant confirmation.",
   ].join("\n");

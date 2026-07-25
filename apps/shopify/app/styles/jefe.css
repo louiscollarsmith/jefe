@@ -144,22 +144,6 @@
   width: 100%;
 }
 
-.JefeGoalsForm {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  width: 100%;
-}
-
-.JefeGoalsActionRow {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  min-height: 36px;
-  width: 100%;
-}
-
 .JefeChannelGrid {
   display: grid;
   gap: 14px;

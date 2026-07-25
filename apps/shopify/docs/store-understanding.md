@@ -1,6 +1,6 @@
 # Store Understanding Pass
 
-Store Understanding is the cautious LLM pass that runs after deterministic Merchant Memory has been rebuilt and before the first adaptive Jefe Interview starts. Its job is to form a provisional business-context interpretation from stored Shopify evidence so the interview can confirm, correct and complete Jefe's understanding instead of starting from a blank slate.
+Store Understanding is the cautious LLM pass that runs after deterministic Merchant Memory has been rebuilt. Its job is to form provisional business-context interpretations from stored Shopify evidence without promoting those interpretations to merchant-confirmed fact.
 
 ## Deterministic facts vs LLM inferences
 
@@ -22,14 +22,14 @@ The summary excludes customer names, emails, phone numbers, addresses, raw order
 
 ## Inference registry
 
-The model can only return keys registered in `store-understanding-registry.server.js`. Each entry defines category, value type, allowed enum values where applicable, minimum evidence, confidence ceiling, merchant confirmability/correctability and interview topic mapping.
+The model can only return keys registered in `store-understanding-registry.server.js`. Each entry defines category, value type, allowed enum values where applicable, minimum evidence, confidence ceiling and merchant confirmability/correctability.
 
 Initial registered inferences include business description/category/catalogue strategy/business model, likely primary customer type, customer purchase pattern, catalogue assortment character and apparent brand positioning.
 
 To add an inference type:
 
 1. Add a registry entry with a clear evidence requirement and confidence ceiling.
-2. Add or update tests for value validation, confidence capping and interview mapping.
+2. Add or update tests for value validation and confidence capping.
 3. Ensure the key does not conflict with deterministic observed facts unless the precedence behaviour is explicitly intended.
 
 ## Structured output
@@ -39,7 +39,6 @@ The LLM response must match `STORE_UNDERSTANDING_OUTPUT_SCHEMA`:
 - `storeSummary`
 - `candidateBeliefs`
 - `uncertainties`
-- `suggestedInterviewConfirmations`
 
 The app validates the response again after model output. Unsupported keys, malformed values, missing evidence, PII-looking values and candidates without enough source evidence are rejected.
 
@@ -52,7 +51,7 @@ Model confidence is not trusted directly. The app caps confidence by:
 - dataset size and completeness;
 - customer/order evidence availability for customer-oriented inferences.
 
-Low-confidence accepted beliefs can exist as provisional context, but interview readiness gives them little or no credit.
+Low-confidence accepted beliefs can exist as provisional context, but they remain lower-authority than deterministic observations and merchant-supplied corrections.
 
 ## Evidence and provenance
 
@@ -77,20 +76,9 @@ Each run is recorded in `store_understanding_runs` with status, trigger, input s
 
 Reruns update active Store Understanding beliefs when values change, preserve one active row per key, and obsolete older Store Understanding inferences that are no longer supported.
 
-## Interview integration
-
-The adaptive interview maps Store Understanding beliefs into topic coverage:
-
-- merchant-confirmed/corrected: full coverage;
-- high-confidence LLM inference: provisional coverage and confirmation wording;
-- medium-confidence LLM inference: confirmation-needed coverage and correction-friendly wording;
-- low-confidence or unknown: the LLM question planner can ask an open-ended question from the allowed topic set.
-
-The first interview acknowledgement uses accepted inferences when available and explicitly frames them as Jefe's interpretation. Merchant confirmation upgrades the belief to merchant-confirmed. Merchant correction stores merchant-authoritative context through the existing interview memory path where the key is merchant-correctable.
-
 ## Fallback behaviour
 
-If Store Understanding is disabled or unavailable, it records a safe run state and onboarding continues. The interview question planner still needs an enabled LLM to create merchant-facing questions; Jefe does not fall back to deterministic registry questions.
+If Store Understanding is disabled or unavailable, it records a safe run state and onboarding continues using deterministic Merchant Memory.
 
 ## Privacy boundaries
 
@@ -98,4 +86,4 @@ Store Understanding is server-side only. It sends bounded catalogue and aggregat
 
 ## Testing
 
-Use mocked LLM providers in tests. Tests should cover accepted persistence, unsupported key rejection, invalid value rejection, confidence ceilings, authoritative-belief protection, idempotent reruns, obsolescence, disabled fallback, bounded/no-PII input summaries and interview confirmation behaviour.
+Use mocked LLM providers in tests. Tests should cover accepted persistence, unsupported key rejection, invalid value rejection, confidence ceilings, authoritative-belief protection, idempotent reruns, obsolescence, disabled fallback and bounded/no-PII input summaries.

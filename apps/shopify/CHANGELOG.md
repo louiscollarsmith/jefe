@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-25
+
+### Changed
+
+- Removed the retired Goals and Merchant Interview workflow, including the old interview tables, services, tests and documentation.
+- Removed goal-specific Merchant Memory keys and open questions so merchants are no longer asked for or stored against the old Goals model.
+- Kept Store Understanding as a provisional memory pass while removing its interview-confirmation output.
+
 ## 2026-07-24
 
 ### Added

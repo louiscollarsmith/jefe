@@ -8,7 +8,6 @@ export const STORE_UNDERSTANDING_OUTPUT_SCHEMA = {
     "storeSummary",
     "candidateBeliefs",
     "uncertainties",
-    "suggestedInterviewConfirmations",
   ],
   properties: {
     storeSummary: { type: Type.STRING },
@@ -65,17 +64,6 @@ export const STORE_UNDERSTANDING_OUTPUT_SCHEMA = {
         },
       },
     },
-    suggestedInterviewConfirmations: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        required: ["beliefKey", "question"],
-        properties: {
-          beliefKey: { type: Type.STRING },
-          question: { type: Type.STRING },
-        },
-      },
-    },
   },
 };
 
@@ -95,10 +83,6 @@ export function parseAndValidateStoreUnderstandingOutput(raw) {
   if (!Array.isArray(object.uncertainties)) {
     return invalid("Model output must include uncertainties.");
   }
-  if (!Array.isArray(object.suggestedInterviewConfirmations)) {
-    return invalid("Model output must include suggested confirmations.");
-  }
-
   const candidateBeliefs = [];
   for (const item of object.candidateBeliefs.slice(0, 10)) {
     const candidate = asRecord(item);
@@ -144,10 +128,6 @@ export function parseAndValidateStoreUnderstandingOutput(raw) {
         .map(normalizeUncertainty)
         .filter(Boolean)
         .slice(0, 8),
-      suggestedInterviewConfirmations: object.suggestedInterviewConfirmations
-        .map(normalizeConfirmation)
-        .filter(Boolean)
-        .slice(0, 8),
     },
   };
 }
@@ -180,22 +160,6 @@ function normalizeUncertainty(value) {
   return {
     topic: uncertainty.topic.trim().slice(0, 120),
     reason: uncertainty.reason.trim().slice(0, 240),
-  };
-}
-
-/** @param {unknown} value */
-function normalizeConfirmation(value) {
-  const confirmation = asRecord(value);
-  if (!confirmation) return null;
-  if (
-    typeof confirmation.beliefKey !== "string" ||
-    typeof confirmation.question !== "string"
-  ) {
-    return null;
-  }
-  return {
-    beliefKey: confirmation.beliefKey.trim().slice(0, 120),
-    question: confirmation.question.trim().slice(0, 300),
   };
 }
 

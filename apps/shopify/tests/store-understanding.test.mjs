@@ -3,10 +3,6 @@ import test from "node:test";
 import { PrismaClient } from "@prisma/client";
 import { createMockLlmProvider } from "../app/lib/llm/provider.server.js";
 import {
-  getMerchantInterviewExperience,
-  submitInterviewAnswer,
-} from "../app/lib/merchant-memory/interview.server.js";
-import {
   correctBelief,
   getBelief,
   rebuildMerchantMemory,
@@ -271,135 +267,6 @@ test("Store Understanding does not overwrite merchant-authoritative beliefs and 
   }
 });
 
-test("adaptive interview asks confirmation from high-confidence Store Understanding and confirmation upgrades authority", async (t) => {
-  if (!databaseUrl) {
-    t.skip("DATABASE_URL is required for Store Understanding tests");
-    return;
-  }
-
-  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-  const suffix = uniqueSuffix();
-
-  try {
-    const { merchant, shop } = await createStoreUnderstandingFixture(prisma, suffix);
-    await rebuildMerchantMemory(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      llmProvider: createMockLlmProvider({
-        operation: storeUnderstandingOutput({
-          candidates: [
-            {
-              beliefKey: "business.description",
-              value: { text: "a premium candle and home fragrance store" },
-              confidence: 0.72,
-            },
-          ],
-        }),
-      }),
-      logger: silentLogger,
-    });
-    const plannerProvider = createStoreUnderstandingQuestionPlannerProvider(
-      storeUnderstandingOutput({
-        candidates: [
-          {
-            beliefKey: "business.description",
-            value: { text: "a premium candle and home fragrance store" },
-            confidence: 0.72,
-          },
-        ],
-      }),
-    );
-
-    const experience = await getMerchantInterviewExperience(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      llmProvider: plannerProvider,
-      logger: silentLogger,
-    });
-    const businessCoverage = experience.readiness.coverage.find(
-      (topic) => topic.topicKey === "business.description",
-    );
-
-    assert.equal(experience.currentTurn.topicKey, "business.description");
-    assert.match(experience.currentTurn.question, /LLM read/i);
-    assert.match(experience.currentTurn.question, /accurate/i);
-    assert.doesNotMatch(
-      experience.currentTurn.question,
-      /describe what your business sells, in your own words/i,
-    );
-    assert.deepEqual(
-      experience.messages.map((message) => message.type).slice(0, 2),
-      ["assistant_context", "assistant_question"],
-    );
-    assert.match(experience.messages[0].content, /studied your catalogue/i);
-    assert.equal(businessCoverage.status, "provisionally_covered");
-    assert.equal(businessCoverage.contribution, 12);
-
-    await submitInterviewAnswer(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      turnId: experience.currentTurn.id,
-      answer: "Yes, that's accurate.",
-      llmProvider: plannerProvider,
-      logger: silentLogger,
-    });
-    const confirmed = await getBelief(prisma, {
-      merchantId: merchant.id,
-      key: "business.description",
-    });
-
-    assert.equal(confirmed.status, "merchant_confirmed");
-    assert.equal(confirmed.confidence, 1);
-  } finally {
-    await prisma.merchant.deleteMany({
-      where: { name: `Store Understanding Test Merchant ${suffix}` },
-    });
-    await prisma.$disconnect();
-  }
-});
-
-function createStoreUnderstandingQuestionPlannerProvider(storeUnderstandingOperation) {
-  return {
-    provider: "mock",
-    model: "mock-store-understanding-question-planner",
-    enabled: true,
-    async generateStructuredOperation() {
-      throw new Error("not used");
-    },
-    async generateStructuredJson(request) {
-      if (request.systemPrompt.includes("next merchant interview question")) {
-        const prompt = JSON.parse(request.prompt);
-        const topic =
-          prompt.allowedTopics.find(
-            (item) => item.topicKey === "business.description",
-          ) ?? prompt.allowedTopics[0];
-        return {
-          json: {
-            topic_key: topic.topicKey,
-            question:
-              "Jefe's LLM read is that you sell premium candles for home fragrance and gifting. Is that accurate?",
-            question_intent: "confirm_inference",
-            answer_suggestions: ["Yes", "Not quite"],
-            rationale: "Confirm the high-confidence Store Understanding inference.",
-          },
-          usage: { estimatedInputTokens: 1 },
-          attempts: 1,
-          durationMs: 0,
-        };
-      }
-      if (request.systemPrompt.includes("Store Understanding")) {
-        return {
-          json: storeUnderstandingOperation,
-          usage: { estimatedInputTokens: 1 },
-          attempts: 1,
-          durationMs: 0,
-        };
-      }
-      throw new Error("fall back to deterministic answer interpretation");
-    },
-  };
-}
-
 test("Store Understanding summary excludes customer PII and bounds catalogue input", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Store Understanding tests");
@@ -447,10 +314,6 @@ function storeUnderstandingOutput({ candidates }) {
       ...candidate,
     })),
     uncertainties: [],
-    suggestedInterviewConfirmations: candidates.map((candidate) => ({
-      beliefKey: candidate.beliefKey,
-      question: "Is this interpretation accurate?",
-    })),
   };
 }
 

@@ -145,7 +145,7 @@ test("preorder availability is stored as policy, not an overwrite of inventory o
   assert.deepEqual(operation.proposedValue, { boolean: true });
 });
 
-test("open question answers become scoped merchant-supplied beliefs", () => {
+test("retired goal open question answers ask for clarification instead of creating goal memory", () => {
   const operation = interpretMerchantMessage({
     message: "Our main goal is increasing repeat purchases this quarter.",
     beliefs,
@@ -158,9 +158,38 @@ test("open question answers become scoped merchant-supplied beliefs", () => {
     context: { currentOpenQuestionId: "question-goal" },
   });
 
+  assert.equal(operation.operationType, OPERATION_TYPES.clarificationRequired);
+  assert.notEqual(operation.targetBeliefKey, "goals.primary_business_goal");
+});
+
+test("priority answers only create preference memory when they map to supported options", () => {
+  const operation = interpretMerchantMessage({
+    message: "Our priority is profit this quarter.",
+    beliefs,
+    openQuestions: [
+      {
+        id: "question-preference",
+        questionKey: "preferences.optimisation_priority",
+      },
+    ],
+    context: { currentOpenQuestionId: "question-preference" },
+  });
+
   assert.equal(operation.operationType, OPERATION_TYPES.answerOpenQuestion);
-  assert.equal(operation.relatedOpenQuestionId, "question-goal");
-  assert.equal(operation.targetBeliefKey, "goals.primary_business_goal");
+  assert.equal(operation.relatedOpenQuestionId, "question-preference");
+  assert.equal(operation.targetBeliefKey, "preferences.optimisation_priority");
+  assert.deepEqual(operation.proposedValue, { option: "profit" });
+});
+
+test("unsupported goal or focus statements ask for clarification instead of creating goal memory", () => {
+  const operation = interpretMerchantMessage({
+    message: "Our focus is improving the wholesale experience.",
+    beliefs,
+    context: {},
+  });
+
+  assert.equal(operation.operationType, OPERATION_TYPES.clarificationRequired);
+  assert.notEqual(operation.targetBeliefKey, "goals.current_priority");
 });
 
 test("ambiguous confirmation asks for clarification before writing", () => {
