@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-26
+
+### Changed
+
+- Updated synthetic Shopify realistic and load profiles so generated operator test orders are all inside the latest 365-day window.
+
 ## 2026-07-25
 
 ### Changed

@@ -19,7 +19,7 @@ export const PROFILE_DEFINITIONS = {
     refundRecords: 16,
   },
   realistic: {
-    historyDays: 730,
+    historyDays: 365,
     activeProducts: 24,
     archivedProducts: 3,
     draftProducts: 2,
@@ -32,7 +32,7 @@ export const PROFILE_DEFINITIONS = {
     refundRecords: 43,
   },
   load: {
-    historyDays: 730,
+    historyDays: 365,
     activeProducts: 36,
     archivedProducts: 4,
     draftProducts: 2,
