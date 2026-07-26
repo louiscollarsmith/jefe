@@ -11,6 +11,7 @@ import {
   correctMerchantInsightFinding,
   ensureMerchantInsightsQueued,
   generateMerchantInsights,
+  getMerchantInsightsExperience,
 } from "../app/lib/merchant-insights/service.server.js";
 import {
   INSIGHT_RUN_STATUS,
@@ -26,6 +27,10 @@ const workerSource = fs.readFileSync(
 );
 const routeSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
+  "utf8",
+);
+const promptSource = fs.readFileSync(
+  new URL("../app/lib/merchant-insights/prompt.server.js", import.meta.url),
   "utf8",
 );
 
@@ -298,6 +303,12 @@ test("insight generation is wired to the async worker and not browser page load"
   assert.doesNotMatch(routeSource, /generateMerchantInsights\(/);
 });
 
+test("insight prompt retries with validation feedback and allowed belief IDs", () => {
+  assert.match(promptSource, /validationNotice/);
+  assert.match(promptSource, /allowedSupportingBeliefIds/);
+  assert.match(promptSource, /Previous output was rejected/);
+});
+
 test("onboarding reveal is capped to the strongest five insights", () => {
   assert.equal(MAX_ONBOARDING_INSIGHTS, 5);
   assert.match(routeSource, /MAX_ONBOARDING_INSIGHTS/);
@@ -373,6 +384,140 @@ test("merchant insight generation persists validated findings and review confirm
     assert.equal(result.status, INSIGHT_RUN_STATUS.completed);
     assert.equal(run.findings.length, 1);
     assert.equal(reviewed.reviewStatus, "confirmed");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("insight generation retries once after invalid model output", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  let calls = 0;
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const queued = await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
+      (belief) => belief.key === "orders.average_order_value.all_time",
+    );
+    assert.ok(averageOrderValueBelief);
+    const result = await generateMerchantInsights(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      runId: queued.run.id,
+      llmProvider: {
+        provider: "mock",
+        model: "mock-retry",
+        enabled: true,
+        async generateStructuredJson() {
+          calls += 1;
+          return {
+            json:
+              calls === 1
+                ? {
+                    insights: [
+                      {
+                        title: "Specialized retail model",
+                        finding:
+                          "The business has a relatively high average price and likely relies on expertise and curation.",
+                        whyItMatters:
+                          "This likely influences the customer base and marketing approach.",
+                        supportingBeliefIds: [averageOrderValueBelief.id],
+                        confidence: "medium",
+                        category: "products",
+                      },
+                    ],
+                  }
+                : {
+                    insights: [
+                      {
+                        title: "Orders have a clear value shape",
+                        finding: "Average order value is 64.",
+                        whyItMatters:
+                          "That gives Jefe a grounded baseline for future recommendations.",
+                        supportingBeliefIds: [averageOrderValueBelief.id],
+                        confidence: "high",
+                        category: "revenue",
+                      },
+                    ],
+                  },
+            usage: {
+              inputTokens: 10,
+              outputTokens: 20,
+              totalTokens: 30,
+              estimatedInputTokens: 10,
+            },
+            attempts: 1,
+            durationMs: 0,
+          };
+        },
+      },
+      logger: silentLogger,
+    });
+
+    assert.equal(result.status, INSIGHT_RUN_STATUS.completed);
+    assert.equal(calls, 2);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("failed current insight runs are not selected as displayable insights", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const queued = await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    await prisma.backfillJob.deleteMany({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+      },
+    });
+    await prisma.merchantInsightRun.update({
+      where: { id: queued.run.id },
+      data: {
+        status: INSIGHT_RUN_STATUS.failed,
+        failedAt: new Date(),
+        safeErrorCode: "invalid_model_output",
+        lastError:
+          "Insight contains generic or unsupported interpretation language.",
+      },
+    });
+
+    const experience = await getMerchantInsightsExperience(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+
+    assert.equal(experience.currentRun.status, INSIGHT_RUN_STATUS.failed);
+    assert.equal(experience.selectedRun, null);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Insights Test ${suffix}` },

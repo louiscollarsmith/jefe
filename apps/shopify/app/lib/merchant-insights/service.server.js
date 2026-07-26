@@ -133,7 +133,7 @@ export async function getMerchantInsightsExperience(prisma, input) {
   const selectedRun =
     currentRun?.status === INSIGHT_RUN_STATUS.completed
       ? currentRun
-      : (previousCompletedRun ?? currentRun);
+      : previousCompletedRun;
 
   return {
     snapshotHash: snapshot.snapshotHash,
@@ -213,21 +213,10 @@ export async function generateMerchantInsights(prisma, input) {
   }
 
   try {
-    const llmResult = await provider.generateStructuredJson({
-      systemPrompt: buildMerchantInsightsSystemPrompt(),
-      prompt: buildMerchantInsightsPrompt(snapshot.snapshot),
-      schema: MERCHANT_INSIGHTS_OUTPUT_SCHEMA,
-      maxInputTokens: 16000,
-      maxOutputTokens: 3600,
-      timeoutMs: 15_000,
+    const { llmResult, parsed } = await generateValidatedInsights(provider, {
+      snapshot,
+      logger,
     });
-    const parsed = parseAndValidateMerchantInsightsOutput(llmResult.json, {
-      allowedBeliefIds: new Set(snapshot.beliefIds),
-      suppliedBeliefs: snapshot.snapshot.beliefs,
-    });
-    if (!parsed.ok) {
-      throw new LlmOutputValidationError(parsed.error);
-    }
     if (parsed.insights.length === 0) {
       await prisma.merchantInsightRun.update({
         where: { id: run.id },
@@ -315,6 +304,47 @@ export async function generateMerchantInsights(prisma, input) {
     });
     throw error;
   }
+}
+
+/**
+ * @param {import("../llm/provider.server.js").LlmProvider} provider
+ * @param {{ snapshot: Awaited<ReturnType<typeof buildMerchantInsightSnapshot>>; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function generateValidatedInsights(provider, input) {
+  const allowedBeliefIds = new Set(input.snapshot.beliefIds);
+  let validationError = null;
+  let lastResult = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const llmResult = await provider.generateStructuredJson({
+      systemPrompt: buildMerchantInsightsSystemPrompt(),
+      prompt: buildMerchantInsightsPrompt(input.snapshot.snapshot, {
+        validationError,
+      }),
+      schema: MERCHANT_INSIGHTS_OUTPUT_SCHEMA,
+      maxInputTokens: 16000,
+      maxOutputTokens: 3600,
+      timeoutMs: 15_000,
+    });
+    lastResult = llmResult;
+    const parsed = parseAndValidateMerchantInsightsOutput(llmResult.json, {
+      allowedBeliefIds,
+      suppliedBeliefs: input.snapshot.snapshot.beliefs,
+    });
+    if (parsed.ok) return { llmResult, parsed };
+
+    validationError = parsed.error;
+    if (attempt < 2) {
+      input.logger.warn("Merchant insights output failed validation; retrying", {
+        error: parsed.error,
+      });
+    }
+  }
+
+  throw new LlmOutputValidationError(
+    validationError ??
+      `Insight generation failed validation after ${lastResult ? "model output" : "request"}.`,
+  );
 }
 
 /**

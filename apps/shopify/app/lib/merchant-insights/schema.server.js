@@ -88,12 +88,12 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
     if (!numericClaimsAreGrounded(normalized, searchableByBeliefId)) {
       return invalid("Insight contains unsupported numerical claims.");
     }
-    if (
-      !interpretationIsSpecificAndGrounded(normalized, searchableByBeliefId)
-    ) {
-      return invalid(
-        "Insight contains generic or unsupported interpretation language.",
-      );
+    const interpretation = validateInterpretationGrounding(
+      normalized,
+      searchableByBeliefId,
+    );
+    if (!interpretation.ok) {
+      return invalid(interpretation.error);
     }
     valid.push(normalized);
   }
@@ -174,7 +174,7 @@ function numericClaimsAreGrounded(insight, searchableByBeliefId) {
  * @param {any} insight
  * @param {Map<string, string>} searchableByBeliefId
  */
-function interpretationIsSpecificAndGrounded(insight, searchableByBeliefId) {
+function validateInterpretationGrounding(insight, searchableByBeliefId) {
   const text = normalizeSearchText(
     [insight.title, insight.finding, insight.whyItMatters, insight.caveat]
       .filter(Boolean)
@@ -187,16 +187,29 @@ function interpretationIsSpecificAndGrounded(insight, searchableByBeliefId) {
   );
 
   const weakGenericPatterns = [
-    /speciali[sz]ed .*retail model/,
-    /suggests? (?:a )?strategy/,
-    /likely influences? (?:the )?(?:customer base|marketing approach)/,
-    /relatively high/,
+    {
+      pattern: /speciali[sz]ed .*retail model/,
+      label: "specialized retail model",
+    },
+    { pattern: /suggests? (?:a )?strategy/, label: "suggests strategy" },
+    {
+      pattern: /likely influences? (?:the )?(?:customer base|marketing approach)/,
+      label: "likely influences customer base or marketing approach",
+    },
+    { pattern: /relatively high/, label: "relatively high" },
   ];
-  if (weakGenericPatterns.some((pattern) => pattern.test(text))) return false;
+  for (const item of weakGenericPatterns) {
+    if (item.pattern.test(text)) {
+      return invalid(
+        `Insight contains generic or unsupported interpretation language: "${item.label}".`,
+      );
+    }
+  }
 
   const claimsThatNeedDirectSupport = [
     "premium",
     "curation",
+    "curated",
     "expertise",
     "supply chain",
     "consumer demand",
@@ -204,9 +217,15 @@ function interpretationIsSpecificAndGrounded(insight, searchableByBeliefId) {
     "marketing approach",
     "operational risk",
   ];
-  return claimsThatNeedDirectSupport.every(
-    (claim) => !text.includes(claim) || supportText.includes(claim),
-  );
+  for (const claim of claimsThatNeedDirectSupport) {
+    if (text.includes(claim) && !supportText.includes(claim)) {
+      return invalid(
+        `Insight contains generic or unsupported interpretation language: unsupported "${claim}" claim.`,
+      );
+    }
+  }
+
+  return { ok: true };
 }
 
 /** @param {string} text */

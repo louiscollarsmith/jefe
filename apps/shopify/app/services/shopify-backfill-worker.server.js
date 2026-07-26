@@ -28,6 +28,11 @@ import {
   markMerchantInsightsJobFailed,
 } from "../lib/merchant-insights/service.server.js";
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
+import {
+  generateMerchantGoals,
+  markMerchantGoalsJobFailed,
+} from "../lib/merchant-goals/service.server.js";
+import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -163,6 +168,13 @@ export async function processNextBackfillJob(prisma, options = {}) {
         runId: stringValue(jsonObject(job.payloadJson).runId),
         message,
       });
+    } else if (job.jobType === MERCHANT_GOALS_JOB_TYPE) {
+      await markMerchantGoalsJobFailed(prisma, {
+        merchantId: job.merchantId,
+        shopId: job.shopId,
+        runId: stringValue(jsonObject(job.payloadJson).runId),
+        message,
+      });
     } else if (failedPermanently) {
       await markEvidenceFailed(prisma, job, failure);
       await prisma.shop.update({
@@ -225,7 +237,8 @@ async function runBackfillJob(prisma, job, options) {
     : FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS;
   const requiresShopifyToken =
     job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
-    job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE;
+    job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE &&
+    job.jobType !== MERCHANT_GOALS_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
@@ -271,6 +284,13 @@ async function runBackfillJob(prisma, job, options) {
       return handleMerchantMemoryRebuild(prisma, context, payload);
     case MERCHANT_INSIGHTS_JOB_TYPE:
       return generateMerchantInsights(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        runId: stringValue(payload.runId),
+        logger: context.logger,
+      });
+    case MERCHANT_GOALS_JOB_TYPE:
+      return generateMerchantGoals(prisma, {
         merchantId: context.merchantId,
         shopId: context.shopId,
         runId: stringValue(payload.runId),

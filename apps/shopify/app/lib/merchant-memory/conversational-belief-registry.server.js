@@ -10,6 +10,7 @@ export const CONVERSATIONAL_CATEGORIES = [
   "operations",
   "preferences",
   "policies",
+  "goals",
 ];
 
 export const CONVERSATIONAL_VALUE_TYPES = {
@@ -310,6 +311,45 @@ const REGISTRY = {
     kind: "policy",
     guidance: "Use only explicit merchant restrictions or strong preferences.",
   },
+  "goals.generated.three_months": {
+    key: "goals.generated.three_months",
+    category: "goals",
+    label: "3-month goal",
+    description: "Jefe's proposed 3-month business objective.",
+    valueType: "goal",
+    merchantCreatable: false,
+    merchantCorrectable: false,
+    confirmable: false,
+    kind: "goal",
+    guidance:
+      "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
+  },
+  "goals.generated.six_months": {
+    key: "goals.generated.six_months",
+    category: "goals",
+    label: "6-month goal",
+    description: "Jefe's proposed 6-month business objective.",
+    valueType: "goal",
+    merchantCreatable: false,
+    merchantCorrectable: false,
+    confirmable: false,
+    kind: "goal",
+    guidance:
+      "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
+  },
+  "goals.generated.twelve_months": {
+    key: "goals.generated.twelve_months",
+    category: "goals",
+    label: "12-month goal",
+    description: "Jefe's proposed 12-month business objective.",
+    valueType: "goal",
+    merchantCreatable: false,
+    merchantCorrectable: false,
+    confirmable: false,
+    kind: "goal",
+    guidance:
+      "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
+  },
 };
 
 export function getConversationalBeliefRegistry() {
@@ -476,6 +516,11 @@ export function formatBeliefValue(value) {
       month: "short",
       year: "numeric",
     });
+  }
+  if (typeof objectValue.title === "string") {
+    return typeof objectValue.description === "string"
+      ? `${objectValue.title}: ${objectValue.description}`
+      : objectValue.title;
   }
   return JSON.stringify(value);
 }
