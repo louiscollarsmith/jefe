@@ -9,6 +9,7 @@
 - Changed Merchant Insight review controls so correction is optional and visible as “Something’s not right,” with “Looks right” confirmation moved into evidence disclosure.
 - Replaced structured Merchant Insight corrections with a natural-language correction box backed by a private correction processor that stores merchant context without exposing or overwriting internal beliefs.
 - Fixed the Merchant Insight correction text box so merchants can type natural-language corrections reliably.
+- Updated synthetic Shopify realistic and load profiles so generated operator test orders are all inside the latest 365-day window.
 
 ## 2026-07-25
 

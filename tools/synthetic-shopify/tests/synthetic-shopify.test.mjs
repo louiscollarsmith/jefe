@@ -122,6 +122,26 @@ test("seasonality and recency windows are present", () => {
   assert.ok(new Date(asOf).getTime() - latestOrderMs <= 24 * 60 * 60 * 1000);
 });
 
+test("all profile orders are generated inside the last 365 days", () => {
+  for (const profile of ["smoke", "realistic", "load"]) {
+    const dataset = generateSyntheticShopifyDataset({
+      profile,
+      seed: 1042026,
+      asOf,
+    });
+    const asOfMs = new Date(asOf).getTime();
+    const maxAgeMs = 365 * 24 * 60 * 60 * 1000;
+    assert.equal(
+      dataset.orders.every((order) => {
+        const processedAtMs = new Date(order.processedAt).getTime();
+        return processedAtMs <= asOfMs && asOfMs - processedAtMs <= maxAgeMs;
+      }),
+      true,
+      `${profile} generated at least one order outside the last 365 days`,
+    );
+  }
+});
+
 test("orders and refunds reconcile financially", () => {
   const dataset = generateSyntheticShopifyDataset({
     profile: "realistic",
