@@ -103,8 +103,8 @@ The manifest is the resume boundary and stores source-to-Shopify ID mappings.
 ## Profiles
 
 - `smoke`: 250 non-test orders, 180 customers, 365 days.
-- `realistic`: 590 non-test orders, 780 customers, 730 days, 24 active products, 3 archived products, 2 draft products.
-- `load`: 3,000 non-test orders, 1,850 customers, 730 days.
+- `realistic`: 590 non-test orders, 780 customers, 365 days, 24 active products, 3 archived products, 2 draft products.
+- `load`: 3,000 non-test orders, 1,850 customers, 365 days.
 
 The same `--seed` and `--as-of` reproduce the same source dataset.
 

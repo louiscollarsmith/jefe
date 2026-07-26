@@ -104,6 +104,7 @@ export function generateSyntheticShopifyDataset(input = {}) {
     profile: profile.name,
     scenario,
     asOf: asOf.toISOString(),
+    orderHistoryDays: profile.historyDays,
     shopDomain: input.shopDomain || "unbound",
   });
 
@@ -135,6 +136,7 @@ export function generateSyntheticShopifyDataset(input = {}) {
       profile: profile.name,
       scenario,
       asOf: asOf.toISOString(),
+      orderHistoryDays: profile.historyDays,
       apiVersion: DEFAULT_API_VERSION,
       shopDomain: input.shopDomain || null,
       currency: CURRENCY,
@@ -814,7 +816,12 @@ function weightedOrderDates(count, rng, asOf, historyDays) {
       { value: rng.int(9, 17), weight: 17 },
       { value: rng.int(0, 8), weight: 5 },
     ]);
-    dates.push(new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, rng.int(0, 59), rng.int(0, 59))).toISOString());
+    const date = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, rng.int(0, 59), rng.int(0, 59)));
+    if (date.getTime() > asOf.getTime()) {
+      dates.push(new Date(asOf.getTime() - rng.int(0, 6 * 60 * 60) * 1000).toISOString());
+    } else {
+      dates.push(date.toISOString());
+    }
   }
   return dates.sort();
 }
