@@ -393,34 +393,45 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
         "write_locations",
       ],
     });
+    const queuedShop = await prisma.shop.findUniqueOrThrow({
+      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+      select: { id: true },
+    });
 
     const start = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const products = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const orders = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const inventory = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const delta = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const finalize = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
     const memory = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: queuedShop.id,
     });
 
     const shop = await prisma.shop.findUniqueOrThrow({

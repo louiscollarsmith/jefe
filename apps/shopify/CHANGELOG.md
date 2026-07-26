@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Restored Channels after Connect in onboarding while keeping channel setup optional, so merchants can continue to Insights without adding Slack or WhatsApp.
+- Added the final Plan onboarding step after Goals, with async Merchant Memory-backed recommendation generation, one persisted first move, natural-language refinement and onboarding completion from Plan.
+- Fixed Plan validation so recommendations can cite numeric targets from the accepted goals or current insights, and hardened background job completion when a claimed job disappears during cleanup.
 - Preserved explicit 3-, 6- and 12-month objectives and KPIs from uploaded Goals planning documents so regeneration follows the merchant's written plan.
 - Updated Goals regeneration so prior generated goals are excluded from the next planning prompt and uploaded planning context is treated as merchant direction.
 - Fixed Goals PDF uploads to use the installed parser API and hide stale success messaging when a document read fails.

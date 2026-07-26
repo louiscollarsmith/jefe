@@ -38,26 +38,30 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes Connect, Insights and Goals while skipping Channels", () => {
+test("onboarding exposes Connect, Channels, Insights, Goals and Plan with optional Channels", () => {
   assert.match(
     appIndexSource,
-    /export const ONBOARDING_STEPS = \["connect", "insights", "goals"\] as const;/,
+    /export const ONBOARDING_STEPS = \[\s*"connect",\s*"channels",\s*"insights",\s*"goals",\s*"plan",\s*\] as const;/,
   );
   assert.match(appIndexSource, /"Connect"/);
+  assert.match(appIndexSource, /"Channels"/);
   assert.match(appIndexSource, /"Insights"/);
   assert.match(appIndexSource, /"Goals"/);
+  assert.match(appIndexSource, /"Plan"/);
+  assert.match(appIndexSource, /Continue to Channels/);
   assert.match(appIndexSource, /Continue to insights/);
   assert.match(appIndexSource, /Continue to goals/);
-  assert.match(appIndexSource, /Finish onboarding/);
+  assert.match(appIndexSource, /Continue to Plan/);
+  assert.match(appIndexSource, /Accept Plan and open Jefe/);
   assert.match(appIndexSource, /Tell me what winning looks like/);
+  assert.match(appIndexSource, /Here&apos;s where I&apos;d start\./);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
   assert.match(
     appIndexSource,
     /requested === "channels" \|\| url\.searchParams\.get\("channelProvider"\)/,
   );
-  assert.doesNotMatch(appIndexSource, /Continue to Channels/);
+  assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
-  assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=plan/);
 });
 
 test("Connect step starts Shopify backfill and shows learning progress", () => {
@@ -86,7 +90,8 @@ test("channels onboarding exposes only Slack and WhatsApp provider cards", () =>
   assert.match(appIndexSource, /Connect Slack/);
   assert.match(appIndexSource, /WhatsApp/);
   assert.match(appIndexSource, /Coming soon/);
-  assert.match(appIndexSource, /Connect Slack now\. WhatsApp is coming soon\./);
+  assert.match(appIndexSource, /You can also skip/);
+  assert.match(appIndexSource, /Channel setup is optional for now\./);
   assert.doesNotMatch(appIndexSource, /Teams/);
   assert.doesNotMatch(appIndexSource, /Discord/);
   assert.doesNotMatch(appIndexSource, /Telegram/);
