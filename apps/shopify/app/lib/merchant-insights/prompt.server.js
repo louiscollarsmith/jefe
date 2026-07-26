@@ -28,9 +28,9 @@ Every insight must pass four tests:
 
 Every factual claim must be supported by the supplied beliefs. Never invent a number, comparison, cause, trend, risk or explanation. Never infer causation unless the supplied beliefs explicitly establish it. Do not treat missing data as a negative result.
 
-Do not turn a concentration into an invented problem. For example, if the evidence says five variants hold 56% of inventory value, explain that buying, pricing or sell-through changes on those products will disproportionately affect cash held in inventory. Do not claim supply chain risk, consumer demand shifts, premium positioning, expertise, curation or customer-base effects unless those exact ideas are supported by cited beliefs.
+Do not turn a concentration into an invented problem. For example, if the evidence says five variants hold 56% of inventory value, explain that buying, pricing or sell-through changes on those products will disproportionately affect cash held in inventory. Do not claim supply chain risk, consumer demand shifts, premium positioning, expertise, curation, customer-base effects or marketing effects unless those exact ideas are supported by cited beliefs.
 
-Reject weak findings that only rename the business model, call prices relatively high without a comparison, describe the merchant as premium without evidence, or end with vague consequences such as "this influences marketing approach."
+Reject weak findings that only rename the business model, call prices relatively high without a comparison, describe the merchant as premium without evidence, or end with vague consequences such as "this influences marketing approach." Avoid the words premium, curation, curated, expertise, customer base, marketing approach, operational risk and strategy unless cited beliefs use the same concept directly.
 
 Respect belief confidence, authority, provenance and caveats. Merchant-confirmed or merchant-corrected information is authoritative for merchant-defined matters. Deterministic beliefs have greater authority than lower-authority LLM inferences for objective data.
 
@@ -38,14 +38,21 @@ Do not expose internal belief keys, raw confidence decimals, implementation term
 
 Write in calm, commercially sharp and plain English. Avoid generic AI-consultant language, empty praise and obvious statements. Do not provide recommendations or actions. Explain what Jefe has learned and why each finding matters. Keep each finding concise: the strongest factual detail should appear in the title or first sentence.
 
-Return only the required structured output. Every insight must include the IDs of the beliefs that support it.`;
+Return only the required structured output. Every insight must include supportingBeliefIds copied exactly from allowedSupportingBeliefIds in the prompt. Never cite IDs, labels, keys or any ID not listed in allowedSupportingBeliefIds.`;
 }
 
-/** @param {any} snapshot */
-export function buildMerchantInsightsPrompt(snapshot) {
+/**
+ * @param {{ beliefs: Array<{ id: string }> }} snapshot
+ * @param {{ validationError?: string | null }} [options]
+ */
+export function buildMerchantInsightsPrompt(snapshot, options = {}) {
   return JSON.stringify({
     promptVersion: MERCHANT_INSIGHTS_PROMPT_VERSION,
     schemaVersion: MERCHANT_INSIGHTS_SCHEMA_VERSION,
+    validationNotice: options.validationError
+      ? `Previous output was rejected: ${options.validationError}. Regenerate all insights. Remove the rejected phrase or claim everywhere unless a cited belief states it directly. Be more literal and cite only direct support from allowedSupportingBeliefIds.`
+      : null,
+    allowedSupportingBeliefIds: snapshot.beliefs.map((belief) => belief.id),
     outputContract: {
       insights: [
         {

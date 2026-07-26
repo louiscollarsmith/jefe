@@ -360,6 +360,25 @@ export async function sendConversationMessage(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; content: string; operation?: any; relatedBeliefIds?: string[] }} input
+ */
+export async function addAssistantConversationNote(prisma, input) {
+  const content = input.content.trim();
+  if (!content) return { ok: false, error: "Message is required." };
+  await ensureInitialOpenQuestions(prisma, input);
+  const conversation = await getOrCreateConversation(prisma, input);
+  await createAssistantMessage(prisma, {
+    conversation,
+    content,
+    operation: input.operation,
+    operationStatus: null,
+    relatedBeliefIds: input.relatedBeliefIds ?? [],
+  });
+  return { ok: true };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null; messageId: string }} input
  */
 export async function confirmProposedOperation(prisma, input) {

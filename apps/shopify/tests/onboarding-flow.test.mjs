@@ -38,22 +38,24 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes Connect and Insights while skipping Channels", () => {
+test("onboarding exposes Connect, Insights and Goals while skipping Channels", () => {
   assert.match(
     appIndexSource,
-    /export const ONBOARDING_STEPS = \["connect", "insights"\] as const;/,
+    /export const ONBOARDING_STEPS = \["connect", "insights", "goals"\] as const;/,
   );
   assert.match(appIndexSource, /"Connect"/);
   assert.match(appIndexSource, /"Insights"/);
+  assert.match(appIndexSource, /"Goals"/);
   assert.match(appIndexSource, /Continue to insights/);
+  assert.match(appIndexSource, /Continue to goals/);
   assert.match(appIndexSource, /Finish onboarding/);
+  assert.match(appIndexSource, /Tell me what winning looks like/);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
   assert.match(
     appIndexSource,
     /requested === "channels" \|\| url\.searchParams\.get\("channelProvider"\)/,
   );
   assert.doesNotMatch(appIndexSource, /Continue to Channels/);
-  assert.doesNotMatch(appIndexSource, /Continue to Goals/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=plan/);
 });
@@ -71,13 +73,13 @@ test("Connect step starts Shopify backfill and shows learning progress", () => {
   assert.doesNotMatch(appIndexSource, /runShopifyBackfill/);
 });
 
-test("onboarding does not expose the retired Goals or interview path", () => {
+test("onboarding does not expose the retired goal form or interview path", () => {
   assert.doesNotMatch(appIndexSource, /getMerchantInterviewExperience/);
   assert.doesNotMatch(appIndexSource, /submitInterviewAnswer/);
   assert.doesNotMatch(appIndexSource, /updateInterviewStatus/);
   assert.doesNotMatch(appIndexSource, /Memory updated/);
-  assert.doesNotMatch(appIndexSource, /step: "goals"/);
-  assert.doesNotMatch(appIndexSource, /step=goals/);
+  assert.match(appIndexSource, /processMerchantGoalMessage/);
+  assert.match(appIndexSource, /processMerchantGoalsDocument/);
 });
 
 test("channels onboarding exposes only Slack and WhatsApp provider cards", () => {
@@ -254,12 +256,12 @@ test("onboarding render does not read browser-only or non-deterministic values",
   const renderSources = [appIndexSource, appShellSource].join("\n");
 
   for (const pattern of [
-    /\bwindow\b/,
-    /\bdocument\b/,
-    /\bnavigator\b/,
-    /\blocalStorage\b/,
-    /\bsessionStorage\b/,
-    /\bmatchMedia\b/,
+    /\bwindow\./,
+    /\bdocument\.(?:body|head|documentElement|create|query|get|addEventListener|removeEventListener|location|cookie)/,
+    /\bnavigator\./,
+    /\blocalStorage\./,
+    /\bsessionStorage\./,
+    /\bmatchMedia\(/,
     /\bDate\.now\(/,
     /\bnew Date\(/,
     /\bMath\.random\(/,

@@ -4,6 +4,17 @@
 
 ### Changed
 
+- Preserved explicit 3-, 6- and 12-month objectives and KPIs from uploaded Goals planning documents so regeneration follows the merchant's written plan.
+- Updated Goals regeneration so prior generated goals are excluded from the next planning prompt and uploaded planning context is treated as merchant direction.
+- Fixed Goals PDF uploads to use the installed parser API and hide stale success messaging when a document read fails.
+- Fixed Goals document uploads so accepted planning files force goal regeneration and keep the current goals visible while the update runs.
+- Reworked the Goals planning-document upload into a conversational card with hidden file input, drag-and-drop, reading and understood states, and document context added back into the Goals conversation.
+- Fixed Insights onboarding regeneration so failed current runs no longer display as loading/empty output and model validation failures get an immediate grounded retry with explicit feedback.
+- Shifted generated Goals language toward revenue, growth and commercial outcomes, with validation rejecting strategy-label titles so operational findings stay in the supporting description.
+- Fixed Merchant Goal regeneration after prompt-version changes by allowing derived Merchant Memory belief supersession to reuse an active database transaction.
+- Fixed the Goals onboarding step so failed goal generations no longer appear as empty “Still thinking...” cards, goal prompts cite only supplied Merchant Memory belief IDs, and the coaching box asks merchants to review or update generated goals.
+- Added the generated Goals onboarding step after Insights, with Merchant Memory-backed 3-, 6- and 12-month objectives, merchant coaching, planning-file upload and final onboarding completion from Goals.
+- Added versioned Merchant Goals generation runs, validated goal horizons, async worker processing and generated goal entries in Merchant Memory with provenance to supporting beliefs.
 - Moved the Merchant Insights signal badge to the top-right of each insight card so merchants can read the insight before reviewing confidence or review status.
 - Tightened Merchant Insight generation and validation so onboarding shows up to five stronger, evidence-grounded findings and rejects generic or unsupported interpretations.
 - Changed Merchant Insight review controls so correction is optional and visible as “Something’s not right,” with “Looks right” confirmation moved into evidence disclosure.

@@ -55,6 +55,8 @@ model Merchant {
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
   merchantInsightRuns           MerchantInsightRun[]
   merchantInsightFindings       MerchantInsightFinding[]
+  merchantGoalRuns              MerchantGoalRun[]
+  merchantGoalHorizons          MerchantGoalHorizon[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -108,6 +110,8 @@ model Shop {
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
   merchantInsightRuns           MerchantInsightRun[]
   merchantInsightFindings       MerchantInsightFinding[]
+  merchantGoalRuns              MerchantGoalRun[]
+  merchantGoalHorizons          MerchantGoalHorizon[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -796,4 +800,63 @@ model MerchantInsightFinding {
   @@index([merchantId, reviewStatus])
   @@index([shopId, reviewStatus])
   @@map("merchant_insight_findings")
+}
+
+model MerchantGoalRun {
+  id                    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId            String                @map("merchant_id") @db.Uuid
+  shopId                String                @map("shop_id") @db.Uuid
+  status                String                @default("queued")
+  beliefSnapshotVersion String                @map("belief_snapshot_version")
+  beliefSnapshotHash    String                @map("belief_snapshot_hash")
+  relevantBeliefIds     String[]              @default([]) @map("relevant_belief_ids")
+  insightRunId          String?               @map("insight_run_id") @db.Uuid
+  promptVersion         String                @map("prompt_version")
+  schemaVersion         String                @map("schema_version")
+  provider              String?
+  modelIdentifier       String?               @map("model_identifier")
+  safeErrorCode         String?               @map("safe_error_code")
+  lastError             String?               @map("last_error")
+  startedAt             DateTime?             @map("started_at") @db.Timestamptz(6)
+  completedAt           DateTime?             @map("completed_at") @db.Timestamptz(6)
+  failedAt              DateTime?             @map("failed_at") @db.Timestamptz(6)
+  supersededAt          DateTime?             @map("superseded_at") @db.Timestamptz(6)
+  result                Json                  @default("{}") @map("result_json")
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant              Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                  Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  horizons              MerchantGoalHorizon[]
+
+  @@unique([shopId, beliefSnapshotHash, promptVersion, schemaVersion])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([beliefSnapshotHash])
+  @@index([insightRunId])
+  @@map("merchant_goal_runs")
+}
+
+model MerchantGoalHorizon {
+  id                  String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId               String          @map("run_id") @db.Uuid
+  merchantId          String          @map("merchant_id") @db.Uuid
+  shopId              String          @map("shop_id") @db.Uuid
+  horizon             String
+  orderIndex          Int             @map("order_index")
+  title               String
+  description         String?
+  supportingBeliefIds String[]        @default([]) @map("supporting_belief_ids")
+  memoryBeliefId      String?         @map("memory_belief_id") @db.Uuid
+  createdAt           DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  run                 MerchantGoalRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  merchant            Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, horizon])
+  @@unique([runId, orderIndex])
+  @@index([merchantId, horizon])
+  @@index([shopId, horizon])
+  @@index([memoryBeliefId])
+  @@map("merchant_goal_horizons")
 }

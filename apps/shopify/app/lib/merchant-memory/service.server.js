@@ -97,7 +97,14 @@ export async function upsertDerivedBelief(prisma, input) {
     existing.status === BELIEF_STATUS.inferred &&
     isDerivationVersionChange(existing.derivationVersion, nextDerivationVersion)
   ) {
-    return prisma.$transaction(async (tx) => {
+    return runInTransaction(prisma, async (tx) => {
+      await tx.merchantMemoryBelief.update({
+        where: { id: existing.id },
+        data: {
+          status: BELIEF_STATUS.superseded,
+          supersededAt: now,
+        },
+      });
       const belief = await tx.merchantMemoryBelief.create({
         data: {
           merchantId: input.merchantId,
@@ -115,13 +122,6 @@ export async function upsertDerivedBelief(prisma, input) {
           lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
           lastEvaluatedAt: now,
           supersedesBeliefId: existing.id,
-        },
-      });
-      await tx.merchantMemoryBelief.update({
-        where: { id: existing.id },
-        data: {
-          status: BELIEF_STATUS.superseded,
-          supersededAt: now,
         },
       });
       await recordHistory(tx, {
@@ -807,6 +807,17 @@ function toDomainBelief(belief) {
  */
 function jsonEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient | any} prisma
+ * @param {(tx: any) => Promise<any>} callback
+ */
+function runInTransaction(prisma, callback) {
+  if (typeof prisma.$transaction === "function") {
+    return prisma.$transaction(callback);
+  }
+  return callback(prisma);
 }
 
 /**

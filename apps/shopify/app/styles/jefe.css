@@ -91,6 +91,14 @@
   padding-bottom: 24px;
 }
 
+.JefeOnboardingShell.is-goals .JefeOnboardingScene {
+  align-items: stretch;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  max-width: 860px;
+  padding-bottom: 24px;
+}
+
 .JefeOnboardingScene > * {
   width: 100%;
 }
@@ -145,6 +153,149 @@
   min-height: 36px;
   padding-top: 2px;
   width: 100%;
+}
+
+.JefeGoalGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+}
+
+.JefeGoalGrid.is-updating .JefeGoalTile {
+  animation: JefeGoalCardUpdate 1.8s ease-in-out infinite;
+}
+
+.JefeGoalTile {
+  background: #fffdfa;
+  border: 1px solid #d8d0c8;
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(39, 55, 77, 0.06);
+  min-height: 116px;
+  padding: 16px;
+}
+
+.JefeGoalsConversation {
+  background: #fffdfa;
+  border: 1px solid #ded8d3;
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(39, 55, 77, 0.04);
+  padding: 16px;
+  width: 100%;
+}
+
+.JefeGoalMessages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.JefeGoalMessage {
+  border-radius: 8px;
+  max-width: 86%;
+  padding: 10px 12px;
+}
+
+.JefeGoalMessage.is-assistant {
+  align-self: flex-start;
+  background: #f1eee9;
+  color: #27231f;
+}
+
+.JefeGoalMessage.is-merchant {
+  align-self: flex-end;
+  background: #e9f1fc;
+  color: #1f3a63;
+}
+
+.JefeGoalMessageForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.JefeGoalDocumentForm {
+  margin: 0;
+  width: 100%;
+}
+
+.JefeGoalDocumentInput {
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+
+.JefeGoalDocumentCard {
+  background: #fffdf9;
+  border: 1px dashed #b9b0a7;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(39, 55, 77, 0.035);
+  padding: 18px;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+  width: 100%;
+}
+
+.JefeGoalDocumentCard.is-dragging {
+  background: #f6f1e8;
+  border-color: #7d98bf;
+  box-shadow: 0 10px 24px rgba(31, 58, 99, 0.08);
+}
+
+.JefeGoalDocumentCard.is-processing,
+.JefeGoalDocumentCard.is-success {
+  border-style: solid;
+}
+
+.JefeGoalDocumentIcon {
+  align-items: center;
+  background: #f1eee9;
+  border-radius: 999px;
+  color: #4f453b;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.JefeGoalDocumentCard.is-dragging .JefeGoalDocumentIcon {
+  animation: JefeUploadIconLift 900ms ease-in-out infinite;
+}
+
+.JefeGoalDocumentIcon.is-success {
+  background: #e8f4ec;
+  color: #17693a;
+}
+
+.JefeGoalDocumentIcon .Polaris-Icon {
+  height: 18px;
+  width: 18px;
+}
+
+.JefeGoalDocumentProgress {
+  animation: JefeDocumentProgress 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, #d8d0c8 0%, #f4efe7 50%, #d8d0c8 100%);
+  background-size: 220% 100%;
+  border-radius: 999px;
+  height: 4px;
+  width: 100%;
+}
+
+.JefeGoalDocumentList {
+  color: #5f574f;
+  display: grid;
+  gap: 4px;
+  list-style-position: inside;
+  margin: 0;
+  padding: 0;
 }
 
 .JefeChannelGrid {
@@ -483,6 +634,40 @@
   }
 }
 
+@keyframes JefeDocumentProgress {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes JefeUploadIconLift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes JefeGoalCardUpdate {
+  0%,
+  100% {
+    border-color: #d8d0c8;
+    box-shadow: 0 10px 26px rgba(39, 55, 77, 0.06);
+  }
+
+  50% {
+    border-color: #9eb0cd;
+    box-shadow: 0 12px 30px rgba(31, 58, 99, 0.1);
+  }
+}
+
 .JefeMemoryView {
   margin: 0 auto;
   max-width: 1180px;
@@ -500,6 +685,14 @@
 
   .JefeChannelGrid {
     grid-template-columns: 1fr;
+  }
+
+  .JefeGoalGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .JefeGoalDocumentCard {
+    padding: 16px;
   }
 
   .JefeInsightCard {
