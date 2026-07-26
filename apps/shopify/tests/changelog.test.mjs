@@ -49,7 +49,8 @@ test("changelog parser reads dated entries and allowed sections", () => {
 });
 
 test("changelog parser ignores non-Jefe date formats", () => {
-  const entries = parseChangelogMarkdown(`# @shopify/shopify-app-template-react-router
+  const entries =
+    parseChangelogMarkdown(`# @shopify/shopify-app-template-react-router
 
 ## 2026.07.16
 
@@ -65,11 +66,22 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   const entries = await loadChangelog();
 
   assert.ok(entries.length >= 4);
-  assert.equal(entries[0].date, "2026-07-25");
+  assert.equal(entries[0].date, "2026-07-26");
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("Removed the retired Goals and Merchant Interview workflow"),
+        item.includes("Moved the Merchant Insights signal badge"),
+      ),
+    ),
+  );
+  assert.ok(
+    entries.some((entry) =>
+      entry.sections.some((section) =>
+        section.items.some((item) =>
+          item.includes(
+            "Removed the retired Goals and Merchant Interview workflow",
+          ),
+        ),
       ),
     ),
   );

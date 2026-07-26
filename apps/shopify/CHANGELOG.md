@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-26
+
+### Changed
+
+- Moved the Merchant Insights signal badge to the top-right of each insight card so merchants can read the insight before reviewing confidence or review status.
+- Tightened Merchant Insight generation and validation so onboarding shows up to five stronger, evidence-grounded findings and rejects generic or unsupported interpretations.
+- Changed Merchant Insight review controls so correction is optional and visible as “Something’s not right,” with “Looks right” confirmation moved into evidence disclosure.
+- Replaced structured Merchant Insight corrections with a natural-language correction box backed by a private correction processor that stores merchant context without exposing or overwriting internal beliefs.
+- Fixed the Merchant Insight correction text box so merchants can type natural-language corrections reliably.
+
 ## 2026-07-25
 
 ### Changed

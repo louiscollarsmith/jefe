@@ -88,6 +88,13 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
     if (!numericClaimsAreGrounded(normalized, searchableByBeliefId)) {
       return invalid("Insight contains unsupported numerical claims.");
     }
+    if (
+      !interpretationIsSpecificAndGrounded(normalized, searchableByBeliefId)
+    ) {
+      return invalid(
+        "Insight contains generic or unsupported interpretation language.",
+      );
+    }
     valid.push(normalized);
   }
 
@@ -98,9 +105,9 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
 function normalizeInsight(value) {
   const item = asRecord(value);
   if (!item) return invalid("Every insight must be an object.");
-  const title = cleanText(item.title, 90);
-  const finding = cleanText(item.finding, 420);
-  const whyItMatters = cleanText(item.whyItMatters, 360);
+  const title = cleanText(item.title, 80);
+  const finding = cleanText(item.finding, 280);
+  const whyItMatters = cleanText(item.whyItMatters, 180);
   const caveat = cleanText(item.caveat, 220, true);
   const supportingBeliefIds = Array.isArray(item.supportingBeliefIds)
     ? [
@@ -163,6 +170,45 @@ function numericClaimsAreGrounded(insight, searchableByBeliefId) {
   return claims.every((claim) => supportText.includes(claim));
 }
 
+/**
+ * @param {any} insight
+ * @param {Map<string, string>} searchableByBeliefId
+ */
+function interpretationIsSpecificAndGrounded(insight, searchableByBeliefId) {
+  const text = normalizeSearchText(
+    [insight.title, insight.finding, insight.whyItMatters, insight.caveat]
+      .filter(Boolean)
+      .join(" "),
+  );
+  const supportText = normalizeSearchText(
+    insight.supportingBeliefIds
+      .map((id) => searchableByBeliefId.get(id) ?? "")
+      .join(" "),
+  );
+
+  const weakGenericPatterns = [
+    /speciali[sz]ed .*retail model/,
+    /suggests? (?:a )?strategy/,
+    /likely influences? (?:the )?(?:customer base|marketing approach)/,
+    /relatively high/,
+  ];
+  if (weakGenericPatterns.some((pattern) => pattern.test(text))) return false;
+
+  const claimsThatNeedDirectSupport = [
+    "premium",
+    "curation",
+    "expertise",
+    "supply chain",
+    "consumer demand",
+    "customer base",
+    "marketing approach",
+    "operational risk",
+  ];
+  return claimsThatNeedDirectSupport.every(
+    (claim) => !text.includes(claim) || supportText.includes(claim),
+  );
+}
+
 /** @param {string} text */
 function numericFragments(text) {
   const matches = text.match(/\b\d+(?:,\d{3})*(?:\.\d+)?%?\b/g) ?? [];
@@ -176,6 +222,11 @@ function numericFragments(text) {
 /** @param {any} belief */
 function searchableBeliefText(belief) {
   return JSON.stringify(belief).replace(/,/g, "").toLowerCase();
+}
+
+/** @param {string} text */
+function normalizeSearchText(text) {
+  return text.replace(/,/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 /** @param {string} title @param {string} finding */

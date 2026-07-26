@@ -4,16 +4,18 @@ import { LlmOutputValidationError } from "../llm/errors.server.js";
 import { createLlmProvider } from "../llm/provider.server.js";
 import {
   confirmBelief,
-  correctBelief,
   recordEvidence,
+  upsertMerchantSuppliedBelief,
 } from "../merchant-memory/service.server.js";
-import { getBeliefDefinition } from "../merchant-memory/conversational-belief-registry.server.js";
+import {
+  getBeliefDefinition,
+  getConversationalBeliefRegistry,
+} from "../merchant-memory/conversational-belief-registry.server.js";
+import { enqueueMerchantMemoryRefresh } from "../merchant-memory/jobs.server.js";
 import {
   BELIEF_PRECEDENCE,
   BELIEF_STATUS,
 } from "../merchant-memory/constants.server.js";
-import { OPERATION_TYPES } from "../merchant-memory/conversation-constants.server.js";
-import { validateStructuredOperation } from "../merchant-memory/conversation.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { buildMerchantInsightSnapshot } from "./candidates.server.js";
 import {
@@ -33,6 +35,12 @@ import {
   buildMerchantInsightsPrompt,
   buildMerchantInsightsSystemPrompt,
 } from "./prompt.server.js";
+import {
+  MERCHANT_INSIGHT_CORRECTION_OUTPUT_SCHEMA,
+  buildMerchantInsightCorrectionPrompt,
+  buildMerchantInsightCorrectionSystemPrompt,
+  parseAndValidateMerchantInsightCorrection,
+} from "./correction-processor.server.js";
 
 const ACTIVE_RUN_STATUSES = [
   INSIGHT_RUN_STATUS.queued,
@@ -395,7 +403,7 @@ export async function confirmMerchantInsightFinding(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; findingId: string; beliefId: string; correction: string }} input
+ * @param {{ merchantId: string; shopId: string; findingId: string; correction: string; insightText?: string | null; supportingBeliefIds?: string[]; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function correctMerchantInsightFinding(prisma, input) {
   const correction = input.correction.trim();
@@ -408,63 +416,226 @@ export async function correctMerchantInsightFinding(prisma, input) {
       shopId: input.shopId,
     },
   });
-  if (!finding.supportingBeliefIds.includes(input.beliefId)) {
-    return { ok: false, error: "That belief does not support this insight." };
-  }
-  const belief = await prisma.merchantMemoryBelief.findFirstOrThrow({
+  const beliefs = await prisma.merchantMemoryBelief.findMany({
     where: {
-      id: input.beliefId,
       merchantId: input.merchantId,
       shopId: input.shopId,
+      id: { in: finding.supportingBeliefIds },
     },
+    include: { evidence: { take: 3, orderBy: { createdAt: "desc" } } },
   });
-  const definition = getBeliefDefinition(belief.key);
-  if (!definition?.merchantCorrectable) {
+  const processor =
+    input.llmProvider ?? createLlmProvider({ logger: input.logger ?? console });
+  if (!processor.enabled || !processor.generateStructuredJson) {
     return {
       ok: false,
-      error:
-        "I should keep that observed Shopify fact separate from merchant interpretation.",
+      error: "I couldn't process that correction safely. Please try again.",
     };
   }
-  const operation = {
-    operationType: OPERATION_TYPES.correctBelief,
-    targetBeliefKey: belief.key,
-    targetBeliefId: belief.id,
-    category: belief.category,
-    proposedValue: valueFromCorrection(correction, definition.valueType),
-    valueType: definition.valueType,
-    reason: "Merchant corrected a belief from the Insights onboarding review.",
-    merchantStatement: correction,
-    confidence: 0.95,
-    requiresConfirmation: false,
-  };
-  const validation = await validateStructuredOperation(prisma, {
-    merchantId: input.merchantId,
-    operation,
-    beliefs: [belief],
-  });
-  if (!validation.ok) return { ok: false, error: validation.error };
 
-  await correctBelief(prisma, {
-    merchantId: input.merchantId,
+  let llmResult;
+  try {
+    llmResult = await processor.generateStructuredJson({
+      systemPrompt: buildMerchantInsightCorrectionSystemPrompt(),
+      prompt: buildMerchantInsightCorrectionPrompt({
+        insight: serializeFindingForCorrection(finding),
+        correction,
+        supportingBeliefs: beliefs.map(serializeBeliefForCorrection),
+        merchantWritableBeliefs: merchantWritableBeliefDefinitions(),
+      }),
+      schema: MERCHANT_INSIGHT_CORRECTION_OUTPUT_SCHEMA,
+      maxInputTokens: 8000,
+      maxOutputTokens: 1800,
+      timeoutMs: 12_000,
+    });
+  } catch (error) {
+    input.logger?.warn?.("Merchant insight correction processor failed", {
+      findingId: finding.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      ok: false,
+      error: "I couldn't process that correction safely. Please try again.",
+    };
+  }
+
+  const parsed = parseAndValidateMerchantInsightCorrection(llmResult.json, {
+    supportingBeliefIds: new Set(finding.supportingBeliefIds),
+  });
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: "I couldn't process that correction safely. Please try again.",
+    };
+  }
+  const processorOutput = parsed.correction;
+  const affectedBeliefIds =
+    processorOutput.affectedBeliefIds.length > 0
+      ? processorOutput.affectedBeliefIds
+      : finding.supportingBeliefIds;
+  const now = new Date();
+  const updated = await prisma.$transaction(async (tx) => {
+    for (const change of processorOutput.proposedMemoryChanges) {
+      await upsertMerchantSuppliedBelief(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        category: change.category,
+        key: change.key,
+        value: change.value,
+        valueType: change.valueType,
+        suppliedBy: "merchant_insights_correction",
+        suppliedAt: now,
+        evidenceSummary: change.summary,
+        evidenceSourceType: "merchant_insights",
+        evidenceSourceReference: `merchant_insight_finding:${finding.id}`,
+        metadata: {
+          findingId: finding.id,
+          runId: finding.runId,
+          originalCorrection: correction,
+          processorOutput,
+        },
+      });
+    }
+
+    await recordEvidence(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      beliefId: null,
+      sourceType: "merchant_insights",
+      sourceReference: `merchant_insight_finding:${finding.id}`,
+      evidenceType: "merchant_insight_correction",
+      summary: `Merchant corrected Jefe's insight: ${correction.slice(0, 240)}`,
+      metadata: {
+        findingId: finding.id,
+        runId: finding.runId,
+        insight: serializeFindingForCorrection(finding),
+        supportingBeliefIds: finding.supportingBeliefIds,
+        submittedInsightText: input.insightText ?? null,
+        submittedSupportingBeliefIds: input.supportingBeliefIds ?? [],
+        originalCorrection: correction,
+        processorOutput,
+        status: "processed",
+      },
+      observedAt: now,
+    });
+
+    for (const beliefId of affectedBeliefIds) {
+      await recordEvidence(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        beliefId,
+        sourceType: "merchant_insights",
+        sourceReference: `merchant_insight_finding:${finding.id}`,
+        evidenceType: "merchant_correction",
+        summary:
+          "Merchant challenged an insight supported by this belief; deterministic facts were not overwritten.",
+        metadata: {
+          findingId: finding.id,
+          runId: finding.runId,
+          originalCorrection: correction,
+          processorOutput,
+        },
+        observedAt: now,
+      });
+    }
+
+    return tx.merchantInsightFinding.update({
+      where: { id: finding.id },
+      data: {
+        reviewStatus: INSIGHT_REVIEW_STATUS.corrected,
+        reviewedAt: now,
+        correctedAt: now,
+      },
+    });
+  });
+
+  if (processorOutput.rebuildMerchantMemory) {
+    await enqueueMerchantMemoryRefresh(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      categories: [
+        ...new Set(
+          beliefs
+            .filter((belief) => affectedBeliefIds.includes(belief.id))
+            .map((belief) => belief.category),
+        ),
+      ],
+      reason: "merchant_insight_correction",
+      resetAttempts: true,
+    });
+  }
+
+  if (processorOutput.regenerateInsights) {
+    await ensureMerchantInsightsQueued(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      runAfter: processorOutput.rebuildMerchantMemory
+        ? new Date(Date.now() + 30_000)
+        : undefined,
+      resetAttempts: true,
+    });
+  }
+
+  return {
+    ok: true,
+    finding: updated,
+    processorOutput,
+    regenerateInsights: processorOutput.regenerateInsights,
+  };
+}
+
+function serializeFindingForCorrection(finding) {
+  return {
+    id: finding.id,
+    title: finding.title,
+    finding: finding.finding,
+    whyItMatters: finding.whyItMatters,
+    confidence: finding.confidence,
+    category: finding.category,
+    caveat: finding.caveat,
+    supportingBeliefIds: finding.supportingBeliefIds,
+  };
+}
+
+function serializeBeliefForCorrection(belief) {
+  const definition = getBeliefDefinition(belief.key);
+  return {
+    id: belief.id,
     key: belief.key,
-    value: operation.proposedValue,
-    valueType: operation.valueType,
-    correctedBy: "merchant_insights",
-    evidenceSummary: `Merchant corrected this during Insights onboarding: ${correction.slice(0, 240)}`,
-    evidenceSourceType: "merchant_insights",
-    evidenceSourceReference: `merchant_insight_finding:${finding.id}`,
-    metadata: { findingId: finding.id, runId: finding.runId },
-  });
-  const updated = await prisma.merchantInsightFinding.update({
-    where: { id: finding.id },
-    data: {
-      reviewStatus: INSIGHT_REVIEW_STATUS.corrected,
-      reviewedAt: new Date(),
-      correctedAt: new Date(),
-    },
-  });
-  return { ok: true, finding: updated };
+    category: belief.category,
+    label: definition?.label ?? belief.key,
+    value: belief.value,
+    valueType: belief.valueType,
+    status: belief.status,
+    confidence: belief.confidence === null ? null : Number(belief.confidence),
+    precedence: Number(belief.precedence ?? 0),
+    authority: isDeterministicObservation(belief)
+      ? "deterministic"
+      : belief.status,
+    evidence: (belief.evidence ?? []).map((item) => ({
+      sourceType: item.sourceType,
+      evidenceType: item.evidenceType,
+      summary: item.summary,
+      observedAt: item.observedAt?.toISOString?.() ?? null,
+    })),
+    guidance: definition?.guidance ?? null,
+  };
+}
+
+function merchantWritableBeliefDefinitions() {
+  return Object.values(getConversationalBeliefRegistry())
+    .filter(
+      (definition) =>
+        definition.merchantCreatable && definition.kind !== "observation",
+    )
+    .map((definition) => ({
+      key: definition.key,
+      category: definition.category,
+      label: definition.label,
+      valueType: definition.valueType,
+      allowedValues: definition.allowedValues ?? null,
+      guidance: definition.guidance,
+    }));
 }
 
 /**
@@ -563,24 +734,6 @@ function isDeterministicObservation(belief) {
       evidence.sourceType === "system_derivation" ||
       evidence.evidenceType === "deterministic_calculation",
   );
-}
-
-/** @param {string} correction @param {string} valueType */
-function valueFromCorrection(correction, valueType) {
-  if (valueType === "number")
-    return { number: Number(correction.replace(/[^0-9.-]/g, "")) };
-  if (valueType === "percentage") {
-    return { percentage: Number(correction.replace(/[^0-9.-]/g, "")) };
-  }
-  if (valueType === "currency_code")
-    return { currency: correction.trim().toUpperCase() };
-  if (valueType === "boolean")
-    return { boolean: /^(yes|true|available|on)$/i.test(correction.trim()) };
-  if (valueType === "enum") return { option: correction.trim().toLowerCase() };
-  if (valueType === "currency_amount") {
-    return { amount: Number(correction.replace(/[^0-9.-]/g, "")) };
-  }
-  return { text: correction };
 }
 
 /** @param {unknown} error */
