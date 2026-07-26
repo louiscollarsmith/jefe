@@ -66,6 +66,7 @@ import {
 import {
   INSIGHT_REVIEW_STATUS,
   INSIGHT_RUN_STATUS,
+  MAX_ONBOARDING_INSIGHTS,
 } from "../lib/merchant-insights/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
@@ -297,7 +298,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           merchantId: merchant.id,
           shopId: shop.id,
           findingId: String(formData.get("findingId") ?? ""),
-          beliefId: String(formData.get("beliefId") ?? ""),
+          insightText: String(formData.get("insightText") ?? ""),
+          supportingBeliefIds: String(formData.get("supportingBeliefIds") ?? "")
+            .split(",")
+            .filter(Boolean),
           correction: String(formData.get("correction") ?? ""),
         });
         if (!result.ok) {
@@ -1002,9 +1006,14 @@ function InsightsStep({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const searchParams = new URLSearchParams(location.search);
+  const insightNotice = searchParams.get("insightNotice");
   const selectedRun = insights?.selectedRun;
   const currentRun = insights?.currentRun;
-  const findings = selectedRun?.findings ?? [];
+  const findings = (selectedRun?.findings ?? []).slice(
+    0,
+    MAX_ONBOARDING_INSIGHTS,
+  );
   const correctionError =
     rawActionData &&
     typeof rawActionData === "object" &&
@@ -1166,6 +1175,14 @@ function InsightsStep({
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
+      {insightNotice === "corrected" ? (
+        <Banner tone="success">
+          <Text as="p">
+            Thanks — I&apos;ll update my understanding and use this when I
+            generate future insights.
+          </Text>
+        </Banner>
+      ) : null}
 
       <div className="JefeInsightList">
         {findings.map((finding: (typeof findings)[number]) => (
@@ -1261,9 +1278,7 @@ function InsightCard({
 }) {
   const [open, setOpen] = useState(false);
   const [correcting, setCorrecting] = useState(false);
-  const [selectedBeliefId, setSelectedBeliefId] = useState(
-    evidence[0]?.id ?? "",
-  );
+  const [correctionText, setCorrectionText] = useState("");
   const confirmed = finding.reviewStatus === INSIGHT_REVIEW_STATUS.confirmed;
   const corrected = finding.reviewStatus === INSIGHT_REVIEW_STATUS.corrected;
 
@@ -1272,125 +1287,148 @@ function InsightCard({
       <div className="JefeInsightRank" aria-hidden="true">
         {finding.orderIndex}
       </div>
-      <BlockStack gap="300">
-        <InlineStack align="space-between" gap="300" blockAlign="start">
-          <BlockStack gap="100">
-            <Text as="h2" variant="headingMd">
-              {finding.title}
-            </Text>
-            <Text as="p">{finding.finding}</Text>
-          </BlockStack>
-          <Badge
-            tone={corrected ? "attention" : confirmed ? "success" : "info"}
-          >
-            {corrected
-              ? "Corrected"
-              : confirmed
-                ? "Confirmed"
-                : confidenceLabel(finding.confidence)}
-          </Badge>
-        </InlineStack>
-        <Text as="p" tone="subdued">
-          {finding.whyItMatters}
-        </Text>
-        {finding.caveat ? (
+      <div className="JefeInsightSignal">
+        <Badge tone={corrected ? "attention" : confirmed ? "success" : "info"}>
+          {corrected
+            ? "Corrected"
+            : confirmed
+              ? "Confirmed"
+              : confidenceLabel(finding.confidence)}
+        </Badge>
+      </div>
+      <div className="JefeInsightBody">
+        <BlockStack gap="300">
+          <div className="JefeInsightPrimary">
+            <BlockStack gap="100">
+              <Text as="h2" variant="headingMd">
+                {finding.title}
+              </Text>
+              <Text as="p">{finding.finding}</Text>
+            </BlockStack>
+          </div>
           <Text as="p" tone="subdued">
-            {finding.caveat}
+            {finding.whyItMatters}
           </Text>
-        ) : null}
-        <InlineStack gap="200" align="space-between" blockAlign="center">
-          <Button
-            variant="plain"
-            onClick={() => setOpen((value) => !value)}
-            ariaExpanded={open}
-            ariaControls={`insight-evidence-${finding.id}`}
-          >
-            Why Jefe thinks this
-          </Button>
-          {!confirmed && !corrected ? (
-            <InlineStack gap="200">
-              <Form method="post">
-                <input type="hidden" name="intent" value="insights.confirm" />
-                <input type="hidden" name="findingId" value={finding.id} />
-                <Button submit>Confirm</Button>
-              </Form>
-              <Button onClick={() => setCorrecting((value) => !value)}>
-                Correct
-              </Button>
-            </InlineStack>
+          {finding.caveat ? (
+            <Text as="p" tone="subdued">
+              {finding.caveat}
+            </Text>
           ) : null}
-        </InlineStack>
-        <Collapsible
-          open={open}
-          id={`insight-evidence-${finding.id}`}
-          transition={{ duration: "150ms", timingFunction: "ease" }}
-        >
-          <BlockStack gap="200">
-            {evidence.map((item) => (
-              <Box
-                key={item.id}
-                padding="300"
-                background="bg-surface-secondary"
-                borderRadius="200"
-              >
-                <BlockStack gap="100">
-                  <Text as="p" fontWeight="semibold">
-                    {item.title}
-                  </Text>
-                  <Text as="p" tone="subdued">
-                    {item.value}
-                  </Text>
-                  {item.evidenceSummary ? (
-                    <Text as="p" tone="subdued">
-                      {item.evidenceSummary}
-                    </Text>
-                  ) : null}
-                  <Text as="p" tone="subdued">
-                    {item.sourceLabel}
-                    {item.lastEvaluatedAt
-                      ? ` · Checked ${item.lastEvaluatedAt}`
-                      : ""}
-                  </Text>
-                </BlockStack>
-              </Box>
-            ))}
-          </BlockStack>
-        </Collapsible>
-        {correcting ? (
-          <Form method="post" className="JefeInsightCorrectionForm">
-            <input type="hidden" name="intent" value="insights.correct" />
-            <input type="hidden" name="findingId" value={finding.id} />
-            <Select
-              label="What should I correct?"
-              name="beliefId"
-              options={evidence.map((item) => ({
-                label: item.title,
-                value: item.id,
-                disabled: !item.correctable,
-              }))}
-              value={selectedBeliefId}
-              onChange={setSelectedBeliefId}
-            />
-            <TextField
-              label="Correction"
-              name="correction"
-              autoComplete="off"
-              multiline={3}
-              error={
-                correctionError
-                  ? safeActionErrorMessage(correctionError)
-                  : undefined
-              }
-            />
-            <InlineStack gap="200">
-              <Button submit variant="primary">
-                Save correction
+          <InlineStack gap="200" align="space-between" blockAlign="center">
+            <Button
+              variant="plain"
+              onClick={() => setOpen((value) => !value)}
+              ariaExpanded={open}
+              ariaControls={`insight-evidence-${finding.id}`}
+            >
+              Why Jefe thinks this
+            </Button>
+            {!corrected ? (
+              <Button onClick={() => setCorrecting((value) => !value)}>
+                Something&apos;s not right
               </Button>
-              <Button onClick={() => setCorrecting(false)}>Cancel</Button>
-            </InlineStack>
-          </Form>
-        ) : null}
-      </BlockStack>
+            ) : null}
+          </InlineStack>
+          <Collapsible
+            open={open}
+            id={`insight-evidence-${finding.id}`}
+            transition={{ duration: "150ms", timingFunction: "ease" }}
+          >
+            <BlockStack gap="200">
+              {evidence.map((item) => (
+                <Box
+                  key={item.id}
+                  padding="300"
+                  background="bg-surface-secondary"
+                  borderRadius="200"
+                >
+                  <BlockStack gap="100">
+                    <Text as="p" fontWeight="semibold">
+                      {item.title}
+                    </Text>
+                    <Text as="p" tone="subdued">
+                      {item.value}
+                    </Text>
+                    {item.evidenceSummary ? (
+                      <Text as="p" tone="subdued">
+                        {item.evidenceSummary}
+                      </Text>
+                    ) : null}
+                    <Text as="p" tone="subdued">
+                      {item.sourceLabel}
+                      {item.lastEvaluatedAt
+                        ? ` · Checked ${item.lastEvaluatedAt}`
+                        : ""}
+                    </Text>
+                  </BlockStack>
+                </Box>
+              ))}
+              {!confirmed && !corrected ? (
+                <Form method="post">
+                  <input type="hidden" name="intent" value="insights.confirm" />
+                  <input type="hidden" name="findingId" value={finding.id} />
+                  <Button submit>Looks right</Button>
+                </Form>
+              ) : null}
+            </BlockStack>
+          </Collapsible>
+          {correcting ? (
+            <Form method="post" className="JefeInsightCorrectionForm">
+              <input type="hidden" name="intent" value="insights.correct" />
+              <input type="hidden" name="findingId" value={finding.id} />
+              <input
+                type="hidden"
+                name="insightText"
+                value={`${finding.title}\n\n${finding.finding}\n\n${finding.whyItMatters}`}
+              />
+              <input
+                type="hidden"
+                name="supportingBeliefIds"
+                value={finding.supportingBeliefIds.join(",")}
+              />
+              <BlockStack gap="100">
+                <Text as="h3" variant="headingSm">
+                  Help me understand what I got wrong.
+                </Text>
+                <Text as="p" tone="subdued">
+                  Tell me what I&apos;ve misunderstood. It might be that the
+                  data is incomplete, I&apos;ve interpreted something
+                  incorrectly, or there&apos;s important context I don&apos;t
+                  know yet.
+                </Text>
+              </BlockStack>
+              <TextField
+                label="Correction"
+                labelHidden
+                name="correction"
+                value={correctionText}
+                onChange={setCorrectionText}
+                autoComplete="off"
+                multiline={5}
+                placeholder={`e.g. "We're seasonal, so having no recent orders is completely normal."`}
+                error={
+                  correctionError
+                    ? safeActionErrorMessage(correctionError)
+                    : undefined
+                }
+              />
+              <InlineStack gap="200">
+                <Button submit variant="primary">
+                  Submit correction
+                </Button>
+                <Button
+                  onClick={() => {
+                    setCorrectionText("");
+                    setCorrecting(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </InlineStack>
+            </Form>
+          ) : null}
+        </BlockStack>
+      </div>
     </div>
   );
 }

@@ -4,14 +4,17 @@ import test from "node:test";
 import { PrismaClient } from "@prisma/client";
 import { createMockLlmProvider } from "../app/lib/llm/provider.server.js";
 import { buildMerchantInsightSnapshot } from "../app/lib/merchant-insights/candidates.server.js";
+import { parseAndValidateMerchantInsightCorrection } from "../app/lib/merchant-insights/correction-processor.server.js";
 import { parseAndValidateMerchantInsightsOutput } from "../app/lib/merchant-insights/schema.server.js";
 import {
   confirmMerchantInsightFinding,
+  correctMerchantInsightFinding,
   ensureMerchantInsightsQueued,
   generateMerchantInsights,
 } from "../app/lib/merchant-insights/service.server.js";
 import {
   INSIGHT_RUN_STATUS,
+  MAX_ONBOARDING_INSIGHTS,
   MERCHANT_INSIGHTS_JOB_TYPE,
 } from "../app/lib/merchant-insights/constants.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
@@ -170,6 +173,122 @@ test("structured insight validation rejects unsupported belief IDs and accepts g
   assert.match(invalidId.error, /not supplied/);
 });
 
+test("structured insight validation rejects generic or unsupported interpretation", () => {
+  const suppliedBeliefs = [
+    {
+      id: "belief-1",
+      value: { percentage: 56, count: 5 },
+      evidence: [
+        {
+          summary:
+            "The top five variants account for 56 percent of available inventory value.",
+        },
+      ],
+    },
+    {
+      id: "belief-2",
+      value: { count: 24, amount: 45.64, currency: "GBP" },
+      evidence: [
+        {
+          summary:
+            "The active catalogue contains 24 products with an average price of 45.64 GBP.",
+        },
+      ],
+    },
+  ];
+
+  const unsupportedRisk = parseAndValidateMerchantInsightsOutput(
+    {
+      insights: [
+        {
+          title: "Inventory concentration creates operational risk",
+          finding:
+            "The top five variants account for 56% of inventory value, creating risk if those products face supply chain disruptions or shifts in consumer demand.",
+          whyItMatters:
+            "That would make the business vulnerable to outside disruption.",
+          supportingBeliefIds: ["belief-1"],
+          confidence: "high",
+          category: "inventory",
+        },
+      ],
+    },
+    { allowedBeliefIds: new Set(["belief-1", "belief-2"]), suppliedBeliefs },
+  );
+  const genericPositioning = parseAndValidateMerchantInsightsOutput(
+    {
+      insights: [
+        {
+          title: "Specialized Wine Retail Model",
+          finding:
+            "The store has 24 active products and a relatively high average price of 45.64.",
+          whyItMatters:
+            "This suggests a strategy based on expertise and curation that likely influences the customer base and marketing approach.",
+          supportingBeliefIds: ["belief-2"],
+          confidence: "medium",
+          category: "products",
+        },
+      ],
+    },
+    { allowedBeliefIds: new Set(["belief-1", "belief-2"]), suppliedBeliefs },
+  );
+  const grounded = parseAndValidateMerchantInsightsOutput(
+    {
+      insights: [
+        {
+          title: "Five variants hold 56% of stock value",
+          finding:
+            "More than half of the retail value currently held in inventory sits in a very small part of the catalogue.",
+          whyItMatters:
+            "Buying, pricing and sell-through changes on those five products will disproportionately affect cash tied up in stock.",
+          supportingBeliefIds: ["belief-1"],
+          confidence: "high",
+          category: "inventory",
+        },
+      ],
+    },
+    { allowedBeliefIds: new Set(["belief-1", "belief-2"]), suppliedBeliefs },
+  );
+
+  assert.equal(unsupportedRisk.ok, false);
+  assert.match(unsupportedRisk.error, /generic or unsupported/);
+  assert.equal(genericPositioning.ok, false);
+  assert.match(genericPositioning.error, /generic or unsupported/);
+  assert.equal(grounded.ok, true);
+});
+
+test("correction processor validation rejects deterministic overwrites", () => {
+  const result = parseAndValidateMerchantInsightCorrection(
+    {
+      correctionType: "fact_dispute",
+      affectedBeliefIds: ["belief-1"],
+      merchantContext: "The last order date is wrong.",
+      confidenceAdjustments: [
+        {
+          beliefId: "belief-1",
+          direction: "needs_review",
+          reason: "Merchant disputes the source data.",
+        },
+      ],
+      followUpQuestion: "Which system has the correct last order date?",
+      proposedMemoryChanges: [
+        {
+          key: "orders.average_order_value.all_time",
+          category: "orders",
+          valueType: "currency_amount",
+          value: { amount: 12, currency: "GBP" },
+          summary: "Unsafe deterministic overwrite.",
+        },
+      ],
+      regenerateInsights: true,
+      rebuildMerchantMemory: true,
+    },
+    { supportingBeliefIds: new Set(["belief-1"]) },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /non-merchant context/);
+});
+
 test("insight generation is wired to the async worker and not browser page load", () => {
   assert.equal(MERCHANT_INSIGHTS_JOB_TYPE, "merchant_insights_generate");
   assert.match(workerSource, /MERCHANT_INSIGHTS_JOB_TYPE/);
@@ -177,6 +296,24 @@ test("insight generation is wired to the async worker and not browser page load"
   assert.match(workerSource, /generateMerchantInsights/);
   assert.match(routeSource, /ensureMerchantInsightsQueued/);
   assert.doesNotMatch(routeSource, /generateMerchantInsights\(/);
+});
+
+test("onboarding reveal is capped to the strongest five insights", () => {
+  assert.equal(MAX_ONBOARDING_INSIGHTS, 5);
+  assert.match(routeSource, /MAX_ONBOARDING_INSIGHTS/);
+  assert.match(routeSource, /selectedRun\?\.findings \?\? \[\]\)\.slice/);
+});
+
+test("insight correction UI uses natural language instead of belief selection", () => {
+  assert.match(routeSource, /Help me understand what I got wrong\./);
+  assert.match(routeSource, /Tell me what I&apos;ve misunderstood/);
+  assert.match(routeSource, /name="insightText"/);
+  assert.match(routeSource, /name="supportingBeliefIds"/);
+  assert.match(routeSource, /value={correctionText}/);
+  assert.match(routeSource, /onChange={setCorrectionText}/);
+  assert.match(routeSource, /Submit correction/);
+  assert.doesNotMatch(routeSource, /name="beliefId"/);
+  assert.doesNotMatch(routeSource, /setSelectedBeliefId/);
 });
 
 test("merchant insight generation persists validated findings and review confirmation", async (t) => {
@@ -236,6 +373,184 @@ test("merchant insight generation persists validated findings and review confirm
     assert.equal(result.status, INSIGHT_RUN_STATUS.completed);
     assert.equal(run.findings.length, 1);
     assert.equal(reviewed.reviewStatus, "confirmed");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("natural language insight correction stores merchant context without overwriting deterministic facts", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const { run, averageOrderValueBelief } = await createCompletedInsightRun(
+      prisma,
+      merchant.id,
+      shop.id,
+    );
+    const finding = run.findings[0];
+
+    const result = await correctMerchantInsightFinding(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      findingId: finding.id,
+      insightText: `${finding.title}\n${finding.finding}`,
+      supportingBeliefIds: finding.supportingBeliefIds,
+      correction:
+        "Most of our sales actually happen through wholesale rather than Shopify.",
+      llmProvider: createMockLlmProvider({
+        operation: {
+          correctionType: "missing_context",
+          affectedBeliefIds: [averageOrderValueBelief.id],
+          merchantContext:
+            "Most revenue happens through wholesale rather than Shopify.",
+          confidenceAdjustments: [
+            {
+              beliefId: averageOrderValueBelief.id,
+              direction: "needs_review",
+              reason:
+                "Shopify order value does not represent the whole business.",
+            },
+          ],
+          followUpQuestion: null,
+          proposedMemoryChanges: [
+            {
+              key: "business.primary_sales_channel",
+              category: "business",
+              valueType: "string",
+              value: { text: "Wholesale" },
+              summary:
+                "Merchant says most revenue happens through wholesale rather than Shopify.",
+            },
+          ],
+          regenerateInsights: true,
+          rebuildMerchantMemory: false,
+        },
+      }),
+      logger: silentLogger,
+    });
+
+    const deterministicBelief =
+      await prisma.merchantMemoryBelief.findUniqueOrThrow({
+        where: { id: averageOrderValueBelief.id },
+      });
+    const merchantContext = await prisma.merchantMemoryBelief.findFirstOrThrow({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        key: "business.primary_sales_channel",
+      },
+    });
+    const correctionEvidence =
+      await prisma.merchantMemoryEvidence.findFirstOrThrow({
+        where: {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          evidenceType: "merchant_insight_correction",
+        },
+      });
+    const reloadedFinding =
+      await prisma.merchantInsightFinding.findUniqueOrThrow({
+        where: { id: finding.id },
+      });
+    const regenerationJob = await prisma.backfillJob.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+        status: "queued",
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(reloadedFinding.reviewStatus, "corrected");
+    assert.equal(deterministicBelief.status, "inferred");
+    assert.deepEqual(deterministicBelief.value, {
+      amount: 64,
+      currency: "GBP",
+    });
+    assert.equal(merchantContext.status, "merchant_confirmed");
+    assert.deepEqual(merchantContext.value, { text: "Wholesale" });
+    assert.equal(
+      correctionEvidence.metadata.originalCorrection,
+      "Most of our sales actually happen through wholesale rather than Shopify.",
+    );
+    assert.deepEqual(
+      correctionEvidence.metadata.submittedSupportingBeliefIds,
+      finding.supportingBeliefIds,
+    );
+    assert.ok(regenerationJob);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("invalid natural language correction processor output is rejected safely", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const { run } = await createCompletedInsightRun(
+      prisma,
+      merchant.id,
+      shop.id,
+    );
+    const finding = run.findings[0];
+
+    const result = await correctMerchantInsightFinding(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      findingId: finding.id,
+      correction: "The last order date is wrong.",
+      llmProvider: createMockLlmProvider({
+        operation: {
+          correctionType: "fact_dispute",
+          affectedBeliefIds: ["not-a-supporting-belief"],
+          merchantContext: "The last order date is wrong.",
+          confidenceAdjustments: [],
+          followUpQuestion: null,
+          proposedMemoryChanges: [],
+          regenerateInsights: true,
+          rebuildMerchantMemory: true,
+        },
+      }),
+      logger: silentLogger,
+    });
+    const reloadedFinding =
+      await prisma.merchantInsightFinding.findUniqueOrThrow({
+        where: { id: finding.id },
+      });
+    const correctionEvidence = await prisma.merchantMemoryEvidence.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        evidenceType: "merchant_insight_correction",
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(reloadedFinding.reviewStatus, "unreviewed");
+    assert.equal(correctionEvidence, null);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Insights Test ${suffix}` },
@@ -359,6 +674,43 @@ async function createInsightFixture(prisma, suffix) {
     },
   });
   return { merchant, shop };
+}
+
+async function createCompletedInsightRun(prisma, merchantId, shopId) {
+  const queued = await ensureMerchantInsightsQueued(prisma, {
+    merchantId,
+    shopId,
+  });
+  const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
+    (belief) => belief.key === "orders.average_order_value.all_time",
+  );
+  assert.ok(averageOrderValueBelief);
+  await generateMerchantInsights(prisma, {
+    merchantId,
+    shopId,
+    runId: queued.run.id,
+    llmProvider: createMockLlmProvider({
+      operation: {
+        insights: [
+          {
+            title: "Shopify order value has a clear baseline",
+            finding: "Average order value is 64.",
+            whyItMatters:
+              "That gives Jefe a grounded baseline for future recommendations.",
+            supportingBeliefIds: [averageOrderValueBelief.id],
+            confidence: "high",
+            category: "revenue",
+          },
+        ],
+      },
+    }),
+    logger: silentLogger,
+  });
+  const run = await prisma.merchantInsightRun.findFirstOrThrow({
+    where: { merchantId, shopId },
+    include: { findings: true },
+  });
+  return { run, averageOrderValueBelief };
 }
 
 function uniqueSuffix() {

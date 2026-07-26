@@ -49,7 +49,8 @@ test("changelog parser reads dated entries and allowed sections", () => {
 });
 
 test("changelog parser ignores non-Jefe date formats", () => {
-  const entries = parseChangelogMarkdown(`# @shopify/shopify-app-template-react-router
+  const entries =
+    parseChangelogMarkdown(`# @shopify/shopify-app-template-react-router
 
 ## 2026.07.16
 
@@ -69,7 +70,25 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
+        item.includes("Moved the Merchant Insights signal badge"),
+      ),
+    ),
+  );
+  assert.ok(
+    entries[0].sections.some((section) =>
+      section.items.some((item) =>
         item.includes("synthetic Shopify realistic and load profiles"),
+      ),
+    ),
+  );
+  assert.ok(
+    entries.some((entry) =>
+      entry.sections.some((section) =>
+        section.items.some((item) =>
+          item.includes(
+            "Removed the retired Goals and Merchant Interview workflow",
+          ),
+        ),
       ),
     ),
   );

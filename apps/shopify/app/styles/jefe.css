@@ -353,7 +353,23 @@
   gap: 14px;
   grid-template-columns: 32px minmax(0, 1fr);
   padding: 16px;
+  position: relative;
   width: 100%;
+}
+
+.JefeInsightBody {
+  min-width: 0;
+}
+
+.JefeInsightPrimary {
+  padding-right: 128px;
+}
+
+.JefeInsightSignal {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  z-index: 1;
 }
 
 .JefeInsightRank {
@@ -488,6 +504,10 @@
 
   .JefeInsightCard {
     grid-template-columns: 1fr;
+  }
+
+  .JefeInsightPrimary {
+    padding-right: 0;
   }
 
   .JefeDisplayHeading {
