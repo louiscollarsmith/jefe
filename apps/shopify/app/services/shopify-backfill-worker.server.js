@@ -33,6 +33,11 @@ import {
   markMerchantGoalsJobFailed,
 } from "../lib/merchant-goals/service.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
+import {
+  generateMerchantPlan,
+  markMerchantPlanJobFailed,
+} from "../lib/merchant-plan/service.server.js";
+import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -89,7 +94,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string }} [options]
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
@@ -101,6 +106,7 @@ export async function processNextBackfillJob(prisma, options = {}) {
     where: {
       status: "queued",
       runAfter: { lte: now },
+      shopId: options.shopId,
     },
     orderBy: [{ priority: "asc" }, { runAfter: "asc" }, { createdAt: "asc" }],
     include: { shop: true, merchant: true },
@@ -122,7 +128,7 @@ export async function processNextBackfillJob(prisma, options = {}) {
   if (claimed.count !== 1) return null;
 
   if (job.shop.status === "uninstalled") {
-    await prisma.backfillJob.update({
+    await prisma.backfillJob.updateMany({
       where: { id: job.id },
       data: {
         status: "cancelled",
@@ -135,7 +141,7 @@ export async function processNextBackfillJob(prisma, options = {}) {
 
   try {
     const result = await runBackfillJob(prisma, job, options);
-    await prisma.backfillJob.update({
+    const completed = await prisma.backfillJob.updateMany({
       where: { id: job.id },
       data: {
         status: "succeeded",
@@ -143,12 +149,15 @@ export async function processNextBackfillJob(prisma, options = {}) {
         resultJson: result ?? {},
       },
     });
+    if (completed.count !== 1) {
+      return { status: "cancelled", jobType: job.jobType, result };
+    }
     return { status: "succeeded", jobType: job.jobType, result };
   } catch (error) {
     const failure = backfillFailureDetails(error);
     const message = failure.message;
     const failedPermanently = job.attemptCount + 1 >= job.maxAttempts;
-    await prisma.backfillJob.update({
+    const updated = await prisma.backfillJob.updateMany({
       where: { id: job.id },
       data: {
         status: failedPermanently ? "failed" : "queued",
@@ -159,6 +168,9 @@ export async function processNextBackfillJob(prisma, options = {}) {
         lastError: message.slice(0, 1000),
       },
     });
+    if (updated.count !== 1) {
+      return { status: "cancelled", jobType: job.jobType, error: message };
+    }
     if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
       await markMemoryFailed(prisma, job, failure);
     } else if (job.jobType === MERCHANT_INSIGHTS_JOB_TYPE) {
@@ -170,6 +182,13 @@ export async function processNextBackfillJob(prisma, options = {}) {
       });
     } else if (job.jobType === MERCHANT_GOALS_JOB_TYPE) {
       await markMerchantGoalsJobFailed(prisma, {
+        merchantId: job.merchantId,
+        shopId: job.shopId,
+        runId: stringValue(jsonObject(job.payloadJson).runId),
+        message,
+      });
+    } else if (job.jobType === MERCHANT_PLAN_JOB_TYPE) {
+      await markMerchantPlanJobFailed(prisma, {
         merchantId: job.merchantId,
         shopId: job.shopId,
         runId: stringValue(jsonObject(job.payloadJson).runId),
@@ -238,7 +257,8 @@ async function runBackfillJob(prisma, job, options) {
   const requiresShopifyToken =
     job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
     job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE &&
-    job.jobType !== MERCHANT_GOALS_JOB_TYPE;
+    job.jobType !== MERCHANT_GOALS_JOB_TYPE &&
+    job.jobType !== MERCHANT_PLAN_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
@@ -291,6 +311,13 @@ async function runBackfillJob(prisma, job, options) {
       });
     case MERCHANT_GOALS_JOB_TYPE:
       return generateMerchantGoals(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        runId: stringValue(payload.runId),
+        logger: context.logger,
+      });
+    case MERCHANT_PLAN_JOB_TYPE:
+      return generateMerchantPlan(prisma, {
         merchantId: context.merchantId,
         shopId: context.shopId,
         runId: stringValue(payload.runId),

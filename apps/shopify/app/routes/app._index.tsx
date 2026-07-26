@@ -80,6 +80,13 @@ import {
   GOAL_HORIZONS,
   GOAL_RUN_STATUS,
 } from "../lib/merchant-goals/constants.js";
+import {
+  acceptMerchantPlanAndCompleteOnboarding,
+  ensureMerchantPlanQueued,
+  getMerchantPlanExperience,
+  processMerchantPlanMessage,
+} from "../lib/merchant-plan/service.server.js";
+import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
 import { getMerchantMemoryConversationExperience } from "../lib/merchant-memory/conversation.server.js";
@@ -91,9 +98,14 @@ import {
   queueInstallShopifyBackfill,
   splitScopes,
 } from "../services/shopify-backfill-status.server";
-import { completeGoalsOnboarding } from "../services/onboarding.server.js";
 
-export const ONBOARDING_STEPS = ["connect", "insights", "goals"] as const;
+export const ONBOARDING_STEPS = [
+  "connect",
+  "channels",
+  "insights",
+  "goals",
+  "plan",
+] as const;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
 const GOALS_DOCUMENT_ACCEPT = ".pdf,.docx,.md,.markdown,.txt";
@@ -422,12 +434,72 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       if (intent === "goals.finish") {
-        await completeGoalsOnboarding(prisma, {
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "plan",
+            goalsNotice: null,
+            insightNotice: null,
+          }),
+        );
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: safeMerchantFacingError(error),
+        intent,
+      };
+    }
+  }
+
+  if (intent.startsWith("plan.")) {
+    try {
+      if (intent === "plan.retry") {
+        await ensureMerchantPlanQueued(prisma, {
+          merchantId: merchant.id,
           shopId: shop.id,
+          resetAttempts: true,
+        });
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "plan",
+            planNotice: null,
+          }),
+        );
+      }
+
+      if (intent === "plan.message") {
+        const result = await processMerchantPlanMessage(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          recommendationId: String(formData.get("recommendationId") ?? "") || null,
+          message: String(formData.get("message") ?? ""),
+        });
+        if (!result.ok) {
+          const messageError = result as { error?: string };
+          return {
+            ok: false,
+            error: messageError.error ?? "That message could not be saved.",
+            intent,
+          };
+        }
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            step: "plan",
+            planNotice: "message_saved",
+          }),
+        );
+      }
+
+      if (intent === "plan.finish") {
+        await acceptMerchantPlanAndCompleteOnboarding(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          recommendationId: String(formData.get("recommendationId") ?? ""),
         });
         return redirect(
           appPathFromSearch(new URL(request.url).search, {
             step: null,
+            planNotice: null,
             goalsNotice: null,
             insightNotice: null,
           }),
@@ -583,6 +655,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop.id,
     });
   }
+  if (activeStep === "plan" && readiness.memoryReady && backfill.complete) {
+    await ensureMerchantPlanQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+  }
   const insights =
     readiness.memoryReady && backfill.complete
       ? await getMerchantInsightsExperience(prisma, {
@@ -593,6 +671,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const goals =
     readiness.memoryReady && backfill.complete
       ? await getMerchantGoalsExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        })
+      : null;
+  const plan =
+    readiness.memoryReady && backfill.complete
+      ? await getMerchantPlanExperience(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         })
@@ -621,6 +706,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ),
       })
     : [];
+  const planEvidence = plan?.selectedRun?.recommendation?.supportingBeliefIds?.length
+    ? await getInsightEvidenceView({
+        merchantId: merchant.id,
+        shopId: shop.id,
+        beliefIds: plan.selectedRun.recommendation.supportingBeliefIds,
+      })
+    : [];
 
   return {
     appMode: "onboarding" as const,
@@ -640,6 +732,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     insightEvidence,
     goals,
     goalsConversation,
+    plan,
+    planEvidence,
   };
 };
 
@@ -664,10 +758,15 @@ export default function AppIndex() {
     data.appMode === "onboarding" &&
     data.activeStep === "goals" &&
     shouldPollMerchantGoals(data.goals);
+  const shouldPollPlan =
+    data.appMode === "onboarding" &&
+    data.activeStep === "plan" &&
+    shouldPollMerchantPlan(data.plan);
 
   useConnectStatusPolling(shouldPollConnect);
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
+  useConnectStatusPolling(shouldPollPlan);
 
   if (data.appMode === "memory") {
     return (
@@ -689,6 +788,15 @@ export default function AppIndex() {
           connected={data.connected}
           canContinue={canContinueToInsights}
         />
+      ) : data.activeStep === "channels" ? (
+        <ChannelsStep
+          merchantName={data.merchantName}
+          connections={data.channelConnections}
+          slackDestinations={data.slackDestinations}
+          slackDestinationError={data.slackDestinationError}
+          hasVerifiedChannel={data.hasVerifiedChannel}
+          actionError={safeActionError}
+        />
       ) : data.activeStep === "insights" ? (
         <InsightsStep
           backfill={data.backfill}
@@ -698,12 +806,20 @@ export default function AppIndex() {
           actionError={safeActionError}
           rawActionData={actionData}
         />
-      ) : (
+      ) : data.activeStep === "goals" ? (
         <GoalsStep
           backfill={data.backfill}
           memoryReady={data.memoryReady}
           goals={data.goals}
           conversation={data.goalsConversation}
+          actionError={safeActionError}
+        />
+      ) : (
+        <PlanStep
+          backfill={data.backfill}
+          memoryReady={data.memoryReady}
+          plan={data.plan}
+          evidence={data.planEvidence}
           actionError={safeActionError}
         />
       )}
@@ -843,7 +959,7 @@ function ConnectStep({
             onClick={() =>
               navigate(
                 appPathFromSearch(location.search, {
-                  step: "insights",
+                  step: "channels",
                   channelProvider: null,
                   channelMode: null,
                   channelNotice: null,
@@ -852,7 +968,7 @@ function ConnectStep({
             }
             variant="primary"
           >
-            Continue to insights
+            Continue to Channels
           </Button>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
@@ -979,8 +1095,6 @@ function Milestone({
   );
 }
 
-// Channels onboarding is temporarily skipped, but the implementation is retained for reactivation.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ChannelsStep({
   merchantName,
   connections,
@@ -1048,7 +1162,8 @@ function ChannelsStep({
         </Text>
         <h1 className="JefeDisplayHeading">How should I reach you?</h1>
         <Text as="p" tone="subdued" alignment="center">
-          Connect Slack now. WhatsApp is coming soon.
+          Connect Slack now if you want Jefe updates there. You can also skip
+          this and choose a channel later.
         </Text>
       </BlockStack>
 
@@ -1075,16 +1190,33 @@ function ChannelsStep({
         />
       </div>
 
-      {!hasVerifiedChannel ? (
+      {hasVerifiedChannel ? (
         <Text as="p" tone="subdued" alignment="center">
-          Verify Slack to continue.
+          Channel connected.
         </Text>
-      ) : null}
+      ) : (
+        <Text as="p" tone="subdued" alignment="center">
+          Channel setup is optional for now.
+        </Text>
+      )}
 
       <InlineStack gap="300" align="center">
         <Button
+          onClick={() =>
+            navigate(
+              appPathFromSearch(location.search, {
+                step: "connect",
+                channelProvider: null,
+                channelMode: null,
+                channelNotice: null,
+              }),
+            )
+          }
+        >
+          Back
+        </Button>
+        <Button
           variant="primary"
-          disabled={!hasVerifiedChannel}
           onClick={() =>
             navigate(
               appPathFromSearch(location.search, {
@@ -1645,11 +1777,446 @@ function GoalsStep({
         <Form method="post">
           <input type="hidden" name="intent" value="goals.finish" />
           <Button submit variant="primary">
-            Finish onboarding
+            Continue to Plan
           </Button>
         </Form>
       </InlineStack>
     </BlockStack>
+  );
+}
+
+function PlanStep({
+  backfill,
+  memoryReady,
+  plan,
+  evidence,
+  actionError,
+}: {
+  backfill: ReturnType<typeof summarizeBackfill>;
+  memoryReady: boolean;
+  plan: Awaited<ReturnType<typeof getMerchantPlanExperience>> | null;
+  evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
+  actionError: SafeActionError;
+}) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const searchParams = new URLSearchParams(location.search);
+  const planNotice = searchParams.get("planNotice");
+  const currentRun = plan?.currentRun;
+  const selectedRun = plan?.selectedRun;
+  const recommendation = selectedRun?.recommendation;
+  const [message, setMessage] = useState("");
+  const navigation = useNavigation();
+  const submittingPlanMessage =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "plan.message";
+  const planGenerationActive =
+    currentRun?.status === PLAN_RUN_STATUS.queued ||
+    currentRun?.status === PLAN_RUN_STATUS.running ||
+    plan?.activeJob?.status === "queued" ||
+    plan?.activeJob?.status === "running";
+  const refinementRegenerating =
+    planNotice === "message_saved" && planGenerationActive;
+
+  if (!memoryReady || !backfill.complete) {
+    return (
+      <InsightStatusScene
+        title="I'm still building the memory I need before choosing a first move."
+        detail={backfill.detail}
+        action={
+          <Button
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "goals",
+                  channelProvider: null,
+                  channelMode: null,
+                }),
+              )
+            }
+          >
+            Back
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (planGenerationActive && !refinementRegenerating) {
+    return (
+      <InsightStatusScene
+        title="I'm choosing the most useful first move."
+        detail="This page will update when the Plan is ready."
+        skeleton
+        action={
+          <Button
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "goals",
+                  channelProvider: null,
+                  channelMode: null,
+                }),
+              )
+            }
+          >
+            Back
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (
+    currentRun?.status === PLAN_RUN_STATUS.insufficientData ||
+    !plan?.hasGoals ||
+    (!selectedRun && (plan?.candidateCount ?? 0) < 3)
+  ) {
+    return (
+      <InsightStatusScene
+        title="I don't have enough agreed direction to choose a useful first move yet."
+        detail="Review the proposed goals first, then I can turn them into a practical Plan."
+        action={
+          <InlineStack gap="300" align="center">
+            <Button
+              onClick={() =>
+                navigate(
+                  appPathFromSearch(location.search, {
+                    step: "goals",
+                    channelProvider: null,
+                    channelMode: null,
+                  }),
+                )
+              }
+            >
+              Back to goals
+            </Button>
+            <Form method="post">
+              <input type="hidden" name="intent" value="plan.retry" />
+              <Button submit variant="primary">
+                Retry Plan
+              </Button>
+            </Form>
+          </InlineStack>
+        }
+      />
+    );
+  }
+
+  if (
+    !selectedRun &&
+    (currentRun?.status === PLAN_RUN_STATUS.failed ||
+      currentRun?.status === PLAN_RUN_STATUS.modelDisabled)
+  ) {
+    return (
+      <InsightStatusScene
+        title="I couldn't generate a trustworthy first move."
+        detail={merchantPlanErrorCopy(currentRun)}
+        action={
+          <InlineStack gap="300" align="center">
+            <Button
+              onClick={() =>
+                navigate(
+                  appPathFromSearch(location.search, {
+                    step: "goals",
+                    channelProvider: null,
+                    channelMode: null,
+                  }),
+                )
+              }
+            >
+              Back to goals
+            </Button>
+            <Form method="post">
+              <input type="hidden" name="intent" value="plan.retry" />
+              <Button submit variant="primary">
+                Retry Plan
+              </Button>
+            </Form>
+          </InlineStack>
+        }
+      />
+    );
+  }
+
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold">
+          FIRST MOVE
+        </Text>
+        <h1 className="JefeDisplayHeading">Here&apos;s where I&apos;d start.</h1>
+        <Text as="p" tone="subdued" alignment="center">
+          I&apos;ve compared what I know about the business with the goals we
+          agreed and chosen one practical action to begin now.
+        </Text>
+      </BlockStack>
+
+      {plan?.stale ? (
+        <Banner tone="warning">
+          <Text as="p">
+            This Plan is from the previous valid memory set. I&apos;ll replace it
+            after the latest generation succeeds.
+          </Text>
+        </Banner>
+      ) : null}
+      {actionError ? (
+        <InlineError message={safeActionErrorMessage(actionError)} />
+      ) : null}
+      {planNotice === "message_saved" ? (
+        <Banner tone="success">
+          <Text as="p">
+            I&apos;ll use that context to choose a better first move.
+          </Text>
+        </Banner>
+      ) : null}
+
+      {recommendation ? (
+        <PlanRecommendationCard
+          recommendation={recommendation}
+          evidence={evidence}
+          updating={refinementRegenerating}
+        />
+      ) : null}
+
+      {recommendation ? (
+        <div className="JefePlanRefinement">
+          <BlockStack gap="300">
+            <Text as="p" fontWeight="bold">
+              Want a different first move? Tell me what to change.
+            </Text>
+            <Form method="post" className="JefeGoalMessageForm">
+              <input type="hidden" name="intent" value="plan.message" />
+              <input
+                type="hidden"
+                name="recommendationId"
+                value={recommendation.id}
+              />
+              <TextField
+                label="Refine Plan"
+                labelHidden
+                name="message"
+                value={message}
+                onChange={setMessage}
+                placeholder="e.g. Make this lighter, avoid discounts, or focus on stock before email..."
+                multiline={3}
+                autoComplete="off"
+              />
+              <InlineStack align="end">
+                <Button
+                  submit
+                  variant="primary"
+                  disabled={!message.trim() || submittingPlanMessage}
+                >
+                  Send
+                </Button>
+              </InlineStack>
+            </Form>
+          </BlockStack>
+        </div>
+      ) : null}
+
+      <InlineStack gap="300" align="center">
+        <Button
+          onClick={() =>
+            navigate(
+              appPathFromSearch(location.search, {
+                step: "goals",
+                channelProvider: null,
+                channelMode: null,
+                channelNotice: null,
+              }),
+            )
+          }
+        >
+          Back
+        </Button>
+        {recommendation ? (
+          <Form method="post">
+            <input type="hidden" name="intent" value="plan.finish" />
+            <input
+              type="hidden"
+              name="recommendationId"
+              value={recommendation.id}
+            />
+            <Button submit variant="primary">
+              Accept Plan and open Jefe
+            </Button>
+          </Form>
+        ) : null}
+      </InlineStack>
+    </BlockStack>
+  );
+}
+
+function PlanRecommendationCard({
+  recommendation,
+  evidence,
+  updating,
+}: {
+  recommendation: NonNullable<
+    NonNullable<
+      Awaited<ReturnType<typeof getMerchantPlanExperience>>["selectedRun"]
+    >["recommendation"]
+  >;
+  evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
+  updating: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const steps = Array.isArray(recommendation.executionSteps)
+    ? recommendation.executionSteps
+    : [];
+  const successSignal =
+    recommendation.successSignal &&
+    typeof recommendation.successSignal === "object"
+      ? (recommendation.successSignal as {
+          description?: string;
+          timeframe?: string;
+          target?: string | null;
+        })
+      : {};
+
+  return (
+    <div className={`JefePlanCard ${updating ? "is-updating" : ""}`}>
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="start" gap="300">
+          <BlockStack gap="150">
+            <Badge tone="attention">Needs your OK</Badge>
+            <Text as="h2" variant="headingLg">
+              {recommendation.title}
+            </Text>
+            <Text as="p">{recommendation.summary}</Text>
+          </BlockStack>
+          <Badge tone={planConfidenceTone(recommendation.confidence)}>
+            {planConfidenceLabel(recommendation.confidence)}
+          </Badge>
+        </InlineStack>
+
+        <div className="JefePlanStartToday">
+          <Text as="p" fontWeight="bold">
+            Start today
+          </Text>
+          <Text as="p">{recommendation.startToday}</Text>
+        </div>
+
+        <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+          <PlanInfoBlock title="Why this action" body={recommendation.whyThisAction} />
+          <PlanInfoBlock title="Why now" body={recommendation.whyNow} />
+        </InlineGrid>
+
+        <BlockStack gap="200">
+          <Text as="p" fontWeight="bold">
+            How to carry it out
+          </Text>
+          <div className="JefePlanSteps">
+            {steps.map((step, index) => (
+              <div className="JefePlanStep" key={`${step.title}-${index}`}>
+                <span className="JefePlanStepNumber">{index + 1}</span>
+                <BlockStack gap="050">
+                  <Text as="p" fontWeight="semibold">
+                    {step.title}
+                  </Text>
+                  <Text as="p" tone="subdued">
+                    {step.description}
+                  </Text>
+                </BlockStack>
+              </div>
+            ))}
+          </div>
+        </BlockStack>
+
+        <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+          <PlanInfoBlock
+            title="Expected benefit"
+            body={recommendation.expectedBenefit}
+          />
+          <PlanInfoBlock
+            title="Success signal"
+            body={[
+              successSignal.description,
+              successSignal.timeframe ? `Timeframe: ${successSignal.timeframe}` : null,
+              successSignal.target ? `Target: ${successSignal.target}` : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          />
+        </InlineGrid>
+
+        {recommendation.assumption || recommendation.caveat ? (
+          <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+            <BlockStack gap="100">
+              {recommendation.assumption ? (
+                <Text as="p" tone="subdued">
+                  Assumption: {recommendation.assumption}
+                </Text>
+              ) : null}
+              {recommendation.caveat ? (
+                <Text as="p" tone="subdued">
+                  Caveat: {recommendation.caveat}
+                </Text>
+              ) : null}
+            </BlockStack>
+          </Box>
+        ) : null}
+
+        <Button
+          variant="plain"
+          onClick={() => setOpen((value) => !value)}
+          ariaExpanded={open}
+          ariaControls={`plan-evidence-${recommendation.id}`}
+        >
+          Why Jefe thinks this
+        </Button>
+        <Collapsible
+          open={open}
+          id={`plan-evidence-${recommendation.id}`}
+          transition={{ duration: "150ms", timingFunction: "ease" }}
+        >
+          <BlockStack gap="200">
+            {evidence.map((item) => (
+              <Box
+                key={item.id}
+                padding="300"
+                background="bg-surface-secondary"
+                borderRadius="200"
+              >
+                <BlockStack gap="100">
+                  <Text as="p" fontWeight="semibold">
+                    {item.title}
+                  </Text>
+                  <Text as="p" tone="subdued">
+                    {item.value}
+                  </Text>
+                  {item.evidenceSummary ? (
+                    <Text as="p" tone="subdued">
+                      {item.evidenceSummary}
+                    </Text>
+                  ) : null}
+                  <Text as="p" tone="subdued">
+                    {item.sourceLabel}
+                  </Text>
+                </BlockStack>
+              </Box>
+            ))}
+          </BlockStack>
+        </Collapsible>
+      </BlockStack>
+    </div>
+  );
+}
+
+function PlanInfoBlock({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="JefePlanInfoBlock">
+      <BlockStack gap="100">
+        <Text as="p" fontWeight="bold">
+          {title}
+        </Text>
+        <Text as="p" tone="subdued">
+          {body}
+        </Text>
+      </BlockStack>
+    </div>
   );
 }
 
@@ -3107,7 +3674,9 @@ function StatusBadge({ status }: { status: string }) {
 
 function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
   if (step === "connect") return "Connect";
+  if (step === "channels") return "Channels";
   if (step === "goals") return "Goals";
+  if (step === "plan") return "Plan";
   return "Insights";
 }
 
@@ -3161,6 +3730,20 @@ function shouldPollMerchantGoals(
   );
 }
 
+function shouldPollMerchantPlan(
+  plan: Awaited<ReturnType<typeof getMerchantPlanExperience>> | null,
+) {
+  if (!plan) return false;
+  const currentStatus = plan.currentRun?.status;
+  const jobStatus = plan.activeJob?.status;
+  return (
+    currentStatus === PLAN_RUN_STATUS.queued ||
+    currentStatus === PLAN_RUN_STATUS.running ||
+    jobStatus === "queued" ||
+    jobStatus === "running"
+  );
+}
+
 function isGoalDocumentConversationMessage(message: {
   role: string;
   structuredOperation?: unknown;
@@ -3185,6 +3768,31 @@ function merchantGoalErrorCopy(run: { safeErrorCode?: string | null } | null) {
     return "The model took too long to respond. You can retry without losing current setup progress.";
   }
   return "The goal job failed safely. I have not shown any untrusted or sample goals.";
+}
+
+function merchantPlanErrorCopy(run: { safeErrorCode?: string | null } | null) {
+  if (run?.safeErrorCode === "llm_disabled") {
+    return "Plan generation is currently disabled, so I cannot choose a trustworthy first move yet.";
+  }
+  if (run?.safeErrorCode === "invalid_model_output") {
+    return "The model response did not pass Jefe's grounding checks, so I rejected it.";
+  }
+  if (run?.safeErrorCode === "llm_timeout") {
+    return "The model took too long to respond. You can retry without losing current setup progress.";
+  }
+  return "The Plan job failed safely. I have not shown any untrusted or sample recommendation.";
+}
+
+function planConfidenceLabel(confidence: string) {
+  if (confidence === "strong") return "Strong support";
+  if (confidence === "reasonable") return "Reasonable support";
+  return "Emerging support";
+}
+
+function planConfidenceTone(confidence: string) {
+  if (confidence === "strong") return "success" as const;
+  if (confidence === "reasonable") return "info" as const;
+  return "attention" as const;
 }
 
 function memoryStatusLabel(status: string) {
@@ -3470,11 +4078,12 @@ function normalizeOnboardingStep(
 ): (typeof ONBOARDING_STEPS)[number] {
   if (!memoryReady || !backfillComplete) return "connect";
   const requested = url.searchParams.get("step");
+  if (requested === "channels" || url.searchParams.get("channelProvider")) {
+    return "channels";
+  }
   if (requested === "insights") return "insights";
   if (requested === "goals") return "goals";
-  if (requested === "channels" || url.searchParams.get("channelProvider")) {
-    return "insights";
-  }
+  if (requested === "plan") return "plan";
   return "connect";
 }
 

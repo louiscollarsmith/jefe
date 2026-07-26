@@ -464,6 +464,7 @@ test("Merchant Memory refresh jobs are debounced, retryable and process without 
     });
     const processed = await processNextBackfillJob(prisma, {
       logger: silentLogger,
+      shopId: shop.id,
     });
     const catalogBeliefs = await prisma.merchantMemoryBelief.count({
       where: { merchantId: merchant.id, category: "catalog" },

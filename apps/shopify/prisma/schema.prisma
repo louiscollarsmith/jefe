@@ -57,6 +57,8 @@ model Merchant {
   merchantInsightFindings       MerchantInsightFinding[]
   merchantGoalRuns              MerchantGoalRun[]
   merchantGoalHorizons          MerchantGoalHorizon[]
+  merchantPlanRuns              MerchantPlanRun[]
+  merchantPlanRecommendations   MerchantPlanRecommendation[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -112,6 +114,8 @@ model Shop {
   merchantInsightFindings       MerchantInsightFinding[]
   merchantGoalRuns              MerchantGoalRun[]
   merchantGoalHorizons          MerchantGoalHorizon[]
+  merchantPlanRuns              MerchantPlanRun[]
+  merchantPlanRecommendations   MerchantPlanRecommendation[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -859,4 +863,76 @@ model MerchantGoalHorizon {
   @@index([shopId, horizon])
   @@index([memoryBeliefId])
   @@map("merchant_goal_horizons")
+}
+
+model MerchantPlanRun {
+  id                    String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId            String                       @map("merchant_id") @db.Uuid
+  shopId                String                       @map("shop_id") @db.Uuid
+  status                String                       @default("queued")
+  snapshotVersion       String                       @map("snapshot_version")
+  snapshotHash          String                       @map("snapshot_hash")
+  relevantBeliefIds     String[]                     @default([]) @map("relevant_belief_ids")
+  insightRunId          String?                      @map("insight_run_id") @db.Uuid
+  goalRunId             String?                      @map("goal_run_id") @db.Uuid
+  promptVersion         String                       @map("prompt_version")
+  schemaVersion         String                       @map("schema_version")
+  provider              String?
+  modelIdentifier       String?                      @map("model_identifier")
+  safeErrorCode         String?                      @map("safe_error_code")
+  lastError             String?                      @map("last_error")
+  startedAt             DateTime?                    @map("started_at") @db.Timestamptz(6)
+  completedAt           DateTime?                    @map("completed_at") @db.Timestamptz(6)
+  failedAt              DateTime?                    @map("failed_at") @db.Timestamptz(6)
+  supersededAt          DateTime?                    @map("superseded_at") @db.Timestamptz(6)
+  result                Json                         @default("{}") @map("result_json")
+  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant              Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  recommendation        MerchantPlanRecommendation?
+
+  @@unique([shopId, snapshotHash, promptVersion, schemaVersion])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([snapshotHash])
+  @@index([insightRunId])
+  @@index([goalRunId])
+  @@map("merchant_plan_runs")
+}
+
+model MerchantPlanRecommendation {
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId                String          @unique @map("run_id") @db.Uuid
+  merchantId           String          @map("merchant_id") @db.Uuid
+  shopId               String          @map("shop_id") @db.Uuid
+  title                String
+  summary              String
+  primaryGoalId        String          @map("primary_goal_id")
+  supportingGoalIds    String[]        @default([]) @map("supporting_goal_ids")
+  whyThisAction        String          @map("why_this_action")
+  whyNow               String          @map("why_now")
+  startToday           String          @map("start_today")
+  executionSteps       Json            @default("[]") @map("execution_steps_json")
+  successSignal        Json            @default("{}") @map("success_signal_json")
+  expectedBenefit      String          @map("expected_benefit")
+  supportingBeliefIds  String[]        @default([]) @map("supporting_belief_ids")
+  supportingInsightIds String[]        @default([]) @map("supporting_insight_ids")
+  confidence           String
+  assumption           String?
+  caveat               String?
+  reviewStatus         String          @default("proposed") @map("review_status")
+  acceptedAt           DateTime?       @map("accepted_at") @db.Timestamptz(6)
+  rejectedAt           DateTime?       @map("rejected_at") @db.Timestamptz(6)
+  completedAt          DateTime?       @map("completed_at") @db.Timestamptz(6)
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  run                  MerchantPlanRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  merchant             Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, reviewStatus, createdAt])
+  @@index([shopId, reviewStatus, createdAt])
+  @@index([primaryGoalId])
+  @@map("merchant_plan_recommendations")
 }
