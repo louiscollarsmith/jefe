@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Added Microsoft Teams and iMessage as coming-soon channel options in the Channels onboarding step alongside Slack and WhatsApp, and updated the step copy to cover multiple channels.
+- Capitalised onboarding step-navigation buttons ("Continue to Goals", "Back to Goals") for consistent step naming.
 - Added a root handover guide and refreshed current-state documentation so operators and coding agents can see the active Merchant Memory onboarding flow without relying on old reset notes.
 - Moved reset-era repository and database audits into the historical archive so they are no longer mistaken for current product guidance.
 

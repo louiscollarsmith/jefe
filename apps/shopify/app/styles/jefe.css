@@ -471,6 +471,12 @@
   border: 1px solid #ebe5df;
 }
 
+.JefeChannelIcon.is-teams,
+.JefeChannelIcon.is-imessage {
+  background: #fff;
+  border: 1px solid #ebe5df;
+}
+
 .JefeChannelLogo {
   display: block;
   height: 44px;

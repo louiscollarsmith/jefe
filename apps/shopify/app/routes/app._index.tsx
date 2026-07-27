@@ -1171,8 +1171,8 @@ function ChannelsStep({
         </Text>
         <h1 className="JefeDisplayHeading">How should I reach you?</h1>
         <Text as="p" tone="subdued" alignment="center">
-          Connect Slack now if you want Jefe updates there. You can also skip
-          this and choose a channel later.
+          Pick any — I send recommendations and check in wherever you work.
+          Add or change these anytime.
         </Text>
       </BlockStack>
 
@@ -1186,6 +1186,12 @@ function ChannelsStep({
           active={activeProvider === "slack"}
           selectUrl={slackUrl}
         />
+        <ComingSoonChannelCard
+          name="Teams"
+          description="Message Jefe from Microsoft Teams."
+          iconSrc="/channels/teams.svg"
+          iconClass="is-teams"
+        />
         <ChannelCard
           provider="whatsapp"
           name="WhatsApp"
@@ -1196,6 +1202,12 @@ function ChannelsStep({
           selectUrl={whatsappUrl}
           unavailable={WHATSAPP_COMING_SOON}
           unavailableLabel="Coming soon"
+        />
+        <ComingSoonChannelCard
+          name="iMessage"
+          description="Reach Jefe from iMessage."
+          iconSrc="/channels/imessage.svg"
+          iconClass="is-imessage"
         />
       </div>
 
@@ -1493,7 +1505,7 @@ function InsightsStep({
         <Form method="post">
           <input type="hidden" name="intent" value="insights.finish" />
           <Button submit variant="primary">
-            Continue to goals
+            Continue to Goals
           </Button>
         </Form>
       </InlineStack>
@@ -1898,7 +1910,7 @@ function PlanStep({
                 )
               }
             >
-              Back to goals
+              Back to Goals
             </Button>
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
@@ -1934,7 +1946,7 @@ function PlanStep({
                 )
               }
             >
-              Back to goals
+              Back to Goals
             </Button>
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
@@ -2742,6 +2754,35 @@ function ChannelCard({
     >
       {content}
     </a>
+  );
+}
+
+function ComingSoonChannelCard({
+  name,
+  description,
+  iconSrc,
+  iconClass,
+}: {
+  name: string;
+  description: string;
+  iconSrc: string;
+  iconClass: string;
+}) {
+  return (
+    <div className="JefeChannelCard is-unavailable" aria-disabled="true">
+      <span className={`JefeChannelIcon ${iconClass}`} aria-hidden="true">
+        <img
+          className="JefeChannelLogo"
+          src={iconSrc}
+          alt=""
+          width={44}
+          height={44}
+        />
+      </span>
+      <span className="JefeChannelName">{name}</span>
+      <span className="JefeChannelDescription">{description}</span>
+      <span className="JefeChannelActionText">Coming soon</span>
+    </div>
   );
 }
 
