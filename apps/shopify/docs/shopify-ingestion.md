@@ -1,6 +1,14 @@
 # Shopify Evidence Ingestion
 
-Shopify ingestion is currently limited to the evidence layer needed for future Merchant Memory work: products, orders, order line items, refunds, customer identities derived from orders, and inventory levels. The retained app scope set is `read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations`.
+Shopify ingestion provides the source evidence used by Merchant Memory. It currently imports products, variants, orders, order line items, refunds, customer identities derived from orders and inventory levels.
+
+The configured Shopify scope set is:
+
+```text
+read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations
+```
+
+Write scopes are configured for future approved action work and synthetic/disposable-store tooling. The current merchant UI must not directly execute Shopify writes.
 
 ## Admin GraphQL Client
 
@@ -18,7 +26,8 @@ The worker then:
 - upserts `products`, `variants`, `orders`, `order_line_items`, `refunds`, `customer_identities` and `inventory_levels`;
 - marks product, order, customer, refund and inventory domains complete;
 - finalises the shop as `ready` when evidence import completed;
-- queues the first Merchant Memory rebuild as independent retryable work.
+- queues Merchant Memory rebuild as independent retryable work;
+- processes Merchant Insights, Goals and Plan jobs when those onboarding steps request them.
 
 Manual/dev backfill can run:
 
@@ -37,11 +46,9 @@ Backfill progress is stored in:
 - `backfill_jobs`
 - `merchant_memory_refresh_runs`
 
-The web service loop processes one queued job at a time. Failed jobs store `last_error` and can be retried from the Dev page.
-
 Merchant Memory build progress is tracked under the `merchant_memory` backfill-status domain. A failed memory build does not change the completed raw Shopify evidence backfill result.
 
-Bulk operation ingestion is intentionally not retained in this reset because the previous implementation was coupled to old product and derived-metric paths. A future scaling ticket should restore bulk evidence import without COGS, dashboards or recommendation assumptions.
+Bulk operation ingestion is not currently retained. A future scaling ticket should restore bulk evidence import without old COGS, dashboard or recommendation assumptions.
 
 ## Webhooks
 

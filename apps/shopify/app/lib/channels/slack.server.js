@@ -1,7 +1,5 @@
 // @ts-check
 
-import crypto from "node:crypto";
-
 import { ChannelServiceError, normaliseProviderError } from "./errors.server.js";
 
 const SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize";
@@ -196,21 +194,6 @@ export class SlackChannelAdapter {
   }
 }
 
-/**
- * @param {string} rawBody
- * @param {string | null | undefined} timestamp
- * @param {string | null | undefined} signature
- * @param {string | null | undefined} signingSecret
- */
-export function verifySlackRequestSignature(rawBody, timestamp, signature, signingSecret) {
-  if (!rawBody || !timestamp || !signature || !signingSecret) return false;
-  const ageSeconds = Math.abs(Date.now() / 1000 - Number(timestamp));
-  if (!Number.isFinite(ageSeconds) || ageSeconds > 300) return false;
-  const base = `v0:${timestamp}:${rawBody}`;
-  const expected = `v0=${crypto.createHmac("sha256", signingSecret).update(base).digest("hex")}`;
-  return safeEqual(expected, signature);
-}
-
 /** @param {Record<string, string | undefined>} env */
 function slackScopes(env) {
   const configured = env.SLACK_OAUTH_SCOPES?.split(",").map((scope) => scope.trim()).filter(Boolean);
@@ -261,14 +244,4 @@ function parseScopeList(scopes) {
 /** @param {string} value */
 function escapeSlackText(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** @param {string} actual @param {string} expected */
-function safeEqual(actual, expected) {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    crypto.timingSafeEqual(actualBuffer, expectedBuffer)
-  );
 }

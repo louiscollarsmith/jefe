@@ -8,18 +8,18 @@ The product is not an analytics dashboard, chatbot or generic autonomous agent. 
 
 ## Authoritative Context
 
+- `HANDOVER.md` - practical current-state handover for Claude and non-technical operators.
 - `context/` - current product and architecture context.
-- `docs/repository_reset_audit.md` - audit for the blank-canvas repository reset.
-- `docs/merchant_memory_data_model.md` - target Merchant Memory data model.
+- `docs/merchant_memory_data_model.md` - current Merchant Memory data model.
 - `prompts/` - active prompts for memory synthesis, revision, questions, recommendations and consistency review.
 
-Historical planning material from the previous product direction is archived under `docs/archive/previous_product_direction/`.
+Historical planning material and reset audits are archived under `docs/archive/`.
 
 ## Application
 
 The main app lives in `apps/shopify`.
 
-It currently includes the blank-canvas Shopify evidence layer:
+It currently includes:
 
 - Shopify embedded app shell.
 - Shopify OAuth, session storage and install state.
@@ -27,6 +27,13 @@ It currently includes the blank-canvas Shopify evidence layer:
 - Persisted Shopify products, variants, orders, order line items, refunds, customer identities and inventory levels.
 - HMAC-verified product, order, refund and inventory webhooks.
 - Source event ledger for backfill and webhook dedupe.
+- Deterministic Merchant Memory beliefs, evidence, history and refresh runs.
+- Store Understanding LLM inference, with lower authority than merchant-confirmed memory.
+- Onboarding through Connect, optional Channels, Insights, Goals and Plan.
+- A merchant-facing Merchant Memory view after onboarding.
+- Dev and Changelog pages.
+
+The standalone waitlist site lives in `apps/marketing`. The synthetic Shopify operator tool lives in `tools/synthetic-shopify`.
 
 ## Local Development
 
@@ -51,4 +58,4 @@ npm test
 
 ## Current Execution Focus
 
-Current repository state is intentionally minimal. The next product work should build Merchant Memory on top of Shopify commerce evidence without inheriting old Daily Brief, analytics, COGS, Klaviyo or action-safety assumptions.
+Improve the first merchant onboarding path that creates, reviews, corrects and uses durable Merchant Memory. Do not inherit old Daily Brief, analytics, COGS dashboard, Klaviyo Winback or Watchdog assumptions from archived material.

@@ -4,54 +4,6 @@
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ shopId: string; metadata?: Record<string, unknown> }} input
  */
-export async function completeInsightsOnboarding(prisma, input) {
-  const shop = await prisma.shop.findUniqueOrThrow({
-    where: { id: input.shopId },
-    select: { onboardingMetadata: true },
-  });
-  return prisma.shop.update({
-    where: { id: input.shopId },
-    data: {
-      onboardingCompletedAt: new Date(),
-      onboardingMetadata: /** @type {any} */ (
-        mergeJsonObject(shop.onboardingMetadata, {
-          completedStep: "insights",
-          completedSource: "jefe_onboarding_insights",
-          ...(input.metadata ?? {}),
-        })
-      ),
-    },
-  });
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopId: string; metadata?: Record<string, unknown> }} input
- */
-export async function completeGoalsOnboarding(prisma, input) {
-  const shop = await prisma.shop.findUniqueOrThrow({
-    where: { id: input.shopId },
-    select: { onboardingMetadata: true },
-  });
-  return prisma.shop.update({
-    where: { id: input.shopId },
-    data: {
-      onboardingCompletedAt: new Date(),
-      onboardingMetadata: /** @type {any} */ (
-        mergeJsonObject(shop.onboardingMetadata, {
-          completedStep: "goals",
-          completedSource: "jefe_onboarding_goals",
-          ...(input.metadata ?? {}),
-        })
-      ),
-    },
-  });
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopId: string; metadata?: Record<string, unknown> }} input
- */
 export async function completePlanOnboarding(prisma, input) {
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: input.shopId },

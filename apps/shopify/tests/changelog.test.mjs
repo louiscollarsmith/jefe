@@ -70,16 +70,21 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   assert.ok(
     entries[0].sections.some((section) =>
       section.items.some((item) =>
-        item.includes("Connect Slack opens Slack authorisation"),
+        item.includes("root handover guide"),
       ),
     ),
   );
   assert.ok(
-    entries.some((entry) =>
-      entry.sections.some((section) =>
-        section.items.some((item) =>
-          item.includes("synthetic Shopify realistic and load profiles"),
-        ),
+    entries[0].sections.some((section) =>
+      section.items.some((item) =>
+        item.includes("verified unused helper code"),
+      ),
+    ),
+  );
+  assert.ok(
+    entries[0].sections.some((section) =>
+      section.items.some((item) =>
+        item.includes("Connect Slack opens Slack authorisation"),
       ),
     ),
   );

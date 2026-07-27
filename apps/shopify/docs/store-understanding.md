@@ -2,13 +2,13 @@
 
 Store Understanding is the cautious LLM pass that runs after deterministic Merchant Memory has been rebuilt. Its job is to form provisional business-context interpretations from stored Shopify evidence without promoting those interpretations to merchant-confirmed fact.
 
-## Deterministic facts vs LLM inferences
+## Deterministic Facts vs LLM Inferences
 
 Deterministic Merchant Memory is calculated by application code from stored Shopify records. Examples include product counts, average order value, repeat customer rate and inventory counts.
 
 Store Understanding creates lower-authority `inferred` beliefs with `derivation_version = store-understanding-v1`, `source_type = llm_store_analysis` and `evidence_type = model_inference`. These beliefs never overwrite merchant-confirmed or merchant-corrected beliefs, and their precedence is lower than deterministic observations.
 
-## Input-summary construction
+## Input Summary Construction
 
 `buildStoreUnderstandingSummary` builds a bounded, privacy-safe JSON summary from existing stored data:
 
@@ -20,7 +20,7 @@ Store Understanding creates lower-authority `inferred` beliefs with `derivation_
 
 The summary excludes customer names, emails, phone numbers, addresses, raw order payloads and raw customer records. Product and variant samples are deterministically capped so prompt input remains bounded.
 
-## Inference registry
+## Inference Registry
 
 The model can only return keys registered in `store-understanding-registry.server.js`. Each entry defines category, value type, allowed enum values where applicable, minimum evidence, confidence ceiling and merchant confirmability/correctability.
 
@@ -32,7 +32,7 @@ To add an inference type:
 2. Add or update tests for value validation and confidence capping.
 3. Ensure the key does not conflict with deterministic observed facts unless the precedence behaviour is explicitly intended.
 
-## Structured output
+## Structured Output
 
 The LLM response must match `STORE_UNDERSTANDING_OUTPUT_SCHEMA`:
 
@@ -53,7 +53,7 @@ Model confidence is not trusted directly. The app caps confidence by:
 
 Low-confidence accepted beliefs can exist as provisional context, but they remain lower-authority than deterministic observations and merchant-supplied corrections.
 
-## Evidence and provenance
+## Evidence And Provenance
 
 Accepted beliefs store evidence with:
 
@@ -66,21 +66,17 @@ Accepted beliefs store evidence with:
 
 The app does not store hidden chain-of-thought or unrestricted model reasoning.
 
-## Precedence
-
-Store Understanding inferences use `BELIEF_PRECEDENCE.llmInference`, below deterministic system inference, direct observations, merchant confirmation, merchant correction and House Rules. Merchant-authoritative beliefs are skipped during Store Understanding writes. Older Store Understanding inferences can be updated or obsoleted on rerun.
-
-## Refresh and idempotency
+## Refresh And Idempotency
 
 Each run is recorded in `store_understanding_runs` with status, trigger, input summary version/hash, model, candidate/accepted/rejected/obsolete counts, duration and error summary. Unchanged completed or model-disabled input summaries are skipped unless the caller forces a retry.
 
 Reruns update active Store Understanding beliefs when values change, preserve one active row per key, and obsolete older Store Understanding inferences that are no longer supported.
 
-## Fallback behaviour
+## Fallback Behaviour
 
 If Store Understanding is disabled or unavailable, it records a safe run state and onboarding continues using deterministic Merchant Memory.
 
-## Privacy boundaries
+## Privacy Boundaries
 
 Store Understanding is server-side only. It sends bounded catalogue and aggregate commerce summaries to the model, not raw customer records or raw order payloads. General logs record run metadata and usage, not full prompts or full model responses.
 

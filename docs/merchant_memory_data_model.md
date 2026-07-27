@@ -1,63 +1,68 @@
 # Merchant Memory Data Model
 
-## Recommendation
+This document describes the current implementation, not a future target schema.
 
-Use a hybrid model.
+Merchant Memory is stored in Postgres through Prisma as queryable rows for beliefs, evidence, history, refresh runs, conversations, open questions, insight runs, goal runs and plan runs. The current app does not store a single versioned JSON memory document; the durable memory surface is built from these relational records.
 
-Store Merchant Memory as versioned JSON document snapshots for review, rendering and reconstruction, while storing independently queryable relational records for evidence, claims, corrections, open questions and recommendation/action provenance.
+## Core Records
 
-This prevents prompt output from becoming the only source of truth and makes the important pieces queryable without forcing the entire memory into a rigid schema too early.
+| Record | Purpose |
+| --- | --- |
+| `merchants` | Business tenant. |
+| `shops` | Connected Shopify store, onboarding state and backfill readiness. |
+| `connector_accounts` | Durable connector account metadata and granted scopes. Shopify tokens remain in `Session`. |
+| `ledger_events` | Source event ledger for backfill/webhook idempotency, raw source audit and provenance. |
+| Commerce tables | Shopify products, variants, orders, line items, refunds, customer identities and inventory levels. |
+| `merchant_memory_beliefs` | Current and historical structured memory statements with key, category, value, status, confidence, precedence and derivation version. |
+| `merchant_memory_evidence` | Evidence/provenance for beliefs without copying raw Shopify payloads or customer PII into memory evidence. |
+| `merchant_memory_belief_history` | Append-only history of value, status, correction, confirmation, supersession and obsolescence changes. |
+| `merchant_memory_refresh_runs` | Deterministic memory rebuild attempts and diagnostics. |
+| `store_understanding_runs` | LLM Store Understanding attempts, accepted inferences and safe failure states. |
+| `merchant_memory_conversations` and messages | Conversation infrastructure used by Goals coaching and dormant generic memory-chat service code. |
+| `merchant_memory_open_questions` | Explicit unresolved questions that can improve memory or recommendations. |
+| `merchant_insight_runs` and findings | Bounded, validated insight generation from active Merchant Memory. |
+| `merchant_goal_runs` and horizons | Generated 3-, 6- and 12-month objectives with merchant coaching/document context. |
+| `merchant_plan_runs` and recommendations | One generated first move derived from memory, insights and goals. This is a recommendation record, not external execution. |
+| Channel records | Slack and future WhatsApp connection state, encrypted credentials, OAuth/verification state and test-message delivery records. |
 
-## Entities
+## Memory Lifecycle
 
-| Entity | Purpose | First merchant? |
-| --- | --- | --- |
-| Merchant | Commercial account and business owner. | Required |
-| Merchant integration/source | Connected commerce source such as Shopify/Klaviyo. Existing `shops` and `connector_accounts`. | Required |
-| Source record/event | Raw and canonical external records. Existing `ledger_events` plus commerce tables. | Required |
-| Deterministic fact/feature | Calculated sales, margin, inventory, repeat-rate and product metrics. Initially represented as evidence items and service payloads. | Required |
-| Evidence item | Queryable fact or source-backed observation used by claims. | Required |
-| Merchant memory document | Stable memory container for a merchant/shop. | Required |
-| Merchant memory version | Immutable-ish version snapshot of the document. | Required |
-| Memory section | Section key inside the versioned document and claims. | Required |
-| Claim/belief | Atomic statement with status, confidence and provenance. | Required |
-| Claim status | Distinguishes observed fact, merchant-confirmed fact, model inference, unresolved, rejected and superseded. | Required |
-| Provenance | Links evidence/claims to ledger events, source records and calculations. | Required |
-| Merchant correction/confirmation | Merchant-authored update that supersedes inference or confirms a claim. | Required |
-| Open question | Unresolved information needed to improve memory. | Required |
-| Recommendation | Proposed action/explanation generated from confirmed memory and evidence. Existing `actions` retained. | Later in pilot |
-| Action provenance | Existing action/evidence/rules/execution records. | Later in pilot |
+Shopify evidence is imported from backfills and webhooks into canonical commerce tables and `ledger_events`.
 
-## Key Fields And Lifecycle
+Deterministic Merchant Memory rebuilds compute facts from canonical Shopify records. Calculated beliefs publish only when applicability and minimum-data rules are met. Skipped derivations are recorded on the refresh run rather than creating misleading zero-value beliefs.
 
-`merchant_memory_documents` hold `merchant_id`, optional `shop_id`, status, title, current version number/id and metadata.
+Store Understanding runs after deterministic memory. It sends bounded, privacy-safe summaries to the configured LLM provider and can create lower-authority inferred beliefs. These inferences cannot overwrite merchant-confirmed or merchant-corrected memory.
 
-`merchant_memory_versions` hold document id, version number, status, generation source, full `document_json`, source snapshot metadata and timestamps. A new version is created for initial synthesis, merchant correction, new evidence refresh or consistency repair.
+Insights, Goals and Plan are generated from active Merchant Memory. Their outputs are validated against allowed IDs, grounded evidence and product rules before persistence.
 
-`merchant_memory_claims` hold version id, section key, claim type, status, confidence, statement, structured value, evidence summary, supersession link and timestamps. Claims are never silently promoted: a model inference remains a model inference until a merchant correction/confirmation or deterministic observation changes its status.
+Merchant corrections and confirmations create history and higher-precedence memory. Later deterministic refreshes must not silently overwrite merchant-authoritative rows.
 
-`merchant_memory_evidence_items` hold deterministic or source-backed evidence with type, source table/record, ledger event link, summary, value JSON and observation/computation timestamps.
+## Status And Authority
 
-`merchant_memory_claim_evidence` links claims to evidence items and ledger events with relationship metadata.
+Current belief statuses include:
 
-`merchant_memory_corrections` hold merchant confirmations, corrections, rejections and answers. Corrections create a new memory version and may supersede earlier claims.
+- `inferred`
+- `merchant_confirmed`
+- `merchant_corrected`
+- `superseded`
+- `obsolete`
 
-`merchant_memory_open_questions` hold section, prompt, reason, priority, status and answer/correction links.
+Precedence is intentionally explicit. Merchant corrections outrank merchant confirmations, which outrank system inference. Store Understanding model inferences have lower authority than deterministic and merchant-originated memory.
 
-## Answers To Explicit Questions
+Never promote a model inference to fact just because it was generated confidently. The application controls persistence and status changes.
 
-Should memory be relational, JSON, or hybrid? Hybrid. JSON versions keep the merchant-facing document coherent; relational claims/evidence/corrections keep truth and provenance queryable.
+## Evidence And Privacy
 
-Which records must be queryable independently? Evidence items, claims, claim statuses, open questions, merchant corrections, memory versions and recommendations/actions.
+Evidence records should identify source type, source reference, evidence type, summary, value metadata and observation/evaluation timestamps.
 
-How are claims connected to evidence? Through `merchant_memory_claim_evidence`, with optional direct ledger/source references on evidence items.
+Evidence should be specific enough to explain a belief, but must not copy customer names, emails, phone numbers, addresses or other raw customer PII into memory evidence. Use aggregate customer evidence where possible.
 
-How is a merchant correction represented? As an append-only correction row with actor, correction type, original claim/version references, corrected content and status. It creates or contributes to a new memory version.
+## Recommendation And Action Boundary
 
-How do we prevent inference becoming fact? Status is explicit. `model_inference` can only become `merchant_confirmed_fact` through merchant action or `observed_fact` through deterministic source evidence. The application, not the LLM, controls persistence.
+The current Plan step persists one recommended first move. It can say what Jefe would start with and why, but it does not execute external changes.
 
-How do we rebuild memory from source evidence? Recompute deterministic features from canonical commerce records/ledger, regenerate evidence items, replay merchant corrections and create a new memory version. Older versions remain available.
+Future external writes require typed adapters, idempotency keys, previews, merchant approval gates and blast-radius caps. Do not let an LLM write directly to Shopify, Slack, WhatsApp or any third-party system.
 
-What happens when deterministic facts change? Create new evidence items or mark previous evidence superseded in metadata, then create claims that supersede outdated claims. Do not mutate historical versions.
+## Migration Policy
 
-Minimum viable pilot schema: memory documents, versions, evidence items, claims, claim-evidence links, corrections and open questions. Existing `actions`, `provenance_links`, `ledger_events`, commerce tables, goals and House Rules remain in place.
+Keep Prisma migration history intact. Old migration names may mention retired Daily Brief, COGS, Klaviyo or action-safety work because they are historical deployment records. Do not edit, squash or delete migrations unless a founder explicitly approves a database reset.
