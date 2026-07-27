@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27
+
+### Fixed
+
+- Fixed production Slack connection from Shopify onboarding so Connect Slack opens Slack authorisation in the popup and immediately shows the merchant that authorisation has started.
+
 ## 2026-07-26
 
 ### Changed
