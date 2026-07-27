@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-27
+
+### Changed
+
+- Added a root handover guide and refreshed current-state documentation so operators and coding agents can see the active Merchant Memory onboarding flow without relying on old reset notes.
+- Moved reset-era repository and database audits into the historical archive so they are no longer mistaken for current product guidance.
+
+### Removed
+
+- Removed verified unused helper code and retired onboarding completion exports that were no longer called by the Shopify app.
+
 ## 2026-07-26
 
 ### Changed

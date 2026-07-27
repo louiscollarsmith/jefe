@@ -4,6 +4,8 @@
 
 `staging` is the only hosted environment for Jefe right now. It is not production.
 
+The active staged Shopify product is the Merchant Memory onboarding app: Connect, optional Channels, Insights, Goals, Plan and the Merchant Memory view. It is not the old Daily Brief/operator dashboard and it is no longer only the reset-era evidence layer.
+
 Flow:
 
 1. Push or merge to `main`.
@@ -91,13 +93,32 @@ SESSION_SECRET=
 
 ENABLE_DEV_TOOLS=true
 ENABLE_SHOPIFY_BACKFILL_LOOP=true
+SHOPIFY_BACKFILL_INITIAL_DELAY_MS=5000
+
+LLM_ENABLED=true
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-3.1-flash-lite
+GEMINI_API_KEY=
+LLM_TIMEOUT_MS=8000
+LLM_MAX_INPUT_TOKENS=6000
+LLM_MAX_OUTPUT_TOKENS=900
+LLM_MAX_RETRIES=1
+
+CHANNEL_CREDENTIAL_ENCRYPTION_SECRET=
+CHANNEL_VERIFICATION_SECRET=
+SLACK_CLIENT_ID=
+SLACK_CLIENT_SECRET=
+SLACK_REDIRECT_URI=
+SLACK_OAUTH_SCOPES=chat:write,chat:write.public,channels:read,groups:read
 ```
 
 Notes:
 
 - The app currently reads Shopify scopes from `SCOPES`, not `SHOPIFY_SCOPES`.
 - `SESSION_SECRET` is listed for staging hygiene, but the current app code does not read it yet.
-- The app requests evidence-read scopes plus product, customer, order, inventory and location write scopes for approved Shopify action previews and execution.
+- The app requests evidence-read scopes plus product, customer, order, inventory and location write scopes for future approved action previews and execution.
+- The current merchant UI must not directly execute Shopify writes. External writes still require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.
+- Slack is the active channel connector. WhatsApp env vars may exist for future work, but WhatsApp is currently marked coming soon in the app UI.
 
 ## Shopify app
 
@@ -202,6 +223,7 @@ Smoke test after deploy:
 3. Open the Shopify dev store.
 4. Open the embedded `Jefe Staging` app.
 5. Confirm the app authenticates and loads the latest navigation.
+6. Walk through onboarding on a development store: Connect, optional Channels, Insights, Goals, Plan, then Merchant Memory.
 
 ## Matt workflow
 
@@ -238,4 +260,8 @@ If a migration caused the issue, write a forward-fix migration rather than manua
 
 ## Safety defaults
 
-Staging uses the read-only evidence-layer app foundation. It should contain development-store evidence data only and should not be connected to production merchant data.
+Staging should contain development-store evidence data only and should not be connected to production merchant data.
+
+LLM prompts must use bounded summaries, not production customer data. Do not commit secrets or paste real merchant/customer data into AI tools.
+
+Historical reset audits and the old Daily Brief/operator roadmap live under `docs/archive/` and are not current deployment instructions.

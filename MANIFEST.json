@@ -1,12 +1,13 @@
 {
   "pack": "jefe-merchant-memory-context",
-  "updated": "2026-07-22",
+  "updated": "2026-07-27",
   "authoritative_context": "context/",
   "central_product_object": "Merchant Memory",
   "current_objective": "Build the first merchant onboarding path that creates, reviews, corrects and uses a durable Merchant Memory.",
   "active_files": [
     "AGENTS.md",
     "CLAUDE.md",
+    "HANDOVER.md",
     "README.md",
     "context/00_north_star.md",
     "context/01_product_principles.md",
@@ -22,20 +23,21 @@
     "context/11_actions_and_autonomy.md",
     "context/12_mvp.md",
     "context/99_glossary.md",
-    "docs/repository_reorientation_audit.md",
     "docs/merchant_memory_data_model.md",
-    "docs/first_merchant_execution_plan.md",
+    "docs/ops/deployment_staging_railway_neon.md",
     "prompts/merchant_onboarding_synthesis.md",
     "prompts/merchant_memory_revision.md",
     "prompts/merchant_memory_question_generation.md",
     "prompts/merchant_recommendation.md",
     "prompts/merchant_memory_consistency_review.md"
   ],
-  "archive": "docs/archive/previous_product_direction/",
+  "archive": "docs/archive/",
   "shopify_app": "apps/shopify",
   "checks": [
     "cd apps/shopify && npm run typecheck",
     "cd apps/shopify && npm run lint",
-    "cd apps/shopify && npm test"
+    "cd apps/shopify && npm test",
+    "cd apps/shopify && npm run build",
+    "cd tools/synthetic-shopify && npm test"
   ]
 }

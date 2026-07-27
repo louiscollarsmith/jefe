@@ -21,11 +21,12 @@ Everything else exists to create, improve, inspect, correct or use that memory.
 Read in this order before coding:
 
 1. `AGENTS.md`
-2. `CLAUDE.md`
-3. `context/00_north_star.md`
-4. Relevant files in `context/`
+2. `HANDOVER.md`
+3. `CLAUDE.md`
+4. `context/00_north_star.md`
+5. Relevant files in `context/`
 
-Historical context and prompts live under `docs/archive/previous_product_direction/`. They are not authoritative unless a founder explicitly reactivates a specific idea in current instructions.
+Historical context, reset audits and previous product prompts live under `docs/archive/`. They are not authoritative unless a founder explicitly reactivates a specific idea in current instructions.
 
 ## Architecture Principles
 
@@ -43,7 +44,8 @@ Historical context and prompts live under `docs/archive/previous_product_directi
 ## Implementation Rules
 
 - Inspect existing code before replacing it.
-- Preserve useful Shopify ingestion, canonical commerce records, COGS, ledger, provenance, approval and action-safety infrastructure.
+- Preserve useful Shopify ingestion, canonical commerce records, ledger, provenance, approval and action-safety patterns where they currently exist.
+- Do not resurrect retired COGS dashboard, Daily Brief, Klaviyo Winback, Watchdog or old operator-roadmap code from archived material.
 - Do not expose production secrets or production customer data to AI tools.
 - Do not let any LLM directly mutate Shopify, Klaviyo or third-party systems.
 - External writes require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.

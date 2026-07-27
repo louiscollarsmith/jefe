@@ -72,22 +72,6 @@ export function evaluateConfidenceTemplate(template, params = {}) {
   }
 }
 
-/**
- * Compatibility export used by existing tests and callers.
- * @param {number} base
- * @param {unknown} sampleSize
- * @param {number} minimum
- * @param {number} full
- */
-export function sampleScore(base, sampleSize, minimum, full) {
-  const size = finiteNumber(sampleSize, 0);
-  if (size <= minimum) return clampConfidence(base * 0.9);
-  if (size >= full) return clampConfidence(Math.max(base, 0.95));
-  return clampConfidence(
-    base + ((Math.min(size, full) - minimum) / (full - minimum)) * (0.95 - base),
-  );
-}
-
 /** @param {unknown} value */
 export function clampConfidence(value) {
   return clamp(finiteNumber(value, 0.5), 0, 1);
