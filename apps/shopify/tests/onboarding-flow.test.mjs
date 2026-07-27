@@ -101,15 +101,23 @@ test("channel cards use app logos and expose connector panels on click", () => {
   assert.match(appIndexSource, /\/channels\/\$\{provider\}\.webp/);
   assert.match(appIndexSource, /className="JefeChannelLogo"/);
   assert.match(appIndexSource, /action=\{slackStartPath\(location\.search\)\}/);
-  assert.match(appIndexSource, /target="jefe-slack-oauth"/);
-  assert.match(appIndexSource, /onSubmit=\{prepareOAuthWindow\}/);
+  assert.doesNotMatch(appIndexSource, /target="jefe-slack-oauth"/);
+  assert.match(appIndexSource, /onSubmit=\{handleSlackOAuthSubmit\}/);
+  assert.match(appIndexSource, /useAppBridge/);
+  assert.match(appIndexSource, /shopify\.idToken\(\)/);
+  assert.match(appIndexSource, /Accept: "application\/json"/);
+  assert.match(appIndexSource, /popup\.location\.href = payload\.redirectUrl/);
+  assert.match(appIndexSource, /setSlackOAuthLaunchState\("authorising"\)/);
+  assert.match(appIndexSource, /parseSlackOAuthStartResponse/);
   assert.match(slackStartSource, /startSlackConnection/);
+  assert.match(slackStartSource, /Response\.json/);
+  assert.match(slackStartSource, /channelActionError/);
   assert.match(slackStartSource, /redirect\(result\.authoriseUrl\)/);
   assert.match(appIndexSource, /width = 560/);
   assert.match(appIndexSource, /height = 720/);
   assert.match(
     appIndexSource,
-    /globalThis\.open\("", "jefe-slack-oauth", features\)/,
+    /globalThis\.open\("", "jefe-slack-oauth", oauthPopupFeatures\(\)\)/,
   );
   assert.match(
     appIndexSource,

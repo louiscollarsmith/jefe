@@ -3,7 +3,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import type { ChangeEvent, DragEvent, ReactNode } from "react";
+import type { ChangeEvent, DragEvent, FormEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   Form,
@@ -17,6 +17,7 @@ import {
   useRevalidator,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import {
   Badge,
   Banner,
@@ -160,6 +161,7 @@ type SlackDestinationView = {
   isPrivate?: boolean;
   isMember?: boolean | null;
 };
+type SlackOAuthLaunchState = "idle" | "authorising" | "failed";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -828,6 +830,10 @@ export default function AppIndex() {
 }
 
 function prepareOAuthWindow() {
+  return globalThis.open("", "jefe-slack-oauth", oauthPopupFeatures());
+}
+
+function oauthPopupFeatures() {
   const width = 560;
   const height = 720;
   const screenLeft =
@@ -857,7 +863,7 @@ function prepareOAuthWindow() {
     "resizable=yes",
     "scrollbars=yes",
   ].join(",");
-  globalThis.open("", "jefe-slack-oauth", features);
+  return features;
 }
 
 function OnboardingShell({
@@ -2594,9 +2600,19 @@ function ChannelCard({
   unavailable?: boolean;
   unavailableLabel?: string | null;
 }) {
+  const shopify = useAppBridge();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
   const location = useLocation();
+  const [slackOAuthLaunchState, setSlackOAuthLaunchState] =
+    useState<SlackOAuthLaunchState>("idle");
+  const [slackOAuthLaunchError, setSlackOAuthLaunchError] = useState<
+    string | null
+  >(null);
+  const displayedConnection =
+    provider === "slack" && slackOAuthLaunchState === "authorising"
+      ? { ...connection, status: CHANNEL_STATUS.authorising }
+      : connection;
   const startsSlackOAuth =
     provider === "slack" &&
     !(
@@ -2607,23 +2623,72 @@ function ChannelCard({
         CHANNEL_STATUS.connected,
         CHANNEL_STATUS.degraded,
       ] as string[]
-    ).includes(connection.status);
-  const actionDisabled = connection.status === CHANNEL_STATUS.authorising;
+    ).includes(displayedConnection.status);
+  const actionDisabled =
+    displayedConnection.status === CHANNEL_STATUS.authorising;
   const className = `JefeChannelCard ${active ? "is-active" : ""} ${
-    connection.verified ? "is-connected" : ""
+    displayedConnection.verified ? "is-connected" : ""
   } ${unavailable ? "is-unavailable" : ""} ${actionDisabled ? "is-inert" : ""}`;
+
+  const handleSlackOAuthSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    if (slackOAuthLaunchState === "authorising") return;
+
+    const popup = prepareOAuthWindow();
+    setSlackOAuthLaunchState("authorising");
+    setSlackOAuthLaunchError(null);
+
+    try {
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      const response = await fetch(form.action, {
+        method: "POST",
+        body: formData,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${await shopify.idToken()}`,
+        },
+      });
+      const payload = await parseSlackOAuthStartResponse(response);
+
+      if (popup && !popup.closed) {
+        popup.location.href = payload.redirectUrl;
+        popup.focus();
+        return;
+      }
+
+      const opened = globalThis.open(
+        payload.redirectUrl,
+        "jefe-slack-oauth",
+        oauthPopupFeatures(),
+      );
+      if (!opened) {
+        throw new Error("Slack could not open. Allow pop-ups and try again.");
+      }
+      opened.focus();
+    } catch (error) {
+      if (popup && !popup.closed) popup.close();
+      setSlackOAuthLaunchState("failed");
+      setSlackOAuthLaunchError(safeErrorMessage(error));
+    }
+  };
+
   const content = (
     <>
       <ChannelCardContent
         provider={provider}
         name={name}
         description={description}
-        connection={connection}
+        connection={displayedConnection}
         merchantName={merchantName}
         actionLabel={
-          unavailableLabel ?? channelCardActionLabel(provider, connection)
+          unavailableLabel ??
+          channelCardActionLabel(provider, displayedConnection)
         }
         actionDisabled={actionDisabled}
+        actionError={provider === "slack" ? slackOAuthLaunchError : null}
       />
     </>
   );
@@ -2636,7 +2701,7 @@ function ChannelCard({
     );
   }
 
-  if (connection.verified) {
+  if (displayedConnection.verified) {
     return (
       <div className={className} aria-current={active ? "true" : undefined}>
         {content}
@@ -2655,9 +2720,8 @@ function ChannelCard({
       <form
         method="post"
         action={slackStartPath(location.search)}
-        target="jefe-slack-oauth"
         className="JefeChannelCardForm"
-        onSubmit={prepareOAuthWindow}
+        onSubmit={handleSlackOAuthSubmit}
       >
         <input type="hidden" name="provider" value="slack" />
         <button type="submit" className={className} aria-pressed={active}>
@@ -2686,6 +2750,7 @@ function ChannelCardContent({
   merchantName,
   actionLabel,
   actionDisabled = false,
+  actionError = null,
 }: {
   provider: "slack" | "whatsapp";
   name: string;
@@ -2694,6 +2759,7 @@ function ChannelCardContent({
   merchantName: string;
   actionLabel?: string | null;
   actionDisabled?: boolean;
+  actionError?: string | null;
 }) {
   const summary = channelConnectionSummary(provider, connection, merchantName);
   return (
@@ -2717,6 +2783,11 @@ function ChannelCardContent({
           }`}
         >
           {actionLabel}
+        </span>
+      ) : null}
+      {actionError ? (
+        <span className="JefeChannelSummary" role="alert">
+          {actionError}
         </span>
       ) : null}
     </>
@@ -3934,6 +4005,48 @@ function isSlackDestinationView(
     typeof (destination as { id?: unknown }).id === "string" &&
     typeof (destination as { label?: unknown }).label === "string"
   );
+}
+
+async function parseSlackOAuthStartResponse(response: Response) {
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // Non-JSON auth failures are handled by the generic message below.
+  }
+
+  if (
+    response.ok &&
+    payload &&
+    typeof payload === "object" &&
+    (payload as { ok?: unknown }).ok === true &&
+    typeof (payload as { redirectUrl?: unknown }).redirectUrl === "string"
+  ) {
+    return {
+      redirectUrl: (payload as { redirectUrl: string }).redirectUrl,
+    };
+  }
+
+  if (payload && typeof payload === "object" && "error" in payload) {
+    const error = (payload as { error?: unknown }).error;
+    if (typeof error === "string" && error.trim()) {
+      throw new Error(error);
+    }
+    if (error && typeof error === "object" && "message" in error) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string" && message.trim()) {
+        throw new Error(message);
+      }
+    }
+  }
+
+  throw new Error("Slack authorisation could not be started.");
+}
+
+function safeErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "Slack authorisation could not be started.";
 }
 
 function channelCardActionLabel(

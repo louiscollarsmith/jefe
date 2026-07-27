@@ -7,6 +7,10 @@
 - Added a root handover guide and refreshed current-state documentation so operators and coding agents can see the active Merchant Memory onboarding flow without relying on old reset notes.
 - Moved reset-era repository and database audits into the historical archive so they are no longer mistaken for current product guidance.
 
+### Fixed
+
+- Fixed production Slack connection from Shopify onboarding so Connect Slack opens Slack authorisation in the popup and immediately shows the merchant that authorisation has started.
+
 ### Removed
 
 - Removed verified unused helper code and retired onboarding completion exports that were no longer called by the Shopify app.
