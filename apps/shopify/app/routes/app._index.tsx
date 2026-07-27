@@ -549,22 +549,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  const readiness = await getMerchantMemoryReadiness({
-    merchantId: merchant.id,
-    shopId: shop.id,
-    shopDomain: session.shop,
-    sessionId: session.id,
-    scopes,
-  });
-  const metrics = await getStoreMetrics({
-    merchantId: merchant.id,
-    shopId: shop.id,
-  });
+  const [readiness, metrics, connected] = await Promise.all([
+    getMerchantMemoryReadiness({
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      sessionId: session.id,
+      scopes,
+    }),
+    getStoreMetrics({
+      merchantId: merchant.id,
+      shopId: shop.id,
+    }),
+    hasActiveShopifyConnection({
+      merchantId: merchant.id,
+      shopDomain: session.shop,
+    }),
+  ]);
   const backfill = summarizeBackfill(readiness, metrics);
-  const connected = await hasActiveShopifyConnection({
-    merchantId: merchant.id,
-    shopDomain: session.shop,
-  });
+  const activeStep = normalizeOnboardingStep(
+    url,
+    readiness.memoryReady,
+    backfill.complete,
+  );
 
   if (
     url.searchParams.get("channelProvider") === "slack" &&
@@ -623,6 +630,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     (item) => item.provider === "slack",
   );
   const shouldLoadSlackDestinations =
+    activeStep === "channels" &&
     slackConnection &&
     [
       CHANNEL_STATUS.needsConfiguration,
@@ -640,11 +648,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           error: channelActionError(error).message,
         }))
     : { destinations: [], error: null };
-  const activeStep = normalizeOnboardingStep(
-    url,
-    readiness.memoryReady,
-    backfill.complete,
-  );
   if (activeStep === "insights" && readiness.memoryReady && backfill.complete) {
     await ensureMerchantInsightsQueued(prisma, {
       merchantId: merchant.id,
@@ -664,21 +667,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
   const insights =
-    readiness.memoryReady && backfill.complete
+    activeStep === "insights" && readiness.memoryReady && backfill.complete
       ? await getMerchantInsightsExperience(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         })
       : null;
   const goals =
-    readiness.memoryReady && backfill.complete
+    activeStep === "goals" && readiness.memoryReady && backfill.complete
       ? await getMerchantGoalsExperience(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         })
       : null;
   const plan =
-    readiness.memoryReady && backfill.complete
+    activeStep === "plan" && readiness.memoryReady && backfill.complete
       ? await getMerchantPlanExperience(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
@@ -1234,7 +1237,7 @@ function ChannelsStep({
             )
           }
         >
-          Continue to insights
+          Continue to Insights
         </Button>
       </InlineStack>
 
