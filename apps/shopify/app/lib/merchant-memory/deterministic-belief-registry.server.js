@@ -4356,6 +4356,65 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Identifies the highest-unit-volume product and its share of units in the window.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "products.cost_coverage",
+    "category": "products",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "current_state",
+    "calculation": "active_variants_with_unit_cost / active_variants",
+    "minimumData": "At least 1 active variant",
+    "confidenceRule": "0.95 direct ratio",
+    "legacyConfidenceRule": "0.95 direct ratio",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.95 direct ratio"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On product change; debounce",
+    "dependencies": ["products", "variants"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Share of active variants with a Shopify cost-per-item set; a readiness signal for margin, not a margin itself.",
+    "sourceUrl": "https://help.shopify.com/en/manual/products/inventory/getting-started-with-inventory/cost-per-item"
+  },
+  {
+    "key": "products.gross_margin.trailing_90d",
+    "category": "products",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "(covered_revenue - covered_cogs) / covered_revenue over cost-covered line items in window",
+    "minimumData": "At least 5 priced orders, single order currency, and cost-per-item covering >=70% of window revenue",
+    "confidenceRule": "0.85; scaled by cost coverage and sample",
+    "legacyConfidenceRule": "0.85; scaled by cost coverage and sample",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.85 scaled by coverage"
+    },
+    "confidenceComponents": [
+      { "template": "coverage_based_v1", "params": {} },
+      { "template": "sample_size_v1", "params": { "suppress_below_sample": 5 } }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["low_sample", "incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "products", "variants"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Gross margin over only the cost-covered share of revenue; value carries revenueCoverage. Excludes shipping and fees. Requires a single order currency.",
+    "sourceUrl": "https://help.shopify.com/en/manual/products/inventory/getting-started-with-inventory/cost-per-item"
   }
 ];
 

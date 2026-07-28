@@ -118,6 +118,7 @@ async function loadDerivationContext(prisma, input) {
           title: true,
           price: true,
           currency: true,
+          unitCost: true,
           inventoryItemExternalId: true,
           sourceUpdatedAt: true,
         },
@@ -291,6 +292,10 @@ function deriveDefinition(context, definition) {
         return bestsellerByRevenue(context, definition, 90);
       case "products.bestseller_by_units.trailing_90d":
         return bestsellerByUnits(context, definition, 90);
+      case "products.cost_coverage":
+        return costCoverage(context, definition);
+      case "products.gross_margin.trailing_90d":
+        return grossMargin(context, definition, 90);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1138,6 +1143,76 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Product margin — gross margin over the cost-covered share of window revenue,
+// plus a cost-coverage readiness signal. Cost-per-item is optional in Shopify,
+// so margin is gated on coverage and never guessed where cost is absent.
+function variantUnitCostMap(context) {
+  const map = new Map();
+  for (const variant of context.variants) {
+    if (variant.unitCost != null) {
+      map.set(variant.id, decimalNumber(variant.unitCost));
+    }
+  }
+  return map;
+}
+
+function costCoverage(context, definition) {
+  const active = context.activeVariants;
+  if (active.length < 1) {
+    return skipped(definition, "insufficient_data", "At least one active variant is required.", { activeVariants: active.length });
+  }
+  const withCost = active.filter((variant) => variant.unitCost != null).length;
+  return shareOutcome(context, definition, withCost, active.length, "Active variants with a cost-per-item set, divided by active variants.", { confidence: 0.95, supportingValues: { variantsWithCost: withCost, activeVariants: active.length } });
+}
+
+function grossMargin(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = singleCurrency(orders.map((order) => order.currency));
+  if (!currency.ok) {
+    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+  }
+  const orderIds = new Set(orders.map((order) => order.id));
+  const costByVariant = variantUnitCostMap(context);
+  let totalRevenue = 0;
+  let coveredRevenue = 0;
+  let coveredCogs = 0;
+  for (const item of context.lineItems) {
+    if (!orderIds.has(item.orderId)) continue;
+    const revenue = decimalNumber(item.totalPrice);
+    totalRevenue += revenue;
+    const unitCost = item.variantId != null ? costByVariant.get(item.variantId) : undefined;
+    if (unitCost != null) {
+      coveredRevenue += revenue;
+      coveredCogs += unitCost * (Number(item.quantity) || 0);
+    }
+  }
+  if (totalRevenue <= 0) {
+    return skipped(definition, "insufficient_data", "No priced line-item revenue in the window.", { totalRevenue });
+  }
+  const revenueCoverage = coveredRevenue / totalRevenue;
+  if (coveredRevenue <= 0 || revenueCoverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Cost-per-item covers too little of window revenue for a reliable margin.", { revenueCoverage: roundNumber(revenueCoverage, 4), coveredRevenue: roundMoney(coveredRevenue) });
+  }
+  return derived(context, definition, {
+    value: {
+      percentage: roundNumber(((coveredRevenue - coveredCogs) / coveredRevenue) * 100, 2),
+      coveredRevenue: roundMoney(coveredRevenue),
+      coveredCogs: roundMoney(coveredCogs),
+      revenueCoverage: roundNumber(revenueCoverage, 4),
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Gross margin over the cost-covered share of window revenue: (covered revenue − covered COGS) / covered revenue.",
+    summary: `Gross margin on cost-covered products in the trailing ${days} days.`,
+    sampleSize: orders.length,
+    coverageMetrics: { revenueCoverage: roundNumber(revenueCoverage, 4) },
+  });
 }
 
 // Product performance — trailing-window sales derived from line items joined to

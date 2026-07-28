@@ -32,7 +32,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 110);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 112);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -103,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 110);
-  assert.equal(result.derivationReport.attempted, 110);
+  assert.equal(result.registryDefinitionCount, 112);
+  assert.equal(result.derivationReport.attempted, 112);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    110,
+    112,
   );
-  assert.equal(result.derivationAttempts.length, 110);
+  assert.equal(result.derivationAttempts.length, 112);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -171,9 +171,9 @@ function createProductPerformancePrisma(orderCount) {
     { id: "prod-charlie", title: "Charlie", status: "ACTIVE" },
   ];
   const variants = [
-    { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
-    { id: "var-bravo", productId: "prod-bravo", sku: "B", title: "B", price: "50.00", currency: "GBP", inventoryItemExternalId: "inv-b" },
-    { id: "var-charlie", productId: "prod-charlie", sku: "C", title: "C", price: "25.00", currency: "GBP", inventoryItemExternalId: "inv-c" },
+    { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-a" },
+    { id: "var-bravo", productId: "prod-bravo", sku: "B", title: "B", price: "50.00", currency: "GBP", unitCost: "30.00", inventoryItemExternalId: "inv-b" },
+    { id: "var-charlie", productId: "prod-charlie", sku: "C", title: "C", price: "25.00", currency: "GBP", unitCost: "10.00", inventoryItemExternalId: "inv-c" },
   ];
   const now = Date.now();
   const orders = [];
@@ -259,6 +259,48 @@ test("product-performance beliefs suppress below minimum order volume", async ()
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
   assert.equal(skipped.get("products.selling_product_count.trailing_90d").status, "INSUFFICIENT_DATA");
   assert.equal(skipped.get("products.bestseller_by_revenue.trailing_90d").status, "INSUFFICIENT_DATA");
+});
+
+test("product-margin beliefs derive cost coverage and coverage-gated gross margin", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const bands = [0.98, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6];
+
+  assert.equal(beliefs.get("products.cost_coverage").value.percentage, 100);
+  const margin = beliefs.get("products.gross_margin.trailing_90d");
+  // Alpha 6 x (£100-£40) + Bravo 4 x (£50-£30): covered revenue £800, COGS £360 -> 55%.
+  assert.equal(margin.value.percentage, 55);
+  assert.equal(margin.value.coveredRevenue, 800);
+  assert.equal(margin.value.revenueCoverage, 1);
+  assert.ok(bands.includes(margin.confidence), "gross_margin confidence not in band");
+});
+
+test("gross margin suppresses when cost coverage is too thin, never guessed", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  const variants = await prisma.variant.findMany();
+  prisma.variant.findMany = async () =>
+    variants.map((variant) =>
+      variant.id === "var-alpha" ? { ...variant, unitCost: null } : variant,
+    );
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const published = new Set(result.derivations.map((belief) => belief.key));
+  const skippedKeys = new Set(result.skippedOutcomes.map((outcome) => outcome.key));
+  // Alpha (~75% of revenue) loses its cost -> coverage < 70% -> margin suppressed, not guessed.
+  assert.equal(published.has("products.gross_margin.trailing_90d"), false);
+  assert.equal(skippedKeys.has("products.gross_margin.trailing_90d"), true);
+  const coverage = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "products.cost_coverage",
+  );
+  assert.ok(coverage && coverage.value.percentage < 100);
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {

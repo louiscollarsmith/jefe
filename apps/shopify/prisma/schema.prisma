@@ -358,6 +358,7 @@ model Variant {
   title                   String?
   price                   Decimal?         @db.Decimal(18, 2)
   currency                String?          @default("GBP")
+  unitCost                Decimal?         @map("unit_cost") @db.Decimal(18, 2)
   inventoryItemExternalId String?          @map("inventory_item_external_id")
   sourceCreatedAt         DateTime?        @map("source_created_at") @db.Timestamptz(6)
   sourceUpdatedAt         DateTime?        @map("source_updated_at") @db.Timestamptz(6)

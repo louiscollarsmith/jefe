@@ -54,6 +54,9 @@ export const PRODUCTS_QUERY = `#graphql
                 updatedAt
                 inventoryItem {
                   id
+                  unitCost {
+                    amount
+                  }
                 }
               }
             }

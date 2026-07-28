@@ -67,6 +67,17 @@ export async function upsertShopifyVariant(prisma, input) {
   const externalId = variantExternalId(variant);
   if (!externalId) return null;
 
+  // Cost per item lives on the variant's inventory item and is only present in
+  // the GraphQL backfill payload — REST webhook payloads don't carry it. We
+  // therefore only write unit_cost when the source actually provided the field,
+  // so a later webhook update can never wipe a backfilled cost.
+  const inventoryItem = variant.inventoryItem;
+  const unitCostProvided =
+    !!inventoryItem &&
+    typeof inventoryItem === "object" &&
+    "unitCost" in inventoryItem;
+  const unitCost = unitCostProvided ? moneyAmount(inventoryItem.unitCost) : null;
+
   return prisma.variant.upsert({
     where: { shopId_externalId: { shopId: input.shopId, externalId } },
     create: {
@@ -78,6 +89,7 @@ export async function upsertShopifyVariant(prisma, input) {
       title: stringValue(variant.title),
       price: moneyAmount(variant.price),
       currency: currencyCode(variant.price),
+      unitCost,
       inventoryItemExternalId: inventoryItemExternalId(variant),
       sourceCreatedAt: parseDate(variant.createdAt ?? variant.created_at),
       sourceUpdatedAt: parseDate(variant.updatedAt ?? variant.updated_at),
@@ -89,6 +101,7 @@ export async function upsertShopifyVariant(prisma, input) {
       title: stringValue(variant.title),
       price: moneyAmount(variant.price),
       currency: currencyCode(variant.price),
+      ...(unitCostProvided ? { unitCost } : {}),
       inventoryItemExternalId: inventoryItemExternalId(variant),
       sourceCreatedAt: parseDate(variant.createdAt ?? variant.created_at),
       sourceUpdatedAt: parseDate(variant.updatedAt ?? variant.updated_at),

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-29
+
+### Added
+
+- Added **margin / COGS** to Merchant Memory — coverage-gated, never guessed. Jefe now reads Shopify's per-variant **cost-per-item** (`InventoryItem.unitCost`, under the existing `read_inventory` scope) into a new additive `Variant.unitCost` column (migration `20260729090000_variant_unit_cost`), captured in the GraphQL products backfill and **preserved on REST webhook updates that don't carry cost** (so a webhook can never wipe a backfilled cost). Two new deterministic `products` beliefs: **`products.cost_coverage`** (share of active variants with a cost set — a margin-readiness signal) and **`products.gross_margin.trailing_90d`** ((covered revenue − covered COGS) / covered revenue). Because cost-per-item is optional in Shopify and often blank, margin is **gated on coverage**: it publishes only with ≥5 priced orders, a single order currency, and cost covering ≥70% of window revenue — otherwise it's recorded as skipped-with-diagnostics (never a fabricated margin), while `cost_coverage` still publishes so the merchant sees exactly how much cost data exists. The value carries `revenueCoverage`, and confidence scales with coverage and sample. Derivations in `app/lib/merchant-memory/shopify-derivations.server.js` + registry defs in `deterministic-belief-registry.server.js`; ingestion in `app/lib/shopify/queries.server.js` + `app/lib/ingestion/shopify/canonical.server.js`. Covered by new cases in `tests/merchant-memory.test.mjs` (margin math, coverage, thin-coverage suppression); full gate green (241/241 with DB). Returns-by-SKU (refund line items) is the next slice; a margin-per-client view can consume `unitCost` alongside the LLM cost ledger.
+
 ## 2026-07-28
 
 ### Added
