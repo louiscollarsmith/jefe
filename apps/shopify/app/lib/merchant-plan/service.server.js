@@ -189,7 +189,19 @@ export async function generateMerchantPlan(prisma, input) {
     return { status: PLAN_RUN_STATUS.insufficientData, runId: run.id };
   }
 
-  const provider = input.llmProvider ?? createLlmProvider({ logger });
+  const provider =
+    input.llmProvider ??
+    createLlmProvider({
+      logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "plan",
+        runType: "MerchantPlanRun",
+        runId: run.id,
+      },
+    });
   await prisma.merchantPlanRun.update({
     where: { id: run.id },
     data: {

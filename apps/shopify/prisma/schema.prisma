@@ -979,3 +979,29 @@ model ActivityEvent {
   @@index([shopId, createdAt])
   @@map("activity_events")
 }
+
+/// LLM cost/usage ledger — one row per model call. Powers per-merchant cost and
+/// the margin denominator. `cost_usd` is derived from token counts via the
+/// pricing table (`app/lib/llm/pricing.server.js`); pricing is PLACEHOLDER until
+/// the real Gemini rates are confirmed, so absolute costs are indicative.
+model LlmUsageEvent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId   String?  @map("merchant_id") @db.Uuid
+  shopId       String?  @map("shop_id") @db.Uuid
+  feature      String
+  runType      String?  @map("run_type")
+  runId        String?  @map("run_id")
+  provider     String   @default("gemini")
+  model        String
+  inputTokens  Int      @map("input_tokens")
+  outputTokens Int      @map("output_tokens")
+  totalTokens  Int      @map("total_tokens")
+  costUsd      Decimal  @map("cost_usd") @db.Decimal(12, 6)
+  latencyMs    Int?     @map("latency_ms")
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([merchantId, createdAt])
+  @@index([feature, createdAt])
+  @@map("llm_usage_event")
+}

@@ -4,9 +4,14 @@ import { getLlmConfig } from "./config.server.js";
 import { LlmDisabledError } from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { recordLlmUsage } from "./usage-recorder.server.js";
 
 /**
- * @param {{ config?: ReturnType<typeof getLlmConfig>; logger?: Pick<Console, "info" | "warn" | "error"> }} [input]
+ * @typedef {{ prisma: any; merchantId?: string | null; shopId?: string | null; feature: string; runType?: string | null; runId?: string | null }} LlmUsageContext
+ */
+
+/**
+ * @param {{ config?: ReturnType<typeof getLlmConfig>; logger?: Pick<Console, "info" | "warn" | "error">; usage?: LlmUsageContext }} [input]
  */
 export function createLlmProvider(input = {}) {
   const config = input.config ?? getLlmConfig();
@@ -23,7 +28,56 @@ export function createLlmProvider(input = {}) {
   // not inject one. The provider only ever logs request metadata — token
   // counts, timings and error names — never prompt or response bodies.
   const logger = input.logger ?? baseLogger.child({ component: "llm" });
-  return createGeminiProvider({ config, logger });
+  const provider = createGeminiProvider({ config, logger });
+  return input.usage ? withUsageRecording(provider, input.usage) : provider;
+}
+
+/**
+ * Wrap a provider so each generate call records an `LlmUsageEvent` (the cost
+ * ledger). Fire-and-forget — recording never affects the generation result.
+ *
+ * @param {LlmProvider} provider
+ * @param {LlmUsageContext} ctx
+ * @returns {LlmProvider}
+ */
+function withUsageRecording(provider, ctx) {
+  if (!ctx || !ctx.prisma) return provider;
+  /**
+   * @param {(request: any) => Promise<any>} method
+   * @returns {(request: any) => Promise<any>}
+   */
+  const wrap = (method) => async (request) => {
+    const base = {
+      merchantId: ctx.merchantId,
+      shopId: ctx.shopId,
+      feature: ctx.feature,
+      runType: ctx.runType,
+      runId: ctx.runId,
+      model: provider.model,
+    };
+    try {
+      const result = await method(request);
+      void recordLlmUsage(ctx.prisma, {
+        ...base,
+        usage: result.usage,
+        latencyMs: result.durationMs,
+        status: "ok",
+      });
+      return result;
+    } catch (error) {
+      void recordLlmUsage(ctx.prisma, { ...base, usage: null, status: "error" });
+      throw error;
+    }
+  };
+  return {
+    ...provider,
+    generateStructuredOperation: wrap(
+      provider.generateStructuredOperation.bind(provider),
+    ),
+    generateStructuredJson: provider.generateStructuredJson
+      ? wrap(provider.generateStructuredJson.bind(provider))
+      : undefined,
+  };
 }
 
 /**

@@ -240,7 +240,19 @@ export async function generateMerchantGoals(prisma, input) {
     return { status: GOAL_RUN_STATUS.insufficientData, runId: run.id };
   }
 
-  const provider = input.llmProvider ?? createLlmProvider({ logger });
+  const provider =
+    input.llmProvider ??
+    createLlmProvider({
+      logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "goals",
+        runType: "MerchantGoalRun",
+        runId: run.id,
+      },
+    });
   await prisma.merchantGoalRun.update({
     where: { id: run.id },
     data: {

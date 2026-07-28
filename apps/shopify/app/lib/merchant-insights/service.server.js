@@ -207,7 +207,19 @@ export async function generateMerchantInsights(prisma, input) {
     return { status: INSIGHT_RUN_STATUS.insufficientData, runId: run.id };
   }
 
-  const provider = input.llmProvider ?? createLlmProvider({ logger });
+  const provider =
+    input.llmProvider ??
+    createLlmProvider({
+      logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "insights",
+        runType: "MerchantInsightRun",
+        runId: run.id,
+      },
+    });
   await prisma.merchantInsightRun.update({
     where: { id: run.id },
     data: {
