@@ -31,3 +31,33 @@ external data or tools (per-merchant enrichment, market/competitor data feeds),
 or needs governed agent-initiated spend on third-party services.
 
 _Logged 2026-07-28 at Matt's request (from a chat about whether Sapiom fits)._
+
+## Sciforium — serverless LLM inference provider (cost/margin lever)
+
+**What it is.** A serverless AI inference platform: instant access to a broad
+library of open-source + frontier models, OpenAI-API-compatible, running on
+their own AMD GPUs for lower cost / stronger privacy / no infra to manage. Same
+category as Groq / Together / Fireworks. Founded 2024, SF. https://sciforium.com/
+
+**When it'd be useful for Jefe.** As an **LLM-cost/margin lever.** Jefe already
+runs on an LLM behind a provider abstraction (`LLM_PROVIDER` / `LLM_MODEL`,
+currently Gemini/Groq), and Sciforium is OpenAI-compatible — so adding it or
+A/B-testing it is low-effort. Value grows with scale: merchant count × (memory
+rebuilds + insights/goals/plan generation + the Slack/email conversations we're
+adding) makes inference a real cost line, directly relevant to
+`docs/ops/product_analytics_and_margin_spec.md`. Secondary: model flexibility +
+an own-hardware privacy angle (though we already redact PII before any LLM call).
+
+**Why not now.** The current provider works; there's no cost/margin pain to solve
+yet, and Sciforium is young (2024). Adopting now optimises a cost we don't feel
+yet.
+
+**Trigger to revisit / bring to the team.** When LLM cost/margin becomes a focus
+(the margin-spec work lands, or inference spend shows up in analytics), or when
+we want model flexibility. Because inference is commoditised + swappable behind
+our abstraction, it's a cheap experiment: benchmark quality + latency + cost vs
+the current provider and keep whatever wins — but only adopt with the abstraction
+keeping a fallback, never as the sole hard dependency.
+
+_Logged 2026-07-28 at Matt's request; he asked to have it brought back when the
+time is right._
