@@ -490,8 +490,7 @@
 }
 
 .JefeChannelCard.is-unavailable .JefeChannelLogo {
-  filter: grayscale(1);
-  opacity: 0.55;
+  opacity: 0.85;
 }
 
 .JefeChannelCard.is-unavailable .JefeChannelDescription,

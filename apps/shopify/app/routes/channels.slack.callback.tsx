@@ -23,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         channelNotice: "slack_connected",
       }),
       "Slack connected",
-      "Return to Jefe to choose the channel I should use.",
+      "Your Slack workspace is connected. Head back to Jefe to keep going.",
     );
   } catch (error) {
     return slackCallbackResponse(
@@ -129,7 +129,10 @@ function appPathWithChannelNotice(
   url.searchParams.delete("error");
   url.searchParams.delete("state");
   url.searchParams.set("step", "channels");
-  url.searchParams.set("channelProvider", "slack");
+  // Intentionally do NOT set channelProvider here: connecting the Slack
+  // workspace is the finish line for onboarding. We land back on the channels
+  // step showing "connected" without force-opening the channel picker — choosing
+  // where Jefe posts is deferred to later (settings), not required to continue.
   for (const [key, value] of Object.entries(updates)) {
     if (value === null) url.searchParams.delete(key);
     else url.searchParams.set(key, value);

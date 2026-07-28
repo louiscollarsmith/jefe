@@ -1,4 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" width="44" height="44" role="img" aria-label="Microsoft Teams">
-  <rect width="44" height="44" rx="10" fill="#5059C9"/>
-  <path d="M13 15h18v4h-7v13h-4V19h-7z" fill="#ffffff"/>
+  <defs>
+    <linearGradient id="teamsTile" x1="5" y1="10" x2="31" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5B63C7"/>
+      <stop offset="1" stop-color="#3A42A4"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32.5" cy="12.5" r="5.4" fill="#7B83EB"/>
+  <path d="M26.7 26.4c0-3.2 2.6-5.8 5.8-5.8s5.8 2.6 5.8 5.8c0 .6-.5 1.1-1.1 1.1H27.8c-.6 0-1.1-.5-1.1-1.1z" fill="#7B83EB"/>
+  <rect x="5" y="10.5" width="25" height="25" rx="4.6" fill="url(#teamsTile)"/>
+  <rect x="9.9" y="16.2" width="15.2" height="3" rx="1.2" fill="#fff"/>
+  <rect x="16" y="16.2" width="3" height="15" rx="1.2" fill="#fff"/>
 </svg>

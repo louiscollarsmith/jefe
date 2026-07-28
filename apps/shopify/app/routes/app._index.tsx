@@ -2738,6 +2738,14 @@ function ChannelCard({
     provider === "slack" && slackOAuthLaunchState === "authorising"
       ? { ...connection, status: CHANNEL_STATUS.authorising }
       : connection;
+  // Onboarding is a one-click "connect the workspace" — a connected Slack that
+  // has not yet had a channel chosen (needs_configuration) counts as connected
+  // here. Picking where Jefe posts is deferred to settings, so we present it as
+  // done (connected styling + Disconnect) instead of nudging "Select channel".
+  const workspaceConnected =
+    provider === "slack" &&
+    displayedConnection.status === CHANNEL_STATUS.needsConfiguration;
+  const looksConnected = displayedConnection.verified || workspaceConnected;
   const startsSlackOAuth =
     provider === "slack" &&
     !(
@@ -2752,7 +2760,7 @@ function ChannelCard({
   const actionDisabled =
     displayedConnection.status === CHANNEL_STATUS.authorising;
   const className = `JefeChannelCard ${active ? "is-active" : ""} ${
-    displayedConnection.verified ? "is-connected" : ""
+    looksConnected ? "is-connected" : ""
   } ${unavailable ? "is-unavailable" : ""} ${actionDisabled ? "is-inert" : ""}`;
 
   const handleSlackOAuthSubmit = async (
@@ -2809,8 +2817,10 @@ function ChannelCard({
         connection={displayedConnection}
         merchantName={merchantName}
         actionLabel={
-          unavailableLabel ??
-          channelCardActionLabel(provider, displayedConnection)
+          workspaceConnected
+            ? null
+            : (unavailableLabel ??
+              channelCardActionLabel(provider, displayedConnection))
         }
         actionDisabled={actionDisabled}
         actionError={provider === "slack" ? slackOAuthLaunchError : null}
@@ -2826,7 +2836,7 @@ function ChannelCard({
     );
   }
 
-  if (displayedConnection.verified) {
+  if (looksConnected) {
     return (
       <div className={className} aria-current={active ? "true" : undefined}>
         {content}

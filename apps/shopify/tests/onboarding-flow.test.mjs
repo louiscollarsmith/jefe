@@ -225,6 +225,18 @@ test("Slack OAuth callback navigation preserves current Shopify query context", 
   assert.match(appShellSource, /navigate\(`\/app\$\{location\.search\}`\)/);
 });
 
+test("onboarding Slack connect is one-click: workspace connect, channel choice deferred", () => {
+  // The OAuth callback returns to the channels step without force-opening the
+  // picker or telling the merchant to pick a channel during onboarding.
+  assert.doesNotMatch(slackCallbackSource, /choose the channel/);
+  assert.match(slackCallbackSource, /workspace is connected/);
+  // A connected-but-unconfigured Slack (needs_configuration) presents as
+  // connected in onboarding instead of nudging channel selection; choosing
+  // where Jefe posts is deferred to settings.
+  assert.match(appIndexSource, /const workspaceConnected =/);
+  assert.match(appIndexSource, /const looksConnected =/);
+});
+
 test("temporary channels page does not poll route data or refresh the embedded app document", () => {
   assert.doesNotMatch(appIndexSource, /window\.location\.reload\(\)/);
   assert.doesNotMatch(appIndexSource, /Check status/);
