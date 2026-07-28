@@ -22,6 +22,8 @@ Commerce sources -> raw events/source records -> deterministic facts/features ->
 
 The current Shopify app flow is Connect -> optional Channels -> Insights -> Goals -> Plan -> Merchant Memory view. Do not describe the app as only a reset-era evidence layer.
 
+This is the current, **advisory** state on an explicit path toward Jefe operating as the merchant's eCommerce manager with **autonomy earned per action type** (see AGENTS.md -> North Star). Advisory-only is a V1 safety posture, not the endpoint. The external-write guardrails stay permanent and are precisely what let autonomy grow safely: anything Jefe does to an external system goes through an approved typed adapter with idempotency, a preview, an approval gate, blast-radius caps and reversibility, with the merchant as principal. Building toward this is in scope; loosening those guardrails is not.
+
 ## Quality Bar
 
 A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.

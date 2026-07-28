@@ -6,7 +6,7 @@ Jefe builds and maintains a living understanding of each merchant's business.
 
 The central product object is **Merchant Memory**: a durable, structured, versioned record of facts, merchant-confirmed facts, model inferences, uncertainties, goals, constraints, operating rules, current priorities, corrections and history.
 
-Jefe is not an analytics dashboard, a chatbot, a generic autonomous agent, or a collection of ecommerce modules.
+Jefe is not an analytics dashboard, a chatbot, an ungrounded autonomous agent, or a collection of ecommerce modules.
 
 ## North Star
 
@@ -15,6 +15,8 @@ Produce Merchant Memory so accurate that the merchant says:
 > Yes. That's exactly how my business works.
 
 Everything else exists to create, improve, inspect, correct or use that memory.
+
+Merchant Memory is the substrate, not the destination. The destination is for Jefe to operate as the merchant's **eCommerce manager** — taking action, with **autonomy earned per action type**. The path is an explicit ramp: advisory now → the merchant approves a recommendation and Jefe **executes** it (rung 1 — human-in-the-loop action) → progressively autonomous on the safe, high-confidence, reversible, low-blast-radius actions as trust is earned, until routine ones need no tap. This is *earned, memory-grounded* autonomy — never generic or ungrounded — and the external-write guardrails in Implementation Rules are exactly what make it possible: it is **more** discipline, not less. The merchant is always the principal — they set goals and autonomy levels and can veto or reverse any action.
 
 ## Authoritative Context
 
