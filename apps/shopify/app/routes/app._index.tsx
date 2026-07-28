@@ -38,6 +38,8 @@ import {
 } from "@shopify/polaris";
 import { CheckCircleIcon, FileIcon, UploadIcon } from "@shopify/polaris-icons";
 
+import { DailyHome } from "../components/daily-home";
+
 import prisma from "../db.server";
 import {
   channelActionError,
@@ -537,15 +539,46 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   if (shop.onboardingCompletedAt) {
+    const memory = await getMerchantMemoryView({
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    // Daily Home is the default post-onboarding surface. Toggle off with
+    // ENABLE_DAILY_HOME=false to fall back to the original Merchant Memory view.
+    if (process.env.ENABLE_DAILY_HOME !== "false") {
+      const [metrics, insights, goals, plan] = await Promise.all([
+        getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
+        getMerchantInsightsExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        }),
+        getMerchantGoalsExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        }),
+        getMerchantPlanExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        }),
+      ]);
+      return {
+        appMode: "daily" as const,
+        shop: session.shop,
+        merchantName: merchant.name,
+        storeName,
+        memory,
+        metrics,
+        recommendation: plan?.selectedRun?.recommendation ?? null,
+        insights: insights?.selectedRun?.findings ?? [],
+        goals: goals?.selectedRun?.horizons ?? [],
+      };
+    }
     return {
       appMode: "memory" as const,
       shop: session.shop,
       merchantName: merchant.name,
       storeName,
-      memory: await getMerchantMemoryView({
-        merchantId: merchant.id,
-        shopId: shop.id,
-      }),
+      memory,
     };
   }
 
@@ -772,6 +805,20 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
+
+  if (data.appMode === "daily") {
+    return (
+      <DailyHome
+        storeName={data.storeName}
+        merchantName={data.merchantName}
+        metrics={data.metrics}
+        memory={data.memory}
+        recommendation={data.recommendation}
+        insights={data.insights}
+        goals={data.goals}
+      />
+    );
+  }
 
   if (data.appMode === "memory") {
     return (
