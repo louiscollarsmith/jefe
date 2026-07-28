@@ -23,6 +23,7 @@
     "shopify:backfill": "node scripts/shopify-backfill.mjs",
     "analytics": "node scripts/analytics-report.mjs",
     "alert:test": "node scripts/alert-test.mjs",
+    "activity-digest": "node scripts/activity-digest.mjs",
     "shopify": "shopify",
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
