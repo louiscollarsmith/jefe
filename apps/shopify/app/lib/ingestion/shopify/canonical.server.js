@@ -607,7 +607,9 @@ async function upsertCustomerIdentityFromOrder(prisma, input) {
     create: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      normalizedEmail: identity.normalizedEmail,
+      // normalized_email (plaintext) is intentionally NOT stored: it is PII at
+      // rest that nothing reads. Only the sha256 emailHash (for lookups/joins)
+      // and the maskedEmail (for display) are persisted.
       emailHash,
       maskedEmail: maskEmail(identity.normalizedEmail),
       firstSeenOrderAt: processedAt,
@@ -624,7 +626,7 @@ async function upsertCustomerIdentityFromOrder(prisma, input) {
       },
     },
     update: {
-      normalizedEmail: identity.normalizedEmail,
+      // normalized_email (plaintext) is intentionally NOT stored (see create).
       maskedEmail: maskEmail(identity.normalizedEmail),
       firstSeenOrderAt:
         existing?.firstSeenOrderAt && processedAt
@@ -694,19 +696,19 @@ function noteAttributeValue(order, name) {
 }
 
 /** @param {unknown} value */
-function normalizeEmail(value) {
+export function normalizeEmail(value) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ? normalized : null;
 }
 
 /** @param {string} email */
-function hashEmail(email) {
+export function hashEmail(email) {
   return crypto.createHash("sha256").update(email).digest("hex");
 }
 
 /** @param {string} email */
-function maskEmail(email) {
+export function maskEmail(email) {
   const [local, domain] = email.split("@");
   if (!local || !domain) return "masked";
   const first = local.slice(0, 1);

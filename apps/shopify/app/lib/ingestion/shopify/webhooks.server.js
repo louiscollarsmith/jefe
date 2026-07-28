@@ -11,6 +11,7 @@ import {
   markShopifyInstallInactive,
 } from "./tenant.server.js";
 import { writeLedgerEvent } from "./ledger.server.js";
+import { handleShopifyComplianceWebhook } from "./compliance.server.js";
 import {
   markShopifyProductDeleted,
   upsertShopifyInventoryLevel,
@@ -79,6 +80,26 @@ export async function handleShopifyWebhookRequest(
  */
 export async function processShopifyWebhook(prisma, input) {
   const payload = safeJsonParse(input.rawBody);
+
+  // GDPR/compliance webhooks are handled up front — before ensureShopifyTenant
+  // and before any ledger write — for two reasons:
+  //   1. A redaction request must never (re)create or reactivate a shop, which
+  //      ensureShopifyTenant would do (these fire after uninstall).
+  //   2. The generic ledger write below persists the request body as rawPayload;
+  //      for compliance topics that body IS the customer PII we are asked to
+  //      erase, so it must never be ledgered. The compliance handler persists
+  //      only sanitised records (see compliance.server.js).
+  if (COMPLIANCE_TOPICS.has(input.topic)) {
+    return handleShopifyComplianceWebhook(prisma, {
+      topic: input.topic,
+      shopDomain: input.shopDomain,
+      body: payload,
+      webhookId: input.webhookId ?? input.eventId ?? null,
+      rawBody: input.rawBody,
+      triggeredAt: input.triggeredAt,
+    });
+  }
+
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: input.shopDomain,
     rawPayload: { source: "webhook", topic: input.topic },
@@ -124,10 +145,6 @@ export async function processShopifyWebhook(prisma, input) {
         data: { scopes: current },
       }),
     ]);
-    return { status: "processed", ledgerEventId: event.id };
-  }
-
-  if (COMPLIANCE_TOPICS.has(input.topic)) {
     return { status: "processed", ledgerEventId: event.id };
   }
 
