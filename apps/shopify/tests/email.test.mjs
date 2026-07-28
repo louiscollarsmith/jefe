@@ -1,0 +1,315 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { PrismaClient } from "@prisma/client";
+import { sendEmail, isEmailEnabled } from "../app/lib/email/resend.server.js";
+import {
+  escapeHtml,
+  interpolate,
+  loadTemplateHtml,
+} from "../app/lib/email/template.server.js";
+import {
+  deriveStoreName,
+  renderWelcomeEmail,
+  sendWelcomeEmailOnInstall,
+} from "../app/lib/email/welcome.server.js";
+import { ensureShopifyTenant } from "../app/lib/ingestion/shopify/tenant.server.js";
+
+const databaseUrl = process.env.DATABASE_URL;
+
+/** Run `fn` with console.log/console.warn captured (and silenced). */
+async function withCapturedConsole(fn) {
+  const logs = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  console.log = (...args) => logs.push(args.join(" "));
+  console.warn = (...args) => logs.push(args.join(" "));
+  try {
+    const result = await fn();
+    return { result, logs };
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+}
+
+/** Save/restore an env var around a callback. */
+async function withEnv(key, value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, key);
+  const previous = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) process.env[key] = previous;
+    else delete process.env[key];
+  }
+}
+
+function uniqueSuffix() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`.replace(
+    /[^a-z0-9-]/gi,
+    "",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Adapter: ENABLE_EMAIL gating (proves no real send by default)
+// ---------------------------------------------------------------------------
+
+test("sendEmail is a no-op that never touches Resend when ENABLE_EMAIL is unset", async () => {
+  await withEnv("ENABLE_EMAIL", undefined, async () => {
+    await withEnv("RESEND_API_KEY", undefined, async () => {
+      const { result, logs } = await withCapturedConsole(() =>
+        sendEmail({
+          to: "merchant@example.com",
+          subject: "Test subject",
+          html: "<p>hi</p>",
+        }),
+      );
+
+      assert.equal(result.disabled, true);
+      assert.equal(result.delivered, false);
+      assert.equal(result.id, null);
+      assert.equal(isEmailEnabled(), false);
+      assert.ok(
+        logs.some((line) =>
+          line.includes(
+            "[email disabled] would send Test subject to merchant@example.com",
+          ),
+        ),
+        "expected the disabled log line",
+      );
+    });
+  });
+});
+
+test("ENABLE_EMAIL enables only on a 'true' value (case/whitespace-insensitive)", async () => {
+  // Anything that is not a "true"-like value leaves sending OFF (the safe default).
+  for (const value of ["false", "0", "1", "yes", "on", "", undefined]) {
+    await withEnv("ENABLE_EMAIL", value, async () => {
+      assert.equal(isEmailEnabled(), false, `value=${JSON.stringify(value)}`);
+    });
+  }
+  // Only a clear "true" (any case, surrounding whitespace tolerated) enables.
+  for (const value of ["true", "TRUE", "True", " true "]) {
+    await withEnv("ENABLE_EMAIL", value, async () => {
+      assert.equal(isEmailEnabled(), true, `value=${JSON.stringify(value)}`);
+    });
+  }
+});
+
+test("sendEmail while enabled but without an API key still does not send", async () => {
+  await withEnv("ENABLE_EMAIL", "true", async () => {
+    await withEnv("RESEND_API_KEY", undefined, async () => {
+      const { result } = await withCapturedConsole(() =>
+        sendEmail({ to: "m@example.com", subject: "S", html: "<p>x</p>" }),
+      );
+      assert.equal(result.delivered, false);
+      assert.equal(result.disabled, false);
+      assert.equal(result.skipped, "missing_api_key");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Template layer: interpolation + escaping
+// ---------------------------------------------------------------------------
+
+test("interpolate replaces placeholders and HTML-escapes values", () => {
+  const out = interpolate("<b>{{name}}</b> at {{url}}", {
+    name: `<script>alert('x')</script>&"`,
+    url: "https://x.test/a?b=1",
+  });
+  assert.ok(!out.includes("<script>"), "raw script tag must be escaped");
+  assert.ok(out.includes("&lt;script&gt;"));
+  assert.ok(out.includes("&amp;"));
+  assert.ok(out.includes("&quot;"));
+  assert.ok(out.includes("https://x.test/a?b=1"));
+});
+
+test("interpolate throws on an unresolved placeholder", () => {
+  assert.throws(
+    () => interpolate("hello {{missing}}", {}),
+    /Unresolved email template variable/,
+  );
+});
+
+test("escapeHtml escapes the five HTML-significant characters", () => {
+  assert.equal(escapeHtml(`&<>"'`), "&amp;&lt;&gt;&quot;&#39;");
+});
+
+test("deriveStoreName turns a shop domain into a human label", () => {
+  assert.equal(
+    deriveStoreName("northwind-supply.myshopify.com"),
+    "Northwind Supply",
+  );
+  assert.equal(deriveStoreName("acme.myshopify.com"), "Acme");
+  assert.equal(deriveStoreName(""), "your store");
+});
+
+// ---------------------------------------------------------------------------
+// Welcome template: demo data replaced with real interpolation
+// ---------------------------------------------------------------------------
+
+test("welcome template ships with the Northwind/Maya demo values parameterised out", () => {
+  const raw = loadTemplateHtml("jefe-welcome");
+  for (const demo of [
+    "Maya",
+    "Northwind Supply",
+    "maya@northwindsupply.com",
+    "ONE_CLICK_TOKEN",
+    // No hardcoded app/logo URL: every link is a {{placeholder}}, so our own
+    // domain must never appear as a literal in the raw template.
+    "mynamejefe.com",
+  ]) {
+    assert.ok(
+      !raw.includes(demo),
+      `raw template must not contain demo value "${demo}"`,
+    );
+  }
+  // The placeholders that replaced them must be present.
+  for (const placeholder of [
+    "{{greeting}}",
+    "{{storeName}}",
+    "{{ctaUrl}}",
+    "{{recipientEmail}}",
+    "{{unsubscribeUrl}}",
+    "{{logoUrl}}",
+  ]) {
+    assert.ok(raw.includes(placeholder), `expected ${placeholder}`);
+  }
+});
+
+test("renderWelcomeEmail interpolates real merchant/store/link values", () => {
+  const { subject, html, text, unsubscribeUrl } = renderWelcomeEmail({
+    shopDomain: "acme-tools.myshopify.com",
+    to: "owner@acme-tools.com",
+    merchantName: "Sam",
+    storeName: "Acme Tools",
+    appUrl: "https://staging.jefe.test",
+  });
+
+  assert.equal(subject, "I'm in — here's what happens next on Acme Tools");
+  assert.ok(html.includes("Alright, Sam — I'm in."));
+  assert.ok(html.includes("Acme Tools is connected."));
+  assert.ok(html.includes('href="https://staging.jefe.test"'), "CTA url");
+  assert.ok(html.includes("https://staging.jefe.test/settings/guardrails"));
+  assert.ok(html.includes("https://staging.jefe.test/settings/notifications"));
+  assert.ok(html.includes("https://staging.jefe.test/e/unsubscribe?t="));
+  assert.ok(html.includes("owner@acme-tools.com"));
+  assert.ok(!html.includes("{{"), "no unresolved placeholders");
+  assert.ok(unsubscribeUrl.startsWith("https://staging.jefe.test/e/unsubscribe?t="));
+  assert.ok(text.includes("Alright, Sam — I'm in."));
+  assert.ok(text.includes("https://staging.jefe.test"));
+});
+
+test("renderWelcomeEmail drops the name gracefully when merchant is unknown", () => {
+  const { html } = renderWelcomeEmail({
+    shopDomain: "acme-tools.myshopify.com",
+    to: "owner@acme-tools.com",
+  });
+  assert.ok(html.includes("Alright — I'm in."));
+  // storeName falls back to the derived label.
+  assert.ok(html.includes("Acme Tools is connected."));
+});
+
+test("sendWelcomeEmailOnInstall skips (without claiming) when no recipient is known", async () => {
+  const { result } = await withCapturedConsole(() =>
+    // prisma is never touched on this path, so a stub object is safe.
+    sendWelcomeEmailOnInstall(
+      /** @type {any} */ ({}),
+      { shopDomain: "acme.myshopify.com", recipientEmail: null },
+    ),
+  );
+  assert.equal(result.sent, false);
+  assert.equal(result.reason, "no_recipient");
+});
+
+// ---------------------------------------------------------------------------
+// Install trigger idempotency (DB-backed, still no real send)
+// ---------------------------------------------------------------------------
+
+test("welcome install trigger sends once per shop and is idempotent", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for the welcome idempotency test");
+    return;
+  }
+
+  await withEnv("ENABLE_EMAIL", undefined, async () => {
+    const prisma = new PrismaClient({
+      datasources: { db: { url: databaseUrl } },
+    });
+    const suffix = uniqueSuffix();
+    const shopDomain = `welcome-${suffix}.myshopify.com`;
+
+    try {
+      await ensureShopifyTenant(prisma, {
+        shopDomain,
+        accessTokenSessionId: `offline-${suffix}`,
+        scopes: ["read_products"],
+      });
+
+      const { result: first, logs } = await withCapturedConsole(async () => {
+        const a = await sendWelcomeEmailOnInstall(prisma, {
+          shopDomain,
+          recipientEmail: `owner-${suffix}@example.com`,
+          merchantName: "Dana",
+        });
+        const b = await sendWelcomeEmailOnInstall(prisma, {
+          shopDomain,
+          recipientEmail: `owner-${suffix}@example.com`,
+          merchantName: "Dana",
+        });
+        return [a, b];
+      });
+      const [firstCall, secondCall] = first;
+
+      // First call claims the guard and dispatches (as a disabled no-op).
+      assert.equal(firstCall.sent, true);
+      assert.equal(firstCall.disabled, true, "must be a disabled no-op send");
+      // Second call is a no-op: the guard was already claimed.
+      assert.equal(secondCall.sent, false);
+      assert.equal(secondCall.reason, "already_sent");
+
+      // Exactly one send was attempted across the two trigger calls.
+      const sendAttempts = logs.filter((line) =>
+        line.includes("[email disabled] would send"),
+      );
+      assert.equal(sendAttempts.length, 1, "exactly one send attempt");
+
+      // The guard timestamp is set exactly once.
+      const shop = await prisma.shop.findUniqueOrThrow({
+        where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+        select: { welcomeEmailSentAt: true },
+      });
+      assert.ok(shop.welcomeEmailSentAt instanceof Date);
+    } finally {
+      await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+      await prisma.$disconnect();
+    }
+  });
+});
+
+test("welcome install trigger does not claim the guard when the shop is missing", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for this test");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  try {
+    const { result } = await withCapturedConsole(() =>
+      sendWelcomeEmailOnInstall(prisma, {
+        shopDomain: `missing-${uniqueSuffix()}.myshopify.com`,
+        recipientEmail: "someone@example.com",
+      }),
+    );
+    assert.equal(result.sent, false);
+    assert.equal(result.reason, "shop_not_found");
+  } finally {
+    await prisma.$disconnect();
+  }
+});

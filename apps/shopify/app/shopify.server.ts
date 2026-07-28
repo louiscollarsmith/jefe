@@ -12,6 +12,7 @@ import {
   splitScopes,
 } from "./services/shopify-backfill-status.server";
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
+import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
   "2025-10": ApiVersion.October25,
@@ -43,6 +44,24 @@ const shopify = shopifyApp({
         sessionId: session.id,
         scopes: splitScopes(session.scope),
         rawPayload: { source: "oauth_after_auth" },
+      });
+
+      // Fire-and-forget the Day-0 welcome email. It is idempotent (a
+      // welcome_email_sent_at guard means it dispatches once per shop, not on
+      // every afterAuth) and gated behind ENABLE_EMAIL (a no-op by default).
+      // Deliberately not awaited and self-catching so a slow or failed email
+      // can never delay or break the install/auth flow.
+      const associatedUser = session.onlineAccessInfo?.associated_user;
+      void sendWelcomeEmailOnInstall(prisma, {
+        shopDomain: session.shop,
+        recipientEmail: associatedUser?.email ?? null,
+        merchantName: associatedUser?.first_name ?? null,
+        appUrl: process.env.EMAIL_APP_URL || undefined,
+      }).catch((error) => {
+        console.error(
+          `[welcome-email] unexpected error for ${session.shop}:`,
+          error,
+        );
       });
     },
   },
