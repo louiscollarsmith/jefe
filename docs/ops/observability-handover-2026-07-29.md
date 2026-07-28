@@ -1,0 +1,49 @@
+# Observability — session handover (2026-07-29)
+
+Resume-state for the next observability session. Built across "Jefe chat 3" on
+2026-07-28→29. Everything below is **live in prod** unless marked.
+
+## What's live (shipped)
+
+- **Structured logging** — `app/lib/observability/logger.server.js` (levelled `LOG_LEVEL`, JSON in prod, `child()` bindings, Error serialisation) with **redaction** (`redact.server.js`: secret/PII keys → `[redacted]`, email-shaped values → `[redacted-email]`, phone keys). Server-only; never import into the client bundle.
+- **Error capture** — `handleError` in `entry.server.tsx` + root `ErrorBoundary` in `root.tsx`.
+- **Sentry (server-side)** — `app/lib/observability/sentry.server.js`, wired into `handleError` + streaming `onError`. Inert unless `SENTRY_DSN` set (it IS set on the `jefe` Railway service). PII-scrubbed in `beforeSend`. Project is "JavaScript React" (fine — DSN is platform-agnostic). **Client-side (@sentry/react) capture is NOT done yet** — the remaining half of roadmap #3.
+- **Health/readiness** — `/health` (liveness, always 200 + version/uptime/DB probe) and `/ready` (fails closed 503 when DB down; Railway healthcheck points here). `services/deployment-health.server.js`.
+- **Alerting** — error-level logs → Slack `#jefe-slack` webhook via the logger's `onError` hook (`alerting.server.js`), rate-limited, redacted, no-op unless `ALERT_WEBHOOK_URL` set (it IS set). **Proven on a real prod signal tonight.**
+- **Correlation IDs** — `context.server.js` (AsyncLocalStorage); the backfill worker wraps each job so its logs share a `correlationId`; `handleError` tags errors too.
+- **Event log** — `activity_events` table + `track()` / `listRecentActivity` (`services/analytics/event-log.server.js`). Fire-and-forget, PII-free. Writers: worker (memory_rebuilt / insights_generated / goals_generated / plan_generated / backfill_completed / job_failed), `shop_installed` (afterAuth), `server_error` + `worker_error` (error paths, topic `reliability`).
+- **LLM cost ledger** — `llm_usage_event` table + `usage-recorder.server.js` + `pricing.server.js`. `createLlmProvider({ usage })` records tokens/cost/latency per call; wired into insights/goals/plan generators. ⚠️ **Pricing is PLACEHOLDER** (`gemini-3.1-flash-lite` $0.10/$0.40 per 1M, marked `verified:false`) — Lewis has the real Gemini rates (~next week); update the single map in `pricing.server.js`.
+- **Ops panel** — `apps/ops/` (separate Node+pg app, its own Railway service `jefe-ops`), live at **https://admin.mynamejefe.com** (+ jefe-ops-production.up.railway.app). **Currently PUBLIC / no login** (`OPS_PUBLIC=true`; founder's call), `noindex`+robots so it's not searchable. Event feed with filter (type/topic/merchant) + full-text search + a funnel/engagement/LLM-cost **overview**. Reads the jefe DB read-only. Not on GitHub auto-deploy — deploy with `cd apps/ops && railway up --service jefe-ops --detach -y`.
+- **Alerts readable from DB** — instead of a Slack MCP (Matt didn't want Slack fiddling), alert-worthy errors (`server_error`/`worker_error`/`job_failed`, topic `reliability`) land in `activity_events`. Read them at the panel (filter reliability) or `SELECT ... FROM activity_events WHERE topic='reliability' ORDER BY created_at DESC`.
+
+## Roadmap status (task list #1–#12 + churn)
+
+Done: #1 backend events, #2 cost ledger, #3 Sentry **server-side**, #4 alerting (digest deliberately gated OFF — see gotchas), #5 panel **overview** (funnel/cost tiles), #12 alerts-in-DB.
+Remaining:
+- **#3 client-side** — `@sentry/react` init in `entry.client.tsx` + client `ErrorBoundary` capture (browser errors still vanish). `@sentry/node` already a dep.
+- **#5** — per-merchant drill-down (one shop's timeline + its LLM cost) + time-series sparklines. Also: re-gate the panel (SSO/password) + a read-only DB user when public is no longer wanted.
+- **#6 metrics/rollups** — DAU/WAU, success-rate + cost trends; daily rollup tables (premature at current volume — on-the-fly is fine for now).
+- **#7 tracing/perf** — latency/slow-query/LLM-duration p50/p95 off the correlation IDs.
+- **#8 uptime/SLOs** — external synthetic checks + SLO breach alerts.
+- **#9 retention/hygiene** — event retention policy, a log drain (Railway logs are ephemeral), PII-in-events audit.
+- **#10 margin** — **UNBLOCKED**: chat 4 shipped `Variant.unitCost` (migration `20260729090000`). Margin-per-client = revenue − COGS (`Variant.unitCost`) − LLM cost (ledger). **Surface cost-coverage** (chat 4 exposes `products.cost_coverage`) so margin isn't shown precise on thin cost data. Benchmark cluster to revisit when spend accrues: current provider vs Sciforium vs Model Fusion (see `future_considerations.md`).
+- **#11 churn capture** — `shop_uninstalled` event + `uninstalledAt` + a churn snapshot captured in the webhook path BEFORE teardown; surface in panel/usage. Sequence schema migration after chat 4's. Reason comes from chat 2's win-back email.
+- **#12 (optional)** — Slack MCP (korotovsky `slack-mcp-server`, `SLACK_MCP_XOXB_TOKEN`, read-only) if the raw channel is ever wanted; superseded by alerts-in-DB.
+
+## Env vars (Railway `jefe` service unless noted)
+
+Set: `SENTRY_DSN`, `ALERT_WEBHOOK_URL`. On `jefe-ops`: `DATABASE_URL` (=jefe's), `OPS_PASSWORD` (generated, in Railway), `OPS_PUBLIC=true`.
+Optional/unset: `ACTIVITY_WEBHOOK_URL` (digest channel, falls back to ALERT_), `ENABLE_DAILY_DIGEST` (=true to re-enable the daily digest — but fix the durable guard first), `LOG_LEVEL`, `APP_VERSION`, `SLACK_MCP_XOXB_TOKEN`.
+
+## Gotchas
+
+- **Shared working tree, shared git index** — 6 sessions on `/Users/mb/Claude/jefe`. ALWAYS `git add <explicit paths>` then `git commit -F - -- <explicit paths>` (pathspec; new files need `git add` first — pathspec-commit skips untracked). Codified in AGENTS.md "Shared Working Tree". (Two sweeps happened on 2026-07-28 before this.)
+- **Daily digest gated OFF** — it re-posted to Slack on every deploy (in-memory once-per-day guard + frequent deploys), and full-feed-to-Slack was off-direction (panel = feed, Slack = alerts). Re-enable needs a DURABLE (DB-backed) guard, not the in-memory one.
+- **Worker "backfill loop failed" alerts** — transient; coincide with deploys (preDeploy `npm run migrate` → first-tick DB blip → self-heals). Now logged under `err` so the message shows.
+- **Placeholder LLM pricing** — see cost ledger above; don't treat absolute costs as real until Lewis confirms.
+- **jefe-ops deploys via `railway up`** (not GitHub auto-deploy) — remember to `railway up` after editing `apps/ops`.
+- **Local typecheck vs Railway** — Railway runs `npx prisma generate` first; a locally-stale Prisma client (missing a new model) shows false `tsc` errors locally. Run `npx prisma generate` before trusting local typecheck.
+
+## Coordination (other live sessions)
+
+chat 2 (onboarding/channels) wires UI-side events (channel_connected, onboarding_*, memory_viewed) + will ping when in `app.tsx` for the client `page_viewed` beacon. chat 4 (memory/COGS) owns `Variant.unitCost` + margin beliefs. chat 5 (triage) routes observability/analytics/ops bugs here + reads alerts from the DB. chat 6 (growth) owns `docs/growth/*`. Ping before editing another session's files.
