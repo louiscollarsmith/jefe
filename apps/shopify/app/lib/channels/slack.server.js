@@ -12,6 +12,11 @@ const DEFAULT_SLACK_SCOPES = Object.freeze([
   // Opening a DM with the installing user (conversations.open) so Jefe can
   // message them directly, before/without a channel being chosen.
   "im:write",
+  // Receiving the merchant's replies: message.im events are only delivered when
+  // im:history is granted, and the inbound handler reads the DM text from them.
+  // Without this in the OAuth request, a reconnect would silently stop two-way
+  // Slack even though the event subscription is configured.
+  "im:history",
 ]);
 
 export class SlackChannelAdapter {
