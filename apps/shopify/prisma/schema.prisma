@@ -957,3 +957,25 @@ model MerchantPlanRecommendation {
   @@index([primaryGoalId])
   @@map("merchant_plan_recommendations")
 }
+
+/// Append-only activity/event log for the internal observability panel. Every
+/// meaningful user or system action is one row: a type + topic + searchable
+/// summary, keyed by merchant/shop. PII-free by construction (shop domain and
+/// event metadata only — never customer data). Not FK-constrained on purpose:
+/// it is a durable log that must survive even if a shop row is later removed.
+model ActivityEvent {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String?  @map("merchant_id") @db.Uuid
+  shopId     String?  @map("shop_id") @db.Uuid
+  shopDomain String?  @map("shop_domain")
+  type       String
+  topic      String?
+  summary    String?
+  properties Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([shopId, createdAt])
+  @@map("activity_events")
+}
