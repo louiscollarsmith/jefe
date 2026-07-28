@@ -25,6 +25,9 @@ const pool = new Pool({
 });
 
 const OPS_PASSWORD = process.env.OPS_PASSWORD || "";
+// OPS_PUBLIC=true opens the panel with no login (temporary, founder's call).
+// The password stays configured so re-gating later is a single flag flip.
+const OPS_PUBLIC = process.env.OPS_PUBLIC === "true";
 const PORT = Number(process.env.PORT) || 4000;
 const WINDOWS = { "24": "24h", "168": "7d", "720": "30d", "2160": "90d" };
 
@@ -175,13 +178,22 @@ function renderDashboard(data, params) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
 
+  // Never let this internal tool be search-indexed, even while it's open.
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+
+  if (url.pathname === "/robots.txt") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("User-agent: *\nDisallow: /\n");
+    return;
+  }
+
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("ok");
     return;
   }
 
-  if (!isAuthed(req)) {
+  if (!OPS_PUBLIC && !isAuthed(req)) {
     res.writeHead(401, {
       "WWW-Authenticate": 'Basic realm="Jefe Ops"',
       "Content-Type": "text/plain",
