@@ -14,9 +14,12 @@ import {
   upsertShopifyOrder,
   upsertShopifyProduct,
 } from "./canonical.server.js";
+import {
+  DEFAULT_BACKFILL_DAYS,
+  MAX_BACKFILL_DAYS,
+} from "../../shopify/backfill-window.server.js";
 
 const DEFAULT_PAGE_SIZE = 50;
-const DEFAULT_BACKFILL_DAYS = 365;
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -269,7 +272,7 @@ function stringValue(value) {
 
 /** @param {number} days */
 function shopifyCreatedAtQuery(days) {
-  const boundedDays = Math.min(Math.max(days, 1), DEFAULT_BACKFILL_DAYS);
+  const boundedDays = Math.min(Math.max(days, 1), MAX_BACKFILL_DAYS);
   const start = new Date(Date.now() - boundedDays * 24 * 60 * 60 * 1000);
   return `created_at:>=${start.toISOString().slice(0, 10)}`;
 }

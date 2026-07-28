@@ -1,5 +1,7 @@
 // @ts-check
 
+import { MAX_BACKFILL_DAYS } from "./backfill-window.server.js";
+
 export const PRODUCTS_COUNT_QUERY = `#graphql
   query JefeProductsCount {
     productsCount(limit: null) {
@@ -18,7 +20,7 @@ export const ORDERS_COUNT_QUERY = `#graphql
 
 /** @param {number} days */
 export function buildOrdersBackfillQueryFilter(days) {
-  const boundedDays = Math.min(Math.max(days, 1), 365);
+  const boundedDays = Math.min(Math.max(days, 1), MAX_BACKFILL_DAYS);
   const start = new Date(Date.now() - boundedDays * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);

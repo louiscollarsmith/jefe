@@ -8,8 +8,9 @@ import {
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
+import { DEFAULT_BACKFILL_DAYS } from "../lib/shopify/backfill-window.server.js";
 
-export const DEFAULT_BACKFILL_DAYS = 365;
+export { DEFAULT_BACKFILL_DAYS };
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
 export const BACKFILL_DOMAINS = [
   "shop",
