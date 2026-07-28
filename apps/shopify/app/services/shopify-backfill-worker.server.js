@@ -175,6 +175,18 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       // Pass the Error under `err` so it serialises (name/message/stack) and the
       // Slack alert shows the actual message, not just the headline.
       logger.error("Shopify evidence backfill loop failed", { err: error });
+      // Also record it as an activity event (topic "reliability") so alerts are
+      // readable from the panel + DB by any session, not just the Slack push.
+      void track(workerPrisma, {
+        type: "worker_error",
+        topic: "reliability",
+        summary: `Backfill worker loop error: ${
+          error instanceof Error ? error.message : String(error)
+        }`.slice(0, 300),
+        properties: {
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+      });
     } finally {
       loopRunning = false;
     }

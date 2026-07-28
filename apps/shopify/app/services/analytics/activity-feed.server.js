@@ -38,6 +38,8 @@ export const EVENT_META = {
   channel_connected: { emoji: "🔌", label: "channel connected", severity: "info" },
   generation_failed: { emoji: "⚠️", label: "generation failed", severity: "warn" },
   job_failed: { emoji: "⚠️", label: "job failed", severity: "warn" },
+  worker_error: { emoji: "🔴", label: "worker error", severity: "warn" },
+  server_error: { emoji: "🔴", label: "server error", severity: "warn" },
 };
 
 /**

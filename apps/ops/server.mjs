@@ -185,7 +185,10 @@ function page(body) {
 function renderDashboard(data, params) {
   const rows = data.rows
     .map((r) => {
-      const warn = r.type === "job_failed" || String(r.type).endsWith("_failed");
+      const warn =
+        r.topic === "reliability" ||
+        String(r.type).endsWith("_failed") ||
+        String(r.type).endsWith("_error");
       const time = new Date(r.created_at).toISOString().slice(0, 16).replace("T", " ");
       return `<tr>
         <td class="time">${esc(time)}</td>

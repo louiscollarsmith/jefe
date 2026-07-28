@@ -9,6 +9,8 @@ import { getShopifyStandaloneDocumentResponse } from "./services/shopify-documen
 import { logger } from "./lib/observability/logger.server";
 import { newCorrelationId } from "./lib/observability/context.server";
 import { initSentry, captureError } from "./lib/observability/sentry.server";
+import db from "./db.server";
+import { track } from "./services/analytics/event-log.server";
 
 // Inert unless SENTRY_DSN is set.
 initSentry();
@@ -93,5 +95,15 @@ export const handleError: HandleErrorFunction = (error, { request }) => {
     method: request.method,
     path: url.pathname,
     correlationId,
+  });
+  // Record it in the activity log (topic "reliability") so errors are readable
+  // from the panel + DB by any session, not just via the Slack push.
+  void track(db, {
+    type: "server_error",
+    topic: "reliability",
+    summary: `${request.method} ${url.pathname}: ${
+      error instanceof Error ? error.message : String(error)
+    }`.slice(0, 300),
+    properties: { path: url.pathname, correlationId },
   });
 };
