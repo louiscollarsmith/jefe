@@ -303,6 +303,34 @@ test("gross margin suppresses when cost coverage is too thin, never guessed", as
   assert.ok(coverage && coverage.value.percentage < 100);
 });
 
+test("revenue and margin beliefs normalize to shop base currency (multi-currency store)", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  // A single store selling internationally: orders carry different *presentment*
+  // currencies, but Shopify stamps every amount in the shop's base currency
+  // (shopMoney), which is what we store — so beliefs must NOT skip on it.
+  const orders = await prisma.order.findMany();
+  prisma.order.findMany = async () =>
+    orders.map((order, index) => ({
+      ...order,
+      currency: index % 5 === 0 ? "EUR" : index % 5 === 1 ? "USD" : "GBP",
+    }));
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const beliefs = new Map(result.derivations.map((b) => [b.key, b]));
+  // Publishes despite mixed presentment currencies (amounts are shop-currency).
+  assert.equal(
+    beliefs.get("products.top_product_revenue_share.trailing_90d").value.percentage,
+    75,
+  );
+  const margin = beliefs.get("products.gross_margin.trailing_90d");
+  assert.equal(margin.value.percentage, 55);
+  // Labeled with the dominant base-currency proxy (GBP here), not skipped.
+  assert.equal(margin.value.currency, "GBP");
+});
+
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {
   const now = new Date("2026-07-23T12:00:00Z");
   const existing = {

@@ -643,7 +643,7 @@ function ordersPerActiveDay(context, definition, days) {
 function revenuePerActiveDay(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   const activeDays = activeDaySet(context, orders).size;
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (orders.length < 1 || activeDays < 1) return skipped(definition, "insufficient_data", "At least one priced order on an active selling day is required.", { orders: orders.length, activeDays });
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   return derived(context, definition, {
@@ -666,7 +666,7 @@ function multiCurrencyOrderShare(context, definition, days) {
 
 function orderValueDispersion(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (orders.length < 10) return skipped(definition, "insufficient_data", "At least 10 priced orders are required for dispersion.", { orders: orders.length });
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   const values = orders.map(orderValue);
@@ -682,7 +682,7 @@ function orderValueDispersion(context, definition, days) {
 
 function orderValueMeanMedianRatio(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (orders.length < 10) return skipped(definition, "insufficient_data", "At least 10 priced orders are required for mean-to-median ratio.", { orders: orders.length });
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   const values = orders.map(orderValue);
@@ -698,7 +698,7 @@ function orderValueMeanMedianRatio(context, definition, days) {
 
 function topSalesDayShare(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders are required.", { orders: orders.length });
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   const byDay = sumBy(orders, (order) => dayKey(orderTime(order), context.shopTimezone), orderValue);
@@ -707,7 +707,7 @@ function topSalesDayShare(context, definition, days) {
 
 function topSalesWeekShare(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   const weekKeys = new Set(orders.map((order) => weekKey(orderTime(order), context.shopTimezone)));
   if (weekKeys.size < 8) return skipped(definition, "insufficient_data", "At least 8 observed weeks are required.", { observedWeeks: weekKeys.size, orders: orders.length });
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
@@ -1038,7 +1038,7 @@ function orderCountWindow(context, definition, days) {
 function grossOrderValueWindow(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   if (orders.length < 1) return skipped(definition, "insufficient_data", "At least one priced order is required.", { pricedOrders: 0 });
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   return derived(context, definition, {
     value: { amount: roundMoney(sum(orders.map(orderValue))), currency: currency.currency, orderCount: orders.length, window: `trailing_${days}d`, orderValuePolicy: orderValuePolicy() },
@@ -1052,7 +1052,7 @@ function grossOrderValueWindow(context, definition, days) {
 
 function orderValueAggregate(context, definition, orders, method, minimum) {
   if (orders.length < minimum) return skipped(definition, "insufficient_data", `At least ${minimum} priced order(s) are required.`, { pricedOrders: orders.length });
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
   const values = orders.map(orderValue);
   const amount = method === "mean" ? average(values) : percentile(values, percentileFor(method));
@@ -1172,9 +1172,9 @@ function grossMargin(context, definition, days) {
   if (orders.length < 5) {
     return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
   }
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
   }
   const orderIds = new Set(orders.map((order) => order.id));
   const costByVariant = variantUnitCostMap(context);
@@ -1269,9 +1269,9 @@ function topProductRevenueShare(context, definition, days, topN) {
   if (orders.length < 5) {
     return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
   }
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
   }
   const revenues = Array.from(revenueByProduct.values())
     .filter((revenue) => revenue > 0)
@@ -1289,9 +1289,9 @@ function bestsellerByRevenue(context, definition, days) {
   if (orders.length < 5) {
     return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
   }
-  const currency = singleCurrency(orders.map((order) => order.currency));
+  const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
   }
   const ranked = Array.from(revenueByProduct.entries())
     .filter((entry) => entry[1] > 0)
@@ -1829,6 +1829,29 @@ function currencyDistribution(currencies) {
 function singleCurrency(currencies) {
   const distribution = currencyDistribution(currencies);
   return { ok: distribution.entries.length <= 1, currency: distribution.entries[0]?.currency ?? null, currencies: distribution.entries.map((entry) => entry.currency) };
+}
+
+// The shop's base currency. Every stored money amount is Shopify shopMoney,
+// denominated in the shop's base currency (constant per shop) — so order/line
+// revenue and margin are summable across orders regardless of the customer's
+// *presentment* currency. A single store selling internationally is the common
+// case, not a data-quality problem, so revenue beliefs must not skip on it. We
+// only need the base-currency label; the dominant priced currency is the proxy
+// (exact capture from shopMoney.currencyCode is a documented follow-up). `ok` is
+// false only when there are no priced records at all. Returns the singleCurrency
+// shape so it is a drop-in at order-revenue call sites.
+function shopBaseCurrency(context) {
+  const distribution = currencyDistribution([
+    ...context.pricedOrders.map((order) => order.currency),
+    ...(context.successfulRefundCoverage?.successfulTransactions ?? []).map(
+      (transaction) => transaction.currency,
+    ),
+  ]);
+  return {
+    ok: distribution.entries.length >= 1,
+    currency: distribution.entries[0]?.currency ?? null,
+    currencies: distribution.entries.map((entry) => entry.currency),
+  };
 }
 
 function shopTimezoneFrom(rawPayload) {
