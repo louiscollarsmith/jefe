@@ -430,7 +430,7 @@ const HTML = String.raw`<!doctype html>
     if(el('ingest-eta')){ el('ingest-eta').textContent= ing>=1?'Done — 14 months indexed':('about '+(etaS<20?etaS:Math.round(etaS/5)*5)+' seconds left · 14 months of history'); }
     if(el('dwell-link')){ el('dwell-link').style.opacity= (S.elapsed>=DWELL_MS)?'1':'0'; }
     if(el('hairline')){ el('hairline').style.width= Math.round((scene/LAST)*100)+'%'; }
-    var showChip=(scene>0&&ing<1), showReady=(scene>0&&ing>=1&&S.elapsed<INGEST_MS+6000);
+    var showChip=(scene>0&&!daily&&ing<1), showReady=(scene>0&&!daily&&ing>=1&&S.elapsed<INGEST_MS+6000);
     if(el('chip-loading')){ el('chip-loading').style.display=showChip?'flex':'none'; if(el('chip-text')){ el('chip-text').textContent='Reading your store · '+Math.round(ing*100)+'%'; } }
     if(el('chip-ready')){ el('chip-ready').style.display=showReady?'flex':'none'; }
     if(el('step-label')){ el('step-label').textContent= pad2(scene+1)+' / 08 · '+labels[scene]; }
