@@ -266,14 +266,14 @@ const HTML = String.raw`<!doctype html>
   var blush='oklch(0.82 0.12 18)',violet='oklch(0.66 0.11 285)',dim='oklch(0.62 0.02 265)',line='oklch(0.4 0.05 268)';
   function el(id){return document.getElementById(id);}
   function pad2(n){return ('0'+n).slice(-2);}
-  window.go=function(n,po){ n=Math.max(0,Math.min(LAST,n)); var playing=(po!==undefined)?po:S.playing; S.scene=n; render(); arm(n,playing); };
+  function showScene(n){ for(var i=0;i<=5;i++){ var sc=el('scene-'+i); if(sc){ sc.style.display=(i===n)?'flex':'none'; } } var a=el('scene-'+n); if(a){ a.innerHTML=a.innerHTML; } }
+  window.go=function(n,po){ n=Math.max(0,Math.min(LAST,n)); var playing=(po!==undefined)?po:S.playing; S.scene=n; showScene(n); render(); arm(n,playing); };
   function arm(n,playing){ clearTimeout(timer); if(playing&&n<LAST){ timer=setTimeout(function(){window.go(n+1);},durations[n]); } }
   function hideSoon(){ clearTimeout(uiTimer); uiTimer=setTimeout(function(){S.ui=false;render();},2600); }
   window.togglePlay=function(){ S.playing=!S.playing; render(); arm(S.scene,S.playing); };
   window.replay=function(){ t0=Date.now(); S.playing=true; S.ingest=0; S.elapsed=0; window.go(0,true); };
   function render(){
     var scene=S.scene, ing=S.ingest;
-    for(var i=0;i<=5;i++){ var sc=el('scene-'+i); if(sc){ sc.style.display=(scene===i)?'flex':'none'; } }
     for(var j=0;j<6;j++){
       var active=(j===scene), done=(j<scene);
       var item=el('rail-'+j); if(item){ item.style.opacity= active?'1':(done?'0.62':'0.34'); }
@@ -305,6 +305,7 @@ const HTML = String.raw`<!doctype html>
   window.toggleCh=function(k){ S.channels[k]=!S.channels[k]; render(); };
   window.imgFail=function(e){ if(e&&e.target){ e.target.style.display='none'; } };
   document.addEventListener('mousemove',function(){ if(!S.ui){S.ui=true;} hideSoon(); render(); });
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden){ showScene(S.scene); render(); } });
   window.go(0,true); hideSoon();
   setInterval(function(){ var ms=Date.now()-t0; S.elapsed=ms; S.ingest=Math.min(1,ms/INGEST_MS); render(); },250);
 })();
