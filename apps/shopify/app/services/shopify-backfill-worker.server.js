@@ -126,6 +126,11 @@ const DIGEST_HOUR_UTC = 8;
  * @param {Pick<Console, "info" | "warn" | "error">} logger
  */
 async function maybePostDailyDigest(prisma, logger) {
+  // OFF by default: the panel (admin.mynamejefe.com) is the activity feed;
+  // Slack stays for alerts only. Opt in with ENABLE_DAILY_DIGEST=true — but note
+  // the once-per-day guard below is in-memory, so re-enabling needs a durable
+  // (DB-backed) guard first or it re-posts on every deploy/restart.
+  if (process.env.ENABLE_DAILY_DIGEST !== "true") return;
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
   if (lastDigestDay === dayKey || now.getUTCHours() < DIGEST_HOUR_UTC) return;
@@ -167,9 +172,9 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await processNextBackfillJob(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
     } catch (error) {
-      logger.error("Shopify evidence backfill loop failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // Pass the Error under `err` so it serialises (name/message/stack) and the
+      // Slack alert shows the actual message, not just the headline.
+      logger.error("Shopify evidence backfill loop failed", { err: error });
     } finally {
       loopRunning = false;
     }
