@@ -19,6 +19,9 @@
  * @property {string} [text] Optional plaintext alternative.
  * @property {Record<string, string>} [headers] Extra headers (e.g. List-Unsubscribe).
  * @property {string} [from] Overrides RESEND_FROM_EMAIL.
+ * @property {string} [replyTo] Overrides RESEND_REPLY_TO — sets the Reply-To
+ *   address so replies to a send-only sender (e.g. hola@) still reach a real,
+ *   monitored inbox rather than bouncing.
  */
 
 /**
@@ -40,14 +43,35 @@ export function isEmailEnabled() {
 }
 
 /**
+ * Build the exact object handed to `resend.emails.send`. Pure + exported so the
+ * from / reply-to / optional-field wiring stays unit-testable without the SDK.
+ *
+ * @param {{ to: string; subject: string; html: string; text?: string; headers?: Record<string, string>; from: string; replyTo?: string }} input
+ * @returns {import("resend").CreateEmailOptions}
+ */
+export function buildResendPayload(input) {
+  const { to, subject, html, text, headers, from, replyTo } = input;
+  return {
+    from,
+    to,
+    subject,
+    html,
+    ...(text ? { text } : {}),
+    ...(headers ? { headers } : {}),
+    ...(replyTo ? { replyTo } : {}),
+  };
+}
+
+/**
  * Send an email through Resend, gated behind ENABLE_EMAIL.
  *
  * @param {SendEmailInput} input
  * @returns {Promise<SendEmailResult>}
  */
 export async function sendEmail(input) {
-  const { to, subject, html, text, headers } = input;
+  const { to, subject } = input;
   const from = input.from ?? process.env.RESEND_FROM_EMAIL ?? "";
+  const replyTo = input.replyTo ?? process.env.RESEND_REPLY_TO ?? "";
 
   // Default path: email disabled -> never touch Resend.
   if (!isEmailEnabled()) {
@@ -87,14 +111,9 @@ export async function sendEmail(input) {
   const { Resend } = await import("resend");
   const resend = new Resend(apiKey);
 
-  const { data, error } = await resend.emails.send({
-    from,
-    to,
-    subject,
-    html,
-    ...(text ? { text } : {}),
-    ...(headers ? { headers } : {}),
-  });
+  const { data, error } = await resend.emails.send(
+    buildResendPayload({ ...input, from, replyTo: replyTo || undefined }),
+  );
 
   if (error) {
     throw new Error(

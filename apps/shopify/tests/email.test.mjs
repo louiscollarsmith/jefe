@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PrismaClient } from "@prisma/client";
-import { sendEmail, isEmailEnabled } from "../app/lib/email/resend.server.js";
+import {
+  sendEmail,
+  isEmailEnabled,
+  buildResendPayload,
+} from "../app/lib/email/resend.server.js";
 import {
   escapeHtml,
   interpolate,
@@ -109,6 +113,38 @@ test("ENABLE_EMAIL enables only on a 'true' value (case/whitespace-insensitive)"
       assert.equal(isEmailEnabled(), true, `value=${JSON.stringify(value)}`);
     });
   }
+});
+
+test("buildResendPayload wires from + reply-to and omits absent optionals", () => {
+  // Minimal input: only required fields survive; no replyTo/text/headers keys.
+  const minimal = buildResendPayload({
+    to: "m@example.com",
+    subject: "S",
+    html: "<p>x</p>",
+    from: "Hola <hola@mynamejefe.com>",
+  });
+  assert.deepEqual(minimal, {
+    from: "Hola <hola@mynamejefe.com>",
+    to: "m@example.com",
+    subject: "S",
+    html: "<p>x</p>",
+  });
+  assert.ok(!("replyTo" in minimal), "no replyTo key when unset");
+
+  // With a Reply-To: the visible sender stays Hola, replies route to a real inbox.
+  const withReply = buildResendPayload({
+    to: "m@example.com",
+    subject: "S",
+    html: "<p>x</p>",
+    text: "x",
+    headers: { "List-Unsubscribe": "<https://x>" },
+    from: "Hola <hola@mynamejefe.com>",
+    replyTo: "matt@mynamejefe.com",
+  });
+  assert.equal(withReply.replyTo, "matt@mynamejefe.com");
+  assert.equal(withReply.from, "Hola <hola@mynamejefe.com>");
+  assert.equal(withReply.text, "x");
+  assert.deepEqual(withReply.headers, { "List-Unsubscribe": "<https://x>" });
 });
 
 test("sendEmail while enabled but without an API key still does not send", async () => {
