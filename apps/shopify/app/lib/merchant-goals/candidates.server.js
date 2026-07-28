@@ -1,10 +1,14 @@
 // @ts-nocheck
 
 import { createHash } from "node:crypto";
-import { buildMerchantInsightSnapshot } from "../merchant-insights/candidates.server.js";
+import {
+  buildMerchantInsightSnapshot,
+  selectPrioritizedCandidates,
+} from "../merchant-insights/candidates.server.js";
 import { INSIGHT_RUN_STATUS } from "../merchant-insights/constants.server.js";
 import {
   GOAL_MEMORY_KEYS,
+  MAX_GOAL_BELIEFS,
   MERCHANT_GOALS_SNAPSHOT_VERSION,
 } from "./constants.server.js";
 
@@ -13,11 +17,33 @@ import {
  * @param {{ merchantId: string; shopId: string }} input
  */
 export async function buildMerchantGoalSnapshot(prisma, input) {
-  const memory = await buildMerchantInsightSnapshot(prisma, input);
+  // Reuse the Insights snapshot builder (and its cap) for the belief base, but
+  // suppress its logger: a Goals run reports its own combined cap below, so an
+  // inner "insights capped" line here would be misleading. The drop counts are
+  // still returned and folded into the Goals accounting.
+  const memory = await buildMerchantInsightSnapshot(prisma, {
+    ...input,
+    logger: undefined,
+  });
   const goalMemoryKeys = new Set(Object.values(GOAL_MEMORY_KEYS));
-  const beliefs = memory.snapshot.beliefs.filter(
+  const filteredCandidates = memory.snapshot.beliefs.filter(
     (belief) => !goalMemoryKeys.has(belief.key),
   );
+  // The belief set is already bounded upstream by the Insights cap this reuses.
+  // Re-apply the same prioritisation here so the Goals snapshot is independently
+  // guaranteed to stay under the provider input limit (18000 tokens). For a set
+  // already at or under the cap this is a no-op that preserves order, so small
+  // stores keep their exact snapshot hash.
+  const selection = selectPrioritizedCandidates(
+    filteredCandidates.map((candidate) => ({
+      candidate,
+      category: candidate.cat,
+      key: candidate.key,
+      score: scoreNormalizedCandidate(candidate),
+    })),
+    MAX_GOAL_BELIEFS,
+  );
+  const beliefs = selection.selected;
   const beliefIds = beliefs.map((belief) => belief.id);
   const allowedBeliefIds = new Set(beliefIds);
   const memorySnapshot = {
@@ -83,13 +109,53 @@ export async function buildMerchantGoalSnapshot(prisma, input) {
       .reverse(),
   };
   const snapshotHash = hashSnapshot(snapshot);
+
+  // Surface beliefs excluded by capping (upstream Insights cap + any applied
+  // here) so truncation is observable rather than silent.
+  const droppedBeliefCount =
+    (memory.droppedBeliefCount ?? 0) + selection.droppedCount;
+  const droppedCategories = [
+    ...new Set([
+      ...(memory.droppedCategories ?? []),
+      ...selection.droppedCategories,
+    ]),
+  ].sort();
+  if (droppedBeliefCount > 0) {
+    input.logger?.warn?.("Merchant goals candidate set capped", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      cap: MAX_GOAL_BELIEFS,
+      keptBeliefs: beliefs.length,
+      droppedBeliefCount,
+      droppedCategories,
+    });
+  }
+
   return {
     snapshot,
     snapshotHash,
     beliefIds,
     candidateCount: beliefs.length,
+    droppedBeliefCount,
+    droppedCategories,
     insightRunId: insightRun?.id ?? null,
   };
+}
+
+/**
+ * Approximate selection score for an already-normalized candidate. Used only on
+ * the rare over-cap defensive path (the primary bound is the upstream Insights
+ * cap). Recency is unavailable after normalization, so this ranks by merchant
+ * authority and confidence only.
+ * @param {{ authority?: string; conf?: number | null }} candidate
+ */
+function scoreNormalizedCandidate(candidate) {
+  let score = 0;
+  if (candidate.authority === "merchant_corrected") score += 40;
+  else if (candidate.authority === "merchant_confirmed") score += 32;
+  else if (candidate.authority === "deterministic") score += 18;
+  if (Number.isFinite(candidate.conf)) score += Math.round(candidate.conf * 20);
+  return score;
 }
 
 /** @param {unknown} value @param {number} max */

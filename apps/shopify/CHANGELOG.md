@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-28
+
+### Added
+
+- Implemented Shopify's three mandatory GDPR/compliance webhooks (`customers/redact`, `customers/data_request`, `shop/redact`) in a new scoped redaction service `app/lib/ingestion/shopify/compliance.server.js`, replacing the previous no-op handling. `customers/redact` deletes the customer's `CustomerIdentity` row(s) and scrubs email/name/address/phone/IP from the affected orders' and ledger events' `raw_payload`, matched by sha256 email hash and Shopify customer id and bounded strictly to the HMAC-verified shop (never other customers or shops). `shop/redact` performs a full `shopId`-scoped teardown (explicit deletes for the non-cascading rows plus the shop-delete cascade, then removal of the now-childless merchant, guarded so a shared merchant with other shops is left intact). `customers/data_request` records a durable, sanitised export (masked email + aggregates + non-sensitive order fields) for the merchant to act on and emails nothing. Covered by `tests/shopify-compliance.test.mjs`.
+
+### Security
+
+- Compliance webhooks are now handled before tenant bootstrap and before the event-ledger write, so a redaction request can no longer reactivate an uninstalled shop or persist its PII-bearing body at rest — previously the full request body was written to `ledger_events.raw_payload` before the no-op compliance branch ran, so a redact request actually *added* PII.
+- Stopped storing plaintext customer email at rest: Shopify ingestion no longer writes `customer_identities.normalized_email` (only the sha256 `email_hash` for lookups and the display `masked_email` are kept — the only fields the app reads). New migration `20260728120000_null_customer_identity_normalized_email` relaxes the column's `NOT NULL` constraint (realigning the live column with the already-optional Prisma field) and NULLs all existing values; the column is intentionally kept, not dropped, for reversibility.
+
+### Fixed
+
+- Made Merchant Memory writes atomic: each belief update now commits together with its history and evidence in a single transaction, so a mid-write failure can no longer leave a belief without its provenance.
+- Retired stale deterministic beliefs: a stat that can no longer be computed on a full rebuild (drops below its minimum-data threshold) is now obsoleted instead of left showing an old value.
+- Bounded Insights and Goals generation to the top 40 prioritised beliefs (merchant corrections + confidence + recency + one-per-category coverage), so mature stores no longer hard-fail generation with `input_too_large`; small stores are unchanged.
+
 ## 2026-07-27
 
 ### Changed

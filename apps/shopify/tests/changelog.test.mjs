@@ -66,23 +66,26 @@ test("changelog loader finds the app changelog from the app workspace", async ()
   const entries = await loadChangelog();
 
   assert.ok(entries.length >= 4);
-  assert.equal(entries[0].date, "2026-07-27");
+  // Find the 2026-07-27 entry by date rather than assuming it's the newest —
+  // later dated sections (e.g. 2026-07-28) legitimately sit above it.
+  const jul27 = entries.find((entry) => entry.date === "2026-07-27");
+  assert.ok(jul27, "expected a 2026-07-27 changelog entry");
   assert.ok(
-    entries[0].sections.some((section) =>
+    jul27.sections.some((section) =>
       section.items.some((item) =>
         item.includes("root handover guide"),
       ),
     ),
   );
   assert.ok(
-    entries[0].sections.some((section) =>
+    jul27.sections.some((section) =>
       section.items.some((item) =>
         item.includes("verified unused helper code"),
       ),
     ),
   );
   assert.ok(
-    entries[0].sections.some((section) =>
+    jul27.sections.some((section) =>
       section.items.some((item) =>
         item.includes("Connect Slack opens Slack authorisation"),
       ),

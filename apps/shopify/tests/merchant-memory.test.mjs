@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PrismaClient } from "@prisma/client";
 import {
+  confirmBelief,
   correctBelief,
   getBelief,
   getBeliefsForMerchant,
@@ -13,6 +14,7 @@ import {
 import { processNextBackfillJob } from "../app/services/shopify-backfill-worker.server.js";
 import { enqueueMerchantMemoryRefresh } from "../app/lib/merchant-memory/jobs.server.js";
 import {
+  BELIEF_PRECEDENCE,
   BELIEF_STATUS,
   MEMORY_REFRESH_JOB_TYPE,
 } from "../app/lib/merchant-memory/constants.server.js";
@@ -354,6 +356,304 @@ test("Merchant-authoritative corrections are not overwritten by recalculation", 
   }
 });
 
+test("Belief writes are atomic: a failure before evidence rolls back belief and history", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Memory tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const { merchant, shop } = await createMemoryFixture(prisma, suffix);
+    await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    const before = await prisma.merchantMemoryBelief.findFirstOrThrow({
+      where: {
+        merchantId: merchant.id,
+        key: "orders.total_order_count",
+        status: { in: ["inferred", "merchant_confirmed", "merchant_corrected"] },
+      },
+    });
+
+    // Simulate a failure between the belief write and the evidence write by
+    // making evidence.create throw *inside* the interactive transaction.
+    await assert.rejects(
+      () =>
+        correctBelief(evidenceFailingClient(prisma), {
+          merchantId: merchant.id,
+          key: "orders.total_order_count",
+          value: { count: 4242 },
+          valueType: "number",
+          correctedBy: "merchant:atomic",
+          evidenceSummary: "This correction must never persist.",
+        }),
+      /simulated evidence failure/,
+    );
+
+    const after = await prisma.merchantMemoryBelief.findFirstOrThrow({
+      where: { id: before.id },
+    });
+    const correctionHistory = await prisma.merchantMemoryBeliefHistory.count({
+      where: {
+        merchantId: merchant.id,
+        key: "orders.total_order_count",
+        changeReason: "merchant_corrected_belief",
+      },
+    });
+    const correctionEvidence = await prisma.merchantMemoryEvidence.count({
+      where: { merchantId: merchant.id, beliefId: before.id, evidenceType: "merchant_correction" },
+    });
+
+    // Whole unit rolled back: no partial belief, no orphaned history/evidence.
+    assert.equal(after.status, BELIEF_STATUS.inferred);
+    assert.equal(after.status, before.status);
+    assert.deepEqual(after.value, before.value);
+    assert.equal(correctionHistory, 0);
+    assert.equal(correctionEvidence, 0);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Memory Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("Confirming an observation records the confirmation but keeps it re-derivable", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Memory tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const { merchant, shop } = await createMemoryFixture(prisma, suffix);
+    await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    // orders.total_order_count is registered with kind === "observation".
+    const beforeConfirm = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "orders.total_order_count",
+    });
+    assert.equal(beforeConfirm.value.count, 2);
+
+    await confirmBelief(prisma, {
+      merchantId: merchant.id,
+      key: "orders.total_order_count",
+      confirmedBy: "merchant:test",
+      evidenceSummary: "Yes, two orders is correct.",
+    });
+
+    const confirmed = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "orders.total_order_count",
+      includeEvidence: true,
+    });
+    // Confirmation is recorded (lastConfirmedAt + evidence) but the belief stays
+    // inferred and system-owned rather than being frozen at merchant_confirmed.
+    assert.equal(confirmed.status, BELIEF_STATUS.inferred);
+    assert.equal(confirmed.value.count, 2);
+    assert.ok(confirmed.lastConfirmedAt);
+    assert.equal(
+      (confirmed.evidence ?? []).some(
+        (item) => item.evidenceType === "merchant_confirmation",
+      ),
+      true,
+    );
+
+    // A new order arrives; a full rebuild must refresh the confirmed observation.
+    await prisma.order.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        externalId: `order-three-${suffix}`,
+        currency: "GBP",
+        totalPrice: "70.00",
+        processedAt: new Date("2026-07-22T10:00:00Z"),
+      },
+    });
+    await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    const refreshed = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "orders.total_order_count",
+    });
+    // Refreshed to 3 (not pinned at 2), still inferred, confirmation preserved.
+    assert.equal(refreshed.status, BELIEF_STATUS.inferred);
+    assert.equal(refreshed.value.count, 3);
+    assert.ok(refreshed.lastConfirmedAt);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Memory Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("A deterministic metric that drops below its data threshold is retired on rebuild", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Memory tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const { merchant, shop } = await createMemoryFixture(prisma, suffix);
+    await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    const active = await prisma.merchantMemoryBelief.findFirst({
+      where: {
+        merchantId: merchant.id,
+        key: "inventory.positive_available_units",
+        status: BELIEF_STATUS.inferred,
+      },
+    });
+    assert.ok(active, "positive_available_units should be active after first rebuild");
+    assert.equal(active.precedence, BELIEF_PRECEDENCE.systemInference);
+
+    // Remove the source so the derivation now returns INSUFFICIENT_DATA.
+    await prisma.inventoryLevel.deleteMany({ where: { merchantId: merchant.id } });
+
+    const rebuild = await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    assert.equal(
+      rebuild.skippedOutcomes.some(
+        (outcome) => outcome.key === "inventory.positive_available_units",
+      ),
+      true,
+    );
+    assert.ok(rebuild.obsoletedDeterministic >= 1);
+
+    const retired = await prisma.merchantMemoryBelief.findFirstOrThrow({
+      where: { id: active.id },
+    });
+    const obsoleteHistory = await prisma.merchantMemoryBeliefHistory.count({
+      where: {
+        merchantId: merchant.id,
+        key: "inventory.positive_available_units",
+        changeReason: "deterministic_derivation_no_longer_supported",
+      },
+    });
+    const stillActive = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "inventory.positive_available_units",
+    });
+
+    assert.equal(retired.status, BELIEF_STATUS.obsolete);
+    assert.ok(retired.supersededAt);
+    assert.equal(obsoleteHistory, 1);
+    assert.equal(stillActive, null);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Memory Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("The rebuild reconciliation never obsoletes merchant-authoritative beliefs", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Memory tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const { merchant, shop } = await createMemoryFixture(prisma, suffix);
+    await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+
+    // Merchant asserts a specific value for a metric that will later lose data.
+    await correctBelief(prisma, {
+      merchantId: merchant.id,
+      key: "inventory.positive_available_units",
+      value: { count: 42 },
+      valueType: "number",
+      correctedBy: "merchant:test",
+    });
+    const corrected = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "inventory.positive_available_units",
+    });
+    assert.equal(corrected.status, BELIEF_STATUS.merchantCorrected);
+
+    // Drop the source so the derivation now returns INSUFFICIENT_DATA and the
+    // key appears in skippedOutcomes for the reconciliation to consider.
+    await prisma.inventoryLevel.deleteMany({ where: { merchantId: merchant.id } });
+    const rebuild = await rebuildMerchantMemory(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: silentLogger,
+    });
+    assert.equal(
+      rebuild.skippedOutcomes.some(
+        (outcome) => outcome.key === "inventory.positive_available_units",
+      ),
+      true,
+    );
+
+    const afterRebuild = await getBelief(prisma, {
+      merchantId: merchant.id,
+      key: "inventory.positive_available_units",
+    });
+    const obsoleteHistory = await prisma.merchantMemoryBeliefHistory.count({
+      where: {
+        merchantId: merchant.id,
+        key: "inventory.positive_available_units",
+        changeReason: "deterministic_derivation_no_longer_supported",
+      },
+    });
+
+    // Authoritative correction survives: never obsoleted, never overwritten.
+    assert.equal(afterRebuild.status, BELIEF_STATUS.merchantCorrected);
+    assert.equal(afterRebuild.value.count, 42);
+    assert.equal(obsoleteHistory, 0);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Memory Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("Merchant Memory lifecycle supports supersession and obsolescence", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Memory tests");
@@ -651,6 +951,37 @@ function uniqueSuffix() {
     /[^a-z0-9-]/gi,
     "",
   );
+}
+
+// Wraps a real Prisma client so that, inside an interactive transaction, the
+// evidence write throws after the belief + history writes have been issued.
+// Reads before the transaction (findFirst/findFirstOrThrow) delegate to the
+// real client; the belief/history writes use the real transaction handle so
+// they participate in — and roll back with — the aborted transaction.
+function evidenceFailingClient(prisma) {
+  return {
+    merchantMemoryBelief: {
+      findFirst: (args) => prisma.merchantMemoryBelief.findFirst(args),
+      findFirstOrThrow: (args) => prisma.merchantMemoryBelief.findFirstOrThrow(args),
+    },
+    $transaction: (callback) =>
+      prisma.$transaction((tx) =>
+        callback({
+          merchantMemoryBelief: {
+            create: (args) => tx.merchantMemoryBelief.create(args),
+            update: (args) => tx.merchantMemoryBelief.update(args),
+          },
+          merchantMemoryBeliefHistory: {
+            create: (args) => tx.merchantMemoryBeliefHistory.create(args),
+          },
+          merchantMemoryEvidence: {
+            create: async () => {
+              throw new Error("simulated evidence failure");
+            },
+          },
+        }),
+      ),
+  };
 }
 
 function createMockDerivationPrisma() {

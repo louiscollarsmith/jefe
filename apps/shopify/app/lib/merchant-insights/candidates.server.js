@@ -7,7 +7,15 @@ import {
   BELIEF_STATUS,
 } from "../merchant-memory/constants.server.js";
 import { getBeliefDefinition } from "../merchant-memory/conversational-belief-registry.server.js";
-import { MERCHANT_INSIGHTS_SNAPSHOT_VERSION } from "./constants.server.js";
+import {
+  MAX_INSIGHT_BELIEFS,
+  MERCHANT_INSIGHTS_SNAPSHOT_VERSION,
+} from "./constants.server.js";
+
+// Additive recency bonus (0..RECENCY_WEIGHT) folded into a belief's selection
+// score. Recency is measured relative to the current belief set (no wall clock
+// is read), so the same belief set always yields the same selection and hash.
+const RECENCY_WEIGHT = 12;
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -39,10 +47,34 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     select: { id: true, completedAt: true },
   });
 
-  const candidates = beliefs
-    .map(normalizeBeliefCandidate)
-    .filter(Boolean)
-    .sort((a, b) => a.cat.localeCompare(b.cat) || a.key.localeCompare(b.key));
+  const scored = withRecencyScores(
+    beliefs
+      .map((belief) => {
+        const candidate = normalizeBeliefCandidate(belief);
+        if (!candidate) return null;
+        return {
+          candidate,
+          category: candidate.cat,
+          key: candidate.key,
+          base: scoreBeliefForSelection(belief),
+          recencyMs: beliefRecencyMs(belief),
+        };
+      })
+      .filter(Boolean),
+  );
+  const selection = selectPrioritizedCandidates(scored, MAX_INSIGHT_BELIEFS);
+  const candidates = selection.selected;
+
+  if (selection.droppedCount > 0) {
+    input.logger?.warn?.("Merchant insights candidate set capped", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      cap: MAX_INSIGHT_BELIEFS,
+      keptBeliefs: candidates.length,
+      droppedBeliefCount: selection.droppedCount,
+      droppedCategories: selection.droppedCategories,
+    });
+  }
 
   const snapshot = {
     snapshotVersion: MERCHANT_INSIGHTS_SNAPSHOT_VERSION,
@@ -65,8 +97,173 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     snapshotHash,
     beliefIds: candidates.map((belief) => belief.id),
     candidateCount: candidates.length,
+    droppedBeliefCount: selection.droppedCount,
+    droppedCategories: selection.droppedCategories,
     memoryRefreshRunId: memoryRefreshRun?.id ?? null,
   };
+}
+
+/**
+ * Prioritise and cap a scored candidate set so the generation prompt stays
+ * under the provider's input-token limit. Selection is deterministic for a
+ * given input, and the returned candidates are ordered by category then key so
+ * the snapshot hash is stable regardless of scoring order.
+ *
+ * When the set is over the cap, at least one belief from every represented
+ * category is retained (category coverage) before the remaining slots are
+ * filled by descending score, so no whole category is silently dropped (unless
+ * there are more categories than the cap itself).
+ *
+ * @param {Array<{ candidate: any; category: string; key: string; score: number }>} scored
+ * @param {number} cap
+ * @returns {{ selected: any[]; droppedCount: number; droppedCategories: string[]; fullyDroppedCategories: string[] }}
+ */
+export function selectPrioritizedCandidates(scored, cap) {
+  const total = scored.length;
+  if (total <= cap) {
+    const selected = [...scored]
+      .sort(byCategoryThenKey)
+      .map((item) => item.candidate);
+    return {
+      selected,
+      droppedCount: 0,
+      droppedCategories: [],
+      fullyDroppedCategories: [],
+    };
+  }
+
+  const byPriority = [...scored].sort(byPriorityDesc);
+  const leaderByCategory = new Map();
+  for (const item of byPriority) {
+    if (!leaderByCategory.has(item.category)) {
+      leaderByCategory.set(item.category, item);
+    }
+  }
+
+  const chosen = new Set();
+  if (leaderByCategory.size <= cap) {
+    // Guarantee category coverage first, then fill by descending priority.
+    for (const leader of leaderByCategory.values()) chosen.add(leader);
+    for (const item of byPriority) {
+      if (chosen.size >= cap) break;
+      chosen.add(item);
+    }
+  } else {
+    // More categories than slots: keep the highest-priority category leaders.
+    for (const leader of [...leaderByCategory.values()]
+      .sort(byPriorityDesc)
+      .slice(0, cap)) {
+      chosen.add(leader);
+    }
+  }
+
+  const keptByCategory = countByCategory(chosen);
+  const totalByCategory = countByCategory(scored);
+  const droppedCategories = [];
+  const fullyDroppedCategories = [];
+  for (const [category, totalCount] of totalByCategory) {
+    const kept = keptByCategory.get(category) ?? 0;
+    if (kept < totalCount) droppedCategories.push(category);
+    if (kept === 0) fullyDroppedCategories.push(category);
+  }
+  droppedCategories.sort();
+  fullyDroppedCategories.sort();
+
+  const selected = [...chosen]
+    .sort(byCategoryThenKey)
+    .map((item) => item.candidate);
+  return {
+    selected,
+    droppedCount: total - selected.length,
+    droppedCategories,
+    fullyDroppedCategories,
+  };
+}
+
+/** @param {Iterable<{ category: string }>} items */
+function countByCategory(items) {
+  const counts = new Map();
+  for (const item of items) {
+    counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** @param {{ category: string; key: string }} a @param {{ category: string; key: string }} b */
+function byCategoryThenKey(a, b) {
+  return (
+    String(a.category).localeCompare(String(b.category)) ||
+    String(a.key).localeCompare(String(b.key))
+  );
+}
+
+/** @param {{ score: number }} a @param {{ score: number }} b */
+function byPriorityDesc(a, b) {
+  return b.score - a.score || byCategoryThenKey(a, b);
+}
+
+/**
+ * Fold a set-relative recency bonus into each candidate's base score. Uses the
+ * min/max observed timestamp within the set (never the wall clock) so the
+ * result is deterministic for a given belief set.
+ * @param {Array<{ candidate: any; category: string; key: string; base: number; recencyMs: number | null }>} items
+ */
+function withRecencyScores(items) {
+  const times = items
+    .map((item) => item.recencyMs)
+    .filter((ms) => ms !== null);
+  const min = times.length ? Math.min(...times) : 0;
+  const max = times.length ? Math.max(...times) : 0;
+  const span = max - min;
+  return items.map((item) => {
+    let bonus = 0;
+    if (span > 0 && item.recencyMs !== null) {
+      bonus = Math.round(((item.recencyMs - min) / span) * RECENCY_WEIGHT);
+    }
+    return {
+      candidate: item.candidate,
+      category: item.category,
+      key: item.key,
+      score: item.base + bonus,
+    };
+  });
+}
+
+/**
+ * Base selection score for a raw belief: merchant authority and deterministic
+ * provenance dominate, then confidence. Mirrors the merchant-plan relevance
+ * weighting. The recency bonus is added separately in withRecencyScores.
+ * @param {any} belief
+ */
+function scoreBeliefForSelection(belief) {
+  let score = 0;
+  const status = String(belief.status ?? "");
+  if (status === BELIEF_STATUS.merchantCorrected) score += 40;
+  else if (status === BELIEF_STATUS.merchantConfirmed) score += 32;
+  if (Number(belief.precedence ?? 0) >= BELIEF_PRECEDENCE.directObservation) {
+    score += 18;
+  }
+  const confidence =
+    belief.confidence === null ? null : Number(belief.confidence);
+  if (Number.isFinite(confidence)) score += Math.round(confidence * 20);
+  return score;
+}
+
+/**
+ * Most recent relevant timestamp for a belief, in epoch ms, or null.
+ * @param {any} belief
+ */
+function beliefRecencyMs(belief) {
+  const value =
+    belief.lastEvaluatedAt ??
+    belief.lastConfirmedAt ??
+    belief.lastObservedAt ??
+    belief.updatedAt ??
+    belief.createdAt ??
+    null;
+  if (value === null || value === undefined) return null;
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /**

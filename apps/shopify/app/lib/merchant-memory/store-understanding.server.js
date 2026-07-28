@@ -562,82 +562,84 @@ async function upsertStoreUnderstandingBelief(prisma, input) {
     lastObservedAt: now,
     lastEvaluatedAt: now,
   };
-  const belief = existing
-    ? await prisma.merchantMemoryBelief.update({
-        where: { id: existing.id },
-        data,
-      })
-    : await prisma.merchantMemoryBelief.create({ data });
+  return runInTransaction(prisma, async (tx) => {
+    const belief = existing
+      ? await tx.merchantMemoryBelief.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await tx.merchantMemoryBelief.create({ data });
 
-  await prisma.merchantMemoryBeliefHistory.create({
-    data: {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      beliefId: belief.id,
-      key: belief.key,
-      previousStatus: existing?.status ?? null,
-      newStatus: belief.status,
-      previousValue: existing?.value ?? undefined,
-      newValue: belief.value ?? undefined,
-      changeReason: existing
-        ? valuesEqual(existing.value, belief.value)
-          ? "llm_store_analysis_recalculated"
-          : "llm_store_analysis_updated"
-        : "llm_store_analysis_created",
-      changedBy: "llm_store_analysis",
-      metadata: {
-        derivationFamily: "llm_store_understanding",
-        derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
-        runId: input.runId,
-        provider: input.provider.provider,
-        model: input.provider.model,
-        promptVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
-        inputSummaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
-        inputSummaryHash: input.inputSummaryHash,
-        modelConfidence: input.candidate.modelConfidence,
-        cappedConfidence: input.candidate.confidence,
-        recommendedForConfirmation: true,
-        qualityFlags: ["recommended_for_confirmation"],
-      },
-    },
-  });
-  await prisma.merchantMemoryEvidence.create({
-    data: {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      beliefId: belief.id,
-      sourceType: "llm_store_analysis",
-      sourceReference: input.runId,
-      evidenceType: "model_inference",
-      summary: `Store Understanding inferred ${belief.key}: ${formatInferenceValue(belief.value)}.`,
-      metadata: {
-        derivationFamily: "llm_store_understanding",
-        derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
-        provider: input.provider.provider,
-        model: input.provider.model,
-        promptVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
-        inputSummaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
-        inputSummaryHash: input.inputSummaryHash,
-        inputSnapshot: {
-          summaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
-          summaryHash: input.inputSummaryHash,
-        },
-        precedence: BELIEF_PRECEDENCE.llmInference,
-        recommendedForConfirmation: true,
-        qualityFlags: ["recommended_for_confirmation"],
-        supportingEvidence: input.candidate.supportingEvidence,
-        rationale: input.candidate.confidenceReason,
-        confidenceCalculation: {
+    await tx.merchantMemoryBeliefHistory.create({
+      data: {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? null,
+        beliefId: belief.id,
+        key: belief.key,
+        previousStatus: existing?.status ?? null,
+        newStatus: belief.status,
+        previousValue: existing?.value ?? undefined,
+        newValue: belief.value ?? undefined,
+        changeReason: existing
+          ? valuesEqual(existing.value, belief.value)
+            ? "llm_store_analysis_recalculated"
+            : "llm_store_analysis_updated"
+          : "llm_store_analysis_created",
+        changedBy: "llm_store_analysis",
+        metadata: {
+          derivationFamily: "llm_store_understanding",
+          derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+          runId: input.runId,
+          provider: input.provider.provider,
+          model: input.provider.model,
+          promptVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+          inputSummaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
+          inputSummaryHash: input.inputSummaryHash,
           modelConfidence: input.candidate.modelConfidence,
-          confidenceCeiling: input.candidate.definition.confidenceCeiling,
-          finalConfidence: input.candidate.confidence,
+          cappedConfidence: input.candidate.confidence,
+          recommendedForConfirmation: true,
+          qualityFlags: ["recommended_for_confirmation"],
         },
-        analysedAt: now.toISOString(),
       },
-      observedAt: now,
-    },
+    });
+    await tx.merchantMemoryEvidence.create({
+      data: {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? null,
+        beliefId: belief.id,
+        sourceType: "llm_store_analysis",
+        sourceReference: input.runId,
+        evidenceType: "model_inference",
+        summary: `Store Understanding inferred ${belief.key}: ${formatInferenceValue(belief.value)}.`,
+        metadata: {
+          derivationFamily: "llm_store_understanding",
+          derivationVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+          provider: input.provider.provider,
+          model: input.provider.model,
+          promptVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
+          inputSummaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
+          inputSummaryHash: input.inputSummaryHash,
+          inputSnapshot: {
+            summaryVersion: STORE_UNDERSTANDING_INPUT_VERSION,
+            summaryHash: input.inputSummaryHash,
+          },
+          precedence: BELIEF_PRECEDENCE.llmInference,
+          recommendedForConfirmation: true,
+          qualityFlags: ["recommended_for_confirmation"],
+          supportingEvidence: input.candidate.supportingEvidence,
+          rationale: input.candidate.confidenceReason,
+          confidenceCalculation: {
+            modelConfidence: input.candidate.modelConfidence,
+            confidenceCeiling: input.candidate.definition.confidenceCeiling,
+            finalConfidence: input.candidate.confidence,
+          },
+          analysedAt: now.toISOString(),
+        },
+        observedAt: now,
+      },
+    });
+    return { skipped: false, belief };
   });
-  return { skipped: false, belief };
 }
 
 /**
@@ -677,6 +679,21 @@ async function obsoleteUnsupportedStoreUnderstandingBeliefs(prisma, input) {
     });
   }
   return stale.length;
+}
+
+/**
+ * Runs the callback inside a database transaction when the client supports one,
+ * so belief + history + evidence writes for a single understanding belief commit
+ * atomically. Falls back to a direct call for lightweight mock clients.
+ *
+ * @param {import("@prisma/client").PrismaClient | any} prisma
+ * @param {(tx: any) => Promise<any>} callback
+ */
+function runInTransaction(prisma, callback) {
+  if (typeof prisma.$transaction === "function") {
+    return prisma.$transaction(callback);
+  }
+  return callback(prisma);
 }
 
 /** @param {any} summary */

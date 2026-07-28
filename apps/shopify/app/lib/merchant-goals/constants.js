@@ -27,3 +27,10 @@ export const GOAL_MEMORY_KEYS = {
 };
 
 export const MIN_GOAL_BELIEFS = 3;
+
+// Upper bound on how many beliefs are placed in the Goals generation
+// snapshot. Mirrors MAX_PLAN_BELIEFS / MAX_INSIGHT_BELIEFS so a mature store
+// cannot exceed the provider's maxInputTokens (18000) and fail permanently as
+// `input_too_large`. The Goals belief set is already bounded upstream by the
+// Insights cap it reuses; this is the explicit, independently-enforced bound.
+export const MAX_GOAL_BELIEFS = 40;

@@ -39,3 +39,11 @@ export const INSIGHT_CATEGORIES = [
 export const MAX_INSIGHTS = 10;
 export const MAX_ONBOARDING_INSIGHTS = 5;
 export const MIN_USEFUL_INSIGHT_BELIEFS = 3;
+
+// Upper bound on how many beliefs are placed in the Insights generation
+// snapshot. Mirrors MAX_PLAN_BELIEFS: a mature store (hundreds of active
+// beliefs) would otherwise blow past the provider's maxInputTokens (16000)
+// and fail permanently as `input_too_large`. Beliefs beyond this cap are
+// dropped by prioritisation (see selectPrioritizedCandidates), never by
+// silent truncation.
+export const MAX_INSIGHT_BELIEFS = 40;

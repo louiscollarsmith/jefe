@@ -16,6 +16,7 @@ import {
 } from "../app/lib/merchant-insights/service.server.js";
 import {
   INSIGHT_RUN_STATUS,
+  MAX_INSIGHT_BELIEFS,
   MAX_ONBOARDING_INSIGHTS,
   MERCHANT_INSIGHTS_JOB_TYPE,
 } from "../app/lib/merchant-insights/constants.server.js";
@@ -98,7 +99,11 @@ test("insight snapshot is bounded to Merchant Memory and excludes raw Shopify PI
   assert.ok(serialized.length < 10_000);
 });
 
-test("insight snapshot includes every active Merchant Memory belief without a candidate cap", async () => {
+test("insight snapshot caps the belief set to MAX_INSIGHT_BELIEFS with prioritisation", async () => {
+  // A mature store can hold hundreds of active beliefs; without a cap the
+  // generation prompt exceeds the provider input-token limit and the run fails
+  // permanently as input_too_large. The snapshot must bound and prioritise
+  // instead of passing every belief through.
   const beliefs = Array.from({ length: 45 }, (_, index) =>
     beliefFixture({
       id: `belief-${index + 1}`,
@@ -125,11 +130,17 @@ test("insight snapshot includes every active Merchant Memory belief without a ca
     shopId: "shop-1",
   });
 
-  assert.equal(snapshot.candidateCount, 45);
-  assert.equal(snapshot.snapshot.beliefCount, 45);
-  assert.deepEqual(
-    new Set(snapshot.beliefIds),
-    new Set(beliefs.map((belief) => belief.id)),
+  assert.equal(snapshot.candidateCount, MAX_INSIGHT_BELIEFS);
+  assert.equal(snapshot.snapshot.beliefCount, MAX_INSIGHT_BELIEFS);
+  assert.equal(snapshot.beliefIds.length, MAX_INSIGHT_BELIEFS);
+  // The drop is surfaced, not silent: a count plus which categories lost beliefs.
+  assert.equal(snapshot.droppedBeliefCount, 45 - MAX_INSIGHT_BELIEFS);
+  assert.deepEqual(snapshot.droppedCategories, ["orders"]);
+  // Every retained belief comes from the supplied set.
+  const inputIds = new Set(beliefs.map((belief) => belief.id));
+  assert.equal(
+    snapshot.beliefIds.every((id) => inputIds.has(id)),
+    true,
   );
 });
 

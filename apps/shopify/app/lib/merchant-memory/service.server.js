@@ -7,6 +7,7 @@ import {
   BELIEF_STATUS,
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
+import { getBeliefDefinition } from "./conversational-belief-registry.server.js";
 import { isDerivationVersionChange } from "./derivation-versioning.server.js";
 import { deriveMerchantMemoryBeliefs } from "./shopify-derivations.server.js";
 import { runStoreUnderstandingPass } from "./store-understanding.server.js";
@@ -175,88 +176,91 @@ export async function upsertDerivedBelief(prisma, input) {
   }
 
   if (!existing) {
-    const belief = await prisma.merchantMemoryBelief.create({
-      data: {
+    return runInTransaction(prisma, async (tx) => {
+      const belief = await tx.merchantMemoryBelief.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? null,
+          category: input.category,
+          key: input.key,
+          value: input.value,
+          valueType: input.valueType,
+          status: BELIEF_STATUS.inferred,
+          confidence: String(input.confidence.toFixed(4)),
+          confidenceReason: input.confidenceReason,
+          precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
+          derivationVersion: nextDerivationVersion,
+          firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
+          lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
+          lastEvaluatedAt: now,
+        },
+      });
+      await recordHistory(tx, {
         merchantId: input.merchantId,
-        shopId: input.shopId ?? null,
-        category: input.category,
+        shopId: input.shopId,
+        beliefId: belief.id,
         key: input.key,
+        previousStatus: null,
+        newStatus: belief.status,
+        previousValue: null,
+        newValue: input.value,
+        changeReason: "derived_belief_created",
+        changedBy: "system",
+        metadata: { confidence: input.confidence },
+      });
+      await recordEvidence(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        beliefId: belief.id,
+        ...input.evidence,
+      });
+      return { belief, changed: true, skipped: false };
+    });
+  }
+
+  const valueChanged = !jsonEqual(existing.value, input.value);
+  return runInTransaction(prisma, async (tx) => {
+    const belief = await tx.merchantMemoryBelief.update({
+      where: { id: existing.id },
+      data: {
+        shopId: input.shopId ?? existing.shopId,
+        category: input.category,
         value: input.value,
         valueType: input.valueType,
         status: BELIEF_STATUS.inferred,
         confidence: String(input.confidence.toFixed(4)),
         confidenceReason: input.confidenceReason,
-        precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
+        precedence: input.precedence ?? existing.precedence,
         derivationVersion: nextDerivationVersion,
-        firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
+        firstObservedAt:
+          existing.firstObservedAt ?? input.firstObservedAt ?? input.observedAt,
         lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
         lastEvaluatedAt: now,
       },
     });
-    await recordHistory(prisma, {
+    await recordHistory(tx, {
       merchantId: input.merchantId,
-      shopId: input.shopId,
+      shopId: input.shopId ?? belief.shopId,
       beliefId: belief.id,
       key: input.key,
-      previousStatus: null,
+      previousStatus: existing.status,
       newStatus: belief.status,
-      previousValue: null,
+      previousValue: existing.value,
       newValue: input.value,
-      changeReason: "derived_belief_created",
+      changeReason: valueChanged
+        ? "derived_belief_value_updated"
+        : "derived_belief_recalculated",
       changedBy: "system",
       metadata: { confidence: input.confidence },
     });
-    await recordEvidence(prisma, {
+    await recordEvidence(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       beliefId: belief.id,
       ...input.evidence,
     });
-    return { belief, changed: true, skipped: false };
-  }
-
-  const valueChanged = !jsonEqual(existing.value, input.value);
-  const belief = await prisma.merchantMemoryBelief.update({
-    where: { id: existing.id },
-    data: {
-      shopId: input.shopId ?? existing.shopId,
-      category: input.category,
-      value: input.value,
-      valueType: input.valueType,
-      status: BELIEF_STATUS.inferred,
-      confidence: String(input.confidence.toFixed(4)),
-      confidenceReason: input.confidenceReason,
-      precedence: input.precedence ?? existing.precedence,
-      derivationVersion:
-        nextDerivationVersion,
-      firstObservedAt:
-        existing.firstObservedAt ?? input.firstObservedAt ?? input.observedAt,
-      lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
-      lastEvaluatedAt: now,
-    },
+    return { belief, changed: valueChanged, skipped: false };
   });
-  await recordHistory(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId ?? belief.shopId,
-    beliefId: belief.id,
-    key: input.key,
-    previousStatus: existing.status,
-    newStatus: belief.status,
-    previousValue: existing.value,
-    newValue: input.value,
-    changeReason: valueChanged
-      ? "derived_belief_value_updated"
-      : "derived_belief_recalculated",
-    changedBy: "system",
-    metadata: { confidence: input.confidence },
-  });
-  await recordEvidence(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    beliefId: belief.id,
-    ...input.evidence,
-  });
-  return { belief, changed: valueChanged, skipped: false };
 }
 
 /**
@@ -364,43 +368,58 @@ export async function confirmBelief(prisma, input) {
     },
   });
   const confirmedAt = input.confirmedAt ?? new Date();
-  const updated = await prisma.merchantMemoryBelief.update({
-    where: { id: belief.id },
-    data: {
-      status: BELIEF_STATUS.merchantConfirmed,
-      confidence: "1.0000",
-      confidenceReason: "Merchant confirmed this belief.",
-      precedence: BELIEF_PRECEDENCE.merchantConfirmation,
-      lastConfirmedAt: confirmedAt,
-    },
-  });
-  await recordHistory(prisma, {
-    merchantId: belief.merchantId,
-    shopId: belief.shopId,
-    beliefId: belief.id,
-    key: belief.key,
-    previousStatus: belief.status,
-    newStatus: updated.status,
-    previousValue: belief.value,
-    newValue: updated.value,
-    changeReason: "merchant_confirmed_belief",
-    changedBy: input.confirmedBy ?? "merchant",
-    metadata: input.metadata ?? {},
-  });
-  if (input.evidenceSummary) {
-    await recordEvidence(prisma, {
+  // A confirmation of a time-varying OBSERVED metric ("confirm the current
+  // observation") must not pin the value: it records the confirmation but keeps
+  // the belief re-derivable at system precedence so later rebuilds refresh it.
+  // Confirming any other kind, or a merchant *asserting* a value via
+  // correctBelief, stays authoritative as before. When the key is not a known
+  // observation we keep the historical authoritative behaviour.
+  const definition = getBeliefDefinition(input.key);
+  const reconfirmableObservation = definition?.kind === "observation";
+
+  return runInTransaction(prisma, async (tx) => {
+    const updated = await tx.merchantMemoryBelief.update({
+      where: { id: belief.id },
+      data: reconfirmableObservation
+        ? { lastConfirmedAt: confirmedAt }
+        : {
+            status: BELIEF_STATUS.merchantConfirmed,
+            confidence: "1.0000",
+            confidenceReason: "Merchant confirmed this belief.",
+            precedence: BELIEF_PRECEDENCE.merchantConfirmation,
+            lastConfirmedAt: confirmedAt,
+          },
+    });
+    await recordHistory(tx, {
       merchantId: belief.merchantId,
       shopId: belief.shopId,
       beliefId: belief.id,
-      sourceType: input.evidenceSourceType ?? "merchant_input",
-      sourceReference: input.evidenceSourceReference ?? input.confirmedBy ?? null,
-      evidenceType: "merchant_confirmation",
-      summary: input.evidenceSummary,
-      metadata: input.metadata ?? { confirmedAt: confirmedAt.toISOString() },
-      observedAt: confirmedAt,
+      key: belief.key,
+      previousStatus: belief.status,
+      newStatus: updated.status,
+      previousValue: belief.value,
+      newValue: updated.value,
+      changeReason: "merchant_confirmed_belief",
+      changedBy: input.confirmedBy ?? "merchant",
+      metadata: reconfirmableObservation
+        ? { ...(input.metadata ?? {}), confirmationMode: "observation_reconfirmable" }
+        : input.metadata ?? {},
     });
-  }
-  return updated;
+    if (input.evidenceSummary || reconfirmableObservation) {
+      await recordEvidence(tx, {
+        merchantId: belief.merchantId,
+        shopId: belief.shopId,
+        beliefId: belief.id,
+        sourceType: input.evidenceSourceType ?? "merchant_input",
+        sourceReference: input.evidenceSourceReference ?? input.confirmedBy ?? null,
+        evidenceType: "merchant_confirmation",
+        summary: input.evidenceSummary ?? "Merchant confirmed the current observation.",
+        metadata: input.metadata ?? { confirmedAt: confirmedAt.toISOString() },
+        observedAt: confirmedAt,
+      });
+    }
+    return updated;
+  });
 }
 
 /**
@@ -416,44 +435,46 @@ export async function correctBelief(prisma, input) {
     },
   });
   const correctedAt = input.correctedAt ?? new Date();
-  const updated = await prisma.merchantMemoryBelief.update({
-    where: { id: belief.id },
-    data: {
-      value: input.value,
-      valueType: input.valueType,
-      status: BELIEF_STATUS.merchantCorrected,
-      confidence: "1.0000",
-      confidenceReason: "Merchant corrected this belief.",
-      precedence: BELIEF_PRECEDENCE.merchantCorrection,
-      lastConfirmedAt: correctedAt,
-      lastEvaluatedAt: correctedAt,
-    },
+  return runInTransaction(prisma, async (tx) => {
+    const updated = await tx.merchantMemoryBelief.update({
+      where: { id: belief.id },
+      data: {
+        value: input.value,
+        valueType: input.valueType,
+        status: BELIEF_STATUS.merchantCorrected,
+        confidence: "1.0000",
+        confidenceReason: "Merchant corrected this belief.",
+        precedence: BELIEF_PRECEDENCE.merchantCorrection,
+        lastConfirmedAt: correctedAt,
+        lastEvaluatedAt: correctedAt,
+      },
+    });
+    await recordHistory(tx, {
+      merchantId: belief.merchantId,
+      shopId: belief.shopId,
+      beliefId: belief.id,
+      key: belief.key,
+      previousStatus: belief.status,
+      newStatus: updated.status,
+      previousValue: belief.value,
+      newValue: updated.value,
+      changeReason: "merchant_corrected_belief",
+      changedBy: input.correctedBy ?? "merchant",
+      metadata: input.metadata ?? {},
+    });
+    await recordEvidence(tx, {
+      merchantId: belief.merchantId,
+      shopId: belief.shopId,
+      beliefId: belief.id,
+      sourceType: input.evidenceSourceType ?? "merchant_input",
+      sourceReference: input.evidenceSourceReference ?? input.correctedBy ?? null,
+      evidenceType: "merchant_correction",
+      summary: input.evidenceSummary ?? "Merchant supplied a correction.",
+      metadata: input.metadata ?? { correctedAt: correctedAt.toISOString() },
+      observedAt: correctedAt,
+    });
+    return updated;
   });
-  await recordHistory(prisma, {
-    merchantId: belief.merchantId,
-    shopId: belief.shopId,
-    beliefId: belief.id,
-    key: belief.key,
-    previousStatus: belief.status,
-    newStatus: updated.status,
-    previousValue: belief.value,
-    newValue: updated.value,
-    changeReason: "merchant_corrected_belief",
-    changedBy: input.correctedBy ?? "merchant",
-    metadata: input.metadata ?? {},
-  });
-  await recordEvidence(prisma, {
-    merchantId: belief.merchantId,
-    shopId: belief.shopId,
-    beliefId: belief.id,
-    sourceType: input.evidenceSourceType ?? "merchant_input",
-    sourceReference: input.evidenceSourceReference ?? input.correctedBy ?? null,
-    evidenceType: "merchant_correction",
-    summary: input.evidenceSummary ?? "Merchant supplied a correction.",
-    metadata: input.metadata ?? { correctedAt: correctedAt.toISOString() },
-    observedAt: correctedAt,
-  });
-  return updated;
 }
 
 /**
@@ -472,92 +493,96 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
   });
 
   if (!existing) {
-    const belief = await prisma.merchantMemoryBelief.create({
-      data: {
+    return runInTransaction(prisma, async (tx) => {
+      const belief = await tx.merchantMemoryBelief.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? null,
+          category: input.category,
+          key: input.key,
+          value: input.value,
+          valueType: input.valueType,
+          status: BELIEF_STATUS.merchantConfirmed,
+          confidence: "1.0000",
+          confidenceReason: "Merchant supplied this understanding.",
+          precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantConfirmation,
+          firstObservedAt: suppliedAt,
+          lastObservedAt: suppliedAt,
+          lastEvaluatedAt: suppliedAt,
+          lastConfirmedAt: suppliedAt,
+        },
+      });
+      await recordHistory(tx, {
         merchantId: input.merchantId,
-        shopId: input.shopId ?? null,
-        category: input.category,
+        shopId: input.shopId,
+        beliefId: belief.id,
         key: input.key,
+        previousStatus: null,
+        newStatus: belief.status,
+        previousValue: null,
+        newValue: input.value,
+        changeReason: "merchant_conversation_belief_created",
+        changedBy: input.suppliedBy ?? "merchant",
+        metadata: input.metadata ?? {},
+      });
+      await recordEvidence(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        beliefId: belief.id,
+        sourceType: input.evidenceSourceType ?? "merchant_input",
+        sourceReference: input.evidenceSourceReference ?? input.suppliedBy ?? null,
+        evidenceType: "merchant_supplied_context",
+        summary: input.evidenceSummary ?? "Merchant supplied business context.",
+        metadata: input.metadata ?? { suppliedAt: suppliedAt.toISOString() },
+        observedAt: suppliedAt,
+      });
+      return { belief, changed: true, created: true };
+    });
+  }
+
+  return runInTransaction(prisma, async (tx) => {
+    const updated = await tx.merchantMemoryBelief.update({
+      where: { id: existing.id },
+      data: {
+        shopId: input.shopId ?? existing.shopId,
+        category: input.category,
         value: input.value,
         valueType: input.valueType,
-        status: BELIEF_STATUS.merchantConfirmed,
+        status: BELIEF_STATUS.merchantCorrected,
         confidence: "1.0000",
-        confidenceReason: "Merchant supplied this understanding.",
-        precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantConfirmation,
-        firstObservedAt: suppliedAt,
+        confidenceReason: "Merchant updated this understanding.",
+        precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantCorrection,
         lastObservedAt: suppliedAt,
         lastEvaluatedAt: suppliedAt,
         lastConfirmedAt: suppliedAt,
       },
     });
-    await recordHistory(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      beliefId: belief.id,
+    await recordHistory(tx, {
+      merchantId: existing.merchantId,
+      shopId: input.shopId ?? existing.shopId,
+      beliefId: existing.id,
       key: input.key,
-      previousStatus: null,
-      newStatus: belief.status,
-      previousValue: null,
+      previousStatus: existing.status,
+      newStatus: updated.status,
+      previousValue: existing.value,
       newValue: input.value,
-      changeReason: "merchant_conversation_belief_created",
+      changeReason: "merchant_conversation_belief_updated",
       changedBy: input.suppliedBy ?? "merchant",
       metadata: input.metadata ?? {},
     });
-    await recordEvidence(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      beliefId: belief.id,
+    await recordEvidence(tx, {
+      merchantId: existing.merchantId,
+      shopId: input.shopId ?? existing.shopId,
+      beliefId: existing.id,
       sourceType: input.evidenceSourceType ?? "merchant_input",
       sourceReference: input.evidenceSourceReference ?? input.suppliedBy ?? null,
       evidenceType: "merchant_supplied_context",
-      summary: input.evidenceSummary ?? "Merchant supplied business context.",
+      summary: input.evidenceSummary ?? "Merchant updated business context.",
       metadata: input.metadata ?? { suppliedAt: suppliedAt.toISOString() },
       observedAt: suppliedAt,
     });
-    return { belief, changed: true, created: true };
-  }
-
-  const updated = await prisma.merchantMemoryBelief.update({
-    where: { id: existing.id },
-    data: {
-      shopId: input.shopId ?? existing.shopId,
-      category: input.category,
-      value: input.value,
-      valueType: input.valueType,
-      status: BELIEF_STATUS.merchantCorrected,
-      confidence: "1.0000",
-      confidenceReason: "Merchant updated this understanding.",
-      precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantCorrection,
-      lastObservedAt: suppliedAt,
-      lastEvaluatedAt: suppliedAt,
-      lastConfirmedAt: suppliedAt,
-    },
+    return { belief: updated, changed: true, created: false };
   });
-  await recordHistory(prisma, {
-    merchantId: existing.merchantId,
-    shopId: input.shopId ?? existing.shopId,
-    beliefId: existing.id,
-    key: input.key,
-    previousStatus: existing.status,
-    newStatus: updated.status,
-    previousValue: existing.value,
-    newValue: input.value,
-    changeReason: "merchant_conversation_belief_updated",
-    changedBy: input.suppliedBy ?? "merchant",
-    metadata: input.metadata ?? {},
-  });
-  await recordEvidence(prisma, {
-    merchantId: existing.merchantId,
-    shopId: input.shopId ?? existing.shopId,
-    beliefId: existing.id,
-    sourceType: input.evidenceSourceType ?? "merchant_input",
-    sourceReference: input.evidenceSourceReference ?? input.suppliedBy ?? null,
-    evidenceType: "merchant_supplied_context",
-    summary: input.evidenceSummary ?? "Merchant updated business context.",
-    metadata: input.metadata ?? { suppliedAt: suppliedAt.toISOString() },
-    observedAt: suppliedAt,
-  });
-  return { belief: updated, changed: true, created: false };
 }
 
 /**
@@ -687,6 +712,23 @@ export async function refreshBeliefs(prisma, input) {
       if (result.skipped) skipped += 1;
       else createdOrUpdated += 1;
     }
+    // Retire deterministic system inferences whose definition was attempted this
+    // run but no longer publishes (e.g. it dropped below its minimum-data
+    // threshold and now returns INSUFFICIENT_DATA / NOT_APPLICABLE). Bounded to
+    // the keys the run actually attempted (skippedOutcomes) and to active
+    // systemInference beliefs, so merchant-authoritative beliefs are never
+    // obsoleted. Mirrors obsoleteUnsupportedStoreUnderstandingBeliefs.
+    const obsoletedDeterministic =
+      (input.refreshType ?? "selective_refresh") === "full_rebuild"
+        ? await obsoleteUnsupportedDeterministicBeliefs(prisma, {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            skippedKeys: new Set(
+              skippedOutcomes.map((outcome) => outcome.key),
+            ),
+            runId: run.id,
+          })
+        : 0;
     const durationMs = Date.now() - startedAt.getTime();
     const storeUnderstanding =
       (input.refreshType ?? "selective_refresh") === "full_rebuild"
@@ -703,6 +745,7 @@ export async function refreshBeliefs(prisma, input) {
       createdOrUpdated,
       skipped,
       skippedOutcomes,
+      obsoletedDeterministic,
       derivationReport,
       registryDefinitionCount: Array.isArray(derivationResult)
         ? derivations.length
@@ -745,6 +788,52 @@ export async function refreshBeliefs(prisma, input) {
     });
     throw error;
   }
+}
+
+/**
+ * Retire active deterministic system inferences whose definition was attempted
+ * in the current rebuild but is no longer supported by the data. Bounded to the
+ * attempted-but-not-published keys (skippedOutcomes) and, critically, to
+ * `status: inferred` + `precedence: systemInference` so merchant-confirmed and
+ * merchant-corrected (authoritative) beliefs are never obsoleted.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; skippedKeys: Set<string>; runId: string }} input
+ */
+async function obsoleteUnsupportedDeterministicBeliefs(prisma, input) {
+  if (input.skippedKeys.size === 0) return 0;
+  const stale = await prisma.merchantMemoryBelief.findMany({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? undefined,
+      key: { in: [...input.skippedKeys] },
+      status: BELIEF_STATUS.inferred,
+      precedence: BELIEF_PRECEDENCE.systemInference,
+    },
+  });
+  const now = new Date();
+  for (const belief of stale) {
+    await runInTransaction(prisma, async (tx) => {
+      await tx.merchantMemoryBelief.update({
+        where: { id: belief.id },
+        data: { status: BELIEF_STATUS.obsolete, supersededAt: now },
+      });
+      await recordHistory(tx, {
+        merchantId: belief.merchantId,
+        shopId: belief.shopId,
+        beliefId: belief.id,
+        key: belief.key,
+        previousStatus: belief.status,
+        newStatus: BELIEF_STATUS.obsolete,
+        previousValue: belief.value,
+        newValue: belief.value,
+        changeReason: "deterministic_derivation_no_longer_supported",
+        changedBy: "system",
+        metadata: { runId: input.runId },
+      });
+    });
+  }
+  return stale.length;
 }
 
 /**
