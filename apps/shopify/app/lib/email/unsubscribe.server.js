@@ -33,7 +33,7 @@ function unsubscribeSecret() {
   return secret;
 }
 
-/** @param {crypto.BinaryLike} value */
+/** @param {string | Buffer} value */
 function b64url(value) {
   return Buffer.from(value).toString("base64url");
 }
