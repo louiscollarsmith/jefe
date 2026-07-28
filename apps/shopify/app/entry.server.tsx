@@ -8,6 +8,10 @@ import { addDocumentResponseHeaders } from "./shopify.server";
 import { getShopifyStandaloneDocumentResponse } from "./services/shopify-document-response.server";
 import { logger } from "./lib/observability/logger.server";
 import { newCorrelationId } from "./lib/observability/context.server";
+import { initSentry, captureError } from "./lib/observability/sentry.server";
+
+// Inert unless SENTRY_DSN is set.
+initSentry();
 
 export const streamTimeout = 5000;
 
@@ -56,6 +60,7 @@ export default async function handleRequest(
         onError(error) {
           responseStatusCode = 500;
           logger.error("Streaming render error", { err: error });
+          captureError(error);
         },
       }
     );
@@ -77,10 +82,16 @@ export const handleError: HandleErrorFunction = (error, { request }) => {
   if (isRouteErrorResponse(error) && error.status === 404) return;
 
   const url = new URL(request.url);
+  const correlationId = request.headers.get("x-request-id") || newCorrelationId();
   logger.error("Unhandled server error", {
     err: error,
     method: request.method,
     path: url.pathname,
-    correlationId: request.headers.get("x-request-id") || newCorrelationId(),
+    correlationId,
+  });
+  captureError(error, {
+    method: request.method,
+    path: url.pathname,
+    correlationId,
   });
 };
