@@ -280,9 +280,7 @@ export async function upsertShopifyOrderLineItem(prisma, input) {
       unitPrice: moneyAmount(
         lineItem.originalUnitPriceSet?.shopMoney ?? lineItem.price,
       ),
-      totalPrice: moneyAmount(
-        lineItem.discountedTotalSet?.shopMoney ?? lineItem.total_discount,
-      ),
+      totalPrice: lineItemDiscountedTotal(lineItem),
       discount: sumDiscountAllocations(discountAllocations),
       discountAllocations,
       rawPayload: lineItem,
@@ -296,9 +294,7 @@ export async function upsertShopifyOrderLineItem(prisma, input) {
       unitPrice: moneyAmount(
         lineItem.originalUnitPriceSet?.shopMoney ?? lineItem.price,
       ),
-      totalPrice: moneyAmount(
-        lineItem.discountedTotalSet?.shopMoney ?? lineItem.total_discount,
-      ),
+      totalPrice: lineItemDiscountedTotal(lineItem),
       discount: sumDiscountAllocations(discountAllocations),
       discountAllocations,
       rawPayload: lineItem,
@@ -461,6 +457,28 @@ function numberValue(value) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+/**
+ * The line's *discounted total*. GraphQL backfill supplies `discountedTotalSet`
+ * directly; REST-shaped webhook payloads (orders/create, orders/updated) do NOT,
+ * so it must be computed as unit-price × quantity − line discount. The previous
+ * fallback used `total_discount` (the discount itself), which stored the discount
+ * as the line total on every webhook-ingested order and corrupted revenue
+ * derivations. Computed in integer minor units to avoid float drift, clamped ≥ 0.
+ * @param {any} lineItem
+ * @returns {string | null}
+ */
+export function lineItemDiscountedTotal(lineItem) {
+  const graphqlTotal = lineItem?.discountedTotalSet?.shopMoney;
+  if (graphqlTotal != null) return moneyAmount(graphqlTotal);
+  const unit = numberValue(lineItem?.price);
+  if (unit == null) return null;
+  const quantity = numberValue(lineItem?.quantity) ?? 0;
+  const discount = numberValue(lineItem?.total_discount) ?? 0;
+  const totalMinor =
+    Math.round(unit * 100) * quantity - Math.round(discount * 100);
+  return (Math.max(0, totalMinor) / 100).toFixed(2);
 }
 
 /** @param {unknown} product */
