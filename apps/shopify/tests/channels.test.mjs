@@ -545,6 +545,50 @@ test("disconnecting one provider does not remove the other provider", async (t) 
   }
 });
 
+test("Slack connect opens a DM with the installer and makes it the default destination", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for channel integration tests");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  const slackAdapter = new MockSlackDmAdapter();
+  try {
+    const { merchant, shop } = await createChannelFixture(prisma, suffix, "slackdm");
+    const started = await startSlackConnection(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      requestUrl: `https://jefe.test/app?shop=${shop.shopDomain}&host=test`,
+      env: channelEnv,
+      adapter: slackAdapter,
+    });
+    const completed = await completeSlackConnectionFromState(prisma, {
+      state: new URL(started.authoriseUrl).searchParams.get("state"),
+      code: "code",
+      env: channelEnv,
+      adapter: slackAdapter,
+    });
+
+    // Connect = "Jefe reaches you": connected via the installer's DM, no channel picked.
+    assert.equal(completed.connection.status, CHANNEL_STATUS.connected);
+    assert.equal(completed.connection.verified, true);
+    assert.equal(slackAdapter.openedDms.length, 1);
+    assert.equal(slackAdapter.openedDms[0].userId, "U-installer");
+    // The connect welcome went to the DM channel, not a workspace channel.
+    assert.equal(slackAdapter.sentMessages.length, 1);
+    assert.equal(slackAdapter.sentMessages[0].channelId, "D-installer");
+    const delivery = await prisma.channelMessageDelivery.findFirstOrThrow({
+      where: { merchantId: merchant.id, provider: "slack", category: "welcome" },
+    });
+    assert.equal(delivery.status, "succeeded");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: { startsWith: `Channel Test ${suffix}` } },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 class MockSlackAdapter {
   constructor() {
     this.sentMessages = [];
@@ -587,6 +631,22 @@ class MockSlackAdapter {
   }
 
   async disconnect() {}
+}
+
+class MockSlackDmAdapter extends MockSlackAdapter {
+  constructor() {
+    super();
+    this.openedDms = [];
+  }
+
+  async completeOAuth() {
+    return { ...(await super.completeOAuth()), authedUserId: "U-installer" };
+  }
+
+  async openDirectMessageChannel(input) {
+    this.openedDms.push(input);
+    return { channelId: "D-installer" };
+  }
 }
 
 class MockWhatsAppAdapter {

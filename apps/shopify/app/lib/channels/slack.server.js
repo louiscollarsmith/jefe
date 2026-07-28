@@ -9,6 +9,9 @@ const DEFAULT_SLACK_SCOPES = Object.freeze([
   "chat:write.public",
   "channels:read",
   "groups:read",
+  // Opening a DM with the installing user (conversations.open) so Jefe can
+  // message them directly, before/without a channel being chosen.
+  "im:write",
 ]);
 
 export class SlackChannelAdapter {
@@ -64,6 +67,8 @@ export class SlackChannelAdapter {
     return {
       accessToken,
       botUserId: stringOrNull(payload.bot_user_id),
+      // The Slack user who installed the app — Jefe's default DM recipient.
+      authedUserId: stringOrNull(payload.authed_user?.id),
       appId: stringOrNull(payload.app_id),
       teamId,
       teamName: stringOrNull(payload.team?.name) ?? validation.teamName,
@@ -71,6 +76,7 @@ export class SlackChannelAdapter {
       rawSafeMetadata: {
         appId: stringOrNull(payload.app_id),
         botUserId: stringOrNull(payload.bot_user_id),
+        authedUserId: stringOrNull(payload.authed_user?.id),
         enterpriseId: stringOrNull(payload.enterprise?.id),
       },
     };
@@ -127,6 +133,34 @@ export class SlackChannelAdapter {
     }
 
     return destinations;
+  }
+
+  /**
+   * Open (or fetch) the DM channel with a user so Jefe can message them
+   * directly. Requires the im:write scope. Returns the DM channel id, which is
+   * used as a normal destination for chat.postMessage.
+   * @param {{ accessToken: string; userId: string }} input
+   * @returns {Promise<{ channelId: string }>}
+   */
+  async openDirectMessageChannel(input) {
+    const response = await this.fetchImpl(`${SLACK_API_URL}/conversations.open`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${input.accessToken}`,
+        "content-type": "application/json;charset=utf-8",
+      },
+      body: JSON.stringify({ users: input.userId }),
+    });
+    const payload = await safeJson(response);
+    if (!response.ok || !payload?.ok) {
+      throw normaliseProviderError(
+        new Error(String(payload?.error ?? response.status)),
+        "test_message_failed",
+      );
+    }
+    const channelId = stringOrNull(payload.channel?.id);
+    if (!channelId) throw new ChannelServiceError("test_message_failed");
+    return { channelId };
   }
 
   /**

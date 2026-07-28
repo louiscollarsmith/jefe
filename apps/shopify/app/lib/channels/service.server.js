@@ -15,6 +15,9 @@ import { normalisePhoneToE164, maskPhoneNumber } from "./phone.server.js";
 import { SlackChannelAdapter } from "./slack.server.js";
 import { CHANNEL_STATUS } from "./status.js";
 import { WhatsAppChannelAdapter } from "./whatsapp.server.js";
+import { logger as baseLogger } from "../observability/logger.server.js";
+
+const channelLog = baseLogger.child({ component: "channels" });
 
 export const CHANNEL_PROVIDERS = Object.freeze(["slack", "whatsapp"]);
 export { CHANNEL_STATUS } from "./status.js";
@@ -240,16 +243,33 @@ async function completeSlackConnectionForStateRow(prisma, stateRow, input, now) 
       teamId: installation.teamId,
       teamName: installation.teamName,
       botUserId: installation.botUserId,
+      authedUserId: installation.authedUserId,
       appId: installation.appId,
     },
     env: input.env,
   });
 
-  const updated = await prisma.channelConnection.update({
+  await prisma.channelConnection.update({
     where: { id: connection.id },
     data: { credentialRef: credential.id },
   });
-  return serializeConnection("slack", updated);
+
+  // Turn "connect the workspace" into "Jefe reaches you": open a DM with the
+  // installing user, make it the default destination, and send the connect
+  // welcome there. Self-catching — a failed DM must never break OAuth; the
+  // connection then simply stays needs_configuration (connected-but-silent).
+  await sendSlackConnectWelcomeDm(prisma, {
+    merchantId: stateRow.merchantId,
+    shopId,
+    env: input.env,
+    adapter,
+    now,
+  });
+
+  const finalConnection = await prisma.channelConnection.findUniqueOrThrow({
+    where: { id: connection.id },
+  });
+  return serializeConnection("slack", finalConnection);
 }
 
 /**
@@ -326,6 +346,82 @@ export async function selectSlackDestinationAndSendWelcome(prisma, input) {
     slackAdapter: input.adapter,
     now: input.now,
   });
+}
+
+/**
+ * After OAuth, open a DM with the installing Slack user and make it Jefe's
+ * default destination, then send the connect welcome there. This turns "connect
+ * the workspace" into "Jefe reaches you in your DMs" without the merchant
+ * choosing a channel — they can switch to a channel later in settings.
+ *
+ * Requires the im:write scope + the installing user's id (captured at OAuth). If
+ * either is missing, or a destination is already set, it is a no-op and the
+ * connection is left as-is. Never throws — a failed DM must not break install.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; env?: Record<string, string | undefined>; adapter?: SlackChannelAdapter; now?: Date }} input
+ * @returns {Promise<{ sent: boolean; reason: string }>}
+ */
+export async function sendSlackConnectWelcomeDm(prisma, input) {
+  const now = input.now ?? new Date();
+  try {
+    const connection = await requireConnection(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      provider: "slack",
+    });
+    // A destination is already set (a channel was chosen, or a DM is live) —
+    // don't override the merchant's choice.
+    if (connection.destinationId) {
+      return { sent: false, reason: "destination_already_set" };
+    }
+    const credential = await loadCredentialPayload(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      provider: "slack",
+      credentialRef: connection.credentialRef,
+      env: input.env,
+    });
+    const authedUserId = asString(credential.authedUserId);
+    if (!authedUserId) {
+      // No installing user captured (e.g. an older install before im:write) —
+      // leave the connection needs_configuration; onboarding shows it connected.
+      return { sent: false, reason: "no_installer" };
+    }
+
+    const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
+    const dm = await adapter.openDirectMessageChannel({
+      accessToken: asString(credential.accessToken),
+      userId: authedUserId,
+    });
+    await prisma.channelConnection.update({
+      where: { id: connection.id },
+      data: {
+        destinationId: dm.channelId,
+        destinationLabel: "Direct message",
+        providerMetadata: {
+          ...jsonObject(connection.providerMetadata),
+          isDirectMessage: true,
+        },
+      },
+    });
+    await sendChannelWelcomeMessage(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      provider: "slack",
+      idempotencyKey: `channel-welcome:slack:connect-dm:${connection.id}`,
+      env: input.env,
+      slackAdapter: adapter,
+      now,
+    });
+    return { sent: true, reason: "dm_sent" };
+  } catch (error) {
+    channelLog.warn("slack connect DM failed (install unaffected)", {
+      shopId: input.shopId,
+      err: error,
+    });
+    return { sent: false, reason: "error" };
+  }
 }
 
 /**
