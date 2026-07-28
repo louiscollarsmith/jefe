@@ -78,11 +78,11 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ---
 
-## 5. Pricing hypothesis (draft — not validated)
+## 5. Pricing (design-partner model APPROVED 2026-07-29; public tiers still a hypothesis)
 
+- **APPROVED (Matt, 2026-07-29):** Design partners are **free during the program** in exchange for feedback + a testimonial + a commitment to convert at a **founding-partner rate**. This is the plan, not a hypothesis.
 - Anchor on **value vs. a human e-commerce manager/analyst** ($3–6k/mo), not vs. a $19 analytics app.
-- Likely **$99–$499/mo** tiers for advisory V1; **autonomy tiers priced higher** as actioning ships (natural expansion path).
-- Design partners: **free during the program** in exchange for feedback + a testimonial + a commitment to convert at a founding-partner rate.
+- Public tiers (hypothesis): likely **$99–$499/mo** for advisory V1; **autonomy tiers priced higher** as actioning ships (natural expansion path).
 - Validate willingness-to-pay in design-partner conversations *before* the App Store listing sets a public price.
 
 ---
@@ -91,7 +91,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 - **Resend:** one verified domain — `mynamejefe.com` (root, EU/eu-west-1, sending enabled). Used for **product transactional** email (welcome, unsubscribe).
 - **Rule:** growth/marketing outbound must NOT share the transactional stream — a bounce/spam complaint on a campaign would poison password-reset-grade deliverability.
-- **Plan:** dedicated **sending subdomain for growth** (proposed `hola.mynamejefe.com` — on-brand; alt `outbound.` / `hey.`). Separate Resend domain → separate reputation. Needs DNS records (Matt's action) + Matt's OK before any real send. Transactional stays on root (consider moving it to `mail.` later for full isolation).
+- **APPROVED (Matt, 2026-07-29):** stand up a dedicated **growth sending subdomain** — `hola.mynamejefe.com` (on-brand). Separate Resend domain → separate reputation. Next step: create the domain in Resend → hand Matt the DNS records to add (his action) → verify. Transactional stays on root (consider moving it to `mail.` later for full isolation). Sending anything real still needs Matt's per-campaign OK.
 - **Hard rule (both streams):** **no real outbound campaign sends without Matt's explicit OK**, same as the product side.
 
 ---
@@ -105,14 +105,15 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ---
 
-## 8. Open decisions for Matt
+## 8. Decisions
 
-1. **ICP gut-check:** confirm single-market established DTC ($1M–$20M) as the wedge, multi-market deferred to 100→1000. (Adopted as working baseline; chat 4 already steered.)
-2. **Growth outbound subdomain:** OK to set up `hola.mynamejefe.com` (or preferred name) as a separate Resend sending domain? Requires you to add DNS records.
-3. **Design-partner pricing:** free-during-program + founding-partner conversion rate — agree?
+1. **ICP** — *working baseline, unobjected.* Single-market established DTC ($1M–$20M), multi-market deferred to 100→1000. Chat 4 steered. Still worth Matt's explicit gut-check when convenient; proceeding on it meanwhile.
+2. ~~**Growth outbound subdomain**~~ — ✅ **APPROVED 2026-07-29** (`hola.mynamejefe.com`). See §6.
+3. ~~**Design-partner pricing**~~ — ✅ **APPROVED 2026-07-29** (free-in-program + founding rate). See §5.
 
 ---
 
 ## Changelog
 
+- **2026-07-29** — Matt approved design-partner pricing (free-in-program + founding rate) and the `hola.mynamejefe.com` growth subdomain. Shipped the commercial tracker v0 (`apps/growth`, ICP triage over `waitlist_signups`) and the build-vs-buy tooling view ([growth-stack.md](growth-stack.md)). ICP stands as unobjected working baseline.
 - **2026-07-28** — Doc created (chat 6). Set working ICP (single-market established DTC), positioning one-liner, draft activation definition, pricing hypothesis, deliverability plan. Steered chat 4 on memory build order. Stage = 0→10.
