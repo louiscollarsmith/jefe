@@ -51,6 +51,8 @@
 
 **Move upmarket to multi-market established brands at the 100→1000 stage**, not before — that's when ACV justifies the memory complexity. Chat 4 has been told to keep the belief model extensible for it, but **not** to build multi-market synthesis now.
 
+**Extension boundary (agreed with chat 4, 2026-07-29):** keep beliefs *market-scopable* — a belief can grow a market/segment dimension later without changing its identity (beliefs are shop-scoped today; Markets-within-a-store is the v2 seam). Single-market beliefs should gate on single-currency at *derivation time* and degrade gracefully (with diagnostics) for multi-currency stores, rather than baking single-currency into the data model. This is how "single-market depth now" stays a clean extension, not a rewrite.
+
 ---
 
 ## 3. Activation & the commercial funnel (draft — align with chat 3)
