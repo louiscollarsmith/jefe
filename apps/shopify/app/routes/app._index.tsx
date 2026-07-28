@@ -3309,10 +3309,19 @@ function InlineError({ message }: { message: string }) {
 }
 
 function JefeMark() {
+  // The real mark: navy rounded square, ivory "J", blush dot. Never a bare letter.
+  // Square + J fills are CSS variables so the cinematic dark theme can invert them.
   return (
-    <div className="JefeMark" aria-hidden="true">
-      J
-    </div>
+    <span className="JefeMark" aria-hidden="true">
+      <svg viewBox="0 0 64 64" style={{ width: "100%", height: "100%", display: "block" }}>
+        <rect width="64" height="64" rx="16" fill="var(--jm-square, #33456b)" />
+        <path
+          d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z"
+          fill="var(--jm-j, #f8ece7)"
+        />
+        <circle cx="32" cy="49" r="4.5" fill="#c98a8a" />
+      </svg>
+    </span>
   );
 }
 

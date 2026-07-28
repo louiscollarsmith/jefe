@@ -659,17 +659,8 @@
 }
 
 .JefeMark {
-  align-items: center;
-  background: #1f3a63;
-  border-radius: 10px;
-  color: #f7e1db;
   display: inline-flex;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 32px;
-  font-weight: 700;
   height: 54px;
-  justify-content: center;
-  line-height: 1;
   width: 54px;
 }
 
@@ -1071,11 +1062,10 @@
 
 /* ---- Wordmark ---- */
 .JefeOnboardingShell.is-cinematic .JefeMark {
-  background: oklch(0.28 0.05 268);
-  border: 1px solid oklch(0.42 0.06 268);
-  color: var(--jc-blush-accent);
-  font-family: var(--jc-display);
-  box-shadow: 0 0 30px -6px oklch(0.6 0.12 285 / 0.6);
+  /* Invert the mark on dark: ivory square, navy J, blush dot (unchanged). */
+  --jm-square: #f8ece7;
+  --jm-j: #1b2338;
+  filter: drop-shadow(0 0 26px oklch(0.6 0.12 285 / 0.6));
 }
 
 /* ---- Connect: learning card (Polaris Card = ShadowBevel > Box) ---- */
