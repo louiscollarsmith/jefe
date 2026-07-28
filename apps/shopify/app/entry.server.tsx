@@ -1,11 +1,12 @@
 import { PassThrough } from "stream";
 import { renderToPipeableStream } from "react-dom/server";
-import { ServerRouter } from "react-router";
+import { ServerRouter, isRouteErrorResponse } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
-import { type EntryContext } from "react-router";
+import { type EntryContext, type HandleErrorFunction } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { getShopifyStandaloneDocumentResponse } from "./services/shopify-document-response.server";
+import { logger } from "./lib/observability/logger.server";
 
 export const streamTimeout = 5000;
 
@@ -53,7 +54,7 @@ export default async function handleRequest(
         },
         onError(error) {
           responseStatusCode = 500;
-          console.error(error);
+          logger.error("Streaming render error", { err: error });
         },
       }
     );
@@ -63,3 +64,22 @@ export default async function handleRequest(
     setTimeout(abort, streamTimeout + 1000);
   });
 }
+
+/**
+ * Central server-side error hook. React Router calls this for every uncaught
+ * error thrown while handling a request (loaders, actions and rendering), so it
+ * is the one place guaranteed to see them. Two expected, non-actionable cases
+ * are skipped: client disconnects (aborted requests) and 404s.
+ */
+export const handleError: HandleErrorFunction = (error, { request }) => {
+  if (request.signal.aborted) return;
+  if (isRouteErrorResponse(error) && error.status === 404) return;
+
+  const url = new URL(request.url);
+  logger.error("Unhandled server error", {
+    err: error,
+    method: request.method,
+    path: url.pathname,
+    requestId: request.headers.get("x-request-id") || undefined,
+  });
+};

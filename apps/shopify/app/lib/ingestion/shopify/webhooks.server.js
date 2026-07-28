@@ -20,6 +20,9 @@ import {
   upsertShopifyRefund,
 } from "./canonical.server.js";
 import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jobs.server.js";
+import { logger as baseLogger } from "../../observability/logger.server.js";
+
+const webhookLogger = baseLogger.child({ component: "shopify-webhook" });
 
 const COMPLIANCE_TOPICS = new Set([
   "customers/data_request",
@@ -53,17 +56,36 @@ export async function handleShopifyWebhookRequest(
     return new Response("Unexpected Shopify webhook topic", { status: 400 });
   }
 
-  const result = await processShopifyWebhook(prisma, {
-    rawBody,
+  // Operational context only — topic/shop/webhookId. The raw body is never
+  // logged: for compliance topics it is the customer PII we are required to
+  // erase, and for others it can still contain customer data.
+  const log = webhookLogger.child({
     topic: headers.topic,
     shopDomain: headers.shopDomain,
-    webhookId: headers.webhookId,
-    eventId: headers.eventId,
-    triggeredAt: headers.triggeredAt,
-    apiVersion: headers.apiVersion,
+    webhookId: headers.webhookId ?? null,
   });
 
-  return Response.json(result);
+  try {
+    const result = await processShopifyWebhook(prisma, {
+      rawBody,
+      topic: headers.topic,
+      shopDomain: headers.shopDomain,
+      webhookId: headers.webhookId,
+      eventId: headers.eventId,
+      triggeredAt: headers.triggeredAt,
+      apiVersion: headers.apiVersion,
+    });
+
+    log.info("Shopify webhook processed", {
+      status: /** @type {{ status?: string }} */ (result)?.status ?? "unknown",
+    });
+    return Response.json(result);
+  } catch (error) {
+    // Log with context, then rethrow so the route returns 5xx and Shopify
+    // retries the delivery (the previous behaviour is preserved).
+    log.error("Shopify webhook processing failed", { err: error });
+    throw error;
+  }
 }
 
 /**

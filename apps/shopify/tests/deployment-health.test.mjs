@@ -1,28 +1,90 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { buildHealthPayload } from "../app/services/deployment-health.server.js";
+import {
+  buildHealthPayload,
+  checkDatabaseHealth,
+} from "../app/services/deployment-health.server.js";
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
+
+const FIXED_NOW = new Date("2026-07-28T12:00:00.000Z");
 
 const EXPECTED_SHOPIFY_SCOPES =
   "read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations";
 
 test("deployment health reports the configured app environment", () => {
-  assert.deepEqual(buildHealthPayload({ APP_ENV: "staging" }), {
+  assert.deepEqual(
+    buildHealthPayload(
+      { APP_ENV: "staging", APP_VERSION: "abc123" },
+      { now: FIXED_NOW, uptimeSeconds: 42 },
+    ),
+    {
+      ok: true,
+      environment: "staging",
+      version: "abc123",
+      timestamp: "2026-07-28T12:00:00.000Z",
+      uptimeSeconds: 42,
+    },
+  );
+});
+
+test("deployment health falls back to NODE_ENV, commit sha, and development", () => {
+  assert.deepEqual(
+    buildHealthPayload(
+      { NODE_ENV: "production", RAILWAY_GIT_COMMIT_SHA: "deadbeef" },
+      { now: FIXED_NOW, uptimeSeconds: 0 },
+    ),
+    {
+      ok: true,
+      environment: "production",
+      version: "deadbeef",
+      timestamp: "2026-07-28T12:00:00.000Z",
+      uptimeSeconds: 0,
+    },
+  );
+  assert.deepEqual(buildHealthPayload({}, { now: FIXED_NOW, uptimeSeconds: 0 }), {
     ok: true,
-    environment: "staging",
+    environment: "development",
+    version: null,
+    timestamp: "2026-07-28T12:00:00.000Z",
+    uptimeSeconds: 0,
   });
 });
 
-test("deployment health falls back to NODE_ENV and development", () => {
-  assert.deepEqual(buildHealthPayload({ NODE_ENV: "production" }), {
-    ok: true,
-    environment: "production",
-  });
-  assert.deepEqual(buildHealthPayload({}), {
-    ok: true,
-    environment: "development",
-  });
+test("database health probe reports ok with latency on success", async () => {
+  const calls = [];
+  const prisma = {
+    async $queryRawUnsafe(query) {
+      calls.push(query);
+      return [{ "?column?": 1 }];
+    },
+  };
+  const result = await checkDatabaseHealth(prisma, { now: () => 0 });
+  assert.equal(result.status, "ok");
+  assert.equal(typeof result.latencyMs, "number");
+  assert.deepEqual(calls, ["SELECT 1"]);
+});
+
+test("database health probe reports error without throwing", async () => {
+  const prisma = {
+    async $queryRawUnsafe() {
+      throw new Error("connection refused");
+    },
+  };
+  const result = await checkDatabaseHealth(prisma);
+  assert.equal(result.status, "error");
+  assert.equal(result.error, "connection refused");
+});
+
+test("database health probe times out a hung query", async () => {
+  const prisma = {
+    $queryRawUnsafe() {
+      return new Promise(() => {}); // never resolves
+    },
+  };
+  const result = await checkDatabaseHealth(prisma, { timeoutMs: 10 });
+  assert.equal(result.status, "error");
+  assert.match(result.error, /Timed out/);
 });
 
 test("Dockerfile generates Prisma Client before building the app", async () => {

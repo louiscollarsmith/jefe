@@ -3,6 +3,7 @@
 import { getLlmConfig } from "./config.server.js";
 import { LlmDisabledError } from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
+import { logger as baseLogger } from "../observability/logger.server.js";
 
 /**
  * @param {{ config?: ReturnType<typeof getLlmConfig>; logger?: Pick<Console, "info" | "warn" | "error"> }} [input]
@@ -18,7 +19,11 @@ export function createLlmProvider(input = {}) {
   if (!config.geminiApiKey) {
     throw new Error("GEMINI_API_KEY is required when LLM_ENABLED=true.");
   }
-  return createGeminiProvider({ config, logger: input.logger });
+  // Default to the structured logger (tagged for filtering) when a caller does
+  // not inject one. The provider only ever logs request metadata — token
+  // counts, timings and error names — never prompt or response bodies.
+  const logger = input.logger ?? baseLogger.child({ component: "llm" });
+  return createGeminiProvider({ config, logger });
 }
 
 /**

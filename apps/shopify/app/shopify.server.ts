@@ -13,6 +13,7 @@ import {
 } from "./services/shopify-backfill-status.server";
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
+import { logger } from "./lib/observability/logger.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
   "2025-10": ApiVersion.October25,
@@ -58,10 +59,11 @@ const shopify = shopifyApp({
         merchantName: associatedUser?.first_name ?? null,
         appUrl: process.env.EMAIL_APP_URL || undefined,
       }).catch((error) => {
-        console.error(
-          `[welcome-email] unexpected error for ${session.shop}:`,
-          error,
-        );
+        logger.error("Welcome email dispatch failed", {
+          err: error,
+          component: "welcome-email",
+          shopDomain: session.shop,
+        });
       });
     },
   },
