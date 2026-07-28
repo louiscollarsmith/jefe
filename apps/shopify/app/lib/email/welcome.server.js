@@ -1,8 +1,16 @@
 // @ts-check
 
+import { logger as baseLogger } from "../observability/logger.server.js";
 import { normalizeShopDomain } from "../shopify/admin-graphql.server.js";
 import { sendEmail } from "./resend.server.js";
 import { loadTemplateHtml, interpolate } from "./template.server.js";
+import {
+  hashRecipient,
+  isEmailUnsubscribed,
+  signUnsubscribeToken,
+} from "./unsubscribe.server.js";
+
+const log = baseLogger.child({ component: "email" });
 
 /**
  * The WELCOME email (Day 0, trigger "Shopify OAuth completes", one ask
@@ -68,20 +76,6 @@ export function deriveStoreName(shopDomain) {
   return words.length ? words.join(" ") : "your store";
 }
 
-/**
- * Build a placeholder one-click unsubscribe token. The real signed token + the
- * `/e/unsubscribe` page are documented follow-ups; this only has to produce a
- * stable `?t=…` value so the link and RFC 8058 header point at the right path.
- *
- * @param {string} shopDomain
- * @returns {string}
- */
-export function buildUnsubscribeToken(shopDomain) {
-  return Buffer.from(`shop:${normalizeShopDomain(shopDomain)}`, "utf8").toString(
-    "base64url",
-  );
-}
-
 /** @param {string} url */
 function trimTrailingSlash(url) {
   return url.replace(/\/+$/, "");
@@ -98,7 +92,10 @@ function resolveUrls(input) {
   const logoUrl = input.logoUrl || process.env.EMAIL_LOGO_URL || DEFAULT_LOGO_URL;
   const unsubscribeUrl =
     input.unsubscribeUrl ||
-    `${appUrl}/e/unsubscribe?t=${buildUnsubscribeToken(input.shopDomain)}`;
+    `${appUrl}/e/unsubscribe?t=${signUnsubscribeToken({
+      shopDomain: normalizeShopDomain(input.shopDomain),
+      emailHash: hashRecipient(input.to) ?? "",
+    })}`;
   return { appUrl, logoUrl, unsubscribeUrl };
 }
 
@@ -233,9 +230,7 @@ export async function sendWelcomeEmailOnInstall(prisma, input) {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const recipient = input.recipientEmail || null;
     if (!recipient) {
-      console.warn(
-        `[welcome-email] no recipient resolved for ${shopDomain} — skipping (see README: resolve merchant email before first real send)`,
-      );
+      log.warn("welcome email skipped: no recipient resolved", { shopDomain });
       return { sent: false, reason: "no_recipient" };
     }
 
@@ -244,11 +239,20 @@ export async function sendWelcomeEmailOnInstall(prisma, input) {
       select: { id: true, welcomeEmailSentAt: true },
     });
     if (!shop) {
-      console.warn(`[welcome-email] shop not found for ${shopDomain} — skipping`);
+      log.warn("welcome email skipped: shop not found", { shopDomain });
       return { sent: false, reason: "shop_not_found" };
     }
     if (shop.welcomeEmailSentAt) {
       return { sent: false, reason: "already_sent" };
+    }
+
+    // Respect an existing unsubscribe (keyed by shop + email hash, no plaintext).
+    const emailHash = hashRecipient(recipient);
+    if (
+      emailHash &&
+      (await isEmailUnsubscribed(prisma, { shopId: shop.id, emailHash }))
+    ) {
+      return { sent: false, reason: "unsubscribed" };
     }
 
     // Atomic claim: only the transition NULL -> now wins.
@@ -278,10 +282,10 @@ export async function sendWelcomeEmailOnInstall(prisma, input) {
     // The guard may already be claimed; we intentionally do not release it
     // (prioritise "never send twice"). Retry-on-failure is a documented
     // follow-up. Swallow so install is never affected.
-    console.error(
-      `[welcome-email] failed for ${input.shopDomain}:`,
-      error instanceof Error ? error.message : error,
-    );
+    log.error("welcome email failed", {
+      shopDomain: input.shopDomain,
+      err: error,
+    });
     return { sent: false, reason: "error" };
   }
 }

@@ -12,7 +12,19 @@ import {
   renderWelcomeEmail,
   sendWelcomeEmailOnInstall,
 } from "../app/lib/email/welcome.server.js";
+import {
+  hashRecipient,
+  isEmailUnsubscribed,
+  recordUnsubscribe,
+  signUnsubscribeToken,
+  verifyUnsubscribeToken,
+} from "../app/lib/email/unsubscribe.server.js";
 import { ensureShopifyTenant } from "../app/lib/ingestion/shopify/tenant.server.js";
+
+// Signed unsubscribe tokens need a secret; renderWelcomeEmail builds one when it
+// renders the List-Unsubscribe URL, so the secret must be present in the test env.
+process.env.EMAIL_UNSUBSCRIBE_SECRET =
+  process.env.EMAIL_UNSUBSCRIBE_SECRET || "test-email-unsubscribe-secret";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -312,4 +324,125 @@ test("welcome install trigger does not claim the guard when the shop is missing"
   } finally {
     await prisma.$disconnect();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Unsubscribe: signed one-click tokens + suppression store
+// ---------------------------------------------------------------------------
+
+test("unsubscribe token round-trips shop domain + email hash", () => {
+  const emailHash = hashRecipient("Owner@Acme-Tools.com");
+  assert.ok(emailHash);
+  const token = signUnsubscribeToken({
+    shopDomain: "acme-tools.myshopify.com",
+    emailHash,
+  });
+  assert.deepEqual(verifyUnsubscribeToken(token), {
+    shopDomain: "acme-tools.myshopify.com",
+    emailHash,
+  });
+});
+
+test("unsubscribe token rejects tampering and malformed input", () => {
+  const emailHash = hashRecipient("owner@acme.com") ?? "";
+  const token = signUnsubscribeToken({
+    shopDomain: "acme.myshopify.com",
+    emailHash,
+  });
+  const [body, sig] = token.split(".");
+  // A different payload signed with the original signature must not verify —
+  // this is the core "can't forge an unsubscribe for someone else" property.
+  const forgedBody = Buffer.from(
+    JSON.stringify({ v: "u1", s: "evil.myshopify.com", h: emailHash }),
+  ).toString("base64url");
+  assert.equal(verifyUnsubscribeToken(`${forgedBody}.${sig}`), null);
+  // Truncated signature, malformed, and missing tokens are all rejected.
+  assert.equal(verifyUnsubscribeToken(`${body}.${sig.slice(0, 8)}`), null);
+  assert.equal(verifyUnsubscribeToken("not-a-token"), null);
+  assert.equal(verifyUnsubscribeToken(""), null);
+  assert.equal(verifyUnsubscribeToken(null), null);
+});
+
+test("recordUnsubscribe suppresses a recipient (idempotent)", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for the suppression test");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  const shopDomain = `unsub-${suffix}.myshopify.com`;
+  try {
+    const { shop } = await ensureShopifyTenant(prisma, {
+      shopDomain,
+      accessTokenSessionId: `offline-${suffix}`,
+      scopes: ["read_products"],
+    });
+    const emailHash = hashRecipient(`owner-${suffix}@example.com`);
+    assert.ok(emailHash);
+
+    assert.equal(
+      await isEmailUnsubscribed(prisma, { shopId: shop.id, emailHash }),
+      false,
+    );
+    await recordUnsubscribe(prisma, { shopId: shop.id, emailHash, source: "test" });
+    assert.equal(
+      await isEmailUnsubscribed(prisma, { shopId: shop.id, emailHash }),
+      true,
+    );
+    // Second call is idempotent (upsert), still unsubscribed.
+    await recordUnsubscribe(prisma, { shopId: shop.id, emailHash, source: "test" });
+    assert.equal(
+      await isEmailUnsubscribed(prisma, { shopId: shop.id, emailHash }),
+      true,
+    );
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
+test("welcome install trigger skips an unsubscribed recipient without claiming the guard", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for the unsubscribe-skip test");
+    return;
+  }
+  await withEnv("ENABLE_EMAIL", undefined, async () => {
+    const prisma = new PrismaClient({
+      datasources: { db: { url: databaseUrl } },
+    });
+    const suffix = uniqueSuffix();
+    const shopDomain = `unsub-skip-${suffix}.myshopify.com`;
+    const recipient = `owner-${suffix}@example.com`;
+    try {
+      const { shop } = await ensureShopifyTenant(prisma, {
+        shopDomain,
+        accessTokenSessionId: `offline-${suffix}`,
+        scopes: ["read_products"],
+      });
+      await recordUnsubscribe(prisma, {
+        shopId: shop.id,
+        emailHash: hashRecipient(recipient),
+        source: "test",
+      });
+
+      const { result } = await withCapturedConsole(() =>
+        sendWelcomeEmailOnInstall(prisma, {
+          shopDomain,
+          recipientEmail: recipient,
+        }),
+      );
+      assert.equal(result.sent, false);
+      assert.equal(result.reason, "unsubscribed");
+
+      // An unsubscribe is not a "sent" — the welcome guard must stay unclaimed.
+      const shopRow = await prisma.shop.findUniqueOrThrow({
+        where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+        select: { welcomeEmailSentAt: true },
+      });
+      assert.equal(shopRow.welcomeEmailSentAt, null);
+    } finally {
+      await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+      await prisma.$disconnect();
+    }
+  });
 });
