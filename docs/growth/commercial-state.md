@@ -91,7 +91,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 - **Resend:** one verified domain — `mynamejefe.com` (root, EU/eu-west-1, sending enabled). Used for **product transactional** email (welcome, unsubscribe).
 - **Rule:** growth/marketing outbound must NOT share the transactional stream — a bounce/spam complaint on a campaign would poison password-reset-grade deliverability.
-- **APPROVED (Matt, 2026-07-29):** stand up a dedicated **growth sending subdomain** — `hola.mynamejefe.com` (on-brand). Separate Resend domain → separate reputation. Next step: create the domain in Resend → hand Matt the DNS records to add (his action) → verify. Transactional stays on root (consider moving it to `mail.` later for full isolation). Sending anything real still needs Matt's per-campaign OK.
+- **Approved in principle (Matt, 2026-07-29)** but **execution deferred:** a dedicated growth sending subdomain (`hola.mynamejefe.com`) for separate reputation. Tried to create it — **Resend's current plan includes only 1 domain**, so it needs a paid upgrade. Timing says wait: 0→10 outreach is **personal 1:1 (Matt's own inbox)**, which needs no subdomain. The subdomain earns its keep when we build **automated lifecycle email at 10→100** — upgrade Resend and create it *then*. Until then: **no bulk/automated growth sends on the transactional domain** (`mynamejefe.com` stays transactional-only). Any real send still needs Matt's per-campaign OK.
 - **Hard rule (both streams):** **no real outbound campaign sends without Matt's explicit OK**, same as the product side.
 
 ---
@@ -108,12 +108,12 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 ## 8. Decisions
 
 1. **ICP** — *working baseline, unobjected.* Single-market established DTC ($1M–$20M), multi-market deferred to 100→1000. Chat 4 steered. Still worth Matt's explicit gut-check when convenient; proceeding on it meanwhile.
-2. ~~**Growth outbound subdomain**~~ — ✅ **APPROVED 2026-07-29** (`hola.mynamejefe.com`). See §6.
+2. **Growth outbound subdomain** — approved in principle, but **deferred to 10→100**: blocked by Resend's 1-domain plan (needs upgrade), and not needed while 0→10 outreach is 1:1 from Matt's inbox. See §6.
 3. ~~**Design-partner pricing**~~ — ✅ **APPROVED 2026-07-29** (free-in-program + founding rate). See §5.
 
 ---
 
 ## Changelog
 
-- **2026-07-29** — Matt approved design-partner pricing (free-in-program + founding rate) and the `hola.mynamejefe.com` growth subdomain. Shipped the commercial tracker v0 (`apps/growth`, ICP triage over `waitlist_signups`) and the build-vs-buy tooling view ([growth-stack.md](growth-stack.md)). ICP stands as unobjected working baseline.
+- **2026-07-29** — Matt approved design-partner pricing (free-in-program + founding rate) and the growth subdomain *in principle* (execution deferred to 10→100 — Resend's 1-domain plan needs an upgrade, and 0→10 outreach is 1:1 anyway). Shipped the commercial tracker v0 (`apps/growth`, ICP triage over `waitlist_signups`) and the build-vs-buy tooling view ([growth-stack.md](growth-stack.md)). ICP stands as unobjected working baseline.
 - **2026-07-28** — Doc created (chat 6). Set working ICP (single-market established DTC), positioning one-liner, draft activation definition, pricing hypothesis, deliverability plan. Steered chat 4 on memory build order. Stage = 0→10.
