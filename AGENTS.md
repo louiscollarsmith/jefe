@@ -54,6 +54,15 @@ Historical context, reset audits and previous product prompts live under `docs/a
 - Log all server-side events through the structured logger (`apps/shopify/app/lib/observability/logger.server.js`), never bare `console.*`. Log identifiers and metadata, never request/response payloads, secrets or customer PII — redaction is a safety net, not permission to log sensitive data. Let thrown errors surface to the central hooks (`handleError` in `entry.server.tsx`, route error boundaries) rather than swallowing them, and add a health signal for any new external dependency. See `apps/shopify/docs/observability.md`.
 - Shopify embedded merchant UI must use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions.
 
+## Shared Working Tree
+
+Multiple Claude Code sessions work concurrently in this one tree, and the git **index/staging area is shared** across all of them.
+
+- **Pathspec-commit, always:** `git commit -- <explicit paths> -m "…"`. Never a bare `git commit` / `git commit -a` — it commits the entire shared index and will sweep another session's staged files into your commit (this happened twice on 2026-07-28).
+- **Never** `git add -A` or `git add <dir>`; stage explicit paths only.
+- Stage and commit **atomically**, and verify `git diff --cached --name-only` shows only your files first.
+- Leave another session's uncommitted work unstaged. You may edit another session's files, but ask that session first, per file — use the cross-session message tool.
+
 ## Before Coding
 
 Restate the task, list files you expect to change, and state assumptions or blockers.
