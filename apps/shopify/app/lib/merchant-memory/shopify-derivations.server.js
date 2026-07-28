@@ -279,6 +279,19 @@ function deriveDefinition(context, definition) {
       case "business.zero_sales_day_share.trailing_90d":
         return zeroSalesDayShare(context, definition, 90);
 
+      case "products.selling_product_count.trailing_90d":
+        return sellingProductCount(context, definition, 90);
+      case "products.no_sale_active_product_count.trailing_90d":
+        return noSaleActiveProductCount(context, definition, 90);
+      case "products.top_product_revenue_share.trailing_90d":
+        return topProductRevenueShare(context, definition, 90, 1);
+      case "products.top_5_product_revenue_share.trailing_90d":
+        return topProductRevenueShare(context, definition, 90, 5);
+      case "products.bestseller_by_revenue.trailing_90d":
+        return bestsellerByRevenue(context, definition, 90);
+      case "products.bestseller_by_units.trailing_90d":
+        return bestsellerByUnits(context, definition, 90);
+
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
       case "catalog.active_product_count":
@@ -1125,6 +1138,138 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Product performance — trailing-window sales derived from line items joined to
+// priced orders. Bounded aggregates (concentration, bestsellers, dead stock),
+// never one belief per SKU, so belief counts and generator inputs stay bounded.
+function productSalesInWindow(context, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  const orderIds = new Set(orders.map((order) => order.id));
+  const items = context.lineItems.filter(
+    (item) => item.productId && orderIds.has(item.orderId),
+  );
+  const soldProductIds = new Set(items.map((item) => item.productId));
+  const revenueByProduct = sumBy(
+    items,
+    (item) => item.productId,
+    (item) => decimalNumber(item.totalPrice),
+  );
+  const unitsByProduct = sumBy(
+    items,
+    (item) => item.productId,
+    (item) => Number(item.quantity) || 0,
+  );
+  return { orders, items, soldProductIds, revenueByProduct, unitsByProduct };
+}
+
+function productTitle(context, productId) {
+  return (
+    context.products.find((product) => product.id === productId)?.title ?? null
+  );
+}
+
+function sellingProductCount(context, definition, days) {
+  const { orders, soldProductIds } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  return countOutcome(context, definition, soldProductIds.size, `Distinct products with recorded sales in the trailing ${days} days.`, { sampleSize: orders.length });
+}
+
+function noSaleActiveProductCount(context, definition, days) {
+  const { orders, soldProductIds } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  if (context.activeProducts.length < 1) {
+    return skipped(definition, "insufficient_data", "At least 1 active product is required.", { activeProducts: context.activeProducts.length });
+  }
+  const noSale = context.activeProducts.filter((product) => !soldProductIds.has(product.id)).length;
+  return countOutcome(context, definition, noSale, `Active products with no recorded sales in the trailing ${days} days.`, { sampleSize: context.activeProducts.length });
+}
+
+function topProductRevenueShare(context, definition, days, topN) {
+  const { orders, revenueByProduct } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = singleCurrency(orders.map((order) => order.currency));
+  if (!currency.ok) {
+    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+  }
+  const revenues = Array.from(revenueByProduct.values())
+    .filter((revenue) => revenue > 0)
+    .sort((a, b) => b - a);
+  if (revenues.length < 2) {
+    return skipped(definition, "insufficient_data", "At least 2 products with sales are required for a concentration share.", { sellingProducts: revenues.length });
+  }
+  const total = sum(revenues);
+  const topSum = sum(revenues.slice(0, topN));
+  return shareOutcome(context, definition, topSum, total, `Revenue from the top ${topN} product${topN === 1 ? "" : "s"} divided by total product revenue in the trailing ${days} days.`, { supportingValues: { sellingProductCount: revenues.length, topN, currency: currency.currency } });
+}
+
+function bestsellerByRevenue(context, definition, days) {
+  const { orders, revenueByProduct } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = singleCurrency(orders.map((order) => order.currency));
+  if (!currency.ok) {
+    return skipped(definition, "blocked_by_data_quality", "Multiple order currencies are present without conversion support.", { currencies: currency.currencies.length });
+  }
+  const ranked = Array.from(revenueByProduct.entries())
+    .filter((entry) => entry[1] > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (ranked.length < 1) {
+    return skipped(definition, "insufficient_data", "At least 1 product with sales is required.", { sellingProducts: ranked.length });
+  }
+  const total = sum(ranked.map((entry) => entry[1]));
+  const [productId, revenue] = ranked[0];
+  return derived(context, definition, {
+    value: {
+      productId,
+      title: productTitle(context, productId),
+      revenue: roundMoney(revenue),
+      revenueShare: roundNumber((revenue / total) * 100, 2),
+      currency: currency.currency,
+      sellingProductCount: ranked.length,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Highest-revenue product from stored line items in one currency over the window.",
+    summary: `Best-selling product by revenue in the trailing ${days} days.`,
+    sampleSize: ranked.length,
+  });
+}
+
+function bestsellerByUnits(context, definition, days) {
+  const { orders, unitsByProduct } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const ranked = Array.from(unitsByProduct.entries())
+    .filter((entry) => entry[1] > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (ranked.length < 1) {
+    return skipped(definition, "insufficient_data", "At least 1 product with sales is required.", { sellingProducts: ranked.length });
+  }
+  const totalUnits = sum(ranked.map((entry) => entry[1]));
+  const [productId, units] = ranked[0];
+  return derived(context, definition, {
+    value: {
+      productId,
+      title: productTitle(context, productId),
+      units,
+      unitsShare: roundNumber((units / totalUnits) * 100, 2),
+      sellingProductCount: ranked.length,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Highest-unit-volume product from stored line items over the window.",
+    summary: `Best-selling product by units in the trailing ${days} days.`,
+    sampleSize: ranked.length,
+  });
 }
 
 function countOutcome(context, definition, count, summary, options = {}) {

@@ -11,13 +11,13 @@ import {
 
 /** @type {Record<string, string[]>} */
 const TOPIC_CATEGORIES = {
-  "products/create": ["catalog", "inventory"],
-  "products/update": ["catalog", "inventory"],
-  "products/delete": ["catalog", "inventory"],
-  "orders/create": ["orders", "customers", "refunds", "inventory", "business"],
-  "orders/updated": ["orders", "customers", "refunds", "inventory", "business"],
-  "orders/cancelled": ["orders", "customers", "refunds", "inventory"],
-  "refunds/create": ["refunds", "orders", "business"],
+  "products/create": ["catalog", "inventory", "products"],
+  "products/update": ["catalog", "inventory", "products"],
+  "products/delete": ["catalog", "inventory", "products"],
+  "orders/create": ["orders", "customers", "refunds", "inventory", "business", "products"],
+  "orders/updated": ["orders", "customers", "refunds", "inventory", "business", "products"],
+  "orders/cancelled": ["orders", "customers", "refunds", "inventory", "products"],
+  "refunds/create": ["refunds", "orders", "business", "products"],
   "inventory_levels/update": ["inventory", "catalog"],
 };
 

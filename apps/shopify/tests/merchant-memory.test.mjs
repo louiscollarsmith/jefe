@@ -31,14 +31,15 @@ const silentLogger = {
   error() {},
 };
 
-test("deterministic belief registry contains only the first implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 104);
+test("deterministic belief registry contains only vetted implementation tranches", () => {
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 110);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
       "0A — validate existing 19",
       "0B — data-quality guardrails",
       "1A — cheap deterministic expansion",
+      "Product performance v1",
     ]),
   );
   assert.equal(
@@ -102,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 104);
-  assert.equal(result.derivationReport.attempted, 104);
+  assert.equal(result.registryDefinitionCount, 110);
+  assert.equal(result.derivationReport.attempted, 110);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    104,
+    110,
   );
-  assert.equal(result.derivationAttempts.length, 104);
+  assert.equal(result.derivationAttempts.length, 110);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -161,6 +162,103 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   );
   assert.equal(beliefs.get("inventory.negative_inventory_unit_magnitude").value.count, 2);
   assert.equal(beliefs.get("customers.repeat_customer_rate.all_time").value.percentage, 50);
+});
+
+function createProductPerformancePrisma(orderCount) {
+  const products = [
+    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
+    { id: "prod-charlie", title: "Charlie", status: "ACTIVE" },
+  ];
+  const variants = [
+    { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
+    { id: "var-bravo", productId: "prod-bravo", sku: "B", title: "B", price: "50.00", currency: "GBP", inventoryItemExternalId: "inv-b" },
+    { id: "var-charlie", productId: "prod-charlie", sku: "C", title: "C", price: "25.00", currency: "GBP", inventoryItemExternalId: "inv-c" },
+  ];
+  const now = Date.now();
+  const orders = [];
+  const lineItems = [];
+  for (let index = 0; index < orderCount; index += 1) {
+    const isAlpha = index % 5 < 3;
+    const id = `perf-order-${index + 1}`;
+    const price = isAlpha ? "100.00" : "50.00";
+    const at = new Date(now - (index + 1) * 24 * 60 * 60 * 1000);
+    orders.push({ id, externalId: `perf-x-${index + 1}`, currency: "GBP", totalPrice: price, totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `perf-c-${index + 1}`, financialStatus: "PAID" });
+    lineItems.push({ orderId: id, productId: isAlpha ? "prod-alpha" : "prod-bravo", variantId: isAlpha ? "var-alpha" : "var-bravo", quantity: 1, unitPrice: price, totalPrice: price });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "perf.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Perf Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("product-performance beliefs derive concentration, bestsellers and dead stock", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const bands = [0.98, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6];
+
+  assert.equal(beliefs.get("products.selling_product_count.trailing_90d").value.count, 2);
+  assert.equal(beliefs.get("products.no_sale_active_product_count.trailing_90d").value.count, 1);
+  assert.equal(beliefs.get("products.top_product_revenue_share.trailing_90d").value.percentage, 75);
+  assert.equal(beliefs.get("products.top_5_product_revenue_share.trailing_90d").value.percentage, 100);
+
+  const byRevenue = beliefs.get("products.bestseller_by_revenue.trailing_90d");
+  assert.equal(byRevenue.valueType, "structured");
+  assert.equal(byRevenue.value.productId, "prod-alpha");
+  assert.equal(byRevenue.value.title, "Alpha");
+  assert.equal(byRevenue.value.revenue, 600);
+  assert.equal(byRevenue.value.revenueShare, 75);
+
+  const byUnits = beliefs.get("products.bestseller_by_units.trailing_90d");
+  assert.equal(byUnits.value.productId, "prod-alpha");
+  assert.equal(byUnits.value.units, 6);
+
+  for (const key of [
+    "products.selling_product_count.trailing_90d",
+    "products.top_product_revenue_share.trailing_90d",
+    "products.bestseller_by_revenue.trailing_90d",
+  ]) {
+    assert.ok(bands.includes(beliefs.get(key).confidence), `${key} confidence not in calibrated band`);
+  }
+});
+
+test("product-performance beliefs suppress below minimum order volume", async () => {
+  const prisma = createProductPerformancePrisma(3);
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
+  assert.equal(skipped.get("products.selling_product_count.trailing_90d").status, "INSUFFICIENT_DATA");
+  assert.equal(skipped.get("products.bestseller_by_revenue.trailing_90d").status, "INSUFFICIENT_DATA");
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {
