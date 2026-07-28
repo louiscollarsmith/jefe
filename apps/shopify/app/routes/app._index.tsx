@@ -538,14 +538,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     accessToken: session.accessToken,
   });
 
-  if (shop.onboardingCompletedAt) {
+  const previewDaily = url.searchParams.get("home") === "daily";
+  if (shop.onboardingCompletedAt || previewDaily) {
     const memory = await getMerchantMemoryView({
       merchantId: merchant.id,
       shopId: shop.id,
     });
     // Daily Home is the default post-onboarding surface. Toggle off with
     // ENABLE_DAILY_HOME=false to fall back to the original Merchant Memory view.
-    if (process.env.ENABLE_DAILY_HOME !== "false") {
+    if (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) {
       const [metrics, insights, goals, plan] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
         getMerchantInsightsExperience(prisma, {
