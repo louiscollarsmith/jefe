@@ -15,14 +15,33 @@ import {
   markShopifyInstallInactive,
 } from "../app/lib/ingestion/shopify/tenant.server.js";
 import {
+  ensurePostOnboardingRecommendationsQueued,
   processNextBackfillJob,
   recoverStaleRunningBackfillJobs,
 } from "../app/services/shopify-backfill-worker.server.js";
 import {
+  enqueueBackfillJob,
   getShopBackfillProgress,
   queueInstallShopifyBackfill,
   retryFailedBackfillJobs,
 } from "../app/services/shopify-backfill-status.server.js";
+import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
+import { MEMORY_REFRESH_JOB_TYPE } from "../app/lib/merchant-memory/constants.server.js";
+import { buildMerchantGoalSnapshot } from "../app/lib/merchant-goals/candidates.server.js";
+import { buildMerchantPlanSnapshot } from "../app/lib/merchant-plan/candidates.server.js";
+import { MERCHANT_INSIGHTS_JOB_TYPE } from "../app/lib/merchant-insights/constants.server.js";
+import {
+  MERCHANT_GOALS_JOB_TYPE,
+  MERCHANT_GOALS_PROMPT_VERSION,
+  MERCHANT_GOALS_SCHEMA_VERSION,
+  MERCHANT_GOALS_SNAPSHOT_VERSION,
+} from "../app/lib/merchant-goals/constants.server.js";
+import {
+  MERCHANT_PLAN_JOB_TYPE,
+  MERCHANT_PLAN_PROMPT_VERSION,
+  MERCHANT_PLAN_SCHEMA_VERSION,
+  MERCHANT_PLAN_SNAPSHOT_VERSION,
+} from "../app/lib/merchant-plan/constants.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const silentLogger = {
@@ -517,6 +536,386 @@ test("stale running evidence backfill jobs are recovered", async (t) => {
     await prisma.$disconnect();
   }
 });
+
+test("completed full memory rebuild queues Plan and Goals refresh for an onboarded shop", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for recommendation refresh tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const fixture = await seedRecommendationFixture(prisma, suffix, {
+      onboarded: true,
+    });
+    await seedCompletedGoalRun(prisma, {
+      ...fixture,
+      beliefSnapshotHash: `goal-${suffix}`,
+    });
+
+    await enqueueBackfillJob(prisma, {
+      merchantId: fixture.merchant.id,
+      shopId: fixture.shop.id,
+      jobType: MEMORY_REFRESH_JOB_TYPE,
+      payload: { reason: "test_new_orders", categories: [] },
+    });
+    const result = await processNextBackfillJob(prisma, {
+      logger: silentLogger,
+      shopId: fixture.shop.id,
+    });
+
+    const planJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_PLAN_JOB_TYPE },
+    });
+    const goalsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_GOALS_JOB_TYPE },
+    });
+    const insightsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_INSIGHTS_JOB_TYPE },
+    });
+
+    assert.equal(result.jobType, MEMORY_REFRESH_JOB_TYPE);
+    assert.equal(result.status, "succeeded");
+    assert.ok(planJob, "Plan job should be queued after a rebuild for an onboarded shop");
+    assert.equal(planJob.status, "queued");
+    assert.ok(goalsJob, "Goals job should be queued after a rebuild for an onboarded shop");
+    assert.equal(goalsJob.status, "queued");
+    assert.ok(insightsJob, "Insights job should still be queued after a full rebuild");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Recommendation Refresh Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("completed full memory rebuild does not queue Plan or Goals before onboarding is complete", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for recommendation refresh tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const fixture = await seedRecommendationFixture(prisma, suffix, {
+      onboarded: false,
+    });
+    await seedCompletedGoalRun(prisma, {
+      ...fixture,
+      beliefSnapshotHash: `goal-${suffix}`,
+    });
+
+    await enqueueBackfillJob(prisma, {
+      merchantId: fixture.merchant.id,
+      shopId: fixture.shop.id,
+      jobType: MEMORY_REFRESH_JOB_TYPE,
+      payload: { reason: "test_new_orders", categories: [] },
+    });
+    const result = await processNextBackfillJob(prisma, {
+      logger: silentLogger,
+      shopId: fixture.shop.id,
+    });
+
+    const planJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_PLAN_JOB_TYPE },
+    });
+    const goalsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_GOALS_JOB_TYPE },
+    });
+    const insightsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_INSIGHTS_JOB_TYPE },
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(
+      planJob,
+      null,
+      "Plan must not be queued mid-onboarding; the funnel drives it",
+    );
+    assert.equal(
+      goalsJob,
+      null,
+      "Goals must not be queued mid-onboarding; the funnel drives it",
+    );
+    assert.ok(
+      insightsJob,
+      "Insights still refresh on a full rebuild regardless of onboarding state",
+    );
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Recommendation Refresh Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("an unchanged belief snapshot reuses completed Plan and Goals runs without wasteful regeneration", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for recommendation refresh tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+
+  try {
+    const fixture = await seedRecommendationFixture(prisma, suffix, {
+      onboarded: true,
+    });
+
+    // Seed a completed Goal run whose hash matches the CURRENT goal snapshot so
+    // the snapshot-hash cache treats the belief snapshot as unchanged.
+    const goalSnapshot = await buildMerchantGoalSnapshot(prisma, {
+      merchantId: fixture.merchant.id,
+      shopId: fixture.shop.id,
+    });
+    await seedCompletedGoalRun(prisma, {
+      ...fixture,
+      beliefSnapshotHash: goalSnapshot.snapshotHash,
+      snapshotVersion: MERCHANT_GOALS_SNAPSHOT_VERSION,
+      promptVersion: MERCHANT_GOALS_PROMPT_VERSION,
+      schemaVersion: MERCHANT_GOALS_SCHEMA_VERSION,
+    });
+
+    // Seed a completed Plan run whose hash matches the CURRENT plan snapshot
+    // (the plan snapshot is read after the goal run exists, so it is stable).
+    const planSnapshot = await buildMerchantPlanSnapshot(prisma, {
+      merchantId: fixture.merchant.id,
+      shopId: fixture.shop.id,
+    });
+    await prisma.merchantPlanRun.create({
+      data: {
+        merchantId: fixture.merchant.id,
+        shopId: fixture.shop.id,
+        status: "completed",
+        snapshotVersion: MERCHANT_PLAN_SNAPSHOT_VERSION,
+        snapshotHash: planSnapshot.snapshotHash,
+        relevantBeliefIds: planSnapshot.beliefIds,
+        insightRunId: planSnapshot.insightRunId,
+        goalRunId: planSnapshot.goalRunId,
+        promptVersion: MERCHANT_PLAN_PROMPT_VERSION,
+        schemaVersion: MERCHANT_PLAN_SCHEMA_VERSION,
+        completedAt: new Date(),
+      },
+    });
+
+    const planRunsBefore = await prisma.merchantPlanRun.count({
+      where: { shopId: fixture.shop.id },
+    });
+    const goalRunsBefore = await prisma.merchantGoalRun.count({
+      where: { shopId: fixture.shop.id },
+    });
+
+    // Simulate the post-rebuild hook with an unchanged belief snapshot.
+    const outcome = await ensurePostOnboardingRecommendationsQueued(prisma, {
+      merchantId: fixture.merchant.id,
+      shopId: fixture.shop.id,
+    });
+
+    const planRunsAfter = await prisma.merchantPlanRun.count({
+      where: { shopId: fixture.shop.id },
+    });
+    const goalRunsAfter = await prisma.merchantGoalRun.count({
+      where: { shopId: fixture.shop.id },
+    });
+    const planRun = await prisma.merchantPlanRun.findFirst({
+      where: { shopId: fixture.shop.id },
+    });
+    const planJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_PLAN_JOB_TYPE },
+    });
+    const goalsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_GOALS_JOB_TYPE },
+    });
+
+    assert.equal(outcome.status, "ensured");
+    assert.equal(outcome.plan, "reused");
+    assert.equal(outcome.goals, "reused");
+    assert.equal(
+      planRunsAfter,
+      planRunsBefore,
+      "No new Plan run is created for an unchanged belief snapshot",
+    );
+    assert.equal(
+      goalRunsAfter,
+      goalRunsBefore,
+      "No new Goal run is created for an unchanged belief snapshot",
+    );
+    assert.equal(
+      planRun.status,
+      "completed",
+      "The completed Plan run stays completed and is not re-queued",
+    );
+    assert.equal(
+      planJob,
+      null,
+      "No Plan generation job is enqueued when the snapshot is unchanged",
+    );
+    assert.equal(
+      goalsJob,
+      null,
+      "No Goals generation job is enqueued when the snapshot is unchanged",
+    );
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Recommendation Refresh Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+async function seedRecommendationFixture(prisma, suffix, { onboarded }) {
+  const merchant = await prisma.merchant.create({
+    data: {
+      name: `Recommendation Refresh Test ${suffix}`,
+      shops: {
+        create: {
+          shopDomain: `rec-refresh-${suffix}.myshopify.com`,
+          rawPayload: { source: "test" },
+          onboardingCompletedAt: onboarded ? new Date() : null,
+        },
+      },
+    },
+    include: { shops: true },
+  });
+  const shop = merchant.shops[0];
+  const beliefs = [];
+  for (const belief of [
+    {
+      key: "business.description",
+      category: "business",
+      value: { text: "Specialist wine merchant" },
+    },
+    {
+      key: "customers.repeat_purchase_rate",
+      category: "customers",
+      value: { percentage: 24, period: "stored history" },
+      valueType: "percentage",
+    },
+    {
+      key: "orders.average_order_value.all_time",
+      category: "orders",
+      value: { amount: 64, currency: "GBP" },
+      valueType: "currency_amount",
+    },
+  ]) {
+    const result = await upsertDerivedBelief(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      category: belief.category,
+      key: belief.key,
+      value: belief.value,
+      valueType: belief.valueType ?? "string",
+      confidence: 0.9,
+      confidenceReason: "Test fixture.",
+      observedAt: new Date("2026-07-26T09:00:00Z"),
+      evidence: {
+        sourceType: "system_derivation",
+        evidenceType: "deterministic_calculation",
+        summary: `Fixture belief for ${belief.key}.`,
+        observedAt: new Date("2026-07-26T09:00:00Z"),
+      },
+    });
+    beliefs.push(result.belief);
+  }
+  // Promote to merchant-confirmed (authoritative) so a real full memory rebuild
+  // never supersedes them, keeping the belief snapshot deterministic across the
+  // rebuild the worker runs.
+  await prisma.merchantMemoryBelief.updateMany({
+    where: { shopId: shop.id },
+    data: { status: "merchant_confirmed", precedence: 60 },
+  });
+
+  const insightRun = await prisma.merchantInsightRun.create({
+    data: {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      status: "completed",
+      beliefSnapshotVersion: "test",
+      beliefSnapshotHash: `insight-${suffix}`,
+      relevantBeliefIds: beliefs.map((belief) => belief.id),
+      promptVersion: "test",
+      schemaVersion: "test",
+      completedAt: new Date("2026-07-26T09:05:00Z"),
+      findings: {
+        create: {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          orderIndex: 1,
+          title: "Repeat purchase has room to grow",
+          finding: "A repeat-purchase signal is present in Merchant Memory.",
+          whyItMatters: "It can shape the first practical action.",
+          confidence: "medium",
+          category: "retention",
+          supportingBeliefIds: [beliefs[1].id],
+          reviewStatus: "confirmed",
+        },
+      },
+    },
+    include: { findings: true },
+  });
+
+  return { merchant, shop, beliefs, insightRun };
+}
+
+async function seedCompletedGoalRun(prisma, input) {
+  const { merchant, shop, beliefs, insightRun } = input;
+  return prisma.merchantGoalRun.create({
+    data: {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      status: "completed",
+      beliefSnapshotVersion: input.snapshotVersion ?? "test",
+      beliefSnapshotHash: input.beliefSnapshotHash,
+      relevantBeliefIds: beliefs.map((belief) => belief.id),
+      insightRunId: insightRun.id,
+      promptVersion: input.promptVersion ?? "test",
+      schemaVersion: input.schemaVersion ?? "test",
+      completedAt: new Date("2026-07-26T09:10:00Z"),
+      horizons: {
+        create: [
+          {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            horizon: "threeMonths",
+            orderIndex: 1,
+            title: "Grow repeat revenue",
+            description: "Use supported customer behaviour to build repeat sales.",
+            supportingBeliefIds: [beliefs[1].id],
+          },
+          {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            horizon: "sixMonths",
+            orderIndex: 2,
+            title: "Increase customer value",
+            description: "Build from early repeat-purchase learning.",
+            supportingBeliefIds: [beliefs[1].id],
+          },
+          {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            horizon: "twelveMonths",
+            orderIndex: 3,
+            title: "Grow revenue with discipline",
+            description: "Scale the strongest supported growth loop.",
+            supportingBeliefIds: [beliefs[2].id],
+          },
+        ],
+      },
+    },
+  });
+}
 
 function uniqueSuffix() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`.replace(

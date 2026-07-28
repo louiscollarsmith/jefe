@@ -29,11 +29,13 @@ import {
 } from "../lib/merchant-insights/service.server.js";
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 import {
+  ensureMerchantGoalsQueued,
   generateMerchantGoals,
   markMerchantGoalsJobFailed,
 } from "../lib/merchant-goals/service.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import {
+  ensureMerchantPlanQueued,
   generateMerchantPlan,
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
@@ -583,9 +585,58 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
       merchantId: context.merchantId,
       shopId: context.shopId,
     });
+    await ensurePostOnboardingRecommendationsQueued(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+    });
   }
 
   return result;
+}
+
+/**
+ * After a completed FULL Merchant Memory rebuild, keep the post-onboarding
+ * recommendation (Plan) — and the Goals it stands on — current with the latest
+ * memory, so the Daily Home surfaces a fresh "move" instead of the one frozen at
+ * onboarding time.
+ *
+ * Gated strictly on shop.onboardingCompletedAt: during onboarding the funnel
+ * (app._index) already drives Goals and Plan step by step, so this must never
+ * fire mid-onboarding. It only takes over once the merchant has finished.
+ *
+ * Both ensure*Queued helpers key their run on the belief snapshot hash and reuse
+ * an existing run when the snapshot is unchanged (status "reused" -> no job
+ * enqueued, no LLM call), so an unchanged rebuild triggers no wasteful
+ * regeneration.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ */
+export async function ensurePostOnboardingRecommendationsQueued(prisma, input) {
+  const shop = await prisma.shop.findUnique({
+    where: { id: input.shopId },
+    select: { onboardingCompletedAt: true },
+  });
+  if (!shop?.onboardingCompletedAt) {
+    return { status: "skipped_not_onboarded" };
+  }
+
+  // Goals first: the Plan snapshot is built on top of the latest completed Goal
+  // run (buildMerchantPlanSnapshot requires hasGoals and folds goal content into
+  // its hash), so refreshing Goals from the new memory keeps the Plan from being
+  // anchored to goals derived from stale beliefs. The Plan job self-heals to the
+  // fresh Goals at generation time (loadPreparedRun rebuilds the snapshot), and
+  // the worker runs Goals (priority 100) before Plan (priority 110).
+  const goals = await ensureMerchantGoalsQueued(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+  });
+  const plan = await ensureMerchantPlanQueued(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+  });
+
+  return { status: "ensured", goals: goals.status, plan: plan.status };
 }
 
 /**
