@@ -7,6 +7,7 @@ import {
   isRouteErrorResponse,
   useRouteError,
 } from "react-router";
+import { useEffect } from "react";
 import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
 import enTranslations from "@shopify/polaris/locales/en.json";
 import "@shopify/polaris/build/esm/styles.css";
@@ -60,6 +61,19 @@ export default function App() {
 export function ErrorBoundary() {
   const error = useRouteError();
   const routeError = isRouteErrorResponse(error);
+
+  // Report genuine exceptions (not 4xx/5xx route responses, which are expected
+  // control flow) to Sentry from the browser. SSR errors are already captured
+  // server-side in entry.server's handleError; this adds the client half —
+  // render errors during client navigation that never reach the server. The
+  // dynamic import keeps Sentry out of the SSR path and the initial bundle.
+  useEffect(() => {
+    if (routeError) return;
+    import("./lib/observability/sentry.client")
+      .then((m) => m.captureClientError(error))
+      .catch(() => {});
+  }, [error, routeError]);
+
   const heading = routeError ? String(error.status) : "Something went wrong";
   const detail = routeError
     ? error.statusText || "This page could not be loaded."
