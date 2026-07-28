@@ -40,6 +40,22 @@ const HTML = String.raw`<!doctype html>
   @keyframes meterFill{from{width:0;}to{width:var(--w,70%);}}
   @keyframes sweep{0%{transform:translateX(-120%);}100%{transform:translateX(120%);}}
   @keyframes flowDash{to{stroke-dashoffset:-40;}}
+  /* Responsive — hold up on smaller widths and the shorter App Bridge iframe */
+  @media (max-width: 860px){
+    #root div[style*="grid-template-columns"]{grid-template-columns:1fr !important;}
+    #root [style*="padding:20px 40px 68px"]{padding:16px 16px 60px !important;}
+    #root [style*="gap:28px"]{gap:16px !important;row-gap:10px !important;}
+  }
+  @media (max-width: 560px){
+    #root [style*="font-size:44px"]{font-size:29px !important;}
+    #root [style*="font-size:42px"]{font-size:29px !important;}
+    #root [style*="font-size:40px"]{font-size:27px !important;}
+    #root [style*="font-size:26px"]{font-size:21px !important;}
+    #root [style*="font-size:12.5px"]{font-size:11px !important;}
+    #root [style*="height:322px"]{transform:scale(0.8);transform-origin:center top;margin-bottom:-40px;}
+    #root [style*="max-width:520px"]{max-width:100% !important;}
+    #root [style*="white-space:nowrap"]{white-space:normal !important;}
+  }
 </style>
 </head>
 <body>
