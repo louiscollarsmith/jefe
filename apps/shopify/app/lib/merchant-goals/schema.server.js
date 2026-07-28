@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import { Type } from "@google/genai";
+import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
 import { GOAL_HORIZONS } from "./constants.server.js";
 
 export const MERCHANT_GOALS_OUTPUT_SCHEMA = {
@@ -36,6 +37,9 @@ export function parseAndValidateMerchantGoalsOutput(raw, context) {
 
   const goals = {};
   const seenTitles = new Set();
+  const beliefsById = new Map(
+    (context.suppliedBeliefs ?? []).map((belief) => [belief.id, belief]),
+  );
   for (const horizon of GOAL_HORIZONS) {
     const result = normalizeGoal(object[horizon.key], horizon.key);
     if (!result.ok) return result;
@@ -53,10 +57,29 @@ export function parseAndValidateMerchantGoalsOutput(raw, context) {
         return invalid("Goal cited a belief that was not supplied to the model.");
       }
     }
+    if (!numericClaimsAreGrounded(goal, beliefsById)) {
+      return invalid("Goal contains unsupported numerical claims.");
+    }
     goals[horizon.key] = goal;
   }
 
   return { ok: true, goals };
+}
+
+/**
+ * A number stated in a goal title or description (goals are persisted as target
+ * beliefs) must appear in the VALUES of the beliefs the goal cites. Delegates to
+ * the shared numeric guard so identifiers and confidence scores cannot ground a
+ * fabricated target.
+ * @param {any} goal
+ * @param {Map<string, any>} beliefsById
+ */
+function numericClaimsAreGrounded(goal, beliefsById) {
+  const text = [goal.title, goal.description].filter(Boolean).join(" ");
+  const supportBeliefs = goal.supportingBeliefIds
+    .map((id) => beliefsById.get(id))
+    .filter(Boolean);
+  return numericTextIsGrounded(text, supportBeliefs);
 }
 
 /**

@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import { Type } from "@google/genai";
+import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
 import {
   INSIGHT_CATEGORIES,
   INSIGHT_CONFIDENCE,
@@ -57,11 +58,12 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
 
   const valid = [];
   const seenTitles = new Set();
+  const suppliedBeliefs = context.suppliedBeliefs ?? [];
+  const beliefsById = new Map(
+    suppliedBeliefs.map((belief) => [belief.id, belief]),
+  );
   const searchableByBeliefId = new Map(
-    context.suppliedBeliefs.map((belief) => [
-      belief.id,
-      searchableBeliefText(belief),
-    ]),
+    suppliedBeliefs.map((belief) => [belief.id, searchableBeliefText(belief)]),
   );
 
   for (const item of object.insights) {
@@ -85,7 +87,7 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
         );
       }
     }
-    if (!numericClaimsAreGrounded(normalized, searchableByBeliefId)) {
+    if (!numericClaimsAreGrounded(normalized, beliefsById)) {
       return invalid("Insight contains unsupported numerical claims.");
     }
     const interpretation = validateInterpretationGrounding(
@@ -150,10 +152,13 @@ function normalizeInsight(value) {
 }
 
 /**
+ * A number stated in an insight must appear in the VALUES of the beliefs it
+ * cites. Grounding is delegated to the shared numeric guard so identifiers,
+ * confidence scores and merged array numbers cannot spuriously support a claim.
  * @param {any} insight
- * @param {Map<string, string>} searchableByBeliefId
+ * @param {Map<string, any>} beliefsById
  */
-function numericClaimsAreGrounded(insight, searchableByBeliefId) {
+function numericClaimsAreGrounded(insight, beliefsById) {
   const text = [
     insight.title,
     insight.finding,
@@ -162,12 +167,10 @@ function numericClaimsAreGrounded(insight, searchableByBeliefId) {
   ]
     .filter(Boolean)
     .join(" ");
-  const claims = numericFragments(text);
-  if (claims.length === 0) return true;
-  const supportText = insight.supportingBeliefIds
-    .map((id) => searchableByBeliefId.get(id) ?? "")
-    .join(" ");
-  return claims.every((claim) => supportText.includes(claim));
+  const supportBeliefs = insight.supportingBeliefIds
+    .map((id) => beliefsById.get(id))
+    .filter(Boolean);
+  return numericTextIsGrounded(text, supportBeliefs);
 }
 
 /**
@@ -226,16 +229,6 @@ function validateInterpretationGrounding(insight, searchableByBeliefId) {
   }
 
   return { ok: true };
-}
-
-/** @param {string} text */
-function numericFragments(text) {
-  const matches = text.match(/\b\d+(?:,\d{3})*(?:\.\d+)?%?\b/g) ?? [];
-  return [
-    ...new Set(
-      matches.map((match) => match.replace(/,/g, "").replace(/%$/, "")),
-    ),
-  ];
 }
 
 /** @param {any} belief */

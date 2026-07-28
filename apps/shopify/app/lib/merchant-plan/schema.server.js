@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import { Type } from "@google/genai";
+import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
 import { PLAN_CONFIDENCE } from "./constants.server.js";
 
 export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
@@ -307,30 +308,30 @@ function containsMultipleActions(recommendation) {
 }
 
 function numericClaimsAreGrounded(recommendation, context) {
-  const claims = numericFragments(
-    [
-      recommendation.title,
-      recommendation.summary,
-      recommendation.whyThisAction,
-      recommendation.whyNow,
-      recommendation.expectedBenefit,
-      recommendation.startToday,
-      ...recommendation.executionSteps.flatMap((step) => [
-        step.title,
-        step.description,
-      ]),
-      recommendation.successSignal?.description,
-      recommendation.successSignal?.target,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
-  if (claims.length === 0) return true;
+  const text = [
+    recommendation.title,
+    recommendation.summary,
+    recommendation.whyThisAction,
+    recommendation.whyNow,
+    recommendation.expectedBenefit,
+    recommendation.startToday,
+    ...recommendation.executionSteps.flatMap((step) => [
+      step.title,
+      step.description,
+    ]),
+    recommendation.successSignal?.description,
+    recommendation.successSignal?.target,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const citedGoals = [
     recommendation.primaryGoalId,
     ...recommendation.supportingGoalIds,
   ];
-  const supportText = [
+  // Ground a number against the VALUES of the beliefs, insights and goals the
+  // recommendation cites. The shared guard excludes ids/confidence and keeps
+  // distinct numbers and units apart.
+  const supportObjects = [
     ...recommendation.supportingBeliefIds.map((id) =>
       (context.suppliedBeliefs ?? []).find((belief) => belief.id === id),
     ),
@@ -340,11 +341,8 @@ function numericClaimsAreGrounded(recommendation, context) {
     ...citedGoals.map((id) =>
       (context.suppliedGoals ?? []).find((goal) => goal.id === id),
     ),
-  ]
-    .filter(Boolean)
-    .map((belief) => normalizeSearchText(JSON.stringify(belief)))
-    .join(" ");
-  return claims.every((claim) => supportText.includes(claim));
+  ].filter(Boolean);
+  return numericTextIsGrounded(text, supportObjects);
 }
 
 function duplicatesPriorRecommendation(recommendation, previousRecommendations) {
@@ -359,16 +357,8 @@ function duplicatesPriorRecommendation(recommendation, previousRecommendations) 
     });
 }
 
-function numericFragments(text) {
-  return [...normalizeSearchText(text).matchAll(/\b\d+(?:\.\d+)?%?\b/g)].map((match) => match[0]);
-}
-
 function normalizeDuplicateKey(value) {
   return normalizeText(value).split(" ").filter((word) => !["the", "a", "an", "to", "for", "with", "and"].includes(word)).join(" ");
-}
-
-function normalizeSearchText(value) {
-  return String(value ?? "").toLowerCase().replace(/[^a-z0-9.%]+/g, " ").trim();
 }
 
 function normalizeText(value) {
