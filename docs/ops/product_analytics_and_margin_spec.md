@@ -8,6 +8,21 @@
 
 All three fall out of two new event streams — an **LLM cost ledger** and a **product-event stream** — plus a small **billing** record for the revenue side. This doc specs the data model, where to instrument it (grounded in the current code), the derived metrics, and a phased build. No UI in v1.
 
+> **v1 delivered (2026-07-28) — read-only, no new tables.** A first "how are
+> clients using Jefe" report ships ahead of the event-stream instrumentation,
+> computed entirely from existing tables (Shop setup/onboarding state, channel
+> connections, generation runs, memory beliefs, the job queue). Run it with
+> `cd apps/shopify && npm run analytics` (`-- --json`, `-- --days=30`). It prints
+> the onboarding funnel + biggest drop-off, engagement (active merchants,
+> channels, memory depth), generation failure rates, and the job queue. The
+> metric logic is the pure, unit-tested `app/services/analytics/usage-report.server.js`;
+> the CLI (`scripts/analytics-report.mjs`) only fetches + prints.
+> **Still to come (this spec's Phases 1–3):** the `LlmUsageEvent` cost ledger
+> (needs real per-model pricing — do not guess), the `ProductEvent` stream +
+> `track()` at the ~10 UI/service call sites (per-event funnel + DAU/WAU), and
+> `MerchantBilling` for margin. Those require migrations and touch shared UI
+> files; the read-only report needed neither.
+
 ---
 
 ## 1. Principles
