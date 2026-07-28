@@ -29,6 +29,7 @@
 
 ### Fixed
 
+- **Onboarding is no longer stuck on Connect while memory generates.** The Channels step is now reachable during backfill/memory generation: `normalizeOnboardingStep` (`app/routes/app._index.tsx`) applied its readiness clamp *before* the channels check, so "Skip for now" / "Continue to Channels" (which navigate to `?step=channels`) were bounced straight back to Connect until generation finished — trapping the merchant on Connect with no way forward. Channels needs no backfilled data, so it's now allowed through regardless of readiness; Insights/Goals/Plan stay gated on the generated data. (Surfaced by feedback triage.)
 - Made Merchant Memory writes atomic: each belief update now commits together with its history and evidence in a single transaction, so a mid-write failure can no longer leave a belief without its provenance.
 - Retired stale deterministic beliefs: a stat that can no longer be computed on a full rebuild (drops below its minimum-data threshold) is now obsoleted instead of left showing an old value.
 - Bounded Insights and Goals generation to the top 40 prioritised beliefs (merchant corrections + confidence + recency + one-per-category coverage), so mature stores no longer hard-fail generation with `input_too_large`; small stores are unchanged.

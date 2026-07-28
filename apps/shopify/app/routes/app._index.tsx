@@ -4386,11 +4386,16 @@ function normalizeOnboardingStep(
   memoryReady: boolean,
   backfillComplete: boolean,
 ): (typeof ONBOARDING_STEPS)[number] {
-  if (!memoryReady || !backfillComplete) return "connect";
   const requested = url.searchParams.get("step");
+  // Channels needs no backfilled data, so it stays reachable even while memory
+  // is still generating. Otherwise "Skip for now" / "Continue to Channels"
+  // (which navigate to ?step=channels) get bounced straight back to connect by
+  // the readiness clamp below — leaving the merchant stuck on Connect.
   if (requested === "channels" || url.searchParams.get("channelProvider")) {
     return "channels";
   }
+  // Insights/Goals/Plan DO need the generated data, so they stay gated on it.
+  if (!memoryReady || !backfillComplete) return "connect";
   if (requested === "insights") return "insights";
   if (requested === "goals") return "goals";
   if (requested === "plan") return "plan";
