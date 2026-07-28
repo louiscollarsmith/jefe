@@ -61,3 +61,37 @@ keeping a fallback, never as the sole hard dependency.
 
 _Logged 2026-07-28 at Matt's request; he asked to have it brought back when the
 time is right._
+
+## Model Fusion (OpenRouter Fusion / Merge Fusion) — multi-model ensemble, cost/quality/dependency lever
+
+**What it is.** A *model-fusion* API (OpenRouter Fusion; Merge has one too) — **not**
+merge.dev's SaaS-integrations API. One prompt → a **panel** of models run in
+parallel → a **judge** model synthesises their answers (consensus, contradictions,
+blind spots) into one, in a single API call. Benchmark claim: an all-open-source
+panel scored statistically level with a frontier model at ~**25% of the cost**.
+https://openrouter.ai/blog/announcements/fusion-beats-frontier/
+
+**When it'd be useful for Jefe.** Hits three goals at once: (1) **reduces
+single-provider (Gemini) dependency** — a panel, not one model; (2) **quality** —
+beats any solo model in the panel; (3) **cost** — frontier-level answers from
+cheaper models. Best fit: Jefe's **higher-stakes** LLM tasks where answer quality
+matters — memory synthesis, Plan/recommendation generation, conversational belief
+interpretation. For the cheapest high-volume tasks a single cheap model
+(Groq/Sciforium) may still win on raw per-call cost; Fusion wins on
+**quality-per-dollar**.
+
+**How.** OpenRouter Fusion plugs into the existing `LLM_PROVIDER`/`LLM_MODEL`
+abstraction (OpenAI-compatible), so it's a low-effort A/B.
+
+**Why not now / caveats.** Current provider works; added latency (panel + judge
+step); newish (2026); adds a Fusion-provider dependency (mitigated — swappable
+behind our abstraction, keep a fallback).
+
+**Trigger to revisit.** Same cluster as Sciforium — when LLM cost/margin/quality
+becomes a focus (the `LlmUsageEvent` cost ledger / margin-spec work). Benchmark
+Fusion **and** a cheap single-model provider against the current setup on quality
++ latency + cost, and pick per task type (Fusion for high-stakes, cheap-single for
+high-volume).
+
+_Logged 2026-07-28 at Matt's request ("add to future consids, no need to ask me")
+after he clarified this is model fusion, not the merge.dev integrations API._
