@@ -18,6 +18,7 @@ import {
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
+import { logger as baseLogger } from "../lib/observability/logger.server";
 import {
   Badge,
   Banner,
@@ -534,7 +535,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
   const url = new URL(request.url);
   const scopes = splitScopes(session.scope);
-  const storeName = await getPersistedStoreName({
+  // Kick off (don't block): on first load this can hit Shopify's Admin API, so
+  // run it concurrently with the readiness/metrics/memory queries below instead
+  // of sequentially in front of them (that pre-await inflated first-load TTFB).
+  // It resolves to a fallback name internally on error, so it never rejects.
+  const storeNamePromise = getPersistedStoreName({
     shop,
     merchantName: merchant.name,
     shopDomain: session.shop,
@@ -543,10 +548,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const previewDaily = url.searchParams.get("home") === "daily";
   if (shop.onboardingCompletedAt || previewDaily) {
-    const memory = await getMerchantMemoryView({
-      merchantId: merchant.id,
-      shopId: shop.id,
-    });
+    const [storeName, memory] = await Promise.all([
+      storeNamePromise,
+      getMerchantMemoryView({ merchantId: merchant.id, shopId: shop.id }),
+    ]);
     // Daily Home is the default post-onboarding surface. Toggle off with
     // ENABLE_DAILY_HOME=false to fall back to the original Merchant Memory view.
     if (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) {
@@ -590,7 +595,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  const [readiness, metrics, connected] = await Promise.all([
+  const [readiness, metrics, connected, storeName] = await Promise.all([
     getMerchantMemoryReadiness({
       merchantId: merchant.id,
       shopId: shop.id,
@@ -606,6 +611,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       merchantId: merchant.id,
       shopDomain: session.shop,
     }),
+    storeNamePromise,
   ]);
   const backfill = summarizeBackfill(readiness, metrics);
   const activeStep = normalizeOnboardingStep(
@@ -3794,6 +3800,8 @@ function jobLabel(jobType: string) {
   return "Running Shopify import";
 }
 
+const onboardingLog = baseLogger.child({ component: "onboarding" });
+
 async function getPersistedStoreName({
   shop,
   merchantName,
@@ -3813,9 +3821,9 @@ async function getPersistedStoreName({
       shopDomain,
       accessToken,
     }).catch((error) => {
-      console.warn("Unable to load Shopify shop metadata", {
+      onboardingLog.warn("Unable to load Shopify shop metadata", {
         shopDomain,
-        error: error instanceof Error ? error.message : String(error),
+        err: error,
       });
       return null;
     });
@@ -3843,7 +3851,7 @@ async function fetchShopMetadata({
   const client = new ShopifyAdminGraphqlClient({
     shopDomain,
     accessToken,
-    logger: console,
+    logger: onboardingLog,
     maxRetries: 1,
   });
   const data = await client.request<{
