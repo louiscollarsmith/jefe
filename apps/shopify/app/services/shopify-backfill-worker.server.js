@@ -45,11 +45,67 @@ import {
   newCorrelationId,
   runWithContext,
 } from "../lib/observability/context.server.js";
+import { track } from "./analytics/event-log.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
 const STALE_RUNNING_JOB_TIMEOUT_MS = 15 * 60_000;
 const DELTA_SYNC_OVERLAP_HOURS = 24;
+
+/**
+ * Completed job types that are worth surfacing as an activity event (the panel /
+ * digest feed). High-volume/internal steps (e.g. shop_backfill_start) are
+ * intentionally omitted to keep the feed signal-heavy.
+ * @type {Record<string, { type: string; topic: string; label: string }>}
+ */
+const JOB_SUCCESS_EVENT = {
+  [MEMORY_REFRESH_JOB_TYPE]: { type: "memory_rebuilt", topic: "memory", label: "Memory rebuilt" },
+  [MERCHANT_INSIGHTS_JOB_TYPE]: { type: "insights_generated", topic: "generation", label: "Insights generated" },
+  [MERCHANT_GOALS_JOB_TYPE]: { type: "goals_generated", topic: "generation", label: "Goals generated" },
+  [MERCHANT_PLAN_JOB_TYPE]: { type: "plan_generated", topic: "generation", label: "Plan generated" },
+  backfill_finalize: { type: "backfill_completed", topic: "onboarding", label: "Evidence backfill completed" },
+};
+
+/**
+ * Record a successful job as an activity event. Fire-and-forget; never blocks or
+ * breaks the worker (track() is self-catching).
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop }} job
+ */
+function trackJobSuccess(prisma, job) {
+  const event = JOB_SUCCESS_EVENT[job.jobType];
+  if (!event) return;
+  void track(prisma, {
+    type: event.type,
+    topic: event.topic,
+    merchantId: job.merchantId,
+    shopId: job.shopId,
+    shopDomain: job.shop.shopDomain,
+    summary: `${event.label} for ${job.shop.shopDomain}`,
+    properties: { jobType: job.jobType },
+  });
+}
+
+/**
+ * Record a permanently-failed job as an activity event (surfaces under "needs
+ * attention"). Fire-and-forget.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop }} job
+ * @param {string} message
+ */
+function trackJobFailure(prisma, job, message) {
+  void track(prisma, {
+    type: "job_failed",
+    topic: "reliability",
+    merchantId: job.merchantId,
+    shopId: job.shopId,
+    shopDomain: job.shop.shopDomain,
+    summary: `${job.jobType} failed for ${job.shop.shopDomain}`,
+    properties: { jobType: job.jobType, error: message.slice(0, 200) },
+  });
+}
 
 let loopStarted = false;
 let loopRunning = false;
@@ -182,6 +238,7 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (completed.count !== 1) {
       return { status: "cancelled", jobType: job.jobType, result };
     }
+    trackJobSuccess(prisma, job);
     return { status: "succeeded", jobType: job.jobType, result };
   } catch (error) {
     const failure = backfillFailureDetails(error);
@@ -200,6 +257,9 @@ async function runClaimedBackfillJob(prisma, job, options) {
     });
     if (updated.count !== 1) {
       return { status: "cancelled", jobType: job.jobType, error: message };
+    }
+    if (failedPermanently) {
+      trackJobFailure(prisma, job, message);
     }
     if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
       await markMemoryFailed(prisma, job, failure);
