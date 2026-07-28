@@ -64,6 +64,9 @@ const HTML = String.raw`<!doctype html>
   <div style="position:absolute;bottom:-18%;right:4%;width:620px;height:620px;border-radius:50%;background:radial-gradient(circle, oklch(0.62 0.12 18 / 0.22), transparent 66%);filter:blur(34px);animation:drift2 26s ease-in-out infinite;pointer-events:none;"></div>
   <div style="position:absolute;inset:0;background-image:linear-gradient(oklch(0.75 0.03 265 / 0.05) 1px, transparent 1px), linear-gradient(90deg, oklch(0.75 0.03 265 / 0.05) 1px, transparent 1px);background-size:62px 62px;mask-image:radial-gradient(80% 70% at 50% 40%, black, transparent);-webkit-mask-image:radial-gradient(80% 70% at 50% 40%, black, transparent);pointer-events:none;"></div>
 
+  <!-- Light "daily" surface — cross-fades in when the demo arrives at the post-onboarding Home/Chat (scenes 6-7). Covers the dark canvas edge-to-edge so the workspace reads as light, per the dark→light handoff. -->
+  <div id="daily-bg" style="position:absolute;inset:0;z-index:1;opacity:0;transition:opacity 0.45s ease;pointer-events:none;background:linear-gradient(180deg, oklch(0.985 0.005 70), oklch(0.965 0.007 65));"></div>
+
   <div style="position:absolute;top:0;left:0;right:0;height:2px;background:oklch(0.3 0.04 265);z-index:5;">
     <div id="hairline" style="height:100%;width:0%;background:linear-gradient(90deg, oklch(0.62 0.1 285), oklch(0.78 0.13 15));box-shadow:0 0 12px oklch(0.72 0.13 15 / 0.8);transition:width 0.6s ease;"></div>
   </div>
@@ -84,6 +87,8 @@ const HTML = String.raw`<!doctype html>
     <div id="rail-3" onclick="go(3)" style="display:flex;align-items:center;gap:9px;cursor:pointer;transition:opacity 0.4s ease;"><span id="raildot-3" style="width:7px;height:7px;border-radius:50%;"></span><span id="raillab-3" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;white-space:nowrap;">First move</span></div>
     <div id="rail-4" onclick="go(4)" style="display:flex;align-items:center;gap:9px;cursor:pointer;transition:opacity 0.4s ease;"><span id="raildot-4" style="width:7px;height:7px;border-radius:50%;"></span><span id="raillab-4" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;white-space:nowrap;">Goals</span></div>
     <div id="rail-5" onclick="go(5)" style="display:flex;align-items:center;gap:9px;cursor:pointer;transition:opacity 0.4s ease;"><span id="raildot-5" style="width:7px;height:7px;border-radius:50%;"></span><span id="raillab-5" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;white-space:nowrap;">Channels</span></div>
+    <div id="rail-6" onclick="go(6)" style="display:flex;align-items:center;gap:9px;cursor:pointer;transition:opacity 0.4s ease;"><span id="raildot-6" style="width:7px;height:7px;border-radius:50%;"></span><span id="raillab-6" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;white-space:nowrap;">Home</span></div>
+    <div id="rail-7" onclick="go(7)" style="display:flex;align-items:center;gap:9px;cursor:pointer;transition:opacity 0.4s ease;"><span id="raildot-7" style="width:7px;height:7px;border-radius:50%;"></span><span id="raillab-7" style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;white-space:nowrap;">Chat</span></div>
   </div>
 
   <div style="position:relative;z-index:2;flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:20px 40px 68px;">
@@ -241,6 +246,140 @@ const HTML = String.raw`<!doctype html>
       </div>
     </div>
 
+    <!-- SCENE 6 — Daily Home (5a), light workspace -->
+    <div id="scene-6" style="display:none;margin:auto;width:100%;max-width:1160px;">
+      <div style="display:grid;grid-template-columns:172px 1fr 246px;background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:20px;overflow:hidden;box-shadow:0 44px 110px -44px oklch(0.28 0.04 265 / 0.6);color:oklch(0.24 0.02 45);font-family:'Schibsted Grotesk',sans-serif;opacity:0;animation:popIn 0.7s cubic-bezier(0.2,0.85,0.2,1) forwards;animation-delay:0.15s;">
+        <div style="background:oklch(0.975 0.004 68);border-right:1px solid oklch(0.93 0.006 64);padding:16px 12px;display:flex;flex-direction:column;gap:15px;">
+          <div style="display:flex;align-items:center;gap:9px;padding:2px 4px;">
+            <span style="width:25px;height:25px;flex:none;"><svg viewBox="0 0 64 64" style="width:100%;height:100%;display:block;"><rect width="64" height="64" rx="16" fill="#33456b"></rect><path d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z" fill="#f8ece7"></path><circle cx="32" cy="49" r="4.5" fill="#c98a8a"></circle></svg></span>
+            <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:14.5px;">Jefe</span>
+            <span style="margin-left:auto;width:7px;height:7px;border-radius:50%;background:oklch(0.6 0.15 155);"></span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;font-size:13px;">
+            <div style="padding:8px 10px;border-radius:8px;background:oklch(0.93 0.025 262);color:oklch(0.3 0.06 262);font-weight:700;">Brief</div>
+            <div style="padding:8px 10px;border-radius:8px;color:oklch(0.42 0.015 60);display:flex;justify-content:space-between;">Queue <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:oklch(0.55 0.015 60);">4</span></div>
+            <div style="padding:8px 10px;border-radius:8px;color:oklch(0.42 0.015 60);">Horizon</div>
+            <div style="padding:8px 10px;border-radius:8px;color:oklch(0.42 0.015 60);">Memory</div>
+            <div style="padding:8px 10px;border-radius:8px;color:oklch(0.42 0.015 60);">Goals</div>
+            <div style="padding:8px 10px;border-radius:8px;color:oklch(0.42 0.015 60);">Settings</div>
+          </div>
+        </div>
+        <div style="padding:22px 26px 16px;display:flex;flex-direction:column;gap:16px;min-width:0;">
+          <div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.8px;text-transform:uppercase;color:oklch(0.42 0.09 22);">Tuesday 28 July · your brief</div>
+            <div style="font-family:'Instrument Serif',serif;font-size:31px;line-height:1.18;margin-top:9px;color:oklch(0.22 0.02 40);">Quiet night — but there's <span style="color:oklch(0.42 0.09 22);">£13,540</span> sitting in four decisions.</div>
+            <div style="display:flex;gap:24px;margin-top:15px;flex-wrap:wrap;">
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:oklch(0.55 0.015 60);">Orders</div><div style="font-family:'Instrument Serif',serif;font-size:21px;">41</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:oklch(0.55 0.015 60);">Revenue</div><div style="font-family:'Instrument Serif',serif;font-size:21px;">£4,890</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:oklch(0.55 0.015 60);">vs last Tue</div><div style="font-family:'Instrument Serif',serif;font-size:21px;color:oklch(0.5 0.13 155);">+12%</div></div>
+              <div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:oklch(0.55 0.015 60);">I handled</div><div style="font-family:'Instrument Serif',serif;font-size:21px;">3</div></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:oklch(0.55 0.015 60);">Your call</div>
+            <div style="background:oklch(0.995 0.004 70);border:1px solid oklch(0.62 0.13 22);border-radius:15px;padding:15px 17px;display:flex;flex-direction:column;gap:9px;box-shadow:0 12px 30px -14px oklch(0.5 0.12 22 / 0.4);">
+              <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;text-transform:uppercase;font-weight:500;color:oklch(0.4 0.08 20);background:oklch(0.93 0.04 20);padding:3px 8px;border-radius:5px;">Needs your OK</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:oklch(0.5 0.015 60);">from Returns + Reviews</span>
+                <span style="margin-left:auto;font-family:'Instrument Serif',serif;font-size:23px;color:oklch(0.42 0.09 22);">£3,100<span style="font-size:12px;color:oklch(0.5 0.015 60);"> / mo</span></span>
+              </div>
+              <div style="font-size:15px;font-weight:600;line-height:1.4;">Switch the Overnight Repair Serum to the lock-cap pump.</div>
+              <div style="font-size:12.5px;line-height:1.5;color:oklch(0.5 0.015 60);">It returns at 9.2% — nearly double your catalogue — and almost every note says the pump arrived broken. The lock-cap drops that to about 4%.</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
+                <span style="font-family:'Bricolage Grotesque',sans-serif;background:oklch(0.42 0.09 22);color:oklch(0.97 0.01 80);font-weight:700;font-size:13px;padding:9px 18px;border-radius:9px;cursor:pointer;">Approve</span>
+                <span style="font-family:'Bricolage Grotesque',sans-serif;color:oklch(0.4 0.015 60);font-weight:700;font-size:13px;padding:9px 15px;border-radius:9px;border:1px solid oklch(0.88 0.008 62);cursor:pointer;">5 steps</span>
+                <span style="margin-left:auto;font-size:12px;font-weight:700;color:oklch(0.42 0.09 22);cursor:pointer;">How I got this number ›</span>
+              </div>
+            </div>
+            <div style="background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:15px;padding:13px 16px;display:flex;align-items:center;gap:13px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;text-transform:uppercase;color:oklch(0.3 0.06 262);background:oklch(0.93 0.025 262);padding:3px 8px;border-radius:5px;flex:none;">Time-sensitive</span>
+              <span style="flex:1;min-width:0;font-size:13px;color:oklch(0.3 0.02 45);">Restock the Bristol VIP bundle before the weekend — it runs 2.3× London on revenue per customer.</span>
+              <span style="font-family:'Instrument Serif',serif;font-size:18px;color:oklch(0.42 0.09 22);flex:none;">£2,240<span style="font-size:10px;color:oklch(0.5 0.015 60);"> est</span></span>
+            </div>
+            <div style="font-size:12.5px;color:oklch(0.42 0.09 22);font-weight:700;cursor:pointer;">2 more in the queue →</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:9px;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:oklch(0.55 0.015 60);">While you slept</div>
+            <div style="display:flex;align-items:center;gap:11px;font-size:12.5px;color:oklch(0.3 0.02 45);">
+              <span style="width:6px;height:6px;border-radius:50%;background:oklch(0.5 0.13 155);flex:none;"></span>
+              <span style="flex:1;">Rewrote 18 product titles missing their key botanical — <span style="color:oklch(0.42 0.13 155);font-weight:600;">+9% search impressions</span> already.</span>
+              <span style="color:oklch(0.5 0.015 60);cursor:pointer;">working ›</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:11px;font-size:12.5px;color:oklch(0.3 0.02 45);">
+              <span style="width:6px;height:6px;border-radius:50%;background:oklch(0.5 0.13 155);flex:none;"></span>
+              <span style="flex:1;">Paused a Meta ad set that had stopped paying back — <span style="color:oklch(0.42 0.13 155);font-weight:600;">saved £610</span> overnight.</span>
+              <span style="color:oklch(0.5 0.015 60);cursor:pointer;">working ›</span>
+            </div>
+          </div>
+          <div style="margin-top:auto;border-top:1px solid oklch(0.93 0.006 64);padding-top:13px;display:flex;align-items:center;gap:12px;">
+            <span style="width:32px;height:32px;flex:none;border-radius:10px;background:oklch(0.42 0.09 22);display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" fill="none" stroke="oklch(0.97 0.01 80)" stroke-width="2" stroke-linecap="round" style="width:15px;height:15px;display:block;"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0"></path><path d="M12 17.5V21"></path></svg></span>
+            <span style="flex:1;font-size:13px;color:oklch(0.5 0.015 60);">Ask Jefe anything — or hold <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:oklch(0.93 0.006 64);padding:1px 6px;border-radius:4px;">space</span> to talk</span>
+          </div>
+        </div>
+        <div style="background:oklch(0.975 0.004 68);border-left:1px solid oklch(0.93 0.006 64);padding:18px 15px;display:flex;flex-direction:column;gap:15px;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:oklch(0.4 0.08 262);background:oklch(0.93 0.025 262);padding:5px 10px;border-radius:100px;align-self:flex-start;">Design partner · #3 of 10</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.4px;text-transform:uppercase;color:oklch(0.42 0.09 22);">New in Jefe</div>
+            <div style="background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:11px;padding:11px 12px;display:flex;flex-direction:column;gap:5px;">
+              <div style="display:flex;align-items:center;gap:7px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:0.6px;text-transform:uppercase;color:oklch(0.4 0.11 155);background:oklch(0.94 0.04 155);padding:2px 6px;border-radius:4px;">Shipped</span><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:oklch(0.42 0.09 22);">You asked for this</span></div>
+              <div style="font-size:12px;color:oklch(0.3 0.02 45);line-height:1.4;">Returns now break down by reason, not just count.</div>
+            </div>
+            <div style="background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:11px;padding:11px 12px;display:flex;flex-direction:column;gap:5px;">
+              <div style="display:flex;align-items:center;gap:7px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:0.6px;text-transform:uppercase;color:oklch(0.3 0.06 262);background:oklch(0.93 0.025 262);padding:2px 6px;border-radius:4px;">New</span></div>
+              <div style="font-size:12px;color:oklch(0.3 0.02 45);line-height:1.4;">Ask Jefe from WhatsApp with a voice note.</div>
+            </div>
+          </div>
+          <div style="margin-top:auto;background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:12px;padding:13px;display:flex;flex-direction:column;gap:10px;">
+            <div style="font-size:12px;color:oklch(0.4 0.015 60);line-height:1.4;">30 minutes with the founders, whenever you need it.</div>
+            <span style="font-family:'Bricolage Grotesque',sans-serif;text-align:center;background:oklch(0.35 0.06 262);color:oklch(0.97 0.01 80);font-weight:700;font-size:12.5px;padding:9px;border-radius:9px;cursor:pointer;">Book a slot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCENE 7 — Chat (2b): one thread across channels -->
+    <div id="scene-7" style="display:none;margin:auto;width:100%;max-width:720px;">
+      <div style="background:oklch(0.995 0.004 70);border:1px solid oklch(0.88 0.008 62);border-radius:20px;overflow:hidden;box-shadow:0 44px 110px -44px oklch(0.28 0.04 265 / 0.6);color:oklch(0.24 0.02 45);font-family:'Schibsted Grotesk',sans-serif;opacity:0;animation:popIn 0.7s cubic-bezier(0.2,0.85,0.2,1) forwards;animation-delay:0.15s;display:flex;flex-direction:column;max-height:80vh;">
+        <div style="padding:15px 20px;border-bottom:1px solid oklch(0.93 0.006 64);display:flex;align-items:center;gap:11px;">
+          <span style="width:26px;height:26px;flex:none;"><svg viewBox="0 0 64 64" style="width:100%;height:100%;display:block;"><rect width="64" height="64" rx="16" fill="#33456b"></rect><path d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z" fill="#f8ece7"></path><circle cx="32" cy="49" r="4.5" fill="#c98a8a"></circle></svg></span>
+          <div style="flex:1;min-width:0;"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:14.5px;">Jefe</div><div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:oklch(0.5 0.015 60);">One thread · Slack · WhatsApp · here</div></div>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:oklch(0.42 0.13 155);display:flex;align-items:center;gap:5px;"><span style="width:6px;height:6px;border-radius:50%;background:oklch(0.6 0.15 155);"></span>online</span>
+        </div>
+        <div style="padding:18px 20px;display:flex;flex-direction:column;gap:14px;overflow:auto;">
+          <div style="align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:5px;align-items:flex-end;opacity:0;animation:fadeUp 0.5s ease forwards;animation-delay:0.4s;">
+            <div style="background:oklch(0.35 0.06 262);color:oklch(0.98 0.01 80);border-radius:15px 15px 4px 15px;padding:11px 14px;font-size:13.5px;line-height:1.5;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;opacity:0.85;"><svg viewBox="0 0 24 24" fill="none" stroke="oklch(0.98 0.01 80)" stroke-width="2" stroke-linecap="round" style="width:13px;height:13px;"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0"></path><path d="M12 17.5V21"></path></svg><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;">voice · 0:14</span></div>
+              Why are refunds up this week? Should I be worried?
+            </div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:oklch(0.5 0.015 60);">via WhatsApp · 7:42am</span>
+          </div>
+          <div style="align-self:flex-start;max-width:86%;display:flex;flex-direction:column;gap:8px;opacity:0;animation:fadeUp 0.5s ease forwards;animation-delay:1.2s;">
+            <div style="background:oklch(0.975 0.005 68);border:1px solid oklch(0.93 0.006 64);border-radius:15px 15px 15px 4px;padding:12px 15px;font-size:13.5px;line-height:1.55;color:oklch(0.26 0.02 45);">Not worried — it's one product. The Overnight Serum pump again (34% of this week's refunds), plus a sizing question on the new cleanser. The pump fix is already in your queue; the cleanser just needs a size note on the listing.</div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:oklch(0.42 0.09 22);cursor:pointer;">How I got this number ›</span>
+          </div>
+          <div style="align-self:center;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:oklch(0.55 0.015 60);display:flex;align-items:center;gap:8px;opacity:0;animation:fadeIn 0.5s ease forwards;animation-delay:2s;"><span style="width:22px;height:1px;background:oklch(0.88 0.008 62);"></span>continued here · 9:12am<span style="width:22px;height:1px;background:oklch(0.88 0.008 62);"></span></div>
+          <div style="align-self:flex-end;max-width:80%;opacity:0;animation:fadeUp 0.5s ease forwards;animation-delay:2.4s;">
+            <div style="background:oklch(0.35 0.06 262);color:oklch(0.98 0.01 80);border-radius:15px 15px 4px 15px;padding:11px 14px;font-size:13.5px;line-height:1.5;">Add the size note. And check with Nadia before anything over £5k.</div>
+          </div>
+          <div style="align-self:flex-start;max-width:86%;display:flex;flex-direction:column;gap:7px;opacity:0;animation:fadeUp 0.5s ease forwards;animation-delay:3.2s;">
+            <div style="background:oklch(0.975 0.005 68);border:1px solid oklch(0.93 0.006 64);border-radius:15px 15px 15px 4px;padding:12px 15px;font-size:13.5px;line-height:1.55;color:oklch(0.26 0.02 45);">Done — the size note is live. And I've saved the rule.</div>
+            <div style="display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:oklch(0.4 0.11 155);"><span style="width:15px;height:15px;border-radius:4px;background:oklch(0.94 0.04 155);color:oklch(0.4 0.11 155);display:flex;align-items:center;justify-content:center;font-size:9px;">✓</span>Saved to Memory · "Over £5k → check with Nadia first"</div>
+          </div>
+        </div>
+        <div style="margin-top:auto;border-top:1px solid oklch(0.93 0.006 64);padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:oklch(0.5 0.015 60);">Reply in:
+            <span style="color:oklch(0.24 0.02 45);background:oklch(0.93 0.006 64);padding:3px 9px;border-radius:100px;">Here</span>
+            <span style="padding:3px 9px;border-radius:100px;border:1px solid oklch(0.88 0.008 62);">WhatsApp</span>
+            <span style="padding:3px 9px;border-radius:100px;border:1px solid oklch(0.88 0.008 62);">Slack</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:11px;">
+            <span style="flex:1;font-size:13px;color:oklch(0.5 0.015 60);background:oklch(0.975 0.005 68);border:1px solid oklch(0.93 0.006 64);border-radius:11px;padding:10px 13px;">Message Jefe…</span>
+            <span style="width:36px;height:36px;flex:none;border-radius:11px;background:oklch(0.42 0.09 22);display:flex;align-items:center;justify-content:center;"><svg viewBox="0 0 24 24" fill="none" stroke="oklch(0.97 0.01 80)" stroke-width="2" stroke-linecap="round" style="width:16px;height:16px;"><rect x="9" y="2.5" width="6" height="11" rx="3"></rect><path d="M5.5 11a6.5 6.5 0 0 0 13 0"></path><path d="M12 17.5V21"></path></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <div id="controls" style="position:absolute;bottom:0;left:0;right:0;z-index:6;display:flex;align-items:center;gap:16px;padding:14px 28px;background:linear-gradient(transparent, oklch(0.12 0.025 265 / 0.9));transition:opacity 0.5s ease;">
@@ -258,26 +397,29 @@ const HTML = String.raw`<!doctype html>
 (function(){
   var S={scene:0,playing:true,channels:{slack:true,teams:false,whatsapp:true},ingest:0,elapsed:0,ui:true};
   window.S=S;
-  var INGEST_MS=52000,DWELL_MS=9000,LAST=5;
-  var labels=['Connect','Integrations','Insights','First move','Goals','Channels'];
-  var durations=[26000,19000,27000,21000,21000,999999];
+  var INGEST_MS=52000,DWELL_MS=9000,LAST=7;
+  var labels=['Connect','Integrations','Insights','First move','Goals','Channels','Home','Chat'];
+  var durations=[26000,19000,27000,21000,21000,22000,24000,999999];
   var t0=Date.now(),timer=null,uiTimer=null;
   var blush='oklch(0.82 0.12 18)',violet='oklch(0.66 0.11 285)',dim='oklch(0.62 0.02 265)',line='oklch(0.4 0.05 268)';
   function el(id){return document.getElementById(id);}
   function pad2(n){return ('0'+n).slice(-2);}
-  function showScene(n){ for(var i=0;i<=5;i++){ var sc=el('scene-'+i); if(sc){ sc.style.display=(i===n)?'flex':'none'; } } var a=el('scene-'+n); if(a){ a.innerHTML=a.innerHTML; } }
+  function showScene(n){ for(var i=0;i<=7;i++){ var sc=el('scene-'+i); if(sc){ sc.style.display=(i===n)?'flex':'none'; } } var a=el('scene-'+n); if(a){ a.innerHTML=a.innerHTML; } }
   window.go=function(n,po){ n=Math.max(0,Math.min(LAST,n)); var playing=(po!==undefined)?po:S.playing; S.scene=n; showScene(n); render(); arm(n,playing); };
   function arm(n,playing){ clearTimeout(timer); if(playing&&n<LAST){ timer=setTimeout(function(){window.go(n+1);},durations[n]); } }
   function hideSoon(){ clearTimeout(uiTimer); uiTimer=setTimeout(function(){S.ui=false;render();},2600); }
   window.togglePlay=function(){ S.playing=!S.playing; render(); arm(S.scene,S.playing); };
   window.replay=function(){ t0=Date.now(); S.playing=true; S.ingest=0; S.elapsed=0; window.go(0,true); };
   function render(){
-    var scene=S.scene, ing=S.ingest;
-    for(var j=0;j<6;j++){
+    var scene=S.scene, ing=S.ingest, daily=(scene>=6);
+    if(el('daily-bg')){ el('daily-bg').style.opacity= daily?'1':'0'; }
+    var labActive= daily?'oklch(0.24 0.02 45)':'oklch(0.95 0.012 80)', labDim= daily?'oklch(0.55 0.015 60)':dim;
+    var dotActive= daily?'oklch(0.42 0.09 22)':blush, dotDone= daily?'oklch(0.35 0.06 262)':violet, dotPend= daily?'oklch(0.82 0.012 70)':line;
+    for(var j=0;j<8;j++){
       var active=(j===scene), done=(j<scene);
       var item=el('rail-'+j); if(item){ item.style.opacity= active?'1':(done?'0.62':'0.34'); }
-      var dot=el('raildot-'+j); if(dot){ dot.style.background= active?blush:(done?violet:line); dot.style.boxShadow= active?('0 0 12px '+blush):'none'; }
-      var lab=el('raillab-'+j); if(lab){ lab.style.color= active?'oklch(0.95 0.012 80)':dim; }
+      var dot=el('raildot-'+j); if(dot){ dot.style.background= active?dotActive:(done?dotDone:dotPend); dot.style.boxShadow= active?('0 0 12px '+dotActive):'none'; }
+      var lab=el('raillab-'+j); if(lab){ lab.style.color= active?labActive:labDim; }
     }
     var etaS=Math.max(1,Math.ceil(((1-ing)*INGEST_MS)/1000));
     var stage = ing<0.28?'Reading orders, refunds and payouts…':ing<0.55?'Mapping every SKU, collection and variant…':ing<0.82?'Profiling customers by region and cohort…':ing<1?'Looking for what matters…':'Store read — findings ready';
@@ -291,7 +433,7 @@ const HTML = String.raw`<!doctype html>
     var showChip=(scene>0&&ing<1), showReady=(scene>0&&ing>=1&&S.elapsed<INGEST_MS+6000);
     if(el('chip-loading')){ el('chip-loading').style.display=showChip?'flex':'none'; if(el('chip-text')){ el('chip-text').textContent='Reading your store · '+Math.round(ing*100)+'%'; } }
     if(el('chip-ready')){ el('chip-ready').style.display=showReady?'flex':'none'; }
-    if(el('step-label')){ el('step-label').textContent= pad2(scene+1)+' / 06 · '+labels[scene]; }
+    if(el('step-label')){ el('step-label').textContent= pad2(scene+1)+' / 08 · '+labels[scene]; }
     if(el('play-icon')){ el('play-icon').textContent= S.playing?'❚❚':'▶'; }
     if(el('controls')){ el('controls').style.opacity=S.ui?'1':'0'; el('controls').style.pointerEvents=S.ui?'auto':'none'; }
     ['slack','teams','whatsapp'].forEach(function(k){
