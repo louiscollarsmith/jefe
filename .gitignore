@@ -43,3 +43,4 @@ apps/*/extensions/*/dist/
 # Non-npm lockfiles
 yarn.lock
 pnpm-lock.yaml
+.slack-config-tokens.json
