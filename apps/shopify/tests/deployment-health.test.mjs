@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildHealthPayload,
   checkDatabaseHealth,
+  readinessStatus,
 } from "../app/services/deployment-health.server.js";
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
 
@@ -85,6 +86,14 @@ test("database health probe times out a hung query", async () => {
   const result = await checkDatabaseHealth(prisma, { timeoutMs: 10 });
   assert.equal(result.status, "error");
   assert.match(result.error, /Timed out/);
+});
+
+test("readiness fails closed when the database is down, passes when ok", () => {
+  assert.equal(readinessStatus({ status: "ok", latencyMs: 1 }), 200);
+  assert.equal(
+    readinessStatus({ status: "error", latencyMs: 5, error: "down" }),
+    503,
+  );
 });
 
 test("Dockerfile generates Prisma Client before building the app", async () => {

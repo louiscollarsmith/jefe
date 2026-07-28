@@ -122,10 +122,30 @@ model Shop {
   channelOAuthStates            ChannelOAuthState[]
   channelVerificationChallenges ChannelVerificationChallenge[]
   channelMessageDeliveries      ChannelMessageDelivery[]
+  emailPreferences              EmailPreference[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
   @@map("shops")
+}
+
+/// Per-recipient email notification preference, keyed by shop + sha256(email).
+/// No plaintext email is stored — the unsubscribe token and this table both use
+/// the email hash, matching the app's PII posture. A row with unsubscribedAt set
+/// means "do not send Jefe emails to this recipient".
+model EmailPreference {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String    @map("shop_id") @db.Uuid
+  emailHash      String    @map("email_hash")
+  unsubscribedAt DateTime? @map("unsubscribed_at") @db.Timestamptz(6)
+  source         String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop           Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, emailHash])
+  @@index([shopId])
+  @@map("email_preferences")
 }
 
 model ConnectorAccount {

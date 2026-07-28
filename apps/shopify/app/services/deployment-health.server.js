@@ -62,6 +62,19 @@ export async function checkDatabaseHealth(prisma, options = {}) {
 }
 
 /**
+ * HTTP status for a readiness check given the dependency probe results. Unlike
+ * `/health` (liveness, always 200 while the process serves), readiness fails
+ * closed — `503` when a required dependency is down — so Railway does not
+ * promote or keep routing to an instance that cannot do real work.
+ *
+ * @param {DatabaseHealth} database
+ * @returns {200 | 503}
+ */
+export function readinessStatus(database) {
+  return database.status === "ok" ? 200 : 503;
+}
+
+/**
  * @template T
  * @param {Promise<T>} promise
  * @param {number} timeoutMs

@@ -84,9 +84,54 @@ check). It always returns `200` when the process can serve, with a body of:
 The database probe (`SELECT 1`, short timeout) is **informational**: a failure is
 logged server-side but does **not** flip the status code, so a transient DB blip
 cannot cause Railway to recycle an otherwise-healthy instance. The raw DB error
-is never included in the public response — only logged. A stricter readiness gate
-(failing the endpoint when a dependency is down) is a separate, deliberate
-decision and is not implemented here.
+is never included in the public response — only logged. For dependency-aware
+gating, see `/ready` below.
+
+## Readiness endpoint — `/ready`
+
+`GET /ready` is the **readiness** check and is what Railway's healthcheck points
+at (`railway.json` → `healthcheckPath: "/ready"`). Unlike `/health`, it **fails
+closed**: it returns `503` when the database probe fails and `200` (with
+`ready: true`) otherwise. This stops Railway from promoting a deploy — or routing
+traffic to an instance — that cannot do real work. Liveness (`/health`) and
+readiness (`/ready`) are deliberately split so a transient blip degrades
+readiness without triggering a liveness restart loop.
+
+## Correlation IDs
+
+`app/lib/observability/context.server.js` provides an `AsyncLocalStorage`-based
+context. Anything run inside `runWithContext(bindings, fn)` has those bindings
+(e.g. `correlationId`, `jobId`, `shopDomain`) automatically merged into every log
+line the logger emits within that async call tree — no id argument threading.
+
+Established today at:
+- **Background jobs** — each claimed backfill/memory/insight/goal/plan job runs
+  inside a context with a fresh `correlationId` + `jobId` + `shopDomain`, so all
+  of that job run's logs (including the memory rebuild and any LLM calls it makes)
+  share one id.
+- **Server errors** — `handleError` tags each error with a `correlationId` (the
+  inbound `x-request-id` if the proxy set one, otherwise a minted id).
+
+The context propagates across `await`s but **not** across process/queue
+boundaries — an id minted for a web request does not (yet) travel into the
+DB-persisted job it enqueues. Full request→job propagation, and automatic
+per-request web context (which needs React Router middleware), are follow-ups.
+
+## Alerting
+
+`app/lib/observability/alerting.server.js` forwards **error-level** log records to
+a Slack-compatible incoming webhook (`ALERT_WEBHOOK_URL`) so failures reach a
+human, not just the log stream. It is wired into the default logger's `onError`
+hook. Properties:
+- **Disabled unless `ALERT_WEBHOOK_URL` is set** (a no-op otherwise).
+- **Never throws, never blocks** — the POST is fire-and-forget and swallows
+  errors, so alerting can't break a request or a log call.
+- **Rate limited** — identical failures are de-duplicated within a cooldown
+  (default 5 min) and a per-minute cap bounds alert storms.
+- Records arrive **already redacted** by the logger, so no secrets/PII are sent.
+
+This is intentionally dependency-free (no Sentry/Datadog account). A richer
+error-tracking SaaS remains an optional future step.
 
 ## Adopting the logger elsewhere
 

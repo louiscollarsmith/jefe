@@ -7,6 +7,7 @@ import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { getShopifyStandaloneDocumentResponse } from "./services/shopify-document-response.server";
 import { logger } from "./lib/observability/logger.server";
+import { newCorrelationId } from "./lib/observability/context.server";
 
 export const streamTimeout = 5000;
 
@@ -80,6 +81,6 @@ export const handleError: HandleErrorFunction = (error, { request }) => {
     err: error,
     method: request.method,
     path: url.pathname,
-    requestId: request.headers.get("x-request-id") || undefined,
+    correlationId: request.headers.get("x-request-id") || newCorrelationId(),
   });
 };

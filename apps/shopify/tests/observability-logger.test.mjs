@@ -129,3 +129,35 @@ test("pretty format renders a single human-readable line", () => {
   assert.ok(lines[0].includes("started"));
   assert.ok(lines[0].includes('"port":3000'));
 });
+
+test("forwards only error-level records to onError", () => {
+  const alerted = [];
+  const logger = createLogger({
+    level: "debug",
+    format: "json",
+    now: () => FIXED,
+    sink: () => {},
+    onError: (record) => alerted.push(record),
+  });
+  logger.info("fine");
+  logger.warn("careful");
+  logger.error("boom", { path: "/x" });
+  assert.equal(alerted.length, 1);
+  assert.equal(alerted[0].msg, "boom");
+  assert.equal(alerted[0].path, "/x");
+});
+
+test("a throwing onError never breaks logging", () => {
+  const lines = [];
+  const logger = createLogger({
+    level: "debug",
+    format: "json",
+    now: () => FIXED,
+    sink: (_l, line) => lines.push(line),
+    onError: () => {
+      throw new Error("alert failed");
+    },
+  });
+  assert.doesNotThrow(() => logger.error("still logs"));
+  assert.equal(lines.length, 1);
+});

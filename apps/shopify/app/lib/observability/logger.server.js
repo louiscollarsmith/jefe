@@ -1,6 +1,8 @@
 // @ts-check
 
 import { redact } from "./redact.server.js";
+import { getContext } from "./context.server.js";
+import { createAlerter } from "./alerting.server.js";
 
 /**
  * Minimal structured logger for the Shopify app.
@@ -149,6 +151,7 @@ function safeJson(value) {
  * @property {Record<string, unknown>} [bindings] Persistent context merged into every line.
  * @property {() => Date} [now] Clock, injectable for tests.
  * @property {(level: LogLevel | "silent", line: string) => void} [sink] Output sink, injectable for tests.
+ * @property {(record: Record<string, unknown>) => void} [onError] Called (fire-and-forget) with the final, redacted record for every error-level event — used to forward alerts.
  */
 
 /**
@@ -172,6 +175,7 @@ export function createLogger(options = {}) {
   const bindings = options.bindings ?? {};
   const now = options.now ?? (() => new Date());
   const sink = options.sink ?? defaultSink;
+  const onError = options.onError;
   const threshold = LEVELS[level] ?? LEVELS.info;
 
   /**
@@ -187,11 +191,19 @@ export function createLogger(options = {}) {
       level: lvl,
       time: now().toISOString(),
       msg,
+      ...getContext(),
       ...bindings,
       .../** @type {Record<string, unknown>} */ (ctx),
     };
     const line = format === "json" ? safeJson(record) : formatPretty(record);
     sink(lvl, line);
+    if (lvl === "error" && onError) {
+      try {
+        onError(record);
+      } catch {
+        // Alert forwarding must never break logging.
+      }
+    }
   }
 
   /** @type {Logger} */
@@ -217,6 +229,12 @@ export function createLogger(options = {}) {
  * (`*.server.ts` / `*.server.js` / entry.server) — never in code that ships to
  * the browser bundle.
  *
- * @type {Logger}
+ * Error-level events are forwarded to the ops alerter (a no-op unless
+ * `ALERT_WEBHOOK_URL` is configured).
  */
-export const logger = createLogger();
+const defaultAlerter = createAlerter();
+
+/** @type {Logger} */
+export const logger = createLogger({
+  onError: (record) => defaultAlerter.notify(record),
+});

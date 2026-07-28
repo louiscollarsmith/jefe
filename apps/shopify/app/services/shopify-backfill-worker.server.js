@@ -40,6 +40,11 @@ import {
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
+import { logger as baseLogger } from "../lib/observability/logger.server.js";
+import {
+  newCorrelationId,
+  runWithContext,
+} from "../lib/observability/context.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -61,7 +66,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   }
 
   loopStarted = true;
-  const logger = options.logger ?? console;
+  const logger = options.logger ?? baseLogger.child({ component: "backfill-worker" });
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
   const workerPrisma = createWorkerPrismaClient() ?? prisma;
   loopPrisma = workerPrisma;
@@ -141,6 +146,29 @@ export async function processNextBackfillJob(prisma, options = {}) {
     return { status: "cancelled", jobType: job.jobType };
   }
 
+  return runWithContext(
+    {
+      correlationId: newCorrelationId(),
+      jobId: job.id,
+      jobType: job.jobType,
+      shopId: job.shopId,
+      shopDomain: job.shop.shopDomain,
+    },
+    () => runClaimedBackfillJob(prisma, job, options),
+  );
+}
+
+/**
+ * Execute a claimed backfill job and record its terminal state. Runs inside a
+ * correlation context (established by the caller) so every log emitted during
+ * this job run — including downstream memory-rebuild and LLM logs — shares one
+ * correlationId.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop; merchant: import("@prisma/client").Merchant }} job
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string }} options
+ */
+async function runClaimedBackfillJob(prisma, job, options) {
   try {
     const result = await runBackfillJob(prisma, job, options);
     const completed = await prisma.backfillJob.updateMany({
