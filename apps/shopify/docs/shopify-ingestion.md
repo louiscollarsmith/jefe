@@ -52,7 +52,7 @@ Bulk operation ingestion is not currently retained. A future scaling ticket shou
 
 ## Webhooks
 
-Webhook routes verify `X-Shopify-Hmac-Sha256` against the raw request body before parsing JSON. Valid webhooks write a raw ledger event keyed by shop, topic and delivery/event ID. Duplicate deliveries return successfully without creating another ledger row.
+Webhook routes verify `X-Shopify-Hmac-Sha256` against the raw request body before parsing JSON. Most valid webhooks write a raw ledger event keyed by shop, topic and delivery/event ID; duplicate deliveries return successfully without creating another ledger row. The mandatory GDPR/compliance topics are the deliberate exception — they are handled before any ledger write (see below).
 
 Canonical evidence sync runs inline for:
 
@@ -72,4 +72,4 @@ App lifecycle topics update retained install state:
 - `app/scopes_update`
 - `app/uninstalled`
 
-Compliance topics are verified, ledgered and acknowledged without adding customer data features.
+The three mandatory GDPR/compliance topics — `customers/redact`, `customers/data_request`, `shop/redact` — are handled up front in `app/lib/ingestion/shopify/compliance.server.js`, **before** tenant resolution and **before** any ledger write. The target tenant is resolved read-only from the HMAC-verified shop domain (never from body fields), so a redaction arriving after uninstall cannot recreate or reactivate a shop. The request body — which itself carries the customer PII being erased — is never persisted verbatim: `customers/redact` deletes the customer's identity row(s) and scrubs email/name/address/phone/IP from that shop's affected order and ledger `raw_payload`s (matched by sha256 email hash + Shopify customer id, strictly shop-scoped); `shop/redact` performs a full shop-scoped teardown including existing ledger rows; `customers/data_request` records a deliberately sanitised export (masked email + aggregates + non-sensitive order fields). This replaced the earlier no-op handling that merely acknowledged the topics and had already written the raw request body to the ledger.
