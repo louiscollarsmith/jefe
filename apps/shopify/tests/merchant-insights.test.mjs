@@ -11,6 +11,7 @@ import {
   correctMerchantInsightFinding,
   ensureMerchantInsightsQueued,
   generateMerchantInsights,
+  getLatestMerchantInsights,
   getMerchantInsightsExperience,
 } from "../app/lib/merchant-insights/service.server.js";
 import {
@@ -292,6 +293,69 @@ test("correction processor validation rejects deterministic overwrites", () => {
 
   assert.equal(result.ok, false);
   assert.match(result.error, /non-merchant context/);
+});
+
+test("getLatestMerchantInsights reads the latest completed run without a snapshot or queueing", async () => {
+  const calls = [];
+  // Mock prisma implements ONLY merchantInsightRun.findFirst. If the reader
+  // tried to rebuild the belief snapshot or queue generation it would touch
+  // other models/methods absent here and throw, proving this path is read-only.
+  const prisma = {
+    merchantInsightRun: {
+      async findFirst(args) {
+        calls.push(args);
+        return {
+          id: "insight-run-1",
+          status: INSIGHT_RUN_STATUS.completed,
+          beliefSnapshotHash: "hash-1",
+          safeErrorCode: null,
+          lastError: null,
+          completedAt: new Date("2026-07-27T09:00:00Z"),
+          failedAt: null,
+          supersededAt: null,
+          findings: [
+            {
+              id: "finding-1",
+              orderIndex: 1,
+              title: "Revenue depends on a focused product set",
+              finding: "A few products carry the clearest demand signal.",
+              whyItMatters: "That can shape the first action.",
+              confidence: "high",
+              category: "products",
+              caveat: null,
+              supportingBeliefIds: ["belief-1"],
+              reviewStatus: "confirmed",
+              reviewedAt: null,
+              correctedAt: null,
+            },
+          ],
+        };
+      },
+    },
+  };
+
+  const result = await getLatestMerchantInsights(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].where.status, INSIGHT_RUN_STATUS.completed);
+  assert.equal(calls[0].where.merchantId, "merchant-1");
+  assert.equal(calls[0].where.shopId, "shop-1");
+  assert.equal("beliefSnapshotHash" in calls[0].where, false);
+  assert.deepEqual(calls[0].include, {
+    findings: { orderBy: { orderIndex: "asc" } },
+  });
+  assert.deepEqual(calls[0].orderBy, { completedAt: "desc" });
+  assert.equal(result.selectedRun.findings.length, 1);
+  assert.equal(result.selectedRun.findings[0].id, "finding-1");
+
+  const empty = await getLatestMerchantInsights(
+    { merchantInsightRun: { async findFirst() { return null; } } },
+    { merchantId: "merchant-1", shopId: "shop-1" },
+  );
+  assert.deepEqual(empty, { selectedRun: null });
 });
 
 test("insight generation is wired to the async worker and not browser page load", () => {

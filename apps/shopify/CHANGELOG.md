@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Fixed the slow post-onboarding Daily Home load (previously 8-11s) by reading the latest completed Insights, Goals and Plan runs directly instead of rebuilding and re-hashing the merchant belief snapshot three times on every home page load; snapshot rebuilds and generation stay on the onboarding funnel only, and the Daily Home never triggers generation on read.
 - Fixed slow onboarding navigation by loading only the active step's data (Insights, Goals or Plan) and Slack channel destinations on demand, and fetching store readiness, metrics and connection state in parallel, so moving between onboarding steps no longer triggers unnecessary database and Slack API calls on every click.
 - Corrected the Channels step button label to "Continue to Insights".
 - Fixed production Slack connection from Shopify onboarding so Connect Slack opens Slack authorisation in the popup and immediately shows the merchant that authorisation has started.

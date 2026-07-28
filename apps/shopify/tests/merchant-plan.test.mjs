@@ -8,6 +8,7 @@ import { parseAndValidateMerchantPlanOutput } from "../app/lib/merchant-plan/sch
 import {
   ensureMerchantPlanQueued,
   generateMerchantPlan,
+  getLatestMerchantPlan,
   getMerchantPlanExperience,
   processMerchantPlanMessage,
 } from "../app/lib/merchant-plan/service.server.js";
@@ -215,6 +216,75 @@ test("Plan structured validation rejects unsupported IDs, generic plans and miss
   assert.equal(duplicate.ok, false);
   assert.match(duplicate.error, /duplicates/);
   assert.equal(goalGroundedNumber.ok, true);
+});
+
+test("getLatestMerchantPlan reads the latest completed run without a snapshot or queueing", async () => {
+  const calls = [];
+  // Mock prisma implements ONLY merchantPlanRun.findFirst. If the reader tried
+  // to rebuild the belief snapshot or queue generation it would touch other
+  // models/methods absent here and throw, proving this path is read-only.
+  const prisma = {
+    merchantPlanRun: {
+      async findFirst(args) {
+        calls.push(args);
+        return {
+          id: "plan-run-1",
+          status: PLAN_RUN_STATUS.completed,
+          snapshotHash: "hash-1",
+          safeErrorCode: null,
+          lastError: null,
+          completedAt: new Date("2026-07-27T09:00:00Z"),
+          failedAt: null,
+          supersededAt: null,
+          recommendation: {
+            id: "rec-1",
+            title: "Send a focused reorder nudge",
+            summary: "One small reorder message.",
+            primaryGoalId: "goal-3",
+            supportingGoalIds: ["goal-6"],
+            whyThisAction: "Repeat-purchase opportunity.",
+            whyNow: "Small enough to start today.",
+            startToday: "Draft the first message.",
+            executionSteps: [{ title: "Choose", description: "Pick a segment." }],
+            successSignal: { description: "Replies or purchases.", timeframe: "two weeks" },
+            expectedBenefit: "Short feedback loop.",
+            supportingBeliefIds: ["belief-1"],
+            supportingInsightIds: ["insight-1"],
+            confidence: "reasonable",
+            assumption: null,
+            caveat: null,
+            reviewStatus: PLAN_REVIEW_STATUS.proposed,
+            acceptedAt: null,
+            rejectedAt: null,
+          },
+        };
+      },
+    },
+  };
+
+  const result = await getLatestMerchantPlan(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].where.status, PLAN_RUN_STATUS.completed);
+  assert.equal(calls[0].where.merchantId, "merchant-1");
+  assert.equal(calls[0].where.shopId, "shop-1");
+  assert.equal("snapshotHash" in calls[0].where, false);
+  assert.deepEqual(calls[0].include, { recommendation: true });
+  assert.deepEqual(calls[0].orderBy, { completedAt: "desc" });
+  assert.equal(result.selectedRun.id, "plan-run-1");
+  assert.equal(
+    result.selectedRun.recommendation.title,
+    "Send a focused reorder nudge",
+  );
+
+  const empty = await getLatestMerchantPlan(
+    { merchantPlanRun: { async findFirst() { return null; } } },
+    { merchantId: "merchant-1", shopId: "shop-1" },
+  );
+  assert.deepEqual(empty, { selectedRun: null });
 });
 
 test("Plan generation is wired to the async worker and not browser page load", () => {

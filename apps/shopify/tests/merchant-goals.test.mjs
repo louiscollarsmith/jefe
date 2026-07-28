@@ -8,6 +8,7 @@ import { parseAndValidateMerchantGoalsOutput } from "../app/lib/merchant-goals/s
 import {
   ensureMerchantGoalsQueued,
   generateMerchantGoals,
+  getLatestMerchantGoals,
   getMerchantGoalsExperience,
   processMerchantGoalMessage,
 } from "../app/lib/merchant-goals/service.server.js";
@@ -208,6 +209,64 @@ test("structured goal validation rejects unsupported belief IDs and generic goal
   assert.match(strategy.error, /commercial outcome/);
   assert.equal(generic.ok, false);
   assert.match(generic.error, /generic/);
+});
+
+test("getLatestMerchantGoals reads the latest completed run without a snapshot or queueing", async () => {
+  const calls = [];
+  // Mock prisma implements ONLY merchantGoalRun.findFirst. If the reader tried
+  // to rebuild the belief snapshot or queue generation it would touch other
+  // models/methods absent here and throw, proving this path is read-only.
+  const prisma = {
+    merchantGoalRun: {
+      async findFirst(args) {
+        calls.push(args);
+        return {
+          id: "goal-run-1",
+          status: GOAL_RUN_STATUS.completed,
+          beliefSnapshotHash: "hash-1",
+          safeErrorCode: null,
+          lastError: null,
+          completedAt: new Date("2026-07-27T09:00:00Z"),
+          failedAt: null,
+          supersededAt: null,
+          horizons: [
+            {
+              id: "horizon-1",
+              horizon: "threeMonths",
+              orderIndex: 1,
+              title: "Grow repeat revenue",
+              description: "Use supported customer behaviour to build repeat sales.",
+              supportingBeliefIds: ["belief-1"],
+              memoryBeliefId: "belief-1",
+            },
+          ],
+        };
+      },
+    },
+  };
+
+  const result = await getLatestMerchantGoals(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].where.status, GOAL_RUN_STATUS.completed);
+  assert.equal(calls[0].where.merchantId, "merchant-1");
+  assert.equal(calls[0].where.shopId, "shop-1");
+  assert.equal("beliefSnapshotHash" in calls[0].where, false);
+  assert.deepEqual(calls[0].include, {
+    horizons: { orderBy: { orderIndex: "asc" } },
+  });
+  assert.deepEqual(calls[0].orderBy, { completedAt: "desc" });
+  assert.equal(result.selectedRun.horizons.length, 1);
+  assert.equal(result.selectedRun.horizons[0].horizon, "threeMonths");
+
+  const empty = await getLatestMerchantGoals(
+    { merchantGoalRun: { async findFirst() { return null; } } },
+    { merchantId: "merchant-1", shopId: "shop-1" },
+  );
+  assert.deepEqual(empty, { selectedRun: null });
 });
 
 test("goal generation is wired to the async worker and not browser page load", () => {

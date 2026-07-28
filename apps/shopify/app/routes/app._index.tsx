@@ -66,6 +66,7 @@ import {
   confirmMerchantInsightFinding,
   correctMerchantInsightFinding,
   ensureMerchantInsightsQueued,
+  getLatestMerchantInsights,
   getMerchantInsightsExperience,
 } from "../lib/merchant-insights/service.server.js";
 import {
@@ -75,6 +76,7 @@ import {
 } from "../lib/merchant-insights/constants.js";
 import {
   ensureMerchantGoalsQueued,
+  getLatestMerchantGoals,
   getMerchantGoalsExperience,
   processMerchantGoalMessage,
   processMerchantGoalsDocument,
@@ -86,6 +88,7 @@ import {
 import {
   acceptMerchantPlanAndCompleteOnboarding,
   ensureMerchantPlanQueued,
+  getLatestMerchantPlan,
   getMerchantPlanExperience,
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
@@ -547,17 +550,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Daily Home is the default post-onboarding surface. Toggle off with
     // ENABLE_DAILY_HOME=false to fall back to the original Merchant Memory view.
     if (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) {
+      // Daily Home is a HOME screen: read the latest completed run fast.
+      // It must NOT rebuild belief snapshots or ensure/queue generation, so
+      // it uses the read-only getLatest* fetchers rather than the
+      // getMerchant*Experience calls used by the onboarding funnel.
       const [metrics, insights, goals, plan] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
-        getMerchantInsightsExperience(prisma, {
+        getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         }),
-        getMerchantGoalsExperience(prisma, {
+        getLatestMerchantGoals(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         }),
-        getMerchantPlanExperience(prisma, {
+        getLatestMerchantPlan(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
         }),

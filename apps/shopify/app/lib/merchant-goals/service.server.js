@@ -191,6 +191,28 @@ export async function getMerchantGoalsExperience(prisma, input) {
 }
 
 /**
+ * Read-only fetch of the latest completed Goals run for the Daily Home.
+ * Unlike getMerchantGoalsExperience, this does NOT build a snapshot (no
+ * re-query/re-hash of the belief set) and does NOT ensure or queue
+ * generation. It only reads the most recent completed run so the home
+ * screen loads fast.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ */
+export async function getLatestMerchantGoals(prisma, input) {
+  const latestCompletedRun = await prisma.merchantGoalRun.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      status: GOAL_RUN_STATUS.completed,
+    },
+    include: { horizons: { orderBy: { orderIndex: "asc" } } },
+    orderBy: { completedAt: "desc" },
+  });
+  return { selectedRun: serializeRun(latestCompletedRun) };
+}
+
+/**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; runId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
