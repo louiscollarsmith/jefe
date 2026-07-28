@@ -1,0 +1,99 @@
+{
+  "relevanceKeywords": [
+    "deprecat", "breaking", "removed", "will be removed", "sunset", "retire",
+    "end of life", "eol", "no longer", "must migrate", "required", "legacy",
+    "unsupported", "discontinu", "shut down", "shutting down", "action required"
+  ],
+  "sources": [
+    {
+      "id": "shopify",
+      "name": "Shopify Platform Changelog",
+      "type": "rss",
+      "url": "https://shopify.dev/changelog/feed.xml",
+      "watch": [
+        "graphql admin", "admin api", "rest admin", "webhook", "api version",
+        "access scope", "order", "product", "customer", "inventory", "fulfillment",
+        "metafield", "rate limit", "session token", "oauth", "2026-", "2027-"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "shopify-app-js",
+      "name": "@shopify/shopify-app-js releases",
+      "type": "github-releases",
+      "url": "Shopify/shopify-app-js",
+      "watch": ["react-router", "session", "auth", "breaking", "webhook", "scopes"],
+      "enabled": true
+    },
+    {
+      "id": "mcp-spec",
+      "name": "Model Context Protocol spec releases",
+      "type": "github-releases",
+      "url": "modelcontextprotocol/modelcontextprotocol",
+      "enabled": true
+    },
+    {
+      "id": "mcp-servers",
+      "name": "Model Context Protocol reference servers",
+      "type": "github-releases",
+      "url": "modelcontextprotocol/servers",
+      "enabled": true
+    },
+    {
+      "id": "google-genai-js",
+      "name": "@google/genai SDK releases",
+      "type": "github-releases",
+      "url": "googleapis/js-genai",
+      "watch": ["breaking", "deprecat", "model", "gemini"],
+      "enabled": true
+    },
+    {
+      "id": "klaviyo",
+      "name": "Klaviyo API changelog",
+      "type": "html",
+      "url": "https://developers.klaviyo.com/en/docs/changelog",
+      "note": "html change-detection; confirm this is the canonical changelog URL / look for a feed",
+      "enabled": true
+    },
+    {
+      "id": "meta-graph",
+      "name": "Meta Graph API changelog",
+      "type": "html",
+      "url": "https://developers.facebook.com/docs/graph-api/changelog/",
+      "note": "URL 404s — find the correct Graph API changelog endpoint before enabling",
+      "enabled": false
+    },
+    {
+      "id": "whatsapp-cloud",
+      "name": "WhatsApp Cloud API changelog",
+      "type": "html",
+      "url": "https://developers.facebook.com/docs/whatsapp/business-platform/changelog",
+      "note": "verify URL",
+      "enabled": false
+    },
+    {
+      "id": "slack",
+      "name": "Slack API changelog",
+      "type": "html",
+      "url": "https://docs.slack.dev/changelog",
+      "note": "verify URL; Slack also has an RSS at api.slack.com/changelog historically",
+      "enabled": false
+    },
+    {
+      "id": "recharge",
+      "name": "Recharge API changelog",
+      "type": "html",
+      "url": "https://developer.rechargepayments.com/2021-11/changelog",
+      "note": "verify URL / version",
+      "enabled": false
+    },
+    {
+      "id": "shipstation",
+      "name": "ShipStation API changelog",
+      "type": "html",
+      "url": "https://www.shipstation.com/docs/api/requirements/",
+      "note": "verify URL — ShipStation API v2 docs",
+      "enabled": false
+    }
+  ]
+}

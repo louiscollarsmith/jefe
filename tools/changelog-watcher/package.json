@@ -1,0 +1,12 @@
+{
+  "name": "changelog-watcher",
+  "private": true,
+  "type": "module",
+  "description": "Polls upstream API/MCP changelogs and reports what changed, so Jefe can adapt before it breaks.",
+  "bin": { "changelog-watcher": "src/watch.mjs" },
+  "scripts": {
+    "watch": "node src/watch.mjs",
+    "init": "node src/watch.mjs --init"
+  },
+  "engines": { "node": ">=20.19 <22 || >=22.12" }
+}
