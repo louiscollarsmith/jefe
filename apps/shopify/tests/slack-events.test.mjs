@@ -73,49 +73,53 @@ test("handleSlackEvent answers the url_verification challenge only when signed",
   assert.equal(bad.body, undefined);
 });
 
-test("handleSlackEvent acknowledges a message.im DM without logging its text", () => {
+test("handleSlackEvent returns the parsed DM for a message.im (for the route to dispatch)", () => {
   const ts = Math.floor(Date.now() / 1000);
   const rawBody = JSON.stringify({
     type: "event_callback",
     team_id: "T1",
     event_id: "Ev1",
-    event: { type: "message", channel_type: "im", user: "U1", text: "secret message body" },
+    event: {
+      type: "message",
+      channel_type: "im",
+      channel: "D1",
+      user: "U1",
+      text: "hi jefe",
+    },
   });
-  const logged = [];
   const result = handleSlackEvent({
     signingSecret: SECRET,
     signature: sign(rawBody, ts),
     timestamp: String(ts),
     rawBody,
-    retryNum: null,
-    logger: { info: (message, context) => logged.push({ message, context }) },
   });
 
   assert.equal(result.status, 200);
-  assert.equal(logged.length, 1);
-  assert.equal(logged[0].context.teamId, "T1");
-  assert.equal(logged[0].context.eventId, "Ev1");
-  // The merchant's message text must never reach the logs.
-  assert.doesNotMatch(JSON.stringify(logged), /secret message body/);
+  assert.deepEqual(result.inboundDm, {
+    teamId: "T1",
+    channelId: "D1",
+    userId: "U1",
+    text: "hi jefe",
+    eventId: "Ev1",
+  });
 });
 
-test("handleSlackEvent ignores the bot's own messages and non-DM channels", () => {
+test("handleSlackEvent ignores bot messages, non-DM channels, edits, and empty text", () => {
   const ts = Math.floor(Date.now() / 1000);
   for (const event of [
-    { type: "message", channel_type: "im", bot_id: "B1", text: "from jefe" },
-    { type: "message", channel_type: "channel", text: "in a channel" },
-    { type: "message", channel_type: "im", subtype: "message_changed" },
+    { type: "message", channel_type: "im", bot_id: "B1", channel: "D1", text: "from jefe" },
+    { type: "message", channel_type: "channel", channel: "C1", text: "in a channel" },
+    { type: "message", channel_type: "im", subtype: "message_changed", channel: "D1" },
+    { type: "message", channel_type: "im", channel: "D1", text: "   " },
   ]) {
     const rawBody = JSON.stringify({ type: "event_callback", team_id: "T1", event });
-    const logged = [];
     const result = handleSlackEvent({
       signingSecret: SECRET,
       signature: sign(rawBody, ts),
       timestamp: String(ts),
       rawBody,
-      logger: { info: (message, context) => logged.push({ message, context }) },
     });
     assert.equal(result.status, 200);
-    assert.equal(logged.length, 0, "no inbound-DM log for ignored events");
+    assert.equal(result.inboundDm, undefined, "no inboundDm for ignored events");
   }
 });

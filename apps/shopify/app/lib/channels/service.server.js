@@ -16,6 +16,7 @@ import { SlackChannelAdapter } from "./slack.server.js";
 import { CHANNEL_STATUS } from "./status.js";
 import { WhatsAppChannelAdapter } from "./whatsapp.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { sendConversationMessage } from "../merchant-memory/conversation.server.js";
 
 const channelLog = baseLogger.child({ component: "channels" });
 
@@ -421,6 +422,109 @@ export async function sendSlackConnectWelcomeDm(prisma, input) {
       err: error,
     });
     return { sent: false, reason: "error" };
+  }
+}
+
+/**
+ * Handle an inbound Slack DM (`message.im`): resolve the merchant from the Slack
+ * team, run the text through the SAME merchant-memory conversation the in-app
+ * chat uses (so Slack shares one brain + memory with the app), and reply in the
+ * DM. Deduped by Slack event id so a Slack retry can't double-reply. Never throws
+ * — it's fire-and-forget off the webhook ack.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ teamId: string | null; channelId: string | null; userId?: string | null; text: string; eventId: string | null; env?: Record<string, string | undefined>; adapter?: SlackChannelAdapter; llmProvider?: import("../llm/provider.server.js").LlmProvider; now?: Date }} input
+ * @returns {Promise<{ replied: boolean; reason: string }>}
+ */
+export async function processInboundSlackDm(prisma, input) {
+  const now = input.now ?? new Date();
+  try {
+    if (!input.teamId || !input.channelId || !input.text.trim()) {
+      return { replied: false, reason: "incomplete_event" };
+    }
+    const connection = await prisma.channelConnection.findFirst({
+      where: { provider: "slack", externalAccountId: input.teamId },
+    });
+    if (!connection?.credentialRef) {
+      return { replied: false, reason: "no_connection" };
+    }
+
+    // Dedup on the Slack event id — a Slack retry must not produce a second reply.
+    const idempotencyKey = `slack-inbound:${input.eventId ?? `${input.channelId}:${now.toISOString()}`}`;
+    const existing = await prisma.channelMessageDelivery.findFirst({
+      where: { merchantId: connection.merchantId, idempotencyKey },
+      select: { id: true },
+    });
+    if (existing) return { replied: false, reason: "duplicate" };
+    const delivery = await prisma.channelMessageDelivery.create({
+      data: {
+        merchantId: connection.merchantId,
+        shopId: connection.shopId,
+        connectionId: connection.id,
+        provider: "slack",
+        category: "inbound_reply",
+        idempotencyKey,
+        status: "pending",
+        metadata: { source: "slack_dm" },
+      },
+    });
+
+    // Same conversation service as the in-app chat: stores the merchant message,
+    // interprets it, and stores Jefe's reply as an assistant message.
+    await sendConversationMessage(prisma, {
+      merchantId: connection.merchantId,
+      shopId: connection.shopId,
+      message: input.text,
+      llmProvider: input.llmProvider,
+      logger: channelLog,
+    });
+    const reply = await prisma.merchantMemoryConversationMessage.findFirst({
+      where: { merchantId: connection.merchantId, role: "assistant" },
+      orderBy: { createdAt: "desc" },
+      select: { content: true },
+    });
+    const replyText = reply?.content?.trim();
+    if (!replyText) {
+      await prisma.channelMessageDelivery.update({
+        where: { id: delivery.id },
+        data: { status: "failed", safeErrorCode: "no_reply" },
+      });
+      return { replied: false, reason: "no_reply" };
+    }
+
+    const credential = await loadCredentialPayload(prisma, {
+      merchantId: connection.merchantId,
+      shopId: connection.shopId ?? "",
+      provider: "slack",
+      credentialRef: connection.credentialRef,
+      env: input.env,
+    });
+    const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
+    const sent = await adapter.sendMessage({
+      accessToken: asString(credential.accessToken),
+      channelId: input.channelId,
+      message: { body: replyText },
+    });
+    await prisma.channelMessageDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: "succeeded",
+        providerMessageId: sent.providerMessageId ?? null,
+        sentAt: now,
+      },
+    });
+    channelLog.info("slack DM replied", {
+      shopId: connection.shopId,
+      eventId: input.eventId,
+    });
+    return { replied: true, reason: "replied" };
+  } catch (error) {
+    channelLog.error("slack inbound DM failed", {
+      teamId: input.teamId,
+      eventId: input.eventId,
+      err: error,
+    });
+    return { replied: false, reason: "error" };
   }
 }
 

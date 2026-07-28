@@ -1,5 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 
+import prisma from "../db.server";
+import { processInboundSlackDm } from "../lib/channels/service.server.js";
 import { handleSlackEvent } from "../lib/channels/slack-events.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server";
 
@@ -25,9 +27,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     signature: request.headers.get("x-slack-signature"),
     timestamp: request.headers.get("x-slack-request-timestamp"),
     rawBody,
-    retryNum: request.headers.get("x-slack-retry-num"),
-    logger: log,
   });
+
+  // A merchant DM: process + reply out-of-band so Slack still gets a fast 200.
+  // Never awaited — a slow ack makes Slack retry, and a failed reply must not
+  // turn into a non-200 (which would double-send).
+  if (result.inboundDm) {
+    void processInboundSlackDm(prisma, result.inboundDm).catch((error) => {
+      log.error("slack inbound processing crashed", { err: error });
+    });
+  }
 
   return new Response(result.body ?? null, {
     status: result.status,

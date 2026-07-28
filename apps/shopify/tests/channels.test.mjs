@@ -10,6 +10,7 @@ import {
   hasVerifiedChannelConnection,
   listChannelConnections,
   listSlackDestinations,
+  processInboundSlackDm,
   resetPendingSlackAuthorisations,
   selectSlackDestinationAndSendWelcome,
   sendChannelTestMessage,
@@ -581,6 +582,86 @@ test("Slack connect opens a DM with the installer and makes it the default desti
       where: { merchantId: merchant.id, provider: "slack", category: "welcome" },
     });
     assert.equal(delivery.status, "succeeded");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: { startsWith: `Channel Test ${suffix}` } },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("processInboundSlackDm ignores a DM from an unknown Slack team", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for channel integration tests");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  try {
+    const result = await processInboundSlackDm(prisma, {
+      teamId: `unknown-${uniqueSuffix()}`,
+      channelId: "D1",
+      text: "anyone there?",
+      eventId: `E-${uniqueSuffix()}`,
+    });
+    assert.equal(result.replied, false);
+    assert.equal(result.reason, "no_connection");
+  } finally {
+    await prisma.$disconnect();
+  }
+});
+
+test("processInboundSlackDm dedups on the Slack event id (no double-reply on retry)", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for channel integration tests");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  // Plain adapter (no installer id) so connect doesn't auto-send a DM welcome.
+  const slackAdapter = new MockSlackAdapter();
+  try {
+    const { merchant, shop } = await createChannelFixture(prisma, suffix, "slackin");
+    const started = await startSlackConnection(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      requestUrl: `https://jefe.test/app?shop=${shop.shopDomain}&host=test`,
+      env: channelEnv,
+      adapter: slackAdapter,
+    });
+    await completeSlackConnectionFromState(prisma, {
+      state: new URL(started.authoriseUrl).searchParams.get("state"),
+      code: "code",
+      env: channelEnv,
+      adapter: slackAdapter,
+    });
+    const connection = await prisma.channelConnection.findFirstOrThrow({
+      where: { merchantId: merchant.id, provider: "slack" },
+    });
+    // The mock connects team "T1". Pre-record a delivery for this event id.
+    const eventId = `E-${suffix}`;
+    await prisma.channelMessageDelivery.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        connectionId: connection.id,
+        provider: "slack",
+        category: "inbound_reply",
+        idempotencyKey: `slack-inbound:${eventId}`,
+        status: "succeeded",
+      },
+    });
+
+    const result = await processInboundSlackDm(prisma, {
+      teamId: "T1",
+      channelId: "D-installer",
+      text: "hi again",
+      eventId,
+      env: channelEnv,
+      adapter: slackAdapter,
+    });
+    assert.equal(result.replied, false);
+    assert.equal(result.reason, "duplicate");
+    assert.equal(slackAdapter.sentMessages.length, 0, "no reply sent for a duplicate");
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: { startsWith: `Channel Test ${suffix}` } },
