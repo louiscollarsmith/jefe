@@ -46,6 +46,7 @@ import {
   runWithContext,
 } from "../lib/observability/context.server.js";
 import { track } from "./analytics/event-log.server.js";
+import { runActivityDigest } from "./analytics/digest.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -111,6 +112,33 @@ let loopStarted = false;
 let loopRunning = false;
 /** @type {PrismaClient | null} */
 let loopPrisma = null;
+/** UTC day (YYYY-MM-DD) the daily activity digest was last posted. */
+let lastDigestDay = /** @type {string | null} */ (null);
+const DIGEST_HOUR_UTC = 8;
+
+/**
+ * Post the daily activity digest to Slack once per UTC day, on the first tick at
+ * or after DIGEST_HOUR_UTC. In-memory guard (a worker restart may re-post once;
+ * a duplicate digest is harmless). No-op without a webhook. Never throws
+ * (runActivityDigest is self-catching).
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ */
+async function maybePostDailyDigest(prisma, logger) {
+  const now = new Date();
+  const dayKey = now.toISOString().slice(0, 10);
+  if (lastDigestDay === dayKey || now.getUTCHours() < DIGEST_HOUR_UTC) return;
+  lastDigestDay = dayKey;
+  const webhookUrl =
+    process.env.ACTIVITY_WEBHOOK_URL || process.env.ALERT_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const result = await runActivityDigest(prisma, { windowHours: 24, webhookUrl });
+  logger.info("Daily activity digest posted", {
+    posted: result.posted,
+    events: result.feed?.totalEvents ?? 0,
+  });
+}
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -137,6 +165,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     loopRunning = true;
     try {
       await processNextBackfillJob(workerPrisma, { logger });
+      await maybePostDailyDigest(workerPrisma, logger);
     } catch (error) {
       logger.error("Shopify evidence backfill loop failed", {
         error: error instanceof Error ? error.message : String(error),

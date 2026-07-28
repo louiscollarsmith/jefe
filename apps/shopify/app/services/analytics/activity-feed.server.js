@@ -23,7 +23,10 @@
  * @property {string} [detail] Short extra context (e.g. which generation failed).
  */
 
-/** Display metadata per event type. `severity: "warn"` surfaces under Needs attention. */
+/**
+ * Display metadata per event type. `severity: "warn"` surfaces under Needs attention.
+ * @type {Record<string, { emoji: string; label: string; severity: string }>}
+ */
 export const EVENT_META = {
   shop_installed: { emoji: "🆕", label: "installed", severity: "info" },
   onboarding_completed: { emoji: "✅", label: "onboarding completed", severity: "info" },
@@ -34,6 +37,7 @@ export const EVENT_META = {
   plan_generated: { emoji: "📋", label: "plan generated", severity: "info" },
   channel_connected: { emoji: "🔌", label: "channel connected", severity: "info" },
   generation_failed: { emoji: "⚠️", label: "generation failed", severity: "warn" },
+  job_failed: { emoji: "⚠️", label: "job failed", severity: "warn" },
 };
 
 /**
