@@ -49,8 +49,8 @@ test("onboarding exposes Connect, Channels, Insights, Goals and Plan with option
   assert.match(appIndexSource, /"Goals"/);
   assert.match(appIndexSource, /"Plan"/);
   assert.match(appIndexSource, /Continue to Channels/);
-  assert.match(appIndexSource, /Continue to insights/);
-  assert.match(appIndexSource, /Continue to goals/);
+  assert.match(appIndexSource, /Continue to Insights/);
+  assert.match(appIndexSource, /Continue to Goals/);
   assert.match(appIndexSource, /Continue to Plan/);
   assert.match(appIndexSource, /Accept Plan and open Jefe/);
   assert.match(appIndexSource, /Tell me what winning looks like/);
@@ -86,13 +86,14 @@ test("onboarding does not expose the retired goal form or interview path", () =>
   assert.match(appIndexSource, /processMerchantGoalsDocument/);
 });
 
-test("channels onboarding exposes only Slack and WhatsApp provider cards", () => {
+test("channels onboarding exposes Slack, WhatsApp, Teams and iMessage provider cards", () => {
   assert.match(appIndexSource, /Connect Slack/);
   assert.match(appIndexSource, /WhatsApp/);
+  assert.match(appIndexSource, /Teams/);
+  assert.match(appIndexSource, /iMessage/);
   assert.match(appIndexSource, /Coming soon/);
-  assert.match(appIndexSource, /You can also skip/);
+  // Channels remain optional — merchants can proceed without connecting one.
   assert.match(appIndexSource, /Channel setup is optional for now\./);
-  assert.doesNotMatch(appIndexSource, /Teams/);
   assert.doesNotMatch(appIndexSource, /Discord/);
   assert.doesNotMatch(appIndexSource, /Telegram/);
 });

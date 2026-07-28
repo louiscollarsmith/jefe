@@ -1,4 +1,3 @@
-import type { LoaderFunctionArgs } from "react-router";
 
 // Standalone, full-fidelity build of the Jefe "Daily" home surface (screen 5a from
 // the design_handoff_jefe_daily handoff): three columns — nav · brief · partner rail.
@@ -248,7 +247,7 @@ const HTML = String.raw`<!doctype html>
 </body>
 </html>`;
 
-export async function loader(_args: LoaderFunctionArgs) {
+export async function loader() {
   return new Response(HTML, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",

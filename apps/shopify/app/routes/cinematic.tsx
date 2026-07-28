@@ -1,4 +1,3 @@
-import type { LoaderFunctionArgs } from "react-router";
 
 // Standalone, full-fidelity cinematic onboarding demo asset.
 // Served as a public resource route (no App Bridge/auth) so it can be opened
@@ -313,7 +312,7 @@ const HTML = String.raw`<!doctype html>
 </body>
 </html>`;
 
-export async function loader(_args: LoaderFunctionArgs) {
+export async function loader() {
   return new Response(HTML, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",

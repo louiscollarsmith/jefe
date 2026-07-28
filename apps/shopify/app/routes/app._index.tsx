@@ -3510,7 +3510,7 @@ async function getMerchantMemoryView({
     const rows = groups.get(category) ?? [];
     rows.push({
       id: belief.id,
-      title: definition?.label ?? humanizeLabel(belief.key),
+      title: definition?.label ?? humanizeBeliefKey(belief.key),
       value: formatMemoryValue(belief.value),
       status: belief.status,
       evidenceSummary: belief.evidence?.[0]?.summary ?? null,
@@ -4023,7 +4023,9 @@ function formatMemoryValue(value: unknown): string {
   if (typeof record.amount === "number") {
     return formatCurrency(record.amount, String(record.currency ?? "GBP"));
   }
-  return JSON.stringify(value);
+  // A structured/nested value we don't have a scalar renderer for. Never surface a
+  // raw JSON blob to a merchant — show the belief's label alone instead.
+  return "";
 }
 
 function humanizeLabel(value: string) {
@@ -4032,6 +4034,28 @@ function humanizeLabel(value: string) {
     .pop()!
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+// A belief key like `customers.repeat_customers.trailing_30d` humanizes to a bare
+// "Trailing 30d" under humanizeLabel (last segment only), which is meaningless on its
+// own. When the last segment is just a time-window/qualifier, keep the preceding
+// segment too so the label reads e.g. "Repeat Customers · Trailing 30d".
+function humanizeBeliefKey(key: string): string {
+  const segments = key.split(".").filter(Boolean);
+  const last = segments[segments.length - 1] ?? key;
+  const isQualifier =
+    /^(trailing|rolling|last|prior|previous|all[_-]?time|ytd|mtd|wtd|t\d+d|d\d+|window)/i.test(
+      last,
+    );
+  const chosen =
+    isQualifier && segments.length >= 2 ? segments.slice(-2) : [last];
+  return chosen
+    .map((segment) =>
+      segment
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    )
+    .join(" · ");
 }
 
 function channelConnection(

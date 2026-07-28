@@ -130,7 +130,7 @@ export function DailyHome({
           <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
             <div style={{ fontFamily: T.mono, fontSize: 10.5, letterSpacing: "1.8px", textTransform: "uppercase", color: T.accent }}>{eyebrowDate()} · your brief</div>
             <div style={{ fontFamily: T.serif, fontSize: 32, lineHeight: 1.15, color: "oklch(0.22 0.02 40)" }}>
-              Here's where {storeName || "your store"} stands this morning.
+              Here’s where {storeName || "your store"} stands this morning.
             </div>
             <div style={{ display: "flex", gap: 20, marginTop: 2, flexWrap: "wrap" }}>
               <div><div style={label}>Orders</div><div style={statValue}>{metrics ? metrics.orders.toLocaleString("en-GB") : "—"}</div></div>
@@ -157,7 +157,7 @@ export function DailyHome({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
                   <span style={{ fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, cursor: "pointer" }}>Approve</span>
                   <span style={{ fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}` }}>{recommendation.executionSteps?.length || 0} steps</span>
-                  <span onClick={() => setShowWorking((v) => !v)} style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: T.accent, cursor: "pointer" }}>How I got this number ›</span>
+                  <button type="button" onClick={() => setShowWorking((v) => !v)} style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: T.accent, cursor: "pointer", background: "none", border: "none", padding: 0, fontFamily: "inherit" }}>How I got this number ›</button>
                 </div>
                 {showWorking ? (
                   <div style={{ background: "oklch(0.975 0.005 68)", borderRadius: 10, padding: "11px 13px", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -189,7 +189,7 @@ export function DailyHome({
               {beliefs.length ? (
                 beliefs.map((b, i) => (
                   <div key={b.id} style={{ padding: "11px 15px", borderBottom: i < beliefs.length - 1 ? `1px solid ${T.borderSubtle}` : "none", display: "flex", alignItems: "center", gap: 11 }}>
-                    <span style={{ flex: 1, fontSize: 12.5, color: "oklch(0.3 0.02 45)" }}>{b.title}{b.value ? ` · ${b.value}` : ""}</span>
+                    <span style={{ flex: 1, fontSize: 12.5, color: "oklch(0.3 0.02 45)" }}>{b.title}{cleanBeliefValue(b.value) ? ` · ${cleanBeliefValue(b.value)}` : ""}</span>
                     <span style={{ flex: "none", fontFamily: T.mono, fontSize: 9.5, color: T.muted }}>{beliefStatus(b.status)}</span>
                   </div>
                 ))
@@ -235,7 +235,7 @@ export function DailyHome({
           <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
             <div style={{ ...label, fontSize: 10, letterSpacing: "1.5px", color: T.accent }}>Tell us what to build</div>
             <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>What's missing? What's annoying? Tell us — we're building Jefe with you.</div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>What’s missing? What’s annoying? Tell us — we’re building Jefe with you.</div>
               <div style={{ display: "flex", gap: 7 }}>
                 <span style={{ flex: 1, textAlign: "center", fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: 9, borderRadius: 9, cursor: "pointer" }}>Record</span>
                 <span style={{ flex: 1, textAlign: "center", fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 12.5, padding: 9, borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Write</span>
@@ -253,6 +253,17 @@ export function DailyHome({
       </div>
     </div>
   );
+}
+
+// Defensive: only surface short, human-readable belief values. The loader already
+// suppresses structured/JSON values, but never let a blob or an over-long string
+// through into the "What Jefe knows" rows.
+function cleanBeliefValue(value: string | null | undefined): string {
+  if (!value) return "";
+  const v = value.trim();
+  if (v.startsWith("{") || v.startsWith("[")) return "";
+  if (v.length > 48) return "";
+  return v;
 }
 
 function beliefStatus(status: string): string {
