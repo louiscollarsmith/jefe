@@ -40,6 +40,7 @@ Historical context, reset audits and previous product prompts live under `docs/a
 - Inferred claims need provenance and confidence.
 - Never allow inferred information to silently become fact.
 - Migrations must be additive, safe and reversible unless explicitly approved.
+- Every subsystem is observable by default: it logs through the structured logger with redaction, lets failures surface to the central error hooks, and exposes a health/self-check for any new service or external dependency.
 
 ## Implementation Rules
 
@@ -50,6 +51,7 @@ Historical context, reset audits and previous product prompts live under `docs/a
 - Do not let any LLM directly mutate Shopify, Klaviyo or third-party systems.
 - External writes require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.
 - Use TypeScript types properly and keep changes scoped to the user's current request.
+- Log all server-side events through the structured logger (`apps/shopify/app/lib/observability/logger.server.js`), never bare `console.*`. Log identifiers and metadata, never request/response payloads, secrets or customer PII — redaction is a safety net, not permission to log sensitive data. Let thrown errors surface to the central hooks (`handleError` in `entry.server.tsx`, route error boundaries) rather than swallowing them, and add a health signal for any new external dependency. See `apps/shopify/docs/observability.md`.
 - Shopify embedded merchant UI must use Shopify Polaris React components for visible layout, navigation, forms, tables, feedback and actions.
 
 ## Before Coding
@@ -69,5 +71,6 @@ For UI work, state:
 
 - Update `apps/shopify/CHANGELOG.md` using today's UK/London date.
 - Use merchant/operator-facing language.
+- Confirm new server code is observable: it logs through the structured logger, captures/propagates errors to the central hooks, and (for any new endpoint, service or dependency) has a health or self-check. See `apps/shopify/docs/observability.md`.
 - Run typecheck, lint and tests where available.
 - Summarise changes, risks, follow-up work and any checks that could not be run.

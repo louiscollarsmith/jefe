@@ -24,7 +24,7 @@ The current Shopify app flow is Connect -> optional Channels -> Insights -> Goal
 
 ## Quality Bar
 
-A change is not done unless it is scoped, typed, testable, safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
+A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
 
 ## Product Truth
 
