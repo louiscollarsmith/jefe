@@ -112,6 +112,46 @@ function optionList(values, selected) {
     .join("");
 }
 
+/** Top-of-page funnel + engagement + cost snapshot. */
+async function queryOverview() {
+  const shops = (
+    await pool.query(`
+      SELECT count(*)::int total,
+        count(*) FILTER (WHERE backfill_completed_at IS NOT NULL)::int backfilled,
+        count(*) FILTER (WHERE onboarding_completed_at IS NOT NULL)::int onboarded,
+        count(*) FILTER (WHERE created_at >= now() - interval '7 days')::int installed_7d
+      FROM shops`)
+  ).rows[0];
+  const active = (
+    await pool.query(`
+      SELECT count(DISTINCT shop_domain)::int active_24h
+      FROM activity_events WHERE created_at >= now() - interval '24 hours'`)
+  ).rows[0];
+  const cost = (
+    await pool.query(`
+      SELECT coalesce(sum(cost_usd), 0)::float cost_7d, count(*)::int calls_7d
+      FROM llm_usage_event WHERE created_at >= now() - interval '7 days'`)
+  ).rows[0];
+  return { ...shops, ...active, ...cost };
+}
+
+function renderOverview(o) {
+  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
+  const tiles = [
+    ["Shops", String(o.total), `${o.installed_7d} new · 7d`],
+    ["Backfilled", String(o.backfilled), `${pct(o.backfilled, o.total)}% of shops`],
+    ["Onboarded", String(o.onboarded), `${pct(o.onboarded, o.total)}% of shops`],
+    ["Active", String(o.active_24h), `distinct · 24h`],
+    ["LLM cost", `$${Number(o.cost_7d || 0).toFixed(4)}`, `${o.calls_7d} calls · 7d · est.`],
+  ];
+  return `<div class="tiles">${tiles
+    .map(
+      ([label, value, sub]) =>
+        `<div class="tile"><div class="tv">${esc(value)}</div><div class="tl">${esc(label)}</div><div class="ts">${esc(sub)}</div></div>`,
+    )
+    .join("")}</div>`;
+}
+
 function page(body) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -134,6 +174,11 @@ function page(body) {
   .pill { display:inline-block; padding:1px 8px; border-radius:999px; background:#1b2330; color:#a9c2ff; font-size:12px; }
   .warn { background:#3a1f22; color:#ffb4b4; }
   .empty { padding:40px 20px; color:#8b909a; }
+  .tiles { display:flex; gap:12px; padding:14px 20px; flex-wrap:wrap; border-bottom:1px solid #23262d; }
+  .tile { background:#171a21; border:1px solid #23262d; border-radius:8px; padding:10px 16px; min-width:110px; }
+  .tile .tv { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .tile .tl { color:#8b909a; font-size:11px; text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
+  .tile .ts { color:#6b7280; font-size:11px; margin-top:1px; }
 </style></head><body>${body}</body></html>`;
 }
 
@@ -161,6 +206,7 @@ function renderDashboard(data, params) {
       <h1>Jefe · Activity</h1>
       <span class="muted">${data.rows.length} event${data.rows.length === 1 ? "" : "s"} · last ${WINDOWS[String(data.hours)] ?? data.hours + "h"}</span>
     </header>
+    ${data.overview ? renderOverview(data.overview) : ""}
     <form method="get">
       <input type="search" name="q" placeholder="Search summary…" value="${esc(params.q ?? "")}">
       <select name="type"><option value="">All types</option>${optionList(data.types, params.type ?? "")}</select>
@@ -217,7 +263,11 @@ const server = http.createServer(async (req, res) => {
   };
 
   try {
-    const data = await queryEvents(params);
+    const [data, overview] = await Promise.all([
+      queryEvents(params),
+      queryOverview().catch(() => null),
+    ]);
+    data.overview = overview;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
     res.end(renderDashboard(data, params));
   } catch (error) {
