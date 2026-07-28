@@ -14,6 +14,7 @@ import {
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
 import { logger } from "./lib/observability/logger.server";
+import { track } from "./services/analytics/event-log.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
   "2025-10": ApiVersion.October25,
@@ -45,6 +46,14 @@ const shopify = shopifyApp({
         sessionId: session.id,
         scopes: splitScopes(session.scope),
         rawPayload: { source: "oauth_after_auth" },
+      });
+
+      // Activity feed: a shop install is the funnel-entry event.
+      void track(prisma, {
+        type: "shop_installed",
+        topic: "onboarding",
+        shopDomain: session.shop,
+        summary: `Shop installed: ${session.shop}`,
       });
 
       // Fire-and-forget the Day-0 welcome email. It is idempotent (a
