@@ -762,6 +762,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     appMode: "onboarding" as const,
+    cinematic: process.env.ENABLE_CINEMATIC_ONBOARDING !== "false",
     shop: session.shop,
     merchantName: merchant.name,
     storeName,
@@ -839,7 +840,7 @@ export default function AppIndex() {
   }
 
   return (
-    <OnboardingShell activeStep={data.activeStep}>
+    <OnboardingShell activeStep={data.activeStep} cinematic={data.cinematic}>
       {data.activeStep === "connect" ? (
         <ConnectStep
           storeName={data.storeName}
@@ -926,15 +927,69 @@ function oauthPopupFeatures() {
 
 function OnboardingShell({
   activeStep,
+  cinematic,
   children,
 }: {
   activeStep: (typeof ONBOARDING_STEPS)[number];
+  cinematic?: boolean;
   children: ReactNode;
 }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const stepIndex = ONBOARDING_STEPS.indexOf(activeStep);
+  const nextStep =
+    stepIndex >= 0 && stepIndex < ONBOARDING_STEPS.length - 1
+      ? ONBOARDING_STEPS[stepIndex + 1]
+      : null;
+
   return (
-    <main className={`JefeOnboardingShell is-${activeStep}`}>
+    <main
+      className={`JefeOnboardingShell is-${activeStep}${
+        cinematic ? " is-cinematic" : ""
+      }`}
+    >
+      {cinematic ? <div className="JefeCinematicAmbient" aria-hidden="true" /> : null}
       <OnboardingStepper activeStep={activeStep} />
       <section className="JefeOnboardingScene">{children}</section>
+      {nextStep ? (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            position: "relative",
+            zIndex: 1,
+            paddingTop: 20,
+          }}
+        >
+          {/* Every step is skippable — you can always move forward even if the
+              step's data isn't ready yet. */}
+          <button
+            type="button"
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: nextStep,
+                  channelProvider: null,
+                  channelMode: null,
+                  channelNotice: null,
+                }),
+              )
+            }
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: 13,
+              fontWeight: 600,
+              color: "inherit",
+              opacity: 0.6,
+            }}
+          >
+            Skip for now →
+          </button>
+        </div>
+      ) : null}
     </main>
   );
 }

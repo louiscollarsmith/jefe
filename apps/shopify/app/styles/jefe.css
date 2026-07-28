@@ -820,3 +820,642 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   CINEMATIC (dark) onboarding theme
+   --------------------------------------------------------------------------
+   Everything below is scoped under `.JefeOnboardingShell.is-cinematic`.
+   When that class is absent the light funnel above is 100% unchanged.
+   Palette, fonts, ambient blobs/grid and drift motion are copied from
+   app/routes/cinematic.tsx. Fonts (Instrument Serif, Schibsted Grotesk,
+   Bricolage Grotesque, IBM Plex Mono) are already loaded app-wide.
+   Strategy: (a) override the Polaris `--p-color-*` tokens on the shell so
+   Polaris components dark-theme automatically, then (b) also set direct
+   background/color/border on the custom `.Jefe*` classes as a backstop so
+   nothing depends solely on a Polaris token name resolving.
+   ========================================================================== */
+
+.JefeOnboardingShell.is-cinematic {
+  /* ---- cinematic palette (referenced throughout this block) ---- */
+  --jc-canvas: radial-gradient(
+      1100px 620px at 50% 12%,
+      oklch(0.26 0.05 268),
+      oklch(0.145 0.03 265) 62%
+    ),
+    #0c0f1a;
+  --jc-ink: oklch(0.95 0.012 80);
+  --jc-ink-2: oklch(0.8 0.02 265);
+  --jc-ink-3: oklch(0.66 0.02 265);
+  --jc-ink-inv: oklch(0.2 0.04 265);
+  --jc-card: oklch(0.22 0.035 265 / 0.72);
+  --jc-card-2: oklch(0.2 0.03 265 / 0.6);
+  --jc-surface-2: oklch(0.26 0.045 265 / 0.55);
+  --jc-border: oklch(0.36 0.05 268);
+  --jc-border-2: oklch(0.32 0.04 268);
+  --jc-border-strong: oklch(0.46 0.06 268);
+  --jc-blush: oklch(0.82 0.12 18);
+  --jc-blush-accent: oklch(0.82 0.11 18);
+  --jc-violet: oklch(0.66 0.11 285);
+  --jc-cta: oklch(0.88 0.09 20);
+  --jc-cta-hover: oklch(0.83 0.1 20);
+  --jc-cta-active: oklch(0.8 0.1 20);
+  --jc-success: oklch(0.68 0.15 155);
+  --jc-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --jc-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --jc-accent-font: "Bricolage Grotesque", "Schibsted Grotesk", sans-serif;
+
+  /* ---- shell paint ---- */
+  background: var(--jc-canvas);
+  color: var(--jc-ink);
+  font-family: "Schibsted Grotesk", system-ui, sans-serif;
+  position: relative;
+  overflow: hidden;
+
+  /* ---- Polaris design-token overrides (dark) ---- */
+  --p-font-family-sans: "Schibsted Grotesk", system-ui, sans-serif;
+  --p-font-family-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --p-color-bg-surface: oklch(0.23 0.04 265);
+  --p-color-bg-surface-secondary: oklch(0.26 0.045 265);
+  --p-color-bg-surface-secondary-hover: oklch(0.29 0.05 265);
+  --p-color-bg-surface-tertiary: oklch(0.29 0.05 265);
+  --p-color-bg-surface-hover: oklch(0.3 0.05 265);
+  --p-color-bg-surface-active: oklch(0.32 0.05 265);
+
+  --p-color-text: var(--jc-ink);
+  --p-color-text-secondary: oklch(0.78 0.02 265);
+  --p-color-text-disabled: oklch(0.55 0.02 265);
+  --p-color-text-link: var(--jc-blush-accent);
+  --p-color-text-link-hover: oklch(0.87 0.1 18);
+  --p-color-text-link-active: oklch(0.9 0.09 18);
+
+  --p-color-border: var(--jc-border);
+  --p-color-border-hover: var(--jc-border-strong);
+  --p-color-border-secondary: var(--jc-border-2);
+  --p-color-border-focus: var(--jc-blush);
+
+  --p-color-bg-fill-brand: var(--jc-cta);
+  --p-color-bg-fill-brand-hover: var(--jc-cta-hover);
+  --p-color-bg-fill-brand-active: var(--jc-cta-active);
+  --p-color-text-brand-on-bg-fill: var(--jc-ink-inv);
+  --p-color-text-brand-on-bg-fill-hover: var(--jc-ink-inv);
+
+  --p-color-bg-fill: oklch(0.28 0.045 265);
+  --p-color-bg-fill-hover: oklch(0.32 0.05 265);
+  --p-color-bg-fill-active: oklch(0.34 0.05 265);
+  --p-color-bg-fill-secondary: oklch(0.26 0.045 265);
+
+  --p-color-icon: oklch(0.82 0.02 265);
+  --p-color-icon-secondary: oklch(0.7 0.02 265);
+  --p-color-icon-disabled: oklch(0.5 0.02 265);
+
+  /* inputs (Goals / Insights / Plan / Slack forms) so fields don't flash white */
+  --p-color-input-bg-surface: oklch(0.2 0.03 265 / 0.7);
+  --p-color-input-bg-surface-hover: oklch(0.24 0.04 265 / 0.7);
+  --p-color-input-bg-surface-active: oklch(0.26 0.045 265 / 0.8);
+  --p-color-input-border: oklch(0.42 0.05 268);
+  --p-color-input-border-hover: oklch(0.55 0.08 285);
+  --p-color-input-border-active: var(--jc-violet);
+}
+
+/* ---- Ambient layer: faint masked grid + two drifting radial blobs ----
+   The empty <div class="JefeCinematicAmbient"> is the first child of the
+   shell. Element background = blush blob (drifts via background-position so
+   it never transforms the pseudo children); ::before = the masked grid;
+   ::after = the violet blob (transform drift). z-index:0 sits it behind
+   the stepper + scene (raised to z-index:1 below). */
+.JefeOnboardingShell.is-cinematic .JefeCinematicAmbient {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    oklch(0.62 0.12 18 / 0.22),
+    transparent 62%
+  );
+  background-repeat: no-repeat;
+  background-size: 760px 760px;
+  background-position: 108% 122%;
+  animation: JefeCinDrift2 26s ease-in-out infinite;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeCinematicAmbient::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+      oklch(0.75 0.03 265 / 0.05) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, oklch(0.75 0.03 265 / 0.05) 1px, transparent 1px);
+  background-size: 62px 62px;
+  -webkit-mask-image: radial-gradient(80% 70% at 50% 40%, black, transparent);
+  mask-image: radial-gradient(80% 70% at 50% 40%, black, transparent);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeCinematicAmbient::after {
+  content: "";
+  position: absolute;
+  top: -14%;
+  left: 8%;
+  width: 640px;
+  height: 640px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    oklch(0.5 0.11 285 / 0.3),
+    transparent 66%
+  );
+  filter: blur(30px);
+  animation: JefeCinDrift1 22s ease-in-out infinite;
+}
+
+@keyframes JefeCinDrift1 {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(60px, -40px);
+  }
+}
+
+@keyframes JefeCinDrift2 {
+  0%,
+  100% {
+    background-position: 108% 122%;
+  }
+
+  50% {
+    background-position: 90% 134%;
+  }
+}
+
+/* Lift interactive content above the ambient layer */
+.JefeOnboardingShell.is-cinematic .JefeStepper,
+.JefeOnboardingShell.is-cinematic .JefeOnboardingScene {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- Stepper: mono labels + dot markers (digit hidden) ---- */
+.JefeOnboardingShell.is-cinematic .JefeStepper {
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperItem {
+  color: var(--jc-ink-3);
+  gap: 9px;
+  font-family: var(--jc-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperNumber {
+  width: 7px;
+  min-width: 7px;
+  height: 7px;
+  border: 0;
+  border-radius: 50%;
+  background: oklch(0.4 0.05 268);
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+  overflow: hidden;
+  transition:
+    background 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperItem.is-complete {
+  color: var(--jc-ink-2);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperItem.is-complete .JefeStepperNumber {
+  background: var(--jc-violet);
+  border: 0;
+  color: transparent;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperItem.is-active {
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeStepperItem.is-active .JefeStepperNumber {
+  background: var(--jc-blush);
+  border: 0;
+  box-shadow: 0 0 12px oklch(0.82 0.12 18 / 0.9);
+}
+
+/* ---- Display heading ---- */
+.JefeOnboardingShell.is-cinematic .JefeDisplayHeading {
+  color: var(--jc-ink);
+  font-family: var(--jc-display);
+  font-weight: 400;
+  font-size: 42px;
+  line-height: 1.1;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeDisplayHeading span {
+  color: var(--jc-blush-accent);
+  font-family: var(--jc-accent-font);
+  font-style: italic;
+  font-weight: 600;
+}
+
+/* ---- Wordmark ---- */
+.JefeOnboardingShell.is-cinematic .JefeMark {
+  background: oklch(0.28 0.05 268);
+  border: 1px solid oklch(0.42 0.06 268);
+  color: var(--jc-blush-accent);
+  font-family: var(--jc-display);
+  box-shadow: 0 0 30px -6px oklch(0.6 0.12 285 / 0.6);
+}
+
+/* ---- Connect: learning card (Polaris Card = ShadowBevel > Box) ---- */
+.JefeOnboardingShell.is-cinematic .JefeLearningCard .Polaris-ShadowBevel {
+  --pc-shadow-bevel-border-radius: 16px;
+  box-shadow:
+    0 30px 80px -30px oklch(0.5 0.1 285 / 0.5),
+    0 1px 2px oklch(0 0 0 / 0.35);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeLearningCard .Polaris-ShadowBevel > .Polaris-Box {
+  background: var(--jc-card);
+  border-color: var(--jc-border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+/* Metric tiles (Polaris Box background="bg-surface-secondary") backstop */
+.JefeOnboardingShell.is-cinematic .JefeLearningCard .Polaris-InlineGrid .Polaris-Box {
+  background: var(--jc-surface-2);
+  border: 1px solid var(--jc-border-2);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeMetricSkeleton {
+  background: linear-gradient(
+    90deg,
+    oklch(0.3 0.04 265) 0%,
+    oklch(0.42 0.05 265) 48%,
+    oklch(0.3 0.04 265) 100%
+  );
+  background-size: 220% 100%;
+}
+
+/* Learning milestones */
+.JefeOnboardingShell.is-cinematic .JefeMilestone {
+  color: oklch(0.86 0.016 80);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeMilestone.is-current {
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeMilestoneIcon {
+  color: var(--jc-blush-accent);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeMilestoneIcon.is-complete {
+  color: var(--jc-success);
+}
+
+/* ---- Insights ---- */
+.JefeOnboardingShell.is-cinematic .JefeInsightCard {
+  background: var(--jc-card);
+  border-color: var(--jc-border);
+  border-radius: 14px;
+  box-shadow:
+    0 20px 60px -28px oklch(0.5 0.1 285 / 0.5),
+    0 1px 2px oklch(0 0 0 / 0.3);
+  color: oklch(0.93 0.014 80);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+/* left accent bar (violet default, blush on alternating rows) */
+.JefeOnboardingShell.is-cinematic .JefeInsightCard::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 14px 0 0 14px;
+  background: var(--jc-violet);
+  box-shadow: 0 0 14px oklch(0.66 0.11 285 / 0.9);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeInsightList > .JefeInsightCard:nth-child(even)::before {
+  background: var(--jc-blush);
+  box-shadow: 0 0 14px oklch(0.82 0.12 18 / 0.9);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeInsightRank {
+  background: oklch(0.28 0.05 268);
+  color: var(--jc-blush-accent);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeInsightCorrectionForm {
+  background: var(--jc-surface-2);
+  border-color: var(--jc-border-2);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeInsightSkeleton {
+  background:
+    linear-gradient(
+      90deg,
+      oklch(0.24 0.04 265) 0%,
+      oklch(0.33 0.05 265) 48%,
+      oklch(0.24 0.04 265) 100%
+    ),
+    oklch(0.22 0.035 265);
+  background-size: 220% 100%;
+  border-color: var(--jc-border);
+}
+
+/* ---- Goals ---- */
+.JefeOnboardingShell.is-cinematic .JefeGoalTile {
+  background: var(--jc-card);
+  border-color: var(--jc-border);
+  border-radius: 14px;
+  box-shadow: 0 14px 40px -24px oklch(0.5 0.1 285 / 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalsConversation {
+  background: var(--jc-card-2);
+  border-color: var(--jc-border-2);
+  border-radius: 16px;
+  box-shadow: 0 14px 40px -26px oklch(0.5 0.1 285 / 0.45);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalMessage.is-assistant {
+  background: oklch(0.26 0.045 265 / 0.9);
+  color: oklch(0.9 0.015 80);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalMessage.is-merchant {
+  background: linear-gradient(
+    150deg,
+    oklch(0.62 0.1 285),
+    oklch(0.5 0.09 288)
+  );
+  color: oklch(0.98 0.01 80);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentCard {
+  background: var(--jc-card-2);
+  border-color: oklch(0.42 0.05 268);
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentCard.is-dragging {
+  background: oklch(0.26 0.05 268 / 0.7);
+  border-color: var(--jc-violet);
+  box-shadow: 0 10px 24px oklch(0.5 0.1 285 / 0.3);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentCard.is-success {
+  border-color: oklch(0.5 0.12 155);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentIcon {
+  background: oklch(0.28 0.05 268);
+  color: oklch(0.86 0.02 80);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentIcon.is-success {
+  background: oklch(0.26 0.06 155 / 0.6);
+  color: var(--jc-success);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentProgress {
+  background: linear-gradient(
+    90deg,
+    oklch(0.3 0.04 265) 0%,
+    oklch(0.5 0.08 285) 50%,
+    oklch(0.3 0.04 265) 100%
+  );
+  background-size: 220% 100%;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalDocumentList {
+  color: var(--jc-ink-2);
+}
+
+/* ---- Plan ---- */
+.JefeOnboardingShell.is-cinematic .JefePlanCard {
+  background: var(--jc-card);
+  border-color: var(--jc-border);
+  border-radius: 16px;
+  box-shadow:
+    0 30px 80px -30px oklch(0.5 0.1 285 / 0.5),
+    0 1px 2px oklch(0 0 0 / 0.3);
+  color: oklch(0.93 0.014 80);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanStartToday {
+  background: oklch(0.26 0.05 268 / 0.7);
+  border-color: oklch(0.42 0.06 268);
+  border-radius: 14px;
+  color: oklch(0.9 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanInfoBlock {
+  background: var(--jc-card-2);
+  border-color: var(--jc-border-2);
+  border-radius: 14px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanStepNumber {
+  background: var(--jc-cta);
+  color: var(--jc-ink-inv);
+  border-radius: 9px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanRefinement {
+  background: var(--jc-card-2);
+  border-color: var(--jc-border-2);
+  border-radius: 14px;
+}
+
+/* Dark "updating" pulse for goal / plan cards */
+@keyframes JefeCinCardUpdate {
+  0%,
+  100% {
+    border-color: var(--jc-border);
+    box-shadow: 0 14px 40px -24px oklch(0.5 0.1 285 / 0.4);
+  }
+
+  50% {
+    border-color: oklch(0.6 0.11 285);
+    box-shadow: 0 16px 44px -22px oklch(0.6 0.12 285 / 0.55);
+  }
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalGrid.is-updating .JefeGoalTile,
+.JefeOnboardingShell.is-cinematic .JefePlanCard.is-updating {
+  animation: JefeCinCardUpdate 1.8s ease-in-out infinite;
+}
+
+/* ---- Channels ---- */
+.JefeOnboardingShell.is-cinematic .JefeChannelCard {
+  background: var(--jc-card);
+  border-color: oklch(0.4 0.05 268);
+  border-radius: 16px;
+  box-shadow: 0 16px 44px -26px oklch(0.5 0.1 285 / 0.5);
+  color: oklch(0.92 0.015 80);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard:hover,
+.JefeOnboardingShell.is-cinematic .JefeChannelCard:focus-visible {
+  border-color: var(--jc-violet);
+  box-shadow: 0 0 34px -8px oklch(0.7 0.12 20 / 0.5);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard:focus-visible {
+  outline: 2px solid var(--jc-blush);
+  outline-offset: 2px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-active,
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-connected {
+  border-color: oklch(0.6 0.11 20);
+  box-shadow: 0 0 34px -8px oklch(0.7 0.12 20 / 0.55);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable {
+  background: oklch(0.2 0.025 265 / 0.5);
+  border-color: oklch(0.3 0.04 268);
+  box-shadow: none;
+  color: oklch(0.62 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable:hover,
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable:focus-visible {
+  border-color: oklch(0.3 0.04 268);
+  box-shadow: none;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-inert:hover,
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-inert:focus-visible {
+  border-color: oklch(0.4 0.05 268);
+  box-shadow: 0 16px 44px -26px oklch(0.5 0.1 285 / 0.5);
+}
+
+/* Keep icon tiles on a light chip so the real channel logos stay legible */
+.JefeOnboardingShell.is-cinematic .JefeChannelIcon,
+.JefeOnboardingShell.is-cinematic .JefeChannelIcon.is-slack,
+.JefeOnboardingShell.is-cinematic .JefeChannelIcon.is-whatsapp,
+.JefeOnboardingShell.is-cinematic .JefeChannelIcon.is-teams,
+.JefeOnboardingShell.is-cinematic .JefeChannelIcon.is-imessage {
+  background: #ffffff;
+  border: 1px solid oklch(0.9 0.01 80);
+  border-radius: 12px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelName {
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelDescription {
+  color: oklch(0.72 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelSummary {
+  color: oklch(0.8 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable .JefeChannelDescription,
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable .JefeChannelSummary {
+  color: oklch(0.6 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelActionText {
+  background: var(--jc-cta);
+  color: var(--jc-ink-inv);
+  border-radius: 10px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelCard.is-unavailable .JefeChannelActionText {
+  background: oklch(0.34 0.04 268);
+  color: oklch(0.72 0.02 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeChannelActionText.is-disabled {
+  background: oklch(0.3 0.04 268);
+  color: oklch(0.55 0.02 265);
+}
+
+/* ---- Buttons ---- */
+/* Primary = blush CTA on ink. Set the button's own custom props directly so
+   we replace the default dark gradient + heavy bevel entirely. */
+.JefeOnboardingShell.is-cinematic .Polaris-Button--variantPrimary {
+  --pc-button-bg: var(--jc-cta);
+  --pc-button-bg_hover: var(--jc-cta-hover);
+  --pc-button-bg_active: var(--jc-cta-active);
+  --pc-button-color: var(--jc-ink-inv);
+  --pc-button-color_hover: var(--jc-ink-inv);
+  --pc-button-color_active: var(--jc-ink-inv);
+  --pc-button-icon-fill: var(--jc-ink-inv);
+  --pc-button-box-shadow: 0 1px 0 oklch(1 0 0 / 0.25) inset,
+    0 8px 24px -10px oklch(0.7 0.12 20 / 0.7);
+  --pc-button-box-shadow_hover: 0 1px 0 oklch(1 0 0 / 0.3) inset,
+    0 10px 28px -10px oklch(0.7 0.12 20 / 0.85);
+  --pc-button-box-shadow_active: 0 1px 2px oklch(0.3 0.06 20 / 0.6) inset;
+}
+
+/* Secondary (default) = subtle bordered dark */
+.JefeOnboardingShell.is-cinematic .Polaris-Button--variantSecondary {
+  --pc-button-bg: oklch(0.28 0.045 265 / 0.6);
+  --pc-button-bg_hover: oklch(0.32 0.05 265 / 0.75);
+  --pc-button-bg_active: oklch(0.34 0.05 265 / 0.85);
+  --pc-button-color: oklch(0.9 0.015 80);
+  --pc-button-color_hover: var(--jc-ink);
+  --pc-button-icon-fill: oklch(0.82 0.02 265);
+  --pc-button-box-shadow: 0 0 0 1px oklch(0.42 0.05 268) inset;
+  --pc-button-box-shadow_hover: 0 0 0 1px oklch(0.55 0.08 285) inset;
+  --pc-button-box-shadow_active: 0 0 0 1px oklch(0.55 0.08 285) inset;
+}
+
+/* Plain / link buttons */
+.JefeOnboardingShell.is-cinematic .Polaris-Button--variantPlain {
+  --pc-button-color: var(--jc-blush-accent);
+  --pc-button-color_hover: oklch(0.88 0.1 18);
+  --pc-button-color_active: oklch(0.9 0.09 18);
+}
+
+/* ---- Focus visibility on dark ---- */
+.JefeOnboardingShell.is-cinematic .JefeStepperItem:focus-visible,
+.JefeOnboardingShell.is-cinematic a:focus-visible,
+.JefeOnboardingShell.is-cinematic .Polaris-Button:focus-visible {
+  outline: 2px solid var(--jc-blush);
+  outline-offset: 3px;
+}
+
+/* ---- Cinematic responsive heading (overrides the higher-specificity
+   cinematic 42px on small screens) ---- */
+@media (max-width: 640px) {
+  .JefeOnboardingShell.is-cinematic .JefeDisplayHeading {
+    font-size: 30px;
+  }
+}
+
+@media (max-height: 720px) {
+  .JefeOnboardingShell.is-cinematic .JefeDisplayHeading {
+    font-size: 32px;
+  }
+}
