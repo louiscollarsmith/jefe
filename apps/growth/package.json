@@ -1,0 +1,16 @@
+{
+  "name": "jefe-growth",
+  "private": true,
+  "type": "module",
+  "description": "Growth infrastructure + commercial tooling for Jefe (chat 6). Kept separate from apps/shopify (the product).",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "test": "node --test",
+    "pipeline": "node scripts/pipeline-report.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  }
+}
