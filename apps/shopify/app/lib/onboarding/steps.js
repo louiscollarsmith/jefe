@@ -44,9 +44,11 @@ export function readFurthestStep(metadata) {
  *
  * - Channels stays reachable even while memory is still generating (it needs no
  *   backfilled data) — otherwise "Skip"/"Continue to Channels" bounce to Connect.
- * - Insights / Goals / Plan require the generated memory + a complete backfill.
- * - With no explicit (or not-yet-ready) request, resume at the FURTHEST step
- *   reached rather than resetting to Connect (the resume fix).
+ * - An explicit Insights/Goals/Plan request is honored even before the data is
+ *   ready — the step renders its OWN "still building…" waiting scene rather than
+ *   bouncing to Connect (that dead-end is what left those scenes unreachable).
+ * - Only the no-explicit-step path gates on readiness, then resumes at the
+ *   FURTHEST step reached rather than resetting to Connect.
  *
  * @param {{
  *   requestedStep?: string | null;
@@ -61,11 +63,16 @@ export function resolveOnboardingStep(input) {
   const requested = input.requestedStep ?? null;
   const furthest = input.furthestStep ?? "connect";
   if (requested === "channels" || input.hasChannelProvider) return "channels";
-  if (!input.memoryReady || !input.backfillComplete) return "connect";
+  // Honor an explicit content-step request even while memory/backfill are still
+  // running: that step renders its OWN "still building…" waiting scene, which is
+  // both a better experience than silently bouncing the merchant back to Connect
+  // AND the only way those waiting scenes are ever reachable.
   if (requested === "insights") return "insights";
   if (requested === "goals") return "goals";
   if (requested === "plan") return "plan";
   if (requested === "connect") return "connect";
-  // No explicit step and the data is ready → resume where they left off.
+  // No explicit step: gate on readiness (still generating → Connect), otherwise
+  // resume at the furthest step reached.
+  if (!input.memoryReady || !input.backfillComplete) return "connect";
   return furthest;
 }

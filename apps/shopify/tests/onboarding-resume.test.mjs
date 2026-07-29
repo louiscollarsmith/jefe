@@ -57,16 +57,19 @@ test("resolveOnboardingStep: channels stays reachable while memory generates", (
   );
 });
 
-test("resolveOnboardingStep: content steps are gated on readiness", () => {
+test("resolveOnboardingStep: an explicit content-step request is honored even before data is ready", () => {
+  // Regression guard for the forward-nav dead-end: "Continue to Insights" (etc.)
+  // mid-generation must NOT bounce to Connect — the requested step is returned so
+  // its own "still building…" waiting scene renders.
   for (const step of ["insights", "goals", "plan"]) {
     assert.equal(
       resolveOnboardingStep({
         requestedStep: step,
         memoryReady: false,
-        backfillComplete: true,
+        backfillComplete: false,
       }),
-      "connect",
-      `${step} without memory → connect`,
+      step,
+      `${step} requested while not ready → ${step} (waiting scene, not connect)`,
     );
     assert.equal(
       resolveOnboardingStep({
@@ -75,9 +78,32 @@ test("resolveOnboardingStep: content steps are gated on readiness", () => {
         backfillComplete: true,
       }),
       step,
-      `${step} with data ready → ${step}`,
+      `${step} ready → ${step}`,
     );
   }
+});
+
+test("resolveOnboardingStep: the no-explicit-step (resume) path still gates on readiness", () => {
+  // The gate moved to only the resume path: with no ?step= and data still
+  // generating, hold at Connect rather than resuming into empty content.
+  assert.equal(
+    resolveOnboardingStep({
+      requestedStep: null,
+      memoryReady: false,
+      backfillComplete: false,
+      furthestStep: "goals",
+    }),
+    "connect",
+  );
+  assert.equal(
+    resolveOnboardingStep({
+      requestedStep: null,
+      memoryReady: true,
+      backfillComplete: true,
+      furthestStep: "goals",
+    }),
+    "goals",
+  );
 });
 
 test("resolveOnboardingStep: no explicit step resumes at the furthest reached", () => {
