@@ -4698,6 +4698,62 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Sequential revenue trend (recent 90d vs prior 90d), growing/flat/declining at a +/-10% threshold; complements year-over-year.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "products.revenue_by_product_type.trailing_90d",
+    "category": "products",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "sum(line-item revenue) grouped by product_type over the window; top types by revenue with share, shop base currency",
+    "minimumData": "At least 5 priced orders in the window and one sold product with a product type",
+    "confidenceRule": "0.85 direct observation; rises with order volume",
+    "legacyConfidenceRule": "0.85 direct observation; rises with order volume",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation; rises with order volume"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample", "incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "products"],
+    "tranche": "Attribute performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Products without a product type are pooled as unattributed revenue, not dropped; product type is an optional Shopify field.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "products.revenue_by_vendor.trailing_90d",
+    "category": "products",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "sum(line-item revenue) grouped by vendor over the window; top vendors by revenue with share, shop base currency",
+    "minimumData": "At least 5 priced orders in the window and one sold product with a vendor",
+    "confidenceRule": "0.85 direct observation; rises with order volume",
+    "legacyConfidenceRule": "0.85 direct observation; rises with order volume",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation; rises with order volume"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample", "incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "products"],
+    "tranche": "Attribute performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Products without a vendor are pooled as unattributed revenue, not dropped; vendor is an optional Shopify field.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 

@@ -105,6 +105,8 @@ async function loadDerivationContext(prisma, input) {
           id: true,
           title: true,
           status: true,
+          productType: true,
+          vendor: true,
           sourceCreatedAt: true,
           sourceUpdatedAt: true,
         },
@@ -308,6 +310,10 @@ function deriveDefinition(context, definition) {
         return yoyRevenueGrowth(context, definition, 90);
       case "business.revenue_trend.trailing_180d":
         return revenueTrend(context, definition, 90);
+      case "products.revenue_by_product_type.trailing_90d":
+        return revenueByProductType(context, definition, 90);
+      case "products.revenue_by_vendor.trailing_90d":
+        return revenueByVendor(context, definition, 90);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1644,6 +1650,88 @@ function grossMargin(context, definition, days) {
 // Product performance — trailing-window sales derived from line items joined to
 // priced orders. Bounded aggregates (concentration, bestsellers, dead stock),
 // never one belief per SKU, so belief counts and generator inputs stay bounded.
+// Revenue grouped by a catalogue attribute (product type, vendor) over a window.
+// Products with no value for the attribute are pooled as "unattributed" revenue
+// rather than dropped, so the shares stay honest about coverage.
+function revenueByAttribute(context, revenueByProduct, attributeOf) {
+  const productById = new Map(
+    context.products.map((product) => [product.id, product]),
+  );
+  const revenueByGroup = new Map();
+  let total = 0;
+  let unattributed = 0;
+  for (const [productId, revenue] of revenueByProduct) {
+    total += revenue;
+    const group = attributeOf(productById.get(productId));
+    if (!group) {
+      unattributed += revenue;
+      continue;
+    }
+    revenueByGroup.set(group, (revenueByGroup.get(group) ?? 0) + revenue);
+  }
+  const items = [...revenueByGroup.entries()]
+    .map(([name, revenue]) => ({
+      name,
+      revenue: roundMoney(revenue),
+      sharePercent: total > 0 ? roundNumber((revenue / total) * 100, 2) : 0,
+    }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 8);
+  return { items, total, unattributed, groupCount: revenueByGroup.size };
+}
+
+function cleanAttribute(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length > 0 ? text : null;
+}
+
+// Which product TYPES drive revenue — the "analyse by category" view merchants
+// merchandise by.
+function revenueByProductType(context, definition, days) {
+  const sales = productSalesInWindow(context, days);
+  if (sales.orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required for revenue by product type.", { orders: sales.orders.length });
+  const agg = revenueByAttribute(context, sales.revenueByProduct, (product) => cleanAttribute(product?.productType));
+  if (agg.items.length < 1) return skipped(definition, "insufficient_data", "No sold products have a product type set.", { typeCount: agg.groupCount });
+  return derived(context, definition, {
+    value: {
+      items: agg.items,
+      topType: agg.items[0] ?? null,
+      typeCount: agg.groupCount,
+      unattributedRevenue: roundMoney(agg.unattributed),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: sampleConfidence(0.85, sales.orders.length, 5, 100),
+    confidenceReason: "Revenue grouped by product type over the trailing window (shop base currency).",
+    summary: `Top product type by revenue: ${agg.items[0]?.name ?? "unknown"} (${agg.groupCount} types with sales).`,
+    sampleSize: sales.orders.length,
+    supportingValues: { typeCount: agg.groupCount },
+  });
+}
+
+// Which VENDORS / brands drive revenue.
+function revenueByVendor(context, definition, days) {
+  const sales = productSalesInWindow(context, days);
+  if (sales.orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required for revenue by vendor.", { orders: sales.orders.length });
+  const agg = revenueByAttribute(context, sales.revenueByProduct, (product) => cleanAttribute(product?.vendor));
+  if (agg.items.length < 1) return skipped(definition, "insufficient_data", "No sold products have a vendor set.", { vendorCount: agg.groupCount });
+  return derived(context, definition, {
+    value: {
+      items: agg.items,
+      topVendor: agg.items[0] ?? null,
+      vendorCount: agg.groupCount,
+      unattributedRevenue: roundMoney(agg.unattributed),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: sampleConfidence(0.85, sales.orders.length, 5, 100),
+    confidenceReason: "Revenue grouped by vendor over the trailing window (shop base currency).",
+    summary: `Top vendor by revenue: ${agg.items[0]?.name ?? "unknown"} (${agg.groupCount} vendors with sales).`,
+    sampleSize: sales.orders.length,
+    supportingValues: { vendorCount: agg.groupCount },
+  });
+}
+
 function productSalesInWindow(context, days) {
   const orders = pricedOrdersInWindow(context, days);
   const orderIds = new Set(orders.map((order) => order.id));

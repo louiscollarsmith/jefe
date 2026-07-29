@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 122);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 124);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -43,6 +43,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "Product performance v1",
       "Customer memory v1",
       "Inventory velocity v1",
+      "Attribute performance v1",
     ]),
   );
   assert.equal(
@@ -106,13 +107,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 122);
-  assert.equal(result.derivationReport.attempted, 122);
+  assert.equal(result.registryDefinitionCount, 124);
+  assert.equal(result.derivationReport.attempted, 124);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    122,
+    124,
   );
-  assert.equal(result.derivationAttempts.length, 122);
+  assert.equal(result.derivationAttempts.length, 124);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -632,6 +633,80 @@ test("top-returned-products maps GraphQL and REST webhook refund line items to p
   assert.equal(belief.value.items[0].refundValue, 200);
   assert.equal(belief.value.items[1].productId, "prod-bravo");
   assert.equal(belief.value.items[1].returnedUnits, 1);
+});
+
+function createAttributePrisma() {
+  const products = [
+    { id: "prod-a", title: "A", status: "ACTIVE", productType: "Shirts", vendor: "Acme" },
+    { id: "prod-b", title: "B", status: "ACTIVE", productType: "Shirts", vendor: "Beta" },
+    { id: "prod-c", title: "C", status: "ACTIVE", productType: "Hats", vendor: "Acme" },
+  ];
+  const variants = [
+    { id: "var-a", productId: "prod-a", sku: "A", title: "A", price: "100.00", currency: "GBP" },
+    { id: "var-b", productId: "prod-b", sku: "B", title: "B", price: "100.00", currency: "GBP" },
+    { id: "var-c", productId: "prod-c", sku: "C", title: "C", price: "100.00", currency: "GBP" },
+  ];
+  const now = Date.now();
+  const orders = [];
+  const lineItems = [];
+  // 6x A (600), 3x B (300), 1x C (100) => total 1000. Types: Shirts 900 / Hats
+  // 100. Vendors: Acme 700 (A+C) / Beta 300 (B).
+  const plan = [...Array(6).fill("prod-a"), ...Array(3).fill("prod-b"), "prod-c"];
+  plan.forEach((productId, index) => {
+    const id = `ao-${index + 1}`;
+    const at = new Date(now - (index + 1) * 24 * 60 * 60 * 1000);
+    orders.push({ id, externalId: `aox-${index + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `ac-${index + 1}`, financialStatus: "PAID" });
+    const variantId = productId === "prod-a" ? "var-a" : productId === "prod-b" ? "var-b" : "var-c";
+    lineItems.push({ orderId: id, productId, variantId, quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
+  });
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "attr.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Attr Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("attribute-level performance groups revenue by product type and vendor", async () => {
+  const prisma = createAttributePrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+
+  const byType = beliefs.get("products.revenue_by_product_type.trailing_90d");
+  assert.equal(byType.valueType, "structured");
+  assert.equal(byType.value.topType.name, "Shirts");
+  assert.equal(byType.value.topType.sharePercent, 90); // (600+300)/1000
+  assert.equal(byType.value.typeCount, 2);
+  assert.equal(byType.value.items[0].revenue, 900);
+
+  const byVendor = beliefs.get("products.revenue_by_vendor.trailing_90d");
+  assert.equal(byVendor.value.topVendor.name, "Acme");
+  assert.equal(byVendor.value.topVendor.sharePercent, 70); // (600+100)/1000
+  assert.equal(byVendor.value.vendorCount, 2);
 });
 
 function createMomentumPrisma() {
