@@ -40,7 +40,7 @@ Important current boundaries:
 - `apps/shopify/docs/` documents current Shopify app subsystems.
 - `docs/ops/` documents operational workflows such as staging deployment and changelog rules.
 - `docs/archive/` contains historical material. Do not treat archived old-product direction or reset audits as current product instructions unless the founder explicitly reactivates them.
-- `prompts/` contains product-level prompt references. Runtime prompts and structured schemas also live in app code.
+- `docs/archive/prompts/` holds historical product-level prompt sketches (unreferenced by code — several describe features that were renamed or never built). Runtime prompts and structured schemas live in app code.
 
 ## Local Development
 

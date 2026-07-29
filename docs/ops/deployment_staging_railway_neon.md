@@ -46,7 +46,7 @@ Create or use:
 - Root directory: `apps/shopify`
 - Config file path: `/apps/shopify/railway.json`
 - Builder: Railpack
-- Health check path: `/health`
+- Health check path: `/ready` (readiness — 503 when the DB is unreachable, so a failed deploy isn't promoted). `/health` is liveness (always 200).
 
 Use Railway's generated URL first, for example:
 
@@ -115,7 +115,7 @@ SLACK_OAUTH_SCOPES=chat:write,chat:write.public,channels:read,groups:read
 Notes:
 
 - The app currently reads Shopify scopes from `SCOPES`, not `SHOPIFY_SCOPES`.
-- `SESSION_SECRET` is listed for staging hygiene, but the current app code does not read it yet.
+- `SESSION_SECRET` **is** read by the app (channel credential-encryption and unsubscribe-link HMAC fallbacks) — keep it set and stable across deploys; rotating it invalidates existing channel credentials and unsubscribe links.
 - The app requests evidence-read scopes plus product, customer, order, inventory and location write scopes for future approved action previews and execution.
 - The current merchant UI must not directly execute Shopify writes. External writes still require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.
 - Slack is the active channel connector. WhatsApp env vars may exist for future work, but WhatsApp is currently marked coming soon in the app UI.
@@ -201,7 +201,7 @@ Follow-up: add explicit `db:seed` and `db:reset` scripts once staging fixtures a
 
 ## Health check and smoke test
 
-Railway checks:
+Railway's healthcheck path is `/ready` (readiness). `/health` is the liveness endpoint (always 200) used for the manual smoke test below:
 
 ```txt
 GET /health
