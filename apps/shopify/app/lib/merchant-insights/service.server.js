@@ -697,7 +697,16 @@ export async function correctMerchantInsightFinding(prisma, input) {
     include: { evidence: { take: 3, orderBy: { createdAt: "desc" } } },
   });
   const processor =
-    input.llmProvider ?? createLlmProvider({ logger: input.logger ?? console });
+    input.llmProvider ??
+    createLlmProvider({
+      logger: input.logger ?? console,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "insight_correction",
+      },
+    });
   if (!processor.enabled || !processor.generateStructuredJson) {
     return {
       ok: false,

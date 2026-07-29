@@ -487,7 +487,17 @@ export async function processMerchantGoalMessage(prisma, input) {
 export async function processMerchantGoalsDocument(prisma, input) {
   const document = await extractDocumentText(input.file);
   if (!document.ok) return document;
-  const provider = input.llmProvider ?? createLlmProvider({ logger: input.logger ?? console });
+  const provider =
+    input.llmProvider ??
+    createLlmProvider({
+      logger: input.logger ?? console,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "goals_document",
+      },
+    });
   if (!provider.enabled || !provider.generateStructuredJson) {
     return { ok: false, error: "I couldn't read that document safely yet." };
   }
