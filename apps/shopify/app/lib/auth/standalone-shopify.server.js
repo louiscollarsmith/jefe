@@ -28,6 +28,7 @@ import { standaloneAppHost } from "./auth-mode.server.js";
  * that per-shop offline session.
  */
 
+/** @type {Record<string, ApiVersion>} */
 const API_VERSIONS_BY_ENV_VALUE = {
   "2025-10": ApiVersion.October25,
   "2026-01": ApiVersion.January26,
