@@ -1,62 +1,79 @@
 # Merchant Memory — Current State & Gaps
 
-> **What this is.** An honest, dated map of what Merchant Memory knows today, what it does not yet, and what real merchant demand says to build next. It complements the principle-level docs (`merchant-memory.md`, `store-understanding.md`, `conversational-merchant-memory.md`, `merchant_memory_data_model.md`) — those describe *how it works*; this describes *how good it is and where to push*.
+> **What this is.** An honest, dated map of what Merchant Memory knows today, what it does not yet, and where to push next. It complements the principle-level docs (`merchant-memory.md`, `store-understanding.md`, `conversational-merchant-memory.md`, `merchant_memory_data_model.md`) — those describe *how it works*; this describes *how good it is and where to push*.
 >
-> **Sources.** A four-pass code audit (memory core · generators · ingestion/evidence · correction/learn loop) cross-referenced with `CHANGELOG.md` and `docs/ops/backend_code_review_2026-07-28.md`, plus a demand signal pulled from an ~800-member e-commerce operators Slack channel. Dated **2026-07-28**. Keep it current as items ship.
+> **Sources.** Original four-pass code audit + an ~800-member e-commerce operators Slack channel demand signal (2026-07-28), **refreshed 2026-07-29** after a large fidelity wave shipped and the founder set the forward direction (a demand-derived **action ontology** with a merchant-set **autonomy slider**). Keep it current as items ship.
 
 ## The frame
 
-The product loop is **Understand → Recommend → (Execute) → Observe → Learn**. Execute (external writes) is deliberately out of scope — Jefe is advisory. Mapping the audit onto the loop:
+The product loop is **Understand → Recommend → (Execute) → Observe → Learn**.
 
-- **Understand — plumbing:** strong. **Understand — content:** thin on the axes merchants actually think in.
-- **Recommend:** strong and grounded.
-- **Observe → Learn:** systematically missing / passive.
+As of 2026-07-29 the **Understand** layer is broad and grounded — the "thin on the axes merchants think in" problem is largely closed (see the shipped list). The frontier has moved twice:
 
-The frontier has moved from *go-live hardening* (largely shipped — see the code-review status header) to **memory fidelity + closing the learn loop**.
+1. *Go-live hardening* → done.
+2. *Memory fidelity + closing the learn loop* → **largely done** (product/margin/returns/customer/inventory/geo/time beliefs; gap-driven questions; the post-onboarding correction surface is live; passive outcome capture exists).
+3. **Now: the Kinetic layer.** The marginal *belief* has diminishing returns — depth you don't act on is a prettier dashboard. The value has moved to **acting** on memory: a **demand-derived action ontology** (executable actions + decision-support intents, discovered from what merchants ask and do, not hand-authored) governed by typed adapters, with a **merchant-set autonomy slider** (recommend → approve→execute → earned autonomy per action class). Memory is now the *substrate*; the destination is Jefe operating as the eCommerce manager. See the North Star in `AGENTS.md`; a dedicated ontology + autonomy-as-policy direction doc is the recommended next design artefact.
+
+**One-line read:** stop adding beliefs for their own sake; deepen only where an action or a decision needs it, and start building the layer that *uses* the memory.
 
 ## What's solid — keep, don't rebuild
 
-- **Relational, versioned, provenanced belief store** — beliefs / evidence / append-only history / refresh-runs, atomic version bumps (atomicity shipped 2026-07-28).
-- **Deterministic-vs-inferred boundary is exemplary** — numeric facts computed in app code; the LLM store-understanding schema has *no number field*, persists at lower precedence, and cannot overwrite deterministic beliefs. Inference can't masquerade as fact at the persistence layer.
-- **Merchant-correction precedence is coded and enforced at every write site**, not just prompted; tested.
-- **Generators are genuinely grounded** — Insights/Goals/Plan citations validated against the prompt's belief allowlist; numeric claims traced to belief *values* (hardened 2026-07-27).
-- **Airtight multi-tenancy; disciplined ingestion** — append-only ledger + dedupe, idempotent upserts, throttle backoff, durable job queue with atomic claim.
+**Foundations**
+- **Relational, versioned, provenanced belief store** — beliefs / evidence / append-only history / refresh-runs; atomic version bumps.
+- **Deterministic-vs-inferred boundary is exemplary** — numeric facts computed in app code; the LLM store-understanding schema has no number field and cannot overwrite deterministic beliefs. This discipline now extends to the **multi-modal feed**: structured input (a costs sheet) → deterministic fact; unstructured (doc/voice) → inference until the merchant confirms.
+- **Merchant-correction precedence is coded and enforced at every write site**, tested.
+- **Generators are genuinely grounded** — Insights/Goals/Plan citations validated against the belief allowlist; numeric claims traced to belief *values*; hardened for **structured** belief values (`*Percent` fields) and made to **degrade gracefully** to deterministic observations instead of hard-failing.
+- **Airtight multi-tenancy; disciplined ingestion.**
 
-## Supply-side gaps (from the audit)
+**Belief content now in memory (shipped 2026-07-29 wave)**
+- **Product performance** — selling/no-sale counts, revenue concentration (top / top-5 share), best-seller by revenue and by units, **product momentum** (risers/fallers), **revenue by product type** (attribute slicing).
+- **Margin / COGS** — `cost_coverage` + coverage-gated `gross_margin`, from Shopify `unitCost` **and** a merchant **cost-sheet upload** (bulk gap-fill).
+- **Returns-by-SKU** — `top_returned_products` with return rate, from backfill **and** the refunds webhook.
+- **Customer memory** — repeat-customer rate, **repeat revenue share**, **average lifetime spend** (repeat vs one-time), **top-customer concentration**.
+- **Inventory velocity** — **days-of-cover** reorder signals: `at_risk_stockout_count` + `low_cover_products` (the reorder list).
+- **Time & seasonality** — **year-over-year** growth, **recent revenue trend**, **peak sales month**, on a configurable **24-month** history window.
+- **Geo & channel** — **`revenue_by_region`** (revenue by destination country), **`online_revenue_share`** (store vs online vs marketplace), and **shop-base-currency normalization** so multi-currency stores are no longer skipped.
+- **Learn loop (partial)** — **recommendation-engagement** capture; **gap-driven open questions** that raise *and retract* themselves as data fills (e.g. "add your product costs").
 
-1. **No product-level performance memory.** Every order line is ingested and indexed (`OrderLineItem.productId`), yet *zero* per-product beliefs exist — no revenue-by-product, bestsellers, product mix, or momentum. The raw material is in hand; it is simply un-derived. **This is the single biggest fidelity gap.**
-2. **No margin / COGS.** Unit cost is never fetched; "margin" survives only as an LLM keyword in prompts. Profit truth is impossible without an ingestion change.
-3. **Returns-by-SKU blocked.** Refund *amount* is modeled but refund line items aren't fetched → can't attribute returns to products/reasons.
-4. **Post-onboarding correction loop is built but unwired.** `correctBelief` / `sendConversationMessage` is real, tested and precedence-safe, but reachable only inside onboarding. The post-onboarding Memory view is read-only and its "chat" composer is a decorative element. The mechanism for the north star runs exactly once.
-5. **No recommendation-outcome capture.** `MerchantPlanRecommendation.completedAt` / `successSignal` are never written or measured. Recommend-and-forget; nothing flows back into memory. (Bounded by Execute being out of scope.)
-6. **Memory can't find its own gaps.** Open-question generation is 2 static seeds — no gap-detection from low-confidence / missing / contradictory beliefs.
-7. **Single-market / single-currency assumption.** Currency is GBP-defaulted; order country is fetched but not modeled; markets/languages/locations are not first-class memory dimensions.
+**Loops now running**
+- **Post-onboarding correct-anything surface is LIVE** (onboarding session, Phase 1) — the memory view carries a "tell me what's wrong or missing" conversation + per-belief `correctable`. The north-star convergence mechanism now runs continuously, not once.
+- **Multi-modal memory feed foundation** — modality-agnostic capture → the engine's structured operations; first net-new modality (cost sheets → deterministic facts) shipped.
 
-## Demand-side signal (operator Slack channel, ~800 members)
+## Remaining gaps (the real list, 2026-07-29)
 
-Ranked by recurrence × centrality to "how my business works" (noise excluded: dev sourcing, backups, payout timing, generic app discovery):
+1. **The Kinetic layer is unbuilt.** No executable actions, no belief→action binding, no autonomy slider yet. This is the single biggest gap now — the destination the memory exists for. Needs the architecture session for the typed-adapter/action-framework shape (a one-way-door design → founder + architecture).
+2. **Markets/languages/locations aren't first-class *dimensions*.** We now have destination-country revenue + channel split + currency normalization, but performance isn't sliced **× market** across beliefs, and languages / multi-location inventory / localized SEO aren't modeled.
+3. **No per-region margin.** `revenue_by_region` gives geo *revenue*; the store-split / US-expansion decision also needs margin-by-region (duties/landed cost). (Surfaced directly by an operator's live store-split question.)
+4. **Marketing / channel / ROAS memory.** Still absent — needs non-Shopify connectors (Meta/Google/Klaviyo) + attribution. Longer horizon.
+5. **The Learn loop is passive.** Recommendation *engagement* is captured but outcomes aren't measured back into belief confidence/autonomy — matures alongside Execute.
+6. **Dynamic conversation token budget.** A mitigation shipped (bounded per-belief serialization); the full budget (trim-to-fit, prioritise discussed beliefs) is pending for the largest memories.
+7. **Smaller follow-ups:** returns *reasons* (Returns API, vs units/value today); cost provenance + override (cost-sheet is gap-fill only); a coarse region rollup (UK/EU/US/ROW) + domestic-vs-international headline; multi-*store* synthesis (the 100→1000 extension).
 
-| # | What operators keep raising | Memory needed | Jefe today |
-|---|---|---|---|
-| 1 | **Multi-market / geo / currency / language / location** (Markets consolidation, Klaviyo multi-geo, multi-location back-in-stock, translation, localized-market SEO, Bol.com) | Markets, currencies, languages, locations as first-class dimensions; performance *per market* | ❌ single-shop, GBP-defaulted, country un-modeled |
-| 2 | **Product & attribute performance** (PDP model-imagery ROI; analyse sales by category/model, collection/model) | Per-product revenue/velocity sliced by attribute | ❌ no per-product performance (gap #1); no attribute slicing |
-| 3 | **Inventory velocity / stock buys / reorder** (Inventory Planner; multi-location back-in-stock) | Sell-through velocity, days-of-cover, reorder points per variant/location | ⚠️ raw inventory + staleness only |
-| 4 | **Returns/refunds & order anomalies** (refunds polluting attribution; duplicate orders) | Returns by SKU/reason; anomaly detection | ⚠️ refund amount only; guards exist but unsurfaced |
-| 5 | **Marketing/channel performance** (Reddit vs Meta; server-side tracking; Klaviyo) | Channel / spend / ROAS memory | ❌ none; needs non-Shopify connectors → longer horizon |
+## Demand-side signal (operator channel) — status
 
-Plus **regulatory churn** (EU withdrawal button, BNPL law, accessibility) → an "external signals / seasonality" horizon, not core memory.
-
-**Read:** the channel skews established, multi-market brands. Demand *validates* the audit (product performance, returns) and *adds* two things above product-alone: **geo/market/currency** as a foundational dimension, and **inventory velocity**.
+| # | What operators keep raising | Status 2026-07-29 |
+|---|---|---|
+| 1 | **Multi-market / geo / currency / language / location** | ⚠️ **partial** — country-revenue + channel + currency shipped; per-market slicing, languages, multi-location still open (gap #2) |
+| 2 | **Product & attribute performance** | ✅ **shipped** — per-product performance + momentum + revenue-by-product-type |
+| 3 | **Inventory velocity / reorder** | ✅ **shipped** — days-of-cover + reorder list |
+| 4 | **Returns/refunds & anomalies** | ✅ returns-by-SKU shipped; reasons + anomaly detection open |
+| 5 | **Marketing/channel performance (ROAS)** | ❌ deferred — needs connectors (gap #4) |
+| 6 | **Store-split / international expansion** (new, live) | ⚠️ geo-revenue shipped as the first brick; per-region margin + decision-support intent open (gaps #3, #1) |
 
 ## Recommended build order
 
-**Spine, either ICP:** derive **product-level performance memory** — deterministic, additive, data already in hand, no LLM/no external writes, unit-testable on plain `node`. Biggest recognizability win; compounds into every downstream surface (Insights/Goals/Plan/Memory view). *(Pending founder ICP steer — see below.)*
+**Near-term memory depth (only where an action/decision needs it):**
+1. **Per-region margin** + a coarse market rollup — completes the store-split / expansion decision-support picture; small, deterministic, high operator salience.
+2. **Market as a first-class slice** (product × market) — the established-brand ICP's #1 ask.
+3. **Dynamic conversation token budget** — robustness for memory-rich merchants (the feed will drive more conversation traffic).
 
-- **If ICP = multi-market established brands** (the channel's read): product **× market × attribute** performance, with **geo/market/currency** promoted to first-class memory dimensions → then **inventory velocity / reorder** → then **returns-by-SKU** (needs a refund-line-item ingestion change) → then wire the **live confirm/correct surface** (with the onboarding session, which owns `app._index.tsx`).
-- **If ICP = single-market DTC first:** product **× attribute** performance is #1; **geo/market** a fast-follow; **inventory velocity** #2; **live correction surface** #3.
+**The frontier — the Kinetic layer (needs founder + architecture sign-off):**
+4. **Intent-capture** — log every merchant action-intent (incl. the ones Jefe can't yet fulfil) as candidate-intent records; the seed corpus of the demand-derived ontology. Low-risk, observation-only, buildable now.
+5. **First executable action, end-to-end — reorder.** Memory already justifies it (`low_cover_products` + days-of-cover); a clean first typed adapter (preview + approval, slider-defaulted to propose-only). Exercises belief → decision → typed action → outcome.
+6. **Belief→action binding + the autonomy slider as policy over the ontology** (recommend / ask-then-act / act, per action risk × merchant setting × Jefe confidence).
 
-**Deferred (need connectors or Execute):** channel/marketing ROAS memory (Meta/Google/Klaviyo); external/regulatory signals; recommendation-outcome capture (matures once Execute exists).
+**Deferred (need connectors or Execute maturity):** channel/marketing ROAS memory; external/regulatory signals; active outcome→confidence learning.
 
 ## Already fixed — don't re-flag
 
-GDPR/compliance webhooks · line-item total · numeric grounding · memory-write atomicity · belief staleness (partial) · Insights/Goals input bounding. All shipped since the 2026-07-27 doc freeze; see `CHANGELOG.md` and the status header in `docs/ops/backend_code_review_2026-07-28.md`.
+Product performance · margin/COGS · returns-by-SKU · customer memory · inventory velocity · YoY/trend/seasonality · geo-revenue · channel split · currency normalization · gap-driven open questions · recommendation-engagement capture · the post-onboarding correction surface · generator structured-value grounding + graceful degrade · conversation input-limit mitigation. All shipped 2026-07-29; see `CHANGELOG.md`.
