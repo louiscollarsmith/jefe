@@ -47,6 +47,7 @@ import {
 } from "../lib/observability/context.server.js";
 import { track } from "./analytics/event-log.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
+import { shouldPageOnWorkerError } from "./deployment-health.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -159,6 +160,11 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
   const workerPrisma = createWorkerPrismaClient() ?? prisma;
   loopPrisma = workerPrisma;
+  // Warm the Prisma engine during the initial delay so the first tick doesn't
+  // race a still-connecting engine after a deploy ("Engine is not yet connected").
+  if (typeof workerPrisma.$connect === "function") {
+    void workerPrisma.$connect().catch(() => {});
+  }
   const initialDelayMs =
     options.initialDelayMs ??
     positiveInteger(
@@ -172,21 +178,31 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await processNextBackfillJob(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
     } catch (error) {
-      // Pass the Error under `err` so it serialises (name/message/stack) and the
-      // Slack alert shows the actual message, not just the headline.
-      logger.error("Shopify evidence backfill loop failed", { err: error });
-      // Also record it as an activity event (topic "reliability") so alerts are
-      // readable from the panel + DB by any session, not just the Slack push.
-      void track(workerPrisma, {
-        type: "worker_error",
-        topic: "reliability",
-        summary: `Backfill worker loop error: ${
-          error instanceof Error ? error.message : String(error)
-        }`.slice(0, 300),
-        properties: {
-          errorName: error instanceof Error ? error.name : "unknown",
-        },
-      });
+      const uptimeSeconds = Math.round(process.uptime());
+      if (!shouldPageOnWorkerError(error, uptimeSeconds)) {
+        // Transient DB-connection blip inside the post-deploy grace window: the
+        // engine is still connecting and the next tick self-heals. WARN, no page.
+        logger.warn(
+          "Backfill loop skipped: database not ready yet (startup grace)",
+          { err: error, uptimeSeconds },
+        );
+      } else {
+        // Pass the Error under `err` so it serialises (name/message/stack) and the
+        // Slack alert shows the actual message, not just the headline.
+        logger.error("Shopify evidence backfill loop failed", { err: error });
+        // Also record it as an activity event (topic "reliability") so alerts are
+        // readable from the panel + DB by any session, not just the Slack push.
+        void track(workerPrisma, {
+          type: "worker_error",
+          topic: "reliability",
+          summary: `Backfill worker loop error: ${
+            error instanceof Error ? error.message : String(error)
+          }`.slice(0, 300),
+          properties: {
+            errorName: error instanceof Error ? error.name : "unknown",
+          },
+        });
+      }
     } finally {
       loopRunning = false;
     }

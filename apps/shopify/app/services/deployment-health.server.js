@@ -95,6 +95,49 @@ export function shouldPageOnDependencyFailure(uptimeSeconds, env = process.env) 
 }
 
 /**
+ * A transient database-connection error — the kind that self-heals on retry.
+ * Right after a deploy the Prisma engine may not have finished connecting to
+ * Neon (which itself may be cold-starting), so the first query throws
+ * "Engine is not yet connected" or an initialization error. These are not bugs.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isTransientDbConnectionError(error) {
+  if (!error || typeof error !== "object") return false;
+  const name = String(/** @type {{ name?: unknown }} */ (error).name ?? "");
+  const message = String(/** @type {{ message?: unknown }} */ (error).message ?? "");
+  return (
+    name === "PrismaClientInitializationError" ||
+    /engine is not yet connected|not yet connected|can'?t reach database|connection.*(closed|terminat)|ECONNREFUSED|ETIMEDOUT|terminating connection|server closed the connection/i.test(
+      message,
+    )
+  );
+}
+
+/**
+ * Whether a background-worker loop failure should page (ERROR + alert) versus be
+ * treated as an expected startup blip (WARN, no page). A transient DB-connection
+ * error within the post-deploy grace window is the worker equivalent of the
+ * readiness blip — the next tick self-heals — so it must not page. Anything else,
+ * or the same error after the grace window, is a real failure that pages.
+ *
+ * @param {unknown} error
+ * @param {number} uptimeSeconds
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {boolean}
+ */
+export function shouldPageOnWorkerError(error, uptimeSeconds, env = process.env) {
+  if (
+    isTransientDbConnectionError(error) &&
+    !shouldPageOnDependencyFailure(uptimeSeconds, env)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * @template T
  * @param {Promise<T>} promise
  * @param {number} timeoutMs
