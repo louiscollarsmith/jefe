@@ -32,7 +32,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 115);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 116);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -103,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 115);
-  assert.equal(result.derivationReport.attempted, 115);
+  assert.equal(result.registryDefinitionCount, 116);
+  assert.equal(result.derivationReport.attempted, 116);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    115,
+    116,
   );
-  assert.equal(result.derivationAttempts.length, 115);
+  assert.equal(result.derivationAttempts.length, 116);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -484,6 +484,54 @@ test("product momentum flags risers and fallers, current 30d vs prior 30d", asyn
   assert.equal(m.value.decliningProductCount, 1);
   assert.equal(m.value.topRiser.productId, "prod-bravo");
   assert.equal(m.value.topFaller.productId, "prod-alpha");
+});
+
+function createYoyPrisma() {
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const orders = [];
+  let n = 0;
+  const addOrder = (daysAgo, amount) => {
+    n += 1;
+    const id = `yo-${n}`;
+    const at = new Date(now - daysAgo * day);
+    orders.push({ id, externalId: `yox-${n}`, currency: "GBP", totalPrice: amount, totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `yc-${n}`, financialStatus: "PAID" });
+  };
+  for (let i = 0; i < 10; i += 1) addOrder(5 + i * 5, "100.00"); // current 90d: 10 x £100
+  for (let i = 0; i < 10; i += 1) addOrder(370 + i * 5, "80.00"); // same 90d a year ago: 10 x £80
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "YoY Merchant",
+        shops: [{ id: "shop-test", shopDomain: "y.myshopify.com", historicalOrderAccess: "all_orders", backfillCompletedAt: new Date(), rawPayload: { name: "Y", iana_timezone: "Europe/London" }, connectorAccounts: [{ scopes: ["read_all_orders"] }], backfillStatuses: [{ domain: "orders", status: "complete" }] }],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("year-over-year revenue growth compares trailing 90d to a year prior", async () => {
+  const prisma = createYoyPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const yoy = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.yoy_revenue_growth.trailing_90d",
+  );
+  assert.ok(yoy, "yoy_revenue_growth should publish");
+  // £1000 now vs £800 a year ago -> +25%.
+  assert.equal(yoy.value.percentage, 25);
+  assert.equal(yoy.value.currentRevenue, 1000);
+  assert.equal(yoy.value.priorYearRevenue, 800);
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {

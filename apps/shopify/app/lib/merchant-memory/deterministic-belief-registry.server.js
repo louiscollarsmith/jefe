@@ -4502,6 +4502,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Rising/declining product counts + top riser/faller by revenue, current 30d vs prior 30d. Only judges products with prior-period revenue (excludes brand-new products).",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.yoy_revenue_growth.trailing_90d",
+    "category": "business",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "(current_90d_revenue - same_90d_one_year_ago_revenue) / same_90d_one_year_ago_revenue",
+    "minimumData": "At least 5 priced orders in both the current window and the same window one year ago (needs >12 months of history)",
+    "confidenceRule": "0.85 direct observation",
+    "legacyConfidenceRule": "0.85 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Year-over-year revenue change, trailing 90 days vs the same 90 days a year ago; requires >12 months of stored history (unlocked by the extended backfill window).",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 

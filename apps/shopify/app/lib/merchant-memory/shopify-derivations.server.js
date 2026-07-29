@@ -304,6 +304,8 @@ function deriveDefinition(context, definition) {
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
         return productMomentum(context, definition);
+      case "business.yoy_revenue_growth.trailing_90d":
+        return yoyRevenueGrowth(context, definition, 90);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1151,6 +1153,46 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Year-over-year revenue — revenue in the trailing window vs the same window one
+// calendar year earlier. Unlocked by the extended history window; the honest
+// growth signal (is the business bigger than a year ago?).
+function ordersRevenueInRange(context, startDaysAgo, endDaysAgo) {
+  const startMs = context.now.getTime() - endDaysAgo * 86400000;
+  const endMs = context.now.getTime() - startDaysAgo * 86400000;
+  const orders = context.datedOrders.filter(
+    (order) =>
+      order.totalPrice !== null &&
+      order.orderTime.getTime() >= startMs &&
+      order.orderTime.getTime() < endMs,
+  );
+  return { orders, revenue: sum(orders.map((order) => orderValue(order))) };
+}
+
+function yoyRevenueGrowth(context, definition, days) {
+  const current = ordersRevenueInRange(context, 0, days);
+  const priorYear = ordersRevenueInRange(context, 365, 365 + days);
+  if (current.orders.length < 5 || priorYear.orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in both the current window and the same window one year ago are required.", { currentOrders: current.orders.length, priorYearOrders: priorYear.orders.length });
+  }
+  if (priorYear.revenue <= 0) {
+    return skipped(definition, "insufficient_data", "No prior-year revenue in the comparison window.", { priorYearRevenue: priorYear.revenue });
+  }
+  const change = (current.revenue - priorYear.revenue) / priorYear.revenue;
+  return derived(context, definition, {
+    value: {
+      percentage: roundNumber(change * 100, 2),
+      currentRevenue: roundMoney(current.revenue),
+      priorYearRevenue: roundMoney(priorYear.revenue),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d_vs_prior_year`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Revenue in the trailing window vs the same window one calendar year earlier.",
+    summary: `Year-over-year revenue change: trailing ${days} days vs the same period a year ago.`,
+    sampleSize: current.orders.length + priorYear.orders.length,
+  });
 }
 
 // Product momentum — products rising or declining by revenue, current 30 days vs
