@@ -34,6 +34,7 @@ const FREEMAIL = new Set([
 /**
  * @typedef {object} Signup
  * @property {string} email
+ * @property {string|null} [name]
  * @property {string|null} [storeUrl]
  * @property {string|null} [source]
  * @property {string|Date|null} [createdAt]
@@ -117,10 +118,11 @@ export function normalizeStore(raw) {
 /**
  * Score one signup for chase priority.
  * @param {Signup} signup
- * @returns {{ email: string, store: Store, emailClass: EmailClass, score: number, tier: Tier, signals: Signal[], needs: string[] }}
+ * @returns {{ email: string, name: string|null, store: Store, emailClass: EmailClass, score: number, tier: Tier, signals: Signal[], needs: string[] }}
  */
 export function scoreSignup(signup) {
   const email = String(signup?.email ?? "").trim().toLowerCase();
+  const name = signup?.name ? String(signup.name).trim() : null;
   const store = normalizeStore(signup?.storeUrl);
   const emailClass = classifyEmail(email);
 
@@ -179,7 +181,7 @@ export function scoreSignup(signup) {
     tier = "low";
   }
 
-  return { email, store, emailClass, score, tier, signals, needs };
+  return { email, name, store, emailClass, score, tier, signals, needs };
 }
 
 /** Sort order for tiers (best chase priority first). */
@@ -256,7 +258,8 @@ export function formatPipeline(pipeline, opts = {}) {
     const rows = typeof opts.limit === "number" ? pipeline.ranked.slice(0, opts.limit) : pipeline.ranked;
     for (const s of rows) {
       const store = s.store.domain ?? "—";
-      lines.push(`[${s.tier.padEnd(10)}] score ${s.score}  ${s.email}  (${store})`);
+      const who = s.name ? `${s.name} <${s.email}>` : s.email;
+      lines.push(`[${s.tier.padEnd(10)}] score ${s.score}  ${who}  (${store})`);
     }
     if (typeof opts.limit === "number" && pipeline.ranked.length > opts.limit) {
       lines.push(`… ${pipeline.ranked.length - opts.limit} more`);

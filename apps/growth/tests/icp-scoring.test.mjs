@@ -71,6 +71,13 @@ test("scoreSignup: no store = needs_info regardless of email", () => {
   assert.ok(branded.needs.includes("get-store-url"));
 });
 
+test("scoreSignup carries name through (from the waitlist form)", () => {
+  const withName = scoreSignup({ email: "jo@acme.com", storeUrl: "acme.com", name: "Jo Founder" });
+  assert.equal(withName.name, "Jo Founder");
+  const without = scoreSignup({ email: "jo@acme.com", storeUrl: "acme.com" });
+  assert.equal(without.name, null);
+});
+
 test("rankPipeline orders by tier then score, and tallies byTier", () => {
   const pipeline = rankPipeline([
     { email: "c@gmail.com", storeUrl: "c" },              // low
@@ -89,14 +96,15 @@ test("rankPipeline orders by tier then score, and tallies byTier", () => {
   assert.equal(pipeline.byTier.needs_info, 1);
 });
 
-test("summarize is PII-free (no emails) and counts correctly", () => {
+test("summarize is PII-free (no emails/names) and counts correctly", () => {
   const pipeline = rankPipeline([
-    { email: "a@acme.com", storeUrl: "acme.com" },
+    { email: "a@acme.com", storeUrl: "acme.com", name: "Ada Founder" },
     { email: "b@gmail.com", storeUrl: "b" },
   ]);
   const sum = summarize(pipeline);
   const json = JSON.stringify(sum);
   assert.ok(!json.includes("@"), "summary must not contain emails");
+  assert.ok(!json.includes("Ada Founder"), "summary must not contain names");
   assert.equal(sum.total, 2);
   assert.equal(sum.stores.customDomain, 1);
   assert.equal(sum.stores.myshopify, 1);

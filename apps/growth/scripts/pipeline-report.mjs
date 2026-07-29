@@ -57,13 +57,14 @@ async function main() {
   const { neon } = await import("@neondatabase/serverless");
   const sql = neon(DATABASE_URL);
   const rows = await sql`
-    SELECT email, store_url, source, created_at
+    SELECT email, store_url, name, source, created_at
     FROM waitlist_signups
     ORDER BY created_at DESC
   `;
 
   const signups = rows.map((r) => ({
     email: r.email,
+    name: r.name,
     storeUrl: r.store_url,
     source: r.source,
     createdAt: r.created_at,
