@@ -100,3 +100,54 @@ This introduces **no new pattern** — it reuses `sendConversationMessage` and t
 want belief mutations behind a dedicated resource route (vs an intent in the
 index action), that's a cross-cutting consistency call for the architecture
 session (chat 7). Flag before choosing the resource-route split.
+
+---
+
+## Phase 2 — inline correction + reachability (spec)
+
+Phase 1 (shipped) put the correct-anything conversation on the `?view=memory`
+surface. Phase 2 makes correction **habitual** — a first-class destination, and
+available in-context where the merchant actually reads memory.
+
+### A. Reachability — Daily Home *hosts* the memory view (not a bolt-on link)
+`daily-home.tsx` (the prod default) already has a **Memory section**. Rather than
+a stopgap link that navigates OUT to `?view=memory`, that existing Memory section
+should **host the editable correct-anything surface directly** (the Phase-1
+conversation panel + per-belief actions). Memory becomes a first-class Daily Home
+view, not a sub-page. Interim: `?view=memory` stays the preview door until this
+lands. This is the one cross-session touch — coordinate with the `daily-home.tsx`
+owner; everything else is the engine + the memory route.
+
+### B. Per-belief confirm / correct quick actions
+`correctable` is already exposed per belief. For correctable beliefs render:
+- **Confirm** ("Yes, that's right") → intent `memory.belief.confirm` →
+  `confirmBelief(prisma, {merchantId, key, confirmedBy})`. One tap; re-confirmable
+  observations stay re-derivable automatically (the engine handles the `kind`).
+- **Correct** → intent `memory.belief.correct`, **routed through the conversation,
+  not a typed-value form:** open the memory conversation **pre-scoped to the
+  belief** (seed the conversation context's `lastDiscussedBeliefKey` / a
+  `scopedBeliefKey` with the belief key + an opener like "About your {label}: …"),
+  then `sendConversationMessage`. The LLM structured-operation then targets that
+  belief. A typed-value form is only worth building for trivially-typed beliefs
+  (option / boolean / single number) where a dropdown is genuinely faster —
+  everything **structured** must go through the conversation (a form can't express
+  a structured-value correction).
+
+### C. Inline correction-in-context on Daily Home
+Where Daily Home surfaces a belief-derived claim (an insight finding, a headline
+metric, a plan recommendation), attach a subtle **"that's not right"** affordance
+that opens the memory conversation **pre-scoped to that belief** (same mechanism
+as B). This needs each belief-citing surface to carry the belief key/id — insight
+findings already have `supportingBeliefIds`; headline metrics / recommendations
+would need to reference the belief key they derive from. Correction should happen
+where the merchant *notices* the error, not only on a page they must remember to
+visit.
+
+### The unifying rule
+**Confirm = one-tap direct (`confirmBelief`); Correct = open the conversation
+pre-scoped (`sendConversationMessage`).** One correction engine across every
+surface (memory view, Daily Home, Slack), all belief types, merchant types plain
+English. No per-belief typed-value forms except the trivial cases.
+
+Guarantees unchanged from Phase 1 (precedence, re-derivable observations,
+history + evidence, no PII, observability).
