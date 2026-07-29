@@ -74,6 +74,100 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ---
 
+## Listing submission — field-by-field answers (2026-07-29)
+
+Paste-ready. **✅ = final · ⚠️ = founder must provide/host.**
+
+### Resources
+- **Privacy policy URL** *(required)* — ⚠️ host at `https://mynamejefe.com/privacy` (page doesn't exist yet; content to draft — also required for the Level-2 data-protection review).
+- **Developer website** — ✅ `https://mynamejefe.com`
+- FAQ / Changelog / Tutorial / Additional docs — optional; leave blank for launch.
+
+### Pricing (≥1 public plan required)
+- **Plan name** — ✅ `Free`
+- **Top features** — ✅ `Full access while Jefe is in early access. Connect your store, build your Merchant Memory, and get insights and recommendations with the evidence behind them.`
+- **"I have approval to charge outside the Shopify Billing API"** — ⚠️ **leave UNCHECKED** (free / Billing-API only).
+- Pricing URL — optional; blank.
+
+### App discovery content
+- **App card subtitle (≤62)** — ✅ `Learns how your store works, then recommends your next move.`
+- **Search terms (5, ≤20 each, no "Shopify"/competitors)** — ✅ `ecommerce manager` · `store insights` · `AI assistant` · `inventory alerts` · `reorder reminders`
+- **Title tag (≤60)** — ✅ `Jefe — AI eCommerce Manager for Shopify Stores`
+- **Meta description (≤160)** — ✅ `Jefe learns how your Shopify store works from your own data, then recommends your next move with the evidence behind it. Advisory today; it acts as you trust it.`
+
+### Install requirements
+- **Sales channels** — ✅ **"My app doesn't require the Shopify Online Store or Shopify POS"** (admin-embedded; no theme extension/POS).
+- **Geographic** — leave unset (English-only is a language limit, not geographic).
+
+### Tracking (optional)
+- Add a **Google Analytics Measurement ID** for the listing if available — feeds the growth funnel (listing views → installs). Else skip.
+
+### Contact
+- Merchant review email + App submission email — ✅ `matt@mynamejefe.com` (or a shared inbox). Allowlist `noreply@shopify.com`.
+
+### App testing
+- **Test account** — ✅ **"My app doesn't require an account"** (auth is Shopify OAuth). ⚠️ Reviewers need a **dev store seeded with `tools/synthetic-shopify`** so Jefe isn't empty.
+- **Screencast URL** — ⚠️ record 3–8 min (storyboard in the Design brief below).
+- **Testing instructions** — ✅:
+  ```
+  1. Install Jefe on a development store that has orders, products, and customers (or use the seeded demo store linked above).
+  2. Jefe authenticates via Shopify OAuth on install and opens inside the admin.
+  3. Jefe reads your orders, products, customers, and inventory in the background to build its Merchant Memory (allow a few minutes for the first build).
+  4. Open "What Jefe knows about your business" to see the structured understanding; entries can be inspected and corrected.
+  5. Review the Insights generated from that memory.
+  6. Review and refine the Goals.
+  7. Review and accept one Plan — each recommendation shows the evidence behind it.
+  8. Optional: connect a channel (Slack) to receive Jefe's updates.
+  Note: Jefe is advisory in this version — it recommends and the merchant approves; no external system is changed without approval.
+  ```
+
+### Still to clear before submit
+1. **Privacy policy** hosted at a URL (content to draft — chat 6 can produce).
+2. **Screencast** recorded + a **data-seeded test store**.
+3. **Icon + screenshots** produced (Design brief below).
+4. Founder calls: Level-2 data-protection substance, scope trim, confirm the free plan.
+
+---
+
+## Design brief (for Claude design)
+
+All assets sit on the **real Jefe brand** (pulled from `apps/marketing`). Match the marketing site.
+
+### Brand tokens
+- **Logo mark:** rounded square (~14/64 corner radius) in **navy `#33456b`**, a stylised cream **"J"** (`#f8ece7`), with a **dusty-rose dot** (`#c98a8a`) at the base. Source: `apps/marketing/public/favicon.svg`.
+- **Palette:** navy/indigo `#33456b` (primary) · cream `#f8ece7` · dusty rose `#c98a8a` · warm gold (~`#dcb87a`) · warm off-white background (`oklch(0.985 0.005 70)`). Dark panels = deep navy (`oklch(0.31 0.06 262)`).
+- **Type:** **Bricolage Grotesque** (display/wordmark) · **Schibsted Grotesk** (body) · **Instrument Serif** (italic serif accent for cheeky emphasis words).
+- **Feel:** warm, premium, a little cheeky ("my name is Jefe"). Confident, human, evidence-led.
+
+### 1. App icon — `1200×1200` PNG
+- The Jefe mark scaled crisply: navy rounded square, cream "J", rose dot.
+- Bold, simple, **no text, no Shopify trademarks**, no photographic detail; legible at 64px. Deliver flat PNG + keep the SVG source.
+
+### 2. Screenshots — `3–6 × 1600×900` (16:9)
+Captured from the live app on a warm off-white/navy frame, one-line caption each, **no PII** (use `tools/synthetic-shopify` data), crop browser chrome. Sequence:
+1. **Connect** — the install/connect screen.
+2. **"What Jefe knows about your business"** — the Merchant Memory view (**hero shot**).
+3. **Insights** — generated insights.
+4. **Goals** — a generated/refined goal.
+5. **Plan** — a recommendation **with its evidence** (the differentiator — keep the evidence visible).
+Captions in Bricolage Grotesque, brand navy on cream; optional gold underline on the emphasis word.
+
+### 3. Feature media — `2–3 min` video (or `1600×900` static) + screencast storyboard
+For the *feature video*, screencast ≤25%; for the *testing screencast* field, a straight 3–8 min screen recording is fine. Beats:
+1. Cold open — the "my name is Jefe" brand hook (~5s).
+2. Connect Shopify (~10s).
+3. Memory builds → "what Jefe knows about your business" — the aha (~30s).
+4. An insight → a goal → a plan **with the evidence** (~45s).
+5. Merchant approves a recommendation; note advisory-now / earns-autonomy (~20s).
+6. Close on the wordmark + "Join the early access." (~5s).
+Warm, unhurried, no loud audio; brand navy/cream throughout.
+
+### 4. Privacy policy page (content + hosted page)
+- **Content:** chat 6 to draft — what data Jefe reads (orders/products/customers/inventory), why, retention, security, merchant + customer rights; aligned to the Level-2 protected-customer-data commitments.
+- **Page:** host on the marketing site at `/privacy`, styled to match (Schibsted Grotesk body, brand palette). This is an `apps/marketing` add — coordinate before building.
+
+---
+
 ## What to learn — ASO & Built for Shopify
 
 There's **no keyword hack**. Shopify ranks on: **install volume + retention**, **reviews & rating**, **listing quality**, and **performance** (Lighthouse — don't drop a storefront's score >10 pts; jefe is admin-embedded so low storefront risk, but confirm). So ASO is mostly **earned post-launch**, not a pre-launch trick:
@@ -95,5 +189,6 @@ There's **no keyword hack**. Shopify ranks on: **install volume + retention**, *
 5. Post-launch: reviews from design partners → ranking → Built for Shopify.
 
 ## Changelog
+- **2026-07-29** — Doc completed as the full submission reference: every field's paste-ready answer (resources/pricing/discovery/install/contact/testing) + a Claude-design brief (icon, screenshots, screencast storyboard, privacy page) on the real Jefe brand tokens (navy `#33456b`, cream, rose, gold; Bricolage/Schibsted/Instrument Serif).
 - **2026-07-29 (pm)** — Locked category (Workflow automation) + final tag sets + English-only launch (localization = 100→1000, DE→FR; needs listing resubmission then). Rewrote intro/details/features to Shopify's factual-listing rules — stripped marketing-voice flourishes (that voice lives on the site) and the auto-flagged words ("best", "pricing"). Field-by-field submission answers provided to founder (discovery/pricing/testing).
 - **2026-07-29** — Created (chat 6). Audited app vs. requirements; app is technically ready-ish, listing is the blocker. Drafted full listing copy; flagged Level 2 data-protection, scope trim, free-plan pricing.
