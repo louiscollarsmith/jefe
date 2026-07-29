@@ -60,7 +60,7 @@ There's **no keyword hack**. Shopify ranks on: **install volume + retention**, *
 - **Reviews are the engine.** Ask each activated design partner to review **at the aha moment** (ties to [case-study-template.md](case-study-template.md)). First reviews disproportionately drive early ranking.
 - **Retention** — nail activation (memory confirmed + 1 rec accepted) so uninstalls stay low.
 - **Complete, high-quality listing** (above) + a demo video.
-- **Category/keywords** — no perfect slot for "AI eComm manager"; test-fit **Store management** / **Finding & optimizing products** / **Marketing & conversion**. Pick by where our ICP browses.
+- **Category (firm): Store management → Operations → Analytics.** Shopify defines it as *"apps that analyze and generate insights or recommendations for a store"* — a verbatim description of Jefe. (We *position* as a manager, not a dashboard — but "Analytics" here means insights/recommendations, and it's where our ICP browses for an app that tells them what to do.) **Graduation path as autonomy ships: Operations → Workflow automation** (*"automate multiple tasks…"*) — not V1. Add AI / insights / recommendations / operations **tags** if offered (cheap to test).
 - **"Built for Shopify"** status is the prize — badge + search-ranking boost + "Picked for you" placement. Earned via app quality + installs + reviews + performance. Target it *after* the first cohort of reviews.
 
 ## Critical path
