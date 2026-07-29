@@ -12,11 +12,11 @@ import {
   Text,
 } from "@shopify/polaris";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate } from "../shopify.server";
+import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { loadChangelog } from "../services/changelog.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  await authenticateAppRequest(request);
 
   return {
     entries: await loadChangelog(),

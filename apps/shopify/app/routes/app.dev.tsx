@@ -23,7 +23,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import prisma from "../db.server";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
-import { authenticate } from "../shopify.server";
+import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { processNextBackfillJob } from "../services/shopify-backfill-worker.server";
 import {
   getShopBackfillProgress,
@@ -41,7 +41,7 @@ type BackfillStatusInput = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session } = await authenticateAppRequest(request);
 
   if (process.env.ENABLE_DEV_TOOLS === "false") {
     throw new Response("Not found", { status: 404 });
@@ -100,7 +100,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session } = await authenticateAppRequest(request);
 
   if (process.env.ENABLE_DEV_TOOLS === "false") {
     return { ok: false, error: "Dev tools are disabled for this environment." };
