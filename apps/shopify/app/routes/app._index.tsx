@@ -4441,10 +4441,21 @@ function useConnectStatusPolling(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return;
-    const timer = setInterval(() => {
+    // Poll for generation to finish, but BACK OFF rather than re-running the full
+    // (heavy) loader every 5s — each revalidate re-does readiness, the store-metric
+    // aggregations and channel queries. Start responsive, then stretch the interval
+    // so a multi-minute wait isn't a sustained DB hammer. Polling stops the moment
+    // the step's data arrives (this effect's `enabled` flips false and cleans up).
+    let delay = 4000;
+    const maxDelay = 20000;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
       revalidator.revalidate();
-    }, 5000);
-    return () => clearInterval(timer);
+      delay = Math.min(Math.round(delay * 1.5), maxDelay);
+      timer = setTimeout(tick, delay);
+    };
+    timer = setTimeout(tick, delay);
+    return () => clearTimeout(timer);
   }, [enabled, revalidator]);
 }
 
