@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 124);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 125);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -44,6 +44,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "Customer memory v1",
       "Inventory velocity v1",
       "Attribute performance v1",
+      "Seasonality v1",
     ]),
   );
   assert.equal(
@@ -107,13 +108,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 124);
-  assert.equal(result.derivationReport.attempted, 124);
+  assert.equal(result.registryDefinitionCount, 125);
+  assert.equal(result.derivationReport.attempted, 125);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    124,
+    125,
   );
-  assert.equal(result.derivationAttempts.length, 124);
+  assert.equal(result.derivationAttempts.length, 125);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -707,6 +708,68 @@ test("attribute-level performance groups revenue by product type and vendor", as
   assert.equal(byVendor.value.topVendor.name, "Acme");
   assert.equal(byVendor.value.topVendor.sharePercent, 70); // (600+100)/1000
   assert.equal(byVendor.value.vendorCount, 2);
+});
+
+function createSeasonalityPrisma() {
+  const orders = [];
+  let index = 0;
+  const push = (date) => {
+    index += 1;
+    orders.push({ id: `so-${index}`, externalId: `sox-${index}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: date, sourceCreatedAt: date, sourceUpdatedAt: date, customerExternalId: `sc-${index}`, financialStatus: "PAID" });
+  };
+  // One order on the 15th of each month, Jan 2025 through Jun 2026.
+  for (let year = 2025; year <= 2026; year += 1) {
+    for (let month = 0; month < 12; month += 1) {
+      if (year === 2026 && month > 5) break;
+      push(new Date(Date.UTC(year, month, 15, 12, 0, 0)));
+    }
+  }
+  // Extra November 2025 orders make it the unambiguous peak.
+  for (let i = 0; i < 6; i += 1) push(new Date(Date.UTC(2025, 10, 10 + i, 12, 0, 0)));
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "seas.myshopify.com",
+            historicalOrderAccess: "all",
+            availableOrderHistoryDays: 720,
+            backfillCompletedAt: new Date(Date.UTC(2026, 6, 1)),
+            rawPayload: { name: "Seas Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders", "read_all_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("seasonality identifies the peak sales month across a year of history", async () => {
+  const prisma = createSeasonalityPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const belief = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.peak_sales_month.all_time",
+  );
+  assert.ok(belief, "peak_sales_month should publish");
+  assert.equal(belief.value.peakMonth, "November");
+  assert.equal(belief.value.peakMonthNumber, 11);
+  assert.equal(belief.value.currency, "GBP");
+  assert.equal(belief.value.monthlyBreakdown.length, 12);
 });
 
 function createMomentumPrisma() {

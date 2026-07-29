@@ -310,6 +310,8 @@ function deriveDefinition(context, definition) {
         return yoyRevenueGrowth(context, definition, 90);
       case "business.revenue_trend.trailing_180d":
         return revenueTrend(context, definition, 90);
+      case "business.peak_sales_month.all_time":
+        return peakSalesMonth(context, definition);
       case "products.revenue_by_product_type.trailing_90d":
         return revenueByProductType(context, definition, 90);
       case "products.revenue_by_vendor.trailing_90d":
@@ -1296,6 +1298,73 @@ function yoyRevenueGrowth(context, definition, days) {
 // Recent revenue trend — revenue in the recent window vs the immediately prior
 // window of the same length (sequential, not year-over-year): is the store
 // growing, flat, or declining right now?
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function monthOfYear(date, timeZone) {
+  return Number(
+    new Intl.DateTimeFormat("en-CA", { timeZone, month: "2-digit" }).format(date),
+  );
+}
+
+// Which calendar month is the sales peak, aggregating revenue by month-of-year
+// across all stored history (shop timezone, shop base currency). Needs roughly a
+// full year of history before it will claim a season.
+function peakSalesMonth(context, definition) {
+  const orders = context.datedOrders.filter((order) => order.totalPrice !== null);
+  if (orders.length < 20) return skipped(definition, "insufficient_data", "At least 20 priced, dated orders are required for seasonality.", { orders: orders.length });
+  const times = orders.map((order) => order.orderTime.getTime());
+  const spanDays = (Math.max(...times) - Math.min(...times)) / 86400000;
+  if (spanDays < 300) return skipped(definition, "insufficient_data", "About 12 months of order history are required to judge seasonality.", { spanDays: Math.round(spanDays) });
+  const revenueByMonth = new Map();
+  let total = 0;
+  for (const order of orders) {
+    const month = monthOfYear(order.orderTime, context.shopTimezone);
+    const revenue = orderValue(order);
+    total += revenue;
+    revenueByMonth.set(month, (revenueByMonth.get(month) ?? 0) + revenue);
+  }
+  if (total <= 0) return skipped(definition, "insufficient_data", "Positive revenue is required for seasonality.", { total: roundMoney(total) });
+  let peakMonth = 1;
+  let peakRevenue = -1;
+  for (const [month, revenue] of revenueByMonth) {
+    if (revenue > peakRevenue) {
+      peakRevenue = revenue;
+      peakMonth = month;
+    }
+  }
+  const monthlyBreakdown = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const revenue = revenueByMonth.get(month) ?? 0;
+    monthlyBreakdown.push({
+      month: MONTH_NAMES[month - 1],
+      monthNumber: month,
+      revenue: roundMoney(revenue),
+      sharePercent: roundNumber((revenue / total) * 100, 2),
+    });
+  }
+  const monthsOfHistory = Math.round(spanDays / 30);
+  return derived(context, definition, {
+    value: {
+      peakMonth: MONTH_NAMES[peakMonth - 1],
+      peakMonthNumber: peakMonth,
+      peakMonthRevenue: roundMoney(peakRevenue),
+      peakMonthSharePercent: roundNumber((peakRevenue / total) * 100, 2),
+      monthlyBreakdown,
+      monthsOfHistory,
+      currency: shopBaseCurrency(context).currency,
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.8, monthsOfHistory, 12, 24),
+    confidenceReason: "Revenue aggregated by calendar month across stored history (shop timezone, shop base currency).",
+    summary: `Peak sales month: ${MONTH_NAMES[peakMonth - 1]} (${roundNumber((peakRevenue / total) * 100, 2)}% of stored revenue).`,
+    sampleSize: orders.length,
+    supportingValues: { monthsOfHistory },
+  });
+}
+
 function revenueTrend(context, definition, days) {
   const recent = ordersRevenueInRange(context, 0, days);
   const prior = ordersRevenueInRange(context, days, days * 2);

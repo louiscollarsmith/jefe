@@ -4754,6 +4754,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Products without a vendor are pooled as unattributed revenue, not dropped; vendor is an optional Shopify field.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.peak_sales_month.all_time",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "revenue aggregated by month-of-year across stored history (shop timezone); peak month + monthly breakdown, shop base currency",
+    "minimumData": "At least 20 priced dated orders spanning about 12 months",
+    "confidenceRule": "0.80 direct observation; rises with months of history",
+    "legacyConfidenceRule": "0.80 direct observation; rises with months of history",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.80 direct observation; rises with months of history"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample", "partial_history"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Seasonality v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Needs about a year of history; months are bucketed in the shop timezone. Requires read_all_orders for history beyond 60 days.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 
