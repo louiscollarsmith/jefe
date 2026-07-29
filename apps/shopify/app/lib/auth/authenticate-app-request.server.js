@@ -65,7 +65,15 @@ export async function authenticateAppRequest(request, deps) {
   if (!session) throw redirect("/");
 
   // Re-resolve the offline token server-side; it never rides the cookie.
-  // Returns the same shape the embedded loaders already consume.
-  const ctx = await resolved.unauthenticatedAdmin(session.shop);
+  // Returns the same shape the embedded loaders already consume. If it can't be
+  // resolved (e.g. the shop uninstalled while the cookie was still valid), treat
+  // the merchant as logged out — a clean redirect to sign-in, never a 500.
+  let ctx;
+  try {
+    ctx = await resolved.unauthenticatedAdmin(session.shop);
+  } catch (error) {
+    if (error instanceof Response) throw error;
+    throw redirect("/");
+  }
   return { admin: ctx.admin, session: ctx.session, standalone: true };
 }

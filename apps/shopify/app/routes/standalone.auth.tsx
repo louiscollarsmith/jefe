@@ -19,8 +19,12 @@ import { standaloneShopify } from "../lib/auth/standalone-shopify.server.js";
  */
 
 async function shopIsInstalled(shop: string): Promise<boolean> {
+  // "Installed" means an ACTIVE install (uninstalled shops keep their row).
+  // Gating on `uninstalledAt IS NULL` routes an uninstall→standalone attempt to
+  // the canonical managed REINSTALL (which re-registers webhooks) instead of a
+  // half-wired standalone re-auth — keeps the one-install-path invariant intact.
   const shopRow = await prisma.shop.findFirst({
-    where: { platform: "shopify", shopDomain: shop },
+    where: { platform: "shopify", shopDomain: shop, uninstalledAt: null },
     select: { id: true },
   });
   return Boolean(shopRow);

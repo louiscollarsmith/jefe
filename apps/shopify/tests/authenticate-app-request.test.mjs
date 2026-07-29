@@ -75,3 +75,25 @@ test("standalone host + tampered cookie redirects (treated as logged out)", asyn
   assert.ok(thrown instanceof Response);
   assert.equal(thrown.headers.get("Location"), "/");
 });
+
+test("standalone host + valid cookie but unresolvable offline session redirects (no 500)", async () => {
+  const setCookie = await serializeStandaloneSession("store.myshopify.com");
+  const throwingDeps = {
+    authenticateAdmin: deps.authenticateAdmin,
+    unauthenticatedAdmin: async () => {
+      throw new Error("offline session not found (uninstalled?)");
+    },
+  };
+  let thrown;
+  try {
+    await authenticateAppRequest(
+      reqWith({ host: "app.mynamejefe.com", cookie: setCookie }),
+      throwingDeps,
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof Response, "expected a redirect, not a thrown error");
+  assert.equal(thrown.status, 302);
+  assert.equal(thrown.headers.get("Location"), "/");
+});

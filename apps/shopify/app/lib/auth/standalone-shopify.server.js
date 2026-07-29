@@ -56,9 +56,18 @@ const log = logger.child({ component: "standalone-auth" });
  * @param {Record<string, string | undefined>} [env]
  */
 export function buildStandaloneShopify(env = process.env) {
+  const apiSecretKey = (env.SHOPIFY_API_SECRET || "").trim();
+  if (!apiSecretKey) {
+    // Fail loud on a misdeploy (consistent with the cookie's SESSION_SECRET
+    // check) rather than silently minting an instance whose HMAC checks reject
+    // every callback.
+    throw new Error(
+      "SHOPIFY_API_SECRET must be set for the standalone Shopify OAuth flow",
+    );
+  }
   return shopifyApi({
     apiKey: env.SHOPIFY_API_KEY,
-    apiSecretKey: env.SHOPIFY_API_SECRET || "",
+    apiSecretKey,
     scopes: env.SCOPES?.split(",").map((scope) => scope.trim()).filter(Boolean),
     hostName: standaloneAppHost(env),
     hostScheme: "https",
