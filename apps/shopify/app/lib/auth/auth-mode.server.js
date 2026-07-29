@@ -27,9 +27,15 @@ import { readStandaloneSession } from "./standalone-session.server.js";
 /** Default public host the standalone surface is served on. */
 const DEFAULT_STANDALONE_HOST = "app.mynamejefe.com";
 
-/** @returns {string} */
-function standaloneAppHost() {
-  return (process.env.STANDALONE_APP_HOST || DEFAULT_STANDALONE_HOST)
+/**
+ * The public host the standalone surface is served on (env-overridable).
+ * Exported so the dedicated standalone Shopify-API instance mints its OAuth
+ * `redirect_uri` on exactly this host — one source of truth for "standalone host".
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string}
+ */
+export function standaloneAppHost(env = process.env) {
+  return (env.STANDALONE_APP_HOST || DEFAULT_STANDALONE_HOST)
     .trim()
     .toLowerCase();
 }
