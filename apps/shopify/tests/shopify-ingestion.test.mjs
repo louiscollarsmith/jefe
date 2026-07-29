@@ -260,6 +260,73 @@ test("Shopify tenant is reactivated after reinstall", async (t) => {
   }
 });
 
+test("duplicate app/uninstalled keeps the shop uninstalled (bug #13)", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  const shopDomain = `uninstall-${suffix}.myshopify.com`;
+  const rawBody = JSON.stringify({ shop_domain: shopDomain });
+  const webhookId = `uninstall-${suffix}`;
+
+  try {
+    // Install, then deliver app/uninstalled twice with the same webhook id (the
+    // Shopify at-least-once retry case that the ledger dedupe collapses).
+    await ensureShopifyTenant(prisma, { shopDomain, scopes: ["read_products"] });
+
+    const first = await processShopifyWebhook(prisma, {
+      rawBody,
+      topic: "app/uninstalled",
+      shopDomain,
+      webhookId,
+      triggeredAt: "2026-07-29T00:00:00Z",
+    });
+    const afterFirst = await prisma.shop.findUniqueOrThrow({
+      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+    });
+
+    const second = await processShopifyWebhook(prisma, {
+      rawBody,
+      topic: "app/uninstalled",
+      shopDomain,
+      webhookId,
+      triggeredAt: "2026-07-29T00:00:00Z",
+    });
+    const afterSecond = await prisma.shop.findUniqueOrThrow({
+      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+    });
+
+    const churnEvents = await prisma.activityEvent.count({
+      where: { shopDomain, type: "shop_uninstalled" },
+    });
+
+    assert.equal(first.status, "processed");
+    assert.equal(afterFirst.status, "uninstalled");
+    assert.ok(afterFirst.uninstalledAt, "uninstalledAt is set on uninstall");
+
+    // The regression: the duplicate delivery is deduped by the ledger, but the
+    // shop must STILL be uninstalled — not reactivated by ensureShopifyTenant and
+    // left stuck "active".
+    assert.equal(second.status, "duplicate");
+    assert.equal(afterSecond.status, "uninstalled");
+    assert.equal(afterSecond.setupStatus, "uninstalled");
+
+    // Churn is captured exactly once (first delivery only), not on the retry.
+    assert.equal(churnEvents, 1);
+  } finally {
+    await prisma.activityEvent
+      .deleteMany({ where: { shopDomain } })
+      .catch(() => {});
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
 test("Shopify tenant creation is idempotent under concurrent requests", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");

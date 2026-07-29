@@ -147,17 +147,25 @@ export async function processShopifyWebhook(prisma, input) {
     eventTs: parseDate(input.triggeredAt) ?? new Date(),
   });
 
-  if (!created) {
-    return { status: "duplicate", ledgerEventId: event.id };
+  // app/uninstalled is handled BEFORE the `!created` dedupe short-circuit below.
+  // The inactivation is a side-effect that must be idempotent and must survive
+  // both ensureShopifyTenant (which reactivates an "uninstalled" shop back to
+  // "active") AND a duplicate delivery. If it stayed after the dedupe return, a
+  // retried uninstall would reactivate the shop and then return "duplicate"
+  // without re-inactivating — leaving it stuck status="active", corrupting the
+  // churn signal and the retention/GDPR posture. Capture churn once (first
+  // delivery only, gated on `created`); ALWAYS re-assert inactive. (bug #13)
+  if (input.topic === "app/uninstalled") {
+    if (created) {
+      // Snapshot BEFORE teardown; best-effort and never throws.
+      await captureShopChurn(prisma, shop);
+    }
+    await markShopifyInstallInactive(prisma, input.shopDomain);
+    return { status: created ? "processed" : "duplicate", ledgerEventId: event.id };
   }
 
-  if (input.topic === "app/uninstalled") {
-    // Capture a PII-free churn snapshot BEFORE teardown — markShopifyInstallInactive
-    // flips status to "uninstalled" and deletes sessions. captureShopChurn is
-    // best-effort and never throws, so it can't block the uninstall completing.
-    await captureShopChurn(prisma, shop);
-    await markShopifyInstallInactive(prisma, input.shopDomain);
-    return { status: "processed", ledgerEventId: event.id };
+  if (!created) {
+    return { status: "duplicate", ledgerEventId: event.id };
   }
 
   if (input.topic === "app/scopes_update") {
