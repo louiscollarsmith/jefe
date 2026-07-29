@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 117);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 120);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -41,6 +41,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "0B — data-quality guardrails",
       "1A — cheap deterministic expansion",
       "Product performance v1",
+      "Customer memory v1",
     ]),
   );
   assert.equal(
@@ -104,13 +105,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 117);
-  assert.equal(result.derivationReport.attempted, 117);
+  assert.equal(result.registryDefinitionCount, 120);
+  assert.equal(result.derivationReport.attempted, 120);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    117,
+    120,
   );
-  assert.equal(result.derivationAttempts.length, 117);
+  assert.equal(result.derivationAttempts.length, 120);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -291,6 +292,92 @@ test("structured belief shares/rates ground generated percent claims", () => {
     numericTextIsGrounded("Beta is your most-returned product, a 33.33% return rate.", [returns]),
     true,
   );
+});
+
+function createCustomerMemoryPrisma() {
+  const now = Date.now();
+  // 5 repeat customers (>=2 orders) at 200 each; 10 one-time at 100 each.
+  const customerIdentities = [
+    ...Array.from({ length: 5 }, (_, i) => ({
+      orderCount: 2,
+      totalSpend: 200,
+      rawPayload: { orderIds: [`r-${i}-a`, `r-${i}-b`] },
+    })),
+    ...Array.from({ length: 10 }, (_, i) => ({
+      orderCount: 1,
+      totalSpend: 100,
+      rawPayload: { orderIds: [`o-${i}`] },
+    })),
+  ];
+  // A few priced GBP orders so shop base currency resolves to GBP.
+  const orders = Array.from({ length: 6 }, (_, i) => {
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    return { id: `cust-order-${i + 1}`, externalId: `cust-x-${i + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `cust-c-${i + 1}`, financialStatus: "PAID" };
+  });
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "cust.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Cust Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => customerIdentities },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("customer memory derives repeat revenue share, LTV and concentration (PII-safe)", async () => {
+  const prisma = createCustomerMemoryPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["customers"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+
+  const repeatShare = beliefs.get("customers.repeat_revenue_share.all_time");
+  assert.equal(repeatShare.value.percentage, 50); // 1000 repeat / 2000 total
+  assert.equal(repeatShare.value.repeatCustomerCount, 5);
+  assert.equal(repeatShare.value.currency, "GBP");
+
+  const ltv = beliefs.get("customers.average_lifetime_spend.all_time");
+  assert.equal(ltv.valueType, "structured");
+  assert.equal(ltv.value.averageLifetimeSpend, 133.33); // 2000 / 15
+  assert.equal(ltv.value.repeatCustomerAverageSpend, 200);
+  assert.equal(ltv.value.oneTimeCustomerAverageSpend, 100);
+  assert.equal(ltv.value.customerCount, 15);
+
+  const concentration = beliefs.get(
+    "customers.top_customer_revenue_share.all_time",
+  );
+  assert.equal(concentration.value.percentage, 75); // top 10 (1500) / 2000
+  assert.equal(concentration.value.topCustomerCount, 10);
+
+  // PII-safe: no identity fields leak into any customer belief value.
+  for (const key of [
+    "customers.repeat_revenue_share.all_time",
+    "customers.average_lifetime_spend.all_time",
+    "customers.top_customer_revenue_share.all_time",
+  ]) {
+    const serialized = JSON.stringify(beliefs.get(key).value);
+    assert.doesNotMatch(serialized, /email|maskedEmail|emailHash|@/i);
+  }
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {

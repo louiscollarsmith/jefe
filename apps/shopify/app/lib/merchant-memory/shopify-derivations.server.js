@@ -165,7 +165,7 @@ async function loadDerivationContext(prisma, input) {
       }),
       prisma.customerIdentity.findMany({
         where,
-        select: { orderCount: true, rawPayload: true },
+        select: { orderCount: true, totalSpend: true, rawPayload: true },
       }),
       prisma.inventoryLevel.findMany({
         where,
@@ -360,6 +360,12 @@ function deriveDefinition(context, definition) {
         return countOutcome(context, definition, context.customerIdentities.length, "Stored hashed customer identities.");
       case "customers.repeat_customer_rate.all_time":
         return repeatCustomerRate(context, definition);
+      case "customers.repeat_revenue_share.all_time":
+        return repeatRevenueShare(context, definition);
+      case "customers.average_lifetime_spend.all_time":
+        return averageLifetimeSpend(context, definition);
+      case "customers.top_customer_revenue_share.all_time":
+        return topCustomerRevenueShare(context, definition);
 
       case "refunds.refunded_order_rate.all_time":
         return refundedOrderRate(context, definition);
@@ -813,6 +819,86 @@ function repeatCustomerRate(context, definition) {
   if (context.customerIdentities.length < 10) return skipped(definition, "insufficient_data", "At least 10 known customers are required for repeat customer rate.", { customerIdentities: context.customerIdentities.length });
   const repeatCustomers = context.customerIdentities.filter((identity) => identity.orderCount >= 2).length;
   return shareOutcome(context, definition, repeatCustomers, context.customerIdentities.length, "Known hashed customer identities with at least two observed orders divided by known identities.", { confidence: sampleConfidence(0.85, context.customerIdentities.length, 10, 100), supportingValues: { window: "all_stored_history" } });
+}
+
+const MIN_CUSTOMERS_FOR_SPEND_BELIEFS = 10;
+const TOP_CUSTOMER_SAMPLE = 10;
+
+// Aggregate per-customer lifetime spend from the hashed identities. totalSpend
+// is stored in shop base currency (currentTotalPriceSet.shopMoney at ingest,
+// deduped by order id), so these are summable/comparable across customers
+// regardless of the buyer's presentment currency. PII-safe: counts, shares and
+// aggregate money only — never an identity.
+function customerSpendStats(context) {
+  let totalSpend = 0;
+  let repeatCount = 0;
+  let repeatSpend = 0;
+  const spendsDesc = [];
+  for (const identity of context.customerIdentities) {
+    const spend = Number(identity.totalSpend ?? 0);
+    totalSpend += spend;
+    spendsDesc.push(spend);
+    if (Number(identity.orderCount ?? 0) >= 2) {
+      repeatCount += 1;
+      repeatSpend += spend;
+    }
+  }
+  spendsDesc.sort((a, b) => b - a);
+  const customerCount = context.customerIdentities.length;
+  return {
+    customerCount,
+    totalSpend,
+    repeatCount,
+    repeatSpend,
+    oneTimeCount: customerCount - repeatCount,
+    oneTimeSpend: totalSpend - repeatSpend,
+    spendsDesc,
+  };
+}
+
+// Share of total customer spend that comes from repeat customers (>=2 orders):
+// distinct from repeat_customer_rate (share of customers), this is the "returning
+// customers drive X% of revenue" signal — a store can have few repeaters who
+// account for most revenue, or many who don't.
+function repeatRevenueShare(context, definition) {
+  const stats = customerSpendStats(context);
+  if (stats.customerCount < MIN_CUSTOMERS_FOR_SPEND_BELIEFS) return skipped(definition, "insufficient_data", "At least 10 known customers are required for repeat revenue share.", { customerIdentities: stats.customerCount });
+  if (stats.totalSpend <= 0) return skipped(definition, "insufficient_data", "Recorded customer spend is required for repeat revenue share.", { totalSpend: roundMoney(stats.totalSpend) });
+  return shareOutcome(context, definition, roundMoney(stats.repeatSpend), roundMoney(stats.totalSpend), "Lifetime spend from customers with at least two observed orders divided by total known customer spend (shop base currency).", { confidence: sampleConfidence(0.85, stats.customerCount, 10, 100), supportingValues: { repeatCustomerCount: stats.repeatCount, currency: shopBaseCurrency(context).currency, window: "all_stored_history" } });
+}
+
+// Average customer lifetime spend (LTV proxy), split by repeat vs one-time so the
+// value of retention is visible. Shop base currency.
+function averageLifetimeSpend(context, definition) {
+  const stats = customerSpendStats(context);
+  if (stats.customerCount < MIN_CUSTOMERS_FOR_SPEND_BELIEFS) return skipped(definition, "insufficient_data", "At least 10 known customers are required for average lifetime spend.", { customerIdentities: stats.customerCount });
+  if (stats.totalSpend <= 0) return skipped(definition, "insufficient_data", "Recorded customer spend is required for average lifetime spend.", { totalSpend: roundMoney(stats.totalSpend) });
+  return derived(context, definition, {
+    value: {
+      averageLifetimeSpend: roundMoney(stats.totalSpend / stats.customerCount),
+      repeatCustomerAverageSpend: stats.repeatCount > 0 ? roundMoney(stats.repeatSpend / stats.repeatCount) : 0,
+      oneTimeCustomerAverageSpend: stats.oneTimeCount > 0 ? roundMoney(stats.oneTimeSpend / stats.oneTimeCount) : 0,
+      customerCount: stats.customerCount,
+      currency: shopBaseCurrency(context).currency,
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.85, stats.customerCount, 10, 100),
+    confidenceReason: "Mean lifetime spend across known hashed customer identities (shop base currency).",
+    summary: `Average lifetime spend across ${stats.customerCount} known customers.`,
+    sampleSize: stats.customerCount,
+    supportingValues: { customerCount: stats.customerCount },
+  });
+}
+
+// Revenue concentration: share of total customer spend from the top customers.
+// A high value = revenue depends on a handful of buyers (concentration risk).
+function topCustomerRevenueShare(context, definition) {
+  const stats = customerSpendStats(context);
+  if (stats.customerCount < MIN_CUSTOMERS_FOR_SPEND_BELIEFS) return skipped(definition, "insufficient_data", "At least 10 known customers are required for customer concentration.", { customerIdentities: stats.customerCount });
+  if (stats.totalSpend <= 0) return skipped(definition, "insufficient_data", "Recorded customer spend is required for customer concentration.", { totalSpend: roundMoney(stats.totalSpend) });
+  const topCustomerCount = Math.min(TOP_CUSTOMER_SAMPLE, stats.customerCount);
+  const topSpend = sum(stats.spendsDesc.slice(0, topCustomerCount));
+  return shareOutcome(context, definition, roundMoney(topSpend), roundMoney(stats.totalSpend), `Lifetime spend from the top ${topCustomerCount} customers divided by total known customer spend (shop base currency).`, { confidence: sampleConfidence(0.85, stats.customerCount, 10, 100), supportingValues: { topCustomerCount, currency: shopBaseCurrency(context).currency, window: "all_stored_history" } });
 }
 
 function refundedOrderRate(context, definition) {
