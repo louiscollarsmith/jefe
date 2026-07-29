@@ -31,17 +31,17 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 **App name** (≤30 chars, must start with brand, no "Shopify" trademark):
 - **`Jefe: AI eCommerce Manager`** (26) — or `Jefe — Your AI Store Manager` (28)
 
-**Introduction** (≤100 chars, merchant benefit):
-> Jefe learns how your store really works, then tells you the smartest next move — with the receipts.
+**App introduction** (two brief *factual* sentences — Shopify bans "generic marketing language," so plainer than our site voice):
+> Jefe learns how your Shopify store actually works from your own orders, products, and customers. It then recommends your next best move and shows the evidence behind it, so you can act with confidence.
 
-**Description** (≤500 chars):
-> Meet Jefe — the AI manager for your Shopify store. Jefe reads your orders, products, customers and returns and builds a living memory of how your business actually works — one you can check and correct. Then it finds the next move worth making and shows the evidence behind it, so you decide with confidence. No dashboard to babysit, no generic chatbot — just a manager that gets your store. Advisory today; Jefe earns the right to act as you trust it.
+**App details** (factual, full sentences; no links/jargon/marketing/testimonials/stats; ≤500 chars):
+> Jefe connects to your Shopify store and reads your orders, products, customers, and inventory to build a structured, correctable understanding of how your business works. It uses that to surface the next actions worth taking — when to reorder, where returns come from, which products underperform — and shows the evidence behind each recommendation, so you stay in control. Jefe is advisory today and acts only when you approve, expanding what it handles as you build trust.
 
-**Feature list** (≤80 chars each, benefit-first):
+**Feature list** (≤80 chars each, plain/factual — avoid "best"/"pricing"/marketing words; the form auto-flags them):
 - Learns how your store works from your own orders, products and customers
-- Recommends your next best move — always with the evidence behind it
+- Recommends your next move, always with the evidence behind it
 - A living Merchant Memory you can inspect and correct anytime
-- Surfaces stockouts, pricing gaps and retention risks before you do
+- Surfaces stockouts, dead stock, and retention risks early
 - Advisory now, earns autonomy as you trust it — you're always in control
 
 **Pricing:** Free while in early access (Design Partner program).
@@ -51,6 +51,26 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 - **3–6 screenshots** 1600×900 (16:9): (1) Connect, (2) "What Jefe knows about your business" memory view, (3) an Insight, (4) a Goal, (5) a Plan/recommendation with its evidence. Crop browser chrome, no PII.
 - **Feature video** (optional, 2–3 min, ≤25% screencast): the "my name is Jefe" hook → the *"yes, that's exactly how my business works"* moment.
 - **Demo store + test instructions** for reviewers — use `tools/synthetic-shopify` seed data (no real customer data).
+
+---
+
+## Locked listing decisions (2026-07-29)
+
+**Primary category:** Store management › Operations › **Workflow automation** (execution is close → tag for the destination; Analytics is the fallback if actioning slips; category is changeable post-launch).
+
+**Automation tasks — tags:**
+- **Selected:** Inventory levels, Stock replenishment, Return processing, Order processing, Order tags, Product tags, Customer segments, Customer tags.
+- **Left off:** Time-based, Sales thresholds *(rule-builder — off-brand)*; Payment status, Order fulfillment *(no scope provisioned)*; Fraud detection, Email responses *(different product categories)*.
+
+**Customization — tags:**
+- **Selected:** Auto-sync data, Multi-store. *(Optional/founder's call: Scheduled tasks, APIs.)*
+- **Left off:** Conditional logic, Custom triggers, Custom workflows, Templates *(rule-builder — Jefe is judgment, not merchant-configured rules)*.
+
+**Tagging principle (for future edits):** tag for the *destination* (what Jefe will do), but exclude (a) other product categories Jefe won't be (fraud, customer-service email), (b) "build-your-own-rules" tags (the anti-thesis of Jefe), (c) domains with **no provisioned write scope**. The `write_products / orders / customers / inventory` scopes are the evidence of what's genuinely on the action roadmap.
+
+**Languages: English only at launch.** The app — UI *and* AI-generated output — is English-only; the checkbox attests the **app** is fully available, not just the listing. Localization is a **100→1000 item — German → French first** (biggest non-English Shopify markets).
+
+> ⚠️ **When localization ships, the App Store submission info must be redone:** a fully translated listing per language, re-attest the "languages the app is fully available in," and expect **re-review**. Adding a language = redo the listing + resubmit, not a checkbox.
 
 ---
 
@@ -75,4 +95,5 @@ There's **no keyword hack**. Shopify ranks on: **install volume + retention**, *
 5. Post-launch: reviews from design partners → ranking → Built for Shopify.
 
 ## Changelog
+- **2026-07-29 (pm)** — Locked category (Workflow automation) + final tag sets + English-only launch (localization = 100→1000, DE→FR; needs listing resubmission then). Rewrote intro/details/features to Shopify's factual-listing rules — stripped marketing-voice flourishes (that voice lives on the site) and the auto-flagged words ("best", "pricing"). Field-by-field submission answers provided to founder (discovery/pricing/testing).
 - **2026-07-29** — Created (chat 6). Audited app vs. requirements; app is technically ready-ish, listing is the blocker. Drafted full listing copy; flagged Level 2 data-protection, scope trim, free-plan pricing.
