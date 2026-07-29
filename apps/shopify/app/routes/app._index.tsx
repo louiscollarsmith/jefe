@@ -103,7 +103,10 @@ import {
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
-import { getMerchantMemoryConversationExperience } from "../lib/merchant-memory/conversation.server.js";
+import {
+  getMerchantMemoryConversationExperience,
+  sendConversationMessage,
+} from "../lib/merchant-memory/conversation.server.js";
 import { getBeliefDefinition } from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
@@ -522,6 +525,42 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent.startsWith("memory.")) {
+    try {
+      // The "correct anything" path: the merchant types plain English, the
+      // conversation service maps it to a correctBelief/confirmBelief structured
+      // operation, and the memory engine applies it (a merchant correction
+      // outranks inference). Thin dispatch — all logic lives in the service.
+      if (intent === "memory.message") {
+        const result = await sendConversationMessage(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          message: String(formData.get("message") ?? ""),
+        });
+        if (!result.ok) {
+          const messageError = result as { error?: string };
+          return {
+            ok: false,
+            error: messageError.error ?? "That correction could not be saved.",
+            intent,
+          };
+        }
+        return redirect(
+          appPathFromSearch(new URL(request.url).search, {
+            view: "memory",
+            memoryNotice: "message_saved",
+          }),
+        );
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: safeMerchantFacingError(error),
+        intent,
+      };
+    }
+  }
+
   return { ok: false, error: "Unsupported action." };
 };
 
@@ -547,14 +586,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   const previewDaily = url.searchParams.get("home") === "daily";
-  if (shop.onboardingCompletedAt || previewDaily) {
+  const viewMemory = url.searchParams.get("view") === "memory";
+  if (shop.onboardingCompletedAt || previewDaily || viewMemory) {
     const [storeName, memory] = await Promise.all([
       storeNamePromise,
       getMerchantMemoryView({ merchantId: merchant.id, shopId: shop.id }),
     ]);
     // Daily Home is the default post-onboarding surface. Toggle off with
-    // ENABLE_DAILY_HOME=false to fall back to the original Merchant Memory view.
-    if (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) {
+    // ENABLE_DAILY_HOME=false to fall back to the Merchant Memory view; ?view=memory
+    // forces the (editable) Merchant Memory view directly — the interim reachability
+    // hook until it becomes a first-class Daily Home destination (see
+    // docs/memory-correction-surface-spec.md).
+    if (
+      (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) &&
+      !viewMemory
+    ) {
       // Daily Home is a HOME screen: read the latest completed run fast.
       // It must NOT rebuild belief snapshots or ensure/queue generation, so
       // it uses the read-only getLatest* fetchers rather than the
@@ -586,12 +632,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         goals: goals?.selectedRun?.horizons ?? [],
       };
     }
+    // The Merchant Memory view is now editable: load the same conversation
+    // experience the goals step uses so the merchant can correct/add memory here.
+    const memoryConversation = await getMerchantMemoryConversationExperience(
+      prisma,
+      { merchantId: merchant.id, shopId: shop.id },
+    );
     return {
       appMode: "memory" as const,
       shop: session.shop,
       merchantName: merchant.name,
       storeName,
       memory,
+      memoryConversation,
     };
   }
 
@@ -865,6 +918,7 @@ export default function AppIndex() {
         storeName={data.storeName}
         merchantName={data.merchantName}
         memory={data.memory}
+        conversation={data.memoryConversation}
       />
     );
   }
@@ -3369,11 +3423,17 @@ function MerchantMemoryView({
   storeName,
   merchantName,
   memory,
+  conversation,
 }: {
   storeName: string;
   merchantName: string;
   memory: Awaited<ReturnType<typeof getMerchantMemoryView>>;
+  conversation: Awaited<
+    ReturnType<typeof getMerchantMemoryConversationExperience>
+  > | null;
 }) {
+  const [message, setMessage] = useState("");
+  const messages = (conversation?.messages ?? []).slice(-6);
   return (
     <main className="JefeMemoryView">
       <BlockStack gap="600">
@@ -3389,6 +3449,55 @@ function MerchantMemoryView({
             and lower-authority inferences that stay clearly labelled.
           </Text>
         </BlockStack>
+
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h2" variant="headingMd">
+              Tell me what&apos;s wrong or missing
+            </Text>
+            <Text as="p" tone="subdued">
+              Correct me in plain English — &ldquo;most of my sales are
+              wholesale,&rdquo; &ldquo;my cost on hoodies is £14&rdquo; — and
+              I&apos;ll update what I know. A correction from you outranks
+              anything I&apos;ve only inferred.
+            </Text>
+            {messages.length > 0 ? (
+              <BlockStack gap="150">
+                {messages.map((item) => (
+                  <Text
+                    key={item.id}
+                    as="p"
+                    tone={item.role === "assistant" ? "subdued" : undefined}
+                  >
+                    {(item.role === "assistant" ? "Jefe: " : "You: ") +
+                      item.content}
+                  </Text>
+                ))}
+              </BlockStack>
+            ) : null}
+            <Form method="post">
+              <input type="hidden" name="intent" value="memory.message" />
+              <BlockStack gap="200">
+                <TextField
+                  label="Correct Jefe"
+                  labelHidden
+                  name="message"
+                  value={message}
+                  onChange={setMessage}
+                  placeholder="e.g. Most of my sales are wholesale, not retail"
+                  multiline={3}
+                  autoComplete="off"
+                />
+                <InlineStack align="end">
+                  <Button submit variant="primary" disabled={!message.trim()}>
+                    Send
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </Form>
+          </BlockStack>
+        </Card>
+
         {memory.groups.length === 0 ? (
           <Card>
             <Text as="p">
@@ -3609,9 +3718,11 @@ async function getMerchantMemoryView({
     string,
     Array<{
       id: string;
+      key: string;
       title: string;
       value: string;
       status: string;
+      correctable: boolean;
       evidenceSummary: string | null;
     }>
   >();
@@ -3621,9 +3732,11 @@ async function getMerchantMemoryView({
     const rows = groups.get(category) ?? [];
     rows.push({
       id: belief.id,
+      key: belief.key,
       title: definition?.label ?? humanizeBeliefKey(belief.key),
       value: formatMemoryValue(belief.value),
       status: belief.status,
+      correctable: Boolean(definition?.merchantCorrectable),
       evidenceSummary: belief.evidence?.[0]?.summary ?? null,
     });
     groups.set(category, rows);

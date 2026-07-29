@@ -329,3 +329,18 @@ test("embedded route components do not render document structure or invalid nest
     );
   }
 });
+
+test("Merchant Memory view wires the correct-anything path + per-belief correctable", () => {
+  // Thin wiring (chat-7-blessed intent-in-index): memory.message dispatches to the
+  // shared conversation service; each belief carries `correctable` from its
+  // definition (for the phase-2 quick actions). ?view=memory is the interim
+  // reachability hook until Memory becomes a first-class Daily Home destination.
+  assert.match(appIndexSource, /intent === "memory\.message"/);
+  assert.match(appIndexSource, /sendConversationMessage\(prisma/);
+  assert.match(
+    appIndexSource,
+    /correctable: Boolean\(definition\?\.merchantCorrectable\)/,
+  );
+  assert.match(appIndexSource, /value="memory\.message"/);
+  assert.match(appIndexSource, /url\.searchParams\.get\("view"\) === "memory"/);
+});
