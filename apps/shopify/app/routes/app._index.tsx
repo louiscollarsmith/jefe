@@ -638,7 +638,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           error: null,
           state: null,
           step: "channels",
-          channelProvider: "slack",
+          // Connect defaults to the installing user's DM (connect-DM), so a
+          // successful connect must NOT auto-open the channel picker — channel
+          // choice stays optional/later. Leaving channelProvider unset keeps the
+          // "connected" notice without popping the "Choose a Slack channel" modal.
+          channelProvider: null,
           channelNotice: "slack_connected",
         }),
       );
