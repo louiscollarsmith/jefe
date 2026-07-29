@@ -53,12 +53,78 @@ const INITIAL_OPEN_QUESTIONS = [
   },
 ];
 
+// Open questions the GAP generator owns. Listing them lets us retract a question
+// automatically once its gap has been filled (a question that memory answered
+// for itself from data should stop being asked).
+const GAP_DRIVEN_QUESTION_KEYS = ["data.product_costs", "policies.no_sale_products"];
+
+/** @param {any} belief */
+function beliefPercentage(belief) {
+  const value = belief?.value;
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.percentage === "number") return value.percentage;
+  if (typeof value.ratio === "number") return value.ratio * 100;
+  return null;
+}
+
+/**
+ * Turn the current belief state into targeted open questions for the gaps only
+ * the merchant can fill — so memory actively reduces its own uncertainty instead
+ * of relying on two static seeds. Deterministic and keyed, so re-running upserts
+ * (never duplicates) and a resolved gap retracts its question.
+ * @param {Array<{ key: string; value: any }>} beliefs
+ */
+export function buildGapDrivenOpenQuestions(beliefs) {
+  const byKey = new Map(beliefs.map((belief) => [belief.key, belief]));
+  const questions = [];
+
+  // Missing or thin product costs → margin/profit can't be tracked. Cost-per-item
+  // is the one margin input Jefe cannot observe, so this is the highest-value gap.
+  const coveragePct = beliefPercentage(byKey.get("products.cost_coverage"));
+  const hasMargin = byKey.has("products.gross_margin.trailing_90d");
+  if (!hasMargin || (coveragePct !== null && coveragePct < 70)) {
+    questions.push({
+      category: "costs",
+      questionKey: "data.product_costs",
+      question:
+        coveragePct !== null
+          ? `Jefe can see cost prices for only ${Math.round(coveragePct)}% of your products, so it can't track your margin accurately yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?`
+          : "Jefe can't see your product cost prices, so it can't track margin or profit yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?",
+      reason:
+        "Cost per item is the one margin input Jefe cannot observe; with it, margin and profit beliefs unlock.",
+      priority: 15,
+      answerType: "text",
+      answerOptions: [],
+    });
+  }
+
+  // Several active products with no recent sales: memory can't tell dead stock
+  // from seasonal or newly launched lines — only the merchant can.
+  const noSale = byKey.get("products.no_sale_active_product_count.trailing_90d");
+  const noSaleCount = Number(noSale?.value?.count ?? 0);
+  if (noSaleCount >= 5) {
+    questions.push({
+      category: "policies",
+      questionKey: "policies.no_sale_products",
+      question: `${noSaleCount} of your active products haven't sold in 90 days. Should Jefe treat products like these as discontinued, seasonal, or still worth promoting?`,
+      reason:
+        "Lets Jefe classify no-sale products correctly instead of assuming they are dead stock.",
+      priority: 40,
+      answerType: "option",
+      answerOptions: ["discontinued", "seasonal", "new_or_launching", "keep_promoting"],
+    });
+  }
+
+  return questions;
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null }} input
  */
 export async function getMerchantMemoryConversationExperience(prisma, input) {
   await ensureInitialOpenQuestions(prisma, input);
+  await ensureGapDrivenOpenQuestions(prisma, input);
   const [conversation, summary] = await Promise.all([
     getOrCreateConversation(prisma, input),
     getMerchantMemorySummary(prisma, input),
@@ -818,6 +884,78 @@ async function commitStructuredOperation(prisma, input) {
 async function ensureInitialOpenQuestions(prisma, input) {
   await Promise.all(
     INITIAL_OPEN_QUESTIONS.map((question) =>
+      prisma.merchantMemoryOpenQuestion.upsert({
+        where: {
+          merchantId_questionKey: {
+            merchantId: input.merchantId,
+            questionKey: question.questionKey,
+          },
+        },
+        create: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? null,
+          ...question,
+        },
+        update: {
+          shopId: input.shopId ?? undefined,
+          question: question.question,
+          reason: question.reason,
+          priority: question.priority,
+          answerType: question.answerType,
+          answerOptions: question.answerOptions,
+        },
+      }),
+    ),
+  );
+}
+
+/**
+ * Generate and reconcile gap-driven open questions from the current belief
+ * state. Raises a question when a fillable gap exists, retracts it (status
+ * "resolved") once the gap closes, and re-opens it if the gap returns — so
+ * memory keeps its own questions in sync with what it can and can't yet see. A
+ * question the merchant already answered is never reopened or disturbed.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null }} input
+ */
+async function ensureGapDrivenOpenQuestions(prisma, input) {
+  const beliefs = await getBeliefsForMerchant(prisma, {
+    merchantId: input.merchantId,
+  });
+  const scoped = beliefs.filter(
+    (belief) => !belief.shopId || belief.shopId === input.shopId,
+  );
+  const applying = buildGapDrivenOpenQuestions(scoped);
+  const applyingKeys = new Set(applying.map((question) => question.questionKey));
+
+  const toResolve = GAP_DRIVEN_QUESTION_KEYS.filter(
+    (key) => !applyingKeys.has(key),
+  );
+  if (toResolve.length > 0) {
+    await prisma.merchantMemoryOpenQuestion.updateMany({
+      where: {
+        merchantId: input.merchantId,
+        questionKey: { in: toResolve },
+        status: "open",
+      },
+      data: { status: "resolved" },
+    });
+  }
+
+  if (applyingKeys.size > 0) {
+    // Re-open a managed question that was auto-resolved but whose gap is back.
+    await prisma.merchantMemoryOpenQuestion.updateMany({
+      where: {
+        merchantId: input.merchantId,
+        questionKey: { in: [...applyingKeys] },
+        status: "resolved",
+      },
+      data: { status: "open" },
+    });
+  }
+
+  await Promise.all(
+    applying.map((question) =>
       prisma.merchantMemoryOpenQuestion.upsert({
         where: {
           merchantId_questionKey: {

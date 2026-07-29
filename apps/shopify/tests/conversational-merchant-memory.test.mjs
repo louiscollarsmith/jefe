@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   OPERATION_TYPES,
+  buildGapDrivenOpenQuestions,
   interpretMerchantMessage,
   interpretMerchantMessageWithLlm,
   validateStructuredOperation,
@@ -14,6 +15,37 @@ import {
   formatBeliefValue,
   validateConversationalValue,
 } from "../app/lib/merchant-memory/conversational-belief-registry.server.js";
+
+test("gap-driven open questions raise on fillable gaps and retract when filled", () => {
+  // Thin cost coverage + several no-sale products => both gap questions raised.
+  const gapState = [
+    { key: "products.cost_coverage", value: { percentage: 20 } },
+    {
+      key: "products.no_sale_active_product_count.trailing_90d",
+      value: { count: 7 },
+    },
+  ];
+  const raised = buildGapDrivenOpenQuestions(gapState);
+  const raisedKeys = new Set(raised.map((question) => question.questionKey));
+  assert.ok(raisedKeys.has("data.product_costs"));
+  assert.ok(raisedKeys.has("policies.no_sale_products"));
+  const costs = raised.find(
+    (question) => question.questionKey === "data.product_costs",
+  );
+  assert.match(costs.question, /20%/);
+
+  // Costs now covered with a margin belief and no dead stock => neither gap
+  // applies, so the reconciler retracts both questions.
+  const filledState = [
+    { key: "products.cost_coverage", value: { percentage: 95 } },
+    { key: "products.gross_margin.trailing_90d", value: { percentage: 55 } },
+    {
+      key: "products.no_sale_active_product_count.trailing_90d",
+      value: { count: 0 },
+    },
+  ];
+  assert.equal(buildGapDrivenOpenQuestions(filledState).length, 0);
+});
 
 const beliefs = [
   {
