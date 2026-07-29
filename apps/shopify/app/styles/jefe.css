@@ -825,6 +825,17 @@
    nothing depends solely on a Polaris token name resolving.
    ========================================================================== */
 
+/* Whitespace fix: cinematic onboarding is dark, but the shell's min-height is
+   100dvh — the OUTER viewport, not the embedded Shopify iframe — so a strip can
+   go uncovered and show the light page default. Paint the page root to the
+   cinematic base colour (#0c0f1a, the var(--jc-canvas) fallback) ONLY while the
+   cinematic shell is mounted, via :has(). The non-cinematic light theme is
+   untouched (no cinematic shell -> this rule doesn't match). */
+html:has(.JefeOnboardingShell.is-cinematic),
+body:has(.JefeOnboardingShell.is-cinematic) {
+  background-color: #0c0f1a;
+}
+
 .JefeOnboardingShell.is-cinematic {
   /* ---- cinematic palette (referenced throughout this block) ---- */
   --jc-canvas: radial-gradient(
