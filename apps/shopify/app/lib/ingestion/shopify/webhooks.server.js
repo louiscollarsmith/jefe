@@ -21,6 +21,7 @@ import {
 } from "./canonical.server.js";
 import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jobs.server.js";
 import { logger as baseLogger } from "../../observability/logger.server.js";
+import { captureShopChurn } from "../../../services/analytics/churn.server.js";
 
 const webhookLogger = baseLogger.child({ component: "shopify-webhook" });
 
@@ -151,6 +152,10 @@ export async function processShopifyWebhook(prisma, input) {
   }
 
   if (input.topic === "app/uninstalled") {
+    // Capture a PII-free churn snapshot BEFORE teardown — markShopifyInstallInactive
+    // flips status to "uninstalled" and deletes sessions. captureShopChurn is
+    // best-effort and never throws, so it can't block the uninstall completing.
+    await captureShopChurn(prisma, shop);
     await markShopifyInstallInactive(prisma, input.shopDomain);
     return { status: "processed", ledgerEventId: event.id };
   }
