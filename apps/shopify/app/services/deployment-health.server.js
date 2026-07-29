@@ -75,6 +75,26 @@ export function readinessStatus(database) {
 }
 
 /**
+ * Whether a failed dependency probe should page (log at ERROR → Slack alert)
+ * versus be treated as an expected startup blip (log at WARN → no page).
+ *
+ * Right after a deploy the DB pool is often still warming (Neon cold start, and
+ * preDeploy `npm run migrate` just ran), so the first readiness/health probes can
+ * fail and then self-heal within seconds. Paging on those is noise — and with
+ * several sessions deploying, it fires constantly and trains the team to ignore
+ * the channel. After the grace window a failure is real and pages. Readiness
+ * still returns 503 during the window, so Railway holds traffic back correctly.
+ *
+ * @param {number} uptimeSeconds process uptime in seconds
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {boolean}
+ */
+export function shouldPageOnDependencyFailure(uptimeSeconds, env = process.env) {
+  const graceSeconds = Number(env.READINESS_ALERT_GRACE_SECONDS) || 60;
+  return uptimeSeconds >= graceSeconds;
+}
+
+/**
  * @template T
  * @param {Promise<T>} promise
  * @param {number} timeoutMs

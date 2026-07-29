@@ -3,6 +3,7 @@ import {
   buildHealthPayload,
   checkDatabaseHealth,
   readinessStatus,
+  shouldPageOnDependencyFailure,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
 
@@ -26,10 +27,21 @@ export const loader = async () => {
   };
 
   if (status !== 200) {
-    logger.error("Readiness check failed", {
+    // A DB blip inside the post-deploy grace window is an expected, self-healing
+    // startup transient, so log it at WARN (no page). A sustained failure after
+    // the window is real and logs at ERROR (pages). 503 is returned either way,
+    // so Railway correctly holds traffic back during startup.
+    const uptimeSeconds = Math.round(process.uptime());
+    const detail = {
       err: database.error,
       latencyMs: database.latencyMs,
-    });
+      uptimeSeconds,
+    };
+    if (shouldPageOnDependencyFailure(uptimeSeconds)) {
+      logger.error("Readiness check failed", detail);
+    } else {
+      logger.warn("Readiness check failed during startup grace window", detail);
+    }
   }
 
   return new Response(JSON.stringify(payload), {

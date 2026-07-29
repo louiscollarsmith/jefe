@@ -9,6 +9,7 @@ import { getShopifyStandaloneDocumentResponse } from "./services/shopify-documen
 import { logger } from "./lib/observability/logger.server";
 import { newCorrelationId } from "./lib/observability/context.server";
 import { initSentry, captureError } from "./lib/observability/sentry.server";
+import { recordRequestDuration } from "./lib/observability/perf.server";
 import db from "./db.server";
 import { track } from "./services/analytics/event-log.server";
 
@@ -23,6 +24,7 @@ export default async function handleRequest(
   responseHeaders: Headers,
   reactRouterContext: EntryContext
 ) {
+  const requestStart = Date.now();
   addDocumentResponseHeaders(request, responseHeaders);
   const standaloneShopifyResponse = getShopifyStandaloneDocumentResponse({
     responseStatusCode,
@@ -48,6 +50,7 @@ export default async function handleRequest(
           const stream = createReadableStreamFromReadable(body);
 
           responseHeaders.set("Content-Type", "text/html");
+          recordRequestDuration(Date.now() - requestStart);
           resolve(
             new Response(stream, {
               headers: responseHeaders,
