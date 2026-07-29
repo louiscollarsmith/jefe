@@ -23,6 +23,7 @@ import { ratio, roundMoney } from "../app/lib/merchant-memory/calculation-primit
 import { currentDefinitionVersion } from "../app/lib/merchant-memory/derivation-versioning.server.js";
 import { deriveMerchantMemoryBeliefs } from "../app/lib/merchant-memory/shopify-derivations.server.js";
 import { DETERMINISTIC_BELIEF_REGISTRY } from "../app/lib/merchant-memory/deterministic-belief-registry.server.js";
+import { numericTextIsGrounded } from "../app/lib/llm/numeric-grounding.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const silentLogger = {
@@ -234,7 +235,7 @@ test("product-performance beliefs derive concentration, bestsellers and dead sto
   assert.equal(byRevenue.value.productId, "prod-alpha");
   assert.equal(byRevenue.value.title, "Alpha");
   assert.equal(byRevenue.value.revenue, 600);
-  assert.equal(byRevenue.value.revenueShare, 75);
+  assert.equal(byRevenue.value.revenueSharePercent, 75);
 
   const byUnits = beliefs.get("products.bestseller_by_units.trailing_90d");
   assert.equal(byUnits.value.productId, "prod-alpha");
@@ -247,6 +248,49 @@ test("product-performance beliefs derive concentration, bestsellers and dead sto
   ]) {
     assert.ok(bands.includes(beliefs.get(key).confidence), `${key} confidence not in calibrated band`);
   }
+});
+
+test("structured belief shares/rates ground generated percent claims", () => {
+  // Regression for the merchant-facing generators (insights/goals/plan): structured
+  // beliefs must expose shares, rates and changes as *Percent fields (0-100), so a
+  // generator citing "75% of revenue" is accepted by the numeric-grounding guard
+  // instead of being falsely rejected (which can hard-fail the whole generation).
+  const bestseller = {
+    key: "products.bestseller_by_revenue.trailing_90d",
+    value: { title: "Alpha", revenue: 600, revenueSharePercent: 75, currency: "GBP" },
+  };
+  assert.equal(
+    numericTextIsGrounded("Alpha is your top product at 600, 75% of revenue.", [bestseller]),
+    true,
+  );
+  // The guard stays strict: an unsupported percentage is still rejected.
+  assert.equal(numericTextIsGrounded("Alpha is 90% of revenue.", [bestseller]), false);
+
+  const trend = {
+    key: "business.revenue_trend.trailing_180d",
+    value: { trend: "growing", changePercent: 25, recentRevenue: 1000, priorRevenue: 800 },
+  };
+  assert.equal(numericTextIsGrounded("Revenue is up 25% in the recent window.", [trend]), true);
+
+  // The headline returned product sits at the value's top level (topReturnedProduct)
+  // so it survives the generators' compactValue serialization; its rate grounds too.
+  const returns = {
+    key: "products.top_returned_products.trailing_180d",
+    value: {
+      topReturnedProduct: {
+        title: "Beta",
+        returnedUnits: 33,
+        returnRatePercent: 33.33,
+        refundValue: 500,
+      },
+      returnedProductCount: 4,
+      currency: "GBP",
+    },
+  };
+  assert.equal(
+    numericTextIsGrounded("Beta is your most-returned product, a 33.33% return rate.", [returns]),
+    true,
+  );
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {
@@ -417,7 +461,7 @@ test("top-returned-products maps refund line items to products with return rate"
   assert.equal(belief.value.items[0].productId, "prod-alpha");
   assert.equal(belief.value.items[0].returnedUnits, 2);
   assert.equal(belief.value.items[0].soldUnits, 6);
-  assert.equal(belief.value.items[0].returnRate, 0.3333);
+  assert.equal(belief.value.items[0].returnRatePercent, 33.33);
   assert.equal(belief.value.items[0].refundValue, 200);
   assert.equal(belief.value.items[1].productId, "prod-bravo");
   assert.equal(belief.value.items[1].returnedUnits, 1);
@@ -578,7 +622,7 @@ test("recent revenue trend compares last 90d to the prior 90d", async () => {
   assert.ok(trend, "revenue_trend should publish");
   // £1000 recent vs £800 prior -> +25% -> growing.
   assert.equal(trend.value.trend, "growing");
-  assert.equal(trend.value.changeRatio, 0.25);
+  assert.equal(trend.value.changePercent, 25);
   assert.equal(trend.value.recentRevenue, 1000);
   assert.equal(trend.value.priorRevenue, 800);
 });

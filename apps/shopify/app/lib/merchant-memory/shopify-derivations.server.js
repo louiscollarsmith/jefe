@@ -1214,7 +1214,7 @@ function revenueTrend(context, definition, days) {
   return derived(context, definition, {
     value: {
       trend,
-      changeRatio: roundNumber(change, 4),
+      changePercent: roundNumber(change * 100, 2),
       recentRevenue: roundMoney(recent.revenue),
       priorRevenue: roundMoney(prior.revenue),
       currency: shopBaseCurrency(context).currency,
@@ -1257,31 +1257,40 @@ function productMomentum(context, definition) {
   let risingProductCount = 0;
   let decliningProductCount = 0;
   let topRiser = null;
+  let topRiserChange = 0;
   let topFaller = null;
+  let topFallerChange = 0;
   for (const [productId, priorRevenue] of prior.revenueByProduct) {
     if (priorRevenue <= 0) continue;
     const currentRevenue = current.revenueByProduct.get(productId) ?? 0;
     const change = (currentRevenue - priorRevenue) / priorRevenue;
     const entry = {
       productId,
-      changeRatio: roundNumber(change, 4),
+      title: productTitle(context, productId),
+      changePercent: roundNumber(change * 100, 2),
       currentRevenue: roundMoney(currentRevenue),
       priorRevenue: roundMoney(priorRevenue),
     };
     if (change >= 0.2) {
       risingProductCount += 1;
-      if (!topRiser || change > topRiser.changeRatio) topRiser = entry;
+      if (!topRiser || change > topRiserChange) {
+        topRiser = entry;
+        topRiserChange = change;
+      }
     } else if (change <= -0.2) {
       decliningProductCount += 1;
-      if (!topFaller || change < topFaller.changeRatio) topFaller = entry;
+      if (!topFaller || change < topFallerChange) {
+        topFaller = entry;
+        topFallerChange = change;
+      }
     }
   }
   return derived(context, definition, {
     value: {
       risingProductCount,
       decliningProductCount,
-      topRiser: topRiser ? { ...topRiser, title: productTitle(context, topRiser.productId) } : null,
-      topFaller: topFaller ? { ...topFaller, title: productTitle(context, topFaller.productId) } : null,
+      topRiser,
+      topFaller,
       currency: shopBaseCurrency(context).currency,
       window: "current_30d_vs_prior_30d",
     },
@@ -1348,7 +1357,7 @@ function topReturnedProducts(context, definition, days) {
         returnedUnits,
         refundValue: roundMoney(refundValueByProduct.get(productId) ?? 0),
         soldUnits,
-        returnRate: soldUnits > 0 ? roundNumber(returnedUnits / soldUnits, 4) : null,
+        returnRatePercent: soldUnits > 0 ? roundNumber((returnedUnits / soldUnits) * 100, 2) : null,
       };
     })
     .sort((a, b) => b.returnedUnits - a.returnedUnits)
@@ -1356,6 +1365,10 @@ function topReturnedProducts(context, definition, days) {
   return derived(context, definition, {
     value: {
       items,
+      // Headline returned product surfaced at the top level so it survives the
+      // generator's compactValue serialization (which drops objects nested in an
+      // array); items[] stays for the memory view.
+      topReturnedProduct: items[0] ?? null,
       returnedProductCount: returnedUnitsByProduct.size,
       currency: shopBaseCurrency(context).currency,
       window: `trailing_${days}d`,
@@ -1583,7 +1596,7 @@ function bestsellerByRevenue(context, definition, days) {
       productId,
       title: productTitle(context, productId),
       revenue: roundMoney(revenue),
-      revenueShare: roundNumber((revenue / total) * 100, 2),
+      revenueSharePercent: roundNumber((revenue / total) * 100, 2),
       currency: currency.currency,
       sellingProductCount: ranked.length,
       window: `trailing_${days}d`,
@@ -1613,7 +1626,7 @@ function bestsellerByUnits(context, definition, days) {
       productId,
       title: productTitle(context, productId),
       units,
-      unitsShare: roundNumber((units / totalUnits) * 100, 2),
+      unitsSharePercent: roundNumber((units / totalUnits) * 100, 2),
       sellingProductCount: ranked.length,
       window: `trailing_${days}d`,
     },
