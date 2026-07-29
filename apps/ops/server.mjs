@@ -176,7 +176,15 @@ async function queryOverview() {
                      FROM activity_events WHERE created_at >= now()::date - interval '13 days' GROUP BY 1) e ON e.bucket = d::date
         ORDER BY d`)
   ).rows.map((r) => r.v);
-  return { ...shops, ...active, ...reliability, ...cost, ...latency, costTrend, activityTrend };
+  const churn = (
+    await pool.query(`
+      SELECT count(*)::int total,
+        count(*) FILTER (WHERE created_at >= now() - interval '30 days')::int churned_30d,
+        coalesce(round(avg((properties->>'tenureDays')::numeric)), 0)::int avg_tenure,
+        count(*) FILTER (WHERE (properties->>'reachedMemory')::boolean)::int reached_memory
+      FROM activity_events WHERE type = 'shop_uninstalled'`)
+  ).rows[0];
+  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, costTrend, activityTrend };
 }
 
 function renderOverview(o) {
@@ -192,6 +200,8 @@ function renderOverview(o) {
     ["LLM latency", `${fmtMs(o.p50)} / ${fmtMs(o.p95)}`, `p50 / p95 · 7d`, false],
     ["Job success", successRate == null ? "—" : `${successRate}%`, `${o.ok_7d || 0}/${jobTotal} · 7d`, false],
     ["Errors 24h", String(o.errors_24h || 0), o.errors_24h ? "reliability" : "clear", Boolean(o.errors_24h)],
+    ["Churned", String(o.churn?.total || 0), `${o.churn?.churned_30d || 0} · 30d`, false],
+    ["Tenure@churn", o.churn && o.churn.total ? `${o.churn.avg_tenure}d` : "—", o.churn && o.churn.total ? `${pct(o.churn.reached_memory, o.churn.total)}% reached memory` : "no churn yet", false],
   ];
   const tileHtml = tiles
     .map(
