@@ -16,9 +16,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Preserve embedded deep-links: an inbound `?shop=` (Shopify admin entry, and
   // what the welcome email can append to deep-link a merchant straight into
   // their embedded app) hands off to the app shell. Everything else gets the
-  // standalone landing below. The full standalone sign-in flow lands in a
-  // follow-up; today the only working way in is Jefe inside Shopify admin, so
-  // the landing routes there.
+  // standalone landing below, whose form signs the merchant in out-of-iframe via
+  // `/standalone/auth` (shop-domain OAuth → signed standalone session).
   if (url.searchParams.get("shop")) {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
@@ -54,13 +53,28 @@ export default function Index() {
           rhythms — so the plan you get back is one you&rsquo;d call your own.
         </p>
 
-        <a className="JefeLanding__cta" href="/auth/login">
-          Open Jefe in Shopify
-        </a>
+        <form
+          className="JefeLanding__form"
+          method="post"
+          action="/standalone/auth"
+        >
+          <input
+            className="JefeLanding__input"
+            type="text"
+            name="shop"
+            inputMode="url"
+            autoComplete="on"
+            placeholder="your-store.myshopify.com"
+            aria-label="Your Shopify store domain"
+          />
+          <button className="JefeLanding__cta" type="submit">
+            Open Jefe
+          </button>
+        </form>
 
         <p className="JefeLanding__helper">
-          Jefe runs inside your Shopify admin. Enter your store to open it — and
-          watch me work.
+          Enter your myshopify.com store to sign in — Jefe opens right here, or
+          walks you through Shopify to connect if you&rsquo;re new.
         </p>
 
         <p className="JefeLanding__sign">— Jefe</p>
@@ -143,19 +157,48 @@ const LANDING_CSS = `
   line-height: 1.55;
   color: #4a5165;
 }
+.JefeLanding__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+  margin-top: 30px;
+}
+.JefeLanding__input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid #d9cfc0;
+  border-radius: 10px;
+  background: #fffdfa;
+  color: #232a3d;
+  font-family: inherit;
+  font-size: 15px;
+  text-align: center;
+}
+.JefeLanding__input::placeholder { color: #a79f92; }
+.JefeLanding__input:focus-visible {
+  outline: 2px solid #8c4030;
+  outline-offset: 1px;
+  border-color: #8c4030;
+}
 .JefeLanding__cta {
-  margin-top: 32px;
+  width: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 48px;
   padding: 0 30px;
+  border: 0;
   border-radius: 10px;
   background: #33456b;
   color: #ffffff;
+  font-family: inherit;
   font-size: 16px;
   font-weight: 700;
   text-decoration: none;
+  cursor: pointer;
   box-shadow: 0 14px 30px -14px rgba(35, 42, 61, 0.75);
   transition: background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
