@@ -1089,9 +1089,6 @@ function buildMerchantMemoryLlmSystemPrompt() {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
- */
-/**
  * Bound a value for the LLM prompt so one belief can't dominate the budget.
  * @param {any} value
  * @param {number} max
@@ -1102,7 +1099,9 @@ function truncateForPrompt(value, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** @param {any} input */
+/**
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
+ */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
   return JSON.stringify({
