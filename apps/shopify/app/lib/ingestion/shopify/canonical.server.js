@@ -163,6 +163,13 @@ export async function upsertShopifyOrder(prisma, input) {
       ),
       currency: stringValue(order.currencyCode ?? order.currency) ?? "GBP",
       sourceName: stringValue(order.sourceName ?? order.source_name),
+      shippingCountry: stringValue(
+        order.shippingAddress?.countryCodeV2 ??
+          order.shippingAddress?.countryCode ??
+          order.shipping_address?.country_code ??
+          order.billingAddress?.countryCodeV2 ??
+          order.billing_address?.country_code,
+      ),
       subtotalPrice: moneyAmount(
         order.currentSubtotalPriceSet?.shopMoney ?? order.subtotal_price,
       ),
@@ -192,6 +199,13 @@ export async function upsertShopifyOrder(prisma, input) {
       ),
       currency: stringValue(order.currencyCode ?? order.currency) ?? "GBP",
       sourceName: stringValue(order.sourceName ?? order.source_name),
+      shippingCountry: stringValue(
+        order.shippingAddress?.countryCodeV2 ??
+          order.shippingAddress?.countryCode ??
+          order.shipping_address?.country_code ??
+          order.billingAddress?.countryCodeV2 ??
+          order.billing_address?.country_code,
+      ),
       subtotalPrice: moneyAmount(
         order.currentSubtotalPriceSet?.shopMoney ?? order.subtotal_price,
       ),

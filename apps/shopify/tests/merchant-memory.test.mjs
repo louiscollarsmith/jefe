@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 126);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 127);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -109,13 +109,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 126);
-  assert.equal(result.derivationReport.attempted, 126);
+  assert.equal(result.registryDefinitionCount, 127);
+  assert.equal(result.derivationReport.attempted, 127);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    126,
+    127,
   );
-  assert.equal(result.derivationAttempts.length, 126);
+  assert.equal(result.derivationAttempts.length, 127);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -459,6 +459,79 @@ test("inventory velocity flags at-risk stockouts and the reorder list", async ()
   assert.equal(lowCover.value.topAtRiskProduct.daysOfCover, 10);
   assert.equal(lowCover.value.items[0].available, 10);
   assert.equal(lowCover.value.items[0].dailyVelocity, 1);
+});
+
+function createRegionPrisma() {
+  const now = Date.now();
+  const orders = [];
+  for (let i = 0; i < 10; i += 1) {
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    // 6 orders ship to GB, 3 to US, 1 with no destination country.
+    const country = i < 6 ? "GB" : i < 9 ? "US" : null;
+    orders.push({
+      id: `region-order-${i + 1}`,
+      externalId: `region-x-${i + 1}`,
+      currency: "GBP",
+      totalPrice: "100.00",
+      totalDiscount: "0.00",
+      totalTax: "0.00",
+      totalShipping: "0.00",
+      processedAt: at,
+      sourceCreatedAt: at,
+      sourceUpdatedAt: at,
+      customerExternalId: `region-c-${i + 1}`,
+      financialStatus: "PAID",
+      shippingCountry: country,
+    });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "region.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Region Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("revenue-by-region splits revenue by destination country, coverage-gated", async () => {
+  const prisma = createRegionPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const region = beliefs.get("business.revenue_by_region.trailing_90d");
+
+  // GB 600 + US 300 = 900 known of 1000 total => 90% coverage (>= 70%).
+  assert.equal(region.valueType, "structured");
+  assert.equal(region.value.countryCount, 2);
+  assert.equal(region.value.knownRevenue, 900);
+  assert.equal(region.value.topCountry.country, "GB");
+  assert.equal(region.value.topCountry.revenue, 600);
+  assert.equal(region.value.topCountry.sharePercent, 66.67);
+  assert.equal(region.value.items[1].country, "US");
+  assert.equal(region.value.items[1].sharePercent, 33.33);
+  assert.equal(region.value.currency, "GBP");
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {

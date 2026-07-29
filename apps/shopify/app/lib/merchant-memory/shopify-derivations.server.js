@@ -141,6 +141,7 @@ async function loadDerivationContext(prisma, input) {
           customerExternalId: true,
           financialStatus: true,
           sourceName: true,
+          shippingCountry: true,
         },
       }),
       prisma.orderLineItem.findMany({
@@ -316,6 +317,8 @@ function deriveDefinition(context, definition) {
         return grossMargin(context, definition, 90);
       case "business.online_revenue_share.trailing_90d":
         return onlineRevenueShare(context, definition, 90);
+      case "business.revenue_by_region.trailing_90d":
+        return revenueByRegion(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -1694,6 +1697,58 @@ function onlineRevenueShare(context, definition, days) {
     summary: `Share of revenue from the online store vs in-store/other channels in the trailing ${days} days.`,
     sampleSize: orders.length,
     coverageMetrics: { channelCoverage: roundNumber(coverage, 4) },
+  });
+}
+
+// Revenue split by destination country — the geo signal behind "should I split my
+// store / open a US presence": which markets actually drive revenue. Coverage-gated
+// on the share of window revenue that carries a known destination country (older
+// orders lack it until re-backfilled). Shop base currency, so summable across a
+// multi-currency store.
+function revenueByRegion(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  let totalRevenue = 0;
+  let knownRevenue = 0;
+  const byCountry = new Map();
+  for (const order of orders) {
+    const revenue = orderValue(order);
+    totalRevenue += revenue;
+    const country = stringValue(order.shippingCountry)?.toUpperCase() ?? null;
+    if (!country) continue;
+    knownRevenue += revenue;
+    byCountry.set(country, (byCountry.get(country) ?? 0) + revenue);
+  }
+  const coverage = totalRevenue > 0 ? knownRevenue / totalRevenue : 0;
+  if (knownRevenue <= 0 || coverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Destination country is set on too little of window revenue (a re-backfill populates it).", { countryCoverage: roundNumber(coverage, 4) });
+  }
+  const items = Array.from(byCountry.entries())
+    .map(([country, revenue]) => ({
+      country,
+      revenue: roundMoney(revenue),
+      sharePercent: roundNumber((revenue / knownRevenue) * 100, 2),
+    }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 8);
+  return derived(context, definition, {
+    value: {
+      items,
+      topCountry: items[0] ?? null,
+      countryCount: byCountry.size,
+      knownRevenue: roundMoney(knownRevenue),
+      countryCoverage: roundNumber(coverage, 4),
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Revenue grouped by destination country over the share of window revenue with a known country.",
+    summary: `Revenue split by destination country in the trailing ${days} days.`,
+    sampleSize: orders.length,
+    coverageMetrics: { countryCoverage: roundNumber(coverage, 4) },
   });
 }
 

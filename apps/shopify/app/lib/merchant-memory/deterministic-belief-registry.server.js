@@ -4588,6 +4588,37 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.revenue_by_region.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "revenue grouped by destination country / revenue_with_known_country within window",
+    "minimumData": "At least 5 priced orders and a known destination country on >=70% of window revenue",
+    "confidenceRule": "0.9; scaled by country coverage and sample",
+    "legacyConfidenceRule": "0.9; scaled by country coverage and sample",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.9 scaled by coverage"
+    },
+    "confidenceComponents": [
+      { "template": "coverage_based_v1", "params": {} },
+      { "template": "sample_size_v1", "params": { "suppress_below_sample": 5 } }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Revenue split by destination country (from order shipping/billing country_code); value carries the top countries with shares. Coverage-gated — older orders lack a country until re-backfilled. The geo signal behind store-split and international-expansion decisions.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
     "key": "products.top_returned_products.trailing_180d",
     "category": "products",
     "valueType": "structured",

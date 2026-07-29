@@ -388,6 +388,7 @@ model Order {
   financialStatus    String?         @map("financial_status")
   fulfillmentStatus  String?         @map("fulfillment_status")
   sourceName         String?         @map("source_name")
+  shippingCountry    String?         @map("shipping_country")
   currency           String          @default("GBP")
   subtotalPrice      Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
   totalPrice         Decimal?        @map("total_price") @db.Decimal(18, 2)
