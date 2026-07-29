@@ -17,6 +17,8 @@ Merchant Memory is the substrate; the destination is Jefe operating as the merch
 
 Both share the same entry shape; they differ only in whether the terminal step is a governed write or a grounded answer.
 
+**A decision-support intent can never itself trigger a write.** Its only escalation path to action is to *propose a separate executable-family entry*, which then goes through the typed adapter (preview, approval, cap, reversibility). The family boundary **is** the advise/act line, and it is enforced structurally, not by prompt: a decision-support entry has no typed-adapter reference, so there is no code path by which it can mutate an external system. Advice governed by the memory-grounding / never-present-inference-as-fact discipline; action governed by the typed-adapter contract; the schema keeps them apart.
+
 ## The ontology is derived from demand — recursive, not hand-authored
 
 The founder does not author playbooks. The system **discovers** the ontology from what merchants actually want, and refines it from what they adopt — the same principle as the memory itself: derive structure from observed signal, let the merchant correct it.
@@ -24,12 +26,14 @@ The founder does not author playbooks. The system **discovers** the ontology fro
 **The loop:**
 1. **Capture** — every merchant action-intent becomes a candidate-intent record, *including the ones Jefe can't yet fulfil* (the "I wish you could…" signal). Sources: in-app / Slack conversation requests, observed Shopify behaviour, and the operator-community corpus.
 2. **Cluster** — recurring candidate-intents group into candidate action-types.
-3. **Promote** — a cluster that crosses a **frequency × value** threshold graduates into a first-class ontology entry (surfaced to the founder now; auto-scaffolded later).
+3. **Promote** — a cluster that crosses a **frequency × value** threshold graduates into a first-class ontology entry (surfaced to the founder now; auto-scaffolded later — see the safety note below on what "scaffold" may and may not do).
 4. **Feed back** — adoption + outcomes (`context/11`'s Observe→Learn) tell us which graduated entries were right.
 
 **Weight behaviour over talk.** Community discourse over-indexes on the novel and the painful (Markets consolidation, BNPL, tax codes) and under-represents the quiet high-value routine (nobody posts "reordered my bestseller again"). Prioritise by the frequency × value of the underlying *need*, trusting what merchants repeatedly **do and ask Jefe to do** above what they discuss.
 
 **The authored part is deliberately thin** — a small set of safe typed primitives (`context/11`) plus the promotion policy. The *instances and priorities* are learned. This mirrors the memory exactly: learned values over a thin authored schema. And those primitives are precisely what let the LLM safely *compose novel actions* nobody authored — the safety envelope is what makes emergent action safe enough to switch on.
+
+**Hard line on "auto-scaffold" — the safety envelope depends on it.** Scaffolding proposes new ontology *entries* and new *compositions of the vetted primitive set*. It **never synthesises new external-write code** — an LLM does not write a new typed adapter. Every write, however novel the composed action, bottoms out in an already-approved primitive with its idempotency key, preview, cap and reversibility intact. "Novel action" = a new arrangement of safe primitives, reviewed before it goes live; it is never freshly generated adapter code. Read "auto-scaffold" as "propose a composition," never as "generate a mutation path."
 
 ## Each ontology entry
 
@@ -73,6 +77,7 @@ The action is bound to the beliefs that justify it and the outcome that validate
 
 - Which first executable actions (reorder is the obvious start; then which?).
 - The autonomy-policy defaults per action class, and how aggressive the irreversible-action floor should be.
+- The **blast-radius-cap thresholds** for high-impact-but-*reversible* actions run at full auto (e.g. a catalogue-wide price change) — the key safety lever under merchant sovereignty. A reversible action can still be *large*; the cap is what bounds how much a single autonomous action may touch, independent of the reversibility floor.
 - The promotion threshold — how much demand before a candidate-intent graduates to a first-class entry.
 
 ## References
