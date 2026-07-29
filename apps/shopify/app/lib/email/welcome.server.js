@@ -100,6 +100,22 @@ function resolveUrls(input) {
 }
 
 /**
+ * Deep-link the "Watch me work" CTA straight into the merchant's embedded app.
+ * The standalone landing redirects `/?shop=<domain>` → `/app?…`, so appending the
+ * shop domain drops an already-installed merchant right into Jefe — working today,
+ * before standalone (out-of-iframe) auth ships. Falls back to the bare app URL if
+ * the shop domain is missing/invalid.
+ * @param {string} appUrl @param {string} shopDomain
+ */
+function buildAppDeepLink(appUrl, shopDomain) {
+  const normalized = normalizeShopDomain(shopDomain);
+  if (!normalized) return appUrl;
+  const url = new URL(appUrl);
+  url.searchParams.set("shop", normalized);
+  return url.toString();
+}
+
+/**
  * Render the welcome email to subject + HTML + text. Pure: no side effects, no
  * network. Every `{{placeholder}}` in the template gets a concrete value.
  *
@@ -113,6 +129,7 @@ export function renderWelcomeEmail(input) {
   const merchantName = input.merchantName ? input.merchantName.trim() : "";
   const greeting = merchantName ? `Alright, ${merchantName}` : "Alright";
   const { appUrl, logoUrl, unsubscribeUrl } = resolveUrls(input);
+  const ctaUrl = buildAppDeepLink(appUrl, input.shopDomain);
   const recipientEmail = input.to || "";
 
   const vars = {
@@ -122,7 +139,7 @@ export function renderWelcomeEmail(input) {
       input.historyDetail || "Your full order history and product catalogue",
     firstBriefEta: input.firstBriefEta || "Tomorrow, 7:30am",
     logoUrl,
-    ctaUrl: appUrl,
+    ctaUrl,
     guardrailsUrl: `${appUrl}/settings/guardrails`,
     notificationsUrl: `${appUrl}/settings/notifications`,
     unsubscribeUrl,
@@ -131,14 +148,14 @@ export function renderWelcomeEmail(input) {
 
   const html = interpolate(loadTemplateHtml(TEMPLATE_NAME), vars);
   const subject = `I'm in — here's what happens next on ${storeName}`;
-  const text = renderWelcomeText({ greeting, storeName, appUrl, unsubscribeUrl });
+  const text = renderWelcomeText({ greeting, storeName, ctaUrl, unsubscribeUrl });
 
   return { subject, html, text, unsubscribeUrl };
 }
 
 /**
  * Plaintext alternative — improves deliverability and covers text-only clients.
- * @param {{ greeting: string; storeName: string; appUrl: string; unsubscribeUrl: string }} vars
+ * @param {{ greeting: string; storeName: string; ctaUrl: string; unsubscribeUrl: string }} vars
  */
 function renderWelcomeText(vars) {
   return [
@@ -153,7 +170,7 @@ function renderWelcomeText(vars) {
     "",
     "What I won't do without asking: change a price, spend more than $200/day moving ad budget, email a customer, or cancel/refund an order. Anything on that list comes to you first.",
     "",
-    `Watch me work: ${vars.appUrl}`,
+    `Watch me work: ${vars.ctaUrl}`,
     "",
     "Reply to this email and it reaches me — same thread, same memory as the app.",
     "— Jefe",

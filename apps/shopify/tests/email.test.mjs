@@ -241,7 +241,12 @@ test("renderWelcomeEmail interpolates real merchant/store/link values", () => {
   assert.equal(subject, "I'm in — here's what happens next on Acme Tools");
   assert.ok(html.includes("Alright, Sam — I'm in."));
   assert.ok(html.includes("Acme Tools is connected."));
-  assert.ok(html.includes('href="https://staging.jefe.test"'), "CTA url");
+  assert.ok(
+    html.includes(
+      'href="https://staging.jefe.test/?shop=acme-tools.myshopify.com"',
+    ),
+    "CTA deep-links into the embedded app via ?shop=",
+  );
   assert.ok(html.includes("https://staging.jefe.test/settings/guardrails"));
   assert.ok(html.includes("https://staging.jefe.test/settings/notifications"));
   assert.ok(html.includes("https://staging.jefe.test/e/unsubscribe?t="));
@@ -249,7 +254,10 @@ test("renderWelcomeEmail interpolates real merchant/store/link values", () => {
   assert.ok(!html.includes("{{"), "no unresolved placeholders");
   assert.ok(unsubscribeUrl.startsWith("https://staging.jefe.test/e/unsubscribe?t="));
   assert.ok(text.includes("Alright, Sam — I'm in."));
-  assert.ok(text.includes("https://staging.jefe.test"));
+  assert.ok(
+    text.includes("https://staging.jefe.test/?shop=acme-tools.myshopify.com"),
+    "text CTA deep-links via ?shop=",
+  );
 });
 
 test("renderWelcomeEmail drops the name gracefully when merchant is unknown", () => {
