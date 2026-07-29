@@ -1091,13 +1091,18 @@ function buildMerchantMemoryLlmSystemPrompt() {
 /**
  * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
  */
-/** Bound a value for the LLM prompt so one belief can't dominate the budget. */
+/**
+ * Bound a value for the LLM prompt so one belief can't dominate the budget.
+ * @param {any} value
+ * @param {number} max
+ */
 function truncateForPrompt(value, max) {
   if (value === null || value === undefined) return null;
   const text = String(value);
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/** @param {any} input */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
   return JSON.stringify({
@@ -1107,7 +1112,7 @@ function buildMerchantMemoryLlmPrompt(input) {
       currentOpenQuestionId: input.context?.currentOpenQuestionId ?? null,
       lastCommittedBeliefKey: input.context?.lastCommittedBeliefKey ?? null,
     },
-    activeBeliefs: input.beliefs.slice(0, 40).map((belief) => ({
+    activeBeliefs: input.beliefs.slice(0, 40).map((/** @type {any} */ belief) => ({
       id: belief.id,
       key: belief.key,
       category: belief.category,
@@ -1125,7 +1130,7 @@ function buildMerchantMemoryLlmPrompt(input) {
         (/** @type {any} */ evidence) => truncateForPrompt(evidence.summary, 110),
       ),
     })),
-    openQuestions: (input.openQuestions ?? []).slice(0, 3).map((question) => ({
+    openQuestions: (input.openQuestions ?? []).slice(0, 3).map((/** @type {any} */ question) => ({
       id: question.id,
       questionKey: question.questionKey,
       category: question.category,
