@@ -84,7 +84,11 @@ export default async function handleRequest(
  */
 export const handleError: HandleErrorFunction = (error, { request }) => {
   if (request.signal.aborted) return;
-  if (isRouteErrorResponse(error) && error.status === 404) return;
+  // Client-error route responses (404s, stray 405 POSTs to actionless routes,
+  // 403s, etc.) are not server faults — skip alerting/Sentry so bots and
+  // misrouted requests don't page. 5xx route responses and genuine unhandled
+  // exceptions still fall through to capture + alert below.
+  if (isRouteErrorResponse(error) && error.status < 500) return;
 
   const url = new URL(request.url);
   const correlationId = request.headers.get("x-request-id") || newCorrelationId();
