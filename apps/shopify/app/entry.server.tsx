@@ -10,6 +10,7 @@ import { logger } from "./lib/observability/logger.server";
 import { newCorrelationId } from "./lib/observability/context.server";
 import { initSentry, captureError } from "./lib/observability/sentry.server";
 import { recordRequestDuration } from "./lib/observability/perf.server";
+import { isBenignStreamError } from "./lib/observability/stream-errors.server";
 import db from "./db.server";
 import { track } from "./services/analytics/event-log.server";
 
@@ -64,6 +65,16 @@ export default async function handleRequest(
         },
         onError(error) {
           responseStatusCode = 500;
+          // A client that disconnects mid-stream (closed tab, navigation, dropped
+          // network) surfaces here as "destination stream errored while writing
+          // data". That's the client going away, not a server fault — WARN, no
+          // page/Sentry. Real render errors still capture + page.
+          if (request.signal.aborted || isBenignStreamError(error)) {
+            logger.warn("Streaming render aborted (client disconnected)", {
+              err: error,
+            });
+            return;
+          }
           logger.error("Streaming render error", { err: error });
           captureError(error);
         },
