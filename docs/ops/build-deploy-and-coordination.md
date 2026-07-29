@@ -16,6 +16,7 @@ Railway additionally runs `prisma migrate deploy` as a pre-deploy step. **Never 
 
 Push/merge to `main` → Railway auto-builds `apps/shopify` → runs `prisma migrate deploy` against Neon → starts the web service.
 
+- **Getting a change onto `main`:** `origin/main` has a *single writer* — only the **main checkout** pushes it; worktree sessions never `git push origin main`. That keeps `origin/main` a strict ancestor of local `main`, so pushes always fast-forward and **no `git fetch` is needed** (a `fetch` 401 can wipe the shared osxkeychain credential for every session). Land a gate-green feature branch from the main checkout — worktrees share the same `.git`, so the branch is already a local ref, nothing to fetch: `git rebase main <branch>` → `git merge --ff-only <branch>` → one `git push origin main`. Urgent live-hotfixes may go straight to `main` via pathspec commits; feature / multi-commit work uses a worktree branch integrated this way.
 - **Service:** `jefe`. ⚠️ The `apps/shopify` directory is Railway-mislinked to `jefe-shepherd`, so always target `--service jefe` explicitly in Railway CLI commands.
 - **Health:** `/health` = liveness (always 200 when the process serves; a failing DB probe is logged, not surfaced, so a blip can't recycle a healthy instance). `/ready` = readiness (fails closed 503 when the DB is down) — this is Railway's healthcheck target.
 - Railway/Neon specifics, env groups, rollback: `docs/ops/deployment_staging_railway_neon.md`.
@@ -41,7 +42,8 @@ Eight-plus sessions share this one working tree and its git index — the source
 - **If a file you need is dirty with another session's work, leave it and coordinate** — don't commit their changes inside yours. (This is real: `CHANGELOG.md` is frequently mid-edit by another session.)
 - **CHANGELOG:** append your entry on your own branch and resolve at merge; don't hand-edit it concurrently on shared `main`.
 - **Awareness:** `git worktree list` + branch names show who's live.
-- **Shepherd** (the Korso coordination hub in `.mcp.json`) is *provisioned, not load-bearing*: its `SHEPHERD_TEAM_TOKEN` is exported interactive-shell-only (`~/.zshrc`), so MCP subprocesses don't inherit it and sessions load zero Shepherd tools. Don't rely on it. Reviving it = putting the token somewhere every session's MCP reliably inherits; until then it's decorative.
+- **Worktree gotcha — Prisma client skew:** the generated `@prisma/client` is regenerated to whatever schema last ran `prisma generate`, so a worktree pinned to an older migration can see *false-red* DB tests (`column … does not exist`) that aren't a real regression. Give each worktree its own `node_modules` (+ its own `prisma generate`); if you hit a phantom red, resync/regenerate to your schema before assuming a regression.
+- **Shepherd** (the Korso coordination hub) was evaluated and **removed** (2026-07-29): its `SHEPHERD_TEAM_TOKEN` was interactive-shell-only, so MCP subprocesses never inherited it and it never actually coordinated us. Coordinate via worktrees + cross-session messages instead.
 - **Environment gotchas:** GNU coreutils `timeout` isn't installed on this macOS — scripts using `timeout` fail with "command not found". Railway `--service jefe` (mislink, above).
 
 ## Architecture decisions

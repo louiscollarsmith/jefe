@@ -60,7 +60,7 @@ Historical context, reset audits and previous product prompts live under `docs/a
 
 Multiple Claude Code sessions work concurrently in this one tree, and the git **index/staging area is shared** across all of them.
 
-- **Isolate by default:** new sessions work in their own `git worktree` + branch (`git worktree add .claude/worktrees/<name> -b claude/<name>`) — physical isolation is the reliable fix and depends on nothing being wired. Shepherd (the coordination hub in `.mcp.json`) is provisioned but **not load-bearing**: its token is interactive-shell-only, so MCP subprocesses don't inherit it — don't rely on it. Full model: `docs/ops/build-deploy-and-coordination.md`.
+- **Isolate by default:** new sessions work in their own `git worktree` + branch (`git worktree add .claude/worktrees/<name> -b claude/<name>`) — physical isolation is the reliable fix and depends on nothing being wired. Coordinate via worktrees + cross-session messages. Only the main checkout pushes `origin/main`; worktree branches land via rebase → ff-merge → single push. Full model: `docs/ops/build-deploy-and-coordination.md`.
 - **Pathspec-commit, always:** `git commit -- <explicit paths> -m "…"`. Never a bare `git commit` / `git commit -a` — it commits the entire shared index and will sweep another session's staged files into your commit (this happened twice on 2026-07-28).
 - **Never** `git add -A` or `git add <dir>`; stage explicit paths only.
 - Stage and commit **atomically**, and verify `git diff --cached --name-only` shows only your files first.
