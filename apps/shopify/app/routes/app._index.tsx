@@ -106,7 +106,7 @@ import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js"
 import { getMerchantMemoryConversationExperience } from "../lib/merchant-memory/conversation.server.js";
 import { getBeliefDefinition } from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
-import { authenticate } from "../shopify.server";
+import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import {
   getShopBackfillProgress,
   queueInstallShopifyBackfill,
@@ -170,7 +170,7 @@ type SlackDestinationView = {
 type SlackOAuthLaunchState = "idle" | "authorising" | "failed";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session } = await authenticateAppRequest(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
@@ -526,7 +526,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session } = await authenticateAppRequest(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
