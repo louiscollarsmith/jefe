@@ -47,6 +47,7 @@ import {
 } from "../lib/observability/context.server.js";
 import { track } from "./analytics/event-log.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
+import { maybePruneOldEvents } from "./analytics/retention.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
@@ -177,6 +178,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     try {
       await processNextBackfillJob(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
+      await maybePruneOldEvents(workerPrisma, { logger });
     } catch (error) {
       const uptimeSeconds = Math.round(process.uptime());
       if (!shouldPageOnWorkerError(error, uptimeSeconds)) {
