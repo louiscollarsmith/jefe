@@ -248,7 +248,24 @@ function page(body) {
   .tile.tile-warn { border-color:#3a1f22; }
   .tile.tile-warn .tv { color:#ffb4b4; }
   .note { padding:8px 20px; color:#c9a15a; font-size:12px; border-bottom:1px solid #23262d; }
-</style></head><body>${body}</body></html>`;
+</style></head><body>${body}<script>(function(){
+  // Auto-refresh: reload on an interval so the panel stays live without a manual
+  // hard-reload. Only when the tab is visible (no background churn); scroll
+  // position is preserved across the reload. Tune with ?refresh=<seconds>,
+  // disable with ?refresh=0. Filters persist via the query string.
+  var K = "jefe-ops-scroll";
+  var y = sessionStorage.getItem(K);
+  if (y) { window.scrollTo(0, parseInt(y, 10) || 0); sessionStorage.removeItem(K); }
+  var secs = parseInt(new URLSearchParams(location.search).get("refresh") || "20", 10);
+  if (secs > 0) {
+    setInterval(function () {
+      if (document.visibilityState === "visible") {
+        sessionStorage.setItem(K, String(window.scrollY));
+        location.reload();
+      }
+    }, secs * 1000);
+  }
+})();</script></body></html>`;
 }
 
 function renderDashboard(data, params) {
@@ -455,10 +472,10 @@ function renderMerchant(data, shopDomain) {
   const marginTiles = [
     ["Revenue", money(netRevenue, ccy), `${m.orders || 0} orders · net`],
     ["COGS", money(m.cogs || 0, ccy), `${coverage}% cost coverage`],
-    ["Margin", money(grossMargin, ccy), marginPct == null ? "—" : `${marginPct}%${coverage < 90 ? " · indicative" : ""}`],
+    ["Margin", money(grossMargin, ccy), marginPct == null ? "—" : `${marginPct}%${coverage < 70 ? " · indicative" : ""}`],
   ];
   const coverageNote =
-    netRevenue > 0 && coverage < 90
+    netRevenue > 0 && coverage < 70
       ? `<div class="note">Margin is indicative — unit costs cover ${coverage}% of product revenue, so missing COGS understate true cost (real margin is lower). LLM cost uses placeholder pricing.</div>`
       : "";
 
