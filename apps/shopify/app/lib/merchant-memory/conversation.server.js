@@ -309,6 +309,12 @@ export async function sendConversationMessage(prisma, input) {
     context,
     llmProvider: input.llmProvider,
     logger: input.logger,
+    usage: {
+      prisma,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      feature: "conversation",
+    },
   }));
   const validation = /** @type {any} */ (await validateStructuredOperation(prisma, {
     merchantId: input.merchantId,
@@ -692,11 +698,11 @@ export function interpretMerchantMessage(input) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
  */
 export async function interpretMerchantMessageWithLlm(input) {
   const fallbackOperation = interpretMerchantMessage(input);
-  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger);
+  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
   if (!provider?.enabled) return fallbackOperation;
 
   try {
@@ -1156,10 +1162,11 @@ function buildMerchantMemoryLlmPrompt(input) {
 
 /**
  * @param {Pick<Console, "info" | "warn" | "error"> | undefined} logger
+ * @param {{ prisma: any; merchantId?: string | null; shopId?: string | null; feature: string; runType?: string | null; runId?: string | null }} [usage]
  */
-function safeCreateLlmProvider(logger) {
+function safeCreateLlmProvider(logger, usage) {
   try {
-    return createLlmProvider({ logger });
+    return createLlmProvider({ logger, usage });
   } catch (error) {
     logger?.warn?.("LLM provider unavailable", {
       error: error instanceof Error ? error.name : "UnknownError",

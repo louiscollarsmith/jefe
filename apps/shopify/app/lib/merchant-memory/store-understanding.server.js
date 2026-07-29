@@ -78,7 +78,14 @@ export async function runStoreUnderstandingPass(prisma, input) {
     }
   }
 
-  const provider = input.llmProvider ?? safeCreateLlmProvider(logger);
+  const provider =
+    input.llmProvider ??
+    safeCreateLlmProvider(logger, {
+      prisma,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      feature: "store_understanding",
+    });
   const run = await prisma.storeUnderstandingRun.create({
     data: {
       merchantId: input.merchantId,
@@ -702,10 +709,13 @@ function hashSummary(summary) {
   return createHash("sha256").update(JSON.stringify(stableSummary)).digest("hex");
 }
 
-/** @param {Pick<Console, "info" | "warn" | "error">} logger */
-function safeCreateLlmProvider(logger) {
+/**
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ * @param {{ prisma: any; merchantId?: string | null; shopId?: string | null; feature: string; runType?: string | null; runId?: string | null }} [usage]
+ */
+function safeCreateLlmProvider(logger, usage) {
   try {
-    return createLlmProvider({ logger });
+    return createLlmProvider({ logger, usage });
   } catch (error) {
     logger.warn("Store Understanding LLM provider unavailable", {
       error: error instanceof Error ? error.name : "UnknownError",
