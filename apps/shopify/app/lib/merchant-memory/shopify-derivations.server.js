@@ -306,6 +306,8 @@ function deriveDefinition(context, definition) {
         return productMomentum(context, definition);
       case "business.yoy_revenue_growth.trailing_90d":
         return yoyRevenueGrowth(context, definition, 90);
+      case "business.revenue_trend.trailing_180d":
+        return revenueTrend(context, definition, 90);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1192,6 +1194,36 @@ function yoyRevenueGrowth(context, definition, days) {
     confidenceReason: "Revenue in the trailing window vs the same window one calendar year earlier.",
     summary: `Year-over-year revenue change: trailing ${days} days vs the same period a year ago.`,
     sampleSize: current.orders.length + priorYear.orders.length,
+  });
+}
+
+// Recent revenue trend — revenue in the recent window vs the immediately prior
+// window of the same length (sequential, not year-over-year): is the store
+// growing, flat, or declining right now?
+function revenueTrend(context, definition, days) {
+  const recent = ordersRevenueInRange(context, 0, days);
+  const prior = ordersRevenueInRange(context, days, days * 2);
+  if (recent.orders.length < 5 || prior.orders.length < 5) {
+    return skipped(definition, "insufficient_data", `At least 5 priced orders in each of the recent and prior ${days}-day windows are required.`, { recentOrders: recent.orders.length, priorOrders: prior.orders.length });
+  }
+  if (prior.revenue <= 0) {
+    return skipped(definition, "insufficient_data", "No prior-window revenue to compare against.", { priorRevenue: prior.revenue });
+  }
+  const change = (recent.revenue - prior.revenue) / prior.revenue;
+  const trend = change >= 0.1 ? "growing" : change <= -0.1 ? "declining" : "flat";
+  return derived(context, definition, {
+    value: {
+      trend,
+      changeRatio: roundNumber(change, 4),
+      recentRevenue: roundMoney(recent.revenue),
+      priorRevenue: roundMoney(prior.revenue),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d_vs_prior_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: `Revenue in the recent ${days} days versus the immediately prior ${days} days.`,
+    summary: `Recent revenue trend: last ${days} days versus the prior ${days} days.`,
+    sampleSize: recent.orders.length + prior.orders.length,
   });
 }
 

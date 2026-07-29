@@ -4530,6 +4530,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Year-over-year revenue change, trailing 90 days vs the same 90 days a year ago; requires >12 months of stored history (unlocked by the extended backfill window).",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.revenue_trend.trailing_180d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_180d",
+    "calculation": "revenue in recent 90 days vs prior 90 days; growing/flat/declining at +/-10%",
+    "minimumData": "At least 5 priced orders in each of the recent and prior 90-day windows",
+    "confidenceRule": "0.85 direct observation",
+    "legacyConfidenceRule": "0.85 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Sequential revenue trend (recent 90d vs prior 90d), growing/flat/declining at a +/-10% threshold; complements year-over-year.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 
