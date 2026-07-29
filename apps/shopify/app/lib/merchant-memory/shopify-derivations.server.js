@@ -302,6 +302,8 @@ function deriveDefinition(context, definition) {
         return onlineRevenueShare(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
+      case "products.product_momentum.trailing_60d":
+        return productMomentum(context, definition);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1149,6 +1151,71 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Product momentum — products rising or declining by revenue, current 30 days vs
+// the prior 30 days. Only judges products with prior-period revenue (a brand-new
+// product isn't "momentum"), so it reads as growth/decline, not new arrivals.
+function productRevenueInRange(context, startDaysAgo, endDaysAgo) {
+  const startMs = context.now.getTime() - endDaysAgo * 86400000;
+  const endMs = context.now.getTime() - startDaysAgo * 86400000;
+  const orders = context.datedOrders.filter(
+    (order) =>
+      order.totalPrice !== null &&
+      order.orderTime.getTime() >= startMs &&
+      order.orderTime.getTime() < endMs,
+  );
+  const orderIds = new Set(orders.map((order) => order.id));
+  const revenueByProduct = sumBy(
+    context.lineItems.filter((item) => item.productId && orderIds.has(item.orderId)),
+    (item) => item.productId,
+    (item) => decimalNumber(item.totalPrice),
+  );
+  return { orders, revenueByProduct };
+}
+
+function productMomentum(context, definition) {
+  const current = productRevenueInRange(context, 0, 30);
+  const prior = productRevenueInRange(context, 30, 60);
+  if (current.orders.length < 5 || prior.orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in each of the current and prior 30-day windows are required.", { currentOrders: current.orders.length, priorOrders: prior.orders.length });
+  }
+  let risingProductCount = 0;
+  let decliningProductCount = 0;
+  let topRiser = null;
+  let topFaller = null;
+  for (const [productId, priorRevenue] of prior.revenueByProduct) {
+    if (priorRevenue <= 0) continue;
+    const currentRevenue = current.revenueByProduct.get(productId) ?? 0;
+    const change = (currentRevenue - priorRevenue) / priorRevenue;
+    const entry = {
+      productId,
+      changeRatio: roundNumber(change, 4),
+      currentRevenue: roundMoney(currentRevenue),
+      priorRevenue: roundMoney(priorRevenue),
+    };
+    if (change >= 0.2) {
+      risingProductCount += 1;
+      if (!topRiser || change > topRiser.changeRatio) topRiser = entry;
+    } else if (change <= -0.2) {
+      decliningProductCount += 1;
+      if (!topFaller || change < topFaller.changeRatio) topFaller = entry;
+    }
+  }
+  return derived(context, definition, {
+    value: {
+      risingProductCount,
+      decliningProductCount,
+      topRiser: topRiser ? { ...topRiser, title: productTitle(context, topRiser.productId) } : null,
+      topFaller: topFaller ? { ...topFaller, title: productTitle(context, topFaller.productId) } : null,
+      currency: shopBaseCurrency(context).currency,
+      window: "current_30d_vs_prior_30d",
+    },
+    confidence: 0.8,
+    confidenceReason: "Products with at least a 20% revenue change, current 30 days vs prior 30 days.",
+    summary: "Products rising or declining in the last 30 days versus the prior 30 days.",
+    sampleSize: current.orders.length + prior.orders.length,
+  });
 }
 
 // Returns by product — units and refund value returned per product, from refund

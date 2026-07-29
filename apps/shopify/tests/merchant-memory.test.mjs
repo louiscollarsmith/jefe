@@ -32,7 +32,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 114);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 115);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -103,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 114);
-  assert.equal(result.derivationReport.attempted, 114);
+  assert.equal(result.registryDefinitionCount, 115);
+  assert.equal(result.derivationReport.attempted, 115);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    114,
+    115,
   );
-  assert.equal(result.derivationAttempts.length, 114);
+  assert.equal(result.derivationAttempts.length, 115);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -421,6 +421,69 @@ test("top-returned-products maps refund line items to products with return rate"
   assert.equal(belief.value.items[0].refundValue, 200);
   assert.equal(belief.value.items[1].productId, "prod-bravo");
   assert.equal(belief.value.items[1].returnedUnits, 1);
+});
+
+function createMomentumPrisma() {
+  const products = [
+    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
+  ];
+  const variants = [
+    { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
+    { id: "var-bravo", productId: "prod-bravo", sku: "B", title: "B", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-b" },
+  ];
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const orders = [];
+  const lineItems = [];
+  let n = 0;
+  const addOrder = (daysAgo, productId, variantId, amount) => {
+    n += 1;
+    const id = `mo-${n}`;
+    const at = new Date(now - daysAgo * day);
+    orders.push({ id, externalId: `mox-${n}`, currency: "GBP", totalPrice: amount, totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `mc-${n}`, financialStatus: "PAID" });
+    lineItems.push({ orderId: id, externalId: `mli-${n}`, productId, variantId, quantity: 1, unitPrice: amount, totalPrice: amount });
+  };
+  // Prior window (35-56 days ago): Alpha high (£100 x5), Bravo low (£20 x5).
+  for (const d of [35, 40, 45, 50, 55]) addOrder(d, "prod-alpha", "var-alpha", "100.00");
+  for (const d of [36, 41, 46, 51, 56]) addOrder(d, "prod-bravo", "var-bravo", "20.00");
+  // Current window (5-26 days ago): Alpha low (£20 x5), Bravo high (£100 x5).
+  for (const d of [5, 10, 15, 20, 25]) addOrder(d, "prod-alpha", "var-alpha", "20.00");
+  for (const d of [6, 11, 16, 21, 26]) addOrder(d, "prod-bravo", "var-bravo", "100.00");
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Momentum Merchant",
+        shops: [{ id: "shop-test", shopDomain: "m.myshopify.com", historicalOrderAccess: "unknown", backfillCompletedAt: new Date(), rawPayload: { name: "M", iana_timezone: "Europe/London" }, connectorAccounts: [{ scopes: ["read_orders"] }], backfillStatuses: [{ domain: "orders", status: "complete" }] }],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("product momentum flags risers and fallers, current 30d vs prior 30d", async () => {
+  const prisma = createMomentumPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const m = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "products.product_momentum.trailing_60d",
+  );
+  assert.ok(m, "product_momentum should publish");
+  // Alpha £500->£100 (declining); Bravo £100->£500 (rising).
+  assert.equal(m.value.risingProductCount, 1);
+  assert.equal(m.value.decliningProductCount, 1);
+  assert.equal(m.value.topRiser.productId, "prod-bravo");
+  assert.equal(m.value.topFaller.productId, "prod-alpha");
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {

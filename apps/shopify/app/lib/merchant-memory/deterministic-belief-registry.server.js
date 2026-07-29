@@ -4474,6 +4474,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Most-returned products by units, with per-product return rate (returned/sold). From backfilled refund line items; real-time webhook refunds (REST shape) + a normalized table are follow-ups.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "products.product_momentum.trailing_60d",
+    "category": "products",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_60d",
+    "calculation": "products with >=20% revenue change, current 30 days vs prior 30 days",
+    "minimumData": "At least 5 priced orders in each of the current and prior 30-day windows",
+    "confidenceRule": "0.8 direct observation",
+    "legacyConfidenceRule": "0.8 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.8 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "products"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Rising/declining product counts + top riser/faller by revenue, current 30d vs prior 30d. Only judges products with prior-period revenue (excludes brand-new products).",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 
