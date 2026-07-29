@@ -4782,6 +4782,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Needs about a year of history; months are bucketed in the shop timezone. Requires read_all_orders for history beyond 60 days.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.recommendation_engagement.all_time",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "counts of plan recommendation review outcomes (accepted/rejected/completed) with acceptance and completion rates",
+    "minimumData": "At least 3 recommendations",
+    "confidenceRule": "0.90 direct observation; rises with recommendation count",
+    "legacyConfidenceRule": "0.90 direct observation; rises with recommendation count",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": false,
+      "legacy_rule": "0.90 direct observation; rises with recommendation count"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample"],
+    "refreshCadence": "On recommendation review; debounce",
+    "dependencies": ["plan_recommendations"],
+    "tranche": "Recommendation outcomes v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "On-demand; promote only when decision-relevant",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "An engagement signal for the earned-autonomy ramp, not a store metric; depends on the merchant reviewing recommendations in-app.",
+    "sourceUrl": "https://shopify.dev/docs/apps/build/online-store"
   }
 ];
 

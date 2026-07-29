@@ -97,7 +97,7 @@ async function loadDerivationContext(prisma, input) {
   const shop = merchant.shops[0] ?? null;
   const shopId = input.shopId ?? shop?.id ?? null;
   const where = { merchantId: input.merchantId, shopId: shopId ?? undefined };
-  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels] =
+  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations] =
     await Promise.all([
       prisma.product.findMany({
         where,
@@ -180,6 +180,19 @@ async function loadDerivationContext(prisma, input) {
           observedAt: true,
         },
       }),
+      // Recommendation outcomes are the Observe→Learn signal. Guarded so
+      // derivation fixtures/mocks without this accessor simply see none.
+      prisma.merchantPlanRecommendation?.findMany
+        ? prisma.merchantPlanRecommendation.findMany({
+            where,
+            select: {
+              reviewStatus: true,
+              acceptedAt: true,
+              rejectedAt: true,
+              completedAt: true,
+            },
+          })
+        : Promise.resolve([]),
     ]);
 
   const now = new Date();
@@ -218,6 +231,7 @@ async function loadDerivationContext(prisma, input) {
     refunds,
     customerIdentities,
     inventoryLevels,
+    planRecommendations,
     retainedProducts,
     activeProducts,
     retainedVariants,
@@ -312,6 +326,8 @@ function deriveDefinition(context, definition) {
         return revenueTrend(context, definition, 90);
       case "business.peak_sales_month.all_time":
         return peakSalesMonth(context, definition);
+      case "business.recommendation_engagement.all_time":
+        return recommendationEngagement(context, definition);
       case "products.revenue_by_product_type.trailing_90d":
         return revenueByProductType(context, definition, 90);
       case "products.revenue_by_vendor.trailing_90d":
@@ -1362,6 +1378,41 @@ function peakSalesMonth(context, definition) {
     summary: `Peak sales month: ${MONTH_NAMES[peakMonth - 1]} (${roundNumber((peakRevenue / total) * 100, 2)}% of stored revenue).`,
     sampleSize: orders.length,
     supportingValues: { monthsOfHistory },
+  });
+}
+
+// Observe→Learn: how the merchant engages with Jefe's recommendations, from the
+// plan recommendation review outcomes. The first memory signal on the earned-
+// autonomy ramp — a merchant who accepts and completes recommendations is one
+// Jefe can eventually act for with less friction.
+function recommendationEngagement(context, definition) {
+  const recs = context.planRecommendations ?? [];
+  if (recs.length < 3) return skipped(definition, "insufficient_data", "At least 3 recommendations are required to summarize engagement.", { recommendations: recs.length });
+  let accepted = 0;
+  let rejected = 0;
+  let completed = 0;
+  for (const rec of recs) {
+    const status = String(rec.reviewStatus ?? "proposed");
+    if (rec.completedAt || status === "completed") completed += 1;
+    if (rec.acceptedAt || status === "accepted" || status === "completed") accepted += 1;
+    if (rec.rejectedAt || status === "rejected") rejected += 1;
+  }
+  const total = recs.length;
+  return derived(context, definition, {
+    value: {
+      totalRecommendations: total,
+      acceptedCount: accepted,
+      rejectedCount: rejected,
+      completedCount: completed,
+      acceptanceRatePercent: roundNumber((accepted / total) * 100, 2),
+      completionRatePercent: roundNumber((completed / total) * 100, 2),
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.9, total, 3, 30),
+    confidenceReason: "Direct counts of plan recommendation review outcomes.",
+    summary: `${accepted} of ${total} recommendations accepted; ${completed} completed.`,
+    sampleSize: total,
+    supportingValues: { totalRecommendations: total },
   });
 }
 

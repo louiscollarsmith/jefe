@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 125);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 126);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -45,6 +45,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "Inventory velocity v1",
       "Attribute performance v1",
       "Seasonality v1",
+      "Recommendation outcomes v1",
     ]),
   );
   assert.equal(
@@ -108,13 +109,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 125);
-  assert.equal(result.derivationReport.attempted, 125);
+  assert.equal(result.registryDefinitionCount, 126);
+  assert.equal(result.derivationReport.attempted, 126);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    125,
+    126,
   );
-  assert.equal(result.derivationAttempts.length, 125);
+  assert.equal(result.derivationAttempts.length, 126);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -770,6 +771,63 @@ test("seasonality identifies the peak sales month across a year of history", asy
   assert.equal(belief.value.peakMonthNumber, 11);
   assert.equal(belief.value.currency, "GBP");
   assert.equal(belief.value.monthlyBreakdown.length, 12);
+});
+
+function createRecommendationPrisma() {
+  const at = new Date(Date.UTC(2026, 5, 1));
+  const recommendations = [
+    { reviewStatus: "completed", acceptedAt: at, rejectedAt: null, completedAt: at },
+    { reviewStatus: "accepted", acceptedAt: at, rejectedAt: null, completedAt: null },
+    { reviewStatus: "accepted", acceptedAt: at, rejectedAt: null, completedAt: null },
+    { reviewStatus: "rejected", acceptedAt: null, rejectedAt: at, completedAt: null },
+    { reviewStatus: "proposed", acceptedAt: null, rejectedAt: null, completedAt: null },
+  ];
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "rec.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(Date.UTC(2026, 6, 1)),
+            rawPayload: { name: "Rec Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => [] },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+    merchantPlanRecommendation: { findMany: async () => recommendations },
+  };
+}
+
+test("recommendation engagement summarizes accept/complete outcomes (Observe->Learn)", async () => {
+  const prisma = createRecommendationPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const belief = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.recommendation_engagement.all_time",
+  );
+  assert.ok(belief, "recommendation_engagement should publish");
+  assert.equal(belief.value.totalRecommendations, 5);
+  assert.equal(belief.value.acceptedCount, 3); // 2 accepted + 1 completed
+  assert.equal(belief.value.completedCount, 1);
+  assert.equal(belief.value.rejectedCount, 1);
+  assert.equal(belief.value.acceptanceRatePercent, 60); // 3/5
+  assert.equal(belief.value.completionRatePercent, 20); // 1/5
 });
 
 function createMomentumPrisma() {
