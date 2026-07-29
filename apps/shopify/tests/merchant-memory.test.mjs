@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 127);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 128);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -109,13 +109,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 127);
-  assert.equal(result.derivationReport.attempted, 127);
+  assert.equal(result.registryDefinitionCount, 128);
+  assert.equal(result.derivationReport.attempted, 128);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    127,
+    128,
   );
-  assert.equal(result.derivationAttempts.length, 127);
+  assert.equal(result.derivationAttempts.length, 128);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -532,6 +532,76 @@ test("revenue-by-region splits revenue by destination country, coverage-gated", 
   assert.equal(region.value.items[1].country, "US");
   assert.equal(region.value.items[1].sharePercent, 33.33);
   assert.equal(region.value.currency, "GBP");
+});
+
+function createRegionMarginPrisma() {
+  const now = Date.now();
+  const products = [
+    { id: "prod-gb", title: "GB Line", status: "ACTIVE" },
+    { id: "prod-us", title: "US Line", status: "ACTIVE" },
+  ];
+  // Same £100 price, different cost: GB cost 40 (60% margin), US cost 70 (30%).
+  const variants = [
+    { id: "var-gb", productId: "prod-gb", sku: "GB", title: "GB", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-gb" },
+    { id: "var-us", productId: "prod-us", sku: "US", title: "US", price: "100.00", currency: "GBP", unitCost: "70.00", inventoryItemExternalId: "inv-us" },
+  ];
+  const orders = [];
+  const lineItems = [];
+  for (let i = 0; i < 10; i += 1) {
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    const country = i < 6 ? "GB" : i < 9 ? "US" : null;
+    const productId = country === "US" ? "prod-us" : "prod-gb";
+    const variantId = country === "US" ? "var-us" : "var-gb";
+    const id = `rm-order-${i + 1}`;
+    orders.push({ id, externalId: `rm-x-${i + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `rm-c-${i + 1}`, financialStatus: "PAID", shippingCountry: country });
+    lineItems.push({ orderId: id, productId, variantId, quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "rm.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "RM Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders", "read_inventory"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("margin-by-region states gross margin per country, doubly coverage-gated", async () => {
+  const prisma = createRegionMarginPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const margin = beliefs.get("business.margin_by_region.trailing_90d");
+
+  assert.equal(margin.valueType, "structured");
+  assert.equal(margin.value.regionCount, 2);
+  // GB: (600 - 6*40) / 600 = 60%; US: (300 - 3*70) / 300 = 30%.
+  assert.equal(margin.value.topRegion.country, "GB");
+  assert.equal(margin.value.topRegion.marginPercent, 60);
+  const us = margin.value.items.find((item) => item.country === "US");
+  assert.equal(us.marginPercent, 30);
+  assert.equal(margin.value.currency, "GBP");
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {

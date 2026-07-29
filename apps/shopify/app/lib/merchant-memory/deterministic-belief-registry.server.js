@@ -4619,6 +4619,37 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.margin_by_region.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "per destination country: (covered revenue - covered COGS) / covered revenue, over the cost-covered share of the region's revenue",
+    "minimumData": "At least 5 priced orders, a known country on >=70% of window revenue, and >=70% cost coverage in at least one region",
+    "confidenceRule": "0.85; scaled by country + cost coverage",
+    "legacyConfidenceRule": "0.85; scaled by country + cost coverage",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.85 scaled by coverage"
+    },
+    "confidenceComponents": [
+      { "template": "coverage_based_v1", "params": {} },
+      { "template": "sample_size_v1", "params": { "suppress_below_sample": 5 } }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "variants"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Gross margin per destination country; a region's margin is stated only where cost-per-item covers >=70% of its revenue, never guessed. The profitability half of the store-split / expansion decision (revenue_by_region is the volume half).",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
     "key": "products.top_returned_products.trailing_180d",
     "category": "products",
     "valueType": "structured",

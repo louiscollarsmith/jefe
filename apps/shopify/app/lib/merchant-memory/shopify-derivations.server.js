@@ -319,6 +319,8 @@ function deriveDefinition(context, definition) {
         return onlineRevenueShare(context, definition, 90);
       case "business.revenue_by_region.trailing_90d":
         return revenueByRegion(context, definition, 90);
+      case "business.margin_by_region.trailing_90d":
+        return marginByRegion(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -1819,6 +1821,82 @@ function grossMargin(context, definition, days) {
     summary: `Gross margin on cost-covered products in the trailing ${days} days.`,
     sampleSize: orders.length,
     coverageMetrics: { revenueCoverage: roundNumber(revenueCoverage, 4) },
+  });
+}
+
+// Gross margin per destination country — the missing half of the store-split /
+// international-expansion decision: revenue_by_region says WHERE the revenue is;
+// this says whether it's PROFITABLE there (a market can be big on revenue but thin
+// on margin after regional cost mix). Doubly coverage-gated: on known destination
+// country (>=70% of window revenue) and, per region, on cost coverage (a region's
+// margin is only stated when >=70% of its revenue has a known cost — never guessed).
+function marginByRegion(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  if (!currency.ok) {
+    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+  }
+  const countryByOrder = new Map();
+  for (const order of orders) {
+    countryByOrder.set(order.id, stringValue(order.shippingCountry)?.toUpperCase() ?? null);
+  }
+  const costByVariant = variantUnitCostMap(context);
+  const byRegion = new Map();
+  let totalRevenue = 0;
+  let knownCountryRevenue = 0;
+  for (const item of context.lineItems) {
+    if (!countryByOrder.has(item.orderId)) continue;
+    const revenue = decimalNumber(item.totalPrice);
+    totalRevenue += revenue;
+    const country = countryByOrder.get(item.orderId);
+    if (!country) continue;
+    knownCountryRevenue += revenue;
+    const bucket = byRegion.get(country) ?? { revenue: 0, coveredRevenue: 0, coveredCogs: 0 };
+    bucket.revenue += revenue;
+    const unitCost = item.variantId != null ? costByVariant.get(item.variantId) : undefined;
+    if (unitCost != null) {
+      bucket.coveredRevenue += revenue;
+      bucket.coveredCogs += unitCost * (Number(item.quantity) || 0);
+    }
+    byRegion.set(country, bucket);
+  }
+  const countryCoverage = totalRevenue > 0 ? knownCountryRevenue / totalRevenue : 0;
+  if (knownCountryRevenue <= 0 || countryCoverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Destination country is set on too little of window revenue.", { countryCoverage: roundNumber(countryCoverage, 4) });
+  }
+  const items = Array.from(byRegion.entries())
+    .map(([country, bucket]) => {
+      const costCov = bucket.revenue > 0 ? bucket.coveredRevenue / bucket.revenue : 0;
+      const stated = costCov >= 0.7 && bucket.coveredRevenue > 0;
+      return {
+        country,
+        revenue: roundMoney(bucket.revenue),
+        marginPercent: stated ? roundNumber(((bucket.coveredRevenue - bucket.coveredCogs) / bucket.coveredRevenue) * 100, 2) : null,
+        costCoverage: roundNumber(costCov, 4),
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 8);
+  if (!items.some((item) => item.marginPercent !== null)) {
+    return skipped(definition, "blocked_by_data_quality", "Cost-per-item covers too little of any region's revenue for a reliable per-region margin.", { countryCoverage: roundNumber(countryCoverage, 4) });
+  }
+  return derived(context, definition, {
+    value: {
+      items,
+      topRegion: items[0] ?? null,
+      regionCount: byRegion.size,
+      countryCoverage: roundNumber(countryCoverage, 4),
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Per-destination-country gross margin over the cost-covered share of each region's revenue; coverage-gated on known country and known cost.",
+    summary: `Gross margin by destination country in the trailing ${days} days.`,
+    sampleSize: orders.length,
+    coverageMetrics: { countryCoverage: roundNumber(countryCoverage, 4) },
   });
 }
 
