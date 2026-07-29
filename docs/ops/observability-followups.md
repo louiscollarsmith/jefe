@@ -73,6 +73,31 @@ The panel (`admin.mynamejefe.com`) is intentionally **public** right now
   Then set `jefe-ops` `DATABASE_URL` to that role's connection string. Needs DB
   admin, so it's a founder step.
 
+## LLM cost metering completeness (chat 7 #3) — margin-accuracy caveat
+
+The ops panel's per-merchant + portfolio LLM cost — and therefore the **margin**
+denominator — currently **undercounts**: only 3 of 7 `createLlmProvider` call sites
+pass a `usage:` context, so 4 LLM paths aren't metered into `llm_usage_event`.
+Until fixed, treat panel LLM cost + margin as a **lower bound** (margin slightly
+overstated). The 4 unmetered sites (from chat 7), to wire like the metered ones
+(insights `service.server.js ~:218`, plan `~:200`, goals `~:251`):
+
+- insight-correction — `app/lib/merchant-insights/service.server.js ~:492` (feature `insight_correction`)
+- goals-document — `app/lib/merchant-goals/service.server.js ~:490` (feature `goals_document`)
+- store-understanding — `app/lib/merchant-memory/store-understanding.server.js ~:708` (feature `store_understanding`)
+- conversation (Slack-driven message→operation; likely the biggest untracked spend) — `app/lib/merchant-memory/conversation.server.js ~:1008` (feature `conversation`)
+
+These touch the insights/goals/memory lanes, so coordinate per-file (chat 4 owns
+memory) / do it in a worktree rather than in the shared tree.
+
+## /health dependency diagnostics (chat 7)
+
+Add NON-gating diagnostics to `/health` (never `/ready` gates — a flaky external
+probe must not recycle a healthy instance): Resend (isEmailEnabled + reachability),
+Slack (isConfigured), Gemini (LLM_ENABLED + cheap ping), and the biggest gap —
+**worker-loop liveness** (last-tick timestamp / queue staleness; a wedged loop is
+currently invisible). Coordinate with chat 7 before touching `health.tsx`.
+
 ## #12 Slack MCP — closed (superseded)
 
 Optional raw-channel Slack MCP (korotovsky `slack-mcp-server`) is **not being
