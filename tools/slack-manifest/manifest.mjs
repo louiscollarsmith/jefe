@@ -146,8 +146,29 @@ try {
     console.log("scopes added:", added.length ? added.join(", ") : "(none — already present)");
     console.log("--- after update ---");
     summarize(await exportManifest());
+  } else if (cmd === "set-redirect") {
+    // Register an OAuth redirect URL. Slack rejects any connect whose redirect_uri
+    // isn't pre-registered here — must exactly match what the app sends
+    // (SLACK_REDIRECT_URI, else <SHOPIFY_APP_URL>/channels/slack/callback).
+    const url = process.argv[3];
+    if (!url) {
+      console.log("usage: node manifest.mjs set-redirect <https://…/channels/slack/callback>");
+      process.exit(1);
+    }
+    const m = await exportManifest();
+    m.oauth_config = m.oauth_config || {};
+    const current = m.oauth_config.redirect_urls || [];
+    if (current.includes(url)) {
+      console.log("redirect already registered:", url);
+    } else {
+      m.oauth_config.redirect_urls = [...current, url];
+      await updateManifest(m);
+      console.log("added redirect url:", url);
+    }
+    const after = await exportManifest();
+    console.log("redirect_urls:", JSON.stringify(after.oauth_config?.redirect_urls || []));
   } else {
-    console.log("usage: node slack-manifest.mjs [status|dump|enable-messages|provision]");
+    console.log("usage: node manifest.mjs [status|dump|enable-messages|provision|set-redirect <url>]");
   }
 } catch (err) {
   console.error("ERROR:", err.message);
