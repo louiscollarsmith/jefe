@@ -162,6 +162,7 @@ export async function upsertShopifyOrder(prisma, input) {
         order.displayFulfillmentStatus ?? order.fulfillment_status,
       ),
       currency: stringValue(order.currencyCode ?? order.currency) ?? "GBP",
+      sourceName: stringValue(order.sourceName ?? order.source_name),
       subtotalPrice: moneyAmount(
         order.currentSubtotalPriceSet?.shopMoney ?? order.subtotal_price,
       ),
@@ -190,6 +191,7 @@ export async function upsertShopifyOrder(prisma, input) {
         order.displayFulfillmentStatus ?? order.fulfillment_status,
       ),
       currency: stringValue(order.currencyCode ?? order.currency) ?? "GBP",
+      sourceName: stringValue(order.sourceName ?? order.source_name),
       subtotalPrice: moneyAmount(
         order.currentSubtotalPriceSet?.shopMoney ?? order.subtotal_price,
       ),

@@ -32,7 +32,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 112);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 113);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -103,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 112);
-  assert.equal(result.derivationReport.attempted, 112);
+  assert.equal(result.registryDefinitionCount, 113);
+  assert.equal(result.derivationReport.attempted, 113);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    112,
+    113,
   );
-  assert.equal(result.derivationAttempts.length, 112);
+  assert.equal(result.derivationAttempts.length, 113);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -329,6 +329,32 @@ test("revenue and margin beliefs normalize to shop base currency (multi-currency
   assert.equal(margin.value.percentage, 55);
   // Labeled with the dominant base-currency proxy (GBP here), not skipped.
   assert.equal(margin.value.currency, "GBP");
+});
+
+test("online revenue share splits store vs online revenue from sourceName", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  const orders = await prisma.order.findMany();
+  // Uniform £100 orders: 7 online ("web") + 3 in-store ("pos") -> 70% online.
+  prisma.order.findMany = async () =>
+    orders.map((order, index) => ({
+      ...order,
+      totalPrice: "100.00",
+      sourceName: index < 7 ? "web" : "pos",
+    }));
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const share = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.online_revenue_share.trailing_90d",
+  );
+  assert.ok(share, "online_revenue_share should publish");
+  assert.equal(share.value.percentage, 70);
+  assert.equal(share.value.channelCoverage, 1);
+  assert.equal(share.value.currency, "GBP");
+  assert.equal(share.value.channels.online, 700);
+  assert.equal(share.value.channels.pos, 300);
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {

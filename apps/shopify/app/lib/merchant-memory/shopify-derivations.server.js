@@ -138,6 +138,7 @@ async function loadDerivationContext(prisma, input) {
           sourceUpdatedAt: true,
           customerExternalId: true,
           financialStatus: true,
+          sourceName: true,
         },
       }),
       prisma.orderLineItem.findMany({
@@ -296,6 +297,8 @@ function deriveDefinition(context, definition) {
         return costCoverage(context, definition);
       case "products.gross_margin.trailing_90d":
         return grossMargin(context, definition, 90);
+      case "business.online_revenue_share.trailing_90d":
+        return onlineRevenueShare(context, definition, 90);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1143,6 +1146,61 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Sales channel — online-store vs in-store (POS) vs other revenue split, from
+// each order's Shopify sourceName. Amounts are shopMoney (base currency). Gated
+// on channel coverage (older orders lack sourceName until re-backfilled), so it
+// never reports a split on data it doesn't have.
+function classifySalesChannel(sourceName) {
+  const value = stringValue(sourceName)?.toLowerCase() ?? "";
+  if (!value) return null;
+  if (value === "pos" || value.includes("point_of_sale") || value.includes("point of sale")) return "pos";
+  if (value === "web" || value === "online_store" || value === "shopify_online_store" || value.includes("online store")) return "online";
+  if (value.includes("draft")) return "draft";
+  return "other";
+}
+
+function onlineRevenueShare(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  let totalRevenue = 0;
+  let knownRevenue = 0;
+  const byChannel = new Map();
+  for (const order of orders) {
+    const revenue = orderValue(order);
+    totalRevenue += revenue;
+    const channel = classifySalesChannel(order.sourceName);
+    if (channel == null) continue;
+    knownRevenue += revenue;
+    byChannel.set(channel, (byChannel.get(channel) ?? 0) + revenue);
+  }
+  const coverage = totalRevenue > 0 ? knownRevenue / totalRevenue : 0;
+  if (knownRevenue <= 0 || coverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Sales-channel is set on too little of window revenue (a re-backfill populates it).", { channelCoverage: roundNumber(coverage, 4) });
+  }
+  const online = byChannel.get("online") ?? 0;
+  return derived(context, definition, {
+    value: {
+      percentage: roundNumber((online / knownRevenue) * 100, 2),
+      onlineRevenue: roundMoney(online),
+      knownRevenue: roundMoney(knownRevenue),
+      channels: Object.fromEntries(
+        Array.from(byChannel.entries()).map(([channel, revenue]) => [channel, roundMoney(revenue)]),
+      ),
+      channelCoverage: roundNumber(coverage, 4),
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Online-store revenue divided by revenue with a known sales channel over the window.",
+    summary: `Share of revenue from the online store vs in-store/other channels in the trailing ${days} days.`,
+    sampleSize: orders.length,
+    coverageMetrics: { channelCoverage: roundNumber(coverage, 4) },
+  });
 }
 
 // Product margin — gross margin over the cost-covered share of window revenue,

@@ -386,6 +386,7 @@ model Order {
   customerExternalId String?         @map("customer_external_id")
   financialStatus    String?         @map("financial_status")
   fulfillmentStatus  String?         @map("fulfillment_status")
+  sourceName         String?         @map("source_name")
   currency           String          @default("GBP")
   subtotalPrice      Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
   totalPrice         Decimal?        @map("total_price") @db.Decimal(18, 2)

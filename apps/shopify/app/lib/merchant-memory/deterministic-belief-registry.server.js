@@ -4415,6 +4415,37 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Gross margin over only the cost-covered share of revenue; value carries revenueCoverage. Excludes shipping and fees. Requires a single order currency.",
     "sourceUrl": "https://help.shopify.com/en/manual/products/inventory/getting-started-with-inventory/cost-per-item"
+  },
+  {
+    "key": "business.online_revenue_share.trailing_90d",
+    "category": "business",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "online_store_revenue / revenue_with_known_sales_channel within window",
+    "minimumData": "At least 5 priced orders and a known sales channel on >=70% of window revenue",
+    "confidenceRule": "0.9; scaled by channel coverage and sample",
+    "legacyConfidenceRule": "0.9; scaled by channel coverage and sample",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.9 scaled by coverage"
+    },
+    "confidenceComponents": [
+      { "template": "coverage_based_v1", "params": {} },
+      { "template": "sample_size_v1", "params": { "suppress_below_sample": 5 } }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Online-store vs in-store/other revenue split from Shopify order sourceName; value carries the per-channel breakdown. Coverage-gated — older orders lack sourceName until re-backfilled.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 
