@@ -60,6 +60,13 @@ import {
 import { CHANNEL_STATUS } from "../lib/channels/status.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import {
+  ONBOARDING_STEPS,
+  resolveOnboardingStep,
+  readFurthestStep,
+  onboardingStepIndex,
+} from "../lib/onboarding/steps";
+import { recordFurthestOnboardingStep } from "../services/onboarding.server";
+import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
 } from "../lib/merchant-memory/constants.server";
@@ -106,13 +113,6 @@ import {
   splitScopes,
 } from "../services/shopify-backfill-status.server";
 
-export const ONBOARDING_STEPS = [
-  "connect",
-  "channels",
-  "insights",
-  "goals",
-  "plan",
-] as const;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
 const GOALS_DOCUMENT_ACCEPT = ".pdf,.docx,.md,.markdown,.txt";
@@ -595,7 +595,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  const [readiness, metrics, connected, storeName] = await Promise.all([
+  const [readiness, metrics, connected, storeName, shopMeta] = await Promise.all([
     getMerchantMemoryReadiness({
       merchantId: merchant.id,
       shopId: shop.id,
@@ -612,13 +612,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopDomain: session.shop,
     }),
     storeNamePromise,
+    prisma.shop.findUnique({
+      where: { id: shop.id },
+      select: { onboardingMetadata: true },
+    }),
   ]);
   const backfill = summarizeBackfill(readiness, metrics);
+  const furthestStep = readFurthestStep(shopMeta?.onboardingMetadata);
   const activeStep = normalizeOnboardingStep(
     url,
     readiness.memoryReady,
     backfill.complete,
+    furthestStep,
   );
+  // Remember the furthest step reached so a later visit (re-opening the app with
+  // no ?step=) resumes here instead of resetting to Connect. Fire-and-forget so
+  // it never blocks the loader (LCP); eventual consistency is fine.
+  if (onboardingStepIndex(activeStep) > onboardingStepIndex(furthestStep)) {
+    void recordFurthestOnboardingStep(prisma, {
+      shopId: shop.id,
+      step: activeStep,
+      currentMetadata: shopMeta?.onboardingMetadata,
+    }).catch((error) =>
+      onboardingLog.warn("failed to persist furthest onboarding step", {
+        err: error,
+      }),
+    );
+  }
 
   if (
     url.searchParams.get("channelProvider") === "slack" &&
@@ -4397,21 +4417,16 @@ function normalizeOnboardingStep(
   url: URL,
   memoryReady: boolean,
   backfillComplete: boolean,
+  furthestStep: (typeof ONBOARDING_STEPS)[number] = "connect",
 ): (typeof ONBOARDING_STEPS)[number] {
-  const requested = url.searchParams.get("step");
-  // Channels needs no backfilled data, so it stays reachable even while memory
-  // is still generating. Otherwise "Skip for now" / "Continue to Channels"
-  // (which navigate to ?step=channels) get bounced straight back to connect by
-  // the readiness clamp below — leaving the merchant stuck on Connect.
-  if (requested === "channels" || url.searchParams.get("channelProvider")) {
-    return "channels";
-  }
-  // Insights/Goals/Plan DO need the generated data, so they stay gated on it.
-  if (!memoryReady || !backfillComplete) return "connect";
-  if (requested === "insights") return "insights";
-  if (requested === "goals") return "goals";
-  if (requested === "plan") return "plan";
-  return "connect";
+  // Thin URL adapter over the pure, unit-tested resolver in lib/onboarding/steps.
+  return resolveOnboardingStep({
+    requestedStep: url.searchParams.get("step"),
+    hasChannelProvider: Boolean(url.searchParams.get("channelProvider")),
+    memoryReady,
+    backfillComplete,
+    furthestStep,
+  });
 }
 
 function safeMerchantFacingError(error: unknown) {

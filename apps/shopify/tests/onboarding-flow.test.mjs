@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+import { ONBOARDING_STEPS } from "../app/lib/onboarding/steps.js";
+
 const appIndexSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
@@ -39,9 +41,9 @@ const shopifyDocumentResponseSource = fs.readFileSync(
 );
 
 test("onboarding exposes Connect, Channels, Insights, Goals and Plan with optional Channels", () => {
-  assert.match(
-    appIndexSource,
-    /export const ONBOARDING_STEPS = \[\s*"connect",\s*"channels",\s*"insights",\s*"goals",\s*"plan",\s*\] as const;/,
+  assert.deepEqual(
+    [...ONBOARDING_STEPS],
+    ["connect", "channels", "insights", "goals", "plan"],
   );
   assert.match(appIndexSource, /"Connect"/);
   assert.match(appIndexSource, /"Channels"/);
@@ -56,10 +58,9 @@ test("onboarding exposes Connect, Channels, Insights, Goals and Plan with option
   assert.match(appIndexSource, /Tell me what winning looks like/);
   assert.match(appIndexSource, /Here&apos;s where I&apos;d start\./);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
-  assert.match(
-    appIndexSource,
-    /requested === "channels" \|\| url\.searchParams\.get\("channelProvider"\)/,
-  );
+  // The channels-reachable-during-generation guarantee and the full step
+  // resolution now live in lib/onboarding/steps.js and are unit-tested
+  // behaviorally in onboarding-resume.test.mjs, rather than string-matched here.
   assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
 });
