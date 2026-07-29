@@ -1180,7 +1180,7 @@ function LearningMilestones({
       {skusComplete ? (
         <Milestone current={!ordersComplete} complete={ordersComplete}>
           {ordersComplete
-            ? "Read 365 days of orders and refunds"
+            ? "Read up to 24 months of orders and refunds"
             : "Reading your orders"}
         </Milestone>
       ) : null}
