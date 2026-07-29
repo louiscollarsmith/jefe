@@ -155,6 +155,14 @@ export async function processShopifyWebhook(prisma, input) {
   // without re-inactivating — leaving it stuck status="active", corrupting the
   // churn signal and the retention/GDPR posture. Capture churn once (first
   // delivery only, gated on `created`); ALWAYS re-assert inactive. (bug #13)
+  //
+  // Residual edge (rare, accepted — chat 7 review): because this re-inactivates on
+  // every delivery, a reinstall landing BETWEEN the original uninstall and a late
+  // redelivery of the SAME deliveryId would be wrongly re-inactivated. It's
+  // near-impossible in practice (Shopify redeliveries are near-immediate, well
+  // before a plausible reinstall) and self-heals on the next app open (afterAuth
+  // re-auths). A full guard would early-handle app/uninstalled BEFORE
+  // ensureShopifyTenant and skip inactivation when a fresher install exists.
   if (input.topic === "app/uninstalled") {
     if (created) {
       // Snapshot BEFORE teardown; best-effort and never throws.
