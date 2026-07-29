@@ -15,6 +15,8 @@ import {
   useNavigate,
   useNavigation,
   useRevalidator,
+  useRouteError,
+  isRouteErrorResponse,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -563,6 +565,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   return { ok: false, error: "Unsupported action." };
 };
+
+/**
+ * Route-level error boundary. The onboarding loader does a lot on first load
+ * (and re-runs on a poll), so a transient throw must NOT replace the whole
+ * cinematic flow with a raw stack trace — the parent boundary surfaces
+ * `error.message` verbatim, which leaks internals and destroys the first
+ * impression. Here we render a calm, on-brand fallback with a refresh instead.
+ * Server-side errors are already captured centrally via entry.server handleError.
+ */
+export function ErrorBoundary() {
+  const error = useRouteError();
+  const revalidator = useRevalidator();
+  const status = isRouteErrorResponse(error) ? error.status : null;
+  return (
+    <Box padding="800">
+      <Card>
+        <BlockStack gap="400" inlineAlign="center">
+          <Text as="h2" variant="headingLg">
+            Jefe is still getting set up
+          </Text>
+          <Text as="p" tone="subdued" alignment="center">
+            I hit a snag loading your store — usually a brief hiccup while
+            everything spins up. Try again and I&apos;ll pick up where I left off.
+          </Text>
+          {status ? (
+            <Text as="p" tone="subdued">
+              (Reference {status})
+            </Text>
+          ) : null}
+          <Button
+            loading={revalidator.state === "loading"}
+            onClick={() => revalidator.revalidate()}
+          >
+            Try again
+          </Button>
+        </BlockStack>
+      </Card>
+    </Box>
+  );
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);

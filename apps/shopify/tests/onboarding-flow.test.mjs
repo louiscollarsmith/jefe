@@ -344,3 +344,10 @@ test("Merchant Memory view wires the correct-anything path + per-belief correcta
   assert.match(appIndexSource, /value="memory\.message"/);
   assert.match(appIndexSource, /url\.searchParams\.get\("view"\) === "memory"/);
 });
+
+test("the onboarding route has its own graceful error boundary (no raw stack over the flow)", () => {
+  // A loader throw on first load / poll must degrade to calm on-brand copy +
+  // a refresh, not the parent boundary's raw error.message over the whole flow.
+  assert.match(appIndexSource, /export function ErrorBoundary/);
+  assert.match(appIndexSource, /Jefe is still getting set up/);
+});
