@@ -60,10 +60,15 @@ Historical context, reset audits and previous product prompts live under `docs/a
 
 Multiple Claude Code sessions work concurrently in this one tree, and the git **index/staging area is shared** across all of them.
 
+- **Isolate by default:** new sessions work in their own `git worktree` + branch (`git worktree add .claude/worktrees/<name> -b claude/<name>`) — physical isolation is the reliable fix and depends on nothing being wired. Shepherd (the coordination hub in `.mcp.json`) is provisioned but **not load-bearing**: its token is interactive-shell-only, so MCP subprocesses don't inherit it — don't rely on it. Full model: `docs/ops/build-deploy-and-coordination.md`.
 - **Pathspec-commit, always:** `git commit -- <explicit paths> -m "…"`. Never a bare `git commit` / `git commit -a` — it commits the entire shared index and will sweep another session's staged files into your commit (this happened twice on 2026-07-28).
 - **Never** `git add -A` or `git add <dir>`; stage explicit paths only.
 - Stage and commit **atomically**, and verify `git diff --cached --name-only` shows only your files first.
 - Leave another session's uncommitted work unstaged. You may edit another session's files, but ask that session first, per file — use the cross-session message tool.
+
+## Architecture Decisions
+
+Architecture, design, refactor and cross-cutting **consistency** decisions are owned by the **architecture session** (currently "Jefe chat 7 — architecture", 2026-07-29). Route those questions there via cross-session message rather than to the founder, so decisions stay coherent across sessions. The architecture owner escalates to the founder only what is genuinely his: product scope, irreversible / one-way-door changes, and safety-rail / merchant-write-guardrail questions. This binds current and future sessions; when the role passes to a successor, update the holder named here. Details and the coordination model: `docs/ops/build-deploy-and-coordination.md`.
 
 ## Before Coding
 
