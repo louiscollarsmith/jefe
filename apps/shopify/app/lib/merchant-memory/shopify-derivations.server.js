@@ -145,6 +145,7 @@ async function loadDerivationContext(prisma, input) {
         where,
         select: {
           orderId: true,
+          externalId: true,
           productId: true,
           variantId: true,
           quantity: true,
@@ -299,6 +300,8 @@ function deriveDefinition(context, definition) {
         return grossMargin(context, definition, 90);
       case "business.online_revenue_share.trailing_90d":
         return onlineRevenueShare(context, definition, 90);
+      case "products.top_returned_products.trailing_180d":
+        return topReturnedProducts(context, definition, 180);
 
       case "catalog.total_product_count":
         return countOutcome(context, definition, context.retainedProducts.length, "Retained non-deleted Shopify products.");
@@ -1146,6 +1149,81 @@ function longestGapBetweenOrders(context, definition, days) {
     maxGap = Math.max(maxGap, Math.floor((times[index].getTime() - times[index - 1].getTime()) / 86400000));
   }
   return countOutcome(context, definition, maxGap, `Longest day gap between consecutive stored orders in the trailing ${days} days.`, { confidence: 0.9, sampleSize: times.length });
+}
+
+// Returns by product — units and refund value returned per product, from refund
+// line items in each order's Refund.rawPayload (backfilled GraphQL shape), mapped
+// to products via the order line item's external id. Real-time webhook refunds
+// (REST shape) and a normalized refund-line-item table are follow-ups.
+function returnsByProductInWindow(context, days) {
+  const productByLineItemExternalId = new Map();
+  for (const item of context.lineItems) {
+    if (item.externalId && item.productId) {
+      productByLineItemExternalId.set(item.externalId, item.productId);
+    }
+  }
+  const windowStartMs = context.now.getTime() - days * 86400000;
+  const returnedUnitsByProduct = new Map();
+  const refundValueByProduct = new Map();
+  let refundsWithLineItems = 0;
+  for (const refund of context.refunds) {
+    const processedAt = refund.processedAt;
+    if (processedAt instanceof Date && processedAt.getTime() < windowStartMs) continue;
+    const edges = jsonObject(refund.rawPayload).refundLineItems?.edges;
+    const nodes = Array.isArray(edges) ? edges.map((edge) => jsonObject(edge).node) : [];
+    let mappedAny = false;
+    for (const rawNode of nodes) {
+      const node = jsonObject(rawNode);
+      const lineItemExternalId = stringValue(jsonObject(node.lineItem).id);
+      const productId = lineItemExternalId
+        ? productByLineItemExternalId.get(lineItemExternalId)
+        : null;
+      if (!productId) continue;
+      mappedAny = true;
+      const quantity = Number(node.quantity) || 0;
+      const shopMoney = jsonObject(jsonObject(node.subtotalSet).shopMoney);
+      const value = decimalNumber(shopMoney.amount);
+      returnedUnitsByProduct.set(productId, (returnedUnitsByProduct.get(productId) ?? 0) + quantity);
+      refundValueByProduct.set(productId, (refundValueByProduct.get(productId) ?? 0) + value);
+    }
+    if (mappedAny) refundsWithLineItems += 1;
+  }
+  return { returnedUnitsByProduct, refundValueByProduct, refundsWithLineItems };
+}
+
+function topReturnedProducts(context, definition, days) {
+  const { returnedUnitsByProduct, refundValueByProduct, refundsWithLineItems } =
+    returnsByProductInWindow(context, days);
+  if (refundsWithLineItems < 1 || returnedUnitsByProduct.size < 1) {
+    return skipped(definition, "insufficient_data", "No refund line items mapped to products in the window (a backfill populates them).", { refundsWithLineItems });
+  }
+  const { unitsByProduct: soldUnitsByProduct } = productSalesInWindow(context, days);
+  const items = Array.from(returnedUnitsByProduct.entries())
+    .map(([productId, returnedUnits]) => {
+      const soldUnits = soldUnitsByProduct.get(productId) ?? 0;
+      return {
+        productId,
+        title: productTitle(context, productId),
+        returnedUnits,
+        refundValue: roundMoney(refundValueByProduct.get(productId) ?? 0),
+        soldUnits,
+        returnRate: soldUnits > 0 ? roundNumber(returnedUnits / soldUnits, 4) : null,
+      };
+    })
+    .sort((a, b) => b.returnedUnits - a.returnedUnits)
+    .slice(0, 5);
+  return derived(context, definition, {
+    value: {
+      items,
+      returnedProductCount: returnedUnitsByProduct.size,
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Products ranked by returned units from mapped refund line items over the window.",
+    summary: `Most-returned products by units in the trailing ${days} days.`,
+    sampleSize: refundsWithLineItems,
+  });
 }
 
 // Sales channel — online-store vs in-store (POS) vs other revenue split, from

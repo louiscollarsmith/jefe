@@ -32,7 +32,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 113);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 114);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -103,13 +103,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 113);
-  assert.equal(result.derivationReport.attempted, 113);
+  assert.equal(result.registryDefinitionCount, 114);
+  assert.equal(result.derivationReport.attempted, 114);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    113,
+    114,
   );
-  assert.equal(result.derivationAttempts.length, 113);
+  assert.equal(result.derivationAttempts.length, 114);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -355,6 +355,72 @@ test("online revenue share splits store vs online revenue from sourceName", asyn
   assert.equal(share.value.currency, "GBP");
   assert.equal(share.value.channels.online, 700);
   assert.equal(share.value.channels.pos, 300);
+});
+
+function createReturnsPrisma() {
+  const products = [
+    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
+  ];
+  const variants = [
+    { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
+    { id: "var-bravo", productId: "prod-bravo", sku: "B", title: "B", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-b" },
+  ];
+  const now = Date.now();
+  const orders = [];
+  const lineItems = [];
+  for (let index = 0; index < 10; index += 1) {
+    const isAlpha = index < 6;
+    const id = `ro-${index + 1}`;
+    const at = new Date(now - (index + 1) * 24 * 60 * 60 * 1000);
+    orders.push({ id, externalId: `rox-${index + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `rc-${index + 1}`, financialStatus: "PAID" });
+    lineItems.push({ orderId: id, externalId: `li-${index + 1}`, productId: isAlpha ? "prod-alpha" : "prod-bravo", variantId: isAlpha ? "var-alpha" : "var-bravo", quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
+  }
+  const refundNode = (lineItemExternalId, productExternalId) => ({
+    node: { quantity: 1, subtotalSet: { shopMoney: { amount: "100.00", currencyCode: "GBP" } }, lineItem: { id: lineItemExternalId, product: { id: productExternalId } } },
+  });
+  const refunds = [
+    { orderId: "ro-1", amount: "100.00", currency: "GBP", processedAt: new Date(now - 2 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-1", "gid-alpha")] } } },
+    { orderId: "ro-2", amount: "100.00", currency: "GBP", processedAt: new Date(now - 3 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-2", "gid-alpha")] } } },
+    { orderId: "ro-7", amount: "100.00", currency: "GBP", processedAt: new Date(now - 4 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-7", "gid-bravo")] } } },
+  ];
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Returns Merchant",
+        shops: [{ id: "shop-test", shopDomain: "r.myshopify.com", historicalOrderAccess: "unknown", backfillCompletedAt: new Date(), rawPayload: { name: "R", iana_timezone: "Europe/London" }, connectorAccounts: [{ scopes: ["read_orders"] }], backfillStatuses: [{ domain: "orders", status: "complete" }] }],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => refunds },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("top-returned-products maps refund line items to products with return rate", async () => {
+  const prisma = createReturnsPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const belief = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "products.top_returned_products.trailing_180d",
+  );
+  assert.ok(belief, "top_returned_products should publish");
+  // Alpha: 2 returned of 6 sold -> 0.3333; Bravo: 1 of 4 -> 0.25.
+  assert.equal(belief.value.items[0].productId, "prod-alpha");
+  assert.equal(belief.value.items[0].returnedUnits, 2);
+  assert.equal(belief.value.items[0].soldUnits, 6);
+  assert.equal(belief.value.items[0].returnRate, 0.3333);
+  assert.equal(belief.value.items[0].refundValue, 200);
+  assert.equal(belief.value.items[1].productId, "prod-bravo");
+  assert.equal(belief.value.items[1].returnedUnits, 1);
 });
 
 test("derived belief version bump creates supersession lineage without touching authoritative beliefs", async () => {

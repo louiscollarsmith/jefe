@@ -4446,6 +4446,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "Online-store vs in-store/other revenue split from Shopify order sourceName; value carries the per-channel breakdown. Coverage-gated — older orders lack sourceName until re-backfilled.",
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "products.top_returned_products.trailing_180d",
+    "category": "products",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_180d",
+    "calculation": "products ranked by returned units from refund line items within window; carries return rate vs sold units",
+    "minimumData": "At least 1 refund with line items mapped to products in the window",
+    "confidenceRule": "0.85 direct observation",
+    "legacyConfidenceRule": "0.85 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order/refund change; debounce",
+    "dependencies": ["orders", "line_items", "refunds", "products"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Most-returned products by units, with per-product return rate (returned/sold). From backfilled refund line items; real-time webhook refunds (REST shape) + a normalized table are follow-ups.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   }
 ];
 

@@ -216,6 +216,25 @@ export const ORDERS_QUERY = `#graphql
                 currencyCode
               }
             }
+            refundLineItems(first: 100) {
+              edges {
+                node {
+                  quantity
+                  subtotalSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  lineItem {
+                    id
+                    product {
+                      id
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
