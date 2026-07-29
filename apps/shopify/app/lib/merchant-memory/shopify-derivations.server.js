@@ -405,6 +405,10 @@ function deriveDefinition(context, definition) {
         return staleInventoryLevelShare(context, definition);
       case "inventory.units_per_active_product":
         return unitsPerActiveProduct(context, definition);
+      case "inventory.at_risk_stockout_count.trailing_30d":
+        return atRiskStockoutCount(context, definition);
+      case "inventory.low_cover_products.trailing_30d":
+        return lowCoverProducts(context, definition);
 
       case "data.currency_consistency":
         return currencyConsistency(context, definition);
@@ -1618,6 +1622,83 @@ function productTitle(context, productId) {
   return (
     context.products.find((product) => product.id === productId)?.title ?? null
   );
+}
+
+const INVENTORY_VELOCITY_WINDOW_DAYS = 30;
+const STOCKOUT_RISK_DAYS = 21;
+const MIN_UNITS_FOR_VELOCITY = 3;
+
+// Join recent sell-rate to current stock, per product, to get days of cover.
+// Only products that BOTH sold enough in the window (a meaningful velocity) and
+// have at least one tracked variant (known available units — missing inventory
+// is unknown, never treated as zero) are evaluated. Returns rows sorted by days
+// of cover ascending (most urgent first).
+function productInventoryCover(context, days) {
+  const { unitsByProduct, orders } = productSalesInWindow(context, days);
+  const rows = [];
+  for (const [productId, unitsSold] of unitsByProduct) {
+    if (unitsSold < MIN_UNITS_FOR_VELOCITY) continue;
+    const variants = context.variantsByProduct.get(productId) ?? [];
+    let available = 0;
+    let tracked = false;
+    for (const variant of variants) {
+      if (context.availableByVariant.has(variant.id)) {
+        tracked = true;
+        available += Number(context.availableByVariant.get(variant.id)) || 0;
+      }
+    }
+    if (!tracked) continue;
+    const dailyVelocity = unitsSold / days;
+    if (dailyVelocity <= 0) continue;
+    rows.push({
+      productId,
+      title: productTitle(context, productId),
+      unitsSold,
+      available,
+      dailyVelocity: roundNumber(dailyVelocity, 2),
+      daysOfCover: roundNumber(available / dailyVelocity, 1),
+    });
+  }
+  rows.sort((a, b) => a.daysOfCover - b.daysOfCover);
+  return { rows, orders };
+}
+
+// How many selling products will run out of stock soon at the current sell-rate
+// — the reorder-urgency headline. Never counts untracked products (unknown
+// stock) or slow sellers (noisy velocity).
+function atRiskStockoutCount(context, definition) {
+  const days = INVENTORY_VELOCITY_WINDOW_DAYS;
+  const { rows, orders } = productInventoryCover(context, days);
+  if (orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required for stockout risk.", { orders: orders.length });
+  if (rows.length < 1) return skipped(definition, "insufficient_data", "No products have both a recent sell-rate and tracked inventory.", { evaluatedProducts: rows.length });
+  const atRisk = rows.filter((row) => row.daysOfCover < STOCKOUT_RISK_DAYS);
+  return countOutcome(context, definition, atRisk.length, `Selling products with fewer than ${STOCKOUT_RISK_DAYS} days of stock cover at the current ${days}-day sell-rate.`, { sampleSize: rows.length, confidence: sampleConfidence(0.85, rows.length, 3, 50), supportingValues: { evaluatedProductCount: rows.length, thresholdDays: STOCKOUT_RISK_DAYS, window: `trailing_${days}d` } });
+}
+
+// The actionable "reorder these" list: the selling products closest to running
+// out, each with its days of cover, current stock and daily sell-rate. The most
+// urgent product is also surfaced at the top level so it survives the generators'
+// depth-capped serialization.
+function lowCoverProducts(context, definition) {
+  const days = INVENTORY_VELOCITY_WINDOW_DAYS;
+  const { rows, orders } = productInventoryCover(context, days);
+  if (orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required for reorder cover.", { orders: orders.length });
+  const atRisk = rows.filter((row) => row.daysOfCover < STOCKOUT_RISK_DAYS).slice(0, 5);
+  if (atRisk.length < 1) return skipped(definition, "insufficient_data", "No selling product is below the stockout-risk cover threshold.", { evaluatedProducts: rows.length });
+  return derived(context, definition, {
+    value: {
+      items: atRisk,
+      topAtRiskProduct: atRisk[0] ?? null,
+      atRiskProductCount: atRisk.length,
+      thresholdDays: STOCKOUT_RISK_DAYS,
+      window: `trailing_${days}d`,
+    },
+    confidence: sampleConfidence(0.85, rows.length, 3, 50),
+    confidenceReason: "Products ranked by days of stock cover (available units divided by recent daily sell-rate).",
+    summary: `${atRisk.length} selling product(s) below ${STOCKOUT_RISK_DAYS} days of stock cover.`,
+    sampleSize: rows.length,
+    supportingValues: { evaluatedProductCount: rows.length },
+  });
 }
 
 function sellingProductCount(context, definition, days) {

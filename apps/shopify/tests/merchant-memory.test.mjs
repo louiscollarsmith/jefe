@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 120);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 122);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -42,6 +42,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "1A — cheap deterministic expansion",
       "Product performance v1",
       "Customer memory v1",
+      "Inventory velocity v1",
     ]),
   );
   assert.equal(
@@ -105,13 +106,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 120);
-  assert.equal(result.derivationReport.attempted, 120);
+  assert.equal(result.registryDefinitionCount, 122);
+  assert.equal(result.derivationReport.attempted, 122);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    120,
+    122,
   );
-  assert.equal(result.derivationAttempts.length, 120);
+  assert.equal(result.derivationAttempts.length, 122);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -378,6 +379,83 @@ test("customer memory derives repeat revenue share, LTV and concentration (PII-s
     const serialized = JSON.stringify(beliefs.get(key).value);
     assert.doesNotMatch(serialized, /email|maskedEmail|emailHash|@/i);
   }
+});
+
+function createInventoryVelocityPrisma() {
+  const now = Date.now();
+  const products = [
+    { id: "prod-fast", title: "Fast Mover", status: "ACTIVE" },
+    { id: "prod-slow", title: "Slow Mover", status: "ACTIVE" },
+  ];
+  const variants = [
+    { id: "var-fast", productId: "prod-fast", sku: "F", title: "F", price: "20.00", currency: "GBP", inventoryItemExternalId: "inv-fast" },
+    { id: "var-slow", productId: "prod-slow", sku: "S", title: "S", price: "20.00", currency: "GBP", inventoryItemExternalId: "inv-slow" },
+  ];
+  // Fast: 10 units in stock; Slow: 300 units in stock.
+  const inventoryLevels = [
+    { variantId: "var-fast", available: 10, inventoryItemExternalId: "inv-fast", locationExternalId: "loc-1", sourceUpdatedAt: new Date(now), observedAt: new Date(now) },
+    { variantId: "var-slow", available: 300, inventoryItemExternalId: "inv-slow", locationExternalId: "loc-1", sourceUpdatedAt: new Date(now), observedAt: new Date(now) },
+  ];
+  // 15 orders across the last 15 days, each selling 2 Fast + 2 Slow => 30 units
+  // of each over the 30-day window => a sell-rate of 1 unit/day each.
+  const orders = [];
+  const lineItems = [];
+  for (let i = 0; i < 15; i += 1) {
+    const id = `inv-order-${i + 1}`;
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    orders.push({ id, externalId: `inv-x-${i + 1}`, currency: "GBP", totalPrice: "80.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `inv-c-${i + 1}`, financialStatus: "PAID" });
+    lineItems.push({ orderId: id, productId: "prod-fast", variantId: "var-fast", quantity: 2, unitPrice: "20.00", totalPrice: "40.00" });
+    lineItems.push({ orderId: id, productId: "prod-slow", variantId: "var-slow", quantity: 2, unitPrice: "20.00", totalPrice: "40.00" });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "inv.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Inv Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders", "read_inventory"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => inventoryLevels },
+  };
+}
+
+test("inventory velocity flags at-risk stockouts and the reorder list", async () => {
+  const prisma = createInventoryVelocityPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["inventory"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+
+  // Fast: 10 in stock / 1 per day = 10 days cover (< 21 => at risk).
+  // Slow: 300 in stock / 1 per day = 300 days cover (not at risk).
+  const atRisk = beliefs.get("inventory.at_risk_stockout_count.trailing_30d");
+  assert.equal(atRisk.value.count, 1);
+
+  const lowCover = beliefs.get("inventory.low_cover_products.trailing_30d");
+  assert.equal(lowCover.valueType, "structured");
+  assert.equal(lowCover.value.atRiskProductCount, 1);
+  assert.equal(lowCover.value.topAtRiskProduct.title, "Fast Mover");
+  assert.equal(lowCover.value.topAtRiskProduct.daysOfCover, 10);
+  assert.equal(lowCover.value.items[0].available, 10);
+  assert.equal(lowCover.value.items[0].dailyVelocity, 1);
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {
