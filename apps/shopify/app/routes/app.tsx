@@ -21,11 +21,14 @@ import {
 } from "@shopify/polaris";
 
 import prisma from "../db.server";
+import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
-import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  // Dual-mode seam: embedded → authenticate.admin (unchanged); standalone
+  // (app.mynamejefe.com, signed cookie) → the shop's offline session. The rest
+  // of the shell is identical either way.
+  const { session, standalone } = await authenticateAppRequest(request);
   const { shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
@@ -37,11 +40,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     showDevTools: process.env.ENABLE_DEV_TOOLS !== "false",
     onboardingComplete: Boolean(shop.onboardingCompletedAt),
+    standalone: Boolean(standalone),
   };
 };
 
 export default function App() {
-  const { apiKey, showDevTools, onboardingComplete } =
+  const { apiKey, showDevTools, onboardingComplete, standalone } =
     useLoaderData<typeof loader>();
   const location = useLocation();
   const navigate = useNavigate();
@@ -68,7 +72,7 @@ export default function App() {
   }
 
   return (
-    <AppProvider embedded apiKey={apiKey}>
+    <AppProvider embedded={!standalone} apiKey={apiKey}>
       <Frame
         navigation={
           focusedOnboarding ? undefined : (

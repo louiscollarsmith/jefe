@@ -60,8 +60,12 @@ export async function authenticateAppRequest(request, deps) {
     return resolved.authenticateAdmin(request);
   }
 
-  // Standalone: re-resolve the offline token server-side; it never rides the
-  // cookie. Returns the same shape the embedded loaders already consume.
+  // Standalone: `session` is guaranteed non-null here (the guard above already
+  // redirected standalone-without-session); this also narrows the type.
+  if (!session) throw redirect("/");
+
+  // Re-resolve the offline token server-side; it never rides the cookie.
+  // Returns the same shape the embedded loaders already consume.
   const ctx = await resolved.unauthenticatedAdmin(session.shop);
   return { admin: ctx.admin, session: ctx.session, standalone: true };
 }
