@@ -16,12 +16,13 @@ const sql = neon(DATABASE_URL);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 
-async function notifySlack(email, storeUrl) {
+async function notifySlack(email, storeUrl, name) {
   if (!SLACK_WEBHOOK_URL) return;
 
+  const who = name ? `${name} — *${email}*` : `*${email}*`;
   const text = storeUrl
-    ? `:wave: New Design Partner signup — *${email}* (${storeUrl})`
-    : `:wave: New Design Partner signup — *${email}* (no store URL given)`;
+    ? `:wave: New Design Partner signup — ${who} (${storeUrl})`
+    : `:wave: New Design Partner signup — ${who} (no store URL given)`;
 
   try {
     const res = await fetch(SLACK_WEBHOOK_URL, {
@@ -46,6 +47,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/api/waitlist", async (req, res) => {
+  const name = String(req.body?.name || "").trim().slice(0, 200) || null;
   const email = String(req.body?.email || "").trim().toLowerCase();
   const storeUrl = String(req.body?.storeUrl || "").trim().slice(0, 320) || null;
   const honeypot = req.body?.company;
@@ -61,14 +63,16 @@ app.post("/api/waitlist", async (req, res) => {
 
   try {
     const [row] = await sql`
-      INSERT INTO waitlist_signups (email, source, store_url)
-      VALUES (${email}, 'mynamejefe.com', ${storeUrl})
-      ON CONFLICT (email) DO UPDATE SET store_url = COALESCE(waitlist_signups.store_url, EXCLUDED.store_url)
+      INSERT INTO waitlist_signups (email, source, store_url, name)
+      VALUES (${email}, 'mynamejefe.com', ${storeUrl}, ${name})
+      ON CONFLICT (email) DO UPDATE SET
+        store_url = COALESCE(waitlist_signups.store_url, EXCLUDED.store_url),
+        name = COALESCE(waitlist_signups.name, EXCLUDED.name)
       RETURNING (xmax = 0) AS inserted
     `;
 
     if (row?.inserted) {
-      notifySlack(email, storeUrl);
+      notifySlack(email, storeUrl, name);
     }
 
     return res.json({ ok: true });

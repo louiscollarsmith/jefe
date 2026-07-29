@@ -128,6 +128,7 @@ const submitButton = form.querySelector("button[type=submit]");
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const name = form.name.value.trim();
   const email = form.email.value.trim();
   const company = form.company.value;
 
@@ -145,12 +146,12 @@ form.addEventListener("submit", async (event) => {
     const res = await fetch("/api/waitlist", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, storeUrl, company }),
+      body: JSON.stringify({ name, email, storeUrl, company }),
     });
     const data = await res.json();
 
     if (res.ok && data.ok) {
-      successBody.textContent = `Jefe's got your name down, ${email}. He'll be in touch.`;
+      successBody.textContent = `Jefe's got your name down, ${name || email}. He'll be in touch.`;
       form.style.display = "none";
       success.hidden = false;
     } else {
