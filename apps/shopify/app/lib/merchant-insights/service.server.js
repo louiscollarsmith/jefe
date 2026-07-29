@@ -267,48 +267,17 @@ export async function generateMerchantInsights(prisma, input) {
       return { status: INSIGHT_RUN_STATUS.insufficientData, runId: run.id };
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.merchantInsightFinding.deleteMany({ where: { runId: run.id } });
-      await tx.merchantInsightFinding.createMany({
-        data: parsed.insights.map((insight, index) => ({
-          runId: run.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          orderIndex: index + 1,
-          title: insight.title,
-          finding: insight.finding,
-          whyItMatters: insight.whyItMatters,
-          confidence: insight.confidence,
-          category: insight.category,
-          caveat: insight.caveat,
-          supportingBeliefIds: insight.supportingBeliefIds,
-        })),
-      });
-      await tx.merchantInsightRun.updateMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: INSIGHT_RUN_STATUS.completed,
-          id: { not: run.id },
-          supersededAt: null,
-        },
-        data: { supersededAt: new Date() },
-      });
-      await tx.merchantInsightRun.update({
-        where: { id: run.id },
-        data: {
-          status: INSIGHT_RUN_STATUS.completed,
-          completedAt: new Date(),
-          safeErrorCode: null,
-          lastError: null,
-          result: {
-            insightCount: parsed.insights.length,
-            usage: llmResult.usage,
-            attempts: llmResult.attempts,
-            durationMs: llmResult.durationMs,
-          },
-        },
-      });
+    await persistCompletedInsightRun(prisma, {
+      run,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      insights: parsed.insights,
+      result: {
+        insightCount: parsed.insights.length,
+        usage: llmResult.usage,
+        attempts: llmResult.attempts,
+        durationMs: llmResult.durationMs,
+      },
     });
 
     logger.info("Merchant insights generated", {
@@ -323,6 +292,64 @@ export async function generateMerchantInsights(prisma, input) {
       insightCount: parsed.insights.length,
     };
   } catch (error) {
+    // The LLM path failing VALIDATION (grounding/schema) must never leave the
+    // merchant with nothing. Degrade to plain, deterministic observations built
+    // from the strongest beliefs — no model interpretation, so there is nothing
+    // to hallucinate or reject. Genuine failures (provider/network/DB) still
+    // fail and surface to the job + error hooks as before.
+    if (error instanceof LlmOutputValidationError) {
+      const fallbackInsights = buildDeterministicFallbackInsights(snapshot, {
+        allowedBeliefIds: new Set(snapshot.beliefIds),
+        suppliedBeliefs: snapshot.snapshot.beliefs,
+      });
+      if (fallbackInsights.length > 0) {
+        await persistCompletedInsightRun(prisma, {
+          run,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          insights: fallbackInsights,
+          result: {
+            insightCount: fallbackInsights.length,
+            mode: "deterministic_fallback",
+            degraded: true,
+            reason: "llm_validation_failed",
+          },
+        });
+        logger.warn("Merchant insights degraded to deterministic fallback", {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          runId: run.id,
+          insightCount: fallbackInsights.length,
+        });
+        return {
+          status: INSIGHT_RUN_STATUS.completed,
+          runId: run.id,
+          insightCount: fallbackInsights.length,
+          degraded: true,
+        };
+      }
+      // Nothing deterministic strong enough to stand alone: an honest "not
+      // enough yet", still not a hard failure the merchant sees as broken.
+      await prisma.merchantInsightRun.update({
+        where: { id: run.id },
+        data: {
+          status: INSIGHT_RUN_STATUS.insufficientData,
+          completedAt: new Date(),
+          safeErrorCode: null,
+          lastError: null,
+          result: { reason: "llm_validation_failed_no_deterministic_fallback" },
+        },
+      });
+      logger.warn(
+        "Merchant insights validation failed with no deterministic fallback",
+        {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          runId: run.id,
+        },
+      );
+      return { status: INSIGHT_RUN_STATUS.insufficientData, runId: run.id };
+    }
     const safe = insightGenerationFailure(error);
     await prisma.merchantInsightRun.update({
       where: { id: run.id },
@@ -379,6 +406,187 @@ async function generateValidatedInsights(provider, input) {
     validationError ??
       `Insight generation failed validation after ${lastResult ? "model output" : "request"}.`,
   );
+}
+
+// Graceful-degrade tuning: how many deterministic beliefs may stand in as plain
+// observations, and the minimum confidence one must carry to be shown alone.
+const DETERMINISTIC_FALLBACK_MAX = 5;
+const DETERMINISTIC_FALLBACK_MIN_CONFIDENCE = 0.6;
+
+// Belief categories → the closest supported insight category. Anything not
+// listed falls through to "other".
+const BELIEF_TO_INSIGHT_CATEGORY = {
+  products: "products",
+  customers: "customers",
+  inventory: "inventory",
+  business: "revenue",
+  orders: "revenue",
+  geography: "geography",
+  operations: "operations",
+  retention: "retention",
+  growth: "growth",
+  risk: "risk",
+};
+
+/** Map a 0..1 belief confidence to the insight confidence label. */
+function beliefConfidenceLabel(conf) {
+  const value = conf === null || conf === undefined ? null : Number(conf);
+  if (value === null || !Number.isFinite(value)) return "medium";
+  if (value >= 0.85) return "high";
+  if (value >= 0.7) return "medium";
+  return "emerging";
+}
+
+/** Map a belief category to a supported insight category. */
+function insightCategoryForBelief(category) {
+  return BELIEF_TO_INSIGHT_CATEGORY[category] ?? "other";
+}
+
+/** @param {string} key */
+function humanizeInsightBeliefKey(key) {
+  return String(key ?? "")
+    .split(".")
+    .slice(-1)[0]
+    .replace(/_/g, " ")
+    .trim();
+}
+
+/**
+ * Graceful degrade: when the LLM path can't produce grounded insights, present
+ * the strongest DETERMINISTIC beliefs as plain observations instead of failing
+ * to nothing. These carry no model interpretation, and every candidate is run
+ * through the SAME production validator so a fallback can never itself smuggle
+ * an ungrounded number past the guard. Returns [] when nothing qualifies.
+ * @param {Awaited<ReturnType<typeof buildMerchantInsightSnapshot>>} snapshot
+ * @param {{ allowedBeliefIds: Set<string>; suppliedBeliefs: any[] }} context
+ */
+function buildDeterministicFallbackInsights(snapshot, context) {
+  const beliefs = snapshot?.snapshot?.beliefs ?? [];
+  const strong = beliefs
+    .filter(
+      (belief) =>
+        belief.authority === "deterministic" ||
+        belief.authority === "merchant_confirmed" ||
+        belief.authority === "merchant_corrected",
+    )
+    .filter((belief) => {
+      const conf =
+        belief.conf === null || belief.conf === undefined
+          ? null
+          : Number(belief.conf);
+      return conf === null || conf >= DETERMINISTIC_FALLBACK_MIN_CONFIDENCE;
+    })
+    .sort((a, b) => Number(b.conf ?? 0) - Number(a.conf ?? 0))
+    .slice(0, DETERMINISTIC_FALLBACK_MAX);
+
+  const fallback = [];
+  for (const belief of strong) {
+    const finding = buildValidatedObservationFinding(belief, context);
+    if (finding) fallback.push(finding);
+  }
+  return fallback;
+}
+
+/**
+ * Build one plain-observation finding for a belief and validate it with the
+ * production insight validator, preferring the belief's deterministic evidence
+ * summary but falling back to number-free text so the finding always clears the
+ * grounding guard. Returns the validated insight or null.
+ */
+function buildValidatedObservationFinding(belief, context) {
+  const label =
+    typeof belief.label === "string" && belief.label.trim()
+      ? belief.label.trim()
+      : humanizeInsightBeliefKey(belief.key);
+  const title = label.slice(0, 80);
+  const category = insightCategoryForBelief(belief.cat);
+  const confidence = beliefConfidenceLabel(belief.conf);
+  const caveat =
+    "Automated observation from your store data — shown because Jefe couldn't compose a fuller insight this time.";
+  const whyItMatters =
+    "A direct observation from your own store data, with no interpretation added.";
+
+  const summary =
+    typeof belief.evidence === "string" ? belief.evidence.trim() : "";
+  const candidateFindings = [];
+  if (summary.length >= 12) candidateFindings.push(summary.slice(0, 280));
+  candidateFindings.push(
+    `Jefe is tracking your ${label.toLowerCase()} directly from your store data.`.slice(
+      0,
+      280,
+    ),
+  );
+  candidateFindings.push("Jefe recorded this directly from your store data.");
+
+  for (const finding of candidateFindings) {
+    const candidate = {
+      title,
+      finding,
+      whyItMatters,
+      supportingBeliefIds: [belief.id],
+      confidence,
+      category,
+      caveat,
+    };
+    const check = parseAndValidateMerchantInsightsOutput(
+      { insights: [candidate] },
+      context,
+    );
+    if (check.ok && check.insights.length === 1) return check.insights[0];
+  }
+  return null;
+}
+
+/**
+ * Persist a set of insights as the current completed run: replace this run's
+ * findings, supersede prior completed runs, and mark the run completed with the
+ * supplied result metadata. Shared by the normal LLM path and the
+ * deterministic-fallback path so both stay consistent.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ run: any; merchantId: string; shopId: string; insights: any[]; result: any }} input
+ */
+async function persistCompletedInsightRun(
+  prisma,
+  { run, merchantId, shopId, insights, result },
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.merchantInsightFinding.deleteMany({ where: { runId: run.id } });
+    await tx.merchantInsightFinding.createMany({
+      data: insights.map((insight, index) => ({
+        runId: run.id,
+        merchantId,
+        shopId,
+        orderIndex: index + 1,
+        title: insight.title,
+        finding: insight.finding,
+        whyItMatters: insight.whyItMatters,
+        confidence: insight.confidence,
+        category: insight.category,
+        caveat: insight.caveat,
+        supportingBeliefIds: insight.supportingBeliefIds,
+      })),
+    });
+    await tx.merchantInsightRun.updateMany({
+      where: {
+        merchantId,
+        shopId,
+        status: INSIGHT_RUN_STATUS.completed,
+        id: { not: run.id },
+        supersededAt: null,
+      },
+      data: { supersededAt: new Date() },
+    });
+    await tx.merchantInsightRun.update({
+      where: { id: run.id },
+      data: {
+        status: INSIGHT_RUN_STATUS.completed,
+        completedAt: new Date(),
+        safeErrorCode: null,
+        lastError: null,
+        result,
+      },
+    });
+  });
 }
 
 /**

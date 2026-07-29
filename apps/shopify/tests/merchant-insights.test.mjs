@@ -552,6 +552,95 @@ test("insight generation retries once after invalid model output", async (t) => 
   }
 });
 
+test("insight generation degrades to deterministic observations when the model never grounds", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  let calls = 0;
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const queued = await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
+      (belief) => belief.key === "orders.average_order_value.all_time",
+    );
+    assert.ok(averageOrderValueBelief);
+
+    // The model cites a real belief but states an ungrounded number on every
+    // attempt, so validation never passes and generation exhausts its retries.
+    const result = await generateMerchantInsights(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      runId: queued.run.id,
+      llmProvider: {
+        provider: "mock",
+        model: "mock-ungrounded",
+        enabled: true,
+        async generateStructuredJson() {
+          calls += 1;
+          return {
+            json: {
+              insights: [
+                {
+                  title: "Fabricated revenue jump",
+                  finding: "Revenue jumped by 4242 across the store last month.",
+                  whyItMatters:
+                    "A change that large would be very material to track.",
+                  supportingBeliefIds: [averageOrderValueBelief.id],
+                  confidence: "high",
+                  category: "revenue",
+                },
+              ],
+            },
+            usage: {
+              inputTokens: 10,
+              outputTokens: 20,
+              totalTokens: 30,
+              estimatedInputTokens: 10,
+            },
+            attempts: 1,
+            durationMs: 0,
+          };
+        },
+      },
+      logger: silentLogger,
+    });
+
+    // Instead of a hard failure that leaves the merchant with nothing, the run
+    // completes with plain deterministic observations.
+    assert.equal(result.status, INSIGHT_RUN_STATUS.completed);
+    assert.equal(result.degraded, true);
+    assert.equal(calls, 2); // both attempts were tried before degrading
+
+    const run = await prisma.merchantInsightRun.findFirstOrThrow({
+      where: { merchantId: merchant.id, shopId: shop.id },
+      include: { findings: true },
+    });
+    assert.equal(run.status, INSIGHT_RUN_STATUS.completed);
+    assert.equal(run.result?.mode, "deterministic_fallback");
+    assert.ok(run.findings.length > 0);
+    for (const finding of run.findings) {
+      assert.ok(finding.supportingBeliefIds.length >= 1);
+      assert.ok(finding.caveat && finding.caveat.length > 0);
+      // The fabricated "4242" must never leak into a deterministic fallback.
+      assert.doesNotMatch(finding.finding, /4242/);
+    }
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("failed current insight runs are not selected as displayable insights", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
