@@ -583,15 +583,17 @@ function createReturnsPrisma() {
     const id = `ro-${index + 1}`;
     const at = new Date(now - (index + 1) * 24 * 60 * 60 * 1000);
     orders.push({ id, externalId: `rox-${index + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `rc-${index + 1}`, financialStatus: "PAID" });
-    lineItems.push({ orderId: id, externalId: `li-${index + 1}`, productId: isAlpha ? "prod-alpha" : "prod-bravo", variantId: isAlpha ? "var-alpha" : "var-bravo", quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
+    lineItems.push({ orderId: id, externalId: `gid://shopify/LineItem/${index + 1}`, productId: isAlpha ? "prod-alpha" : "prod-bravo", variantId: isAlpha ? "var-alpha" : "var-bravo", quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
   }
   const refundNode = (lineItemExternalId, productExternalId) => ({
     node: { quantity: 1, subtotalSet: { shopMoney: { amount: "100.00", currencyCode: "GBP" } }, lineItem: { id: lineItemExternalId, product: { id: productExternalId } } },
   });
   const refunds = [
-    { orderId: "ro-1", amount: "100.00", currency: "GBP", processedAt: new Date(now - 2 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-1", "gid-alpha")] } } },
-    { orderId: "ro-2", amount: "100.00", currency: "GBP", processedAt: new Date(now - 3 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-2", "gid-alpha")] } } },
-    { orderId: "ro-7", amount: "100.00", currency: "GBP", processedAt: new Date(now - 4 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("li-7", "gid-bravo")] } } },
+    { orderId: "ro-1", amount: "100.00", currency: "GBP", processedAt: new Date(now - 2 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("gid://shopify/LineItem/1", "gid-alpha")] } } },
+    { orderId: "ro-2", amount: "100.00", currency: "GBP", processedAt: new Date(now - 3 * 24 * 60 * 60 * 1000), rawPayload: { refundLineItems: { edges: [refundNode("gid://shopify/LineItem/2", "gid-alpha")] } } },
+    // REST webhook shape with a numeric line_item_id: the real-time refund path
+    // must map to the same product as the GraphQL backfill shape above.
+    { orderId: "ro-7", amount: "100.00", currency: "GBP", processedAt: new Date(now - 4 * 24 * 60 * 60 * 1000), rawPayload: { refund_line_items: [{ line_item_id: 7, quantity: 1, subtotal_set: { shop_money: { amount: "100.00", currency_code: "GBP" } } }] } },
   ];
   return {
     merchant: {
@@ -611,7 +613,7 @@ function createReturnsPrisma() {
   };
 }
 
-test("top-returned-products maps refund line items to products with return rate", async () => {
+test("top-returned-products maps GraphQL and REST webhook refund line items to products", async () => {
   const prisma = createReturnsPrisma();
   const result = await deriveMerchantMemoryBeliefs(prisma, {
     merchantId: "merchant-test",

@@ -1409,26 +1409,72 @@ function returnsByProductInWindow(context, days) {
   for (const refund of context.refunds) {
     const processedAt = refund.processedAt;
     if (processedAt instanceof Date && processedAt.getTime() < windowStartMs) continue;
-    const edges = jsonObject(refund.rawPayload).refundLineItems?.edges;
-    const nodes = Array.isArray(edges) ? edges.map((edge) => jsonObject(edge).node) : [];
     let mappedAny = false;
-    for (const rawNode of nodes) {
-      const node = jsonObject(rawNode);
-      const lineItemExternalId = stringValue(jsonObject(node.lineItem).id);
-      const productId = lineItemExternalId
-        ? productByLineItemExternalId.get(lineItemExternalId)
+    for (const line of refundLineNodes(jsonObject(refund.rawPayload))) {
+      const productId = line.lineItemExternalId
+        ? productByLineItemExternalId.get(line.lineItemExternalId)
         : null;
       if (!productId) continue;
       mappedAny = true;
-      const quantity = Number(node.quantity) || 0;
-      const shopMoney = jsonObject(jsonObject(node.subtotalSet).shopMoney);
-      const value = decimalNumber(shopMoney.amount);
-      returnedUnitsByProduct.set(productId, (returnedUnitsByProduct.get(productId) ?? 0) + quantity);
-      refundValueByProduct.set(productId, (refundValueByProduct.get(productId) ?? 0) + value);
+      returnedUnitsByProduct.set(productId, (returnedUnitsByProduct.get(productId) ?? 0) + line.quantity);
+      refundValueByProduct.set(productId, (refundValueByProduct.get(productId) ?? 0) + line.value);
     }
     if (mappedAny) refundsWithLineItems += 1;
   }
   return { returnedUnitsByProduct, refundValueByProduct, refundsWithLineItems };
+}
+
+// Refund line items arrive in two shapes: the GraphQL backfill shape
+// (refundLineItems.edges[].node, line-item id as a gid, subtotalSet.shopMoney)
+// and the REST webhook shape (refund_line_items[], numeric line_item_id,
+// subtotal_set.shop_money). Normalize both to { lineItemExternalId (gid),
+// quantity, value } so a real-time refund counts the same as a backfilled one.
+function refundLineNodes(payload) {
+  const out = [];
+  const edges = payload.refundLineItems?.edges;
+  if (Array.isArray(edges)) {
+    for (const edge of edges) {
+      const node = jsonObject(jsonObject(edge).node);
+      const shopMoney = jsonObject(jsonObject(node.subtotalSet).shopMoney);
+      out.push({
+        lineItemExternalId: normalizeLineItemGid(jsonObject(node.lineItem).id),
+        quantity: Number(node.quantity) || 0,
+        value: decimalNumber(shopMoney.amount),
+      });
+    }
+    return out;
+  }
+  const restLines = payload.refund_line_items;
+  if (Array.isArray(restLines)) {
+    for (const raw of restLines) {
+      const line = jsonObject(raw);
+      const shopMoney = jsonObject(jsonObject(line.subtotal_set).shop_money);
+      const value =
+        shopMoney.amount != null
+          ? decimalNumber(shopMoney.amount)
+          : decimalNumber(line.subtotal);
+      out.push({
+        lineItemExternalId: normalizeLineItemGid(
+          line.line_item_id ?? jsonObject(line.line_item).id,
+        ),
+        quantity: Number(line.quantity) || 0,
+        value,
+      });
+    }
+    return out;
+  }
+  return out;
+}
+
+// Match the ingestion's line-item id normalization: OrderLineItem.externalId is
+// always stored as a gid, so a numeric REST id must be lifted to a gid to join.
+function normalizeLineItemGid(value) {
+  if (value == null || value === "") return null;
+  const text = String(value);
+  if (text.startsWith("gid://")) return text;
+  // REST payloads carry a bare numeric line-item id; lift it to the gid form the
+  // ingestion stores so the join succeeds. Any already-formed id is left as-is.
+  return /^\d+$/.test(text) ? `gid://shopify/LineItem/${text}` : text;
 }
 
 function topReturnedProducts(context, definition, days) {
