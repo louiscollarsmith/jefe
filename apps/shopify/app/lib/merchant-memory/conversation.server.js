@@ -1091,6 +1091,13 @@ function buildMerchantMemoryLlmSystemPrompt() {
 /**
  * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
  */
+/** Bound a value for the LLM prompt so one belief can't dominate the budget. */
+function truncateForPrompt(value, max) {
+  if (value === null || value === undefined) return null;
+  const text = String(value);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
   return JSON.stringify({
@@ -1105,12 +1112,17 @@ function buildMerchantMemoryLlmPrompt(input) {
       key: belief.key,
       category: belief.category,
       label: labelForBeliefKey(belief.key),
-      value: formatBeliefValue(belief.value),
+      // Bound the serialized value + evidence: structured beliefs (seasonal
+      // breakdowns, reorder/returns lists, momentum objects) fall through
+      // formatBeliefValue to a full JSON dump, which for a memory-rich merchant
+      // pushes the conversation prompt past the input-token limit. The LLM only
+      // needs enough of the value to identify the belief, not the whole payload.
+      value: truncateForPrompt(formatBeliefValue(belief.value), 150),
       valueType: belief.valueType,
       status: belief.status,
       confidence: belief.confidence,
-      evidenceSummaries: (belief.evidence ?? []).slice(0, 2).map(
-        (/** @type {any} */ evidence) => evidence.summary,
+      evidenceSummaries: (belief.evidence ?? []).slice(0, 1).map(
+        (/** @type {any} */ evidence) => truncateForPrompt(evidence.summary, 110),
       ),
     })),
     openQuestions: (input.openQuestions ?? []).slice(0, 3).map((question) => ({
