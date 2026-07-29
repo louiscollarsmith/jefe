@@ -3,6 +3,22 @@
 Resume-state for the next observability session. Built across "Jefe chat 3" on
 2026-07-28→29. Everything below is **live in prod** unless marked.
 
+## Chat 8 update (2026-07-29, late) — remaining roadmap shipped
+
+Chat 8 worked the top-ten remaining list; **all code-side items shipped to prod**
+(commits on `main`; ops panel via `railway up --service jefe-ops`):
+
+- **#3 client-side Sentry** — `app/entry.client.tsx` + `app/lib/observability/sentry.client.ts`; `VITE_SENTRY_DSN` set on jefe. Browser errors now captured.
+- **#11 churn** — `shop_uninstalled` event + PII-free snapshot in the uninstall webhook (`app/services/analytics/churn.server.js`). Event-only; **`Shop.uninstalledAt` deferred** (another session was live-editing `schema.prisma`, adding `Order.sourceName` — avoided the collision).
+- **#5 / #10 / #6 / #7 ops panel** (`apps/ops/server.mjs`) — per-merchant drill-down (event timeline + LLM cost + 14-day sparklines); coverage-gated **margin** (revenue − COGS − LLM cost, "indicative" on thin cost data); overview metrics (active-7d, LLM p50/p95, job success-rate, errors-24h, activity/cost trend sparklines).
+- **#7 request latency** — in-memory p50/p95/p99 on `/health` (`app/lib/observability/perf.server.js`).
+- **#9 retention** — opt-in `app/services/analytics/retention.server.js` (`ENABLE_EVENT_RETENTION`, off by default), run from the worker's daily guard. No new scheduler.
+- **Alert-noise fixes (from real prod pages tonight):** post-deploy grace window (`READINESS_ALERT_GRACE_SECONDS`, default 60s) so readiness/health/worker DB blips log WARN not page; the worker proactively `$connect()`s its Prisma client; `handleError` now skips 4xx (bot `POST /` 405s no longer page). New helpers in `deployment-health.server.js`: `shouldPageOnDependencyFailure`, `shouldPageOnWorkerError`, `isTransientDbConnectionError`.
+
+**Left = infra / founder-gated → see `observability-followups.md`:** external uptime monitor (#8), Railway log drain (#9 remainder), ops-panel re-gate (`OPS_PUBLIC=false`) + read-only DB role, Sentry→#jefe-slack native integration (needs founder OAuth), #12 Slack MCP **closed as superseded**.
+
+**Pre-existing bug found & flagged (out of scope):** a duplicate `app/uninstalled` delivery reactivates an uninstalled shop (via `ensureShopifyTenant`) before the dedupe short-circuit returns, so it's left `active` — ordering bug in `processShopifyWebhook` (`webhooks.server.js`).
+
 ## What's live (shipped)
 
 - **Structured logging** — `app/lib/observability/logger.server.js` (levelled `LOG_LEVEL`, JSON in prod, `child()` bindings, Error serialisation) with **redaction** (`redact.server.js`: secret/PII keys → `[redacted]`, email-shaped values → `[redacted-email]`, phone keys). Server-only; never import into the client bundle.
