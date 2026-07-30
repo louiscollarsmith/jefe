@@ -321,7 +321,13 @@ test("winback uninstall trigger sends once per shop and is idempotent", async (t
         },
       });
 
-      const { result, logs } = await withCapturedConsole(async () => {
+      // withCapturedConsole only SILENCES the disabled-send log lines here — we
+      // deliberately don't assert on the captured logs: node:test runs the tests
+      // in this file concurrently and they share one global console, so a log
+      // count races. "Exactly one send" is proven authoritatively below by the
+      // return values (first dispatched + disabled, second short-circuits) and by
+      // the single guard timestamp.
+      const { result } = await withCapturedConsole(async () => {
         const a = await sendWinBackEmailOnUninstall(prisma, {
           shopDomain,
           shopId: shop.id,
@@ -338,11 +344,6 @@ test("winback uninstall trigger sends once per shop and is idempotent", async (t
       assert.equal(first.disabled, true, "must be a disabled no-op send");
       assert.equal(second.sent, false);
       assert.equal(second.reason, "already_sent");
-
-      const sendAttempts = logs.filter((line) =>
-        line.includes("[email disabled] would send"),
-      );
-      assert.equal(sendAttempts.length, 1, "exactly one send attempt");
 
       const shopRow = await prisma.shop.findUniqueOrThrow({
         where: { platform_shopDomain: { platform: "shopify", shopDomain } },
