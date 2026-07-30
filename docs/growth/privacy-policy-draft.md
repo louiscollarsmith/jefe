@@ -10,7 +10,7 @@
 
 **Last updated: [DATE]**
 
-Jefe ("Jefe", "we", "us") is an AI eCommerce manager for Shopify stores, operated by `[LEGAL ENTITY — ⟦REVIEW: e.g. Quiver Ltd, company no., registered address⟧]`. This policy explains what data we access, why, how we protect it, and your rights.
+Jefe ("Jefe", "we", "us") is an AI eCommerce manager for Shopify stores, operated by **Quiver Solutions Limited** (company no. 16961611), 27 Old Gloucester Street, London WC1N 3AX. This policy explains what data we access, why, how we protect it, and your rights.
 
 ## 1. Our two roles
 
@@ -31,13 +31,13 @@ We request **only the Shopify scopes needed** to provide the service. ⟦REVIEW:
 
 ## 3. Why we process it (purpose & legal basis)
 
-To provide the service: to build your **Merchant Memory** (a structured, correctable understanding of your business), and to generate insights, goals, and recommendations. Legal basis: performance of our contract with you and our legitimate interest in operating and improving the service. ⟦REVIEW: legal-basis wording per GDPR/UK-GDPR.⟧
+To provide the service: to build your **Merchant Memory** (a structured, correctable understanding of your business), to generate insights, goals, and recommendations, and — where you enable it — **to take actions on your store that you authorise** (see §4). Legal basis: performance of our contract with you and our legitimate interest in operating and improving the service. ⟦REVIEW: legal-basis wording per GDPR/UK-GDPR.⟧
 
 ## 4. How we process it
 
 - **Deterministic code** computes reliable commerce facts. **A large language model** (currently Google Gemini via API) interprets *bounded* evidence into memory, questions, and recommendations. Application code validates and persists the result; merchant corrections outrank model inference.
-- Jefe is **advisory** today — it recommends; you decide. It does not write to your Shopify store or other systems without your explicit approval through a controlled, reversible action with a preview and blast-radius caps.
-- **We do not sell your data, and we do not use your store's data to train general-purpose or third-party AI models.** The LLM processes your data solely to generate your outputs. ⟦REVIEW: confirm against the LLM provider's API data-use terms (e.g. Gemini API) and state any provider retention.⟧
+- Jefe **acts on your authority** through controlled, reversible typed adapters — each with a preview, an approval gate where you require one, and blast-radius caps. For every type of action you choose the mode: **recommend** (Jefe suggests, you act), **approve-then-execute** (Jefe acts on your approval), or **autonomous** (Jefe acts within the policy you set and reports back). You set and can change the autonomy level per action type, and can reverse any action.
+- **We do not sell your data.** We do not use your store's data to train general-purpose or third-party AI models — the LLM processes your data solely to generate your outputs. **To improve Jefe, we do use *de-identified, merchant-level aggregates* and the outcomes of actions** (e.g. which recommendations and actions work) to build our cross-merchant intelligence and action ontology; **your end customers' personal data is never used in this cross-merchant layer.** ⟦REVIEW: confirm against the LLM provider's API data-use terms (e.g. Gemini API) + provider retention; align wording with the DPA and the memory/ontology data-flow (de-identified aggregates only, no cross-merchant end-customer PII).⟧
 
 ## 5. Sub-processors
 
@@ -74,7 +74,7 @@ We do not sell personal data and do not share it except with the sub-processors 
 
 - **Merchants** can inspect and correct their Merchant Memory in-product at any time, and can request access, correction, or deletion of their account data.
 - **End customers** should exercise rights (access/erasure) with the **merchant** (the controller); we support the merchant via the Shopify webhooks above.
-- To exercise rights or ask questions: `privacy@mynamejefe.com` ⟦REVIEW: create mailbox⟧.
+- To exercise rights or ask questions: `hola@mynamejefe.com` ⟦REVIEW: ensure hola@ receives mail (currently the transactional send-from address).⟧
 
 ## 10. International transfers
 
@@ -90,7 +90,7 @@ We'll post changes here and update the "Last updated" date; material changes wil
 
 ## 13. Contact
 
-`[LEGAL ENTITY]`, `[registered address]`. Email: `privacy@mynamejefe.com`. ⟦REVIEW: add DPO/EU-rep if required.⟧
+**Quiver Solutions Limited** (company no. 16961611), 27 Old Gloucester Street, London WC1N 3AX. Email: `hola@mynamejefe.com`. ⟦REVIEW: add DPO/EU-rep if required.⟧
 
 ---
 
