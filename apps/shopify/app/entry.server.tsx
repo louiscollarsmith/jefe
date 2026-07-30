@@ -1,6 +1,6 @@
 import { PassThrough } from "stream";
 import { renderToPipeableStream } from "react-dom/server";
-import { ServerRouter, isRouteErrorResponse } from "react-router";
+import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext, type HandleErrorFunction } from "react-router";
 import { isbot } from "isbot";
@@ -11,6 +11,7 @@ import { newCorrelationId } from "./lib/observability/context.server";
 import { initSentry, captureError } from "./lib/observability/sentry.server";
 import { recordRequestDuration } from "./lib/observability/perf.server";
 import { isBenignStreamError } from "./lib/observability/stream-errors.server";
+import { shouldReportServerError } from "./lib/observability/error-policy.server";
 import db from "./db.server";
 import { track } from "./services/analytics/event-log.server";
 
@@ -94,12 +95,11 @@ export default async function handleRequest(
  * are skipped: client disconnects (aborted requests) and 404s.
  */
 export const handleError: HandleErrorFunction = (error, { request }) => {
-  if (request.signal.aborted) return;
-  // Client-error route responses (404s, stray 405 POSTs to actionless routes,
-  // 403s, etc.) are not server faults — skip alerting/Sentry so bots and
-  // misrouted requests don't page. 5xx route responses and genuine unhandled
-  // exceptions still fall through to capture + alert below.
-  if (isRouteErrorResponse(error) && error.status < 500) return;
+  // Skip expected non-faults — aborted requests (client disconnects) and 4xx
+  // route responses (bot 404s, stray 405 POSTs, 403s). 5xx and genuine unhandled
+  // exceptions fall through to capture + alert. Decision is extracted +
+  // unit-tested in error-policy.server.
+  if (!shouldReportServerError(error, { aborted: request.signal.aborted })) return;
 
   const url = new URL(request.url);
   const correlationId = request.headers.get("x-request-id") || newCorrelationId();
