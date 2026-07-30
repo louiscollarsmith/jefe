@@ -74,16 +74,40 @@ For a system touching merchant money and trust, **auditability beats opacity** �
 
 This is the memory thesis (provenance + confidence, deterministic grounding, typed writes) extended to actions: an action system you can explain to a merchant line-by-line.
 
-## Seed: the registry today
+## The map today (first-pass inventory)
 
-| actionType | state | scope | notes |
-|---|---|---|---|
-| `price_markdown` (dead-stock clearance) | **DONE**\* | `write_products` | First action. Decision engine + typed adapter built; execution flagged-off (`CLEARANCE_EXECUTE_ENABLED`). |
-| product tag / merchandising | **BUILDABLE** | `write_products` | Deferred (founder call: nice-to-have, not headline). |
-| reorder / restock draft | **BUILDABLE** | `write_products` | High operator demand; Shopify has no first-party PO *purchase* API (that part is **NO-PATH**) — a draft/tag is BUILDABLE. |
-| proactive channel message (Slack/WhatsApp) | **BUILDABLE** | n/a (channel, not Shopify) | The declared-but-unbuilt `operational_messages` channel capability lives here as its registry home. |
+Verified against the live Shopify Admin GraphQL docs (2026-07). Only `price_markdown` is DONE; the value is seeing the whole surface — what we can build now, what needs a scope, and the genuine walls.
 
-\* Clearance's DONE is conditional: `write_products` is currently provisioned but is a launch scope-trim candidate; if trimmed, go-live re-adds it via `scopes_update`. Either way execution stays behind the flag + the merchant's approval until the founder flips it.
+**DONE** — `price_markdown` (dead-stock clearance): decision engine + ledger + typed execution adapter built, flagged-off (`CLEARANCE_EXECUTE_ENABLED`). \*`write_products` is held today but a launch scope-trim candidate; if trimmed, go-live re-adds it via `scopes_update`.
+
+**Highest-value BUILDABLE** (scope held today, adapter-only — the fastest next builds, all reversible → the auto-eligibility sweet spot):
+- *Pricing* (`write_products`): `price_set`, `set_compare_at_price`, `bulk_price_update` — the clearance mutation (`productVariantsBulkUpdate`) generalised to promos + repricing.
+- *Inventory* (`write_inventory`): `inventory_set`, `inventory_adjust` — correct oversell/stock drift; pairs with the `inventory_levels/update` webhook already subscribed.
+- *Merchandising* (`write_products`): `product_status_change` (archive dead SKUs), `add_tags`/`remove_tags`, `collection_add_products` + `collection_reorder`.
+- *Customer marketing* (`write_customers`): `customer_email_marketing_consent`, `customer_sms_marketing_consent` — the one marketing lever needing no new scope.
+- *Order housekeeping* (`write_orders`): `order_update` (note/tags), `order_close` — low-risk warm-up before the irreversible order actions.
+
+**BUILDABLE but confirm-gated** (scope held, but irreversible → never auto, always confirm): `refund_create`, `order_cancel`, `product_delete`, `customer_delete`, `customer_merge`.
+
+**NEEDS-SCOPE** (mutation exists, scope not held → "grant X to enable", per-action re-consent):
+- Fulfillment (`write_*_fulfillment_orders`): create/track/hold/reroute/cancel — a whole domain behind one re-consent bundle.
+- Discounts (`write_discounts`): code + automatic discounts, deactivate.
+- Order edits (`write_order_edits` — **separate from `write_orders`**, easy to mis-map): add/remove/qty/line-discounts.
+- Draft orders (`write_draft_orders`): create/complete/invoice.
+- Channel publishing (`write_publications`); online-store content — pages/blogs/menus/redirects (`write_content` / `write_online_store_pages` / `write_online_store_navigation`).
+- Inventory transfer (`write_inventory_transfers` — grantability uncertain, verify at build); marketing-activity register (`write_marketing_events` — attributes only, does NOT send).
+
+**NO-PATH** (Shopify's API genuinely can't — surface honestly):
+1. Send a Shopify Email/SMS marketing campaign (`marketingActivityCreate` only *attributes*) → Jefe's own Resend/Slack/WhatsApp stack is the route.
+2. Supplier procurement (place + pay a PO) — `inventoryTransferCreate` only moves *your own* stock between *your* locations.
+3. Edit the checkout flow/fields (UI extensions/Functions only).
+4. Theme/storefront code (`themeFilesUpsert` needs a special Shopify exemption — effectively closed for a normal app).
+5. Store / plan / tax / payment-provider settings.
+6. Native product bundles (Functions, not a first-party mutation).
+
+The declared-but-unbuilt `operational_messages` channel capability (proactive Slack/WhatsApp) is BUILDABLE and lives here as its registry home — it's Jefe's own comms stack, not a Shopify write.
+
+*Full per-mutation table (each mutation name + reversibility) from the 2026-07-30 write-surface research; this section is the curated, decision-useful view.*
 
 ## Relationships
 
