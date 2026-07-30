@@ -11,6 +11,15 @@ automatically_update_urls_on_dev = true
 [webhooks]
 api_version = "2026-07"
 
+  # Mandatory GDPR/privacy compliance webhooks. Shopify calls these; the handlers
+  # (app/routes/webhooks.customers.*.tsx, webhooks.shop.redact.tsx) verify HMAC via
+  # handleShopifyWebhookRequest and are covered by the compliance tests. Registered
+  # here so a fresh `shopify app deploy` subscribes them (App Store requirement).
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "/webhooks/customers/data_request"
+  customer_deletion_url = "/webhooks/customers/redact"
+  shop_deletion_url = "/webhooks/shop/redact"
+
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
