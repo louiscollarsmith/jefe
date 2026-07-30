@@ -6,6 +6,7 @@ import {
   buildUnfulfilledIntentEvent,
   interpretMerchantMessage,
   interpretMerchantMessageWithLlm,
+  selectPromptBeliefs,
   validateStructuredOperation,
 } from "../app/lib/merchant-memory/conversation.server.js";
 import {
@@ -60,6 +61,29 @@ test("intent-capture shapes a PII-safe candidate-intent event from an unresolved
   assert.equal(event.shopId, "s1");
   assert.equal(event.properties.reason, "That's an action Jefe can't take yet.");
   assert.ok(typeof event.summary === "string" && event.summary.length > 0);
+});
+
+test("selectPromptBeliefs keeps the discussed belief within a tight budget", () => {
+  const beliefs = Array.from({ length: 60 }, (_, i) => ({
+    id: `b${i}`,
+    key: `products.metric_${i}`,
+    category: "products",
+    value: { count: i },
+    valueType: "number",
+    status: "system_inference",
+    confidence: 0.5,
+    evidence: [],
+  }));
+  const input = {
+    beliefs,
+    message: "why is metric_57 like that",
+    context: { lastDiscussedBeliefKeys: ["products.metric_57"] },
+  };
+  const selected = selectPromptBeliefs(input, 2000); // tight char budget
+  // The belief the merchant is discussing must survive the cut, even under budget.
+  assert.ok(selected.some((belief) => belief.key === "products.metric_57"));
+  assert.ok(selected.length <= 40); // hard cap respected
+  assert.ok(selected.length >= 8); // always keeps a useful minimum
 });
 
 const beliefs = [

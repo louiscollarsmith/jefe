@@ -30,6 +30,7 @@ import {
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
+import { getLlmConfig } from "../llm/config.server.js";
 
 export { OPERATION_STATUS, OPERATION_TYPES };
 
@@ -1131,36 +1132,108 @@ function truncateForPrompt(value, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// Belief-budget tuning for the conversation prompt. CHARS_PER_TOKEN is a
+// deliberately conservative characters-per-token estimate (real is ~4) so we
+// under-fill rather than overflow the provider's input-token limit.
+const CHARS_PER_TOKEN = 3.5;
+const MAX_PROMPT_BELIEFS = 40;
+const MIN_PROMPT_BELIEFS = 8;
+
+/**
+ * Serialize one belief to the compact shape the LLM sees; value + evidence bounded.
+ * @param {any} belief
+ */
+function serializePromptBelief(belief) {
+  return {
+    id: belief.id,
+    key: belief.key,
+    category: belief.category,
+    label: labelForBeliefKey(belief.key),
+    // Structured beliefs fall through formatBeliefValue to a full JSON dump; bound
+    // it — the LLM only needs enough of the value to identify the belief.
+    value: truncateForPrompt(formatBeliefValue(belief.value), 150),
+    valueType: belief.valueType,
+    status: belief.status,
+    confidence: belief.confidence,
+    evidenceSummaries: (belief.evidence ?? [])
+      .slice(0, 1)
+      .map((/** @type {any} */ evidence) => truncateForPrompt(evidence.summary, 110)),
+  };
+}
+
+/**
+ * Relevance score for keeping a belief in the budgeted prompt: the belief the
+ * merchant is discussing wins hardest, then merchant-owned and high-confidence
+ * ones. Ensures the belief actually under discussion survives the cut.
+ * @param {any} belief @param {string} messageLower @param {Set<string>} discussedKeys
+ */
+function promptBeliefScore(belief, messageLower, discussedKeys) {
+  let score = 0;
+  const key = String(belief.key ?? "");
+  if (discussedKeys.has(key)) score += 100;
+  const label = labelForBeliefKey(key).toLowerCase();
+  const keyTokens = key.split(/[._]/).filter((token) => token.length > 3);
+  if (keyTokens.some((token) => messageLower.includes(token))) score += 50;
+  if (label.length > 3 && messageLower.includes(label)) score += 40;
+  if (belief.status === "merchant_corrected") score += 30;
+  else if (belief.status === "merchant_confirmed") score += 20;
+  score += Math.round(Number(belief.confidence ?? 0) * 10);
+  return score;
+}
+
+/**
+ * Choose the beliefs to include in the prompt: rank by relevance, then fill up to
+ * a character budget (and the hard MAX_PROMPT_BELIEFS cap). This is the dynamic
+ * token budget — it guarantees the prompt fits the input-token limit even for a
+ * memory-rich merchant, while keeping the belief the merchant is talking about.
+ * @param {{ beliefs: any[]; message?: string; context?: any }} input
+ * @param {number} budgetChars
+ */
+export function selectPromptBeliefs(input, budgetChars) {
+  const messageLower = String(input.message ?? "").toLowerCase();
+  const discussedKeys = new Set(
+    [
+      ...(input.context?.lastDiscussedBeliefKeys ?? []),
+      input.context?.lastCommittedBeliefKey,
+    ].filter(Boolean),
+  );
+  const ranked = [...(input.beliefs ?? [])]
+    .map((belief) => ({
+      belief,
+      score: promptBeliefScore(belief, messageLower, discussedKeys),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const selected = [];
+  let usedChars = 0;
+  for (const { belief } of ranked) {
+    if (selected.length >= MAX_PROMPT_BELIEFS) break;
+    const serialized = serializePromptBelief(belief);
+    const cost = JSON.stringify(serialized).length + 1;
+    if (usedChars + cost > budgetChars && selected.length >= MIN_PROMPT_BELIEFS) {
+      break;
+    }
+    selected.push(serialized);
+    usedChars += cost;
+  }
+  // Emit ordered by key for a stable, readable prompt.
+  selected.sort((a, b) => String(a.key).localeCompare(String(b.key)));
+  return selected;
+}
+
 /**
  * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
  */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
-  return JSON.stringify({
+  const prompt = {
     merchantMessage: input.message,
     conversationContext: {
       lastDiscussedBeliefKeys: input.context?.lastDiscussedBeliefKeys ?? [],
       currentOpenQuestionId: input.context?.currentOpenQuestionId ?? null,
       lastCommittedBeliefKey: input.context?.lastCommittedBeliefKey ?? null,
     },
-    activeBeliefs: input.beliefs.slice(0, 40).map((/** @type {any} */ belief) => ({
-      id: belief.id,
-      key: belief.key,
-      category: belief.category,
-      label: labelForBeliefKey(belief.key),
-      // Bound the serialized value + evidence: structured beliefs (seasonal
-      // breakdowns, reorder/returns lists, momentum objects) fall through
-      // formatBeliefValue to a full JSON dump, which for a memory-rich merchant
-      // pushes the conversation prompt past the input-token limit. The LLM only
-      // needs enough of the value to identify the belief, not the whole payload.
-      value: truncateForPrompt(formatBeliefValue(belief.value), 150),
-      valueType: belief.valueType,
-      status: belief.status,
-      confidence: belief.confidence,
-      evidenceSummaries: (belief.evidence ?? []).slice(0, 1).map(
-        (/** @type {any} */ evidence) => truncateForPrompt(evidence.summary, 110),
-      ),
-    })),
+    activeBeliefs: /** @type {any[]} */ ([]),
     openQuestions: (input.openQuestions ?? []).slice(0, 3).map((/** @type {any} */ question) => ({
       id: question.id,
       questionKey: question.questionKey,
@@ -1183,7 +1256,14 @@ function buildMerchantMemoryLlmPrompt(input) {
     })),
     policy:
       "For observed inventory or catalogue counts, create a policy/preference belief when the merchant gives interpretation rather than overwriting observed data.",
-  });
+  };
+  // Beliefs get whatever character budget remains after the fixed parts (message,
+  // context, open questions, the supported-belief registry, policy), so the whole
+  // prompt stays under the provider's input-token limit however rich the memory.
+  const overheadChars = JSON.stringify(prompt).length;
+  const maxPromptChars = getLlmConfig().maxInputTokens * CHARS_PER_TOKEN;
+  prompt.activeBeliefs = selectPromptBeliefs(input, maxPromptChars - overheadChars);
+  return JSON.stringify(prompt);
 }
 
 /**
