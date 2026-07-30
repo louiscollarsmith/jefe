@@ -3,9 +3,12 @@ import {
   buildHealthPayload,
   checkDatabaseHealth,
   shouldPageOnDependencyFailure,
+  buildWorkerHealth,
+  buildDependencyHealth,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
 import { getLatencyPercentiles } from "../lib/observability/perf.server";
+import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
 
 export const loader = async () => {
   const database = await checkDatabaseHealth(db);
@@ -14,6 +17,10 @@ export const loader = async () => {
     ...buildHealthPayload(process.env),
     checks: {
       database: { status: database.status, latencyMs: database.latencyMs },
+      worker: buildWorkerHealth(getWorkerLastTickAt(), {
+        enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
+      }),
+      ...buildDependencyHealth(process.env),
     },
     latency: getLatencyPercentiles(),
   };

@@ -138,6 +138,46 @@ export function shouldPageOnWorkerError(error, uptimeSeconds, env = process.env)
 }
 
 /**
+ * Non-gating worker-loop liveness for `/health`. The backfill loop ticks every
+ * ~15s in the web process; if the last tick is older than the stale window the
+ * loop is likely wedged (invisible today). Informational only — never flips
+ * `/health` off 200.
+ *
+ * @param {number | null} lastTickAt epoch ms of the last tick (from the heartbeat), or null
+ * @param {{ now?: number; staleMs?: number; enabled?: boolean }} [opts]
+ * @returns {{ status: "ok" | "stale" | "starting" | "disabled"; lastTickAgoMs: number | null }}
+ */
+export function buildWorkerHealth(lastTickAt, opts = {}) {
+  if (opts.enabled === false) return { status: "disabled", lastTickAgoMs: null };
+  const now = opts.now ?? Date.now();
+  const staleMs = opts.staleMs ?? 90_000;
+  if (lastTickAt == null) return { status: "starting", lastTickAgoMs: null };
+  const ago = now - lastTickAt;
+  return { status: ago > staleMs ? "stale" : "ok", lastTickAgoMs: ago };
+}
+
+/**
+ * Cheap dependency presence flags for `/health` — env checks only, no network
+ * calls (so `/health` stays fast and can't hang on a flaky external probe).
+ * Non-gating: informational, never fails the check.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string } }}
+ */
+export function buildDependencyHealth(env = process.env) {
+  return {
+    email: { configured: env.ENABLE_EMAIL === "true" },
+    slack: { configured: Boolean(env.ALERT_WEBHOOK_URL) },
+    llm: {
+      enabled:
+        env.LLM_ENABLED === "true" ||
+        (env.LLM_ENABLED !== "false" && Boolean(env.GEMINI_API_KEY)),
+      provider: env.LLM_PROVIDER || "gemini",
+    },
+  };
+}
+
+/**
  * @template T
  * @param {Promise<T>} promise
  * @param {number} timeoutMs

@@ -49,6 +49,7 @@ import { track } from "./analytics/event-log.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
+import { recordWorkerTick } from "../lib/observability/heartbeat.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -175,6 +176,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   const tick = async () => {
     if (loopRunning) return;
     loopRunning = true;
+    recordWorkerTick();
     try {
       await processNextBackfillJob(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
