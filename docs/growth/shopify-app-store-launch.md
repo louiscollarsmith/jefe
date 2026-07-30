@@ -74,19 +74,21 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ---
 
-## Listing copy — two-mode autonomy re-cut (2026-07-30, supersedes advisory framing)
+## Listing copy — accurate launch framing (2026-07-30) [INTERIM — final line pending founder confirm]
 
-> The 2026-07-30 posture shift (Jefe **acts autonomously from install**, two modes per action type) supersedes the "advisory today" copy in the field-by-field section below. Use this.
+> ⚠️ **Correction (chat 7 caught it):** an earlier re-cut claimed Jefe "acts on it / handles it for you." At **launch, execution ships flagged-off (propose-first)** — the two-mode action capability is *built* but not live. Claiming live autonomous store-writes to a reviewer is the same false-statement risk as the "transient" privacy line. **The final legal/App-Store positioning line is founder substance — chat 7 is relaying the exact wording for Matt's confirm; use that when it lands.** Safe interim below.
+>
+> **Canonical framings.** *Capability* (internal — AGENTS/context/commercial-state, blessed by chat 7): two-mode, merchant-controlled — Jefe proposes-for-approval OR acts autonomously per the merchant's per-action-type policy, via typed reversible adapters; merchant is principal + can veto/reverse. *Launch reality* (legal + listing): built to act; **propose-first at launch** (first action ships flagged-off); autonomy turns on per action type as it ships + the merchant opts in.
 
-- **App card subtitle (≤62):** `Learns your store, finds the next move, and acts on it.`
-- **Introduction:** `Jefe learns how your Shopify store actually works from your own data, then finds the next move to make. You choose per action whether Jefe recommends it for your approval or handles it for you.`
-- **App details (≤500):** `Meet Jefe — an AI manager for your Shopify store. Jefe reads your orders, products, customers, and inventory to build a living understanding of how your business works, then finds the next move worth making and shows the evidence behind it. For each type of action, you decide the mode: Jefe recommends and you approve, or Jefe handles it for you and reports back. Every action runs through controlled, reversible steps — you set the rules, and can veto or undo anything. You stay in control.`
-- **Features:** (1) `Learns how your store works from your own orders, products and customers` (2) `Finds the next move worth making — always with the evidence behind it` (3) `You choose per action: Jefe recommends for approval, or handles it for you` (4) `Every action is controlled and reversible — set the rules, veto, or undo` (5) `A living Merchant Memory you can inspect and correct anytime`
-- **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move, and — your call — recommends it or handles it for you.`
+**Interim safe copy (recommends-now + built-to-act; no live-autonomy claim):**
+- **App card subtitle (≤62):** `Learns how your store works and finds your next move, with the evidence.`
+- **Introduction:** `Jefe learns how your Shopify store actually works from your own data, then finds the next move to make and shows the evidence behind it. It's built to act on your say-so, with new actions rolling out over time — always under your control.`
+- **App details (≤500):** `Meet Jefe — an AI manager for your Shopify store. Jefe reads your orders, products, customers, and inventory to build a living understanding of how your business works, then finds the next move worth making and shows the evidence behind it. Jefe is built to act on those moves through controlled, reversible steps — for each type of action you choose whether Jefe proposes it for your approval or handles it for you — and actions roll out over time, always under your control. You set the rules, and can veto or undo anything.`
+- **Features:** (1) `Learns how your store works from your own orders, products and customers` (2) `Finds the next move worth making — always with the evidence behind it` (3) `Built to act on those moves — you approve, or let Jefe handle routine ones` (4) `Every action is controlled and reversible — set the rules, veto, or undo` (5) `A living Merchant Memory you can inspect and correct anytime`
+- **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move with the evidence, and is built to act on it — on your terms.`
 
-**Category:** Store management › Operations › **Workflow automation** — now firmly correct (acts from install).
-**⚠️ Scope trim REVERSED:** **keep the `write_*` scopes** — Jefe needs them to act. (Earlier trim rec assumed advisory-V1.)
-**⚠️ Reviewer-demo requirement:** copy claims Jefe *acts* + category is Workflow automation → a reviewer must be able to SEE an action work on the test store. At minimum the **approve→execute** path (e.g. dead-stock clearance) must be demonstrable at submission (live or in the screencast), else risk a "doesn't match the category" flag. If autonomous actions are still dark at submit, demo approve→execute or soften "acts on it" → "acts with your approval."
+**⚠️ Scope:** keep the `write_*` scopes (needed for the action layer).
+**⚠️ Category + reviewer:** if execution is fully flagged-off at launch a reviewer sees recommendations, not automation → **reconsider Workflow automation vs Analytics** until an action is demonstrable, and a reviewer must be able to see whatever the copy claims. Decide alongside the confirmed positioning line.
 
 ---
 

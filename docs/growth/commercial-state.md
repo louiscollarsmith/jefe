@@ -1,23 +1,23 @@
 # Commercial State — Jefe (living baseline)
 
-> **Owner:** Jefe chat 6 (growth infrastructure + commercial) · **Audience:** all Jefe sessions (product + growth) · **Last updated:** 2026-07-29
+> **Owner:** Jefe chat 6 (growth infrastructure + commercial) · **Audience:** all Jefe sessions (product + growth) · **Last updated:** 2026-07-30
 >
 > This is the **shared commercial baseline**. Product sessions should read §1 (positioning), §2 (ICP), and §3 (activation) before making product-order decisions. This doc is updated as we learn — treat the newest changelog entry as current truth, and don't inherit anything contradicted below.
 
 ---
 
-## 1. Positioning (accurate — precise about the ramp, don't overclaim what's shipped)
+## 1. Positioning (accurate — two-mode capability, precise about the launch rollout)
 
-**Jefe is the AI eCommerce manager for a Shopify store.** It learns how the store operates from its own data (orders, products, customers, inventory, policies), builds a **Merchant Memory** the merchant can inspect and correct, and — today — recommends the next move with the evidence behind it.
+**Jefe is the AI eCommerce manager for a Shopify store.** It learns how the store operates from its own data (orders, products, customers, inventory, policies), builds a **Merchant Memory** the merchant can inspect and correct, finds the next move with the evidence behind it, and is **built to act on it** under the merchant's control.
 
-- **The destination is action, not advice.** Merchant Memory is the *substrate*; the point is for Jefe to **operate** as the merchant's eCommerce manager, with **autonomy earned per action type**: advisory now → merchant approves a recommendation and Jefe executes it → progressively autonomous on the safe, high-confidence, reversible, low-blast-radius actions as trust is earned. Advisory-V1 is a deliberate **safety posture, not the endpoint**; the external-write guardrails (typed adapters, previews, approval gates, blast-radius caps, reversibility) are exactly what let autonomy grow safely. The merchant is always the principal — sets goals + autonomy levels, can veto or reverse anything. (Canonical: `AGENTS.md` → North Star.)
-- **Don't overclaim what's shipped.** Present tense = advisory (recommends; merchant decides). Frame actioning/autonomy as the direction Jefe *earns*, not something it does to a store today. The live site's "…or actions it for you" is the aspirational edge — keep marketing on the right side of "earns the right to."
+- **Two-mode by design (the capability).** Jefe operates in two merchant-controlled modes, chosen **per action type**: (a) **propose-for-approval** — Jefe recommends, the merchant approves, Jefe executes; or (b) **autonomous** — Jefe acts within the merchant's policy and reports back. Both run through the same guardrails: typed adapters, idempotency, previews, approval gates, blast-radius caps, reversibility. The merchant is always the **principal** — sets goals + per-action-type autonomy, and can veto or reverse anything. (Canonical: `AGENTS.md` → North Star; blessed by chat 7 as the internal capability framing, 2026-07-30.)
+- **Launch reality — describe THIS accurately in legal + the App Store.** Built to act, but **propose-first at launch**: the first executable action ships **flagged-off**, and autonomy turns on **per action type as it ships + the merchant opts in**. So don't say "acts autonomously from install" (inaccurate, and a false-attestation risk with an App-Store reviewer — same class of error as the "transient data" line chat 7 caught), and don't say "advisory for months" (stale — the two-mode action layer *is* the product). Honest launch line: *recommends the next move now; built to act on it, rolling out action by action, always on the merchant's terms.* **Final legal/App-Store wording is founder substance — chat 7 relays Matt's confirmed line; don't finalize ahead of it.**
 - **The core object is Merchant Memory** — durable, structured, versioned, correctable. Merchant-confirmed facts outrank model inference. This is the moat and the message.
-- **What Jefe is not:** an analytics dashboard, a chatbot, or an *ungrounded* autonomous agent. Autonomy is memory-grounded and earned — never generic.
+- **What Jefe is not:** an analytics dashboard, a chatbot, or an *ungrounded* autonomous agent. Autonomy is memory-grounded and merchant-authorized — never generic.
 
-**One-liner (canonical, advisory-today):** *Jefe is the AI eCommerce manager that learns how your Shopify store actually works — tells you the next move today, and earns the right to just handle it.*
+**One-liner (canonical):** *Jefe is the AI eCommerce manager that learns how your Shopify store actually works, finds the next move — and, on your terms, either shows you or handles it.*
 
-**Selling the ramp:** the pitch is not "an advisory tool" — it's *"your eCommerce manager: it learns your business, proves its recommendations, and takes over the routine work as you trust it."* Bigger story, and it's what the product is genuinely built toward.
+**Selling the ramp:** the pitch is not "an advisory tool" — it's *"your eCommerce manager: it learns your business, proves its recommendations, and — mode by mode, on your say-so — takes over the routine work."* The two-mode capability is the product; propose-first is how it rolls out safely.
 
 **The buyer persona (site language):** "eCommerce manager" — the person who personally runs the store day to day.
 
@@ -127,6 +127,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ## Changelog
 
+- **2026-07-30 (pm)** — **Autonomy framing aligned to two-mode capability** (§1 rewritten), blessed by chat 7 as the internal/canonical framing: Jefe operates in two merchant-controlled modes per action type — propose-for-approval **or** autonomous — not "advisory now, autonomy later." Kept the **launch reality** explicit and accurate: propose-first at launch (first action ships flagged-off), autonomy per action type as it ships + opt-in. Legal/App-Store final wording held for Matt's confirmed line (chat 7 relays). Reversed the earlier App-Store copy that claimed Jefe "acts on it" from install (over-claim / reviewer false-attestation risk). Kept `write_*` scopes.
 - **2026-07-30** — Beachhead reframe: Jefe incubated inside **Quiver**, shipping first to Quiver's own e-commerce customers (212 warm customers + 2,486 relationships from the Gmail CRM) → warm wedge, not cold. Added [target-lists.md](target-lists.md) (conversion-factor sizing model + status). Overnight sweeps populating the lists.
 - **2026-07-29 (pm)** — Matt delegated the ICP; **reframed single-market → single-store** (international/multi-currency is table stakes on Shopify → first-class now, not a segmentation axis; multi-*store* deferred to 100→1000). Green-lit chat 4 to re-rank. Aligned §1 positioning to the sharpened product narrative (Merchant Memory = substrate; destination = Jefe operating as eCommerce manager with autonomy earned per action type; advisory-V1 is a safety posture, not the endpoint). Confirmed transactional sender `Hola <hola@mynamejefe.com>` + Reply-To `matt@`.
 - **2026-07-29 (am)** — Matt approved design-partner pricing (free-in-program + founding rate) and the growth subdomain *in principle* (execution deferred to 10→100 — Resend's 1-domain plan needs an upgrade, and 0→10 outreach is 1:1 anyway). Shipped the commercial tracker v0 (`apps/growth`, ICP triage over `waitlist_signups`) and the build-vs-buy tooling view ([growth-stack.md](growth-stack.md)).

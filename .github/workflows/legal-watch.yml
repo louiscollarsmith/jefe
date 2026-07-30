@@ -1,0 +1,77 @@
+name: Legal-doc watch
+
+# Flags when the app's legal *reality* (OAuth scopes, sub-processors, autonomy
+# modes, data types/regions, retention) has drifted from the last-reviewed
+# baseline the published privacy/terms/DPA reflect — so a legal-doc review is
+# never something someone has to remember to run. See
+# docs/growth/legal-docs-governance.md. Alert-only (never blocks a merge); the
+# signal is a #jefe-slack ping, matching the app's ops-alert convention.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/growth/legal-triggers.json'
+      - 'apps/growth/legal-baseline.json'
+      - 'apps/shopify/shopify.app.toml'
+  pull_request:
+    paths:
+      - 'apps/growth/legal-triggers.json'
+      - 'apps/growth/legal-baseline.json'
+      - 'apps/shopify/shopify.app.toml'
+  schedule:
+    # Weekly backstop (Mondays 08:00 UTC): catches drift even when no file
+    # changed, and keeps nagging until a flagged review is done + re-baselined.
+    # The governance doc's quarterly cadence is the review SLA; this is the nudge.
+    - cron: '0 8 * * 1'
+  workflow_dispatch: {}
+
+jobs:
+  legal-watch:
+    name: Legal reality vs last-reviewed baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The watcher is pure Node (reads JSON + the toml) — no npm install needed.
+      - name: Run legal-watch
+        id: watch
+        working-directory: apps/growth
+        run: |
+          set +e
+          OUT="$(node scripts/legal-watch.mjs)"
+          CODE=$?
+          echo "$OUT"
+          {
+            echo 'report<<REPORT_EOF'
+            echo "$OUT"
+            echo 'REPORT_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "flagged=$([ $CODE -ne 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Legal-doc watch'
+            echo '```'
+            echo "$OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Alert-only: never fail the job (don't block merges / redden CI).
+          exit 0
+      - name: Alert #jefe-slack when a legal review is needed
+        if: steps.watch.outputs.flagged == 'true'
+        env:
+          WEBHOOK: ${{ secrets.ALERT_WEBHOOK_URL }}
+          REPORT: ${{ steps.watch.outputs.report }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "ALERT_WEBHOOK_URL secret not set — skipping Slack alert"; exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          MSG=":clipboard: *Legal-doc review needed* — the app's legal reality has drifted from the last-reviewed baseline (privacy / terms / DPA).
+${REPORT}
+Review the affected docs, then acknowledge by copying apps/growth/legal-triggers.json → apps/growth/legal-baseline.json. ${RUN_URL}"
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$(jq -nc --arg t "$MSG" '{text: $t}')" "$WEBHOOK" \
+            && echo "posted legal-watch alert to #jefe-slack" \
+            || echo "alert POST failed (non-fatal)"
