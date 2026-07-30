@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import {
   measureAndRecordClearanceOutcomes,
@@ -119,6 +120,18 @@ test("measureAndRecordClearanceOutcomes scores an applied run and writes outcome
   assert.equal(updates[0].data.outcomeStatus, "measured");
   assert.equal(updates[0].data.outcome.variantsCleared, 2);
   assert.ok(updates[0].data.outcomeMeasuredAt instanceof Date);
+});
+
+test("the outcome-measurement job stays wired into the worker loop (dormant Observe→Learn regression guard)", () => {
+  // Nothing exercises the worker's daily-cadence wrapper at runtime (it's dormant
+  // until execution is live), so a source-level guard keeps a refactor from silently
+  // unwiring the Observe→Learn loop — the measurement + belief refresh must reach the tick.
+  const workerSource = fs.readFileSync(
+    new URL("../app/services/shopify-backfill-worker.server.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(workerSource, /measureAndRecordClearanceOutcomes/); // the loader is imported + run
+  assert.match(workerSource, /maybeMeasureClearanceOutcomes\(workerPrisma/); // and called in the tick
 });
 
 test("measureAndRecordClearanceOutcomes: no eligible runs → nothing measured, no writes", async () => {

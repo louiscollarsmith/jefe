@@ -250,6 +250,30 @@ test("getActiveSuggestedAction returns null when nothing is proposed", async () 
   assert.equal(await getActiveSuggestedAction(prisma, { merchantId: "m1", shopId: "s1" }), null);
 });
 
+test("getActiveSuggestedAction degrades gracefully on a legacy row with no proposalSummary", async () => {
+  delete process.env.CLEARANCE_EXECUTE_ENABLED;
+  const prisma = {
+    actionExecution: {
+      findFirst: async () => ({
+        runId: "run-legacy",
+        actionType: "price_markdown",
+        resolvedMode: "approve",
+        proposalSummary: null, // a row proposed before the summary was persisted
+        preview: { variantCount: 2 },
+      }),
+    },
+    actionAutonomyPolicy: { findUnique: async () => null }, // → default mode
+  };
+  const sa = await getActiveSuggestedAction(prisma, { merchantId: "m1", shopId: "s1", currency: "GBP" });
+  assert.ok(sa, "still renders a card from the preview variant count — no crash");
+  assert.equal(sa.actionRunId, "run-legacy");
+  assert.match(sa.headline, /2 products/);
+  // Money is unknown without a summary → the em-dash placeholder, not a wrong number.
+  assert.equal(sa.keyNumbers.find((n) => n.label === "Trapped capital").value, "—");
+  assert.deepEqual(sa.topItems, []); // no per-item detail without a summary
+  assert.equal(sa.mode, "approve_execute"); // default dial
+});
+
 test("reviseAction re-proposes at the new markdown + supersedes the original", async () => {
   const original = {
     id: "e-old",
