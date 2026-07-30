@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  approveAction,
   proposeActionFromIntent,
+  rejectAction,
   toSuggestedAction,
 } from "../app/lib/actions/action-resolution.server.js";
+
+// Minimal execution-row stub for approve/reject (findUnique + update).
+function mockExecPrisma(row) {
+  let current = row;
+  return {
+    actionExecution: {
+      findUnique: async () => (current ? { ...current } : null),
+      update: async ({ data }) => {
+        current = { ...current, ...data };
+        return { ...current };
+      },
+    },
+  };
+}
 
 // A tiny prisma stub: canned reads for buildDeadStockClearanceProposal's 3 queries
 // + a capturing actionExecution.create. No DB needed — proves the full orchestration.
@@ -90,4 +106,26 @@ test("proposeActionFromIntent returns no_opportunity when there's no dead stock"
     intent: { actionType: "price_markdown", targetKind: "dead_stock" },
   });
   assert.equal(res.status, "no_opportunity");
+});
+
+test("approveAction records the merchant's yes: proposed -> approved", async () => {
+  const prisma = mockExecPrisma({ id: "e1", runId: "r1", merchantId: "m1", status: "proposed" });
+  const res = await approveAction(prisma, { merchantId: "m1", actionRunId: "r1" });
+  assert.equal(res.status, "approved");
+  assert.equal(res.execution.status, "approved");
+  assert.equal(res.execution.approvedBy, "m1");
+});
+
+test("approveAction refuses a non-proposed or wrong-merchant action (no write)", async () => {
+  const applied = mockExecPrisma({ id: "e1", runId: "r1", merchantId: "m1", status: "applied" });
+  assert.equal((await approveAction(applied, { merchantId: "m1", actionRunId: "r1" })).status, "not_proposable");
+  const wrong = mockExecPrisma({ id: "e1", runId: "r1", merchantId: "m1", status: "proposed" });
+  assert.equal((await approveAction(wrong, { merchantId: "intruder", actionRunId: "r1" })).status, "not_found");
+});
+
+test("rejectAction drops a proposed action: proposed -> rejected", async () => {
+  const prisma = mockExecPrisma({ id: "e1", runId: "r1", merchantId: "m1", status: "proposed" });
+  const res = await rejectAction(prisma, { merchantId: "m1", actionRunId: "r1" });
+  assert.equal(res.status, "rejected");
+  assert.equal(res.execution.status, "rejected");
 });
