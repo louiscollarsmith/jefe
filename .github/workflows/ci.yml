@@ -76,6 +76,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Perf-regression guard: compares app-owned client chunks' gzip size to
+      # bundle-budget.json. NON-BLOCKING (continue-on-error) — reports a regression
+      # without failing CI, until a first green run confirms the budgets fit; then
+      # flip it to a hard gate. Protects the app._index decomposition.
+      - name: Bundle-size guard (non-blocking)
+        continue-on-error: true
+        run: node scripts/check-bundle-size.mjs
+
       # Self-reporting red gate: on ANY failed step above, ping #jefe-slack with
       # the branch / commit / run link, so a CI failure surfaces on its own
       # instead of someone having to watch the Actions tab. Uses the same webhook

@@ -1,0 +1,9 @@
+{
+  "_comment": "Gzip-kB ceilings for app-owned client chunks — the perf-decomposition targets. Catches a regression (e.g. a heavy module statically re-imported into app._index, the Move-1 issue). Raise a budget deliberately, in the same PR, when a growth is intended. Vendor chunks (Polaris/React) are not tracked here — their size is a dependency choice, not a regression.",
+  "gzipKb": {
+    "app._index": 18,
+    "daily-home": 14,
+    "root": 9,
+    "app": 14
+  }
+}
