@@ -74,6 +74,22 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ---
 
+## Listing copy — two-mode autonomy re-cut (2026-07-30, supersedes advisory framing)
+
+> The 2026-07-30 posture shift (Jefe **acts autonomously from install**, two modes per action type) supersedes the "advisory today" copy in the field-by-field section below. Use this.
+
+- **App card subtitle (≤62):** `Learns your store, finds the next move, and acts on it.`
+- **Introduction:** `Jefe learns how your Shopify store actually works from your own data, then finds the next move to make. You choose per action whether Jefe recommends it for your approval or handles it for you.`
+- **App details (≤500):** `Meet Jefe — an AI manager for your Shopify store. Jefe reads your orders, products, customers, and inventory to build a living understanding of how your business works, then finds the next move worth making and shows the evidence behind it. For each type of action, you decide the mode: Jefe recommends and you approve, or Jefe handles it for you and reports back. Every action runs through controlled, reversible steps — you set the rules, and can veto or undo anything. You stay in control.`
+- **Features:** (1) `Learns how your store works from your own orders, products and customers` (2) `Finds the next move worth making — always with the evidence behind it` (3) `You choose per action: Jefe recommends for approval, or handles it for you` (4) `Every action is controlled and reversible — set the rules, veto, or undo` (5) `A living Merchant Memory you can inspect and correct anytime`
+- **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move, and — your call — recommends it or handles it for you.`
+
+**Category:** Store management › Operations › **Workflow automation** — now firmly correct (acts from install).
+**⚠️ Scope trim REVERSED:** **keep the `write_*` scopes** — Jefe needs them to act. (Earlier trim rec assumed advisory-V1.)
+**⚠️ Reviewer-demo requirement:** copy claims Jefe *acts* + category is Workflow automation → a reviewer must be able to SEE an action work on the test store. At minimum the **approve→execute** path (e.g. dead-stock clearance) must be demonstrable at submission (live or in the screencast), else risk a "doesn't match the category" flag. If autonomous actions are still dark at submit, demo approve→execute or soften "acts on it" → "acts with your approval."
+
+---
+
 ## Listing submission — field-by-field answers (2026-07-29)
 
 Paste-ready. **✅ = final · ⚠️ = founder must provide/host.**
