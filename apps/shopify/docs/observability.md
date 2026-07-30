@@ -1,12 +1,12 @@
 # Observability & Error Logging
 
-This is the baseline observability layer for the Shopify app: structured logs, a
-central server-side error hook, a user-facing error boundary, and a health
-endpoint that reports version and dependency status. It has no external
-dependency — logs are written to stdout/stderr as JSON, which Railway's log
-drain collects. Adding an error-tracking SaaS (e.g. Sentry) later is possible
-but was deliberately out of scope; it would egress error payloads to a third
-party and needs a founder decision.
+The observability layer for the Shopify app: structured logs (stdout/stderr JSON,
+collected by Railway's log drain), a central server-side error hook, a user-facing
+error boundary, a health/readiness split, **Sentry** error tracking (server +
+client), and **Slack alerting** for both runtime errors and CI failures. An
+external uptime monitor (Better Stack) pings the app and pages #jefe-slack, and an
+internal ops panel (`admin.mynamejefe.com`, `apps/ops`) reads the same signals
+from the DB for a human-driven view.
 
 ## Structured logger
 
@@ -42,6 +42,13 @@ Every context payload passes through `redact()`
 - keys that look like credentials or PII (`*token*`, `*secret*`, `*password*`,
   `authorization`, `cookie`, `*phone*`, …) → `"[redacted]"`;
 - email-shaped substrings in **any** string value → `"[redacted-email]"`;
+- high-confidence secret shapes in free text (Shopify `shpat_…`, Stripe
+  `sk_live_…`, GitHub `ghp_…`, `Bearer`/`Basic`/`Token` values) →
+  `"[redacted-secret]"` — catches a token embedded in an error message or URL that
+  the key-based rule can't see;
+- `Error` values are serialised (name/message/stack/own fields) at **any** nesting
+  depth, with the message/stack scrubbed — so a nested error can't slip a
+  token/email through, nor vanish to `{}`;
 - recursion is depth- and cycle-bounded; long strings are truncated.
 
 This is intentionally conservative — it would rather hide an operational field
@@ -53,9 +60,14 @@ log request bodies or prompt/response contents.** Log identifiers and metadata
 
 `app/entry.server.tsx` exports `handleError`, which React Router calls for every
 uncaught error thrown while handling a request (loaders, actions, rendering). It
-is the one place guaranteed to see server errors, and logs them via the logger.
-It skips two expected, non-actionable cases: client disconnects (aborted
-requests) and 404s.
+is the one place guaranteed to see server errors: it logs them via the logger,
+captures them to Sentry (`captureError`), and records them to the activity log
+(topic `reliability`) so they're readable from the ops panel and DB, not only via
+the Slack push. Which errors are **reported** vs. skipped as expected non-faults is
+decided by the pure, unit-tested `shouldReportServerError`
+(`app/lib/observability/error-policy.server.js`): **aborted requests** (client
+disconnects) and **4xx route responses** (bot 404s, stray 405 POSTs, 403s) are
+skipped; 5xx and genuine exceptions report.
 
 ## Root error boundary
 
@@ -64,6 +76,23 @@ fallback (no raw stack trace) for any error not caught by a nested route
 boundary. The embedded `app/*` routes keep their own Shopify-aware boundary; the
 root one is the top-level net for everything else. It is free of server-only
 imports; server-side logging of these errors is handled by `handleError`.
+
+## Sentry — error tracking
+
+`app/lib/observability/sentry.server.js` (server) and `sentry.client.ts` (client)
+add grouping, regression and release tracking on top of the logs. **Inert unless
+the DSN is set** — the server reads `SENTRY_DSN`, the client reads
+`VITE_SENTRY_DSN` (both are set in prod).
+
+- **PII posture:** `sendDefaultPii: false`; request cookies/body/headers are
+  dropped; extra context runs through `redact()` before send. We capture `Error`
+  objects, not payloads.
+- **Noise filter:** `beforeSend` drops already-handled benign events via the pure,
+  tested `isBenignForSentry` — client mid-stream disconnects
+  (`isBenignStreamError`) and 4xx route responses — so a real 5xx stands out.
+  Filtering at the SDK level (not only in `handleError`) also catches Sentry's own
+  auto-instrumentation, which can capture before `handleError` runs.
+- Issues route to **#jefe-slack** via Better Stack's Sentry integration.
 
 ## Health endpoint — `/health`
 
@@ -130,8 +159,17 @@ hook. Properties:
   (default 5 min) and a per-minute cap bounds alert storms.
 - Records arrive **already redacted** by the logger, so no secrets/PII are sent.
 
-This is intentionally dependency-free (no Sentry/Datadog account). A richer
-error-tracking SaaS remains an optional future step.
+### Other alert routes
+
+- **CI failures → #jefe-slack.** `.github/workflows/ci.yml` posts to the same
+  `ALERT_WEBHOOK_URL` (also stored as a GH Actions secret) on any failed run, so a
+  red build reaches Slack, not just email.
+- **Uptime (Better Stack) → #jefe-slack.** An external monitor pings the app and
+  pages Slack on downtime — the outside-in check the internal signals can't give.
+- **Sentry → #jefe-slack** via Better Stack's Sentry integration (see *Sentry*
+  above).
+- **Ops panel** (`admin.mynamejefe.com`, `apps/ops`) reads the reliability +
+  economics signals from the DB for a human-driven view alongside the push alerts.
 
 ## Adopting the logger elsewhere
 
