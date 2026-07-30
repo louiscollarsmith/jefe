@@ -1,0 +1,13 @@
+{
+  "_comment": "LAST-REVIEWED legal reality (the state the current published docs reflect). The watcher diffs legal-triggers.json against this. To acknowledge a completed review, copy legal-triggers.json over this file. NOTE: autonomyModes is intentionally the pre-2026-07-30 advisory state so the watcher demonstrates catching the autonomy-posture change — clear it once the legal docs are updated to two-mode + merchants notified.",
+  "scopes": [
+    "read_products", "write_products", "read_orders", "write_orders", "read_all_orders",
+    "read_customers", "write_customers", "read_inventory", "write_inventory",
+    "read_locations", "write_locations"
+  ],
+  "subProcessors": ["Neon", "Railway", "Google (Gemini)", "Resend", "Sentry", "Shopify"],
+  "dataRegions": ["UK", "EU", "US"],
+  "autonomyModes": ["advisory"],
+  "dataTypes": ["orders", "products", "customers-PII", "inventory"],
+  "retentionModel": "raw-order-PII-at-rest-until-uninstall-or-redact"
+}

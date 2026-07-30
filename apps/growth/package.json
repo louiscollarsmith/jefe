@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "pipeline": "node scripts/pipeline-report.mjs"
+    "pipeline": "node scripts/pipeline-report.mjs",
+    "legal-watch": "node scripts/legal-watch.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4"
