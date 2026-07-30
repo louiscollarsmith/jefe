@@ -466,6 +466,7 @@ test("Plan generation emits the plan-rec actionIntent → a proposed clearance r
     assert.equal(proposed.actionKind, "dead_stock_clearance");
     assert.equal(proposed.resolvedMode, "approve"); // default dial → propose-first, never auto
     assert.equal(proposed.proposalSummary.variantCount, 1);
+    assert.equal(Number(proposed.proposalSummary.markdownPercent), 30); // the emit's advisory % round-tripped
     assert.equal(Number(proposed.proposalSummary.totalTrappedCapital), 800); // 10 units × £80 cost
   } finally {
     // ActionExecution has no merchant FK cascade → clean it up explicitly first.

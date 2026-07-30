@@ -101,6 +101,7 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
   assert.equal(row.proposalSummary.variantCount, 1);
   assert.equal(row.proposalSummary.totalTrappedCapital, 800); // 10 units × £80 cost
   assert.equal(row.proposalSummary.totalProjectedRecovery, 1400); // 10 units × £140
+  assert.equal(row.proposalSummary.markdownPercent, 30); // the requested % (intent params)
   assert.deepEqual(row.proposalSummary.topItems[0], { title: "Parka", unitsOnHand: 10, trappedCapital: 800 });
   // The card data: advisory (executable false), money in keyNumbers, carries the runId.
   assert.equal(res.suggestedAction.executable, false);
@@ -200,9 +201,10 @@ test("buildProposalSummary totals only surviving items + carries units/trapped f
   };
   // Preview kept v1 + v2, refused v3 (below floor) — totals must match the shown set.
   const preview = { variantCount: 2, changes: [{ variantId: "v1" }, { variantId: "v2" }] };
-  const summary = buildProposalSummary(proposal, preview);
+  const summary = buildProposalSummary(proposal, preview, 30);
   assert.equal(summary.variantCount, 2);
   assert.equal(summary.windowDays, 90);
+  assert.equal(summary.markdownPercent, 30); // the knob the merchant edits
   assert.equal(summary.totalTrappedCapital, 1000); // 800 + 200, NOT +90
   assert.equal(summary.totalProjectedRecovery, 1720); // 1400 + 320
   assert.equal(summary.topItems.length, 2);
@@ -218,6 +220,7 @@ test("getActiveSuggestedAction: latest proposed row → formatted card (advisory
     proposalSummary: {
       windowDays: 90,
       variantCount: 2,
+      markdownPercent: 30,
       totalTrappedCapital: 1000,
       totalProjectedRecovery: 1720,
       topItems: [{ title: "Parka", unitsOnHand: 10, trappedCapital: 810 }],
@@ -239,6 +242,7 @@ test("getActiveSuggestedAction: latest proposed row → formatted card (advisory
   assert.equal(sa.keyNumbers.find((n) => n.label === "Projected recovery").value, "£1,720");
   assert.equal(sa.keyNumbers.find((n) => n.label === "Products").value, "2");
   assert.equal(sa.topItems[0].detail, "10 units · £810 tied up");
+  assert.equal(sa.markdownPercent, 30); // the edit control's reference value
 });
 
 test("getActiveSuggestedAction returns null when nothing is proposed", async () => {
@@ -283,6 +287,7 @@ test("reviseAction re-proposes at the new markdown + supersedes the original", a
   assert.equal(created.actionType, "price_markdown");
   assert.equal(created.merchantSetting, "approve_execute"); // the merchant's dial is preserved
   assert.equal(created.preview.changes[0].toPrice, 100); // 50% off 200 = 100, above the 80 floor
+  assert.equal(created.proposalSummary.markdownPercent, 50); // revised knob persisted on the new row
 });
 
 test("reviseAction refuses a non-proposed run or the wrong merchant (no re-propose)", async () => {

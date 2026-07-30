@@ -32,16 +32,19 @@ import {
  * @param {{ merchantId: string; shopId: string; intent: import("./action-intent.server.js").ActionIntent }} input
  */
 async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
-  const markdownPercent = Number(intent.params?.markdownPercent);
+  const requested = Number(intent.params?.markdownPercent);
+  // The effective default markdown that produced this proposal — the exact knob the
+  // merchant edits (reviseAction round-trips it). Clamp to [0,100]; default 30.
+  const markdownPercent = Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 30;
   const proposal = await buildDeadStockClearanceProposal(prisma, {
     merchantId,
     shopId,
-    options: Number.isFinite(markdownPercent) ? { defaultDiscountPercent: markdownPercent } : undefined,
+    options: { defaultDiscountPercent: markdownPercent },
   });
   if (proposal.status !== "proposed") return null;
   const preview = buildClearancePreview(/** @type {any} */ (proposal));
   if (preview.variantCount === 0) return null; // all refused (below-floor / missing-floor) or none
-  return { proposal, preview };
+  return { proposal, preview, markdownPercent };
 }
 
 /**
@@ -87,8 +90,9 @@ export function formatMoney(amount, currency = "GBP") {
  * formatting happens at read time against the shop currency (getActiveSuggestedAction).
  * @param {{ windowDays?: number; items?: Array<{ variantId: string | null; title?: string | null; unitsOnHand?: number; trappedCapital?: number; projectedRecovery?: number }> }} proposal
  * @param {{ changes?: Array<{ variantId: string }>; variantCount?: number }} preview
+ * @param {number} [markdownPercent]  The requested default % that produced the proposal — the knob the merchant edits.
  */
-export function buildProposalSummary(proposal, preview) {
+export function buildProposalSummary(proposal, preview, markdownPercent) {
   const byVariant = new Map(
     (proposal?.items ?? []).map((item) => [item.variantId, item]),
   );
@@ -104,6 +108,7 @@ export function buildProposalSummary(proposal, preview) {
   return {
     windowDays: proposal?.windowDays ?? 90,
     variantCount: preview?.variantCount ?? surviving.length,
+    markdownPercent: Number.isFinite(Number(markdownPercent)) ? Number(markdownPercent) : undefined,
     totalTrappedCapital: round2(totalTrappedCapital),
     totalProjectedRecovery: round2(totalProjectedRecovery),
     topItems: surviving.slice(0, 3).map((item) => ({
@@ -166,7 +171,7 @@ export async function proposeActionFromIntent(prisma, input) {
     intent,
   });
   if (!resolved) return { status: "no_opportunity" };
-  const { proposal, preview } = resolved;
+  const { proposal, preview, markdownPercent } = resolved;
 
   // Deterministic proposal: the numbers are facts (only costed variants, floored at
   // cost), so the sizing confidence is full. Refine per data-completeness later.
@@ -183,7 +188,7 @@ export async function proposeActionFromIntent(prisma, input) {
   const runId = randomUUID();
   // Persist the money summary alongside the execution preview so the Daily Home card
   // renders key numbers + top items without re-running the proposal (a read-time query).
-  const proposalSummary = buildProposalSummary(proposal, preview);
+  const proposalSummary = buildProposalSummary(proposal, preview, markdownPercent);
   const execution = await prisma.actionExecution.create({
     data: {
       runId,
@@ -277,6 +282,8 @@ export async function getActiveSuggestedAction(prisma, input) {
     actionRunId: row.runId,
     actionType: row.actionType,
     mode,
+    // The proposed default % (the knob the edit control POSTs back to reviseAction).
+    markdownPercent: typeof summary.markdownPercent === "number" ? summary.markdownPercent : undefined,
   };
 }
 

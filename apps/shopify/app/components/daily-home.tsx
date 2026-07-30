@@ -358,6 +358,7 @@ export type SuggestedAction = {
   actionRunId?: string; // the proposed run's id — the Approve/Reject target
   actionType?: string; // e.g. "price_markdown" (the autonomy-dial key)
   mode?: ActionMode; // the merchant's current mode for this action type (getActionMode)
+  markdownPercent?: number; // the proposed default % — the reference the edit control (action.edit → reviseAction) POSTs back
   note?: string; // optional footer override (e.g. autonomous-done: "Jefe marked these down for you")
 };
 
