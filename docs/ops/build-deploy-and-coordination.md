@@ -10,7 +10,7 @@ One command, run before **EVERY** push (and again after any rebase):
 bash scripts/preflight.sh        # prisma generate → typecheck → lint → test → build
 ```
 
-Push only if green: `bash scripts/preflight.sh && git push origin HEAD:main`. Enable the structural backstop once — shared across all worktrees via the common `.git/config`: `git config core.hooksPath .githooks` installs a pre-push hook that runs preflight and **blocks a red push to `origin/main`**.
+Push only if green: `bash scripts/preflight.sh && git push origin HEAD:main`. Enable the structural backstop once — shared across all worktrees via the common `.git/config`: `git config core.hooksPath .githooks` installs a pre-push hook that runs preflight and **blocks a red push to `origin/main`**. A worktree without `node_modules` can't run the gate — there the hook **skips** with a note (CI still gates); run `cd apps/shopify && npm ci` to enable the fast local gate. Reserve `git push --no-verify` for when you've *just* run preflight green yourself — not as a routine bypass.
 
 Non-negotiables:
 - **Re-run preflight after ANY rebase/fetch that moved your base.** A pre-rebase green gate is void once a sibling's commit rebases in — a deleted export (passes typecheck **and** build, fails only at runtime/test) or a tripped consistency guard shows only on a fresh run. Both red-mains on 2026-07-30 came from skipping this.

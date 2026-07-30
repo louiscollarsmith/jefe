@@ -22,5 +22,16 @@ if [ "$pushing_main" -eq 0 ]; then
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
+
+# Graceful degrade: a worktree without installed deps can't run the gate at all.
+# Skip with a clear note and let CI gate — rather than failing the push and training
+# everyone to `--no-verify` (which would defeat the hook for the worktrees that CAN
+# run it). The full local gate still runs wherever node_modules exists.
+if [ ! -d "$repo_root/apps/shopify/node_modules" ]; then
+  echo "⚠ pre-push: apps/shopify/node_modules missing in this worktree — skipping local preflight; CI still gates this push." >&2
+  echo "  (run: cd apps/shopify && npm ci  — to enable the fast local gate here.)" >&2
+  exit 0
+fi
+
 echo "⟳ pre-push: running preflight before origin/main …"
 bash "$repo_root/scripts/preflight.sh"
