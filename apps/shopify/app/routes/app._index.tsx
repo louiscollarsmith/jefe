@@ -225,11 +225,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // approval but performs NO external write (safe no-op), so this is dark until
   // Matt flips the flag. Redirect to reload the home so the card reflects the new
   // state (chat 4's binding); the write result rides that reload.
+  const actionLog = baseLogger.child({ component: "action" });
   if (intent === "action.approve") {
-    await wireClearanceExecution(prisma, session, {
+    const actionRunId = String(formData.get("actionRunId") ?? "");
+    const result = await wireClearanceExecution(prisma, session, {
       merchantId: merchant.id,
-      actionRunId: String(formData.get("actionRunId") ?? ""),
+      actionRunId,
       mode: "approve",
+    });
+    // `executed` distinguishes a real store write (flag on) from the dark record
+    // (flag off). No customer data — merchant + run identifiers only.
+    actionLog.info("merchant approved suggested action", {
+      merchantId: merchant.id,
+      actionRunId,
+      executed: result.executed,
     });
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
@@ -240,12 +249,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // (the reason picker exposes no PII field; text capped here as a backstop).
     const reasonCategory = String(formData.get("reason") ?? "").trim();
     const reasonText = String(formData.get("reasonText") ?? "").trim().slice(0, 140);
-    await rejectAction(prisma, {
+    const actionRunId = String(formData.get("actionRunId") ?? "");
+    const result = await rejectAction(prisma, {
       merchantId: merchant.id,
-      actionRunId: String(formData.get("actionRunId") ?? ""),
+      actionRunId,
       reasonCategory: reasonCategory || undefined,
       reasonText: reasonText || undefined,
     });
+    // reasonCategory is a fixed enum (safe); reasonText is merchant free-text → never logged.
+    const declineMeta = {
+      merchantId: merchant.id,
+      actionRunId,
+      reasonCategory: reasonCategory || null,
+      status: result.status,
+    };
+    if (result.status === "rejected")
+      actionLog.info("merchant declined suggested action", declineMeta);
+    else actionLog.warn("merchant decline did not apply", declineMeta);
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
   if (intent === "action.edit") {
@@ -254,19 +274,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // overridden), supersedes the old proposed row, and the loader re-reads the fresh
     // proposal on the redirect. No external write — this is still the propose half.
     const markdownPercent = Number(formData.get("markdownPercent"));
-    await reviseAction(prisma, {
+    const actionRunId = String(formData.get("actionRunId") ?? "");
+    const result = await reviseAction(prisma, {
       merchantId: merchant.id,
-      actionRunId: String(formData.get("actionRunId") ?? ""),
+      actionRunId,
       params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
     });
+    const editMeta = {
+      merchantId: merchant.id,
+      actionRunId,
+      markdownPercent: Number.isFinite(markdownPercent) ? markdownPercent : null,
+      status: result.status,
+    };
+    if (result.status === "revised")
+      actionLog.info("merchant revised suggested action", editMeta);
+    else actionLog.warn("merchant revise did not apply", editMeta);
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
   if (intent === "action.set_mode") {
-    await setActionMode(prisma, {
+    const actionType = String(formData.get("actionType") ?? "");
+    const mode = String(formData.get("mode") ?? "");
+    const result = await setActionMode(prisma, {
       merchantId: merchant.id,
-      actionType: String(formData.get("actionType") ?? ""),
-      mode: String(formData.get("mode") ?? ""),
+      actionType,
+      mode,
     });
+    const modeMeta = { merchantId: merchant.id, actionType, mode, status: result.status };
+    if (result.status === "ok")
+      actionLog.info("merchant set action autonomy mode", modeMeta);
+    else actionLog.warn("merchant set-mode rejected", modeMeta);
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
 
