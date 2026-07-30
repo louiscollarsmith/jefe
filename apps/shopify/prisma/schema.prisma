@@ -1045,9 +1045,9 @@ model ActionExecution {
   shopId            String                 @map("shop_id") @db.Uuid
   actionType        String                 @map("action_type") // the primitive, e.g. "price_markdown"
   actionKind        String?                @map("action_kind") // advice context, e.g. "dead_stock_clearance"
-  status            String                 @default("proposed") // proposed|approved|applied|partially_applied|reverted|failed
-  merchantSetting   String                 @map("merchant_setting") // "propose"|"auto" at execution time
-  resolvedMode      String                 @map("resolved_mode") // "propose"|"auto" actually used
+  status            String                 @default("proposed") // proposed|approved|applied|partially_applied|reverted|failed|superseded
+  merchantSetting   String                 @map("merchant_setting") // recommend|approve_execute|autonomous (the merchant's dial at propose time)
+  resolvedMode      String                 @map("resolved_mode") // recommend|approve|auto (merchant dial × structural gate)
   eligibility       Json                   @default("{}") @map("eligibility_json") // {reversible,withinCap,confident,autoEligible}
   confidence        Float?
   approvedBy        String?                @map("approved_by") // merchant id, or "auto"

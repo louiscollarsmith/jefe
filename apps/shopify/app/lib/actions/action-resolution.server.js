@@ -6,10 +6,11 @@
 //   intent → resolve (memory/query + safe sizing) → preview → structural eligibility
 //   → autonomy mode → create a "proposed" ActionExecution row → SuggestedAction.
 //
-// No external write here: this is the propose half. The merchant's approval flips
-// the row proposed→approved (approveAction), and — only when the write-flag is on —
-// the typed adapter executes it. The LLM chose the verb + rough magnitude; the
-// deterministic params (floored prices) are computed here + re-checked by the gate.
+// No external write here: this is the propose half. On approval, wireClearanceExecution
+// records proposed→approved AND — only when the write-flag is on — the typed adapter
+// executes it (there is no standalone approve step in the 3-mode model). The LLM chose
+// the verb + rough magnitude; the deterministic params (floored prices) are computed
+// here + re-checked by the gate.
 
 import { randomUUID } from "node:crypto";
 import { validateActionIntent } from "./action-intent.server.js";
