@@ -50,6 +50,7 @@ import { runActivityDigest } from "./analytics/digest.server.js";
 import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
 import { maybePostChangelog } from "./changelog/changelog-watcher.server.js";
+import { maybeSendWinBackCampaign } from "../lib/email/winback-campaign.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
 import { recordWorkerTick } from "../lib/observability/heartbeat.server.js";
 
@@ -237,6 +238,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
       await maybeMeasureClearanceOutcomes(workerPrisma, logger);
+      await maybeSendWinBackCampaign(workerPrisma, { logger });
       loopFailureStreak = 0; // a fully-successful tick clears the streak
     } catch (error) {
       loopFailureStreak += 1;

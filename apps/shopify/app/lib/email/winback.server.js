@@ -16,6 +16,7 @@ import {
   DEFAULT_LOGO_URL,
   deriveStoreName,
 } from "./welcome.server.js";
+import { isWinBackCampaignEnabled } from "./winback-campaign.server.js";
 
 const log = baseLogger.child({ component: "email" });
 
@@ -65,7 +66,14 @@ export async function clearWinBackGuard(prisma, shopDomain) {
       shopDomain: normalized,
       winbackEmailSentAt: { not: null },
     },
-    data: { winbackEmailSentAt: null },
+    // Clear the whole sequence (Day-0 guard + campaign steps + persisted
+    // recipient) so a later re-churn starts a fresh win-back from scratch.
+    data: {
+      winbackEmailSentAt: null,
+      winbackEmail2SentAt: null,
+      winbackEmail3SentAt: null,
+      winbackRecipientEmail: null,
+    },
   });
   return { cleared: res.count };
 }
@@ -349,7 +357,13 @@ export async function sendWinBackEmailOnUninstall(prisma, input) {
     // Atomic claim: only the transition NULL -> now wins.
     const claim = await prisma.shop.updateMany({
       where: { id: input.shopId, winbackEmailSentAt: null },
-      data: { winbackEmailSentAt: new Date() },
+      data: {
+        winbackEmailSentAt: new Date(),
+        // Persist the recipient so the follow-up sequence (emails 2 & 3) can reach
+        // them after the uninstall webhook deletes this shop's Session rows. Stored
+        // ONLY when the campaign is enabled — a dark deploy writes nothing new.
+        ...(isWinBackCampaignEnabled() ? { winbackRecipientEmail: recipient } : {}),
+      },
     });
     if (claim.count === 0) {
       return { sent: false, reason: "already_sent" };
