@@ -12,6 +12,7 @@ Shopify (Admin GraphQL + webhooks)
   → derivation:  belief registry → facts + evidence + confidence          [deterministic]
   → Merchant Memory: beliefs · evidence · history · open questions        [system of record]
   → LLM inference:   insights · goals · plan · store-understanding · chat  [proposes only, validated]
+  → actions:         action-intent → floored preview → gated typed adapter → store write  [merchant-moded, reversible]
   → surfaces & comms: embedded app UI · Slack · email
   → merchant: reviews · confirms · corrects  ──(corrections outrank inference)──┐
         └─────────────────────────────────────────────────────────────────────┘
@@ -23,6 +24,7 @@ Shopify (Admin GraphQL + webhooks)
 - **Derivation** (`lib/merchant-memory/shopify-derivations`, `deterministic-belief-registry`): reads canonical tables, computes facts via a registry of belief definitions with calibrated confidence templates, emits belief + evidence rows. Coverage-/data-gated — never guesses; suppresses with diagnostics rather than publishing a misleading value.
 - **Merchant Memory** (`lib/merchant-memory`): the product's core object. A belief = one `MerchantMemoryBelief` row keyed by a stable semantic key; provenance lives in separate evidence rows; changes are recorded in an append-only history table. Everything else reads and writes through it.
 - **LLM inference** (`lib/llm`, plus `store-understanding`, `merchant-insights|goals|plan`): interprets a compact, privacy-safe belief snapshot into typed proposals — insights, goals, a plan recommendation, candidate beliefs, or a conversation operation. Never writes anywhere itself.
+- **Actions & execution** (`lib/actions`): the write path. The LLM proposes a typed action-intent from memory; a deterministic resolver floors the params and builds a preview; a typed adapter executes it under the merchant's per-action mode. `proposeActionFromIntent` creates a `proposed` `action_executions` row; `wireClearanceExecution` records approval + runs `applyClearance` (compare-and-set against live state, one idempotent write per target, auto-revert on partial failure), gated by `CLEARANCE_EXECUTE_ENABLED`; outcomes feed back into memory. First action: dead-stock clearance (`price_markdown`), built + flagged-off. Contract + the 3-mode dial: `11_actions_and_autonomy.md`; the capability catalog: `13_action_capability_registry.md`.
 - **Surfaces & comms** (`app/routes/app._index.tsx`, `lib/channels`, `lib/email`): advisory output renders in the embedded app; Slack is a transport over the same conversation engine; email (Resend) is transactional only.
 
 ## Load-bearing invariants
