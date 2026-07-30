@@ -27,7 +27,7 @@ As of 2026-07-29 the **Understand** layer is broad and grounded — the "thin on
 
 **Belief content now in memory (shipped 2026-07-29 wave)**
 - **Product performance** — selling/no-sale counts, revenue concentration (top / top-5 share), best-seller by revenue and by units, **product momentum** (risers/fallers), **revenue by product type** (attribute slicing).
-- **Margin / COGS** — `cost_coverage` + coverage-gated `gross_margin`, from Shopify `unitCost` **and** a merchant **cost-sheet upload** (bulk gap-fill).
+- **Margin / COGS** — `cost_coverage` + coverage-gated `gross_margin`, from Shopify's per-variant cost (`cost_per_item`). *(Merchant-supplied costs are to come via the general upload → LLM-extract pipeline — not a bespoke cost-sheet parser; that parser was removed 2026-07-30 per direction.)*
 - **Returns-by-SKU** — `top_returned_products` with return rate, from backfill **and** the refunds webhook.
 - **Customer memory** — repeat-customer rate, **repeat revenue share**, **average lifetime spend** (repeat vs one-time), **top-customer concentration**.
 - **Inventory velocity** — **days-of-cover** reorder signals: `at_risk_stockout_count` + `low_cover_products` (the reorder list).
@@ -37,7 +37,7 @@ As of 2026-07-29 the **Understand** layer is broad and grounded — the "thin on
 
 **Loops now running**
 - **Post-onboarding correct-anything surface is LIVE** (onboarding session, Phase 1) — the memory view carries a "tell me what's wrong or missing" conversation + per-belief `correctable`. The north-star convergence mechanism now runs continuously, not once.
-- **Multi-modal memory feed foundation** — modality-agnostic capture → the engine's structured operations; first net-new modality (cost sheets → deterministic facts) shipped.
+- **Multi-modal memory feed foundation** — modality-agnostic capture → the engine's structured operations. *(Direction, 2026-07-30: merchant uploads — including costs — ingest via a **general upload → LLM-extract** pipeline, NOT bespoke per-format parsers. The bespoke cost-sheet parser was removed; the general pipeline is the modality path.)*
 
 ## Remaining gaps (the real list, 2026-07-29)
 
@@ -47,7 +47,7 @@ As of 2026-07-29 the **Understand** layer is broad and grounded — the "thin on
 4. **Marketing / channel / ROAS memory.** Still absent — needs non-Shopify connectors (Meta/Google/Klaviyo) + attribution. Longer horizon.
 5. **The Learn loop — outcome measurement BUILT for clearance; generalization open.** *(updated 2026-07-30)* Clearance outcomes are now measured back into memory (`clearance_effectiveness` + `action_decline_signal` beliefs, refreshed by a daily worker job), dormant until execution is live. STILL OPEN: feeding these outcomes into belief **confidence** + the **earned-autonomy ladder** (auto-graduate an action class once it consistently works), and generalizing the outcome-measurement pattern beyond clearance to each new action type.
 6. **Dynamic conversation token budget.** A mitigation shipped (bounded per-belief serialization); the full budget (trim-to-fit, prioritise discussed beliefs) is pending for the largest memories.
-7. **Smaller follow-ups:** returns *reasons* (Returns API, vs units/value today); cost provenance + override (cost-sheet is gap-fill only); a coarse region rollup (UK/EU/US/ROW) + domestic-vs-international headline; multi-*store* synthesis (the 100→1000 extension).
+7. **Smaller follow-ups:** returns *reasons* (Returns API, vs units/value today); cost provenance + override (Shopify-native cost is gap-fill; merchant-supplied costs to arrive via the general upload pipeline); a coarse region rollup (UK/EU/US/ROW) + domestic-vs-international headline; multi-*store* synthesis (the 100→1000 extension).
 
 ## Demand-side signal (operator channel) — status
 
