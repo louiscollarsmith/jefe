@@ -141,6 +141,7 @@ export function DailyHome({
   memory,
   recommendation,
   suggestedAction = null,
+  executedActions = [],
   insights,
   goals,
 }: {
@@ -150,6 +151,7 @@ export function DailyHome({
   memory: MemoryView;
   recommendation: Recommendation;
   suggestedAction?: SuggestedAction | null;
+  executedActions?: ExecutedAction[];
   insights: Insight[];
   goals: Goal[];
 }) {
@@ -184,7 +186,7 @@ export function DailyHome({
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${T.borderSubtle}` }}>
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "24px 26px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
           {section === "brief" ? (
-            <BriefContent storeName={storeName} metrics={metrics} memory={memory} recommendation={recommendation} suggestedAction={suggestedAction} goals={goals} cur={cur} />
+            <BriefContent storeName={storeName} metrics={metrics} memory={memory} recommendation={recommendation} suggestedAction={suggestedAction} executedActions={executedActions} goals={goals} cur={cur} />
           ) : section === "queue" ? (
             <QueueSection recommendation={recommendation} insights={insights} waitingCount={waitingCount} />
           ) : section === "horizon" ? (
@@ -555,12 +557,76 @@ function SuggestedActionCard({ action }: { action: SuggestedAction }) {
   );
 }
 
+// The "what Jefe did for you" feed — the Observe end of the loop, rendered from
+// chat 9's getExecutedActionFeed (server-formatted strings, render as-is). Honesty
+// bar (chat 7): only applied / partially_applied / reverted rows arrive (failed is
+// omitted server-side); the headline already reflects what ACTUALLY landed (not the
+// proposed count), and reverted is shown as a rollback, never a success.
+type ExecutedActionOutcome =
+  | { measured: false }
+  | {
+      measured: true;
+      variantsCleared?: number;
+      variantsSold?: number;
+      unitsMoved?: number;
+      revenueRecovered?: string;
+      effectivenessRatePercent?: number;
+      summary?: string;
+    };
+type ExecutedAction = {
+  actionRunId: string;
+  actionType: string;
+  status: string; // "applied" | "partially_applied" | "reverted"
+  headline: string; // pre-formatted
+  appliedAt: string | null;
+  revertedAt: string | null;
+  outcome: ExecutedActionOutcome;
+};
+
+function formatFeedDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+function ExecutedActionFeed({ actions }: { actions: ExecutedAction[] }) {
+  if (!actions.length) return null; // hide entirely until Jefe has actually done something
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      <div style={sectionLabel}>What Jefe did</div>
+      <div style={{ background: "oklch(0.99 0.003 70)", border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
+        {actions.map((a, i) => {
+          const reverted = a.status === "reverted";
+          const when = reverted ? a.revertedAt : a.appliedAt;
+          return (
+            <div key={a.actionRunId} style={{ padding: "12px 15px", borderBottom: i < actions.length - 1 ? `1px solid ${T.borderSubtle}` : "none", display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 13, lineHeight: 1.4, color: reverted ? T.muted : T.ink, fontWeight: 600 }}>{a.headline}</span>
+                {when ? <span style={{ flex: "none", fontFamily: T.mono, fontSize: 10, color: T.muted }}>{formatFeedDate(when)}</span> : null}
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.45, color: T.muted }}>
+                {reverted
+                  ? "Attempted, then rolled back automatically — nothing was left changed."
+                  : a.outcome.measured
+                    ? a.outcome.summary ?? "Done."
+                    : "Jefe's tracking the results."}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BriefContent({
   storeName,
   metrics,
   memory,
   recommendation,
   suggestedAction,
+  executedActions,
   goals,
   cur,
 }: {
@@ -569,6 +635,7 @@ function BriefContent({
   memory: MemoryView;
   recommendation: Recommendation;
   suggestedAction: SuggestedAction | null;
+  executedActions: ExecutedAction[];
   goals: Goal[];
   cur: string;
 }) {
@@ -633,6 +700,8 @@ function BriefContent({
         )}
         {suggestedAction ? <SuggestedActionCard action={suggestedAction} /> : null}
       </div>
+
+      <ExecutedActionFeed actions={executedActions} />
 
       {/* What Jefe knows — real beliefs */}
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>

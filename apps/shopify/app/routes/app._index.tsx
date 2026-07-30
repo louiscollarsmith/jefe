@@ -83,7 +83,7 @@ import {
 } from "../lib/onboarding/steps";
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
-import { getActiveSuggestedAction, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
+import { getActiveSuggestedAction, getExecutedActionFeed, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
 import { setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
   ACTIVE_BELIEF_STATUSES,
@@ -792,6 +792,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         currency: metrics?.currency || "GBP",
       });
+      // The "what Jefe did for you" feed — applied/reverted actions with their
+      // measured outcome (chat 9's read, server-formatted). Empty until execution
+      // is live, so the Daily Home section self-hides until the first real action.
+      const executedActions = await getExecutedActionFeed(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        currency: metrics?.currency || "GBP",
+      });
       return {
         appMode: "daily" as const,
         shop: session.shop,
@@ -801,6 +809,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         metrics,
         recommendation: plan?.selectedRun?.recommendation ?? null,
         suggestedAction,
+        executedActions,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
       };
@@ -1081,6 +1090,7 @@ export default function AppIndex() {
           memory={data.memory}
           recommendation={data.recommendation}
           suggestedAction={data.suggestedAction}
+          executedActions={data.executedActions}
           insights={data.insights}
           goals={data.goals}
         />
