@@ -79,8 +79,8 @@ const execCtx = (over = {}) => ({
   runId: "run-1",
   merchantId: "m1",
   shopId: "s1",
-  merchantSetting: "propose",
-  resolvedMode: "propose",
+  merchantSetting: "approve_execute",
+  resolvedMode: "approve",
   eligibility: { reversible: true, withinCap: true, confident: true, autoEligible: true },
   confidence: 0.95,
   ...over,
@@ -133,12 +133,28 @@ test("computeClearanceAutoEligibility requires reversible AND within-cap AND con
   assert.ok(overCap.reasons.includes("over_blast_radius_cap"));
 });
 
-test("resolveAutonomyMode: propose unless merchant=auto AND structurally eligible; irreversible floor holds", () => {
+test("resolveAutonomyMode: 3 modes (recommend/approve_execute/autonomous); the gate floors autonomous", () => {
   const eligible = { autoEligible: true, reversible: true };
-  assert.equal(resolveAutonomyMode("auto", eligible).mode, "auto");
-  assert.equal(resolveAutonomyMode("propose", eligible).mode, "propose"); // merchant didn't opt in
-  assert.equal(resolveAutonomyMode("auto", { autoEligible: false, reversible: true }).mode, "propose"); // not eligible
-  assert.equal(resolveAutonomyMode("auto", { autoEligible: true, reversible: false }).mode, "propose"); // irreversible floor
+  assert.equal(resolveAutonomyMode("recommend", eligible).mode, "recommend");
+  assert.equal(resolveAutonomyMode("approve_execute", eligible).mode, "approve");
+  assert.equal(resolveAutonomyMode("autonomous", eligible).mode, "auto");
+  // autonomous but not structurally eligible -> degrades to approve, never silent-auto
+  assert.equal(resolveAutonomyMode("autonomous", { autoEligible: false, reversible: true }).mode, "approve");
+  assert.equal(resolveAutonomyMode("autonomous", { autoEligible: true, reversible: false }).mode, "approve"); // irreversible floor
+});
+
+test("applyClearance refuses in 'recommend' mode (advisory never executes)", async () => {
+  await withExecuteEnabled(async () => {
+    const preview = buildClearancePreview(sampleProposal);
+    await assert.rejects(
+      () =>
+        applyClearance(
+          { prisma: makeMockPrisma(), shopifyClient: makeMockClient([["v1", 100]]), execution: execCtx({ resolvedMode: "recommend" }) },
+          preview,
+        ),
+      /recommend/,
+    );
+  });
 });
 
 test("applyClearance refuses when disabled (no write path by default)", async () => {

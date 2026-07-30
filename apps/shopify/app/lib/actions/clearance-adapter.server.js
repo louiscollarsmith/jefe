@@ -143,27 +143,31 @@ export function computeClearanceAutoEligibility(preview, confidence, caps = DEFA
 }
 
 /**
- * Resolve the autonomy mode for a run: the merchant's dial × the structural gate.
- * Auto ONLY if the merchant opted into auto for this action class AND the action
- * is structurally auto-eligible. The irreversible floor is explicit here too
- * (`reversible !== false`) as defense-in-depth: a non-reversible action can never
- * auto-run regardless of the merchant setting. Everything else → propose (ask).
- * @param {string} merchantSetting  "propose" | "auto"
+ * Resolve the run's mode from the merchant's per-action-type setting × the
+ * structural gate. Three merchant-chosen modes (2026-07-30, founder):
+ *   "recommend"       → advise only; the adapter is never invoked (mode "recommend").
+ *   "approve_execute" → propose + one-tap execute, human-in-the-loop (mode "approve").
+ *   "autonomous"      → execute automatically, but ONLY if structurally eligible
+ *                       (mode "auto"); otherwise safely degraded to "approve".
+ * The structural gate (reversible ∧ within-cap ∧ confident, incl. the explicit
+ * irreversible floor) is the hard floor under "autonomous": a merchant can dial
+ * trust up, but can never route an ineligible action to silent auto.
+ * @param {string} merchantSetting  "recommend" | "approve_execute" | "autonomous"
  * @param {{ autoEligible?: boolean; reversible?: boolean }} eligibility
- * @returns {{ mode: "propose" | "auto"; reason: string }}
+ * @returns {{ mode: "recommend" | "approve" | "auto"; reason: string }}
  */
 export function resolveAutonomyMode(merchantSetting, eligibility) {
-  const wantsAuto = merchantSetting === "auto";
+  if (merchantSetting === "recommend") {
+    return { mode: "recommend", reason: "merchant_recommend_only" };
+  }
   const eligible = eligibility?.autoEligible === true && eligibility?.reversible !== false;
-  const mode = wantsAuto && eligible ? "auto" : "propose";
-  return {
-    mode,
-    reason: mode === "auto"
-      ? "merchant_auto_and_eligible"
-      : !wantsAuto
-        ? "merchant_setting_propose"
-        : "not_auto_eligible",
-  };
+  if (merchantSetting === "autonomous") {
+    return eligible
+      ? { mode: "auto", reason: "merchant_autonomous_and_eligible" }
+      : { mode: "approve", reason: "autonomous_not_eligible_degraded" };
+  }
+  // "approve_execute" (and any unknown value → safe default): propose + execute-on-tap.
+  return { mode: "approve", reason: "merchant_approve_execute" };
 }
 
 /**
@@ -229,6 +233,11 @@ export async function applyClearance({ prisma, shopifyClient, execution }, previ
     typeof shopifyClient.getVariantPrice !== "function"
   ) {
     throw new Error("Clearance execution requires an injected shopifyClient with getVariantPrice + updateVariantPrice.");
+  }
+  if (execution?.resolvedMode === "recommend") {
+    // Advisory-only mode never reaches the write path — structural guard so a
+    // "recommend" run can't execute even if the adapter is mistakenly invoked.
+    throw new Error("Clearance execution called in 'recommend' mode — advisory actions do not execute.");
   }
   const caps = options.caps ?? DEFAULT_CLEARANCE_CAPS;
   const cap = enforceBlastRadiusCap(preview, caps);
