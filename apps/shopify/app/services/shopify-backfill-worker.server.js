@@ -114,6 +114,8 @@ function trackJobFailure(prisma, job, message) {
 
 let loopStarted = false;
 let loopRunning = false;
+/** Consecutive failed ticks — a single failure WARNs, a sustained streak pages. */
+let loopFailureStreak = 0;
 /** @type {PrismaClient | null} */
 let loopPrisma = null;
 /** UTC day (YYYY-MM-DD) the daily activity digest was last posted. */
@@ -183,29 +185,37 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
+      loopFailureStreak = 0; // a fully-successful tick clears the streak
     } catch (error) {
-      const uptimeSeconds = Math.round(process.uptime());
-      if (!shouldPageOnWorkerError(error, uptimeSeconds)) {
-        // Transient DB-connection blip inside the post-deploy grace window: the
-        // engine is still connecting and the next tick self-heals. WARN, no page.
-        logger.warn(
-          "Backfill loop skipped: database not ready yet (startup grace)",
-          { err: error, uptimeSeconds },
-        );
+      loopFailureStreak += 1;
+      if (!shouldPageOnWorkerError(loopFailureStreak)) {
+        // A single failed tick self-heals on the next one — a transient DB/engine
+        // blip (a Neon connection drop, deploy warmup) or a one-off fluke. WARN,
+        // don't page. Only a SUSTAINED failure (streak past the threshold) is a
+        // real outage worth waking someone. Error-agnostic, so a new Prisma error
+        // variant ("Response from the Engine was empty" etc.) can't slip through.
+        logger.warn("Backfill loop tick failed; will retry next tick", {
+          err: error,
+          streak: loopFailureStreak,
+        });
       } else {
         // Pass the Error under `err` so it serialises (name/message/stack) and the
         // Slack alert shows the actual message, not just the headline.
-        logger.error("Shopify evidence backfill loop failed", { err: error });
+        logger.error("Shopify evidence backfill loop failing repeatedly", {
+          err: error,
+          streak: loopFailureStreak,
+        });
         // Also record it as an activity event (topic "reliability") so alerts are
         // readable from the panel + DB by any session, not just the Slack push.
         void track(workerPrisma, {
           type: "worker_error",
           topic: "reliability",
-          summary: `Backfill worker loop error: ${
+          summary: `Backfill worker loop error (x${loopFailureStreak}): ${
             error instanceof Error ? error.message : String(error)
           }`.slice(0, 300),
           properties: {
             errorName: error instanceof Error ? error.name : "unknown",
+            streak: loopFailureStreak,
           },
         });
       }

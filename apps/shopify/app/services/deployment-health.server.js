@@ -95,46 +95,25 @@ export function shouldPageOnDependencyFailure(uptimeSeconds, env = process.env) 
 }
 
 /**
- * A transient database-connection error — the kind that self-heals on retry.
- * Right after a deploy the Prisma engine may not have finished connecting to
- * Neon (which itself may be cold-starting), so the first query throws
- * "Engine is not yet connected" or an initialization error. These are not bugs.
+ * Whether a backfill-loop failure should page (ERROR + Slack) versus be treated
+ * as a transient blip (WARN, no page). The loop retries every tick, so a single
+ * failed tick — a Neon connection drop, a deploy warmup, a one-off fluke —
+ * self-heals on the next tick and is not alert-worthy. Only a SUSTAINED failure
+ * pages: once the consecutive-failure streak reaches the threshold
+ * (`BACKFILL_LOOP_PAGE_AFTER`, default 3 ≈ 45s at the 15s tick) it is a real
+ * outage worth waking someone.
  *
- * @param {unknown} error
- * @returns {boolean}
- */
-export function isTransientDbConnectionError(error) {
-  if (!error || typeof error !== "object") return false;
-  const name = String(/** @type {{ name?: unknown }} */ (error).name ?? "");
-  const message = String(/** @type {{ message?: unknown }} */ (error).message ?? "");
-  return (
-    name === "PrismaClientInitializationError" ||
-    /engine is not yet connected|not yet connected|can'?t reach database|connection.*(closed|terminat)|ECONNREFUSED|ETIMEDOUT|terminating connection|server closed the connection/i.test(
-      message,
-    )
-  );
-}
-
-/**
- * Whether a background-worker loop failure should page (ERROR + alert) versus be
- * treated as an expected startup blip (WARN, no page). A transient DB-connection
- * error within the post-deploy grace window is the worker equivalent of the
- * readiness blip — the next tick self-heals — so it must not page. Anything else,
- * or the same error after the grace window, is a real failure that pages.
+ * Error-agnostic by design: it counts consecutive failed ticks rather than
+ * matching Prisma error strings, so a new transient variant (e.g. "Response from
+ * the Engine was empty") can't slip through and page on a single self-healing blip.
  *
- * @param {unknown} error
- * @param {number} uptimeSeconds
+ * @param {number} consecutiveFailures streak of consecutive failed ticks (>= 1 on a failure)
  * @param {Record<string, string | undefined>} [env]
  * @returns {boolean}
  */
-export function shouldPageOnWorkerError(error, uptimeSeconds, env = process.env) {
-  if (
-    isTransientDbConnectionError(error) &&
-    !shouldPageOnDependencyFailure(uptimeSeconds, env)
-  ) {
-    return false;
-  }
-  return true;
+export function shouldPageOnWorkerError(consecutiveFailures, env = process.env) {
+  const pageAfter = Number(env.BACKFILL_LOOP_PAGE_AFTER) || 3;
+  return consecutiveFailures >= pageAfter;
 }
 
 /**

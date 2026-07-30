@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   shouldPageOnDependencyFailure,
-  isTransientDbConnectionError,
   shouldPageOnWorkerError,
 } from "../app/services/deployment-health.server.js";
 
@@ -33,33 +32,19 @@ test("falls back to 60s on invalid/empty env", () => {
   );
 });
 
-test("isTransientDbConnectionError recognises engine/connection blips", () => {
-  assert.equal(
-    isTransientDbConnectionError(new Error("Engine is not yet connected")),
-    true,
-  );
-  assert.equal(
-    isTransientDbConnectionError({
-      name: "PrismaClientInitializationError",
-      message: "x",
-    }),
-    true,
-  );
-  assert.equal(
-    isTransientDbConnectionError(new Error("Can't reach database server")),
-    true,
-  );
-  assert.equal(isTransientDbConnectionError(new Error("undefined is not a function")), false);
-  assert.equal(isTransientDbConnectionError(null), false);
+test("shouldPageOnWorkerError pages only on a sustained failure streak", () => {
+  // A single failed tick (any error) self-heals on the next one -> WARN, no page.
+  assert.equal(shouldPageOnWorkerError(1, {}), false);
+  assert.equal(shouldPageOnWorkerError(2, {}), false);
+  // The 3rd consecutive failure (~45s at the 15s tick) is a real outage -> page.
+  assert.equal(shouldPageOnWorkerError(3, {}), true);
+  assert.equal(shouldPageOnWorkerError(10, {}), true);
 });
 
-test("shouldPageOnWorkerError suppresses only transient startup blips", () => {
-  const transient = new Error("Engine is not yet connected");
-  const realBug = new TypeError("cannot read properties of undefined");
-  // transient + inside grace -> no page
-  assert.equal(shouldPageOnWorkerError(transient, 5, {}), false);
-  // transient + past grace -> page (something is actually wrong)
-  assert.equal(shouldPageOnWorkerError(transient, 120, {}), true);
-  // real bug -> always pages, even during startup
-  assert.equal(shouldPageOnWorkerError(realBug, 5, {}), true);
+test("worker page threshold is env-tunable, falls back to 3", () => {
+  const env = { BACKFILL_LOOP_PAGE_AFTER: "5" };
+  assert.equal(shouldPageOnWorkerError(4, env), false);
+  assert.equal(shouldPageOnWorkerError(5, env), true);
+  // invalid/empty env falls back to the default of 3
+  assert.equal(shouldPageOnWorkerError(3, { BACKFILL_LOOP_PAGE_AFTER: "x" }), true);
 });
