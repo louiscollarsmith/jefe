@@ -151,3 +151,30 @@ English. No per-belief typed-value forms except the trivial cases.
 
 Guarantees unchanged from Phase 1 (precedence, re-derivable observations,
 history + evidence, no PII, observability).
+
+## Also required: resolve proposed conversation operations (audit finding, chat 5)
+
+The live `memory.message` conversation (`sendConversationMessage`) can produce an
+operation that **requires confirmation** — it creates an assistant message with
+`operationStatus: "proposed"` + `requiresConfirmation` and stashes
+`pendingOperationMessageId` on the conversation. The **resolvers already exist and
+are tested** — `confirmProposedOperation(prisma, { merchantId, shopId, messageId })`
+and `rejectProposedOperation(prisma, { merchantId, messageId })` — but nothing
+calls them, so a proposed change **dangles**: the merchant sees "confirm?" with no
+control. It is a UX dead-end, not data corruption (the belief is not changed until
+confirmed).
+
+Close it either way (pick per the UI you're building):
+
+- **UI (chat 2 lane, natural with this surface):** render Confirm / Reject controls
+  on any message with `operationStatus: "proposed"`, calling the existing resolvers
+  with that message's id (`pendingOperationMessageId`). Confirm commits the change
+  (belief updated at merchant precedence, history + evidence); reject drops it. Both
+  clear `pendingOperationMessageId`.
+- **Conversation-level (memory-engine lane):** in `sendConversationMessage`, when a
+  pending operation exists and the next message is a clear affirmative/negative,
+  resolve it via the same resolvers before the normal interpret. Needs a careful
+  affirmative/negative heuristic and touches the live path — build it monitored, not
+  unattended.
+
+Engine is ready either way; this is wiring, not new backend.
