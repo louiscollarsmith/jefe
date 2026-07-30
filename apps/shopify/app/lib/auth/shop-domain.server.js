@@ -46,6 +46,35 @@ export function parseShopDomain(input) {
 }
 
 /**
+ * Normalize the STORE-HANDLE input from the standalone sign-in form, where the
+ * merchant types only the prefix and `.myshopify.com` is a fixed UI suffix.
+ *
+ * The `.myshopify.com` suffix is constant for every store (the permanent shop
+ * domain is always `<handle>.myshopify.com`), so a bare handle with no dot gets
+ * the suffix appended; a full domain (someone typed/pasted the whole thing) is
+ * passed through unchanged. Either way the result is strictly validated by
+ * {@link parseShopDomain}, so this can only ever return a canonical
+ * `<handle>.myshopify.com` or `null`.
+ *
+ * @param {unknown} input
+ * @returns {string | null}
+ */
+export function normalizeShopInput(input) {
+  if (typeof input !== "string") return null;
+  const cleaned = input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+  if (!cleaned) return null;
+  // A bare handle (no dot) → append the constant suffix. Anything with a dot is
+  // treated as a full domain and validated as-is (so a pasted full domain, or a
+  // non-myshopify host, is handled/rejected by parseShopDomain).
+  const candidate = cleaned.includes(".") ? cleaned : `${cleaned}.myshopify.com`;
+  return parseShopDomain(candidate);
+}
+
+/**
  * Whether `input` is a valid, canonical Shopify shop domain.
  *
  * @param {unknown} input

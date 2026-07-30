@@ -58,23 +58,31 @@ export default function Index() {
           method="post"
           action="/standalone/auth"
         >
-          <input
-            className="JefeLanding__input"
-            type="text"
-            name="shop"
-            inputMode="url"
-            autoComplete="on"
-            placeholder="your-store.myshopify.com"
-            aria-label="Your Shopify store domain"
-          />
+          <span className="JefeLanding__inputGroup">
+            <input
+              className="JefeLanding__input"
+              type="text"
+              name="shop"
+              inputMode="url"
+              autoComplete="on"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="your-store"
+              aria-label="Your Shopify store name"
+            />
+            <span className="JefeLanding__inputSuffix" aria-hidden="true">
+              .myshopify.com
+            </span>
+          </span>
           <button className="JefeLanding__cta" type="submit">
             Open Jefe
           </button>
         </form>
 
         <p className="JefeLanding__helper">
-          Enter your myshopify.com store to sign in — Jefe opens right here, or
-          walks you through Shopify to connect if you&rsquo;re new.
+          Enter your store name to sign in — Jefe opens right here, or walks you
+          through Shopify to connect if you&rsquo;re new.
         </p>
 
         <p className="JefeLanding__sign">— Jefe</p>
@@ -165,23 +173,39 @@ const LANDING_CSS = `
   max-width: 380px;
   margin-top: 30px;
 }
-.JefeLanding__input {
+.JefeLanding__inputGroup {
+  display: flex;
+  align-items: center;
   width: 100%;
   min-height: 48px;
-  padding: 0 16px;
+  padding: 0 14px;
   border: 1px solid #d9cfc0;
   border-radius: 10px;
   background: #fffdfa;
-  color: #232a3d;
-  font-family: inherit;
-  font-size: 15px;
-  text-align: center;
 }
-.JefeLanding__input::placeholder { color: #a79f92; }
-.JefeLanding__input:focus-visible {
+.JefeLanding__inputGroup:focus-within {
   outline: 2px solid #8c4030;
   outline-offset: 1px;
   border-color: #8c4030;
+}
+.JefeLanding__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #232a3d;
+  font-family: inherit;
+  font-size: 15px;
+  text-align: right;
+}
+.JefeLanding__input:focus { outline: none; }
+.JefeLanding__input::placeholder { color: #a79f92; }
+.JefeLanding__inputSuffix {
+  flex: 0 0 auto;
+  color: #6b7285;
+  font-size: 15px;
+  white-space: nowrap;
 }
 .JefeLanding__cta {
   width: 100%;

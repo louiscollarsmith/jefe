@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect } from "react-router";
 
 import prisma from "../db.server";
-import { parseShopDomain } from "../lib/auth/shop-domain.server.js";
+import { normalizeShopInput } from "../lib/auth/shop-domain.server.js";
 import {
   managedInstallPath,
   resolveStandaloneStart,
@@ -39,7 +39,7 @@ async function startStandaloneAuth(request: Request): Promise<Response> {
     shopInput = typeof value === "string" ? value : null;
   }
 
-  const shop = parseShopDomain(shopInput);
+  const shop = normalizeShopInput(shopInput);
   const isInstalled = shop ? await shopIsInstalled(shop) : false;
   const decision = resolveStandaloneStart({ shop, isInstalled });
 
