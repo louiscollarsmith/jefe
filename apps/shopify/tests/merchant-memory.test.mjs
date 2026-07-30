@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 130);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 131);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -46,6 +46,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "Attribute performance v1",
       "Seasonality v1",
       "Recommendation outcomes v1",
+      "Clearance outcomes v1",
     ]),
   );
   assert.equal(
@@ -109,13 +110,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 130);
-  assert.equal(result.derivationReport.attempted, 130);
+  assert.equal(result.registryDefinitionCount, 131);
+  assert.equal(result.derivationReport.attempted, 131);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    130,
+    131,
   );
-  assert.equal(result.derivationAttempts.length, 130);
+  assert.equal(result.derivationAttempts.length, 131);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -1109,6 +1110,64 @@ test("recommendation engagement summarizes accept/complete outcomes (Observe->Le
   assert.equal(belief.value.rejectedCount, 1);
   assert.equal(belief.value.acceptanceRatePercent, 60); // 3/5
   assert.equal(belief.value.completionRatePercent, 20); // 1/5
+});
+
+function createClearancePrisma() {
+  const at = new Date(Date.UTC(2026, 6, 1));
+  // Three MEASURED clearance runs on the ledger: two moved stock, one didn't.
+  const outcomes = [
+    { outcome: { variantsCleared: 3, variantsSold: 2, unitsMoved: 5, revenueRecovered: 255 }, appliedAt: at },
+    { outcome: { variantsCleared: 2, variantsSold: 2, unitsMoved: 4, revenueRecovered: 180 }, appliedAt: at },
+    { outcome: { variantsCleared: 4, variantsSold: 0, unitsMoved: 0, revenueRecovered: 0 }, appliedAt: at },
+  ];
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "clr.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: at,
+            rawPayload: { name: "Clr Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => [] },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+    actionExecution: { findMany: async () => outcomes },
+  };
+}
+
+test("clearance effectiveness aggregates measured outcomes (Observe->Learn)", async () => {
+  const prisma = createClearancePrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const belief = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.clearance_effectiveness.all_time",
+  );
+  assert.ok(belief, "clearance_effectiveness should publish");
+  assert.equal(belief.value.measuredRuns, 3);
+  assert.equal(belief.value.runsThatMovedStock, 2); // runs 1 + 2 sold, run 3 didn't
+  assert.equal(belief.value.variantsCleared, 9); // 3 + 2 + 4
+  assert.equal(belief.value.variantsSold, 4); // 2 + 2 + 0
+  assert.equal(belief.value.unitsMoved, 9); // 5 + 4 + 0
+  assert.equal(belief.value.revenueRecovered, 435); // 255 + 180 + 0
+  assert.equal(belief.value.runEffectivenessPercent, 66.67); // 2/3
+  assert.equal(belief.value.variantSellThroughPercent, 44.44); // 4/9
 });
 
 function createMomentumPrisma() {

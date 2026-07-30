@@ -97,7 +97,7 @@ async function loadDerivationContext(prisma, input) {
   const shop = merchant.shops[0] ?? null;
   const shopId = input.shopId ?? shop?.id ?? null;
   const where = { merchantId: input.merchantId, shopId: shopId ?? undefined };
-  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations] =
+  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations, clearanceOutcomes] =
     await Promise.all([
       prisma.product.findMany({
         where,
@@ -194,6 +194,14 @@ async function loadDerivationContext(prisma, input) {
             },
           })
         : Promise.resolve([]),
+      // Measured clearance outcomes — the Observe→Learn "did the action work" signal.
+      // Guarded so derivation fixtures/mocks without the accessor simply see none.
+      prisma.actionExecution?.findMany
+        ? prisma.actionExecution.findMany({
+            where: { merchantId: input.merchantId, shopId: shopId ?? undefined, actionType: "price_markdown", outcomeStatus: "measured" },
+            select: { outcome: true, appliedAt: true },
+          })
+        : Promise.resolve([]),
     ]);
 
   const now = new Date();
@@ -233,6 +241,7 @@ async function loadDerivationContext(prisma, input) {
     customerIdentities,
     inventoryLevels,
     planRecommendations,
+    clearanceOutcomes,
     retainedProducts,
     activeProducts,
     retainedVariants,
@@ -337,6 +346,8 @@ function deriveDefinition(context, definition) {
         return peakSalesMonth(context, definition);
       case "business.recommendation_engagement.all_time":
         return recommendationEngagement(context, definition);
+      case "business.clearance_effectiveness.all_time":
+        return clearanceEffectiveness(context, definition);
       case "products.revenue_by_product_type.trailing_90d":
         return revenueByProductType(context, definition, 90);
       case "products.revenue_by_vendor.trailing_90d":
@@ -1422,6 +1433,55 @@ function recommendationEngagement(context, definition) {
     summary: `${accepted} of ${total} recommendations accepted; ${completed} completed.`,
     sampleSize: total,
     supportingValues: { totalRecommendations: total },
+  });
+}
+
+// Observe→Learn: whether Jefe's clearance actions actually worked, aggregated from the
+// measured outcomes on the action_executions ledger (units moved + cash recovered after
+// each applied markdown). This is the "did the action work" belief on the earned-autonomy
+// ramp — a merchant whose clearances consistently move stock is one Jefe can act for with
+// less friction. Dormant until clearance execution is live (no measured runs while the
+// write flag is off); it lights up the moment the first real clearance is measured.
+function clearanceEffectiveness(context, definition) {
+  const runs = (context.clearanceOutcomes ?? []).filter(
+    (run) => run?.outcome && typeof run.outcome === "object",
+  );
+  if (runs.length < 3) {
+    return skipped(definition, "insufficient_data", "At least 3 measured clearance runs are required to summarize effectiveness.", { runs: runs.length });
+  }
+  let variantsCleared = 0;
+  let variantsSold = 0;
+  let unitsMoved = 0;
+  let revenueRecovered = 0;
+  let runsThatMovedStock = 0;
+  for (const run of runs) {
+    const outcome = run.outcome;
+    variantsCleared += Number(outcome.variantsCleared) || 0;
+    variantsSold += Number(outcome.variantsSold) || 0;
+    unitsMoved += Number(outcome.unitsMoved) || 0;
+    revenueRecovered += Number(outcome.revenueRecovered) || 0;
+    if ((Number(outcome.variantsSold) || 0) > 0) runsThatMovedStock += 1;
+  }
+  const total = runs.length;
+  return derived(context, definition, {
+    value: {
+      measuredRuns: total,
+      runsThatMovedStock,
+      variantsCleared,
+      variantsSold,
+      unitsMoved,
+      revenueRecovered: roundNumber(revenueRecovered, 2),
+      // Share of cleared variants that sold at least one unit post-clearance.
+      variantSellThroughPercent: variantsCleared > 0 ? roundNumber((variantsSold / variantsCleared) * 100, 2) : 0,
+      // Share of runs that moved at least one variant — the headline "clearances work here" rate.
+      runEffectivenessPercent: roundNumber((runsThatMovedStock / total) * 100, 2),
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.9, total, 3, 30),
+    confidenceReason: "Direct counts of measured clearance-run outcomes.",
+    summary: `${runsThatMovedStock} of ${total} clearances moved stock; ${unitsMoved} units recovered.`,
+    sampleSize: total,
+    supportingValues: { measuredRuns: total, unitsMoved },
   });
 }
 
