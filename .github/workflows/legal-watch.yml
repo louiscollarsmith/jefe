@@ -68,10 +68,10 @@ jobs:
             echo "ALERT_WEBHOOK_URL secret not set — skipping Slack alert"; exit 0
           fi
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          MSG=":clipboard: *Legal-doc review needed* — the app's legal reality has drifted from the last-reviewed baseline (privacy / terms / DPA).
-${REPORT}
-Review the affected docs, then acknowledge by copying apps/growth/legal-triggers.json → apps/growth/legal-baseline.json. ${RUN_URL}"
+          HEAD=":clipboard: *Legal-doc review needed* — the app's legal reality has drifted from the last-reviewed baseline (privacy / terms / DPA)."
+          FOOT="Review the affected docs, then acknowledge by copying apps/growth/legal-triggers.json → apps/growth/legal-baseline.json. ${RUN_URL}"
+          TEXT=$(printf '%s\n%s\n%s' "$HEAD" "$REPORT" "$FOOT")
           curl -sf -X POST -H 'Content-type: application/json' \
-            --data "$(jq -nc --arg t "$MSG" '{text: $t}')" "$WEBHOOK" \
+            --data "$(jq -nc --arg t "$TEXT" '{text: $t}')" "$WEBHOOK" \
             && echo "posted legal-watch alert to #jefe-slack" \
             || echo "alert POST failed (non-fatal)"
