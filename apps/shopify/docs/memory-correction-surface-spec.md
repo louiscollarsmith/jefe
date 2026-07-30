@@ -177,4 +177,7 @@ Close it either way (pick per the UI you're building):
   affirmative/negative heuristic and touches the live path — build it monitored, not
   unattended.
 
-Engine is ready either way; this is wiring, not new backend.
+**Agreed path (chat 4 + chat 5): option (a).** The conversation-level heuristic (b)
+is explicitly deferred — a fuzzy affirmative/negative in the live `sendConversationMessage`
+path is not worth rushing when (a) closes the gap cleanly and monitored. Engine is
+ready either way; this is wiring, not new backend.
