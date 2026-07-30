@@ -33,9 +33,19 @@ These are the same guardrails the whole product is built to preserve; they are *
 
 This reuses the existing spine: memory → recommendation → **now execution** → learning. The only new surface is the adapter + preview + approval flow; the memory, provenance, and precedence machinery is unchanged.
 
-## Earning autonomy per action type
+## Autonomy: earned, but merchant-owned
 
-An action type graduates from approved-execute toward autonomous when its evidence supports it: a track record of merchant approvals/acceptances for that class, high model+memory confidence, bounded and reversible blast radius, and no recent corrections. The merchant sets the ceiling; memory records the track record; the system proposes raising autonomy only when the record earns it. The `business.recommendation_engagement` beliefs (already in memory) are the first substrate for this.
+The **merchant holds the authority** — a *set* of sliders, one per action class (full-auto reorders while pricing stays advisory, say), never one global dial. "Earned per action type" **informs** the recommended default and Jefe's own caution; it is not a hard cap the system imposes over the merchant. The default posture the merchant starts from is **auto on the safest reversible actions** — Jefe acts from day one on what is provably safe, and the merchant dials trust up or down from there. `business.recommendation_engagement` (already in memory) is the track-record substrate that raises Jefe's confidence and the recommended default over time.
+
+### The auto-eligibility gate (what makes day-one auto safe)
+
+A brand-new merchant with **zero** track record can already have Jefe acting, so safety cannot come from earned trust — it must be **structural**. An action may auto-run **only if it clears, at the execution gate**:
+
+> **reversible ∧ blast_radius ≤ cap ∧ confidence ≥ threshold**
+
+computed from the action's risk metadata plus context, checked in the adapter layer — never by prompt or convention. Fail any of the three and it falls back to **ask-then-act**, no exceptions. The LLM cannot route around this (the same shape as the citation-allowlist and numeric-grounding gates: structural, not trusted). Genuinely **irreversible / catastrophic-blast-radius** actions default to a confirm even at full auto — a merchant-adjustable floor, because you can always dial trust up once it is earned but you cannot undo a catastrophic action. The merchant owns the thresholds (the safe-set definition and the caps).
+
+This pairs with `docs/action-ontology-and-autonomy.md` — the action ontology and the slider-as-policy (the WHAT); this file is the execution contract that enforces it (the HOW).
 
 ## What stays permanent
 
