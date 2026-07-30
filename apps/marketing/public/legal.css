@@ -1,0 +1,57 @@
+:root {
+  --navy: #33456b;
+  --cream: #f8ece7;
+  --text: #22252b;
+  --muted: #5b6270;
+  --border: #e6e3dd;
+  --bg: #faf9f6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Schibsted Grotesk", system-ui, -apple-system, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+.legal-nav {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 24px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg);
+}
+.legal-nav .wordmark {
+  font-family: "Bricolage Grotesque", sans-serif; font-weight: 700;
+  font-size: 22px; color: var(--navy); text-decoration: none;
+}
+.legal-nav .dl {
+  font: inherit; font-weight: 600; background: var(--navy); color: var(--cream);
+  border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer;
+}
+.legal-nav .dl:hover { opacity: .92; }
+.legal-wrap { max-width: 760px; margin: 0 auto; padding: 44px 24px 96px; }
+.legal-wrap h1 {
+  font-family: "Bricolage Grotesque", sans-serif; color: var(--navy);
+  font-size: 34px; line-height: 1.15; margin: 0 0 4px;
+}
+.legal-wrap .updated { color: var(--muted); margin: 0 0 28px; font-size: 15px; }
+.legal-wrap h2 {
+  font-family: "Bricolage Grotesque", sans-serif; color: var(--navy);
+  font-size: 20px; margin: 34px 0 8px;
+}
+.legal-wrap p, .legal-wrap li { font-size: 16px; margin: 8px 0; }
+.legal-wrap a { color: var(--navy); }
+.legal-wrap table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 15px; }
+.legal-wrap th, .legal-wrap td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+.draft-banner {
+  background: #fff6e5; border: 1px solid #e8c98a; color: #7a5a1a;
+  padding: 12px 16px; border-radius: 8px; margin-bottom: 28px; font-size: 14px;
+}
+.legal-foot { border-top: 1px solid var(--border); margin-top: 48px; padding-top: 20px; color: var(--muted); font-size: 14px; }
+
+@media print {
+  .legal-nav, .dl, .draft-banner { display: none !important; }
+  body { background: #fff; color: #000; }
+  .legal-wrap { max-width: none; padding: 0; }
+  a { color: #000; text-decoration: none; }
+}

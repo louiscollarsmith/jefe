@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy Policy — Jefe</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/legal.css" />
+</head>
+<body>
+  <nav class="legal-nav">
+    <a class="wordmark" href="/">Jefe</a>
+    <button class="dl" type="button" onclick="window.print()">Download PDF</button>
+  </nav>
+  <main class="legal-wrap">
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated: 30 July 2026</p>
+
+    <p>Jefe ("Jefe", "we", "us") is an AI eCommerce manager for Shopify stores, operated by Quiver Solutions Limited (company no. 16961611), registered at 27 Old Gloucester Street, London WC1N 3AX. This policy explains what data we access, why, how we protect it, and your rights.</p>
+
+    <h2>1. Our two roles</h2>
+    <p><strong>As a processor</strong> (on the merchant's behalf): when Jefe processes data about a merchant's <em>end customers</em> (e.g. names, emails, addresses on orders), the <strong>merchant is the data controller</strong> and Jefe is the <strong>processor</strong>, acting on the merchant's instructions under our Data Processing Agreement (available on request).</p>
+    <p><strong>As a controller</strong>: for the merchant's own account and usage data (the person who installs and uses Jefe), we act as controller.</p>
+
+    <h2>2. What we access and collect</h2>
+    <p><strong>From your Shopify store</strong> (via Shopify's API, with your authorisation, and Shopify webhooks): orders and order line items, refunds; products, variants, inventory levels, locations; customer identities associated with orders — which may include <strong>name, email, address, and phone</strong> ("protected customer data"); and store configuration and policies.</p>
+    <p><strong>About your use of Jefe</strong>: account identifiers, the memory you confirm and correct, settings, and technical logs (identifiers and metadata, not customer data content).</p>
+    <p>We request only the Shopify scopes needed to provide the service.</p>
+
+    <h2>3. Why we process it</h2>
+    <p>To provide the service: to build your Merchant Memory (a structured, correctable understanding of your business) and to generate insights, goals, and recommendations. Legal basis: performance of our contract with you and our legitimate interests in operating and improving the service.</p>
+
+    <h2>4. How we process it</h2>
+    <p>Deterministic code computes reliable commerce facts. A large language model interprets bounded evidence into memory, questions, and recommendations; our application validates and stores the result, and your corrections outrank the model. Jefe <strong>acts on your authority</strong> through controlled, reversible steps — each with a preview, an approval gate where you require one, and blast-radius limits. For each type of action you choose the mode: <strong>recommend</strong> (Jefe suggests, you act), <strong>approve-then-execute</strong> (Jefe acts on your approval), or <strong>autonomous</strong> (Jefe acts within the policy you set and reports back). You set and can change the autonomy level per action type, and can reverse any action.</p>
+    <p><strong>We do not sell your data.</strong> We use your store's data — including your customers' order details — to provide your Jefe service: building your Merchant Memory and generating your insights, goals, and recommendations. Your customers' order details are retained in raw order records (encrypted at rest) and used to compute your store's aggregates; they are deleted when you uninstall Jefe or on a customer-deletion request (see Retention &amp; deletion below). Your Merchant Memory itself stores only aggregate results — never your customers' names, emails, phone numbers, or addresses.</p>
+    <p>We also use <strong>aggregated, de-identified, merchant-level patterns</strong> and our <strong>action ontology</strong> (which approaches tend to work) to improve Jefe's service and intelligence. We do <strong>not</strong> use your end customers' protected personal data to train models or build any cross-merchant layer, and one merchant's data never flows into another merchant's memory or experience. Inputs to the model are PII-minimised.</p>
+
+    <h2>5. Sub-processors</h2>
+    <p>We share data only with vendors that help us run the service, under contract. A current list is available on request.</p>
+    <table>
+      <tr><th>Sub-processor</th><th>Purpose</th></tr>
+      <tr><td>Google (Gemini API)</td><td>LLM interpretation</td></tr>
+      <tr><td>Railway</td><td>Application hosting</td></tr>
+      <tr><td>Neon</td><td>Database (Postgres)</td></tr>
+      <tr><td>Resend</td><td>Transactional email</td></tr>
+      <tr><td>Sentry</td><td>Error monitoring (redacted)</td></tr>
+      <tr><td>Slack</td><td>Merchant comms channel (if you connect it)</td></tr>
+      <tr><td>Shopify</td><td>The platform your store runs on</td></tr>
+    </table>
+
+    <h2>6. Data sharing</h2>
+    <p>We do not sell personal data and do not share it except with the sub-processors above, or where required by law.</p>
+
+    <h2>7. Retention &amp; deletion</h2>
+    <p>We retain your Merchant Memory and supporting data for the duration of the service (while Jefe is installed). We honour Shopify's mandatory privacy webhooks: <code>customers/redact</code> (erase a specific customer's data and delete their identity record), <code>customers/data_request</code> (assemble data held about a customer), and <code>shop/redact</code> (delete a shop's data on uninstall). On uninstall, your shop-scoped data is hard-deleted within approximately 48 hours (via <code>shop/redact</code>), except where we must retain it for legal reasons. Encrypted database backups age out separately over a short rolling retention window.</p>
+
+    <h2>8. Security</h2>
+    <p>Encryption at rest (AES-256) and in transit (TLS/HTTPS); access controls limiting staff access to protected data; access logging; an incident-response process; and separation of test and production data.</p>
+
+    <h2>9. Your rights</h2>
+    <p>Merchants can inspect and correct their Merchant Memory in-product at any time, and can request access, correction, or deletion of their account data. End customers should exercise their rights (access/erasure) with the merchant (the controller); we support the merchant via the Shopify webhooks above. To exercise rights or ask questions: <a href="mailto:hola@mynamejefe.com">hola@mynamejefe.com</a>.</p>
+
+    <h2>10. International transfers</h2>
+    <p>Data may be processed in the UK, the European Union, and the United States, depending on our infrastructure providers' regions; our LLM sub-processor (Google Gemini) runs on Google's global infrastructure. Where data leaves the UK/EEA, we rely on appropriate safeguards such as Standard Contractual Clauses.</p>
+
+    <h2>11. Children</h2>
+    <p>Jefe is a business tool, not directed to children and not intended to process children's data.</p>
+
+    <h2>12. Changes</h2>
+    <p>We'll post changes here and update the "Last updated" date; material changes will be notified to merchants.</p>
+
+    <h2>13. Contact</h2>
+    <p>Quiver Solutions Limited, 27 Old Gloucester Street, London WC1N 3AX. Email: <a href="mailto:hola@mynamejefe.com">hola@mynamejefe.com</a>.</p>
+
+    <div class="legal-foot">© <span id="year"></span> Jefe.</div>
+  </main>
+  <script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>

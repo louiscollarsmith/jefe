@@ -46,6 +46,12 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// Legal — Privacy Policy (clean URL → public/privacy.html). Terms/DPA follow once
+// their text is approved + reconciled to the autonomy-from-day-1 framing.
+app.get("/privacy", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "privacy.html"));
+});
+
 app.post("/api/waitlist", async (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 200) || null;
   const email = String(req.body?.email || "").trim().toLowerCase();
