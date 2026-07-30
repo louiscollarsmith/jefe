@@ -58,13 +58,26 @@ Historical context, reset audits and previous product prompts live under `docs/a
 
 ## Shared Working Tree
 
-Multiple Claude Code sessions work concurrently in this one tree, and the git **index/staging area is shared** across all of them.
+~8 Claude Code sessions work concurrently against ONE tree that shares a single git object store **and index**. `origin/main` is the only source of truth; the local `main` checkout is a disposable mirror, **not** a workspace. Full model + rationale: `docs/ops/build-deploy-and-coordination.md`.
 
-- **Isolate by default:** new sessions work in their own `git worktree` + branch (`git worktree add .claude/worktrees/<name> -b claude/<name>`) — physical isolation is the reliable fix and depends on nothing being wired. Coordinate via worktrees + cross-session messages. Only the main checkout pushes `origin/main`; worktree branches land via rebase → ff-merge → single push. Full model: `docs/ops/build-deploy-and-coordination.md`.
-- **Pathspec-commit, always:** `git commit -- <explicit paths> -m "…"`. Never a bare `git commit` / `git commit -a` — it commits the entire shared index and will sweep another session's staged files into your commit (this happened twice on 2026-07-28).
-- **Never** `git add -A` or `git add <dir>`; stage explicit paths only.
-- Stage and commit **atomically**, and verify `git diff --cached --name-only` shows only your files first.
-- Leave another session's uncommitted work unstaged. You may edit another session's files, but ask that session first, per file — use the cross-session message tool.
+**Work in a worktree; push straight to origin.**
+- Start in your own worktree off origin/main: `git worktree add -b <lane>/<task> .claude/worktrees/<name> origin/main`, then `(cd apps/shopify && npx prisma generate)`.
+- Land work by pushing the worktree directly: `git push origin HEAD:main`. If rejected, `git fetch origin main && git rebase origin/main`, **re-run preflight**, then push again.
+- **Never leave commits on the local `main` branch.** Committing to the shared main checkout without pushing diverges your work the instant anyone else pushes — it then can't cleanly rebase and blocks every session using that checkout. (This stranded two commits on 2026-07-30.) Keep the main checkout reset to `origin/main`; treat it read-only.
+
+**Preflight before EVERY push — no exceptions.** Run `bash scripts/preflight.sh` (prisma generate → typecheck → lint → test → build); push only if green. Enable the structural backstop once (shared across all worktrees): `git config core.hooksPath .githooks`.
+- **Re-run preflight after ANY rebase/fetch that moved your base.** A sibling's commit can delete a symbol you import (a JS missing-export passes typecheck **and** build, failing only at runtime/test) or trip a consistency guard. A pre-rebase green gate is void post-rebase.
+- **"It's just config/docs" is NOT an exception** — guard tests assert config (scope declarations, cross-file consistency). Two red-mains on 2026-07-30 came from skipping the gate on a rebase and on a "config-only" edit.
+
+**Commit hygiene.**
+- Pathspec-commit, always: `git commit -- <explicit paths> -m "…"`. Never bare `git commit` / `git commit -a` / `git add -A` / `git add <dir>` — the shared index will sweep another session's staged files into your commit.
+- Verify `git diff --cached --name-only` shows only your files before committing.
+- A `schema.prisma` change ships **with its migration in the same commit** — an edit without a matching migration trips the drift hard gate (CI-blocking). Migrations are additive unless the founder approves otherwise.
+
+**Cross-lane coordination.**
+- You may edit another session's files, but ask that session first, **per file**, via cross-session message.
+- **Don't reverse a coordination decision mid-flight.** If you asked a session to add or remove something, confirm they haven't already acted before you change your mind — a flip-flop that removes a symbol another session now depends on breaks the build (this caused a red-main on 2026-07-30).
+- **CHANGELOG collisions:** if a sibling already added today's dated section, keep BOTH — take their section, re-insert yours; never overwrite.
 
 ## Architecture Decisions
 
@@ -88,5 +101,5 @@ For UI work, state:
 - Update `apps/shopify/CHANGELOG.md` using today's UK/London date.
 - Use merchant/operator-facing language.
 - Confirm new server code is observable: it logs through the structured logger, captures/propagates errors to the central hooks, and (for any new endpoint, service or dependency) has a health or self-check. See `apps/shopify/docs/observability.md`.
-- Run typecheck, lint and tests where available.
+- Run `bash scripts/preflight.sh` (prisma generate, typecheck, lint, tests, build) before pushing — and **again after any rebase**. Push only if green.
 - Summarise changes, risks, follow-up work and any checks that could not be run.

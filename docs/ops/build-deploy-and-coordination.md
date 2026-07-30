@@ -4,22 +4,28 @@ The living how-to for the Jefe monorepo. Operating **law** is `AGENTS.md` + `CLA
 
 ## The gate
 
-Every deploy runs this, and every session should run it locally before pushing:
+One command, run before **EVERY** push (and again after any rebase):
 
 ```
-npx prisma generate && npm run typecheck && npm run lint && npm test && npm run build
+bash scripts/preflight.sh        # prisma generate → typecheck → lint → test → build
 ```
 
-Railway additionally runs `prisma migrate deploy` as a pre-deploy step. **Never mask the exit code** with `| tail` or similar — it hides a red gate and has burned us. Let it fail loudly.
+Push only if green: `bash scripts/preflight.sh && git push origin HEAD:main`. Enable the structural backstop once — shared across all worktrees via the common `.git/config`: `git config core.hooksPath .githooks` installs a pre-push hook that runs preflight and **blocks a red push to `origin/main`**.
+
+Non-negotiables:
+- **Re-run preflight after ANY rebase/fetch that moved your base.** A pre-rebase green gate is void once a sibling's commit rebases in — a deleted export (passes typecheck **and** build, fails only at runtime/test) or a tripped consistency guard shows only on a fresh run. Both red-mains on 2026-07-30 came from skipping this.
+- **No "it's just config/docs" exceptions** — guard tests assert config (scope declarations, cross-file consistency).
+- **Never mask the exit code** with `| tail`/`| grep` — it hides a red gate and has burned us; `preflight.sh` runs un-piped for exactly this reason. Railway additionally runs `prisma migrate deploy` pre-deploy.
 
 ## Deploy
 
 Push/merge to `main` → Railway auto-builds `apps/shopify` → runs `prisma migrate deploy` against Neon → starts the web service.
 
-- **Getting a change onto `main`:** two paths, by the state of the shared **main checkout**:
-  - *Preferred — main checkout clean (single-writer):* land a gate-green branch from the main checkout: `git rebase main <branch>` → `git merge --ff-only <branch>` → one `git push origin main`. Worktrees share `.git`, so the branch is already a local ref (nothing to fetch), `origin/main` stays a strict ancestor of local `main`, pushes fast-forward, and **no `git fetch` is needed** — which protects the shared osxkeychain credential (a `fetch` 401 can wipe it for every session).
-  - *Under load — main checkout dirty with other sessions' WIP (common at peak; the single-writer flow stalls here, and `git merge --ff-only main` in the main checkout is unsafe against uncommitted work):* land from **your own worktree branched off `origin/main`**. `git fetch origin main` → `git checkout -b <branch> origin/main` → gate → `git push origin HEAD:main`; on a non-ff rejection, `git fetch origin main && git rebase origin/main` and retry. `origin/main` is the source of truth — the local `main` ref frequently **diverges/goes stale** under load (a session commits to it unpushed while origin advances); ignore it, rebase onto `origin/main`. Resolve CHANGELOG collisions by keeping **both** date sections/entries (verified 2026-07-30 across a ~6-session night). Fetch only when needed — the 401-credential-wipe risk is real; if a fetch 401s, re-auth before retrying rather than looping.
-  - Urgent live-hotfixes may go straight to `main` via pathspec commits; feature / multi-commit work uses a worktree branch.
+- **Getting a change onto `main`:** work in a **worktree branched off `origin/main`** and push it directly. This is the model that holds at ~8 concurrent sessions (the older "single-writer from a clean main checkout" flow is retired — it stranded commits and stalled at peak):
+  - `git worktree add -b <lane>/<task> .claude/worktrees/<name> origin/main` → `(cd apps/shopify && npx prisma generate)` → **preflight** → `git push origin HEAD:main`.
+  - On a non-ff rejection: `git fetch origin main && git rebase origin/main`, **re-run preflight**, retry. Resolve CHANGELOG collisions by keeping **both** date sections/entries (verified across a ~6-session night, 2026-07-30).
+  - **`origin/main` is the only source of truth. Never leave commits on the local `main` branch** — it diverges the instant origin advances (a session commits unpushed while others push), then can't cleanly rebase and blocks everyone on that checkout. Keep the main checkout reset to `origin/main`; treat it read-only. (Stranded two commits on 2026-07-30.)
+  - Fetch only when needed — a `fetch` 401 can wipe the shared osxkeychain credential for every session; re-auth before retrying rather than looping. Urgent live-hotfixes may still go straight to `main` via pathspec commits from a worktree.
 - **Service:** `jefe`. ⚠️ The `apps/shopify` directory is Railway-mislinked to `jefe-shepherd`, so always target `--service jefe` explicitly in Railway CLI commands.
 - **Health:** `/health` = liveness (always 200 when the process serves; a failing DB probe is logged, not surfaced, so a blip can't recycle a healthy instance). `/ready` = readiness (fails closed 503 when the DB is down) — this is Railway's healthcheck target.
 - Railway/Neon specifics, env groups, rollback: `docs/ops/deployment_staging_railway_neon.md`.
@@ -40,9 +46,10 @@ Commerce sources → deterministic facts → Merchant Memory beliefs (provenance
 
 Eight-plus sessions share this one working tree and its git index — the source of the CHANGELOG stomping and `git add`-swept files we've hit. The model:
 
-- **Isolate by default.** New sessions work in their own git worktree + branch: `git worktree add .claude/worktrees/<name> -b claude/<name>`. Physical isolation is the reliable fix — it depends on nothing being wired. The P2 standalone-auth session already runs this way.
+- **Isolate by default.** New sessions work in their own worktree off origin/main: `git worktree add -b <lane>/<task> .claude/worktrees/<name> origin/main`, then `(cd apps/shopify && npx prisma generate)`. Physical isolation is the reliable fix — it depends on nothing being wired. Push straight to origin with `git push origin HEAD:main`; never leave commits on the local `main` branch (see Deploy).
 - **Pathspec-commit, always.** `git commit -- <explicit paths>`. Never `git add -A`/`git add <dir>` or a bare `git commit -a` — it sweeps other sessions' staged files. Verify `git diff --cached --name-only` shows only yours first. Mandatory whether or not you're isolated.
 - **If a file you need is dirty with another session's work, leave it and coordinate** — don't commit their changes inside yours. (This is real: `CHANGELOG.md` is frequently mid-edit by another session.)
+- **Don't reverse a coordination decision mid-flight.** If you asked a session to add or remove a symbol, confirm they haven't already acted before you change your mind — a flip-flop that deletes something another session now imports breaks the build (red-main, 2026-07-30). Route architecture/consistency calls to the architecture session (below) rather than negotiating them ad hoc.
 - **CHANGELOG:** append your entry on your own branch and resolve at merge; don't hand-edit it concurrently on shared `main`.
 - **Awareness:** `git worktree list` + branch names show who's live.
 - **Worktree gotcha — Prisma client skew:** the generated `@prisma/client` is regenerated to whatever schema last ran `prisma generate`, so a worktree pinned to an older migration can see *false-red* DB tests (`column … does not exist`) that aren't a real regression. Give each worktree its own `node_modules` (+ its own `prisma generate`); if you hit a phantom red, resync/regenerate to your schema before assuming a regression.

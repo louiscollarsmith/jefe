@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Structural backstop for the shared branch: no push to origin/main lands red.
+# Runs the full preflight gate (typecheck / lint / test / build) and blocks the push
+# if it fails. Enable once (shared across all worktrees via the common .git/config):
+#
+#   git config core.hooksPath .githooks
+#
+# Escape hatch — ONLY when you have JUST run `bash scripts/preflight.sh` green yourself
+# (e.g. re-pushing after a trivial no-op amend): git push --no-verify.
+set -euo pipefail
+
+# Only gate pushes that actually update origin/main.
+pushing_main=0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main) pushing_main=1 ;;
+  esac
+done
+
+if [ "$pushing_main" -eq 0 ]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+echo "⟳ pre-push: running preflight before origin/main …"
+bash "$repo_root/scripts/preflight.sh"
