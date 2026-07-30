@@ -82,6 +82,9 @@ import {
   onboardingStepIndex,
 } from "../lib/onboarding/steps";
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
+import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
+import { rejectAction } from "../lib/actions/action-resolution.server";
+import { setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
@@ -214,6 +217,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         channelNotice: null,
       }),
     );
+  }
+
+  // The merchant's decisions on Jefe's proposed actions (the "suggested action"
+  // card) + the per-action autonomy dial. The actual store write is gated INSIDE
+  // wireClearanceExecution by CLEARANCE_EXECUTE_ENABLED — flag-off records the
+  // approval but performs NO external write (safe no-op), so this is dark until
+  // Matt flips the flag. Redirect to reload the home so the card reflects the new
+  // state (chat 4's binding); the write result rides that reload.
+  if (intent === "action.approve") {
+    await wireClearanceExecution(prisma, session, {
+      merchantId: merchant.id,
+      actionRunId: String(formData.get("actionRunId") ?? ""),
+      mode: "approve",
+    });
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.reject") {
+    await rejectAction(prisma, {
+      merchantId: merchant.id,
+      actionRunId: String(formData.get("actionRunId") ?? ""),
+    });
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.set_mode") {
+    await setActionMode(prisma, {
+      merchantId: merchant.id,
+      actionType: String(formData.get("actionType") ?? ""),
+      mode: String(formData.get("mode") ?? ""),
+    });
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
 
   if (intent.startsWith("channel.")) {

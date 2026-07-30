@@ -347,16 +347,75 @@ function ScopePill({ acts }: { acts?: boolean }) {
 // `action.approve` handler + the typed reversible adapter that actually changes
 // the store is the execution lane (chat 4) — the shape's execute contract
 // (intent + action reference) is finalised with that binding.
+export type ActionMode = "recommend" | "approve_execute" | "autonomous";
+
 export type SuggestedAction = {
   headline: string;
   keyNumbers?: Array<{ label: string; value: string }>;
   topItems?: Array<{ title: string; detail?: string }>;
   executable: boolean;
+  // Bound by chat 4 from the proposed ActionExecution row + the autonomy policy:
+  actionRunId?: string; // the proposed run's id — the Approve/Reject target
+  actionType?: string; // e.g. "price_markdown" (the autonomy-dial key)
+  mode?: ActionMode; // the merchant's current mode for this action type (getActionMode)
+  note?: string; // optional footer override (e.g. autonomous-done: "Jefe marked these down for you")
 };
 
-function SuggestedActionCard({ action }: { action: SuggestedAction }) {
+// The per-action autonomy dial: the merchant's standing choice for how Jefe
+// handles THIS action type. Sets via the `action.set_mode` intent → chat 4's
+// setActionMode; the current selection comes from getActionMode (bound into
+// `action.mode`). chat 4's resolveAutonomyMode reads it to decide recommend /
+// propose / auto at propose-time.
+const ACTION_MODE_OPTIONS: Array<{ value: ActionMode; label: string; hint: string }> = [
+  { value: "recommend", label: "Recommend", hint: "Jefe suggests, you do it" },
+  { value: "approve_execute", label: "I approve each", hint: "Jefe does it once you approve" },
+  { value: "autonomous", label: "Autonomous", hint: "Jefe does it, then tells you" },
+];
+
+function ActionModePicker({ actionType, current }: { actionType: string; current: ActionMode }) {
   return (
-    <div style={{ background: T.card, border: `1px solid ${T.navy}`, borderRadius: 15, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 9 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={label}>How Jefe handles this</div>
+      <Form method="post">
+        <input type="hidden" name="intent" value="action.set_mode" />
+        <input type="hidden" name="actionType" value={actionType} />
+        <div style={{ display: "inline-flex", border: `1px solid ${T.border}`, borderRadius: 9, overflow: "hidden" }}>
+          {ACTION_MODE_OPTIONS.map((opt) => {
+            const active = opt.value === current;
+            return (
+              <button
+                key={opt.value}
+                type="submit"
+                name="mode"
+                value={opt.value}
+                title={opt.hint}
+                aria-pressed={active}
+                style={{
+                  fontFamily: T.brand,
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  padding: "6px 12px",
+                  border: "none",
+                  borderRight: opt.value !== "autonomous" ? `1px solid ${T.border}` : "none",
+                  cursor: "pointer",
+                  background: active ? T.navy : T.card,
+                  color: active ? "oklch(0.97 0.01 80)" : T.muted,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </Form>
+    </div>
+  );
+}
+
+function SuggestedActionCard({ action }: { action: SuggestedAction }) {
+  const canDecide = action.executable && Boolean(action.actionRunId);
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.navy}`, borderRadius: 15, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontFamily: T.mono, fontSize: 9, letterSpacing: "1.1px", textTransform: "uppercase", fontWeight: 500, color: "oklch(0.4 0.08 262)", background: T.navyTint, padding: "3px 7px", borderRadius: 5 }}>Jefe suggests</span>
       </div>
@@ -381,16 +440,27 @@ function SuggestedActionCard({ action }: { action: SuggestedAction }) {
           ))}
         </div>
       ) : null}
-      {action.executable ? (
-        <div style={{ marginTop: 2 }}>
+
+      {action.actionType ? (
+        <ActionModePicker actionType={action.actionType} current={action.mode ?? "approve_execute"} />
+      ) : null}
+
+      {canDecide ? (
+        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
           <Form method="post">
             <input type="hidden" name="intent" value="action.approve" />
+            <input type="hidden" name="actionRunId" value={action.actionRunId} />
             <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, border: "none", cursor: "pointer" }}>Approve →</button>
+          </Form>
+          <Form method="post">
+            <input type="hidden" name="intent" value="action.reject" />
+            <input type="hidden" name="actionRunId" value={action.actionRunId} />
+            <button type="submit" style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Decline</button>
           </Form>
         </div>
       ) : (
         <div style={{ fontSize: 12, lineHeight: 1.5, color: T.muted, fontStyle: "italic" }}>
-          Advisory for now — Jefe will action this for you once execution is switched on.
+          {action.note ?? "Advisory for now — Jefe will action this for you once execution is switched on."}
         </div>
       )}
     </div>
