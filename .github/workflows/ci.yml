@@ -55,15 +55,13 @@ jobs:
         run: npx prisma migrate deploy
 
       - name: Check schema/migration drift (observability #4)
-        # The migrated DB (built from migration files above) must match
-        # schema.prisma. NON-BLOCKING (reporting only): running the real
-        # `migrate diff` shows REAL pre-existing drift (~15 tables — updated_at
-        # DB-default vs @updatedAt, Prisma index-name changes, a few nullability
-        # shifts) accumulated from schema edits without matching migrations. The
-        # earlier hard-gate flip was a mistake (the "audit" was a column check,
-        # not this diff) and reddened CI. Keep it visible; re-enable as a gate
-        # only AFTER the drift is reconciled (add migrations to match schema.prisma).
-        continue-on-error: true
+        # The migrated DB (built from the migration files above) must match
+        # schema.prisma. HARD GATE: definition-level drift fails CI. The
+        # pre-existing ~15-table drift was reconciled in migration
+        # 20260730140000_reconcile_schema_drift (verified: fresh `migrate deploy`
+        # of all migrations in order → `migrate diff --exit-code` = 0). A fresh
+        # migrate-deploy now matches schema, so any future drift is a real
+        # regression worth blocking.
         run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel ./prisma/schema.prisma --exit-code
 
       - name: Typecheck
