@@ -13,6 +13,7 @@ import {
 } from "./services/shopify-backfill-status.server";
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
+import { clearWinBackGuard } from "./lib/email/winback.server.js";
 import { logger } from "./lib/observability/logger.server";
 import { track } from "./services/analytics/event-log.server";
 
@@ -71,6 +72,18 @@ const shopify = shopifyApp({
         logger.error("Welcome email dispatch failed", {
           err: error,
           component: "welcome-email",
+          shopDomain: session.shop,
+        });
+      });
+
+      // A merchant who has (re)installed has "spent" any prior farewell — clear
+      // the win-back guard so a future re-churn gets a fresh one (the win-back
+      // is per churn event, not once per shop lifetime). Fire-and-forget; a
+      // conditional no-op write on a first install.
+      void clearWinBackGuard(prisma, session.shop).catch((error) => {
+        logger.error("Win-back guard reset failed", {
+          err: error,
+          component: "winback-email",
           shopDomain: session.shop,
         });
       });

@@ -1,6 +1,7 @@
 // @ts-check
 
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { track } from "../../services/analytics/event-log.server.js";
 import { normalizeShopDomain } from "../shopify/admin-graphql.server.js";
 import { signFeedbackToken } from "./feedback.server.js";
 import { sendEmail } from "./resend.server.js";
@@ -43,6 +44,30 @@ export function isWinBackEmailEnabled() {
     String(process.env.ENABLE_WINBACK_EMAIL ?? "").trim().toLowerCase() ===
     "true"
   );
+}
+
+/**
+ * Clear the win-back guard so a re-churn re-sends. Called on (re)install
+ * (afterAuth): a merchant who is back and active has "spent" any prior farewell,
+ * so if they leave again they should get a fresh one — the win-back is per
+ * churn *event*, not once per shop lifetime. Conditional (only clears a set
+ * guard) so it's a no-op write on the common path. Never used to send anything.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {string} shopDomain
+ * @returns {Promise<{ cleared: number }>}
+ */
+export async function clearWinBackGuard(prisma, shopDomain) {
+  const normalized = normalizeShopDomain(shopDomain);
+  const res = await prisma.shop.updateMany({
+    where: {
+      platform: "shopify",
+      shopDomain: normalized,
+      winbackEmailSentAt: { not: null },
+    },
+    data: { winbackEmailSentAt: null },
+  });
+  return { cleared: res.count };
 }
 
 /**
@@ -343,6 +368,27 @@ export async function sendWinBackEmailOnUninstall(prisma, input) {
       storeName: input.storeName ?? null,
       daysInstalled,
       appUrl: input.appUrl,
+    });
+
+    // Health signal: a PII-free dispatch event (no recipient — kind + outcome
+    // only) so email sends/failures are visible in the ops feed. Fire-and-forget.
+    void track(prisma, {
+      type: "email_sent",
+      topic: "email",
+      shopId: input.shopId,
+      shopDomain,
+      summary: `Win-back email ${
+        result.disabled
+          ? "stubbed (disabled)"
+          : result.delivered
+            ? "delivered"
+            : "not delivered"
+      } for ${shopDomain}`,
+      properties: {
+        kind: "winback",
+        delivered: Boolean(result.delivered),
+        disabled: Boolean(result.disabled),
+      },
     });
 
     return {

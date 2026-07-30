@@ -10,6 +10,7 @@ import {
 } from "../app/lib/email/feedback.server.js";
 import {
   SUBJECT_OPTIONS,
+  clearWinBackGuard,
   isWinBackEmailEnabled,
   renderWinBackEmail,
   resolveWinBackRecipient,
@@ -65,6 +66,17 @@ function uniqueSuffix() {
     /[^a-z0-9-]/gi,
     "",
   );
+}
+
+/** Poll for a fire-and-forget activity event (track() is not awaited). Generous
+ * window so a cold Prisma engine on the first suite run can't flake the assert. */
+async function waitForEvents(prisma, where, tries = 60) {
+  for (let i = 0; i < tries; i += 1) {
+    const rows = await prisma.activityEvent.findMany({ where });
+    if (rows.length > 0) return rows;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -337,10 +349,60 @@ test("winback uninstall trigger sends once per shop and is idempotent", async (t
         select: { winbackEmailSentAt: true },
       });
       assert.ok(shopRow.winbackEmailSentAt instanceof Date);
+
+      // The single dispatch emitted one PII-free health event.
+      const events = await waitForEvents(prisma, {
+        shopId: shop.id,
+        type: "email_sent",
+      });
+      assert.equal(events.length, 1, "one email_sent event for one dispatch");
+      assert.equal(events[0].properties.kind, "winback");
+      assert.equal(events[0].properties.disabled, true);
     } finally {
+      await prisma.activityEvent
+        .deleteMany({ where: { shopDomain } })
+        .catch(() => {});
       await prisma.session.deleteMany({ where: { shop: shopDomain } });
       await prisma.merchant.deleteMany({ where: { name: shopDomain } });
       await prisma.$disconnect();
     }
   }));
+});
+
+test("clearWinBackGuard clears a set guard on reinstall and no-ops otherwise", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for the clearWinBackGuard test");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  const shopDomain = `winback-clear-${suffix}.myshopify.com`;
+  try {
+    const { shop } = await ensureShopifyTenant(prisma, {
+      shopDomain,
+      accessTokenSessionId: `offline-${suffix}`,
+      scopes: ["read_products"],
+    });
+
+    // No guard set yet -> no-op clear.
+    assert.deepEqual(await clearWinBackGuard(prisma, shopDomain), { cleared: 0 });
+
+    // Guard set (a prior farewell) -> reinstall clears it so a re-churn re-sends.
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: { winbackEmailSentAt: new Date() },
+    });
+    assert.deepEqual(await clearWinBackGuard(prisma, shopDomain), { cleared: 1 });
+    const row = await prisma.shop.findUniqueOrThrow({
+      where: { id: shop.id },
+      select: { winbackEmailSentAt: true },
+    });
+    assert.equal(row.winbackEmailSentAt, null);
+
+    // Idempotent: clearing an already-clear guard is a no-op.
+    assert.deepEqual(await clearWinBackGuard(prisma, shopDomain), { cleared: 0 });
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.$disconnect();
+  }
 });
