@@ -2,10 +2,10 @@
 
 // The single approve→execute entry point for a clearance action run — called from
 // the app action on a merchant approve (mode "approve") or the autonomous path
-// (mode "auto"). It COMPOSES the two existing halves rather than re-implementing
-// either: chat 4's approveAction records proposed→approved, and the flag-gated
-// adapter (applyClearance) does the store write. Flag-off is a safe no-op — the
-// approval is recorded, nothing is written.
+// (mode "auto"). It records the approval transition (proposed→approved) inline —
+// folded into this single execute fn per the 3-mode model, since there's no
+// approve-without-execute — then the flag-gated adapter (applyClearance) does the
+// store write. Flag-off is a safe no-op — the approval is recorded, nothing written.
 //
 // ⚠️ This is the wiring that makes clearance LIVE. It is UNWIRED until the app action
 // calls it, and the actual store write stays behind CLEARANCE_EXECUTE_ENABLED. Going
@@ -14,7 +14,6 @@
 
 import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
-import { approveAction } from "./action-resolution.server.js";
 import { createClearanceShopifyClient } from "./clearance-shopify-client.server.js";
 import { applyClearance, isClearanceExecuteEnabled } from "./clearance-adapter.server.js";
 
@@ -70,25 +69,24 @@ export async function wireClearanceExecution(prisma, session, input, deps = {}) 
     return { ok: false, executed: false, reason: "empty_preview", status: row.status };
   }
 
-  // Record proposed → approved (reuse chat 4's guarded transition; approvedBy tells
-  // apart a merchant tap from an autonomous run).
+  // Record proposed → approved inline. approvedBy tells apart a merchant tap from an
+  // autonomous run. The row's status is the guard: only proposed/approved execute.
   const approvedBy = mode === "auto" ? "auto" : merchantId;
-  const approval = await approveAction(prisma, { merchantId, actionRunId, approvedBy });
-  if (approval.status === "not_found") {
-    return { ok: false, executed: false, reason: "not_found" };
+  if (row.status === "applied" || row.status === "partially_applied") {
+    return { ok: true, executed: false, reason: "already_applied", status: row.status };
   }
-  if (approval.status === "not_proposable") {
-    const cur = approval.currentStatus;
-    if (cur === "applied" || cur === "partially_applied") {
-      return { ok: true, executed: false, reason: "already_applied", status: cur };
-    }
-    if (cur !== "approved") {
-      // rejected / reverted / failed — not a state we execute from.
-      return { ok: false, executed: false, reason: `not_executable:${cur}`, status: cur };
-    }
-    // Already "approved" (e.g. a prior run recorded approval while the flag was off) —
-    // fall through and execute now. applyClearance is itself idempotent per write.
+  if (row.status !== "proposed" && row.status !== "approved") {
+    // rejected / reverted / failed — not a state we execute from.
+    return { ok: false, executed: false, reason: `not_executable:${row.status}`, status: row.status };
   }
+  if (row.status === "proposed") {
+    await prisma.actionExecution.update({
+      where: { runId: actionRunId },
+      data: { status: "approved", approvedBy, approvedAt: new Date() },
+    });
+  }
+  // status "approved" (fresh or pre-existing, e.g. approved while the flag was off) —
+  // fall through and execute; applyClearance is itself idempotent per write.
 
   if (!isClearanceExecuteEnabled()) {
     log.info("clearance approved; execution disabled (flag off) — no store write", {
