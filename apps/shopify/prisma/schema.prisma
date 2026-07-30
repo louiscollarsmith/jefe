@@ -1009,3 +1009,23 @@ model LlmUsageEvent {
   @@index([feature, createdAt])
   @@map("llm_usage_event")
 }
+
+/// Durable record of CHANGELOG.md entries the changelog watcher has seen, so a
+/// deploy/restart never re-announces an entry to Slack. One row per parsed
+/// entry, keyed by a content hash. `seeded` rows were present when the watcher
+/// first ran (recorded, never announced) so enabling it doesn't flood the
+/// channel with the whole backlog. Also the durable source a public-facing
+/// changelog page can render later.
+model ChangelogAnnouncement {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  entryHash     String   @unique @map("entry_hash")
+  section       String
+  title         String
+  body          String
+  postedToSlack Boolean  @default(false) @map("posted_to_slack")
+  seeded        Boolean  @default(false)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([section])
+  @@map("changelog_announcements")
+}

@@ -48,6 +48,7 @@ import {
 import { track } from "./analytics/event-log.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
+import { maybePostChangelog } from "./changelog/changelog-watcher.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
 import { recordWorkerTick } from "../lib/observability/heartbeat.server.js";
 
@@ -181,6 +182,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await processNextBackfillJob(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
+      await maybePostChangelog(workerPrisma, { logger });
     } catch (error) {
       const uptimeSeconds = Math.round(process.uptime());
       if (!shouldPageOnWorkerError(error, uptimeSeconds)) {
