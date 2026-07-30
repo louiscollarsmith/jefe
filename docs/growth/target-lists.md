@@ -31,11 +31,13 @@ Factors are **assumptions to recalibrate** with real reply/convert data. The ema
 - **Stage 10→100** — all 212 customers (DTC-filtered) + the top prospects from the 2,486 (ranked by engagement).
 - **Stage 100→1,000+** — prospect pool + App Store + content + paid.
 
-## Status (overnight, 2026-07-30)
+## Status (2026-07-30, overnight) — lists assembled
 
-- Contact-email sweep over the 212 customers → running (background) → `scratchpad/target-lists/quiver-customer-contacts.csv`.
-- Shopify-verification of the Stage 1→10 shortlist → running (background) → `scratchpad/target-lists/stage1-shopify-check.csv`.
-- **No outreach drafted or sent** — per founder, lists only; sending is a separate go.
+- **Contact sweep:** done, 212/212. Email found for 210. Quality: **88 genuine brand-domain contacts**, 90 freemail (likely consumer/personal), 32 other-corporate, 2 none.
+- **Shopify-verify:** done, 38/40 (dropped **Chilli No 5** = WooCommerce, **Cefinn** = store permanently closed).
+- **Lists assembled** (scratchpad, PII out of repo): `stage1-10-targets.csv` — 38 verified-Shopify brands, **18 with a ready brand contact, ~20 needing an operator-contact pass**; and `stage10-100-targets.csv` — 212, tiered by contact quality.
+- **⚠️ Data-quality caveat:** the `Client/<Brand>/Customer` labels are largely the brands' *end-consumer* support threads, so many extracted emails are a brand's *customer*, not its operator. Usable brand contacts = the 88 domain-matched (and several of those are generic `hello@`/`support@` inboxes). The ~124 others need the operator email found (brand site / LinkedIn) — or, since these are the founder's *own Quiver customers*, supplied from his knowledge/CRM. A deeper mailbox pass (pageSize > 5) would also recover more.
+- **⚠️ Consent/compliance:** contacts compiled from a support inbox = fine to *review*; **sending needs a lawful basis (GDPR) + explicit founder OK — never an automated follow-on**, and not to end-consumers. **Nothing was sent or drafted.**
 
 ## Changelog
 

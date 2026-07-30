@@ -10,9 +10,12 @@ Autonomous run while Matt is offline. Rule followed: **two-way work → commit; 
 - **P5 · Pipeline model** — conversion-factor sizing + outreach funnel in `apps/growth/src/pipeline-model.server.js`, **16/16 tests green**.
 - Bonus: [design-brief-handoff.md](design-brief-handoff.md) (paste-ready for Claude design).
 
-## In progress
+## P1 · Target lists — assembled ✅
 
-- **P1 · Target lists** — **Shopify-verify done: 38/40 shortlist verified Shopify** (dropped **Chilli No 5** = WooCommerce, **Cefinn** = store closed). **Contact-email sweep over the 212 customers is running** (background). On completion I assemble **Stage 1→10** (verified Shopify customers + emails) and **Stage 10→100** (all 212 + top prospects) into the scratchpad (PII stays out of the repo).
+- Shopify-verify: 38/40 (dropped **Chilli No 5** = WooCommerce, **Cefinn** = store closed).
+- Contact sweep: 212/212 → **88 genuine brand contacts**, 90 freemail, 32 other-corporate, 2 none.
+- Lists in scratchpad: `stage1-10-targets.csv` (38 brands; **18 ready contacts, ~20 need an operator-contact pass**) + `stage10-100-targets.csv` (212, tiered). Caveats in [target-lists.md](target-lists.md).
+- **Reality check:** warm *relationships* are real (212 Quiver customers); usable *contacts* ≈ 88 (the `/Customer` labels are mostly the brands' own consumers). The rest need the operator email — likely already in your CRM, since they're your customers.
 
 ## Deploy status
 
@@ -27,7 +30,9 @@ Autonomous run while Matt is offline. Rule followed: **two-way work → commit; 
 3. **Privacy policy** → legal review + host at `mynamejefe.com/privacy`.
 4. **App Store** → scope-trim decision, Level-2 data-protection substance confirm, free plan.
 5. **Prune Stage-1 shortlist** (you flagged Bybi/Kore; Chilli No 5 + Cefinn auto-dropped by verification).
-6. **Push** → chat 7 blessing (routed) unblocks it.
+6. **Push** → chat 7 blessing (routed) unblocks any explicit push; deploy-safe growth commits already rode to origin on the shared cadence.
+7. **Outreach consent basis** — the contacts came from a support inbox; before *any* send, decide the lawful basis + which addresses are OK (GDPR), and never to end-consumers. Nothing was sent/drafted.
+8. **Operator-contact pass** — ~124 brands have a consumer/freemail email, not the decision-maker; you likely hold many in your own CRM.
 
 ## Log
 
