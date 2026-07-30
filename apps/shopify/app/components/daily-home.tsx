@@ -412,8 +412,57 @@ function ActionModePicker({ actionType, current }: { actionType: string; current
   );
 }
 
+const DECLINE_REASONS: { value: string; label: string }[] = [
+  { value: "too_aggressive", label: "Too aggressive" },
+  { value: "wrong_products", label: "Wrong products" },
+  { value: "bad_timing", label: "Bad timing" },
+  { value: "already_handled", label: "Already handled it" },
+  { value: "other", label: "Other" },
+];
+
+// Reason capture on decline — the Observe→Learn signal. Categories + an optional
+// free-text line only; never customer PII. Passed to rejectAction as `reason`.
+function DeclineReasonForm({ actionRunId, onCancel }: { actionRunId: string; onCancel: () => void }) {
+  const [reason, setReason] = useState(DECLINE_REASONS[0].value);
+  return (
+    <Form method="post" style={{ display: "flex", flexDirection: "column", gap: 9, background: T.hover, borderRadius: 11, padding: "12px 13px", marginTop: 2 }}>
+      <input type="hidden" name="intent" value="action.reject" />
+      <input type="hidden" name="actionRunId" value={actionRunId} />
+      <input type="hidden" name="reason" value={reason} />
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: T.ink }}>Why decline? Jefe learns from this.</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {DECLINE_REASONS.map((r) => {
+          const active = r.value === reason;
+          return (
+            <button
+              key={r.value}
+              type="button"
+              onClick={() => setReason(r.value)}
+              aria-pressed={active}
+              style={{ fontFamily: T.brand, fontSize: 11.5, fontWeight: 700, padding: "5px 10px", borderRadius: 7, cursor: "pointer", border: `1px solid ${active ? T.navy : T.border}`, background: active ? T.navyTint : T.card, color: active ? T.navy : T.muted }}
+            >
+              {r.label}
+            </button>
+          );
+        })}
+      </div>
+      <input
+        name="reasonText"
+        maxLength={140}
+        placeholder="Anything to add? Optional — no customer details."
+        style={{ fontFamily: "inherit", fontSize: 12.5, padding: "7px 10px", borderRadius: 7, border: `1px solid ${T.border}`, background: T.card, color: T.ink }}
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer" }}>Send &amp; decline</button>
+        <button type="button" onClick={onCancel} style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 12.5, padding: "8px 13px", borderRadius: 8, border: `1px solid ${T.border}`, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </Form>
+  );
+}
+
 function SuggestedActionCard({ action }: { action: SuggestedAction }) {
   const canDecide = action.executable && Boolean(action.actionRunId);
+  const [showDecline, setShowDecline] = useState(false);
   return (
     <div style={{ background: T.card, border: `1px solid ${T.navy}`, borderRadius: 15, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -446,18 +495,18 @@ function SuggestedActionCard({ action }: { action: SuggestedAction }) {
       ) : null}
 
       {canDecide ? (
-        <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-          <Form method="post">
-            <input type="hidden" name="intent" value="action.approve" />
-            <input type="hidden" name="actionRunId" value={action.actionRunId} />
-            <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, border: "none", cursor: "pointer" }}>Approve →</button>
-          </Form>
-          <Form method="post">
-            <input type="hidden" name="intent" value="action.reject" />
-            <input type="hidden" name="actionRunId" value={action.actionRunId} />
-            <button type="submit" style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Decline</button>
-          </Form>
-        </div>
+        showDecline ? (
+          <DeclineReasonForm actionRunId={action.actionRunId ?? ""} onCancel={() => setShowDecline(false)} />
+        ) : (
+          <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+            <Form method="post">
+              <input type="hidden" name="intent" value="action.approve" />
+              <input type="hidden" name="actionRunId" value={action.actionRunId} />
+              <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, border: "none", cursor: "pointer" }}>Approve →</button>
+            </Form>
+            <button type="button" onClick={() => setShowDecline(true)} style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Decline</button>
+          </div>
+        )
       ) : (
         <div style={{ fontSize: 12, lineHeight: 1.5, color: T.muted, fontStyle: "italic" }}>
           {action.note ?? "Advisory for now — Jefe will action this for you once execution is switched on."}
