@@ -140,8 +140,13 @@ export function renderWelcomeEmail(input) {
     firstBriefEta: input.firstBriefEta || "Tomorrow, 7:30am",
     logoUrl,
     ctaUrl,
-    guardrailsUrl: `${appUrl}/settings/guardrails`,
-    notificationsUrl: `${appUrl}/settings/notifications`,
+    // No standalone settings surface exists yet, so these must NOT point at
+    // /settings/* (they 404 from the live email). Interim honest targets: the
+    // "email preferences" control is the real signed one-click unsubscribe, and
+    // "change my limits" deep-links into the app (where guardrails live). A real
+    // settings/guardrails + notification-preferences surface is the proper fix.
+    guardrailsUrl: ctaUrl,
+    notificationsUrl: unsubscribeUrl,
     unsubscribeUrl,
     recipientEmail,
   };

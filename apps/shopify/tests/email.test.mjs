@@ -223,8 +223,10 @@ test("renderWelcomeEmail interpolates real merchant/store/link values", () => {
     ),
     "CTA deep-links into the embedded app via ?shop=",
   );
-  assert.ok(html.includes("https://staging.jefe.test/settings/guardrails"));
-  assert.ok(html.includes("https://staging.jefe.test/settings/notifications"));
+  // The welcome email must not link to /settings/* — no such route exists yet,
+  // so those links 404 from the inbox. Interim: guardrails deep-links into the
+  // app, email-preferences is the signed unsubscribe.
+  assert.ok(!html.includes("/settings/"), "no dead /settings links");
   assert.ok(html.includes("https://staging.jefe.test/e/unsubscribe?t="));
   assert.ok(html.includes("owner@acme-tools.com"));
   assert.ok(!html.includes("{{"), "no unresolved placeholders");
