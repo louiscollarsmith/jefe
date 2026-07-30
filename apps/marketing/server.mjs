@@ -46,6 +46,14 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/privacy", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "privacy.html"));
+});
+
+app.get("/terms", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "terms.html"));
+});
+
 app.post("/api/waitlist", async (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 200) || null;
   const email = String(req.body?.email || "").trim().toLowerCase();
