@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildActionDeclinedEvent,
   proposeActionFromIntent,
   rejectAction,
   toSuggestedAction,
 } from "../app/lib/actions/action-resolution.server.js";
 
-// Minimal execution-row stub for approve/reject (findUnique + update).
+// Minimal execution-row stub for reject (findUnique + update + the activity-event
+// sink track() writes the decline signal to).
 function mockExecPrisma(row) {
   let current = row;
+  const events = [];
   return {
+    _events: events,
     actionExecution: {
       findUnique: async () => (current ? { ...current } : null),
       update: async ({ data }) => {
@@ -17,6 +21,7 @@ function mockExecPrisma(row) {
         return { ...current };
       },
     },
+    activityEvent: { create: async ({ data }) => { events.push(data); } },
   };
 }
 
@@ -139,4 +144,22 @@ test("rejectAction drops a proposed action: proposed -> rejected", async () => {
   const res = await rejectAction(prisma, { merchantId: "m1", actionRunId: "r1" });
   assert.equal(res.status, "rejected");
   assert.equal(res.execution.status, "rejected");
+});
+
+test("buildActionDeclinedEvent captures the decline + reason as a PII-safe learning signal", () => {
+  const ev = buildActionDeclinedEvent(
+    { merchantId: "m1", shopId: "s1", actionType: "price_markdown", runId: "r1" },
+    "too_aggressive",
+  );
+  assert.equal(ev.type, "merchant_action_declined");
+  assert.equal(ev.topic, "action_feedback");
+  assert.equal(ev.properties.actionType, "price_markdown");
+  assert.equal(ev.properties.reason, "too_aggressive");
+  assert.equal(ev.properties.runId, "r1");
+  assert.match(ev.summary, /too_aggressive/);
+  // No reason → still a valid signal, reason null.
+  assert.equal(
+    buildActionDeclinedEvent({ merchantId: "m1", actionType: "price_markdown", runId: "r1" }).properties.reason,
+    null,
+  );
 });

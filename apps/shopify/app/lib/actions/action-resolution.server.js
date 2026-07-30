@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { validateActionIntent } from "./action-intent.server.js";
 import { getActionMode } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
+import { track } from "../../services/analytics/event-log.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
   buildClearancePreview,
@@ -156,15 +157,35 @@ export async function proposeActionFromIntent(prisma, input) {
 // fn. This layer creates the proposed row and reads outcomes; it does not approve.
 
 /**
- * Record a merchant rejecting a proposed action: proposed → rejected. Nothing is
- * written to the store; the proposal is simply dropped.
+ * Shape a PII-safe "merchant declined an action" event — what the merchant didn't
+ * want, and (if given) why. Feeds Observe→Learn alongside the outcome loop: a
+ * declined suggestion + reason is as useful a signal as one that worked.
+ * @param {{ merchantId: string; shopId?: string | null; actionType: string; runId: string }} execution
+ * @param {string} [reason]
+ */
+export function buildActionDeclinedEvent(execution, reason) {
+  return {
+    type: "merchant_action_declined",
+    topic: "action_feedback",
+    summary: `Declined ${execution.actionType}${reason ? `: ${reason}` : ""}`,
+    merchantId: execution.merchantId,
+    shopId: execution.shopId ?? undefined,
+    properties: { actionType: execution.actionType, reason: reason ?? null, runId: execution.runId },
+  };
+}
+
+/**
+ * Record a merchant declining a proposed action: proposed → rejected, with an
+ * optional reason captured as a learning signal (send a category / short text —
+ * PII-safe, never customer data). Nothing is written to the store; the proposal is
+ * dropped and the decline + reason feed the action-feedback corpus.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; actionRunId: string }} input
+ * @param {{ merchantId: string; actionRunId: string; reason?: string }} input
  */
 export async function rejectAction(prisma, input) {
   const execution = await prisma.actionExecution.findUnique({
     where: { runId: input.actionRunId },
-    select: { id: true, runId: true, merchantId: true, status: true },
+    select: { id: true, runId: true, merchantId: true, shopId: true, status: true, actionType: true },
   });
   if (!execution || execution.merchantId !== input.merchantId) return { status: "not_found" };
   if (execution.status !== "proposed") {
@@ -175,5 +196,7 @@ export async function rejectAction(prisma, input) {
     data: { status: "rejected" },
     select: { id: true, runId: true, status: true },
   });
+  // Observe→Learn: capture the decline + reason (best-effort; never blocks the reply).
+  void track(prisma, buildActionDeclinedEvent(execution, input.reason));
   return { status: "rejected", execution: rejected };
 }
