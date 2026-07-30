@@ -76,26 +76,30 @@ This is the memory thesis (provenance + confidence, deterministic grounding, typ
 
 ## The map today (first-pass inventory)
 
-Verified against the live Shopify Admin GraphQL docs (2026-07). Only `price_markdown` is DONE; the value is seeing the whole surface — what we can build now, what needs a scope, and the genuine walls.
+Verified against the live Shopify Admin GraphQL docs (2026-07) and reconciled with the 7-scope launch trim (see below). Only `price_markdown` is DONE; the value is seeing the whole surface — what we can build now (all `write_products`), what needs a scoped re-consent, and the genuine walls.
 
 **DONE** — `price_markdown` (dead-stock clearance): decision engine + ledger + typed execution adapter + the live write client + the `wireClearanceExecution` orchestrator + the surface (approve / decline / 3-mode picker) — all built and on origin, flagged-off (`CLEARANCE_EXECUTE_ENABLED`). `write_products` is **kept** at launch: clearance goes live at launch (autonomy-from-day-one), so its scope stays; the launch scope-trim dropped only the four *unused* `write_*` (orders/customers/inventory/locations), re-added per-action as those ship. Go-live remaining: chat-4-lane's plan-rec emit (fills the proposed row) → the founder's `CLEARANCE_EXECUTE_ENABLED` flip after a test round-trip.
 
-**Highest-value BUILDABLE** (scope held today, adapter-only — the fastest next builds, all reversible → the auto-eligibility sweet spot):
-- *Pricing* (`write_products`): `price_set`, `set_compare_at_price`, `bulk_price_update` — the clearance mutation (`productVariantsBulkUpdate`) generalised to promos + repricing.
-- *Inventory* (`write_inventory`): `inventory_set`, `inventory_adjust` — correct oversell/stock drift; pairs with the `inventory_levels/update` webhook already subscribed.
-- *Merchandising* (`write_products`): `product_status_change` (archive dead SKUs), `add_tags`/`remove_tags`, `collection_add_products` + `collection_reorder`.
-- *Customer marketing* (`write_customers`): `customer_email_marketing_consent`, `customer_sms_marketing_consent` — the one marketing lever needing no new scope.
-- *Order housekeeping* (`write_orders`): `order_update` (note/tags), `order_close` — low-risk warm-up before the irreversible order actions.
+**Scopes held today** (post the 7-scope launch trim): `read_products, write_products, read_orders, read_all_orders, read_customers, read_inventory, read_locations`. The only **write** scope held is `write_products` — so every non-product write is NEEDS-SCOPE until re-added per-action. This sharpens the near-term roadmap: the next builds are all `write_products` siblings (no new consent), and inventory/order/customer writes each carry a scoped re-consent step.
 
-**BUILDABLE but confirm-gated** (scope held, but irreversible → never auto, always confirm): `refund_create`, `order_cancel`, `product_delete`, `customer_delete`, `customer_merge`.
+**BUILDABLE — scope held (`write_products`), adapter-only, reversible** — the auto-eligibility sweet spot + the fastest next builds; all reuse the clearance adapter + write client with no new consent:
+- *Pricing* (`write_products`): `price_set`, `set_compare_at_price`, `bulk_price_update` — the clearance mutation (`productVariantsBulkUpdate`) generalised to promos + repricing. Reversible (prior price). **The natural 2nd primitive** — it reuses `clearance-shopify-client` + the `expectedFrom`/revert model, so it forces the shared-shape extraction the explicit dispatch is waiting for (two real primitives → the interface).
+- *Merchandising* (`write_products`): `product_status_change` (archive dead SKUs that didn't clear — pairs with clearance), `add_tags`/`remove_tags`, `collection_add_products`/`collection_reorder` (verify collections ride `write_products`). Reversible (unarchive / re-tag / re-order).
 
-**NEEDS-SCOPE** (mutation exists, scope not held → "grant X to enable", per-action re-consent):
-- Fulfillment (`write_*_fulfillment_orders`): create/track/hold/reroute/cancel — a whole domain behind one re-consent bundle.
-- Discounts (`write_discounts`): code + automatic discounts, deactivate.
-- Order edits (`write_order_edits` — **separate from `write_orders`**, easy to mis-map): add/remove/qty/line-discounts.
-- Draft orders (`write_draft_orders`): create/complete/invoice.
-- Channel publishing (`write_publications`); online-store content — pages/blogs/menus/redirects (`write_content` / `write_online_store_pages` / `write_online_store_navigation`).
-- Inventory transfer (`write_inventory_transfers` — grantability uncertain, verify at build); marketing-activity register (`write_marketing_events` — attributes only, does NOT send).
+**BUILDABLE — scope held but irreversible** → always confirm, never auto (`write_products`): `product_delete`.
+
+**NEEDS-SCOPE** — the mutation exists but the scope was **trimmed at launch** (or never held) → re-add per-action via `scopes_update`, each justified by the feature the merchant opts into:
+- *Inventory* (`write_inventory` — trimmed): `inventory_set`, `inventory_adjust` — correct oversell / stock drift; pairs with the `inventory_levels/update` webhook. Reversible.
+- *Customer marketing* (`write_customers` — trimmed): `customer_email_marketing_consent`, `customer_sms_marketing_consent`.
+- *Order housekeeping* (`write_orders` — trimmed): `order_update` (note/tags), `order_close`; plus the irreversible `refund_create`, `order_cancel` (confirm-gated).
+- *Customer lifecycle* (`write_customers` — trimmed, irreversible → confirm-gated): `customer_delete`, `customer_merge`.
+- *Locations* (`write_locations` — trimmed): location create / edit / activate.
+- *Fulfillment* (`write_*_fulfillment_orders`): create/track/hold/reroute/cancel — a domain behind one re-consent bundle.
+- *Discounts* (`write_discounts`): code + automatic discounts, deactivate.
+- *Order edits* (`write_order_edits` — **separate from `write_orders`**, easy to mis-map): add/remove/qty/line-discounts.
+- *Draft orders* (`write_draft_orders`): create/complete/invoice.
+- *Channel publishing* (`write_publications`); *online-store content* — pages/blogs/menus/redirects (`write_content` / `write_online_store_pages` / `write_online_store_navigation`).
+- *Inventory transfer* (`write_inventory_transfers` — grantability uncertain, verify at build); *marketing-activity register* (`write_marketing_events` — attributes only, does NOT send).
 
 **NO-PATH** (Shopify's API genuinely can't — surface honestly):
 1. Send a Shopify Email/SMS marketing campaign (`marketingActivityCreate` only *attributes*) → Jefe's own Resend/Slack/WhatsApp stack is the route.
