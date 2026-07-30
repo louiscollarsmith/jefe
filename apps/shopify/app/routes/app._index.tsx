@@ -4,7 +4,7 @@ import type {
   LoaderFunctionArgs,
 } from "react-router";
 import type { ChangeEvent, DragEvent, FormEvent, ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   Form,
   redirect,
@@ -41,7 +41,12 @@ import {
 } from "@shopify/polaris";
 import { CheckCircleIcon, FileIcon, UploadIcon } from "@shopify/polaris-icons";
 
-import { DailyHome } from "../components/daily-home";
+// Code-split: DailyHome (~51kB, hand-rolled, no Polaris) renders only for
+// returning users (appMode "daily"). Lazy so first-run onboarding + the memory
+// view don't ship it. SSR-streamed, so the server still resolves + streams it.
+const DailyHome = lazy(() =>
+  import("../components/daily-home").then((m) => ({ default: m.DailyHome })),
+);
 
 import prisma from "../db.server";
 import {
@@ -942,15 +947,17 @@ export default function AppIndex() {
 
   if (data.appMode === "daily") {
     return (
-      <DailyHome
-        storeName={data.storeName}
-        merchantName={data.merchantName}
-        metrics={data.metrics}
-        memory={data.memory}
-        recommendation={data.recommendation}
-        insights={data.insights}
-        goals={data.goals}
-      />
+      <Suspense fallback={null}>
+        <DailyHome
+          storeName={data.storeName}
+          merchantName={data.merchantName}
+          metrics={data.metrics}
+          memory={data.memory}
+          recommendation={data.recommendation}
+          insights={data.insights}
+          goals={data.goals}
+        />
+      </Suspense>
     );
   }
 
