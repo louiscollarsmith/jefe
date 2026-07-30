@@ -90,6 +90,8 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ## 5. Pricing (design-partner model APPROVED 2026-07-29; public tiers still a hypothesis)
 
+> **Full living pricing strategy → [pricing-strategy.md](pricing-strategy.md)** — philosophy, tier hypothesis, the phased learn→test roadmap, the WTP-discovery question set, and billing mechanics. This §5 is the summary.
+
 - **APPROVED (Matt, 2026-07-29):** Design partners are **free during the program** in exchange for feedback + a testimonial + a commitment to convert at a **founding-partner rate**. This is the plan, not a hypothesis.
 - Anchor on **value vs. a human e-commerce manager/analyst** ($3–6k/mo), not vs. a $19 analytics app.
 - Public tiers (hypothesis): likely **$99–$499/mo** entry; **higher tiers as autonomy broadens** — more action types + more autonomous mode = the natural expansion path (autonomy is live from day 1, so tiering is by *breadth/mode of action*, not advisory-vs-autonomous).
