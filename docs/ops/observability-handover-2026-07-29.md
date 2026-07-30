@@ -16,7 +16,7 @@ marked HELD. Commits authored `Jefe Agent`.
 - **/health diagnostics** — `buildWorkerHealth` (backfill-loop liveness via an in-memory heartbeat: ok/stale/starting/disabled + lastTickAgoMs) + `buildDependencyHealth` (env-only email/slack/llm flags, no network). `/health` now exposes `checks.worker`, dep flags, and `latency` p50/p95/p99. Live-verified.
 - **Alert-noise (streaming aborts)** — `stream-errors.server.js`: benign client-abort / premature-close / ECONNRESET stream errors downgrade to WARN (were paging as "Streaming render error").
 - **Churn & retention view** in the ops panel (Churned + Tenure@churn tiles).
-- **#17 churn-reason consumed** — overview "Why they left" breakdown + merchant drill-down reason (latest `shop_uninstall_feedback` per shop; last-write-wins per the e.feedback contract). **Empty until `ENABLE_EMAIL` sends farewell-email feedback links** — build-ahead, ready. (ops `e5114c1`)
+- **#17 churn-reason consumed** — overview "Why they left" breakdown + merchant drill-down reason (latest `shop_uninstall_feedback` per shop; last-write-wins per the e.feedback contract). **Empty until `ENABLE_WINBACK_EMAIL` sends farewell-email feedback links** (`ENABLE_EMAIL` is already ON for welcome emails — the win-back farewell is separately gated by `ENABLE_WINBACK_EMAIL`, still dark) — build-ahead, ready. (ops `e5114c1`)
 - **#20 portfolio economics** — overview "LLM cost by feature · 7d" + coverage-gated "Margin by client" table (each row links to the drill-down). (ops `e5114c1`)
 - **#19 ops-panel tests** — extracted pure helpers to `apps/ops/format.mjs` (esc/money/fmtMs/safeEqual/optionList/sparkline/churnReasonLabel) + 12 `node --test` cases; `apps/ops` had zero tests before. (ops `6e54085`)
 - **Schema-drift guard** — non-blocking `prisma migrate diff` step in `ci.yml` (`89f68af`). Obs #4 audit found NO app drift (only a rogue `waitlist_signups` marketing table, out of scope).
@@ -25,7 +25,9 @@ marked HELD. Commits authored `Jefe Agent`.
 **Founder-side / external (Matt, 07-30):**
 - **#8 uptime** — Better Stack (free tier) monitor **live** on `https://app.mynamejefe.com/ready` (GET, 3-min checks, SSL verify on, multi-region). Advised: set **Confirmation period → 3 min** (2 failed checks) so a deploy blip doesn't page. **Slack routing still to do**: Integrations → Slack → Quiver → #jefe-slack (currently email-to-founder only; push notifs need a paid upgrade — skip).
 
-**HELD (one-way doors — do NOT turn on without Matt):** `ENABLE_EMAIL` (real win-back sends — also the switch that starts populating #17), `ENABLE_EVENT_RETENTION` (deletes old events).
+**HELD (one-way doors — do NOT turn on without Matt):** `ENABLE_WINBACK_EMAIL` (real farewell/win-back sends — also the switch that starts populating #17's "Why they left"; note `ENABLE_EMAIL` is already ON for welcome emails), `ENABLE_EVENT_RETENTION` (deletes old events).
+
+**Noise source found (flagged, not fixed — needs a decision):** transient Shopify GraphQL HTTP errors during backfill page #jefe-slack once per failed job (3 pages for one blip on the dev store at ~01:03Z, then quiet). The grace/transient logic only downgrades transient *DB* errors; extending it to retryable Shopify API errors (429/5xx/network) needs a transient-classification call — spawned as a follow-up task.
 
 **Morning follow-ups:**
 - **Flip the CI drift guard to blocking** — drop `continue-on-error` in `ci.yml` once a first green run confirms no definition-level drift. Deferred overnight because `gh` was unavailable to read the run.
