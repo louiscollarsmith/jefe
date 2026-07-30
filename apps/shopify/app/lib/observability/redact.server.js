@@ -18,6 +18,7 @@
 
 const REDACTED = "[redacted]";
 const REDACTED_EMAIL = "[redacted-email]";
+const REDACTED_SECRET = "[redacted-secret]";
 
 /** Max recursion depth before we stop descending and mark the value. */
 const DEFAULT_MAX_DEPTH = 8;
@@ -42,6 +43,20 @@ const EMAIL_VALUE_PATTERN =
   /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 
 /**
+ * High-confidence secret shapes that can end up inside free-text values —
+ * error messages ("Shopify rejected token shpat_…"), URLs, or stringified
+ * responses. Only well-known prefixed, high-entropy token formats are matched so
+ * a legitimate operational string is never mistaken for a secret. A key-based
+ * match (`isSensitiveKey`) already covers structured fields; this catches the
+ * substring case where a secret is embedded in prose the key doesn't flag.
+ */
+const SECRET_VALUE_PATTERN =
+  /\b(?:shp(?:at|ca|pa|ss)_[0-9a-fA-F]{32}|(?:sk|rk|pk)_(?:live|test)_[0-9a-zA-Z]{16,}|whsec_[0-9a-zA-Z]{16,}|AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{36,})\b/g;
+
+/** Bearer/authorization tokens in free text: keep the scheme, drop the token. */
+const BEARER_VALUE_PATTERN = /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{12,}/gi;
+
+/**
  * @param {string} key
  * @returns {boolean}
  */
@@ -55,13 +70,16 @@ export function isSensitiveKey(key) {
  * @returns {string}
  */
 function scrubString(value, maxString) {
-  const withoutEmails = value.replace(EMAIL_VALUE_PATTERN, REDACTED_EMAIL);
-  if (withoutEmails.length > maxString) {
-    return `${withoutEmails.slice(0, maxString)}…[truncated ${
-      withoutEmails.length - maxString
+  const scrubbed = value
+    .replace(EMAIL_VALUE_PATTERN, REDACTED_EMAIL)
+    .replace(SECRET_VALUE_PATTERN, REDACTED_SECRET)
+    .replace(BEARER_VALUE_PATTERN, (_m, scheme) => `${scheme} ${REDACTED_SECRET}`);
+  if (scrubbed.length > maxString) {
+    return `${scrubbed.slice(0, maxString)}…[truncated ${
+      scrubbed.length - maxString
     } chars]`;
   }
-  return withoutEmails;
+  return scrubbed;
 }
 
 /**
@@ -94,6 +112,32 @@ export function redact(input, options = {}) {
     if (value instanceof Date) return value.toISOString();
 
     if (depth >= maxDepth) return "[Object: max depth]";
+
+    if (value instanceof Error) {
+      // Errors carry message/stack as NON-enumerable props, so Object.keys()
+      // misses them and a raw Error would redact to `{}` — silently losing the
+      // error. Extract them explicitly, scrub the free-text (emails/secrets) they
+      // often contain, and keep own-enumerable extras (e.g. a typed error's
+      // `status`) under the usual key-based redaction.
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      const err = /** @type {Error & Record<string, unknown>} */ (value);
+      /** @type {Record<string, unknown>} */
+      const out = { name: err.name };
+      out.message =
+        typeof err.message === "string"
+          ? scrubString(err.message, maxString)
+          : err.message;
+      if (typeof err.stack === "string") {
+        out.stack = scrubString(err.stack, maxString);
+      }
+      for (const key of Object.keys(err)) {
+        if (key === "name" || key === "message" || key === "stack") continue;
+        out[key] = isSensitiveKey(key) ? REDACTED : walk(err[key], depth + 1);
+      }
+      seen.delete(value);
+      return out;
+    }
 
     if (Array.isArray(value)) {
       if (seen.has(value)) return "[Circular]";

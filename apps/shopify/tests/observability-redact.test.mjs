@@ -82,3 +82,67 @@ test("isSensitiveKey matches common credential shapes", () => {
     assert.equal(isSensitiveKey(key), false, `${key} should not be sensitive`);
   }
 });
+
+test("serialises a bare Error (message/stack are non-enumerable) instead of {}", () => {
+  const out = redact(new Error("auth failed for alice@example.com"));
+  assert.equal(out.name, "Error");
+  assert.equal(out.message, "auth failed for [redacted-email]");
+  assert.equal(typeof out.stack, "string");
+  assert.ok(out.stack.includes("[redacted-email]"));
+});
+
+test("serialises Errors nested below the top level (not just err/error keys)", () => {
+  const out = redact({
+    result: { err: new Error("boom carol@x.io") },
+    attempts: [{ error: new TypeError("bad") }],
+  });
+  // Without the Error branch these would each collapse to {}.
+  assert.equal(out.result.err.name, "Error");
+  assert.equal(out.result.err.message, "boom [redacted-email]");
+  assert.equal(out.attempts[0].error.name, "TypeError");
+  assert.equal(out.attempts[0].error.message, "bad");
+});
+
+test("keeps a typed error's own fields but redacts sensitive ones", () => {
+  const err = Object.assign(new Error("nope"), { status: 503, apiKey: "sk-secret" });
+  const out = redact(err);
+  assert.equal(out.status, 503);
+  assert.equal(out.apiKey, "[redacted]");
+});
+
+test("does not throw on a self-referential (cyclic) error cause", () => {
+  const err = new Error("root");
+  err.cause = err;
+  const out = redact(err);
+  assert.equal(out.name, "Error");
+  assert.equal(out.cause, "[Circular]");
+});
+
+test("scrubs high-confidence secret shapes inside free text", () => {
+  // Fixtures are assembled from parts at runtime so this source file contains no
+  // literal secret-shaped string — otherwise secret-scanning push protection
+  // rejects the commit (ironic for a redaction test). Each still forms a real
+  // token shape once concatenated.
+  const shopify = "shp" + "at_" + "0123456789abcdef".repeat(2); // shpat_ + 32 hex
+  const stripe = "sk_" + "live_" + "abcd1234EFGH5678ijkl"; // sk_live_ + 20
+  const github = "gh" + "p_" + "0123456789abcdefghij0123456789abcdEF"; // ghp_ + 36
+  const bearer = "Authorization: " + "Bearer " + "abcdef1234567890xyz";
+  const out = redact({ a: `using ${shopify} now`, b: stripe, c: github, d: bearer });
+  assert.ok(out.a.includes("[redacted-secret]") && !out.a.includes("at_0123"));
+  assert.equal(out.b, "[redacted-secret]");
+  assert.equal(out.c, "[redacted-secret]");
+  assert.ok(out.d.includes("Bearer [redacted-secret]"));
+});
+
+test("does not over-redact legitimate operational strings", () => {
+  const out = redact({
+    shop: "jaspers-market.myshopify.com",
+    gid: "gid://shopify/Product/123",
+    word: "shipment scheduled",
+    sku: "SK-1024",
+  });
+  assert.equal(out.shop, "jaspers-market.myshopify.com");
+  assert.equal(out.gid, "gid://shopify/Product/123");
+  assert.equal(out.word, "shipment scheduled");
+  assert.equal(out.sku, "SK-1024");
+});
