@@ -1868,7 +1868,6 @@ async function createMemoryFixture(prisma, suffix) {
       {
         merchantId: merchant.id,
         shopId: shop.id,
-        normalizedEmail: `repeat-${suffix}@example.com`,
         emailHash: `repeat-hash-${suffix}`,
         maskedEmail: "r***@example.com",
         orderCount: 2,
@@ -1879,7 +1878,6 @@ async function createMemoryFixture(prisma, suffix) {
       {
         merchantId: merchant.id,
         shopId: shop.id,
-        normalizedEmail: `single-${suffix}@example.com`,
         emailHash: `single-hash-${suffix}`,
         maskedEmail: "s***@example.com",
         orderCount: 1,

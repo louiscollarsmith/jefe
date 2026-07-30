@@ -497,7 +497,6 @@ model CustomerIdentity {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId        String    @map("merchant_id") @db.Uuid
   shopId            String    @map("shop_id") @db.Uuid
-  normalizedEmail   String?   @map("normalized_email")
   emailHash         String    @map("email_hash")
   maskedEmail       String?   @map("masked_email")
   firstSeenOrderAt  DateTime? @map("first_seen_order_at") @db.Timestamptz(6)

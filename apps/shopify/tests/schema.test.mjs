@@ -148,7 +148,6 @@ test("inserts and reads retained Shopify evidence foundation rows", async (t) =>
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        normalizedEmail: `buyer-${suffix}@example.com`,
         emailHash: `hash-${suffix}`,
         maskedEmail: "b***@example.com",
         firstSeenOrderAt: new Date("2026-07-22T08:05:00Z"),

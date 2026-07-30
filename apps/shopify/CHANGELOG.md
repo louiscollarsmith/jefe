@@ -43,6 +43,7 @@
 
 ### Changed
 
+- **Dropped the unused `CustomerIdentity.normalizedEmail` column** (founder-approved cleanup). The app never read or wrote it — ingestion stores only the sha256 `email_hash` (for joins) and `masked_email` (for display), so the plaintext-email column was inert; removing it is a small PII-posture win on top of the tidy. Migration `20260729170000_drop_customer_normalized_email`; the 3 test fixtures that still wrote it updated. Full gate green, typecheck green.
 - **Transactional email now sends as the brand persona, with replies routed to a real inbox.** `RESEND_FROM_EMAIL` now defaults to `Hola <hola@mynamejefe.com>` — a brand persona, not a person — on the already-verified root domain, and a new optional `RESEND_REPLY_TO` sets a `Reply-To` so replies to the send-only `hola@` address still reach a monitored inbox instead of bouncing (domain receiving is disabled on the current Resend plan). The Resend adapter (`app/lib/email/resend.server.js`) gained a pure, exported `buildResendPayload` that wires `from` / `replyTo` / optional fields — unit-tested without the SDK — and `sendEmail` resolves `replyTo` from the call or `RESEND_REPLY_TO`. The welcome body was already signed "— Jefe" (brand), never a personal name. Still fully `ENABLE_EMAIL`-gated: nothing sends. `.env.example` + `tests/email.test.mjs` updated.
 
 ## 2026-07-28
