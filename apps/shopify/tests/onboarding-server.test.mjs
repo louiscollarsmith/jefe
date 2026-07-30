@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import {
   completePlanOnboarding,
   recordFurthestOnboardingStep,
+  skipOnboarding,
 } from "../app/services/onboarding.server.js";
 import { readFurthestStep } from "../app/lib/onboarding/steps.js";
 import { ensureShopifyTenant } from "../app/lib/ingestion/shopify/tenant.server.js";
@@ -94,6 +95,38 @@ test("recordFurthestOnboardingStep: no-op on a missing shop (never throws)", asy
     });
     assert.equal(result, null);
   } finally {
+    await prisma.$disconnect();
+  }
+});
+
+test("skipOnboarding marks the shop onboarded, tagged as a skip", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for the skip test");
+    return;
+  }
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  const shopDomain = `onbsvc-skip-${suffix}.myshopify.com`;
+  try {
+    const { shop } = await ensureShopifyTenant(prisma, {
+      shopDomain,
+      accessTokenSessionId: `offline-${suffix}`,
+      scopes: ["read_products"],
+    });
+    await setMetadata(prisma, shop.id, { furthestStep: "channels", keep: "me" });
+
+    await skipOnboarding(prisma, { shopId: shop.id });
+
+    const { onboardingMetadata, onboardingCompletedAt } = await readMetadata(
+      prisma,
+      shop.id,
+    );
+    assert.ok(onboardingCompletedAt instanceof Date, "completion timestamp set");
+    assert.equal(onboardingMetadata.completedSource, "skipped");
+    assert.equal(onboardingMetadata.completedStep, "skipped");
+    assert.equal(onboardingMetadata.keep, "me", "existing metadata preserved");
+  } finally {
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
   }
 });

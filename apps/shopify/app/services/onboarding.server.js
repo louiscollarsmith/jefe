@@ -30,6 +30,37 @@ export async function completePlanOnboarding(prisma, input) {
 }
 
 /**
+ * Skip the onboarding funnel: mark the shop onboarded now, tagged as a skip, for
+ * a returning/experienced merchant who wants into Jefe without the full
+ * Connect→Channels→Insights→Goals→Plan flow. Mirrors `completePlanOnboarding`
+ * but records `completedSource: "skipped"` so downstream (and analytics) can tell
+ * a skip from a full completion. The post-Connect gate (don't skip before Shopify
+ * is connected — the home would be empty) is enforced at the call site.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string; metadata?: Record<string, unknown> }} input
+ */
+export async function skipOnboarding(prisma, input) {
+  const shop = await prisma.shop.findUniqueOrThrow({
+    where: { id: input.shopId },
+    select: { onboardingMetadata: true },
+  });
+  return prisma.shop.update({
+    where: { id: input.shopId },
+    data: {
+      onboardingCompletedAt: new Date(),
+      onboardingMetadata: /** @type {any} */ (
+        mergeJsonObject(shop.onboardingMetadata, {
+          completedStep: "skipped",
+          completedSource: "skipped",
+          ...(input.metadata ?? {}),
+        })
+      ),
+    },
+  });
+}
+
+/**
  * Record the furthest onboarding step a merchant has reached, so a later visit
  * can resume there instead of resetting to "connect".
  *
