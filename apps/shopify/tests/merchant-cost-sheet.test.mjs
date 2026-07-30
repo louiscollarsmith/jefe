@@ -50,6 +50,25 @@ test("parseCostSheet prefers the specific cost column over a generic one", () =>
   assert.deepEqual(parsed.entries, [{ sku: "A", cost: 7 }]);
 });
 
+test("parseCostSheet parses European decimal-comma formats without mis-scaling Anglo ones", () => {
+  const parsed = parseCostSheet([
+    { sku: "EU1", cost: "1.234,56" }, // European: dot=thousands, comma=decimal
+    { sku: "EU2", cost: "12,50" }, // European decimal comma
+    { sku: "EU3", cost: "€2,05" }, // currency symbol + decimal comma
+    { sku: "UK1", cost: "1,250.00" }, // Anglo: comma=thousands, dot=decimal
+    { sku: "UK2", cost: "1,250" }, // Anglo thousands, no decimal
+    { sku: "PLAIN", cost: "8" },
+  ]);
+  assert.deepEqual(parsed.entries, [
+    { sku: "EU1", cost: 1234.56 },
+    { sku: "EU2", cost: 12.5 },
+    { sku: "EU3", cost: 2.05 },
+    { sku: "UK1", cost: 1250 },
+    { sku: "UK2", cost: 1250 },
+    { sku: "PLAIN", cost: 8 },
+  ]);
+});
+
 test("parseCostSheet is not confident when a required column is missing", () => {
   const noCost = parseCostSheet([{ SKU: "A", Price: "20" }]);
   assert.equal(noCost.confident, false);

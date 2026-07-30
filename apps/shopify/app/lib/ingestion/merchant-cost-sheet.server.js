@@ -61,9 +61,38 @@ function detectColumn(headers, aliases) {
 }
 
 /**
- * Parse a cost cell to a non-negative number. Strips currency symbols and
- * thousands separators; a bare decimal point is kept. Returns null when the cell
- * isn't a usable cost. (European decimal-comma is a documented follow-up.)
+ * Normalize a numeric string's thousands/decimal separators to a JS-parseable form,
+ * handling BOTH Anglo (`1,234.56`) and European (`1.234,56`, `12,50`) formats WITHOUT
+ * guessing on genuinely ambiguous input (getting a cost wrong corrupts the margin
+ * belief, so we only convert when the format is unambiguous):
+ *  - both `.` and `,` present → the RIGHTMOST is the decimal separator, the other is
+ *    the thousands separator (`1.234,56` → `1234.56`; `1,234.56` → `1234.56`).
+ *  - a single `,` followed by exactly two digits, no `.` → a decimal comma (`12,50` →
+ *    `12.50`). Anglo never writes a two-digit thousands group, so this is safe.
+ *  - otherwise commas are treated as thousands and stripped (`1,250` → `1250`); the
+ *    genuinely-ambiguous single-dot case (`1.250`) is left as the Anglo decimal, as before.
+ * @param {string} cleaned  already stripped of everything but digits, '.', ',', '-'
+ */
+function normalizeNumericSeparators(cleaned) {
+  const hasDot = cleaned.includes(".");
+  const hasComma = cleaned.includes(",");
+  if (hasDot && hasComma) {
+    return cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")
+      ? cleaned.replace(/\./g, "").replace(",", ".") // European: comma is decimal
+      : cleaned.replace(/,/g, ""); // Anglo: comma is thousands
+  }
+  if (hasComma) {
+    return /^-?\d+,\d{2}$/.test(cleaned)
+      ? cleaned.replace(",", ".") // decimal comma (12,50)
+      : cleaned.replace(/,/g, ""); // thousands separator(s)
+  }
+  return cleaned;
+}
+
+/**
+ * Parse a cost cell to a non-negative number. Strips currency symbols, then resolves
+ * thousands/decimal separators across Anglo and European formats (see
+ * normalizeNumericSeparators). Returns null when the cell isn't a usable cost.
  * @param {any} raw
  */
 function parseCostValue(raw) {
@@ -73,8 +102,7 @@ function parseCostValue(raw) {
   }
   const cleaned = String(raw).trim().replace(/[^0-9.,-]/g, "");
   if (!cleaned) return null;
-  const normalized = cleaned.replace(/,/g, "");
-  const value = Number(normalized);
+  const value = Number(normalizeNumericSeparators(cleaned));
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
