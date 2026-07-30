@@ -54,6 +54,10 @@ app.get("/terms", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "terms.html"));
 });
 
+app.get("/dpa", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dpa.html"));
+});
+
 app.post("/api/waitlist", async (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 200) || null;
   const email = String(req.body?.email || "").trim().toLowerCase();

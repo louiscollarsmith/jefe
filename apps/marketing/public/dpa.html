@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Data Processing Agreement — Jefe</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/legal.css" />
+</head>
+<body>
+  <nav class="legal-nav">
+    <a class="wordmark" href="/">Jefe</a>
+    <button class="dl" type="button" onclick="window.print()">Download PDF</button>
+  </nav>
+  <main class="legal-wrap">
+    <div class="draft-banner">Draft — pending legal review. This is a starting template, not legal advice; a lawyer should finalise it (in particular the SCC mechanics, audit terms, and Annex details). (Remove this banner + the <code>noindex</code> tag at go-live.)</div>
+
+    <h1>Data Processing Agreement</h1>
+    <p class="updated">Last updated: 30 July 2026</p>
+
+    <p>This Data Processing Agreement ("DPA") forms part of the <a href="/terms">Terms of Service</a> between you, the merchant ("Controller"), and Quiver Solutions Limited (company no. 16961611), 27 Old Gloucester Street, London WC1N 3AX ("Jefe", "Processor", "we"). It governs our processing of personal data relating to your end customers, which we process on your behalf when providing Jefe. Where there is a conflict on data-protection matters, this DPA prevails over the Terms.</p>
+
+    <h2>1. Definitions</h2>
+    <p>"Data Protection Law" means the UK GDPR, the Data Protection Act 2018, and the EU GDPR where applicable. "Personal Data", "Controller", "Processor", "Data Subject", "Processing", and "Personal Data Breach" have the meanings given in that law. "Sub-processor" means a third party we engage to process Personal Data. "Protected Customer Data" means end-customer Personal Data accessed via Shopify's APIs (including name, email, address, phone).</p>
+
+    <h2>2. Roles &amp; scope</h2>
+    <p>For end-customer Personal Data processed through Jefe, you are the Controller and we are the Processor. We process such Personal Data only to provide, secure, and (subject to your instructions and applicable law) improve the service, as described in Annex A. For your own account data, we act as a controller under our <a href="/privacy">Privacy Policy</a>.</p>
+
+    <h2>3. Our obligations as Processor</h2>
+    <p>We will:</p>
+    <ul>
+      <li>process Personal Data only on your documented instructions (including as set out in the Terms, this DPA, and your use of the service), unless required by law (in which case we will inform you unless legally prohibited);</li>
+      <li>ensure persons authorised to process Personal Data are bound by confidentiality;</li>
+      <li>implement appropriate technical and organisational security measures (Annex C), meeting Article 32 of the UK GDPR;</li>
+      <li>engage Sub-processors only as set out in clause 4;</li>
+      <li>taking into account the nature of processing, assist you by appropriate measures to respond to Data Subject requests (access, erasure, portability, etc.);</li>
+      <li>assist you with your obligations on security, breach notification, data protection impact assessments, and prior consultation;</li>
+      <li>at your choice, delete or return Personal Data on termination as set out in clause 8; and</li>
+      <li>make available information necessary to demonstrate compliance with Article 28, and allow for and contribute to audits, subject to reasonable notice, confidentiality, and frequency limits [confirm audit mechanics with legal].</li>
+    </ul>
+
+    <h2>4. Sub-processors</h2>
+    <p>You grant general authorisation for us to engage the Sub-processors listed in Annex B. We impose data-protection obligations on each Sub-processor that are no less protective than this DPA, and remain responsible for their performance. We will give you reasonable prior notice of any intended addition or replacement of a Sub-processor and a reasonable opportunity to object on reasonable data-protection grounds [confirm notice mechanism].</p>
+
+    <h2>5. International transfers</h2>
+    <p>Where we transfer Personal Data outside the UK or EEA, we do so on the basis of an adequacy decision or appropriate safeguards, including the UK International Data Transfer Agreement / Addendum or the EU Standard Contractual Clauses, which are incorporated by reference where applicable. See Annex A/B for regions.</p>
+
+    <h2>6. Security</h2>
+    <p>We maintain the technical and organisational measures in Annex C, and review them periodically. You are responsible for your own configuration and use of the service, and for the security of your Shopify account.</p>
+
+    <h2>7. Personal Data Breach</h2>
+    <p>We will notify you without undue delay after becoming aware of a Personal Data Breach affecting your Personal Data, and provide information reasonably available to help you meet your notification obligations.</p>
+
+    <h2>8. Deletion &amp; return</h2>
+    <p>On termination or on your request, we will delete or return your Personal Data. In practice, uninstalling Jefe triggers Shopify's <code>shop/redact</code> webhook, under which we hard-delete shop-scoped data within approximately 48 hours; individual end-customer records are handled via <code>customers/redact</code>. Encrypted backups age out over our backup-retention window [confirm]. We may retain Personal Data where required by law.</p>
+
+    <h2>9. Liability</h2>
+    <p>Each party's liability under this DPA is subject to the limitations and exclusions in the Terms.</p>
+
+    <h2>10. Governing law</h2>
+    <p>This DPA is governed by the laws of England and Wales, consistent with the Terms.</p>
+
+    <hr />
+    <h2>Annex A — Details of processing</h2>
+    <p><strong>Subject matter:</strong> provision of the Jefe service. <strong>Duration:</strong> the term of the Terms. <strong>Nature &amp; purpose:</strong> building Merchant Memory and generating insights, goals, and recommendations for the Controller; hosting, security, and service improvement. <strong>Types of Personal Data:</strong> end-customer identifiers on orders — name, email, address, phone; order and transaction data. <strong>Categories of Data Subjects:</strong> the Controller's customers and prospective customers. <strong>Regions:</strong> UK, EU, and/or US [confirm Neon + Railway regions]; Google Gemini on Google global infrastructure.</p>
+
+    <h2>Annex B — Sub-processors</h2>
+    <table>
+      <tr><th>Sub-processor</th><th>Purpose</th><th>Location</th></tr>
+      <tr><td>Neon</td><td>Database (Postgres)</td><td>[US / EU — confirm]</td></tr>
+      <tr><td>Railway</td><td>Application hosting</td><td>[US / EU — confirm]</td></tr>
+      <tr><td>Google (Gemini API)</td><td>LLM interpretation (PII-minimised inputs)</td><td>Google global / US</td></tr>
+      <tr><td>Resend</td><td>Transactional email</td><td>EU (eu-west-1)</td></tr>
+      <tr><td>Sentry</td><td>Error monitoring (redacted)</td><td>[confirm]</td></tr>
+      <tr><td>Shopify</td><td>Source platform</td><td>Global</td></tr>
+    </table>
+
+    <h2>Annex C — Technical &amp; organisational measures</h2>
+    <ul>
+      <li>Encryption at rest (AES-256) and in transit (TLS/HTTPS).</li>
+      <li>Access controls limiting staff access to Protected Customer Data; access logging.</li>
+      <li>Separation of test and production data.</li>
+      <li>Incident-response process for security events and Personal Data Breaches.</li>
+      <li>Data-minimisation: only the customer fields needed to provide the service are processed; PII-minimised inputs to the LLM.</li>
+      <li>Deletion honouring Shopify's <code>customers/redact</code>, <code>customers/data_request</code>, and <code>shop/redact</code> webhooks.</li>
+    </ul>
+
+    <div class="legal-foot">© <span id="year"></span> Jefe. See also our <a href="/privacy">Privacy Policy</a> and <a href="/terms">Terms of Service</a>.</div>
+  </main>
+  <script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>
