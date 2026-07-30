@@ -17,7 +17,7 @@
 
 **One-liner (canonical):** *Jefe is the AI eCommerce manager that learns how your Shopify store actually works, finds the next move — and, on your terms, either shows you or handles it.*
 
-**Selling the ramp:** the pitch is not "an advisory tool" — it's *"your eCommerce manager: it learns your business, proves its recommendations, and — mode by mode, on your say-so — takes over the routine work."* The two-mode capability is the product; propose-first is how it rolls out safely.
+**Selling the ramp:** the pitch is not "an advisory tool" — it's *"your eCommerce manager: it learns your business, proves its recommendations, and — on your say-so, mode by mode — acts."* The three-mode capability (recommend / approve-execute / autonomous) is the product; the ramp is the merchant **widening** autonomy — more action types, more autonomous — as trust grows, not advisory-then-action.
 
 **The buyer persona (site language):** "eCommerce manager" — the person who personally runs the store day to day.
 
@@ -92,7 +92,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 - **APPROVED (Matt, 2026-07-29):** Design partners are **free during the program** in exchange for feedback + a testimonial + a commitment to convert at a **founding-partner rate**. This is the plan, not a hypothesis.
 - Anchor on **value vs. a human e-commerce manager/analyst** ($3–6k/mo), not vs. a $19 analytics app.
-- Public tiers (hypothesis): likely **$99–$499/mo** for advisory V1; **autonomy tiers priced higher** as actioning ships (natural expansion path).
+- Public tiers (hypothesis): likely **$99–$499/mo** entry; **higher tiers as autonomy broadens** — more action types + more autonomous mode = the natural expansion path (autonomy is live from day 1, so tiering is by *breadth/mode of action*, not advisory-vs-autonomous).
 - Validate willingness-to-pay in design-partner conversations *before* the App Store listing sets a public price.
 
 ---

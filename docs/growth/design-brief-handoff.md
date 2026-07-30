@@ -13,6 +13,6 @@
 **Deliverables:**
 1. **App icon** — 1200×1200 PNG: the Jefe mark, bold, no text, no Shopify marks, legible at 64px.
 2. **3–6 screenshots** — 1600×900 (16:9), captured from the app on **synthetic seed data** (`tools/synthetic-shopify`), one-line caption each, no PII, chrome cropped: (1) Connect, (2) "What Jefe knows about your business" memory view [hero], (3) Insights, (4) Goals, (5) a Plan with its evidence.
-3. **Feature video / screencast** — 2–3 min (or 3–8 min for the testing field): cold-open "my name is Jefe" → connect → memory builds (the aha) → insight→goal→plan-with-evidence → merchant approves a rec (advisory-now / earns-autonomy) → wordmark + "Join the early access." Warm, unhurried.
+3. **Feature video / screencast** — 2–3 min (or 3–8 min for the testing field): cold-open "my name is Jefe" → connect → memory builds (the aha) → insight→goal→plan-with-evidence → **merchant approves an action and Jefe executes it (e.g. clearance); show the three modes — recommend / approve-execute / autonomous — and that every action is reversible** → wordmark + "Join the early access." Warm, unhurried.
 
-**Do not** invent metrics or overclaim autonomy (advisory today; actioning is earned).
+**Do not** invent metrics. On autonomy, be accurate: Jefe **acts from day 1** in three merchant-chosen modes (recommend / approve-execute / autonomous), every action reversible — don't portray it as advisory-only, and don't imply unsupervised full-autopilot either.
