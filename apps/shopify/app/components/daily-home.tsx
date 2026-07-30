@@ -214,8 +214,8 @@ export function DailyHome({
             <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>What’s missing? What’s annoying? Tell us — we’re building Jefe with you.</div>
               <div style={{ display: "flex", gap: 7 }}>
-                <span style={{ flex: 1, textAlign: "center", fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: 9, borderRadius: 9, cursor: "pointer" }}>Record</span>
-                <span style={{ flex: 1, textAlign: "center", fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 12.5, padding: 9, borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Write</span>
+                <span style={{ ...inertControl, flex: 1, justifyContent: "center" }} aria-disabled="true">Record <SoonTag /></span>
+                <span style={{ ...inertControl, flex: 1, justifyContent: "center" }} aria-disabled="true">Write <SoonTag /></span>
               </div>
             </div>
           </div>
@@ -223,7 +223,7 @@ export function DailyHome({
             <div style={{ ...sectionLabel, color: T.accent }}>Talk to the founders</div>
             <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: 13, display: "flex", flexDirection: "column", gap: 11 }}>
               <div style={{ fontSize: 12.5, lineHeight: 1.4, color: "oklch(0.4 0.015 60)" }}>30 minutes with us, whenever you need it.</div>
-              <span style={{ fontFamily: T.brand, textAlign: "center", background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: 10, borderRadius: 9, cursor: "pointer" }}>Book a slot</span>
+              <span style={{ ...inertControl, justifyContent: "center" }} aria-disabled="true">Book a slot <SoonTag /></span>
             </div>
           </div>
         </div>
@@ -722,15 +722,15 @@ function SettingsTeam() {
           </div>
         ))}
       </SettingCard>
-      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>Routing rules — “over £5k, ask Nadia then tell Sam”, “pricing always goes to Sam”, “urgent on WhatsApp, not Slack” — live here too. Anyone in a shared channel can press a button, but roles are enforced server-side.</div>
-      <div><span style={{ fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: "9px 16px", borderRadius: 9, cursor: "pointer", display: "inline-block" }}>Invite a teammate</span></div>
+      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>Team roles, spend limits and routing rules — “over £5k, ask Nadia then tell Sam”, “pricing always goes to Sam”, “urgent on WhatsApp, not Slack” — are coming soon. When they land, roles will be enforced server-side.</div>
+      <div><span style={inertControl} aria-disabled="true">Invite a teammate <SoonTag /></span></div>
     </>
   );
 }
 
 function SettingsIntegrations({ storeName }: { storeName: string }) {
   const suggested = [
-    { name: "Xero", why: "Three times this week Jefe had to guess at your true margin — Xero closes that gap." },
+    { name: "Xero", why: "When Jefe can't see your true costs it has to estimate margin — Xero closes that gap." },
     { name: "Gmail", why: "Supplier price changes and delays usually land in your inbox first." },
   ];
   const addZones = [
@@ -748,7 +748,7 @@ function SettingsIntegrations({ storeName }: { storeName: string }) {
           <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: T.ink }}>Shopify<span style={{ fontWeight: 400, color: T.muted }}> · {storeName || "your store"}</span></span>
           <ScopePill />
         </SettingRow>
-        <div style={{ padding: "10px 15px", fontSize: 12, color: T.muted }}>Detected on your store: Klaviyo, Recharge, ShipStation. Detection is free — each still needs its own connect before Jefe can read it.</div>
+        <div style={{ padding: "10px 15px", fontSize: 12, color: T.muted }}>Auto-detecting the apps already on your store is coming soon — for now, add the ones you want Jefe to read below.</div>
       </SettingCard>
 
       <div style={sectionLabel}>Jefe suggests</div>
@@ -758,7 +758,7 @@ function SettingsIntegrations({ storeName }: { storeName: string }) {
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: T.ink }}>{s.name}</span>
               <ScopePill />
-              <span style={{ marginLeft: "auto", fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12, padding: "7px 14px", borderRadius: 9, cursor: "pointer" }}>Connect</span>
+              <span style={{ ...inertControl, marginLeft: "auto" }} aria-disabled="true">Connect <SoonTag /></span>
             </div>
             <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>{s.why}</div>
           </div>
@@ -785,7 +785,7 @@ function SettingsDeveloper() {
       <div style={sectionLabel}>MCP server</div>
       <SettingCard>
         <div style={{ padding: "13px 15px", display: "flex", flexDirection: "column", gap: 9 }}>
-          <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>Point any MCP-aware client at Jefe:</div>
+          <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>An MCP server for Jefe is coming soon — you’ll point any MCP-aware client at it like this:</div>
           <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.ink, background: "oklch(0.965 0.005 68)", border: `1px solid ${T.borderSubtle}`, borderRadius: 8, padding: "10px 12px", overflowX: "auto", whiteSpace: "nowrap" }}>claude mcp add jefe --url https://mcp.jefe.app</div>
         </div>
       </SettingCard>
@@ -809,7 +809,7 @@ function SettingsDeveloper() {
       <SettingCard>
         <div style={{ padding: "13px 15px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ flex: 1, fontSize: 12.5, color: T.muted }}>No keys yet. A key can never do more than the person who created it.</span>
-          <span style={{ fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 12.5, padding: "8px 15px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Create key</span>
+          <span style={inertControl} aria-disabled="true">Create key <SoonTag /></span>
         </div>
       </SettingCard>
     </>
