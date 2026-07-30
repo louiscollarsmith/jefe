@@ -701,6 +701,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         memory,
         metrics,
         recommendation: plan?.selectedRun?.recommendation ?? null,
+        // Seam for the generic "suggested action" advisory card (Jefe's first
+        // visible action). chat 4 binds this to the LLM plan-rec + typed
+        // primitive; null renders nothing, so the card stays inert until bound.
+        suggestedAction: null as
+          | import("../components/daily-home").SuggestedAction
+          | null,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
       };
@@ -980,6 +986,7 @@ export default function AppIndex() {
           metrics={data.metrics}
           memory={data.memory}
           recommendation={data.recommendation}
+          suggestedAction={data.suggestedAction}
           insights={data.insights}
           goals={data.goals}
         />

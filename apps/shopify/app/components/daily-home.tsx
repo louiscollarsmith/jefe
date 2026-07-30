@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Form } from "react-router";
 
 // Real, data-driven Jefe "Daily" home (design screen 5a), rendered post-onboarding
 // inside the Shopify admin. Wired to actual merchant data — store metrics, the real
@@ -139,6 +140,7 @@ export function DailyHome({
   metrics,
   memory,
   recommendation,
+  suggestedAction = null,
   insights,
   goals,
 }: {
@@ -147,6 +149,7 @@ export function DailyHome({
   metrics: Metrics;
   memory: MemoryView;
   recommendation: Recommendation;
+  suggestedAction?: SuggestedAction | null;
   insights: Insight[];
   goals: Goal[];
 }) {
@@ -181,7 +184,7 @@ export function DailyHome({
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${T.borderSubtle}` }}>
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "24px 26px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
           {section === "brief" ? (
-            <BriefContent storeName={storeName} metrics={metrics} memory={memory} recommendation={recommendation} goals={goals} cur={cur} />
+            <BriefContent storeName={storeName} metrics={metrics} memory={memory} recommendation={recommendation} suggestedAction={suggestedAction} goals={goals} cur={cur} />
           ) : section === "queue" ? (
             <QueueSection recommendation={recommendation} insights={insights} waitingCount={waitingCount} />
           ) : section === "horizon" ? (
@@ -335,11 +338,71 @@ function ScopePill({ acts }: { acts?: boolean }) {
 // BRIEF (default) — unchanged from the original 5a build
 // ---------------------------------------------------------------------------
 
+// A GENERIC "action Jefe suggests" advisory card. Renders ANY action the LLM
+// proposes from memory (dead-stock clearance is the first thing through it, but
+// this is deliberately NOT bound to any per-action shaper — one action ontology,
+// per the autonomy-from-install direction). `executable:false` (execution still
+// dark) → advisory only, NO live Approve button (honest, the #17 principle).
+// `executable:true` → the real Approve→execute trigger appears; the route
+// `action.approve` handler + the typed reversible adapter that actually changes
+// the store is the execution lane (chat 4) — the shape's execute contract
+// (intent + action reference) is finalised with that binding.
+export type SuggestedAction = {
+  headline: string;
+  keyNumbers?: Array<{ label: string; value: string }>;
+  topItems?: Array<{ title: string; detail?: string }>;
+  executable: boolean;
+};
+
+function SuggestedActionCard({ action }: { action: SuggestedAction }) {
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.navy}`, borderRadius: 15, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: T.mono, fontSize: 9, letterSpacing: "1.1px", textTransform: "uppercase", fontWeight: 500, color: "oklch(0.4 0.08 262)", background: T.navyTint, padding: "3px 7px", borderRadius: 5 }}>Jefe suggests</span>
+      </div>
+      <div style={{ fontSize: 15, lineHeight: 1.4, color: T.ink, fontWeight: 600 }}>{action.headline}</div>
+      {action.keyNumbers?.length ? (
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          {action.keyNumbers.map((n) => (
+            <div key={n.label}>
+              <div style={label}>{n.label}</div>
+              <div style={{ fontFamily: T.serif, fontSize: 18 }}>{n.value}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {action.topItems?.length ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {action.topItems.slice(0, 3).map((it, i) => (
+            <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>
+              <strong style={{ color: T.ink }}>{it.title}</strong>
+              {it.detail ? ` — ${it.detail}` : ""}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {action.executable ? (
+        <div style={{ marginTop: 2 }}>
+          <Form method="post">
+            <input type="hidden" name="intent" value="action.approve" />
+            <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, border: "none", cursor: "pointer" }}>Approve →</button>
+          </Form>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, lineHeight: 1.5, color: T.muted, fontStyle: "italic" }}>
+          Advisory for now — Jefe will action this for you once execution is switched on.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BriefContent({
   storeName,
   metrics,
   memory,
   recommendation,
+  suggestedAction,
   goals,
   cur,
 }: {
@@ -347,6 +410,7 @@ function BriefContent({
   metrics: Metrics;
   memory: MemoryView;
   recommendation: Recommendation;
+  suggestedAction: SuggestedAction | null;
   goals: Goal[];
   cur: string;
 }) {
@@ -409,6 +473,7 @@ function BriefContent({
             No move waiting on you right now — Jefe is lining up your next recommendation from the latest data.
           </div>
         )}
+        {suggestedAction ? <SuggestedActionCard action={suggestedAction} /> : null}
       </div>
 
       {/* What Jefe knows — real beliefs */}
