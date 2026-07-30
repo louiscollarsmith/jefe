@@ -18,6 +18,7 @@ import http from "node:http";
 import pg from "pg";
 
 import {
+  churnReasonLabel,
   esc,
   fmtMs,
   money,
@@ -153,7 +154,61 @@ async function queryOverview() {
         count(*) FILTER (WHERE (properties->>'reachedMemory')::boolean)::int reached_memory
       FROM activity_events WHERE type = 'shop_uninstalled'`)
   ).rows[0];
-  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, costTrend, activityTrend };
+
+  // Uninstall-reason breakdown — the LATEST win-back-feedback answer per shop
+  // (email scanners may pre-tap several links, so last write wins). Empty until
+  // the farewell email (ENABLE_EMAIL) starts sending feedback links. (obs #17)
+  const churnReasons = (
+    await pool.query(`
+      SELECT reason, count(*)::int n FROM (
+        SELECT DISTINCT ON (shop_id) properties->>'reason' AS reason
+          FROM activity_events
+         WHERE type = 'shop_uninstall_feedback' AND shop_id IS NOT NULL
+         ORDER BY shop_id, created_at DESC
+      ) latest
+      WHERE reason IS NOT NULL
+      GROUP BY reason ORDER BY n DESC`)
+  ).rows;
+
+  // Portfolio LLM spend by feature · 7d — which features drive inference cost
+  // (informs the provider-cost / margin lever). (obs #20)
+  const costByFeature = (
+    await pool.query(`
+      SELECT feature, coalesce(sum(cost_usd), 0)::float cost, count(*)::int calls
+        FROM llm_usage_event
+       WHERE created_at >= now() - interval '7 days'
+       GROUP BY feature ORDER BY cost DESC`)
+  ).rows;
+
+  // Margin per client (indicative): net revenue − COGS − LLM cost, with COGS
+  // coverage so a shop with patchy unit costs isn't shown a falsely-precise
+  // margin. Same shape as the per-merchant view, aggregated across shops. (obs #20)
+  const marginList = (
+    await pool.query(`
+      WITH rev AS (SELECT shop_id, sum(total_price)::float revenue, count(*)::int orders FROM orders GROUP BY shop_id),
+           refunded AS (SELECT shop_id, sum(amount)::float refunds FROM refunds GROUP BY shop_id),
+           cogs AS (SELECT oli.shop_id,
+                           sum(oli.quantity * v.unit_cost)::float cogs,
+                           sum(CASE WHEN v.unit_cost IS NOT NULL THEN oli.quantity*oli.unit_price ELSE 0 END)::float covered_rev,
+                           sum(oli.quantity*oli.unit_price)::float line_rev
+                      FROM order_line_items oli LEFT JOIN variants v ON v.id = oli.variant_id
+                     GROUP BY oli.shop_id),
+           llm AS (SELECT shop_id, sum(cost_usd)::float llm_cost FROM llm_usage_event GROUP BY shop_id)
+      SELECT s.shop_domain,
+             coalesce(rev.revenue,0)::float revenue, coalesce(rev.orders,0)::int orders,
+             coalesce(refunded.refunds,0)::float refunds,
+             coalesce(cogs.cogs,0)::float cogs, coalesce(cogs.covered_rev,0)::float covered_rev,
+             coalesce(cogs.line_rev,0)::float line_rev, coalesce(llm.llm_cost,0)::float llm_cost
+        FROM shops s
+        LEFT JOIN rev      ON rev.shop_id      = s.id
+        LEFT JOIN refunded ON refunded.shop_id = s.id
+        LEFT JOIN cogs     ON cogs.shop_id     = s.id
+        LEFT JOIN llm      ON llm.shop_id      = s.id
+       WHERE coalesce(rev.orders,0) > 0
+       ORDER BY revenue DESC LIMIT 15`)
+  ).rows;
+
+  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, costTrend, activityTrend };
 }
 
 function renderOverview(o) {
@@ -184,7 +239,53 @@ function renderOverview(o) {
       <div class="panel"><div class="ph">Activity · 14d</div>${sparkline(o.activityTrend || [])}<div class="pn">${activityTotal} events</div></div>
       <div class="panel"><div class="ph">LLM cost · 14d</div>${sparkline(o.costTrend || [], { stroke: "#7c5cff" })}<div class="pn">$${costTotal.toFixed(4)} est.</div></div>
     </div>`;
-  return `<div class="tiles">${tileHtml}</div>${strip}`;
+
+  // Portfolio LLM spend by feature · 7d + uninstall-reason breakdown (obs #20/#17).
+  const featureRows = (o.costByFeature || []).length
+    ? o.costByFeature
+        .map(
+          (f) =>
+            `<tr><td>${esc(f.feature)}</td><td>$${Number(f.cost).toFixed(4)}</td><td>${f.calls}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td class="muted">No LLM usage · 7d.</td><td></td><td></td></tr>`;
+  const reasonTotal = (o.churnReasons || []).reduce((a, r) => a + Number(r.n), 0);
+  const reasonRows = reasonTotal
+    ? o.churnReasons
+        .map(
+          (r) => `<tr><td>${esc(churnReasonLabel(r.reason))}</td><td>${r.n}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td class="muted">No uninstall feedback yet.</td><td></td></tr>`;
+  const breakdown = `<div class="panels">
+      <div class="panel"><div class="ph">LLM cost by feature · 7d</div><table class="mini"><tbody>${featureRows}</tbody></table></div>
+      <div class="panel"><div class="ph">Why they left · latest per shop</div><table class="mini"><tbody>${reasonRows}</tbody></table></div>
+    </div>`;
+
+  // Margin per client (indicative) — net revenue − COGS − LLM cost, coverage-gated (obs #20).
+  let anyIndicative = false;
+  const marginRows = (o.marginList || []).length
+    ? o.marginList
+        .map((r) => {
+          const netRev = Number(r.revenue || 0) - Number(r.refunds || 0);
+          const coverage =
+            Number(r.line_rev || 0) > 0
+              ? Math.round((Number(r.covered_rev || 0) / Number(r.line_rev)) * 100)
+              : 0;
+          const margin = netRev - Number(r.cogs || 0) - Number(r.llm_cost || 0);
+          const marginPct = netRev > 0 ? Math.round((margin / netRev) * 100) : null;
+          if (coverage < 70) anyIndicative = true;
+          const flag = coverage < 70 ? "*" : "";
+          const n0 = (x) => Number(x).toLocaleString("en-US", { maximumFractionDigits: 0 });
+          return `<tr><td><a class="mlink" href="/merchant?shop=${encodeURIComponent(r.shop_domain)}">${esc(r.shop_domain)}</a></td><td>$${n0(netRev)}</td><td>${r.orders}</td><td>${coverage}%</td><td>$${Number(r.llm_cost || 0).toFixed(4)}</td><td>$${n0(margin)}${flag}${marginPct == null ? "" : ` <span class="muted">${marginPct}%</span>`}</td></tr>`;
+        })
+        .join("")
+    : `<tr><td class="empty" colspan="6">No merchants with orders yet.</td></tr>`;
+  const marginTable = `<div style="color:#8b909a;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin:18px 0 6px">Margin by client · indicative</div>
+    <table><thead><tr><th>Client</th><th>Net rev.</th><th>Orders</th><th>COGS cov.</th><th>LLM cost</th><th>Margin</th></tr></thead><tbody>${marginRows}</tbody></table>
+    ${anyIndicative ? `<div class="note">* COGS coverage &lt; 70% — margin is overstated (missing unit costs make true cost lower than shown); LLM cost uses placeholder pricing.</div>` : ""}`;
+
+  return `<div class="tiles">${tileHtml}</div>${strip}${breakdown}${marginTable}`;
 }
 
 function page(body) {
@@ -389,7 +490,21 @@ async function queryMerchant(shopDomain) {
       ).rows.map((r) => Number(r.v))
     : new Array(14).fill(0);
 
-  return { shop, events, cost, costByFeature, margin, currency, eventSpark, costSpark };
+  // Latest uninstall-feedback reason for this shop (if they answered the
+  // farewell email) — folded onto the churn record in the header. (obs #17)
+  const churnReason = shopId
+    ? (
+        await pool.query(
+          `SELECT properties->>'reason' AS reason
+             FROM activity_events
+            WHERE type = 'shop_uninstall_feedback' AND shop_id = $1
+            ORDER BY created_at DESC LIMIT 1`,
+          [shopId],
+        )
+      ).rows[0]?.reason || null
+    : null;
+
+  return { shop, events, cost, costByFeature, margin, currency, eventSpark, costSpark, churnReason };
 }
 
 function renderMerchant(data, shopDomain) {
@@ -474,7 +589,7 @@ function renderMerchant(data, shopDomain) {
   return page(`
     <header>
       <h1>Jefe · Merchant</h1>
-      <span class="muted">${esc(shopDomain)}${churned ? ' · <span class="pill warn">churned</span>' : ""}</span>
+      <span class="muted">${esc(shopDomain)}${churned ? ` · <span class="pill warn">churned</span>${data.churnReason ? ` · said: ${esc(churnReasonLabel(data.churnReason))}` : ""}` : ""}</span>
       <a class="clear" href="/" style="margin-left:auto">← All activity</a>
     </header>
     <div class="tiles">${tiles}</div>

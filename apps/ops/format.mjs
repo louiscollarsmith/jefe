@@ -69,3 +69,23 @@ export function sparkline(values, opts = {}) {
     .join(" ");
   return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
+
+// Uninstall-feedback reason codes → labels. MIRROR of FEEDBACK_REASONS in
+// apps/shopify/app/lib/email/feedback.server.js — the codes are LOCKED and
+// shared (farewell-email template ↔ this ops readback). Edit both together,
+// never one alone.
+const CHURN_REASON_LABELS = {
+  too_early: "Too early for us",
+  no_value: "Didn't see the value",
+  too_complex: "Too complex",
+  broke: "Something broke",
+};
+
+/**
+ * Human label for an uninstall-feedback reason code. Unknown/empty codes fall
+ * back to the raw code (or an em dash) so a newly-added code still renders
+ * something rather than blanking out.
+ */
+export function churnReasonLabel(code) {
+  return CHURN_REASON_LABELS[code] || code || "—";
+}

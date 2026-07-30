@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  churnReasonLabel,
   esc,
   fmtMs,
   money,
@@ -87,4 +88,15 @@ test("sparkline: honours width/height/stroke overrides", () => {
   assert.match(svg, /width="100"/);
   assert.match(svg, /height="20"/);
   assert.match(svg, /stroke="#ff0000"/);
+});
+
+test("churnReasonLabel: known codes map to labels; unknown/empty fall back", () => {
+  assert.equal(churnReasonLabel("too_early"), "Too early for us");
+  assert.equal(churnReasonLabel("no_value"), "Didn't see the value");
+  assert.equal(churnReasonLabel("too_complex"), "Too complex");
+  assert.equal(churnReasonLabel("broke"), "Something broke");
+  // Unknown code renders itself (forward-compatible), null/empty → em dash.
+  assert.equal(churnReasonLabel("brand_new_reason"), "brand_new_reason");
+  assert.equal(churnReasonLabel(null), "—");
+  assert.equal(churnReasonLabel(""), "—");
 });
