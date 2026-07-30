@@ -15,8 +15,16 @@
 // SSO is a documented upgrade.
 
 import http from "node:http";
-import crypto from "node:crypto";
 import pg from "pg";
+
+import {
+  esc,
+  fmtMs,
+  money,
+  optionList,
+  safeEqual,
+  sparkline,
+} from "./format.mjs";
 
 const { Pool } = pg;
 const pool = new Pool({
@@ -30,36 +38,6 @@ const OPS_PASSWORD = process.env.OPS_PASSWORD || "";
 const OPS_PUBLIC = process.env.OPS_PUBLIC === "true";
 const PORT = Number(process.env.PORT) || 4000;
 const WINDOWS = { "24": "24h", "168": "7d", "720": "30d", "2160": "90d" };
-
-/** @param {string} value */
-function esc(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-const CCY = { GBP: "£", USD: "$", EUR: "€", CAD: "C$", AUD: "A$" };
-/** Money with the store's currency symbol (0 dp — these are portfolio-level). */
-function money(n, ccy) {
-  const sym = CCY[ccy] || (ccy ? `${ccy} ` : "");
-  return `${sym}${Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-}
-
-/** Human latency: ms under 1s, else seconds. */
-function fmtMs(ms) {
-  if (ms == null) return "—";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-}
-
-/** Timing-safe string compare. */
-function safeEqual(a, b) {
-  const ab = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  if (ab.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ab, bb);
-}
 
 function isAuthed(req) {
   if (!OPS_PASSWORD) return false; // fail closed until configured
@@ -114,15 +92,6 @@ async function queryEvents(params) {
     types: types.rows.map((r) => r.type),
     hours,
   };
-}
-
-function optionList(values, selected) {
-  return values
-    .map(
-      (v) =>
-        `<option value="${esc(v)}"${v === selected ? " selected" : ""}>${esc(v)}</option>`,
-    )
-    .join("");
 }
 
 /** Top-of-page funnel + engagement + cost snapshot. */
@@ -318,25 +287,6 @@ function renderDashboard(data, params) {
       <a class="clear" href="/">Clear</a>
     </form>
     ${table}`);
-}
-
-/** Tiny inline-SVG sparkline (self-contained; no external libs). */
-function sparkline(values, opts = {}) {
-  const w = opts.w ?? 170;
-  const h = opts.h ?? 34;
-  const stroke = opts.stroke ?? "#2d6cdf";
-  if (!values || !values.length) return "";
-  const max = Math.max(...values.map(Number), 1);
-  const n = values.length;
-  const dx = n > 1 ? w / (n - 1) : 0;
-  const pts = values
-    .map((v, idx) => {
-      const x = Math.round(idx * dx);
-      const y = Math.round(h - 2 - (Number(v) / max) * (h - 4));
-      return `${x},${y}`;
-    })
-    .join(" ");
-  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 /** One merchant's shop state, event timeline, LLM cost, and 14-day sparklines. */

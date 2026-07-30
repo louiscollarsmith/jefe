@@ -5,7 +5,8 @@
   "description": "Jefe internal observability panel — a separate, gated ops app (never merchant-facing).",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node server.mjs"
+    "dev": "node server.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
