@@ -79,6 +79,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ## 4. Current commercial status
 
+- **⭐ Beachhead (2026-07-30): Quiver's own customers.** Jefe is **incubated inside Quiver** and ships first to Quiver's existing e-commerce customers, then spins out as its own company. **212 warm Quiver customers + 2,486 brand relationships** (surfaced from the founder's Gmail CRM) power Stages 1→10 and 10→100 — *warm, not cold*, which pulls the first-client timeline sharply forward. Model + lists: [target-lists.md](target-lists.md).
 - **Stage:** 0 → 10 (design partners / concierge). See [growth-strategy.md](growth-strategy.md).
 - **Distribution live:** waitlist site at mynamejefe.com (Design Partner Program, "first 100 e-commerce managers"). Signups stored in `waitlist_signups` (Neon).
 - **App Store:** not yet listed. Pre-launch.
@@ -126,6 +127,7 @@ The commercial funnel sits on top of the product onboarding funnel (Connect → 
 
 ## Changelog
 
+- **2026-07-30** — Beachhead reframe: Jefe incubated inside **Quiver**, shipping first to Quiver's own e-commerce customers (212 warm customers + 2,486 relationships from the Gmail CRM) → warm wedge, not cold. Added [target-lists.md](target-lists.md) (conversion-factor sizing model + status). Overnight sweeps populating the lists.
 - **2026-07-29 (pm)** — Matt delegated the ICP; **reframed single-market → single-store** (international/multi-currency is table stakes on Shopify → first-class now, not a segmentation axis; multi-*store* deferred to 100→1000). Green-lit chat 4 to re-rank. Aligned §1 positioning to the sharpened product narrative (Merchant Memory = substrate; destination = Jefe operating as eCommerce manager with autonomy earned per action type; advisory-V1 is a safety posture, not the endpoint). Confirmed transactional sender `Hola <hola@mynamejefe.com>` + Reply-To `matt@`.
 - **2026-07-29 (am)** — Matt approved design-partner pricing (free-in-program + founding rate) and the growth subdomain *in principle* (execution deferred to 10→100 — Resend's 1-domain plan needs an upgrade, and 0→10 outreach is 1:1 anyway). Shipped the commercial tracker v0 (`apps/growth`, ICP triage over `waitlist_signups`) and the build-vs-buy tooling view ([growth-stack.md](growth-stack.md)).
 - **2026-07-28** — Doc created (chat 6). Set working ICP, positioning one-liner, draft activation definition, pricing hypothesis, deliverability plan. Steered chat 4 on memory build order. Stage = 0→10.
