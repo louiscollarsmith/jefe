@@ -7,6 +7,7 @@ import {
   computeClearanceAutoEligibility,
   enforceBlastRadiusCap,
   isClearanceExecuteEnabled,
+  revertClearance,
 } from "../app/lib/actions/clearance-adapter.server.js";
 
 const sampleProposal = {
@@ -88,6 +89,83 @@ test("applyClearance writes via the injected client only when enabled (mock, no 
       { variantId: "v1", price: 70 },
       { variantId: "v2", price: 45 },
     ]);
+  } finally {
+    if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
+    else process.env.CLEARANCE_EXECUTE_ENABLED = prev;
+  }
+});
+
+test("revertClearance requires an injected client (cannot fire unwired)", async () => {
+  const preview = buildClearancePreview(sampleProposal);
+  await assert.rejects(
+    () => revertClearance(null, preview.reversibilityPlan),
+    /injected shopifyClient/,
+  );
+});
+
+test("revertClearance restores prices from the plan, skipping malformed entries", async () => {
+  const calls = [];
+  const mockClient = {
+    updateVariantPrice: async (variantId, price) => {
+      calls.push({ variantId, price });
+    },
+  };
+  const result = await revertClearance(mockClient, [
+    { variantId: "v1", restorePrice: 100 },
+    { variantId: "v2", restorePrice: 50 },
+    { variantId: "v3", restorePrice: 0 }, // malformed (non-positive) -> skipped, not guessed
+    { restorePrice: 20 }, // malformed (no variantId) -> skipped
+  ]);
+  assert.equal(result.restoredCount, 2);
+  assert.equal(result.skippedCount, 2);
+  assert.deepEqual(calls, [
+    { variantId: "v1", price: 100 },
+    { variantId: "v2", price: 50 },
+  ]);
+});
+
+test("revert is NOT gated on the enable flag (undo must not be trappable)", async () => {
+  // Even with execution disabled, an applied clearance must be reversible.
+  const prev = process.env.CLEARANCE_EXECUTE_ENABLED;
+  try {
+    delete process.env.CLEARANCE_EXECUTE_ENABLED; // feature off
+    assert.equal(isClearanceExecuteEnabled(), false);
+    const calls = [];
+    const mockClient = { updateVariantPrice: async (id, price) => calls.push({ id, price }) };
+    const result = await revertClearance(mockClient, [{ variantId: "v1", restorePrice: 100 }]);
+    assert.equal(result.restoredCount, 1);
+    assert.deepEqual(calls, [{ id: "v1", price: 100 }]);
+  } finally {
+    if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
+    else process.env.CLEARANCE_EXECUTE_ENABLED = prev;
+  }
+});
+
+test("apply -> revert round-trips a store back to its original prices", async () => {
+  const preview = buildClearancePreview(sampleProposal);
+  // A tiny in-memory "store": variantId -> current price, seeded at the originals.
+  const store = new Map([
+    ["v1", 100],
+    ["v2", 50],
+  ]);
+  const mockClient = {
+    updateVariantPrice: async (variantId, price) => {
+      store.set(variantId, price);
+    },
+  };
+  const prev = process.env.CLEARANCE_EXECUTE_ENABLED;
+  try {
+    process.env.CLEARANCE_EXECUTE_ENABLED = "true";
+    const applied = await applyClearance(mockClient, preview);
+    // After apply: marked down.
+    assert.equal(store.get("v1"), 70);
+    assert.equal(store.get("v2"), 45);
+    // Revert using the plan the apply returned.
+    const reverted = await revertClearance(mockClient, applied.reversibilityPlan);
+    assert.equal(reverted.restoredCount, 2);
+    // Store is byte-for-byte back to where it started.
+    assert.equal(store.get("v1"), 100);
+    assert.equal(store.get("v2"), 50);
   } finally {
     if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
     else process.env.CLEARANCE_EXECUTE_ENABLED = prev;

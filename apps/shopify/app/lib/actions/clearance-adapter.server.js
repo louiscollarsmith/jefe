@@ -150,3 +150,43 @@ export async function applyClearance(shopifyClient, preview, options = {}) {
     reversibilityPlan: preview.reversibilityPlan,
   };
 }
+
+/**
+ * Reverse an applied clearance — restore each variant to the price captured in the
+ * reversibility plan. This is what makes "reversible" a real guarantee rather than
+ * a stored intention: the plan is only meaningful if there is an operation that
+ * executes it.
+ *
+ * ⚠️ Also a Shopify write path, but deliberately **not** gated on
+ * `CLEARANCE_EXECUTE_ENABLED`: the undo must never be harder to reach than the
+ * action it undoes, or disabling the feature after a run would trap a merchant in a
+ * clearance they can't reverse. It stays safe because (a) it requires an injected
+ * `shopifyClient`, so it cannot fire unwired or by accident, and (b) it only ever
+ * *restores* prices from a plan — it can't set an arbitrary price — so it always
+ * returns the store to a prior, known-good state. Idempotent per
+ * variant+restore-price. Skips malformed plan entries rather than guessing.
+ * @param {{ updateVariantPrice: (variantId: string, price: number) => Promise<unknown> }} shopifyClient
+ * @param {Array<{ variantId: string; restorePrice: number }>} reversibilityPlan
+ */
+export async function revertClearance(shopifyClient, reversibilityPlan) {
+  if (!shopifyClient || typeof shopifyClient.updateVariantPrice !== "function") {
+    throw new Error("Clearance reversal requires an injected shopifyClient.");
+  }
+  const restored = [];
+  const skipped = [];
+  for (const entry of reversibilityPlan ?? []) {
+    const price = round2(entry?.restorePrice);
+    if (!entry?.variantId || !(price > 0)) {
+      skipped.push({ variantId: entry?.variantId ?? null, reason: "malformed_plan_entry" });
+      continue;
+    }
+    await shopifyClient.updateVariantPrice(entry.variantId, price);
+    restored.push({ variantId: entry.variantId, restorePrice: price });
+  }
+  return {
+    restored,
+    restoredCount: restored.length,
+    skipped,
+    skippedCount: skipped.length,
+  };
+}
