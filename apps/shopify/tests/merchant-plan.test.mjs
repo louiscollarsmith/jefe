@@ -218,6 +218,49 @@ test("Plan structured validation rejects unsupported IDs, generic plans and miss
   assert.equal(goalGroundedNumber.ok, true);
 });
 
+test("Plan validation attaches a registry-valid actionIntent, drops unknown, tolerates none", () => {
+  const base = planOutputFixture();
+  // Registry-valid intent → normalized onto the recommendation (magnitude → params).
+  const withIntent = parseAndValidateMerchantPlanOutput(
+    {
+      ...base,
+      selectedRecommendation: {
+        ...base.selectedRecommendation,
+        actionIntent: {
+          actionType: "price_markdown",
+          targetKind: "dead_stock",
+          markdownPercent: 30,
+          rationale: "Free the trapped cash",
+        },
+      },
+    },
+    validationContext(),
+  );
+  assert.equal(withIntent.ok, true);
+  assert.equal(withIntent.recommendation.actionIntent.actionType, "price_markdown");
+  assert.equal(withIntent.recommendation.actionIntent.targetKind, "dead_stock");
+  assert.deepEqual(withIntent.recommendation.actionIntent.params, { markdownPercent: 30 });
+
+  // Unknown capability → dropped to null; the plan itself still validates (advisory).
+  const bogus = parseAndValidateMerchantPlanOutput(
+    {
+      ...base,
+      selectedRecommendation: {
+        ...base.selectedRecommendation,
+        actionIntent: { actionType: "wire_money", targetKind: "bank" },
+      },
+    },
+    validationContext(),
+  );
+  assert.equal(bogus.ok, true);
+  assert.equal(bogus.recommendation.actionIntent, null);
+
+  // Absent → null; the plan validates.
+  const none = parseAndValidateMerchantPlanOutput(base, validationContext());
+  assert.equal(none.ok, true);
+  assert.equal(none.recommendation.actionIntent, null);
+});
+
 test("getLatestMerchantPlan reads the latest completed run without a snapshot or queueing", async () => {
   const calls = [];
   // Mock prisma implements ONLY merchantPlanRun.findFirst. If the reader tried
@@ -353,6 +396,92 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
   }
 });
 
+test("Plan generation emits the plan-rec actionIntent → a proposed clearance row (no store write)", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Plan persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createPlanFixture(prisma, suffix);
+    // Seed one dead-stock variant: ACTIVE product, stock on hand, a known unit cost,
+    // and NO sales in the window → a real, safe clearance opportunity for the emit.
+    const product = await prisma.product.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        externalId: `deadprod-${suffix}`,
+        title: "Dusty Parka",
+        status: "ACTIVE",
+        variants: {
+          create: [
+            { merchantId: merchant.id, shopId: shop.id, externalId: `deadvar-${suffix}`, sku: "DEAD", price: "200.00", unitCost: "80.00" },
+          ],
+        },
+      },
+      include: { variants: true },
+    });
+    await prisma.inventoryLevel.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        variantId: product.variants[0].id,
+        inventoryItemExternalId: `ii-dead-${suffix}`,
+        locationExternalId: "loc-1",
+        available: 10,
+      },
+    });
+
+    const queued = await ensureMerchantPlanQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    const snapshot = queued.snapshot.snapshot;
+    await generateMerchantPlan(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      runId: queued.run.id,
+      llmProvider: createMockLlmProvider({
+        operation: planOutputFixture({
+          beliefId: snapshot.beliefs[0].id,
+          insightId: snapshot.insights[0].id,
+          goalId: snapshot.goals[0].id,
+          supportingGoalId: snapshot.goals[1].id,
+          // Jefe (the LLM) decides to recommend clearance from memory — the emit.
+          actionIntent: { actionType: "price_markdown", targetKind: "dead_stock", markdownPercent: 30 },
+        }),
+      }),
+      logger: silentLogger,
+    });
+
+    const proposed = await prisma.actionExecution.findFirst({
+      where: { merchantId: merchant.id, shopId: shop.id, status: "proposed" },
+    });
+    assert.ok(proposed, "the emit created a proposed action row");
+    assert.equal(proposed.actionType, "price_markdown");
+    assert.equal(proposed.actionKind, "dead_stock_clearance");
+    assert.equal(proposed.resolvedMode, "approve"); // default dial → propose-first, never auto
+    assert.equal(proposed.proposalSummary.variantCount, 1);
+    assert.equal(Number(proposed.proposalSummary.totalTrappedCapital), 800); // 10 units × £80 cost
+  } finally {
+    // ActionExecution has no merchant FK cascade → clean it up explicitly first.
+    const leftover = await prisma.merchant.findFirst({
+      where: { name: `Merchant Plan Test ${suffix}` },
+    });
+    if (leftover) {
+      await prisma.actionExecution.deleteMany({ where: { merchantId: leftover.id } });
+    }
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Plan Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("Plan refinement records evidence, marks the current Plan and queues regeneration", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Plan persistence tests");
@@ -434,6 +563,7 @@ function planOutputFixture({
   insightId = "insight-1",
   goalId = "goal-3",
   supportingGoalId = "goal-6",
+  actionIntent,
 } = {}) {
   return {
     candidates: [
@@ -442,6 +572,7 @@ function planOutputFixture({
       candidateFixture("candidate_3", "Check stock for proven products", beliefId, insightId),
     ],
     selectedRecommendation: {
+      ...(actionIntent ? { actionIntent } : {}),
       candidateId: "candidate_1",
       title: "Send a focused reorder nudge",
       summary:

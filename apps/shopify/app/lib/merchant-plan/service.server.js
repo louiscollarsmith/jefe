@@ -5,6 +5,8 @@ import { createLlmProvider } from "../llm/provider.server.js";
 import { recordEvidence } from "../merchant-memory/service.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
+import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
+import { isClearanceExecuteEnabled } from "../actions/clearance-adapter.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
 import {
   MERCHANT_PLAN_JOB_TYPE,
@@ -295,6 +297,19 @@ export async function generateMerchantPlan(prisma, input) {
       });
     });
 
+    // Emit any action-intent the plan-rec carried into the typed action lane — Jefe
+    // deciding, FROM MEMORY, to offer a concrete move (dead-stock clearance is the first
+    // through it). The primitive re-resolves the intent against live memory and computes
+    // floored/capped params, so it proposes only a real, safe opportunity — and writes
+    // nothing external (execution stays behind CLEARANCE_EXECUTE_ENABLED). Best-effort +
+    // OUTSIDE the plan transaction: a failure here never fails plan generation.
+    await maybeEmitPlanAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      intent: recommendation.actionIntent,
+      logger,
+    });
+
     logger.info("Merchant Plan generated", {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -314,6 +329,41 @@ export async function generateMerchantPlan(prisma, input) {
       },
     });
     throw error;
+  }
+}
+
+/**
+ * Hand a plan-rec's optional action-intent to the typed action lane. The intent is
+ * advisory (the LLM picked the verb); proposeActionFromIntent re-resolves it against
+ * live memory and computes floored + capped parameters, creating a `proposed` row only
+ * when there is a real, safe opportunity. Nothing external is written — execution stays
+ * behind CLEARANCE_EXECUTE_ENABLED. Best-effort: never throws into plan generation.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; intent: any; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, logger }) {
+  if (!intent) return;
+  try {
+    const result = await proposeActionFromIntent(prisma, {
+      merchantId,
+      shopId,
+      intent,
+      writeEnabled: isClearanceExecuteEnabled(),
+    });
+    logger.info("Plan emitted an action-intent", {
+      merchantId,
+      shopId,
+      actionType: intent.actionType,
+      status: result.status,
+      runId: result.execution?.runId ?? null,
+    });
+  } catch (error) {
+    logger.error("Plan action-intent emit failed (non-fatal)", {
+      merchantId,
+      shopId,
+      actionType: intent?.actionType ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

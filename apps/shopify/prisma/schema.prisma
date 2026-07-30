@@ -1052,6 +1052,7 @@ model ActionExecution {
   appliedAt         DateTime?              @map("applied_at") @db.Timestamptz(6)
   revertedAt        DateTime?              @map("reverted_at") @db.Timestamptz(6)
   preview           Json                   @default("{}") @map("preview_json") // the approved preview
+  proposalSummary   Json?                  @map("proposal_summary") // propose-time money summary (totals + topItems) for the Daily Home card — read back without re-running the proposal
   caps              Json?                  @map("caps_json")
   outcomeStatus     String                 @default("pending") @map("outcome_status") // pending|measured
   outcomeMeasuredAt DateTime?              @map("outcome_measured_at") @db.Timestamptz(6)

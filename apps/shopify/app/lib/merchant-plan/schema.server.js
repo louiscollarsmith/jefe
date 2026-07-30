@@ -2,6 +2,7 @@
 
 import { Type } from "@google/genai";
 import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
+import { validateActionIntent } from "../actions/action-intent.server.js";
 import { PLAN_CONFIDENCE } from "./constants.server.js";
 
 export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
@@ -108,6 +109,21 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         confidence: { type: Type.STRING, enum: PLAN_CONFIDENCE },
         assumption: { type: Type.STRING, nullable: true },
         caveat: { type: Type.STRING, nullable: true },
+        // OPTIONAL: the typed action Jefe can carry out for this recommendation, from
+        // the Action Capability Registry. Emitted ONLY when supplied memory directly
+        // supports a registered capability; omitted otherwise. The magnitude is
+        // advisory — the primitive computes the safe (floored, capped) parameters.
+        actionIntent: {
+          type: Type.OBJECT,
+          nullable: true,
+          required: ["actionType", "targetKind"],
+          properties: {
+            actionType: { type: Type.STRING },
+            targetKind: { type: Type.STRING },
+            markdownPercent: { type: Type.NUMBER, nullable: true },
+            rationale: { type: Type.STRING, nullable: true },
+          },
+        },
       },
     },
   },
@@ -222,6 +238,8 @@ function normalizeRecommendation(value, context) {
     confidence: typeof item.confidence === "string" ? item.confidence : "",
     assumption: cleanText(item.assumption, 220, true),
     caveat: cleanText(item.caveat, 220, true),
+    // Advisory + best-effort: null when absent/malformed/unknown (never fails the plan).
+    actionIntent: normalizeActionIntent(item.actionIntent),
   };
   for (const field of [
     "candidateId",
@@ -262,6 +280,28 @@ function normalizeRecommendation(value, context) {
     return invalid("Recommendation used an unsupported confidence label.");
   }
   return { ok: true, recommendation };
+}
+
+/**
+ * Normalize an OPTIONAL LLM-emitted action-intent against the Action Capability
+ * Registry. Advisory + best-effort: a missing, malformed, or unknown intent returns
+ * null and the plan still stands — the recommendation prose is the product, and the
+ * typed primitive re-validates + floors the parameters before anything is proposed.
+ * The LLM's magnitude (markdownPercent) is a suggestion the primitive is free to floor.
+ * @param {unknown} value
+ */
+function normalizeActionIntent(value) {
+  const item = asRecord(value);
+  if (!item) return null;
+  const markdownPercent = Number(item.markdownPercent);
+  const candidate = {
+    actionType: cleanText(item.actionType, 50),
+    targetKind: cleanText(item.targetKind, 50),
+    params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
+    rationale: cleanText(item.rationale, 220, true) ?? undefined,
+  };
+  const validation = validateActionIntent(candidate);
+  return validation.ok ? validation.intent : null;
 }
 
 function normalizeStep(value) {

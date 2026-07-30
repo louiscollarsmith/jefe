@@ -83,7 +83,7 @@ import {
 } from "../lib/onboarding/steps";
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
-import { rejectAction } from "../lib/actions/action-resolution.server";
+import { getActiveSuggestedAction, rejectAction } from "../lib/actions/action-resolution.server";
 import { setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
   ACTIVE_BELIEF_STATUSES,
@@ -733,6 +733,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           shopId: shop.id,
         }),
       ]);
+      // Jefe's first visible action: the latest proposed action as a render-ready card,
+      // money formatted in the shop currency. Read-only (a single indexed row) and
+      // null when nothing is proposed, so the card stays inert. Executable only when the
+      // write path is live (CLEARANCE_EXECUTE_ENABLED) — advisory until then.
+      const suggestedAction = await getActiveSuggestedAction(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        currency: metrics?.currency || "GBP",
+      });
       return {
         appMode: "daily" as const,
         shop: session.shop,
@@ -741,12 +750,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         memory,
         metrics,
         recommendation: plan?.selectedRun?.recommendation ?? null,
-        // Seam for the generic "suggested action" advisory card (Jefe's first
-        // visible action). chat 4 binds this to the LLM plan-rec + typed
-        // primitive; null renders nothing, so the card stays inert until bound.
-        suggestedAction: null as
-          | import("../components/daily-home").SuggestedAction
-          | null,
+        suggestedAction,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
       };

@@ -1,5 +1,6 @@
 // @ts-check
 
+import { listActionCapabilities } from "../actions/action-intent.server.js";
 import {
   MERCHANT_PLAN_PROMPT_VERSION,
   MERCHANT_PLAN_SCHEMA_VERSION,
@@ -26,6 +27,8 @@ Candidate actions must differ in substance, not wording. Prefer the strongest co
 
 Do not recommend something already accepted, rejected, completed or stated as unsuitable in previousRecommendations or merchantContext.
 
+When — and only when — the selected recommendation maps to one of Jefe's registered executable capabilities (actionCapabilities) AND the supplied memory directly supports acting now, also emit an actionIntent naming that capability, so Jefe can offer to carry it out. Choose actionType and targetKind from actionCapabilities only; any magnitude you give (for example markdownPercent) is advisory — Jefe computes the safe, floored, capped parameters itself and never applies your number directly. If no registered capability cleanly fits, omit actionIntent. Never invent a capability, and never let the availability of an action change which recommendation you choose — pick the best recommendation first, then attach an actionIntent only if one genuinely fits.
+
 Return only the required structured output. Copy all cited IDs exactly from allowedGoalIds, allowedSupportingBeliefIds and allowedSupportingInsightIds. Do not expose internal keys, raw confidence decimals, chain-of-thought or database language in merchant-facing fields.`;
 }
 
@@ -45,6 +48,9 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
     allowedGoalIds: snapshot.goals.map((goal) => goal.id),
     allowedSupportingBeliefIds: snapshot.beliefs.map((belief) => belief.id),
     allowedSupportingInsightIds: snapshot.insights.map((insight) => insight.id),
+    // The typed actions Jefe can execute — the ONLY vocabulary an emitted actionIntent
+    // may draw from. Empty-safe: no capabilities → never emit an actionIntent.
+    actionCapabilities: listActionCapabilities(),
     outputContract: {
       candidates: [
         {
@@ -86,6 +92,12 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
         confidence: "strong | reasonable | emerging",
         assumption: "optional important assumption",
         caveat: "optional caveat or uncertainty",
+        actionIntent: {
+          actionType: "one of actionCapabilities[].actionType — only when memory supports acting now; else omit the whole actionIntent",
+          targetKind: "one of that capability's targetKinds",
+          markdownPercent: "optional advisory magnitude; Jefe floors + caps it (never applied directly)",
+          rationale: "optional one-line why, for the merchant",
+        },
       },
     },
     fieldLegend: {
@@ -99,6 +111,8 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
         "safe summaries of merchant coaching, planning documents, corrections and Plan refinements",
       previousRecommendations:
         "prior Plan recommendations; avoid rejected, accepted or completed actions",
+      actionCapabilities:
+        "the typed actions Jefe can execute; the only source for actionIntent.actionType/targetKind — emit an actionIntent only when memory directly supports one",
     },
     snapshot,
   });
