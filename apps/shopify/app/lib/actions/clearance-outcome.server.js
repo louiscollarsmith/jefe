@@ -78,3 +78,91 @@ export function measureClearanceOutcome(run, lineItemsAfter) {
     effectivenessRatePercent: variantsCleared > 0 ? round2((variantsSold / variantsCleared) * 100) : 0,
   };
 }
+
+/**
+ * The DB "Observe" step: measure + record outcomes for applied clearance runs whose
+ * measurement window has elapsed. For each such run it gathers the sales of the cleared
+ * variants that happened AFTER the clearance was applied, scores the run with
+ * measureClearanceOutcome, and persists the result on the ledger row (`outcome` +
+ * `outcomeStatus="measured"` + `outcomeMeasuredAt`). No external write — only the
+ * action_executions row is updated; the belief that aggregates these measured rows (the
+ * "Learn" step) reads them separately.
+ *
+ * Idempotent by construction: it only picks up `outcomeStatus="pending"` runs and flips
+ * them to "measured", so a re-run never double-scores. A run whose preview has no cleared
+ * variants is still marked measured (zeros) so it can't re-queue forever. Nothing here
+ * runs until clearance execution is live (there are no applied runs while the flag is
+ * off) — it's the ready-for-flip half of the loop.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ now?: Date; measurementWindowDays?: number; limit?: number; logger?: Pick<Console, "info" | "warn"> }} [input]
+ * @returns {Promise<{ measured: number; results: Array<{ runId: string; merchantId: string; shopId: string } & ReturnType<typeof measureClearanceOutcome>> }>}
+ */
+export async function measureAndRecordClearanceOutcomes(prisma, input = {}) {
+  const now = input.now ?? new Date();
+  const windowDays = Number.isFinite(Number(input.measurementWindowDays))
+    ? Number(input.measurementWindowDays)
+    : 14;
+  const cutoff = new Date(now.getTime() - windowDays * 86400000);
+
+  // Applied runs past their measurement window that haven't been scored yet.
+  const runs = await prisma.actionExecution.findMany({
+    where: {
+      actionType: "price_markdown",
+      status: { in: ["applied", "partially_applied"] },
+      outcomeStatus: "pending",
+      appliedAt: { lte: cutoff },
+    },
+    select: { id: true, runId: true, merchantId: true, shopId: true, appliedAt: true, preview: true },
+    orderBy: { appliedAt: "asc" },
+    take: Number.isFinite(Number(input.limit)) ? Number(input.limit) : 100,
+  });
+
+  const results = [];
+  for (const run of runs) {
+    const preview = /** @type {any} */ (run.preview) ?? {};
+    const changes = (Array.isArray(preview.changes) ? preview.changes : [])
+      .filter((/** @type {any} */ change) => change?.variantId)
+      .map((/** @type {any} */ change) => ({ variantId: change.variantId, toPrice: Number(change.toPrice) }));
+    const variantIds = changes.map((change) => change.variantId);
+    const appliedAt = run.appliedAt ?? now;
+
+    let lines = [];
+    if (variantIds.length > 0) {
+      const lineItems = await prisma.orderLineItem.findMany({
+        where: {
+          merchantId: run.merchantId,
+          shopId: run.shopId,
+          variantId: { in: variantIds },
+          order: { processedAt: { gte: appliedAt } },
+        },
+        select: {
+          variantId: true,
+          quantity: true,
+          unitPrice: true,
+          order: { select: { processedAt: true } },
+        },
+      });
+      lines = lineItems.map((line) => ({
+        variantId: line.variantId,
+        quantity: Number(line.quantity) || 0,
+        unitPrice: line.unitPrice == null ? null : Number(line.unitPrice),
+        processedAt: line.order?.processedAt ?? now,
+      }));
+    }
+
+    const outcome = measureClearanceOutcome({ appliedAt, changes }, lines);
+    await prisma.actionExecution.update({
+      where: { id: run.id },
+      data: {
+        outcome: /** @type {any} */ (outcome),
+        outcomeStatus: "measured",
+        outcomeMeasuredAt: now,
+      },
+    });
+    results.push({ runId: run.runId, merchantId: run.merchantId, shopId: run.shopId, ...outcome });
+  }
+
+  input.logger?.info?.("clearance outcomes measured", { measured: results.length, windowDays });
+  return { measured: results.length, results };
+}

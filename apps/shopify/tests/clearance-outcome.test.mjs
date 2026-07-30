@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { measureClearanceOutcome } from "../app/lib/actions/clearance-outcome.server.js";
+import {
+  measureAndRecordClearanceOutcomes,
+  measureClearanceOutcome,
+} from "../app/lib/actions/clearance-outcome.server.js";
 
 const run = {
   appliedAt: "2026-07-01T00:00:00.000Z",
@@ -64,6 +67,73 @@ test("empty / no-movement runs report zeros without dividing by zero", () => {
   const cold = measureClearanceOutcome(run, []);
   assert.equal(cold.effectivenessRatePercent, 0);
   assert.equal(cold.variantsCleared, 3);
+});
+
+test("measureAndRecordClearanceOutcomes scores an applied run and writes outcome=measured", async () => {
+  let findManyArgs = null;
+  const updates = [];
+  const prisma = {
+    actionExecution: {
+      findMany: async (args) => {
+        findManyArgs = args;
+        return [
+          {
+            id: "e1",
+            runId: "r1",
+            merchantId: "m1",
+            shopId: "s1",
+            appliedAt: new Date("2026-07-01T00:00:00.000Z"),
+            preview: { changes: [{ variantId: "v1", toPrice: 70 }, { variantId: "v2", toPrice: 45 }] },
+          },
+        ];
+      },
+      update: async ({ where, data }) => {
+        updates.push({ where, data });
+        return { id: where.id, ...data };
+      },
+    },
+    orderLineItem: {
+      findMany: async () => [
+        { variantId: "v1", quantity: 2, unitPrice: 70, order: { processedAt: new Date("2026-07-05T00:00:00.000Z") } },
+      ],
+    },
+  };
+
+  const res = await measureAndRecordClearanceOutcomes(prisma, {
+    now: new Date("2026-07-20T00:00:00.000Z"),
+    measurementWindowDays: 14,
+  });
+
+  // Query targets only unscored, applied, past-window runs.
+  assert.deepEqual(findManyArgs.where.status, { in: ["applied", "partially_applied"] });
+  assert.equal(findManyArgs.where.outcomeStatus, "pending");
+  assert.deepEqual(findManyArgs.where.appliedAt, { lte: new Date("2026-07-06T00:00:00.000Z") });
+
+  assert.equal(res.measured, 1);
+  assert.equal(res.results[0].variantsCleared, 2);
+  assert.equal(res.results[0].variantsSold, 1); // only v1 moved
+  assert.equal(res.results[0].unitsMoved, 2);
+  // Persisted onto the ledger row: the outcome + measured status.
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].where.id, "e1");
+  assert.equal(updates[0].data.outcomeStatus, "measured");
+  assert.equal(updates[0].data.outcome.variantsCleared, 2);
+  assert.ok(updates[0].data.outcomeMeasuredAt instanceof Date);
+});
+
+test("measureAndRecordClearanceOutcomes: no eligible runs → nothing measured, no writes", async () => {
+  const prisma = {
+    actionExecution: {
+      findMany: async () => [],
+      update: async () => {
+        throw new Error("must not update when there are no eligible runs");
+      },
+    },
+    orderLineItem: { findMany: async () => [] },
+  };
+  const res = await measureAndRecordClearanceOutcomes(prisma, {});
+  assert.equal(res.measured, 0);
+  assert.deepEqual(res.results, []);
 });
 
 /** @param {number} value */
