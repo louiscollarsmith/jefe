@@ -72,7 +72,7 @@ import {
   readFurthestStep,
   onboardingStepIndex,
 } from "../lib/onboarding/steps";
-import { recordFurthestOnboardingStep } from "../services/onboarding.server";
+import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
@@ -189,6 +189,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
+
+  if (intent === "onboarding.skip") {
+    // Skip the WHOLE funnel (distinct from the per-step "Skip for now →" that
+    // just advances one step): mark the shop onboarded (source "skipped") and
+    // drop the merchant on the home. The button is gated on `connected`, so this
+    // only fires post-Connect (skipping before Shopify is connected would land
+    // on an empty home).
+    await skipOnboarding(prisma, { shopId: shop.id });
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        step: null,
+        channelProvider: null,
+        channelMode: null,
+        channelNotice: null,
+      }),
+    );
+  }
 
   if (intent.startsWith("channel.")) {
     try {
@@ -973,7 +990,7 @@ export default function AppIndex() {
   }
 
   return (
-    <OnboardingShell activeStep={data.activeStep} cinematic={data.cinematic}>
+    <OnboardingShell activeStep={data.activeStep} cinematic={data.cinematic} connected={data.connected}>
       {data.activeStep === "connect" ? (
         <ConnectStep
           storeName={data.storeName}
@@ -1061,10 +1078,12 @@ function oauthPopupFeatures() {
 function OnboardingShell({
   activeStep,
   cinematic,
+  connected,
   children,
 }: {
   activeStep: (typeof ONBOARDING_STEPS)[number];
   cinematic?: boolean;
+  connected?: boolean;
   children: ReactNode;
 }) {
   const location = useLocation();
@@ -1082,6 +1101,38 @@ function OnboardingShell({
       }`}
     >
       {cinematic ? <div className="JefeCinematicAmbient" aria-hidden="true" /> : null}
+      {connected ? (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            position: "relative",
+            zIndex: 2,
+          }}
+        >
+          {/* Skip the WHOLE funnel — for a returning/experienced merchant who
+              wants straight into Jefe. Only shown once Shopify is connected
+              (skipping before Connect lands on an empty home). */}
+          <Form method="post">
+            <input type="hidden" name="intent" value="onboarding.skip" />
+            <button
+              type="submit"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "inherit",
+                opacity: 0.55,
+              }}
+            >
+              Skip setup — go to Jefe →
+            </button>
+          </Form>
+        </div>
+      ) : null}
       <OnboardingStepper activeStep={activeStep} />
       <section className="JefeOnboardingScene">{children}</section>
       {nextStep ? (
@@ -2916,12 +2967,26 @@ function ChannelCard({
     try {
       const form = event.currentTarget;
       const formData = new FormData(form);
+      // Embedded authenticates this POST with an App Bridge id-token Bearer.
+      // Standalone (app.mynamejefe.com) has no App Bridge, so `shopify.idToken()`
+      // rejects there — which used to abort the whole OAuth start and surface a
+      // "failed" card. Skip the Bearer if the id-token can't be obtained: the
+      // same-origin request still carries the host-scoped cookie session, and
+      // `channel.slack.start` accepts either (authenticate-app-request handles
+      // embedded Bearer AND standalone cookie).
+      let authHeaders: Record<string, string> = {};
+      try {
+        const idToken = await shopify.idToken();
+        if (idToken) authHeaders = { Authorization: `Bearer ${idToken}` };
+      } catch {
+        // standalone / no App Bridge id-token — proceed via the cookie session
+      }
       const response = await fetch(form.action, {
         method: "POST",
         body: formData,
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${await shopify.idToken()}`,
+          ...authHeaders,
         },
       });
       const payload = await parseSlackOAuthStartResponse(response);
