@@ -47,6 +47,7 @@ import {
 } from "../lib/observability/context.server.js";
 import { track } from "./analytics/event-log.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
+import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
 import { maybePostChangelog } from "./changelog/changelog-watcher.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
@@ -122,6 +123,9 @@ let loopPrisma = null;
 let lastDigestDay = /** @type {string | null} */ (null);
 const DIGEST_HOUR_UTC = 8;
 
+let lastOutcomeMeasureDay = /** @type {string | null} */ (null);
+const OUTCOME_MEASURE_HOUR_UTC = 6;
+
 /**
  * Post the daily activity digest to Slack once per UTC day, on the first tick at
  * or after DIGEST_HOUR_UTC. In-memory guard (a worker restart may re-post once;
@@ -149,6 +153,53 @@ async function maybePostDailyDigest(prisma, logger) {
     posted: result.posted,
     events: result.feed?.totalEvents ?? 0,
   });
+}
+
+/**
+ * Score applied clearance runs whose measurement window has elapsed (Observe→Learn),
+ * once per UTC day on the first tick at/after OUTCOME_MEASURE_HOUR_UTC, then enqueue a
+ * memory refresh for each affected merchant so the clearance-effectiveness belief picks
+ * up the new outcomes. On by default; opt out with ENABLE_CLEARANCE_OUTCOME_JOB=false.
+ *
+ * Self-catching: a measurement failure must not trip the loop's failure streak. Safe to
+ * run before execution is live — there are no applied runs while the write flag is off,
+ * so it measures nothing and enqueues nothing (a no-op until the first real clearance).
+ * The once-per-day guard is in-memory (a worker restart may re-run once, which is
+ * idempotent — only pending rows are scored).
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ */
+async function maybeMeasureClearanceOutcomes(prisma, logger) {
+  if (process.env.ENABLE_CLEARANCE_OUTCOME_JOB === "false") return;
+  const now = new Date();
+  const dayKey = now.toISOString().slice(0, 10);
+  if (lastOutcomeMeasureDay === dayKey || now.getUTCHours() < OUTCOME_MEASURE_HOUR_UTC) return;
+  lastOutcomeMeasureDay = dayKey;
+  try {
+    const result = await measureAndRecordClearanceOutcomes(prisma, { logger });
+    if (result.measured === 0) return;
+    const refreshed = new Set();
+    for (const run of result.results) {
+      const key = `${run.merchantId}:${run.shopId}`;
+      if (refreshed.has(key)) continue;
+      refreshed.add(key);
+      await enqueueMerchantMemoryRefresh(prisma, {
+        merchantId: run.merchantId,
+        shopId: run.shopId,
+        categories: ["business"],
+        reason: "clearance_outcome_measured",
+      });
+    }
+    logger.info("Clearance outcomes measured; memory refresh enqueued", {
+      measured: result.measured,
+      merchants: refreshed.size,
+    });
+  } catch (error) {
+    logger.warn("Clearance outcome measurement failed; loop continues", {
+      err: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
@@ -185,6 +236,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
+      await maybeMeasureClearanceOutcomes(workerPrisma, logger);
       loopFailureStreak = 0; // a fully-successful tick clears the streak
     } catch (error) {
       loopFailureStreak += 1;

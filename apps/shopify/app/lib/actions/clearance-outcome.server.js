@@ -121,12 +121,18 @@ export async function measureAndRecordClearanceOutcomes(prisma, input = {}) {
   const results = [];
   for (const run of runs) {
     const preview = /** @type {any} */ (run.preview) ?? {};
-    const changes = (Array.isArray(preview.changes) ? preview.changes : [])
-      .filter((/** @type {any} */ change) => change?.variantId)
-      .map((/** @type {any} */ change) => ({ variantId: change.variantId, toPrice: Number(change.toPrice) }));
+    const rawChanges = Array.isArray(preview.changes) ? preview.changes : [];
+    /** @type {Array<{ variantId: string; toPrice: number }>} */
+    const changes = [];
+    for (const change of rawChanges) {
+      if (change && change.variantId) {
+        changes.push({ variantId: String(change.variantId), toPrice: Number(change.toPrice) });
+      }
+    }
     const variantIds = changes.map((change) => change.variantId);
     const appliedAt = run.appliedAt ?? now;
 
+    /** @type {Array<{ variantId: string; quantity: number; unitPrice: number | null; processedAt: Date }>} */
     let lines = [];
     if (variantIds.length > 0) {
       const lineItems = await prisma.orderLineItem.findMany({
@@ -144,7 +150,7 @@ export async function measureAndRecordClearanceOutcomes(prisma, input = {}) {
         },
       });
       lines = lineItems.map((line) => ({
-        variantId: line.variantId,
+        variantId: String(line.variantId ?? ""),
         quantity: Number(line.quantity) || 0,
         unitPrice: line.unitPrice == null ? null : Number(line.unitPrice),
         processedAt: line.order?.processedAt ?? now,
