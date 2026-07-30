@@ -115,10 +115,10 @@ export async function wireClearanceExecution(prisma, session, input, deps = {}) 
     merchantId: row.merchantId,
     shopId: row.shopId,
     actionType: row.actionType,
-    actionKind: row.actionKind,
+    actionKind: row.actionKind ?? undefined,
     merchantSetting: row.merchantSetting,
     resolvedMode: row.resolvedMode,
-    eligibility: row.eligibility,
+    eligibility: /** @type {any} */ (row.eligibility),
     confidence: row.confidence,
     approvedBy,
   };

@@ -52,12 +52,13 @@ function round2(value) {
  * is a genuine markdown (0 < toPrice < fromPrice) AND at or above its cost floor.
  * Below-floor or missing-floor items are REFUSED (recorded, never applied) — the
  * "never sell below cost" invariant enforced structurally at the gate.
- * @param {{ items?: Array<{ variantId: string; title?: string | null; currentPrice: number; suggestedPrice: number; floorPrice?: number | null }> }} proposal
+ * @param {{ items?: Array<{ variantId: string | null; title?: string | null; currentPrice: number; suggestedPrice: number; floorPrice?: number | null }> }} proposal
  */
 export function buildClearancePreview(proposal) {
   const changes = [];
   const refused = [];
   for (const item of proposal?.items ?? []) {
+    if (!item.variantId) continue; // no variant to act on — nothing to write
     const from = round2(item.currentPrice);
     const to = round2(item.suggestedPrice);
     if (!(from > 0) || !(to > 0) || to >= from) continue; // not a valid markdown
@@ -187,7 +188,7 @@ async function restoreApplied(shopifyClient, plan) {
       await shopifyClient.updateVariantPrice(entry.variantId, price);
       restored.push({ variantId: entry.variantId, restorePrice: price });
     } catch (err) {
-      failed.push({ variantId: entry.variantId, error: String(err?.message ?? err) });
+      failed.push({ variantId: entry.variantId, error: (err instanceof Error ? err.message : String(err)) });
     }
   }
   return { restored, failed };
@@ -317,12 +318,12 @@ export async function applyClearance({ prisma, shopifyClient, execution }, previ
     );
     await prisma.actionExecution.update({
       where: { id: parent.id },
-      data: { status: "reverted", revertedAt: new Date(), error: String(err?.message ?? err) },
+      data: { status: "reverted", revertedAt: new Date(), error: (err instanceof Error ? err.message : String(err)) },
     });
     return {
       ok: false,
       executionId: parent.id,
-      error: String(err?.message ?? err),
+      error: (err instanceof Error ? err.message : String(err)),
       revertedCount: undo.restored.length,
       revertFailures: undo.failed,
     };
