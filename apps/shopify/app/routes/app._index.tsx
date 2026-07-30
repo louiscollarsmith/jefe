@@ -1697,6 +1697,13 @@ function InsightsStep({
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
+      {insightNotice === "confirmed" ? (
+        <Banner tone="success">
+          <Text as="p">
+            Thanks — I&apos;ll treat this as confirmed and lean on it.
+          </Text>
+        </Banner>
+      ) : null}
       {insightNotice === "corrected" ? (
         <Banner tone="success">
           <Text as="p">
@@ -1960,7 +1967,7 @@ function GoalsStep({
                 {horizon.label}
               </Text>
               <Text as="h2" variant="headingMd">
-                {goal?.title ?? "Goal needs retry"}
+                {goal?.title ?? "Still shaping this one…"}
               </Text>
               {goal?.description ? (
                 <Text as="p" tone="subdued">

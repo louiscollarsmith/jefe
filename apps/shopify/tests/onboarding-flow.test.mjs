@@ -351,3 +351,11 @@ test("the onboarding route has its own graceful error boundary (no raw stack ove
   assert.match(appIndexSource, /export function ErrorBoundary/);
   assert.match(appIndexSource, /Jefe is still getting set up/);
 });
+
+test("onboarding papercuts: insight-confirm gives feedback; no dev-copy empty tile", () => {
+  // #9: confirming an insight now shows a success banner (previously only
+  // corrections did, so "Looks right" reloaded with no acknowledgement).
+  assert.match(appIndexSource, /insightNotice === "confirmed"/);
+  // #6: the empty-goal tile no longer leaks dev copy.
+  assert.doesNotMatch(appIndexSource, /Goal needs retry/);
+});
