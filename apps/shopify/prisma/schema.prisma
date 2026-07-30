@@ -1029,3 +1029,60 @@ model ChangelogAnnouncement {
   @@index([section])
   @@map("changelog_announcements")
 }
+
+/// Execution ledger for the typed action-primitive layer (the Action Capability
+/// Registry's record). One row per action run: what was approved, the autonomy
+/// decision, what was written, and the measured outcome. Generic across primitives
+/// via `actionType` — NOT per-action tables. Nothing writes here until an action
+/// is wired + flagged on; safe to deploy empty.
+model ActionExecution {
+  id                String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId             String                 @unique @map("run_id") @db.Uuid
+  merchantId        String                 @map("merchant_id") @db.Uuid
+  shopId            String                 @map("shop_id") @db.Uuid
+  actionType        String                 @map("action_type") // the primitive, e.g. "price_markdown"
+  actionKind        String?                @map("action_kind") // advice context, e.g. "dead_stock_clearance"
+  status            String                 @default("proposed") // proposed|approved|applied|partially_applied|reverted|failed
+  merchantSetting   String                 @map("merchant_setting") // "propose"|"auto" at execution time
+  resolvedMode      String                 @map("resolved_mode") // "propose"|"auto" actually used
+  eligibility       Json                   @default("{}") @map("eligibility_json") // {reversible,withinCap,confident,autoEligible}
+  confidence        Float?
+  approvedBy        String?                @map("approved_by") // merchant id, or "auto"
+  approvedAt        DateTime?              @map("approved_at") @db.Timestamptz(6)
+  appliedAt         DateTime?              @map("applied_at") @db.Timestamptz(6)
+  revertedAt        DateTime?              @map("reverted_at") @db.Timestamptz(6)
+  preview           Json                   @default("{}") @map("preview_json") // the approved preview
+  caps              Json?                  @map("caps_json")
+  outcomeStatus     String                 @default("pending") @map("outcome_status") // pending|measured
+  outcomeMeasuredAt DateTime?              @map("outcome_measured_at") @db.Timestamptz(6)
+  outcome           Json?                  @map("outcome_json") // action-shaped Observe→Learn result
+  error             String?
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  writes            ActionExecutionWrite[]
+
+  @@index([merchantId, actionType, status])
+  @@index([shopId, outcomeStatus])
+  @@map("action_executions")
+}
+
+/// One intended write within an action run — the queryable idempotency + reversal
+/// unit. `expectedFrom` is the compare-and-set source (the previewed prior value):
+/// the gate refuses to write when the live value has drifted from it, and revert
+/// restores from it (the authoritative undo source — parent has no reversibility
+/// snapshot by design).
+model ActionExecutionWrite {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  executionId    String          @map("execution_id") @db.Uuid
+  targetRef      String          @map("target_ref") // generic target, e.g. variantId
+  expectedFrom   Json?           @map("expected_from") // previewed prior value; CAS + revert source
+  targetValueKey String          @map("target_value_key") // canonical string of the write value, for the unique key
+  targetValue    Json            @map("target_value")
+  status         String          @default("pending") // pending|applied|skipped_drift|failed
+  appliedAt      DateTime?       @map("applied_at") @db.Timestamptz(6)
+  execution      ActionExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@unique([executionId, targetRef, targetValueKey]) // one write per run+target+value
+  @@index([executionId, status])
+  @@map("action_execution_writes")
+}
