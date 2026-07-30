@@ -65,15 +65,15 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ---
 
-## Listing copy — autonomy from day 1, three modes (2026-07-30; direction confirmed, exact wording pending Matt's line)
+## Listing copy — autonomy from day 1, three modes (2026-07-30 — FINAL, Matt-approved)
 
 > **Direction (Matt-confirmed, relayed by chat 7, 2026-07-30):** **three modes, all v1** — *recommend* · *recommend→approve→execute* · *autonomous* — and **autonomy from day 1**: Jefe **executes on the merchant's behalf, live at launch** (Matt explicitly rejected flagged-off / propose-first). Supersedes both the "advisory-today" copy and the interim "recommends-now" cut. chat 7 is shipping the live Shopify write client and **enabling execution before submit**, so "Jefe executes" is **true at review time**.
 >
 > **⚠️ Honesty gate (the one hard condition):** the "executes / autonomous" copy is accurate **only if execution is actually LIVE when the listing is submitted / reviewed.** chat 7 owns landing + confirming the write client first, and will ping before Matt submits. If it's somehow not live at submit, fall back to the recommends-now wording (in git history). Same principle as the "transient" line: fix by shipping the capability, not softening the words.
 >
-> **Exact final wording is still Matt's to confirm** (chat 7 relays it). Copy below is *direction-accurate* — safe to work from, but expect the last-mile phrasing to be swapped for Matt's confirmed line.
+> **Matt approved the canonical line (2026-07-30)** — the copy below is FINAL. The only remaining condition is the honesty gate above: chat 7 confirms clearance execution is live in prod (the `CLEARANCE_EXECUTE_ENABLED` flip, in progress) **before** Matt submits.
 
-**Direction-accurate canonical line (Matt via chat 7):** *Jefe acts on your behalf — you approve each action, or let it run autonomously, per action type.*
+**Confirmed canonical line (Matt-approved, 2026-07-30):** *Jefe acts on your behalf — you approve each action, or let it run autonomously, per action type.*
 
 **Listing copy (autonomy-from-day-1, three modes):**
 - **App card subtitle (≤62):** `Learns your store, finds the next move, acts on it — your call`
