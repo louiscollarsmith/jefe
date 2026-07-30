@@ -8,6 +8,10 @@ const appIndexSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
 );
+const merchantMemoryViewSource = fs.readFileSync(
+  new URL("../app/components/merchant-memory-view.tsx", import.meta.url),
+  "utf8",
+);
 const slackCallbackSource = fs.readFileSync(
   new URL("../app/routes/channels.slack.callback.tsx", import.meta.url),
   "utf8",
@@ -341,7 +345,11 @@ test("Merchant Memory view wires the correct-anything path + per-belief correcta
     appIndexSource,
     /correctable: Boolean\(definition\?\.merchantCorrectable\)/,
   );
-  assert.match(appIndexSource, /value="memory\.message"/);
+  // The correct-anything Form (which emits memory.message) now lives in the
+  // extracted MerchantMemoryView component; the intent HANDLER + dispatch stay
+  // in the route action (verified above), so this is the intent-in-index wiring
+  // split cleanly across the route and its lazy-loaded view.
+  assert.match(merchantMemoryViewSource, /value="memory\.message"/);
   assert.match(appIndexSource, /url\.searchParams\.get\("view"\) === "memory"/);
 });
 
