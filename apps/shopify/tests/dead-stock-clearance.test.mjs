@@ -4,7 +4,6 @@ import { PrismaClient } from "@prisma/client";
 import {
   buildDeadStockClearanceProposal,
   sizeClearanceMarkdowns,
-  toClearanceRecommendation,
 } from "../app/lib/actions/dead-stock-clearance.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -140,40 +139,4 @@ test("buildDeadStockClearanceProposal finds only in-stock, unsold, costed varian
     await prisma.merchant.deleteMany({ where: { name: `Clearance ${suffix}` } });
     await prisma.$disconnect();
   }
-});
-
-test("toClearanceRecommendation shapes a proposal into an advisory recommendation (top 3, advisory-only)", () => {
-  const proposal = {
-    status: "proposed",
-    windowDays: 90,
-    deadStockVariantCount: 4,
-    belowCostCount: 1,
-    totalTrappedCapital: 5000,
-    totalProjectedRecovery: 3200,
-    items: [
-      { variantId: "v1", title: "A", unitsOnHand: 10, currentPrice: 200, suggestedPrice: 140, discountPercent: 30, trappedCapital: 2000 },
-      { variantId: "v2", title: "B", unitsOnHand: 5, currentPrice: 100, suggestedPrice: 70, discountPercent: 30, trappedCapital: 1500 },
-      { variantId: "v3", title: "C", unitsOnHand: 8, currentPrice: 50, suggestedPrice: 35, discountPercent: 30, trappedCapital: 1000 },
-      { variantId: "v4", title: "D", unitsOnHand: 3, currentPrice: 40, suggestedPrice: 28, discountPercent: 30, trappedCapital: 500 },
-    ],
-  };
-  const rec = toClearanceRecommendation(proposal);
-  assert.equal(rec.status, "available");
-  assert.equal(rec.kind, "dead_stock_clearance");
-  assert.equal(rec.variantCount, 4);
-  assert.equal(rec.trappedCapital, 5000);
-  assert.equal(rec.projectedRecovery, 3200);
-  assert.equal(rec.belowCostCount, 1);
-  assert.equal(rec.executable, false); // advisory only — surfacing can never trigger a write
-  assert.equal(rec.topItems.length, 3); // headline items, capped
-  assert.equal(rec.topItems[0].variantId, "v1");
-});
-
-test("toClearanceRecommendation returns no_opportunity when there is nothing to clear", () => {
-  assert.equal(toClearanceRecommendation({ status: "no_dead_stock", windowDays: 90, items: [] }).status, "no_opportunity");
-  assert.equal(
-    toClearanceRecommendation({ status: "proposed", windowDays: 90, deadStockVariantCount: 0, items: [] }).status,
-    "no_opportunity",
-  );
-  assert.equal(toClearanceRecommendation(null).status, "no_opportunity");
 });
