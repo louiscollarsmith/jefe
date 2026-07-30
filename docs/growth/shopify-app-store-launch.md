@@ -19,7 +19,7 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 **⚠️ Three things to get right before submit — product/founder, not growth:**
 
 1. **Protected Customer Data = Level 2.** Scopes include `read_customers`/`write_customers` (customer name/email/address/phone) → strictest tier + a **data-protection review**. The *request* is submitted; the *substance* must be true and implemented: encryption at rest + in transit, data minimization, retention limits, staff access controls + logs, incident-response policy, test/prod separation. Reviewers verify, and there's an **annual re-review** (heavier the more installs / customer records you hold). Owner: product/security.
-2. **Scopes are too broad for V1.** Requesting `write_products, write_orders, write_customers, write_inventory, write_locations, read_all_orders` — but V1 is **advisory (no Shopify writes)**. "Request only necessary scopes" is a review criterion, and every customer-data scope widens the Level 2 review. **Rec: trim to the reads V1 actually uses; re-add write scopes when action/autonomy features ship** (scopes expand later via `scopes_update`). NB: HANDOVER intentionally pre-provisioned write scopes for the autonomy roadmap — so this is a founder call: cleaner review now vs. fewer scope prompts later. Owner: product + Matt.
+2. **Scope hygiene — trim the *unused* writes, keep the used one.** Autonomy is live from day 1, so Jefe **does** write to Shopify — but only clearance is wired at launch, which uses `write_products`. **Decision (chat 7): keep `read_*` + `write_products`; trim the four unused writes (`write_orders`, `write_customers`, `write_inventory`, `write_locations`).** "Request only necessary scopes" is a review criterion and every customer-data scope widens the Level 2 review, so requesting writes nothing exercises yet invites a flag; the registry re-adds each write per-action as it ships (`scopes_update`, which re-prompts merchants). chat 7 owns the `shopify.app.toml` edit + `shopify app deploy` (folded into the pre-submit write-client deploy); chat 6 then syncs this listing + `apps/growth/legal-triggers.json` to the final set. Owner: chat 7 (arch) + Matt.
 3. **Pricing / Billing.** No Billing API integration exists, and charges **must** run through Shopify's Billing API. Design partners are free anyway → **launch with a free plan (early-access/beta)** so Billing API isn't a submission blocker. Get installs + reviews first; build Billing API before monetizing (that's the 10→100 gate). Owner: Matt.
 
 **⬜ Run last:** the automated checks + Shopify's **AI Toolkit self-review** (`shopify` CLI command the dashboard offers) — run against the app to pre-empt rejections. Owner: whoever holds the Shopify CLI + Partner auth (product/Matt).
@@ -28,21 +28,12 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ## Listing content — first draft (chat 6)
 
+> ⚠️ **Superseded for COPY (2026-07-30):** the intro / details / feature copy here was the 2026-07-29 *advisory-era* draft. For the copy you paste into the form, use the **"Listing copy — autonomy from day 1, three modes"** section above — it's authoritative (autonomy from day 1, execution live at launch, three modes). The **app-name** options below still stand; the Level-2 / billing / testing / category notes are reconciled inline.
+
 **App name** (≤30 chars, must start with brand, no "Shopify" trademark):
 - **`Jefe: AI eCommerce Manager`** (26) — or `Jefe — Your AI Store Manager` (28)
 
-**App introduction** (two brief *factual* sentences — Shopify bans "generic marketing language," so plainer than our site voice):
-> Jefe learns how your Shopify store actually works from your own orders, products, and customers. It then recommends your next best move and shows the evidence behind it, so you can act with confidence.
-
-**App details** (factual, full sentences; no links/jargon/marketing/testimonials/stats; ≤500 chars):
-> Jefe connects to your Shopify store and reads your orders, products, customers, and inventory to build a structured, correctable understanding of how your business works. It uses that to surface the next actions worth taking — when to reorder, where returns come from, which products underperform — and shows the evidence behind each recommendation, so you stay in control. Jefe is advisory today and acts only when you approve, expanding what it handles as you build trust.
-
-**Feature list** (≤80 chars each, plain/factual — avoid "best"/"pricing"/marketing words; the form auto-flags them):
-- Learns how your store works from your own orders, products and customers
-- Recommends your next move, always with the evidence behind it
-- A living Merchant Memory you can inspect and correct anytime
-- Surfaces stockouts, dead stock, and retention risks early
-- Advisory now, earns autonomy as you trust it — you're always in control
+**App introduction / App details / Feature list:** → use the authoritative copy in the **autonomy-from-day-1, three-modes** section above. The advisory-era drafts previously here are superseded — Jefe executes on the merchant's behalf from day 1 (three modes: recommend · approve-execute · autonomous), not "advisory today."
 
 **Pricing:** Free while in early access (Design Partner program).
 
@@ -107,15 +98,15 @@ Paste-ready. **✅ = final · ⚠️ = founder must provide/host.**
 
 ### Pricing (≥1 public plan required)
 - **Plan name** — ✅ `Free`
-- **Top features** — ✅ `Full access while Jefe is in early access. Connect your store, build your Merchant Memory, and get insights and recommendations with the evidence behind them.`
+- **Top features** — ✅ `Full access while Jefe is in early access: connect your store, build your Merchant Memory, get recommendations with the evidence, and let Jefe act on them — your call.`
 - **"I have approval to charge outside the Shopify Billing API"** — ⚠️ **leave UNCHECKED** (free / Billing-API only).
 - Pricing URL — optional; blank.
 
 ### App discovery content
-- **App card subtitle (≤62)** — ✅ `Learns how your store works, then recommends your next move.`
+- **App card subtitle (≤62)** — ✅ `Learns your store, finds the next move, acts on it — your call`
 - **Search terms (5, ≤20 each, no "Shopify"/competitors)** — ✅ `ecommerce manager` · `store insights` · `AI assistant` · `inventory alerts` · `reorder reminders`
 - **Title tag (≤60)** — ✅ `Jefe — AI eCommerce Manager for Shopify Stores`
-- **Meta description (≤160)** — ✅ `Jefe learns how your Shopify store works from your own data, then recommends your next move with the evidence behind it. Advisory today; it acts as you trust it.`
+- **Meta description (≤160)** — ✅ `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move, and acts on it — you approve, or let it run autonomously.`
 
 ### Install requirements
 - **Sales channels** — ✅ **"My app doesn't require the Shopify Online Store or Shopify POS"** (admin-embedded; no theme extension/POS).
@@ -140,7 +131,7 @@ Paste-ready. **✅ = final · ⚠️ = founder must provide/host.**
   6. Review and refine the Goals.
   7. Review and accept one Plan — each recommendation shows the evidence behind it.
   8. Optional: connect a channel (Slack) to receive Jefe's updates.
-  Note: Jefe is advisory in this version — it recommends and the merchant approves; no external system is changed without approval.
+  Note: Jefe executes real actions in this version — for each action type the merchant picks the mode (recommend · approve-execute · autonomous) and every change is reversible. The reviewer should see an action execute (e.g. dead-stock clearance). [Contingent on execution being live at submit — chat 7's gate; if it slips, this reverts to recommend-and-approve.]
   ```
 
 ### Still to clear before submit
@@ -180,7 +171,7 @@ For the *feature video*, screencast ≤25%; for the *testing screencast* field, 
 2. Connect Shopify (~10s).
 3. Memory builds → "what Jefe knows about your business" — the aha (~30s).
 4. An insight → a goal → a plan **with the evidence** (~45s).
-5. Merchant approves a recommendation; note advisory-now / earns-autonomy (~20s).
+5. Merchant approves an action and Jefe **executes** it (e.g. clearance) — show the three modes (recommend · approve-execute · autonomous) and that every action is reversible (~20s).
 6. Close on the wordmark + "Join the early access." (~5s).
 Warm, unhurried, no loud audio; brand navy/cream throughout.
 
@@ -196,7 +187,7 @@ There's **no keyword hack**. Shopify ranks on: **install volume + retention**, *
 - **Reviews are the engine.** Ask each activated design partner to review **at the aha moment** (ties to [case-study-template.md](case-study-template.md)). First reviews disproportionately drive early ranking.
 - **Retention** — nail activation (memory confirmed + 1 rec accepted) so uninstalls stay low.
 - **Complete, high-quality listing** (above) + a demo video.
-- **Category (decided 2026-07-29): Store management → Operations → Workflow automation.** Founder call: execution/actioning is *close*, so we categorize for the destination — Jefe *operating* the store, executing approved actions per action type. (Analytics — *"insights or recommendations"* — is the accurate V1-today shelf and the fallback if actioning slips; **category is changeable post-launch**.) **Because V1 is still advisory at submit, the listing description must carry the honesty** — *"advisory today; you approve, Jefe executes as it earns your trust"* — so merchants don't install expecting full autopilot and churn (early retention drives ranking).
+- **Category: Store management → Operations → Workflow automation** (confirmed 2026-07-30). Correct because execution is **live/demonstrable at submit** — Jefe *operates* the store, executing actions per action type (recommend · approve-execute · autonomous). (Analytics — *"insights or recommendations"* — is only the fallback if execution slips and isn't live at submit; **category is changeable post-launch**.) **Set expectations honestly in the copy:** the listing must convey the three modes and merchant control — *"you approve each action, or let Jefe run it autonomously, per action type"* — so merchants aren't surprised in either direction (full-autopilot *or* advisory-only); accurate expectations protect early retention → ranking.
   - **Tag field → Automation tasks:** applicable — the operational domains Jefe acts in: inventory/reordering, pricing, product management, order management, marketing. Tick the closest the form offers.
   - **Tag field → Customization:** likely **N/A** (AI-driven, not a build-your-own-rules tool) — unless there's a merchant-set **goals / autonomy-level / preferences** tag, which genuinely fits.
   - Exact tag strings live only in the Partner Dashboard form, not public docs.
