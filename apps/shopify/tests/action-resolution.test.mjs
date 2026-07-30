@@ -5,6 +5,7 @@ import {
   buildProposalSummary,
   formatMoney,
   getActiveSuggestedAction,
+  getExecutedActionFeed,
   proposeActionFromIntent,
   rejectAction,
   reviseAction,
@@ -272,6 +273,50 @@ test("getActiveSuggestedAction degrades gracefully on a legacy row with no propo
   assert.equal(sa.keyNumbers.find((n) => n.label === "Trapped capital").value, "—");
   assert.deepEqual(sa.topItems, []); // no per-item detail without a summary
   assert.equal(sa.mode, "approve_execute"); // default dial
+});
+
+test("getExecutedActionFeed returns the 'what Jefe did' history with formatted outcomes", async () => {
+  const prisma = {
+    actionExecution: {
+      findMany: async () => [
+        {
+          runId: "run-a",
+          actionType: "price_markdown",
+          status: "applied",
+          appliedAt: new Date("2026-07-10T00:00:00.000Z"),
+          revertedAt: null,
+          preview: { variantCount: 12 },
+          proposalSummary: { variantCount: 12, markdownPercent: 30 },
+          outcome: { variantsCleared: 12, variantsSold: 9, unitsMoved: 20, revenueRecovered: 810, effectivenessRatePercent: 75 },
+          outcomeStatus: "measured",
+        },
+        {
+          runId: "run-b",
+          actionType: "price_markdown",
+          status: "applied",
+          appliedAt: new Date("2026-07-11T00:00:00.000Z"),
+          revertedAt: null,
+          preview: { variantCount: 3 },
+          proposalSummary: { variantCount: 3, markdownPercent: 20 },
+          outcome: null,
+          outcomeStatus: "pending",
+        },
+      ],
+    },
+  };
+  const feed = await getExecutedActionFeed(prisma, { merchantId: "m1", shopId: "s1", currency: "GBP" });
+  assert.equal(feed.length, 2);
+  // Measured entry: short applied-change headline + formatted outcome.
+  assert.equal(feed[0].actionRunId, "run-a");
+  assert.equal(feed[0].actionType, "price_markdown");
+  assert.equal(feed[0].headline, "Marked 12 products down for clearance (−30%)");
+  assert.equal(feed[0].appliedAt, "2026-07-10T00:00:00.000Z");
+  assert.equal(feed[0].outcome.measured, true);
+  assert.equal(feed[0].outcome.revenueRecovered, "£810");
+  assert.equal(feed[0].outcome.unitsMoved, 20);
+  assert.match(feed[0].outcome.summary, /9 of 12 cleared products sold/);
+  // Applied but not yet scored → outcome.measured false (surface shows "tracking…").
+  assert.equal(feed[1].outcome.measured, false);
 });
 
 test("reviseAction re-proposes at the new markdown + supersedes the original", async () => {

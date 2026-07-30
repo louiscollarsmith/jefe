@@ -288,6 +288,93 @@ export async function getActiveSuggestedAction(prisma, input) {
   };
 }
 
+/**
+ * Format a measured clearance outcome for the "what Jefe did" feed — money in the shop
+ * currency plus a pre-formatted one-liner (the surface renders strings as-is).
+ * @param {any} outcome  the row's stored measureClearanceOutcome result
+ * @param {string} currency
+ */
+function formatExecutedOutcome(outcome, currency) {
+  const variantsCleared = Number(outcome?.variantsCleared) || 0;
+  const variantsSold = Number(outcome?.variantsSold) || 0;
+  const unitsMoved = Number(outcome?.unitsMoved) || 0;
+  const revenueRecovered = Number(outcome?.revenueRecovered) || 0;
+  return {
+    variantsCleared,
+    variantsSold,
+    unitsMoved,
+    revenueRecovered: formatMoney(revenueRecovered, currency),
+    effectivenessRatePercent: Number(outcome?.effectivenessRatePercent) || 0,
+    summary: `${variantsSold} of ${variantsCleared} cleared product${variantsCleared === 1 ? "" : "s"} sold · ${unitsMoved} unit${unitsMoved === 1 ? "" : "s"} moved · ${formatMoney(revenueRecovered, currency)} recovered`,
+  };
+}
+
+/**
+ * A short "what Jefe did" headline for one executed action.
+ * @param {string} status @param {number} variantCount @param {any} summary
+ */
+function buildExecutedHeadline(status, variantCount, summary) {
+  const noun = `${variantCount} product${variantCount === 1 ? "" : "s"}`;
+  if (status === "reverted") return `Reverted a clearance on ${noun}`;
+  const pct = Number.isFinite(Number(summary?.markdownPercent)) ? ` (−${Number(summary.markdownPercent)}%)` : "";
+  const partial = status === "partially_applied" ? " (some skipped)" : "";
+  return `Marked ${noun} down for clearance${pct}${partial}`;
+}
+
+/**
+ * The "what Jefe did for you" feed — the merchant-facing history of EXECUTED actions off
+ * the action_executions ledger, most recent first. Each entry is a completed action
+ * (applied / partially applied / reverted) with its measured outcome once the Observe
+ * step has scored it (`outcome.measured` is false until then). Money is formatted
+ * server-side against the shop currency (the surface renders strings as-is), the same
+ * contract as getActiveSuggestedAction. Empty until execution is live — nothing is
+ * applied while the write flag is off.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; currency?: string; limit?: number }} input
+ */
+export async function getExecutedActionFeed(prisma, input) {
+  const currency = input.currency || "GBP";
+  const rows = await prisma.actionExecution.findMany({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      status: { in: ["applied", "partially_applied", "reverted"] },
+    },
+    orderBy: [{ appliedAt: "desc" }, { createdAt: "desc" }],
+    take: Number.isFinite(Number(input.limit)) ? Number(input.limit) : 20,
+    select: {
+      runId: true,
+      actionType: true,
+      status: true,
+      appliedAt: true,
+      revertedAt: true,
+      preview: true,
+      proposalSummary: true,
+      outcome: true,
+      outcomeStatus: true,
+    },
+  });
+
+  return rows.map((row) => {
+    const preview = /** @type {any} */ (row.preview) ?? {};
+    const summary = /** @type {any} */ (row.proposalSummary) ?? {};
+    const variantCount = Number(summary.variantCount ?? preview.variantCount ?? 0);
+    const measured =
+      row.outcomeStatus === "measured" && row.outcome && typeof row.outcome === "object";
+    return {
+      actionRunId: row.runId,
+      actionType: row.actionType,
+      status: row.status,
+      headline: buildExecutedHeadline(row.status, variantCount, summary),
+      appliedAt: row.appliedAt?.toISOString?.() ?? null,
+      revertedAt: row.revertedAt?.toISOString?.() ?? null,
+      outcome: measured
+        ? { measured: true, ...formatExecutedOutcome(/** @type {any} */ (row.outcome), currency) }
+        : { measured: false },
+    };
+  });
+}
+
 // NOTE: approval is NOT a standalone step. In the 3-mode model there is no
 // approve-without-execute (recommend has no approve; approve_execute + autonomous
 // both execute), so the approve→execute transition is owned by the execution-contract
