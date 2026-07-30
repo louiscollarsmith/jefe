@@ -208,7 +208,21 @@ async function queryOverview() {
        ORDER BY revenue DESC LIMIT 15`)
   ).rows;
 
-  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, costTrend, activityTrend };
+  // Win-back email dispatch health · 7d — consumes chat 2's PII-free `email_sent`
+  // event ({kind, delivered, disabled}). Zero until ENABLE_WINBACK_EMAIL flips;
+  // ready to light up. (obs)
+  const emailHealth = (
+    await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE (properties->>'delivered')::boolean)::int delivered,
+        count(*) FILTER (WHERE (properties->>'disabled')::boolean)::int suppressed,
+        count(*) FILTER (WHERE NOT coalesce((properties->>'delivered')::boolean, false)
+                           AND NOT coalesce((properties->>'disabled')::boolean, false))::int failed
+        FROM activity_events
+       WHERE type = 'email_sent' AND created_at >= now() - interval '7 days'`)
+  ).rows[0];
+
+  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, emailHealth, costTrend, activityTrend };
 }
 
 function renderOverview(o) {
@@ -257,9 +271,16 @@ function renderOverview(o) {
         )
         .join("")
     : `<tr><td class="muted">No uninstall feedback yet.</td><td></td></tr>`;
+  const eh = o.emailHealth || {};
+  const emailAny =
+    Number(eh.delivered || 0) + Number(eh.suppressed || 0) + Number(eh.failed || 0);
+  const emailRows = emailAny
+    ? `<tr><td>Sent</td><td>${eh.delivered || 0}</td></tr><tr><td>Failed</td><td>${eh.failed || 0}</td></tr><tr><td>Suppressed</td><td>${eh.suppressed || 0}</td></tr>`
+    : `<tr><td class="muted">No win-back emails yet.</td><td></td></tr>`;
   const breakdown = `<div class="panels">
       <div class="panel"><div class="ph">LLM cost by feature · 7d</div><table class="mini"><tbody>${featureRows}</tbody></table></div>
       <div class="panel"><div class="ph">Why they left · latest per shop</div><table class="mini"><tbody>${reasonRows}</tbody></table></div>
+      <div class="panel"><div class="ph">Win-back email · 7d</div><table class="mini"><tbody>${emailRows}</tbody></table></div>
     </div>`;
 
   // Margin per client (indicative) — net revenue − COGS − LLM cost, coverage-gated (obs #20).
