@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 131);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 132);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -47,6 +47,7 @@ test("deterministic belief registry contains only vetted implementation tranches
       "Seasonality v1",
       "Recommendation outcomes v1",
       "Clearance outcomes v1",
+      "Action feedback v1",
     ]),
   );
   assert.equal(
@@ -110,13 +111,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 131);
-  assert.equal(result.derivationReport.attempted, 131);
+  assert.equal(result.registryDefinitionCount, 132);
+  assert.equal(result.derivationReport.attempted, 132);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    131,
+    132,
   );
-  assert.equal(result.derivationAttempts.length, 131);
+  assert.equal(result.derivationAttempts.length, 132);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -1168,6 +1169,63 @@ test("clearance effectiveness aggregates measured outcomes (Observe->Learn)", as
   assert.equal(belief.value.revenueRecovered, 435); // 255 + 180 + 0
   assert.equal(belief.value.runEffectivenessPercent, 66.67); // 2/3
   assert.equal(belief.value.variantSellThroughPercent, 44.44); // 4/9
+});
+
+function createDeclinePrisma() {
+  const at = new Date(Date.UTC(2026, 6, 1));
+  // Four declined actions; "too_aggressive" is the most common reason category.
+  const declines = [
+    { properties: { actionType: "price_markdown", reasonCategory: "too_aggressive", reasonText: null } },
+    { properties: { actionType: "price_markdown", reasonCategory: "too_aggressive", reasonText: null } },
+    { properties: { actionType: "price_markdown", reasonCategory: "wrong_products", reasonText: null } },
+    { properties: { actionType: "price_markdown", reasonCategory: "bad_timing", reasonText: null } },
+  ];
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "dcl.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: at,
+            rawPayload: { name: "Dcl Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => [] },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+    activityEvent: { findMany: async () => declines },
+  };
+}
+
+test("action decline signal aggregates reason categories (Observe->Learn)", async () => {
+  const prisma = createDeclinePrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const belief = new Map(result.derivations.map((b) => [b.key, b])).get(
+    "business.action_decline_signal.all_time",
+  );
+  assert.ok(belief, "action_decline_signal should publish");
+  assert.equal(belief.value.totalDeclines, 4);
+  assert.equal(belief.value.topReasonCategory, "too_aggressive"); // 2 of 4
+  assert.equal(belief.value.topReasonSharePercent, 50); // 2/4
+  assert.equal(belief.value.byReasonCategory.too_aggressive, 2);
+  assert.equal(belief.value.byReasonCategory.wrong_products, 1);
+  assert.equal(belief.value.byActionType.price_markdown, 4);
 });
 
 function createMomentumPrisma() {

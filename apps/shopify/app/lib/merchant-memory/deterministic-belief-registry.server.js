@@ -4956,6 +4956,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "An earned-autonomy signal, not a store metric; dormant until clearance execution is live (no measured runs while the write flag is off).",
     "sourceUrl": "https://shopify.dev/docs/apps/build/online-store"
+  },
+  {
+    "key": "business.action_decline_signal.all_time",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "counts of declined actions grouped by reason category and action type, with the most common reason and its share",
+    "minimumData": "At least 3 declined actions",
+    "confidenceRule": "0.90 direct observation; rises with decline count",
+    "legacyConfidenceRule": "0.90 direct observation; rises with decline count",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": false,
+      "legacy_rule": "0.90 direct observation; rises with decline count"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["low_sample"],
+    "refreshCadence": "On action decline; debounce",
+    "dependencies": ["activity_events"],
+    "tranche": "Action feedback v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "On-demand; promote only when decision-relevant",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "A feedback signal for the earned-autonomy ramp; PII-safe (reason categories only). Dormant until actions are executable (declines flow once the write flag is on).",
+    "sourceUrl": "https://shopify.dev/docs/apps/build/online-store"
   }
 ];
 

@@ -97,7 +97,7 @@ async function loadDerivationContext(prisma, input) {
   const shop = merchant.shops[0] ?? null;
   const shopId = input.shopId ?? shop?.id ?? null;
   const where = { merchantId: input.merchantId, shopId: shopId ?? undefined };
-  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations, clearanceOutcomes] =
+  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations, clearanceOutcomes, actionDeclines] =
     await Promise.all([
       prisma.product.findMany({
         where,
@@ -202,6 +202,14 @@ async function loadDerivationContext(prisma, input) {
             select: { outcome: true, appliedAt: true },
           })
         : Promise.resolve([]),
+      // Declined actions — the "what/why the merchant rejected" Observe→Learn signal.
+      // reasonCategory is a PII-safe slug; the free-text note is already redacted at write.
+      prisma.activityEvent?.findMany
+        ? prisma.activityEvent.findMany({
+            where: { merchantId: input.merchantId, shopId: shopId ?? undefined, type: "merchant_action_declined" },
+            select: { properties: true },
+          })
+        : Promise.resolve([]),
     ]);
 
   const now = new Date();
@@ -242,6 +250,7 @@ async function loadDerivationContext(prisma, input) {
     inventoryLevels,
     planRecommendations,
     clearanceOutcomes,
+    actionDeclines,
     retainedProducts,
     activeProducts,
     retainedVariants,
@@ -348,6 +357,8 @@ function deriveDefinition(context, definition) {
         return recommendationEngagement(context, definition);
       case "business.clearance_effectiveness.all_time":
         return clearanceEffectiveness(context, definition);
+      case "business.action_decline_signal.all_time":
+        return actionDeclineSignal(context, definition);
       case "products.revenue_by_product_type.trailing_90d":
         return revenueByProductType(context, definition, 90);
       case "products.revenue_by_vendor.trailing_90d":
@@ -1482,6 +1493,51 @@ function clearanceEffectiveness(context, definition) {
     summary: `${runsThatMovedStock} of ${total} clearances moved stock; ${unitsMoved} units recovered.`,
     sampleSize: total,
     supportingValues: { measuredRuns: total, unitsMoved },
+  });
+}
+
+// Observe→Learn: what the merchant rejects and why, aggregated from the PII-safe
+// merchant_action_declined events (reasonCategory is a slug; the free-text note is
+// redacted at write). The plan-rec can read this to propose better next time — e.g. a
+// merchant who keeps declining clearances as "too aggressive" wants gentler markdowns.
+// Dormant until execution is live (the Decline control only renders when actions are
+// executable), so declines flow once the write flag is on.
+function actionDeclineSignal(context, definition) {
+  const declines = (context.actionDeclines ?? []).filter(
+    (event) => event?.properties && typeof event.properties === "object",
+  );
+  if (declines.length < 3) {
+    return skipped(definition, "insufficient_data", "At least 3 declined actions are required to summarize the decline signal.", { declines: declines.length });
+  }
+  /** @type {Record<string, number>} */
+  const byReasonCategory = {};
+  /** @type {Record<string, number>} */
+  const byActionType = {};
+  for (const event of declines) {
+    const props = event.properties;
+    const category = typeof props.reasonCategory === "string" && props.reasonCategory ? props.reasonCategory : "unspecified";
+    byReasonCategory[category] = (byReasonCategory[category] ?? 0) + 1;
+    const actionType = typeof props.actionType === "string" && props.actionType ? props.actionType : "unknown";
+    byActionType[actionType] = (byActionType[actionType] ?? 0) + 1;
+  }
+  const total = declines.length;
+  const topEntry = Object.entries(byReasonCategory).sort((a, b) => b[1] - a[1])[0];
+  const topReasonCategory = topEntry ? topEntry[0] : "unspecified";
+  const topReasonCount = topEntry ? topEntry[1] : 0;
+  return derived(context, definition, {
+    value: {
+      totalDeclines: total,
+      byReasonCategory,
+      byActionType,
+      topReasonCategory,
+      topReasonSharePercent: roundNumber((topReasonCount / total) * 100, 2),
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.9, total, 3, 30),
+    confidenceReason: "Direct counts of merchant action declines by reason category.",
+    summary: `${total} suggestions declined; most common reason: ${topReasonCategory}.`,
+    sampleSize: total,
+    supportingValues: { totalDeclines: total },
   });
 }
 
