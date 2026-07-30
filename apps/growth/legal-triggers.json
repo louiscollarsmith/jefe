@@ -1,13 +1,12 @@
 {
   "_comment": "Current declared LEGAL REALITY. Update this whenever reality changes (new sub-processor, scope, region, autonomy mode, data type, retention). The watcher (scripts/legal-watch.mjs) diffs this against legal-baseline.json and flags which legal docs need review + whether merchants must be notified. After updating the docs + notifying, copy this file over legal-baseline.json to acknowledge.",
   "scopes": [
-    "read_products", "write_products", "read_orders", "write_orders", "read_all_orders",
-    "read_customers", "write_customers", "read_inventory", "write_inventory",
-    "read_locations", "write_locations"
+    "read_products", "write_products", "read_orders", "read_all_orders",
+    "read_customers", "read_inventory", "read_locations"
   ],
   "subProcessors": ["Neon", "Railway", "Google (Gemini)", "Resend", "Sentry", "Shopify"],
   "dataRegions": ["UK", "EU", "US"],
-  "autonomyModes": ["approve-execute", "autonomous"],
+  "autonomyModes": ["recommend", "approve-execute", "autonomous"],
   "dataTypes": ["orders", "products", "customers-PII", "inventory"],
   "retentionModel": "raw-order-PII-at-rest-until-uninstall-or-redact"
 }
