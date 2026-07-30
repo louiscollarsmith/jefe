@@ -29,6 +29,7 @@ import {
   labelForBeliefKey,
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
+import { track } from "../../services/analytics/event-log.server.js";
 
 export { OPERATION_STATUS, OPERATION_TYPES };
 
@@ -116,6 +117,28 @@ export function buildGapDrivenOpenQuestions(beliefs) {
   }
 
   return questions;
+}
+
+/**
+ * Intent-capture — the seed of the demand-derived action ontology. A merchant
+ * message Jefe can't resolve into a memory operation is often an *action* the
+ * merchant wants but Jefe can't yet take ("reorder my bestseller", "email my VIPs").
+ * Shape a PII-safe candidate-intent event from it, logged via the activity stream
+ * and mined later (by frequency × value) for what to build. Best-effort; the
+ * event never affects the reply. Pure so the shape is unit-testable.
+ * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {string} content
+ * @param {{ reason?: string | null } | null | undefined} operation
+ */
+export function buildUnfulfilledIntentEvent(input, content, operation) {
+  return {
+    type: "merchant_intent_unfulfilled",
+    topic: "intent",
+    summary: summarizeMerchantStatement(content),
+    merchantId: input.merchantId,
+    shopId: input.shopId ?? undefined,
+    properties: { reason: operation?.reason ?? null },
+  };
 }
 
 /**
@@ -375,6 +398,9 @@ export async function sendConversationMessage(prisma, input) {
   }
 
   if (operation.operationType === OPERATION_TYPES.clarificationRequired) {
+    // Intent-capture: an unresolved ask is often an action Jefe can't yet take —
+    // log it (PII-safe, best-effort) as a candidate intent for the ontology.
+    void track(prisma, buildUnfulfilledIntentEvent(input, content, operation));
     await createAssistantMessage(prisma, {
       conversation,
       content: operation.reason,

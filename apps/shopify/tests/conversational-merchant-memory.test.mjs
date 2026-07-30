@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   OPERATION_TYPES,
   buildGapDrivenOpenQuestions,
+  buildUnfulfilledIntentEvent,
   interpretMerchantMessage,
   interpretMerchantMessageWithLlm,
   validateStructuredOperation,
@@ -45,6 +46,20 @@ test("gap-driven open questions raise on fillable gaps and retract when filled",
     },
   ];
   assert.equal(buildGapDrivenOpenQuestions(filledState).length, 0);
+});
+
+test("intent-capture shapes a PII-safe candidate-intent event from an unresolved ask", () => {
+  const event = buildUnfulfilledIntentEvent(
+    { merchantId: "m1", shopId: "s1" },
+    "Can you reorder my bestseller and email my VIP customers?",
+    { reason: "That's an action Jefe can't take yet." },
+  );
+  assert.equal(event.type, "merchant_intent_unfulfilled");
+  assert.equal(event.topic, "intent");
+  assert.equal(event.merchantId, "m1");
+  assert.equal(event.shopId, "s1");
+  assert.equal(event.properties.reason, "That's an action Jefe can't take yet.");
+  assert.ok(typeof event.summary === "string" && event.summary.length > 0);
 });
 
 const beliefs = [
