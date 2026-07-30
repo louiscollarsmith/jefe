@@ -303,6 +303,8 @@ function deriveDefinition(context, definition) {
         return sellingProductCount(context, definition, 90);
       case "products.no_sale_active_product_count.trailing_90d":
         return noSaleActiveProductCount(context, definition, 90);
+      case "products.dead_stock.trailing_90d":
+        return deadStock(context, definition, 90);
       case "products.top_product_revenue_share.trailing_90d":
         return topProductRevenueShare(context, definition, 90, 1);
       case "products.top_5_product_revenue_share.trailing_90d":
@@ -2106,6 +2108,67 @@ function noSaleActiveProductCount(context, definition, days) {
   }
   const noSale = context.activeProducts.filter((product) => !soldProductIds.has(product.id)).length;
   return countOutcome(context, definition, noSale, `Active products with no recorded sales in the trailing ${days} days.`, { sampleSize: context.activeProducts.length });
+}
+
+// Dead stock = active products with inventory on hand but no sales in the window:
+// the cash trapped in what isn't moving. Trapped capital = units on hand × unit
+// cost (where cost is known), so it's the true capital tied up, not retail value.
+// Complements the count belief with the value + the named products, and feeds the
+// clearance action.
+function deadStock(context, definition, days) {
+  const { orders, soldProductIds } = productSalesInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const costByVariant = variantUnitCostMap(context);
+  const items = [];
+  let deadStockProductCount = 0;
+  let totalTrappedCapital = 0;
+  for (const product of context.activeProducts) {
+    if (soldProductIds.has(product.id)) continue;
+    const variants = context.variantsByProduct.get(product.id) ?? [];
+    let units = 0;
+    let trapped = 0;
+    let hasStock = false;
+    let hasCost = false;
+    for (const variant of variants) {
+      const available = context.availableByVariant.get(variant.id) ?? 0;
+      if (available > 0) {
+        hasStock = true;
+        units += available;
+        const cost = costByVariant.get(variant.id);
+        if (cost != null) {
+          hasCost = true;
+          trapped += cost * available;
+        }
+      }
+    }
+    if (!hasStock) continue;
+    deadStockProductCount += 1;
+    if (hasCost) {
+      totalTrappedCapital += trapped;
+      items.push({ productId: product.id, title: productTitle(context, product.id), unitsOnHand: units, trappedCapital: roundMoney(trapped) });
+    }
+  }
+  if (deadStockProductCount < 1) {
+    return skipped(definition, "insufficient_data", "No active product is both in stock and out of sales in the window.", { deadStockProductCount });
+  }
+  items.sort((a, b) => b.trappedCapital - a.trappedCapital);
+  return derived(context, definition, {
+    value: {
+      items: items.slice(0, 8),
+      topDeadProduct: items[0] ?? null,
+      deadStockProductCount,
+      costCoveredProductCount: items.length,
+      totalTrappedCapital: roundMoney(totalTrappedCapital),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Active products in stock with no sales in the window; trapped capital = units on hand × unit cost where cost is known.",
+    summary: `${deadStockProductCount} active products have stock but no sales in the trailing ${days} days.`,
+    sampleSize: orders.length,
+  });
 }
 
 function topProductRevenueShare(context, definition, days, topN) {

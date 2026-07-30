@@ -4380,6 +4380,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "products.dead_stock.trailing_90d",
+    "category": "products",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "active products in stock with no sales in window; trapped capital = units on hand × unit cost where cost is known",
+    "minimumData": "At least 5 priced orders in the window and at least 1 in-stock, no-sale active product",
+    "confidenceRule": "0.9 direct observation",
+    "legacyConfidenceRule": "0.9 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.9 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage", "incomplete_inventory_coverage"],
+    "refreshCadence": "On order or inventory change; debounce",
+    "dependencies": ["orders", "line_items", "variants", "inventory_levels", "products"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Cash trapped in products that aren't moving; trapped capital is stated only where unit cost is known (never guessed). The memory fact behind the clearance action.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
     "key": "products.top_product_revenue_share.trailing_90d",
     "category": "products",
     "valueType": "percentage",

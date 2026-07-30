@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 128);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 129);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -109,13 +109,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 128);
-  assert.equal(result.derivationReport.attempted, 128);
+  assert.equal(result.registryDefinitionCount, 129);
+  assert.equal(result.derivationReport.attempted, 129);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    128,
+    129,
   );
-  assert.equal(result.derivationAttempts.length, 128);
+  assert.equal(result.derivationAttempts.length, 129);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -602,6 +602,75 @@ test("margin-by-region states gross margin per country, doubly coverage-gated", 
   const us = margin.value.items.find((item) => item.country === "US");
   assert.equal(us.marginPercent, 30);
   assert.equal(margin.value.currency, "GBP");
+});
+
+function createDeadStockPrisma() {
+  const now = Date.now();
+  const products = [
+    { id: "prod-dead", title: "Dead Widget", status: "ACTIVE" },
+    { id: "prod-live", title: "Live Widget", status: "ACTIVE" },
+  ];
+  const variants = [
+    { id: "var-dead", productId: "prod-dead", sku: "D", title: "D", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-d" },
+    { id: "var-live", productId: "prod-live", sku: "L", title: "L", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-l" },
+  ];
+  const inventoryLevels = [
+    { variantId: "var-dead", available: 10, inventoryItemExternalId: "inv-d", locationExternalId: "loc-1", sourceUpdatedAt: new Date(now), observedAt: new Date(now) },
+    { variantId: "var-live", available: 5, inventoryItemExternalId: "inv-l", locationExternalId: "loc-1", sourceUpdatedAt: new Date(now), observedAt: new Date(now) },
+  ];
+  // 6 orders, all selling only the live product; the dead product never sells.
+  const orders = [];
+  const lineItems = [];
+  for (let i = 0; i < 6; i += 1) {
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    const id = `ds-order-${i + 1}`;
+    orders.push({ id, externalId: `ds-x-${i + 1}`, currency: "GBP", totalPrice: "100.00", totalDiscount: "0.00", totalTax: "0.00", totalShipping: "0.00", processedAt: at, sourceCreatedAt: at, sourceUpdatedAt: at, customerExternalId: `ds-c-${i + 1}`, financialStatus: "PAID" });
+    lineItems.push({ orderId: id, productId: "prod-live", variantId: "var-live", quantity: 1, unitPrice: "100.00", totalPrice: "100.00" });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "ds.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "DS Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders", "read_inventory"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => products },
+    variant: { findMany: async () => variants },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => lineItems },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => inventoryLevels },
+  };
+}
+
+test("dead-stock belief surfaces in-stock, no-sale products with trapped capital", async () => {
+  const prisma = createDeadStockPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const dead = beliefs.get("products.dead_stock.trailing_90d");
+
+  assert.equal(dead.valueType, "structured");
+  assert.equal(dead.value.deadStockProductCount, 1); // only the dead product
+  assert.equal(dead.value.topDeadProduct.productId, "prod-dead");
+  assert.equal(dead.value.topDeadProduct.trappedCapital, 400); // 10 units × £40 cost
+  assert.equal(dead.value.totalTrappedCapital, 400);
+  assert.equal(dead.value.currency, "GBP");
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {
