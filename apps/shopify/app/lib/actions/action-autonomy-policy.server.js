@@ -32,7 +32,8 @@ export async function getActionMode(prisma, input) {
     where: { merchantId_actionType: { merchantId: input.merchantId, actionType: input.actionType } },
     select: { mode: true },
   });
-  return isValidActionMode(row?.mode) ? /** @type {any} */ (row.mode) : DEFAULT_ACTION_MODE;
+  if (row && isValidActionMode(row.mode)) return /** @type {any} */ (row.mode);
+  return DEFAULT_ACTION_MODE;
 }
 
 /**

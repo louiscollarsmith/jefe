@@ -37,7 +37,7 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
     options: Number.isFinite(markdownPercent) ? { defaultDiscountPercent: markdownPercent } : undefined,
   });
   if (proposal.status !== "proposed") return null;
-  const preview = buildClearancePreview(proposal);
+  const preview = buildClearancePreview(/** @type {any} */ (proposal));
   if (preview.variantCount === 0) return null; // all refused (below-floor / missing-floor) or none
   return { proposal, preview };
 }
@@ -67,7 +67,7 @@ export function toSuggestedAction({ proposal, preview, runId, executable }) {
       { label: "Projected recovery", value: proposal.totalProjectedRecovery },
       { label: "Products", value: preview.variantCount },
     ],
-    topItems: preview.changes.slice(0, 3).map((c) => ({
+    topItems: preview.changes.slice(0, 3).map((/** @type {any} */ c) => ({
       title: c.title ?? c.variantId,
       detail: `${c.fromPrice} → ${c.toPrice} (−${c.discountPercent}%)`,
     })),
