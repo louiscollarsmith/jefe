@@ -3,6 +3,35 @@
 Resume-state for the next observability session. Built across "Jefe chat 3" on
 2026-07-28→29. Everything below is **live in prod** unless marked.
 
+## Chat 8 update (2026-07-30, overnight) — autonomous top-5 shipped
+
+Continuation under an explicit overnight mandate ("deploy two-way doors + turn
+on; build one-way doors but hold for the morning"). Everything here is **live in
+prod** (jefe via `main`, ops panel via `railway up --service jefe-ops`) unless
+marked HELD. Commits authored `Jefe Agent`.
+
+**Shipped + deployed (two-way doors):**
+- **LLM metering completed** — all **7** call sites now record to `llm_usage_event` (added `conversation` + `store_understanding` via `safeCreateLlmProvider(logger, usage)`, plus `insight_correction` + `goals_document`). Margin is honest end-to-end now. Pricing still PLACEHOLDER (see gotchas).
+- **Bug #13 fixed** (the duplicate-`app/uninstalled` reactivation flagged out-of-scope on 07-29): `app/uninstalled` is handled BEFORE the dedupe short-circuit — churn captured once (gated on `created`), `markShopifyInstallInactive` ALWAYS re-asserted (idempotent). Regression test added. `Shop.uninstalledAt` added (migration `20260729130000`, verified absent in prod first).
+- **/health diagnostics** — `buildWorkerHealth` (backfill-loop liveness via an in-memory heartbeat: ok/stale/starting/disabled + lastTickAgoMs) + `buildDependencyHealth` (env-only email/slack/llm flags, no network). `/health` now exposes `checks.worker`, dep flags, and `latency` p50/p95/p99. Live-verified.
+- **Alert-noise (streaming aborts)** — `stream-errors.server.js`: benign client-abort / premature-close / ECONNRESET stream errors downgrade to WARN (were paging as "Streaming render error").
+- **Churn & retention view** in the ops panel (Churned + Tenure@churn tiles).
+- **#17 churn-reason consumed** — overview "Why they left" breakdown + merchant drill-down reason (latest `shop_uninstall_feedback` per shop; last-write-wins per the e.feedback contract). **Empty until `ENABLE_EMAIL` sends farewell-email feedback links** — build-ahead, ready. (ops `e5114c1`)
+- **#20 portfolio economics** — overview "LLM cost by feature · 7d" + coverage-gated "Margin by client" table (each row links to the drill-down). (ops `e5114c1`)
+- **#19 ops-panel tests** — extracted pure helpers to `apps/ops/format.mjs` (esc/money/fmtMs/safeEqual/optionList/sparkline/churnReasonLabel) + 12 `node --test` cases; `apps/ops` had zero tests before. (ops `6e54085`)
+- **Schema-drift guard** — non-blocking `prisma migrate diff` step in `ci.yml` (`89f68af`). Obs #4 audit found NO app drift (only a rogue `waitlist_signups` marketing table, out of scope).
+- **Sentry → #jefe-slack** — high-priority-issues alert rule routes to Slack (member/email action removed). Via the Sentry UI (no token handled).
+
+**Founder-side / external (Matt, 07-30):**
+- **#8 uptime** — Better Stack (free tier) monitor **live** on `https://app.mynamejefe.com/ready` (GET, 3-min checks, SSL verify on, multi-region). Advised: set **Confirmation period → 3 min** (2 failed checks) so a deploy blip doesn't page. **Slack routing still to do**: Integrations → Slack → Quiver → #jefe-slack (currently email-to-founder only; push notifs need a paid upgrade — skip).
+
+**HELD (one-way doors — do NOT turn on without Matt):** `ENABLE_EMAIL` (real win-back sends — also the switch that starts populating #17), `ENABLE_EVENT_RETENTION` (deletes old events).
+
+**Morning follow-ups:**
+- **Flip the CI drift guard to blocking** — drop `continue-on-error` in `ci.yml` once a first green run confirms no definition-level drift. Deferred overnight because `gh` was unavailable to read the run.
+- Finish Better Stack → Slack integration (above).
+- When `ENABLE_EMAIL` goes on, #17's "Why they left" + per-merchant reason populate automatically.
+
 ## Chat 8 update (2026-07-29, late) — remaining roadmap shipped
 
 Chat 8 worked the top-ten remaining list; **all code-side items shipped to prod**

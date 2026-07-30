@@ -4,6 +4,14 @@ The code-side observability roadmap is shipped (see `observability-handover-2026
 What's left is **infra / founder-gated** — no new app machinery, just steps to
 run when wanted. Grouped by roadmap item.
 
+## Status update (2026-07-30, overnight) — several of these are now DONE
+
+- **LLM metering completeness** (below) — **DONE.** All 7 `createLlmProvider` sites now pass a `usage:` context (added `conversation` + `store_understanding`, plus `insight_correction` + `goals_document`); panel LLM cost + margin are no longer undercounted. Pricing is still placeholder.
+- **/health dependency diagnostics** (below) — **DONE.** `buildWorkerHealth` (backfill-loop liveness via an in-memory heartbeat) + `buildDependencyHealth` (email/slack/llm env flags, no network) ship on `/health`, alongside `latency` percentiles.
+- **#8 external uptime monitor** (below) — **DONE (founder).** Better Stack monitor live on `app.mynamejefe.com/ready` (3-min, SSL-verify, multi-region). Remaining: route it to #jefe-slack (Integrations → Slack → Quiver → #jefe-slack; currently founder-email only) and set Confirmation period → 3 min.
+- **Sentry → #jefe-slack** (below) — **DONE.** The high-priority-issues alert rule now posts to #jefe-slack (member/email action removed).
+- **Still open:** ops-panel re-gate (`OPS_PUBLIC=false`) + read-only DB role; Railway log drain; **CI schema-drift guard → flip to blocking** (shipped non-blocking in `ci.yml`; drop `continue-on-error` after a first green run confirms no definition-level drift — `gh` was unavailable overnight to read the run).
+
 ## New env vars introduced (chat 8)
 
 On the `jefe` service (Railway):
