@@ -323,6 +323,8 @@ function deriveDefinition(context, definition) {
         return revenueByRegion(context, definition, 90);
       case "business.margin_by_region.trailing_90d":
         return marginByRegion(context, definition, 90);
+      case "business.discount_depth.trailing_90d":
+        return discountDepth(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -1899,6 +1901,49 @@ function marginByRegion(context, definition, days) {
     summary: `Gross margin by destination country in the trailing ${days} days.`,
     sampleSize: orders.length,
     coverageMetrics: { countryCoverage: roundNumber(countryCoverage, 4) },
+  });
+}
+
+// Discount depth — how much of the store's pre-discount revenue is given away in
+// discounts, plus the share of orders that carried any discount. A margin-leak
+// signal: heavy discounting can hide thin real margins. Shop base currency.
+function discountDepth(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  if (!currency.ok) {
+    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+  }
+  let totalDiscount = 0;
+  let totalNet = 0;
+  let discountedOrders = 0;
+  for (const order of orders) {
+    const discount = decimalNumber(order.totalDiscount);
+    totalDiscount += discount;
+    totalNet += decimalNumber(order.totalPrice);
+    if (discount > 0) discountedOrders += 1;
+  }
+  const gross = totalNet + totalDiscount;
+  if (gross <= 0) {
+    return skipped(definition, "insufficient_data", "No positive revenue in the window.", { gross: roundMoney(gross) });
+  }
+  return derived(context, definition, {
+    value: {
+      percentage: roundNumber((totalDiscount / gross) * 100, 2),
+      discountedOrderSharePercent: roundNumber((discountedOrders / orders.length) * 100, 2),
+      totalDiscount: roundMoney(totalDiscount),
+      grossRevenue: roundMoney(gross),
+      netRevenue: roundMoney(totalNet),
+      discountedOrderCount: discountedOrders,
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.9,
+    confidenceReason: "Total discounts divided by gross (pre-discount) revenue over the window, plus the share of orders carrying any discount.",
+    summary: `Share of pre-discount revenue given away in discounts in the trailing ${days} days.`,
+    sampleSize: orders.length,
   });
 }
 

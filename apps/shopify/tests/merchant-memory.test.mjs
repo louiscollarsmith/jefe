@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 129);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 130);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -109,13 +109,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 129);
-  assert.equal(result.derivationReport.attempted, 129);
+  assert.equal(result.registryDefinitionCount, 130);
+  assert.equal(result.derivationReport.attempted, 130);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    129,
+    130,
   );
-  assert.equal(result.derivationAttempts.length, 129);
+  assert.equal(result.derivationAttempts.length, 130);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);
@@ -671,6 +671,75 @@ test("dead-stock belief surfaces in-stock, no-sale products with trapped capital
   assert.equal(dead.value.topDeadProduct.trappedCapital, 400); // 10 units × £40 cost
   assert.equal(dead.value.totalTrappedCapital, 400);
   assert.equal(dead.value.currency, "GBP");
+});
+
+function createDiscountPrisma() {
+  const now = Date.now();
+  // 6 discounted orders (£90 + £10 off = £100 gross), 4 full-price (£100).
+  const orders = [];
+  for (let i = 0; i < 10; i += 1) {
+    const at = new Date(now - (i + 1) * 24 * 60 * 60 * 1000);
+    const discounted = i < 6;
+    orders.push({
+      id: `disc-order-${i + 1}`,
+      externalId: `disc-x-${i + 1}`,
+      currency: "GBP",
+      totalPrice: discounted ? "90.00" : "100.00",
+      totalDiscount: discounted ? "10.00" : "0.00",
+      totalTax: "0.00",
+      totalShipping: "0.00",
+      processedAt: at,
+      sourceCreatedAt: at,
+      sourceUpdatedAt: at,
+      customerExternalId: `disc-c-${i + 1}`,
+      financialStatus: "PAID",
+    });
+  }
+  return {
+    merchant: {
+      findUniqueOrThrow: async () => ({
+        id: "merchant-test",
+        name: "Mock Merchant",
+        shops: [
+          {
+            id: "shop-test",
+            shopDomain: "disc.myshopify.com",
+            historicalOrderAccess: "unknown",
+            backfillCompletedAt: new Date(),
+            rawPayload: { name: "Disc Shop", iana_timezone: "Europe/London" },
+            connectorAccounts: [{ scopes: ["read_orders"] }],
+            backfillStatuses: [{ domain: "orders", status: "complete" }],
+          },
+        ],
+      }),
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
+    order: { findMany: async () => orders },
+    orderLineItem: { findMany: async () => [] },
+    refund: { findMany: async () => [] },
+    customerIdentity: { findMany: async () => [] },
+    inventoryLevel: { findMany: async () => [] },
+  };
+}
+
+test("discount-depth measures give-away share and penetration", async () => {
+  const prisma = createDiscountPrisma();
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["business"],
+  });
+  const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
+  const dd = beliefs.get("business.discount_depth.trailing_90d");
+
+  // Discounts £60 of £1000 gross = 6%; 6 of 10 orders discounted = 60%.
+  assert.equal(dd.value.percentage, 6);
+  assert.equal(dd.value.discountedOrderSharePercent, 60);
+  assert.equal(dd.value.totalDiscount, 60);
+  assert.equal(dd.value.grossRevenue, 1000);
+  assert.equal(dd.value.discountedOrderCount, 6);
+  assert.equal(dd.value.currency, "GBP");
 });
 
 test("product-performance beliefs suppress below minimum order volume", async () => {

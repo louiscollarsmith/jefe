@@ -4678,6 +4678,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.discount_depth.trailing_90d",
+    "category": "business",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "sum(total_discounts) / (sum(total_price) + sum(total_discounts)) within window; plus share of orders with any discount",
+    "minimumData": "At least 5 priced orders in the window with positive revenue",
+    "confidenceRule": "0.9 direct observation",
+    "legacyConfidenceRule": "0.9 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.9 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Share of pre-discount revenue given away in discounts, and the share of orders discounted; a margin-leak signal, not a directive.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
     "key": "products.top_returned_products.trailing_180d",
     "category": "products",
     "valueType": "structured",
