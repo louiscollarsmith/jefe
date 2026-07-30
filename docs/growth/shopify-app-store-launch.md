@@ -74,21 +74,23 @@ Grounded in the actual Partner Dashboard state + an audit of `apps/shopify`. Not
 
 ---
 
-## Listing copy — accurate launch framing (2026-07-30) [INTERIM — final line pending founder confirm]
+## Listing copy — autonomy from day 1, two-mode (2026-07-30, CONFIRMED via chat 7 relay of Matt)
 
-> ⚠️ **Correction (chat 7 caught it):** an earlier re-cut claimed Jefe "acts on it / handles it for you." At **launch, execution ships flagged-off (propose-first)** — the two-mode action capability is *built* but not live. Claiming live autonomous store-writes to a reviewer is the same false-statement risk as the "transient" privacy line. **The final legal/App-Store positioning line is founder substance — chat 7 is relaying the exact wording for Matt's confirm; use that when it lands.** Safe interim below.
+> **Direction (Matt-confirmed, relayed by chat 7, 2026-07-30):** autonomy **from day 1** — Jefe **executes on the merchant's behalf, live at launch**, two modes per action type. This supersedes both the earlier "advisory-today" copy *and* the interim "propose-first / recommends-now" cut. chat 7 is shipping the live Shopify write client and **enabling execution before submit**, so "Jefe executes" is **true at review time** — not a flagged-off claim.
 >
-> **Canonical framings.** *Capability* (internal — AGENTS/context/commercial-state, blessed by chat 7): two-mode, merchant-controlled — Jefe proposes-for-approval OR acts autonomously per the merchant's per-action-type policy, via typed reversible adapters; merchant is principal + can veto/reverse. *Launch reality* (legal + listing): built to act; **propose-first at launch** (first action ships flagged-off); autonomy turns on per action type as it ships + the merchant opts in.
+> **⚠️ Honesty gate (the one hard condition):** this copy is accurate **only if execution is actually LIVE when the listing is submitted / reviewed.** chat 7 owns landing + confirming the write client first. If execution is *not* live at submit, fall back to the recommends-now wording (in git history) — never claim autonomous action a reviewer can't see. Same principle as the "transient" line: the fix is shipping the capability, not softening the words.
 
-**Interim safe copy (recommends-now + built-to-act; no live-autonomy claim):**
-- **App card subtitle (≤62):** `Learns how your store works and finds your next move, with the evidence.`
-- **Introduction:** `Jefe learns how your Shopify store actually works from your own data, then finds the next move to make and shows the evidence behind it. It's built to act on your say-so, with new actions rolling out over time — always under your control.`
-- **App details (≤500):** `Meet Jefe — an AI manager for your Shopify store. Jefe reads your orders, products, customers, and inventory to build a living understanding of how your business works, then finds the next move worth making and shows the evidence behind it. Jefe is built to act on those moves through controlled, reversible steps — for each type of action you choose whether Jefe proposes it for your approval or handles it for you — and actions roll out over time, always under your control. You set the rules, and can veto or undo anything.`
-- **Features:** (1) `Learns how your store works from your own orders, products and customers` (2) `Finds the next move worth making — always with the evidence behind it` (3) `Built to act on those moves — you approve, or let Jefe handle routine ones` (4) `Every action is controlled and reversible — set the rules, veto, or undo` (5) `A living Merchant Memory you can inspect and correct anytime`
-- **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move with the evidence, and is built to act on it — on your terms.`
+**Confirmed canonical line (Matt via chat 7):** *Jefe acts on your behalf — you approve each action, or let it run autonomously, per action type.*
 
-**⚠️ Scope:** keep the `write_*` scopes (needed for the action layer).
-**⚠️ Category + reviewer:** if execution is fully flagged-off at launch a reviewer sees recommendations, not automation → **reconsider Workflow automation vs Analytics** until an action is demonstrable, and a reviewer must be able to see whatever the copy claims. Decide alongside the confirmed positioning line.
+**Listing copy (autonomy-from-day-1):**
+- **App card subtitle (≤62):** `Learns your store, finds the next move, acts on it — your call`
+- **Introduction:** `Jefe learns how your Shopify store actually works from your own data, then acts on your behalf. For each type of action you choose the mode: Jefe proposes it for your approval, or runs it autonomously and reports back. You set the rules, and can veto or reverse anything.`
+- **App details (≤500):** `Meet Jefe — an AI manager for your Shopify store. Jefe reads your orders, products, customers, and inventory to build a living understanding of how your business works, finds the next move worth making, and acts on it. For each type of action you choose the mode: Jefe recommends and you approve, or Jefe runs it autonomously and reports back. Every action goes through controlled, reversible steps — you set the rules, and can veto or undo anything. You are always in control.`
+- **Features:** (1) `Learns how your store works from your own orders, products and customers` (2) `Finds the next move worth making — always with the evidence behind it` (3) `Acts on your behalf — you approve each action, or let Jefe run it, per action type` (4) `Every action is controlled and reversible — set the rules, veto, or undo` (5) `A living Merchant Memory you can inspect and correct anytime`
+- **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move, and acts on it — you approve each one, or let it run autonomously.`
+
+**Scope (per chat 7):** **keep `write_products`** — clearance actually executes against it (necessary + honest to request). The other four write_* (`write_orders`, `write_customers`, `write_inventory`, `write_locations`) are **trim-candidates** — nothing live uses them yet, and unused write scopes can draw a reviewer "requests scopes it doesn't use" flag. Decide before submit (chat 7 / architecture call).
+**Category:** **Store management › Operations › Workflow automation** — correct, *because* execution is live at submit so a reviewer sees an action work. (The earlier Analytics hedge assumed a flagged-off launch; no longer applies.) Reviewer-demo: show clearance (approve→execute or autonomous) working on the test store / screencast.
 
 ---
 
