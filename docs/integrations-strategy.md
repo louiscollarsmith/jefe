@@ -66,6 +66,10 @@ An embedded iPaaS / unified-API maintains connectors to hundreds of tools, so we
 - **Don't hand-map per tool.** The aggregator's data still lands in memory via the *general* normalization → LLM → ontology, not a per-tool bespoke mapping — otherwise we've just moved the bespoke-shaper problem behind a vendor.
 - **Detection is inference, not fact.** `business.tool_stack` is system-detected (fingerprint match / signal heuristic) → treat it as inference with confidence + let the merchant confirm/correct (the standard memory provenance ladder), never assert it as fact.
 
+## Prior art (context, NOT a strategy input)
+
+Louis built a bespoke Klaviyo integration pre-reset (2026-07-21, PRs #29–31: adapter, API-key storage, win-back-draft generation, an `action-safety` precursor — ~1,700 lines), removed in the 2026-07-22 Merchant-Memory reset and recoverable from git history. **Founder steer (2026-07-31): do not let prior work bias this strategy.** It is a reference *only if* Klaviyo independently earns a deep-build slot via the demand signal — never a reason to prioritize Klaviyo or revive the direct-API approach. The strategy stays demand-driven and aggregator-first; decisions are made on merit + demand, not sunk cost.
+
 ## Net
 
 Build ~3–5 deep (Shopify done), **detect the stack from day one** (storefront fingerprint + Shopify signals → a memory belief → proactive offers), partner the long tail via an **eCommerce-native MCP-gateway aggregator (Alloy)**, and let the general upload→LLM pipeline + MCP carry the rest — all demand-driven, all through the typed-adapter + one-ontology discipline.
