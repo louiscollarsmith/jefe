@@ -77,3 +77,22 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Self-reporting red gate: on ANY failed step above, ping #jefe-slack with
+      # the branch / commit / run link, so a CI failure surfaces on its own
+      # instead of someone having to watch the Actions tab. Uses the same webhook
+      # as the app's ops alerts — add it as a repo Actions secret (Settings →
+      # Secrets and variables → Actions → new secret ALERT_WEBHOOK_URL, same value
+      # as the jefe service's ALERT_WEBHOOK_URL). No-ops until the secret exists.
+      - name: Alert #jefe-slack on CI failure
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "ALERT_WEBHOOK_URL secret not set — skipping Slack alert"; exit 0
+          fi
+          MSG=":rotating_light: CI failed on ${GITHUB_REF_NAME} (${GITHUB_SHA:0:7}) by ${GITHUB_ACTOR} — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "$(jq -nc --arg t "$MSG" '{text: $t}')" "$WEBHOOK" \
+            && echo "posted CI-failure alert to #jefe-slack" || echo "alert POST failed (non-fatal)"
