@@ -58,9 +58,8 @@ jobs:
         # The migrated DB (built from migration files above) must match
         # schema.prisma. This catches columns/tables added to the schema (or via
         # db-push) with no migration, which would break a fresh migrate-deploy.
-        # Non-blocking until a first green run confirms no pre-existing
-        # definition-level drift — then drop continue-on-error for a hard gate.
-        continue-on-error: true
+        # Hard gate: definition-level drift fails CI. Audited clean 2026-07-29;
+        # flipped from non-blocking on founder OK 2026-07-30.
         run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel ./prisma/schema.prisma --exit-code
 
       - name: Typecheck
