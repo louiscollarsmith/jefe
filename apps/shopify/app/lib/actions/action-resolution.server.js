@@ -13,6 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { validateActionIntent } from "./action-intent.server.js";
+import { getActionMode } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
@@ -106,11 +107,12 @@ export async function proposeActionFromIntent(prisma, input) {
   // Deterministic proposal: the numbers are facts (only costed variants, floored at
   // cost), so the sizing confidence is full. Refine per data-completeness later.
   const confidence = input.confidence ?? 1;
-  // v1 default: the autonomy dial doesn't exist yet, so default to "approve_execute" —
-  // Jefe proposes, the merchant approves, Jefe executes (propose-first). When the dial
-  // lands (M3) read the merchant's per-action setting here. Settings:
-  // "recommend" | "approve_execute" | "autonomous" → modes recommend | approve | auto.
-  const merchantSetting = input.merchantSetting ?? "approve_execute";
+  // The autonomy dial: read the merchant's mode for this action-type (defaults to
+  // approve_execute / propose-first when unset — never auto by default). Callers/tests
+  // may override. Settings recommend|approve_execute|autonomous → modes recommend|approve|auto.
+  const merchantSetting =
+    input.merchantSetting ??
+    (await getActionMode(prisma, { merchantId: input.merchantId, actionType: intent.actionType }));
   const eligibility = computeClearanceAutoEligibility(preview, confidence);
   const autonomy = resolveAutonomyMode(merchantSetting, eligibility);
 

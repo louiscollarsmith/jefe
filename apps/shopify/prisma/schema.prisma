@@ -1086,3 +1086,20 @@ model ActionExecutionWrite {
   @@index([executionId, status])
   @@map("action_execution_writes")
 }
+
+/// The autonomy dial: the merchant's mode per action-type (the 3-mode setting Matt
+/// wants — recommend / approve_execute / autonomous). The resolution layer reads this
+/// to drive resolveAutonomyMode (auto vs propose vs recommend-only); the surface
+/// (picker) sets + shows it. One row per (merchant, action-type); default when absent
+/// is approve_execute (propose-first). Additive; no row = the default.
+model ActionAutonomyPolicy {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  actionType String   @map("action_type") // e.g. "price_markdown"
+  mode       String // "recommend" | "approve_execute" | "autonomous"
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([merchantId, actionType])
+  @@map("action_autonomy_policies")
+}

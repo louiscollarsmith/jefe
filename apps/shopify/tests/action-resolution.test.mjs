@@ -22,11 +22,12 @@ function mockExecPrisma(row) {
 
 // A tiny prisma stub: canned reads for buildDeadStockClearanceProposal's 3 queries
 // + a capturing actionExecution.create. No DB needed — proves the full orchestration.
-function mockPrisma({ variants = [], inventory = [], soldLineItems = [], onCreate }) {
+function mockPrisma({ variants = [], inventory = [], soldLineItems = [], actionMode = null, onCreate }) {
   return {
     variant: { findMany: async () => variants },
     inventoryLevel: { findMany: async () => inventory },
     orderLineItem: { findMany: async () => soldLineItems },
+    actionAutonomyPolicy: { findUnique: async () => (actionMode ? { mode: actionMode } : null) },
     actionExecution: {
       create: async ({ data }) => {
         onCreate?.(data);
@@ -91,6 +92,25 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
   assert.equal(res.suggestedAction.executable, false);
   assert.equal(res.suggestedAction.actionRunId, row.runId);
   assert.equal(res.suggestedAction.keyNumbers.find((n) => n.label === "Projected recovery").value, 1400);
+});
+
+test("the merchant's dial drives the mode: autonomous + eligible -> resolvedMode auto", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
+    inventory: [{ variantId: "v1", available: 10 }],
+    soldLineItems: [],
+    actionMode: "autonomous", // merchant opted into auto for this action-type
+    onCreate: (data) => { row = data; },
+  });
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 30 } },
+  });
+  assert.equal(res.status, "proposed");
+  assert.equal(row.merchantSetting, "autonomous");
+  assert.equal(row.resolvedMode, "auto"); // reversible + capped + confident + merchant=autonomous
 });
 
 test("proposeActionFromIntent returns no_opportunity when there's no dead stock", async () => {
