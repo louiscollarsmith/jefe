@@ -11,6 +11,10 @@
  * default never even loads the SDK.
  */
 
+import { logger as baseLogger } from "../observability/logger.server.js";
+
+const log = baseLogger.child({ component: "email" });
+
 /**
  * @typedef {Object} SendEmailInput
  * @property {string} to Recipient address.
@@ -75,15 +79,16 @@ export async function sendEmail(input) {
 
   // Default path: email disabled -> never touch Resend.
   if (!isEmailEnabled()) {
-    console.log(`[email disabled] would send ${subject} to ${to}`);
+    log.debug("email disabled — not sending", { subject, to });
     return { delivered: false, disabled: true, id: null, to, subject };
   }
 
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
-    console.warn(
-      `[email] ENABLE_EMAIL=true but RESEND_API_KEY is missing — not sending "${subject}" to ${to}`,
-    );
+    log.warn("ENABLE_EMAIL=true but RESEND_API_KEY is missing — not sending", {
+      subject,
+      to,
+    });
     return {
       delivered: false,
       disabled: false,
@@ -94,9 +99,10 @@ export async function sendEmail(input) {
     };
   }
   if (!from) {
-    console.warn(
-      `[email] ENABLE_EMAIL=true but RESEND_FROM_EMAIL is missing — not sending "${subject}" to ${to}`,
-    );
+    log.warn("ENABLE_EMAIL=true but RESEND_FROM_EMAIL is missing — not sending", {
+      subject,
+      to,
+    });
     return {
       delivered: false,
       disabled: false,

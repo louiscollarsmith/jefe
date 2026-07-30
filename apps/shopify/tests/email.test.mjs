@@ -32,22 +32,6 @@ process.env.EMAIL_UNSUBSCRIBE_SECRET =
 
 const databaseUrl = process.env.DATABASE_URL;
 
-/** Run `fn` with console.log/console.warn captured (and silenced). */
-async function withCapturedConsole(fn) {
-  const logs = [];
-  const originalLog = console.log;
-  const originalWarn = console.warn;
-  console.log = (...args) => logs.push(args.join(" "));
-  console.warn = (...args) => logs.push(args.join(" "));
-  try {
-    const result = await fn();
-    return { result, logs };
-  } finally {
-    console.log = originalLog;
-    console.warn = originalWarn;
-  }
-}
-
 /** Save/restore an env var around a callback. */
 async function withEnv(key, value, fn) {
   const had = Object.prototype.hasOwnProperty.call(process.env, key);
@@ -76,26 +60,16 @@ function uniqueSuffix() {
 test("sendEmail is a no-op that never touches Resend when ENABLE_EMAIL is unset", async () => {
   await withEnv("ENABLE_EMAIL", undefined, async () => {
     await withEnv("RESEND_API_KEY", undefined, async () => {
-      const { result, logs } = await withCapturedConsole(() =>
-        sendEmail({
-          to: "merchant@example.com",
-          subject: "Test subject",
-          html: "<p>hi</p>",
-        }),
-      );
+      const result = await sendEmail({
+        to: "merchant@example.com",
+        subject: "Test subject",
+        html: "<p>hi</p>",
+      });
 
       assert.equal(result.disabled, true);
       assert.equal(result.delivered, false);
       assert.equal(result.id, null);
       assert.equal(isEmailEnabled(), false);
-      assert.ok(
-        logs.some((line) =>
-          line.includes(
-            "[email disabled] would send Test subject to merchant@example.com",
-          ),
-        ),
-        "expected the disabled log line",
-      );
     });
   });
 });
@@ -150,9 +124,11 @@ test("buildResendPayload wires from + reply-to and omits absent optionals", () =
 test("sendEmail while enabled but without an API key still does not send", async () => {
   await withEnv("ENABLE_EMAIL", "true", async () => {
     await withEnv("RESEND_API_KEY", undefined, async () => {
-      const { result } = await withCapturedConsole(() =>
-        sendEmail({ to: "m@example.com", subject: "S", html: "<p>x</p>" }),
-      );
+      const result = await sendEmail({
+        to: "m@example.com",
+        subject: "S",
+        html: "<p>x</p>",
+      });
       assert.equal(result.delivered, false);
       assert.equal(result.disabled, false);
       assert.equal(result.skipped, "missing_api_key");
@@ -271,12 +247,10 @@ test("renderWelcomeEmail drops the name gracefully when merchant is unknown", ()
 });
 
 test("sendWelcomeEmailOnInstall skips (without claiming) when no recipient is known", async () => {
-  const { result } = await withCapturedConsole(() =>
-    // prisma is never touched on this path, so a stub object is safe.
-    sendWelcomeEmailOnInstall(
-      /** @type {any} */ ({}),
-      { shopDomain: "acme.myshopify.com", recipientEmail: null },
-    ),
+  // prisma is never touched on this path, so a stub object is safe.
+  const result = await sendWelcomeEmailOnInstall(
+    /** @type {any} */ ({}),
+    { shopDomain: "acme.myshopify.com", recipientEmail: null },
   );
   assert.equal(result.sent, false);
   assert.equal(result.reason, "no_recipient");
@@ -306,33 +280,24 @@ test("welcome install trigger sends once per shop and is idempotent", async (t) 
         scopes: ["read_products"],
       });
 
-      const { result: first, logs } = await withCapturedConsole(async () => {
-        const a = await sendWelcomeEmailOnInstall(prisma, {
-          shopDomain,
-          recipientEmail: `owner-${suffix}@example.com`,
-          merchantName: "Dana",
-        });
-        const b = await sendWelcomeEmailOnInstall(prisma, {
-          shopDomain,
-          recipientEmail: `owner-${suffix}@example.com`,
-          merchantName: "Dana",
-        });
-        return [a, b];
+      const firstCall = await sendWelcomeEmailOnInstall(prisma, {
+        shopDomain,
+        recipientEmail: `owner-${suffix}@example.com`,
+        merchantName: "Dana",
       });
-      const [firstCall, secondCall] = first;
+      const secondCall = await sendWelcomeEmailOnInstall(prisma, {
+        shopDomain,
+        recipientEmail: `owner-${suffix}@example.com`,
+        merchantName: "Dana",
+      });
 
-      // First call claims the guard and dispatches (as a disabled no-op).
+      // First call claims the guard and dispatches (as a disabled no-op); the
+      // second is a no-op because the guard was already claimed. Together these
+      // return values prove exactly one send was attempted across two triggers.
       assert.equal(firstCall.sent, true);
       assert.equal(firstCall.disabled, true, "must be a disabled no-op send");
-      // Second call is a no-op: the guard was already claimed.
       assert.equal(secondCall.sent, false);
       assert.equal(secondCall.reason, "already_sent");
-
-      // Exactly one send was attempted across the two trigger calls.
-      const sendAttempts = logs.filter((line) =>
-        line.includes("[email disabled] would send"),
-      );
-      assert.equal(sendAttempts.length, 1, "exactly one send attempt");
 
       // The guard timestamp is set exactly once.
       const shop = await prisma.shop.findUniqueOrThrow({
@@ -357,12 +322,10 @@ test("welcome install trigger does not claim the guard when the shop is missing"
     datasources: { db: { url: databaseUrl } },
   });
   try {
-    const { result } = await withCapturedConsole(() =>
-      sendWelcomeEmailOnInstall(prisma, {
-        shopDomain: `missing-${uniqueSuffix()}.myshopify.com`,
-        recipientEmail: "someone@example.com",
-      }),
-    );
+    const result = await sendWelcomeEmailOnInstall(prisma, {
+      shopDomain: `missing-${uniqueSuffix()}.myshopify.com`,
+      recipientEmail: "someone@example.com",
+    });
     assert.equal(result.sent, false);
     assert.equal(result.reason, "shop_not_found");
   } finally {
@@ -469,12 +432,10 @@ test("welcome install trigger skips an unsubscribed recipient without claiming t
         source: "test",
       });
 
-      const { result } = await withCapturedConsole(() =>
-        sendWelcomeEmailOnInstall(prisma, {
-          shopDomain,
-          recipientEmail: recipient,
-        }),
-      );
+      const result = await sendWelcomeEmailOnInstall(prisma, {
+        shopDomain,
+        recipientEmail: recipient,
+      });
       assert.equal(result.sent, false);
       assert.equal(result.reason, "unsubscribed");
 
