@@ -78,12 +78,6 @@ const JEFE_MARK = (
   </svg>
 );
 
-const MIC_ICON = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="oklch(0.97 0.01 80)" strokeWidth={2} strokeLinecap="round" style={{ width: 16, height: 16, display: "block" }}>
-    <rect x="9" y="2.5" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0" /><path d="M12 17.5V21" />
-  </svg>
-);
-
 function currencySymbol(code: string): string {
   const c = (code || "GBP").toUpperCase();
   if (c === "GBP") return "£";
@@ -102,6 +96,43 @@ function eyebrowDate(): string {
 const label: React.CSSProperties = { fontFamily: T.mono, fontSize: 9.5, letterSpacing: "1.2px", textTransform: "uppercase", color: "oklch(0.55 0.015 60)" };
 const statValue: React.CSSProperties = { fontFamily: T.serif, fontSize: 21 };
 const sectionLabel: React.CSSProperties = { ...label, letterSpacing: "1.6px", fontSize: 10 };
+
+// #17 honesty pass: an INERT control style — visibly not-yet-clickable — for
+// actions whose backend isn't wired yet. Replaces the dead `cursor: pointer`
+// spans that previously looked live, so nothing on the default screen presents
+// as a working action (Product Truth: nothing fake may present as working-real).
+const inertControl: React.CSSProperties = {
+  fontFamily: T.brand,
+  fontWeight: 700,
+  fontSize: 12.5,
+  padding: "8px 14px",
+  borderRadius: 9,
+  border: `1px solid ${T.borderSubtle}`,
+  color: T.muted,
+  background: T.hover,
+  cursor: "not-allowed",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+};
+function SoonTag() {
+  return (
+    <span
+      style={{
+        fontFamily: T.mono,
+        fontSize: 8.5,
+        letterSpacing: "0.6px",
+        textTransform: "uppercase",
+        color: T.muted,
+        border: `1px solid ${T.border}`,
+        borderRadius: 4,
+        padding: "1px 4px",
+      }}
+    >
+      soon
+    </span>
+  );
+}
 
 export function DailyHome({
   storeName,
@@ -164,12 +195,11 @@ export function DailyHome({
           )}
         </div>
 
-        {/* composer — pinned, never scrolls away */}
+        {/* composer — chat here isn't wired yet; point to the real channels
+            rather than presenting a fake input (#17 honesty pass) */}
         <div style={{ flex: "none", borderTop: `1px solid ${T.border}`, background: "oklch(0.98 0.004 68)", padding: "12px 26px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ width: 34, height: 34, flex: "none", borderRadius: 10, background: T.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {MIC_ICON}
-          </span>
-          <span style={{ flex: 1, fontSize: 13, color: T.muted }}>Ask Jefe anything about your store — or tell him what to work on.</span>
+          <span style={{ flex: 1, fontSize: 13, color: T.muted }}>Chatting with Jefe here is coming soon — for now, reply to any Jefe email or message him in Slack.</span>
+          <SoonTag />
         </div>
       </div>
 
@@ -354,7 +384,7 @@ function BriefContent({
               <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "oklch(0.36 0.11 155)" }}>{recommendation.expectedBenefit}</div>
             ) : null}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, cursor: "pointer" }}>Approve</span>
+              <span style={inertControl} aria-disabled="true" title="Approvals are coming soon">Approve <SoonTag /></span>
               <span style={{ fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}` }}>{recommendation.executionSteps?.length || 0} steps</span>
               <button type="button" onClick={() => setShowWorking((v) => !v)} style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: T.accent, cursor: "pointer", background: "none", border: "none", padding: 0, fontFamily: "inherit" }}>How I got this number ›</button>
             </div>
@@ -491,9 +521,9 @@ function QueueSection({ recommendation, insights, waitingCount }: { recommendati
           </div>
         </div>
         <div style={{ borderTop: `1px solid ${T.borderSubtle}`, padding: "10px 16px", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontFamily: T.brand, background: T.accent, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>Approve</span>
-          <span style={{ fontFamily: T.brand, color: "oklch(0.4 0.015 60)", fontWeight: 700, fontSize: 12.5, padding: "8px 14px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Decline with a reason</span>
-          <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: T.accent, cursor: "pointer" }}>How I got this number ›</span>
+          <span style={inertControl} aria-disabled="true">Approve <SoonTag /></span>
+          <span style={inertControl} aria-disabled="true">Decline <SoonTag /></span>
+          <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: T.muted }}>Full reasoning in the Brief</span>
         </div>
       </div>
     </>
@@ -795,7 +825,7 @@ function SettingsData({ storeName }: { storeName: string }) {
   ];
   return (
     <>
-      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>Your data for {storeName || "your store"} is stored in the EU and never used to train models. Export, pause, leave or delete — on your terms, any time.</div>
+      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: T.muted }}>Your data for {storeName || "your store"} is stored in the EU and never used to train models. Export, pause, leave and delete are coming soon — to remove Jefe now, uninstall the app from your Shopify admin.</div>
       <SettingCard>
         {actions.map((a, i) => (
           <div key={a.name} style={{ padding: "13px 15px", borderBottom: i < actions.length - 1 ? `1px solid ${T.borderSubtle}` : "none", display: "flex", alignItems: "center", gap: 12 }}>
@@ -803,7 +833,7 @@ function SettingsData({ storeName }: { storeName: string }) {
               <span style={{ fontSize: 13, fontWeight: 600, color: a.danger ? T.accent : T.ink }}>{a.name}</span>
               <span style={{ fontSize: 12, lineHeight: 1.5, color: T.muted }}>{a.detail}</span>
             </div>
-            <span style={{ flex: "none", fontFamily: T.brand, fontWeight: 700, fontSize: 12.5, padding: "8px 15px", borderRadius: 9, cursor: "pointer", border: `1px solid ${a.danger ? "oklch(0.62 0.13 22)" : T.border}`, color: a.danger ? T.accent : "oklch(0.4 0.015 60)" }}>{a.cta}</span>
+            <span style={{ ...inertControl, flex: "none" }} aria-disabled="true">{a.cta} <SoonTag /></span>
           </div>
         ))}
       </SettingCard>
