@@ -14,6 +14,24 @@ import { isBenignStreamError } from "./stream-errors.server.js";
  * top of the fact that we only capture Error objects, not payloads.
  */
 
+/**
+ * Whether a captured exception is benign noise that must not reach Sentry:
+ * a client disconnecting mid-SSR-stream (a handled stream abort), or a 4xx route
+ * response (bot POSTs to actionless routes, 404s/405s). Both are already logged
+ * at WARN, not faults. Real 5xx faults and status-less errors are kept.
+ *
+ * Extracted and exported so the drop contract is unit-testable — the failure mode
+ * of an over-broad filter is silently dropping real errors, which is worth a test.
+ *
+ * @param {unknown} originalException `hint.originalException` from `beforeSend`.
+ * @returns {boolean} true if the event should be dropped
+ */
+export function isBenignForSentry(originalException) {
+  if (isBenignStreamError(originalException)) return true;
+  const status = Number(/** @type {any} */ (originalException)?.status);
+  return Number.isFinite(status) && status >= 400 && status < 500;
+}
+
 let initialized = false;
 
 /**
@@ -30,15 +48,10 @@ export function initSentry(env = process.env) {
     tracesSampleRate: 0,
     sendDefaultPii: false,
     beforeSend(event, hint) {
-      // Drop already-handled benign noise so a real error stands out in Sentry:
-      // a client disconnecting mid-SSR-stream, and 4xx route responses (bot POSTs
-      // to actionless routes, 404s/405s). Both are logged at WARN, not faults —
-      // filtering here (not only in handleError) also catches Sentry's own SDK
+      // Drop already-handled benign noise so a real error stands out in Sentry.
+      // Filtering here (not only in handleError) also catches Sentry's own SDK
       // auto-instrumentation, which can capture before handleError runs.
-      const original = /** @type {any} */ (hint?.originalException);
-      if (isBenignStreamError(original)) return null;
-      const status = Number(original?.status);
-      if (Number.isFinite(status) && status >= 400 && status < 500) return null;
+      if (isBenignForSentry(hint?.originalException)) return null;
 
       if (event.request) {
         delete event.request.cookies;

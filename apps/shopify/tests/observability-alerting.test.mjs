@@ -96,3 +96,21 @@ test("never throws when the webhook fetch rejects", () => {
   });
   assert.doesNotThrow(() => alerter.notify(RECORD));
 });
+
+test("per-window cap resets after the window elapses (recovers after a storm)", () => {
+  let t = 0;
+  const fetch = fakeFetch();
+  const alerter = createAlerter({
+    webhookUrl: "https://hooks.example.com/x",
+    fetch,
+    now: () => t,
+    maxPerWindow: 2,
+  });
+  alerter.notify({ ...RECORD, path: "/a" }); // sent
+  alerter.notify({ ...RECORD, path: "/b" }); // sent
+  alerter.notify({ ...RECORD, path: "/c" }); // over the cap -> suppressed
+  assert.equal(fetch.calls.length, 2);
+  t = 60_000; // WINDOW_MS elapsed -> the per-minute cap window resets
+  alerter.notify({ ...RECORD, path: "/d" }); // sent again
+  assert.equal(fetch.calls.length, 3);
+});
