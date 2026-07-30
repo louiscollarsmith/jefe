@@ -147,31 +147,11 @@ export async function proposeActionFromIntent(prisma, input) {
   };
 }
 
-/**
- * Record the merchant's approval of a proposed action: proposed → approved. This is
- * where the merchant's "yes" is captured (approvedBy/At), which is why it lives with
- * the approve control, not the executor. Records ONLY — it does not write to the
- * store; the gated adapter (`applyClearance`) transitions approved → applied, and
- * that execute-on-approve wiring is the deliberate go-live step (real client + flag).
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; actionRunId: string; approvedBy?: string }} input
- */
-export async function approveAction(prisma, input) {
-  const execution = await prisma.actionExecution.findUnique({
-    where: { runId: input.actionRunId },
-    select: { id: true, runId: true, merchantId: true, status: true },
-  });
-  if (!execution || execution.merchantId !== input.merchantId) return { status: "not_found" };
-  if (execution.status !== "proposed") {
-    return { status: "not_proposable", currentStatus: execution.status };
-  }
-  const approved = await prisma.actionExecution.update({
-    where: { runId: input.actionRunId },
-    data: { status: "approved", approvedBy: input.approvedBy ?? input.merchantId, approvedAt: new Date() },
-    select: { id: true, runId: true, status: true, approvedAt: true },
-  });
-  return { status: "approved", execution: approved };
-}
+// NOTE: approval is NOT a standalone step. In the 3-mode model there is no
+// approve-without-execute (recommend has no approve; approve_execute + autonomous
+// both execute), so the approve→execute transition is owned by the execution-contract
+// side (`wireClearanceExecution`), which records proposed→approved AND executes as one
+// fn. This layer creates the proposed row and reads outcomes; it does not approve.
 
 /**
  * Record a merchant rejecting a proposed action: proposed → rejected. Nothing is
