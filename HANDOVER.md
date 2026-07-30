@@ -8,7 +8,7 @@ Jefe builds and maintains Merchant Memory: a structured understanding of how eac
 
 Merchant Memory stores observed commerce facts, merchant-confirmed facts, model inferences, uncertainties, goals, constraints, operating preferences, corrections and history. The product goal is that the merchant can look at Jefe's understanding and say: "Yes. That's exactly how my business works."
 
-Jefe is not currently an analytics dashboard, a generic chatbot, or an autonomous agent that writes directly to Shopify or other systems. Shopify data and merchant input build memory; Jefe then uses that memory to explain what it has learned and propose a first plan.
+Jefe is not an analytics dashboard or a generic chatbot, and **an LLM never writes directly to Shopify or any external system** — that guardrail is permanent. Shopify data and merchant input build memory; Jefe uses that memory to explain what it has learned, propose a plan, and — through a **typed, previewed, reversible adapter** — take approved actions on the store. The first action (dead-stock clearance) is **built and wired but dark behind a flag** (`CLEARANCE_EXECUTE_ENABLED`); execution goes live per-merchant, per-action-type when the founder flips it.
 
 ## Current Product Flow
 
@@ -27,7 +27,7 @@ Important current boundaries:
 - LLMs interpret bounded evidence and produce structured outputs. Application code validates and persists the result.
 - Merchant corrections and confirmations outrank model inference.
 - The app must not let an LLM directly mutate Shopify, Slack, WhatsApp or any other external system.
-- Shopify write scopes are configured for future approved action work, but the current merchant UI should not directly execute Shopify writes.
+- The typed **action/execution layer** is built for the first action (dead-stock clearance / `price_markdown`) — a proposed-row ledger (`action_executions`), the `wireClearanceExecution` approve→execute orchestrator, and the `applyClearance` typed adapter — but it stays **dark behind `CLEARANCE_EXECUTE_ENABLED`** (unset = records approval, writes nothing). The LLM never writes directly; only the deterministic typed adapter does, under the merchant's per-action mode (recommend / approve_execute / autonomous). OAuth scopes were trimmed to the 7 a live V1 uses (all reads + `write_products`); other `write_*` are re-added per-action as each ships. See `context/11_actions_and_autonomy.md` + `docs/ops/clearance-go-live.md`.
 - Full post-onboarding Merchant Memory chat is not a shipped UI yet. Some service code exists because Goals uses the memory conversation infrastructure.
 - React Router v8 future-flag warnings can appear during build. They are maintenance warnings, not current blockers.
 
@@ -57,15 +57,13 @@ npm run dev
 
 Use `npm run dev:split-worker` when debugging the app server and Shopify import worker separately.
 
-Useful checks:
+Before every push, run the one gate (and again after any rebase):
 
 ```bash
-cd apps/shopify
-npm run typecheck
-npm run lint
-npm test
-npm run build
+bash scripts/preflight.sh        # prisma generate → typecheck → lint → test → build
 ```
+
+~8 Claude sessions share this tree — work in a worktree off `origin/main` and push `HEAD:main` directly; a pre-push hook blocks a red push. See `AGENTS.md` → Shared Working Tree and `docs/ops/build-deploy-and-coordination.md`.
 
 For the synthetic Shopify tool:
 
@@ -88,6 +86,7 @@ Shopify app runtime:
 - `SCOPES`
 - `SESSION_SECRET`
 - `ENABLE_DEV_TOOLS`
+- `CLEARANCE_EXECUTE_ENABLED` (the first action's go-live flag; unset = dark, records approval but writes nothing)
 - `ENABLE_SHOPIFY_BACKFILL_LOOP`
 - `SHOPIFY_BACKFILL_INITIAL_DELAY_MS`
 
