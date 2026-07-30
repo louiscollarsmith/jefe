@@ -2,7 +2,7 @@
 
 The catalog of every action Jefe can take on a merchant's store — its state, its safety contract, and its **measured effectiveness**. This is what the write-path buildout is planned against, the source of Jefe's honest "here's what I can and can't do" surface, and the spine of the Observe→Learn loop. It extends `11_actions_and_autonomy.md` (the typed-adapter contract + the autonomy model) with the *catalog* layer: not just *how* an action executes safely, but *which* actions exist, in what state, and whether they've earned their place by adding value.
 
-**Status:** design (chat 7, 2026-07-30, founder-greenlit).
+**Status:** design + first action built (chat 7, 2026-07-30, founder-greenlit) — `price_markdown` is DONE/flagged-off; the catalog + effectiveness loop are the ongoing build.
 
 ## The capability lifecycle
 
@@ -44,7 +44,7 @@ Each action type is a typed catalog entry:
   adapterModule: "app/lib/actions/clearance-adapter.server.js",
   reversibility: "reversible",           // reversible | irreversible — feeds the auto-eligibility gate
   blastRadiusModel: { unit: "variant", caps: { maxVariants, maxDiscountPercent } },
-  autonomyDefault: "propose",            // propose | auto — the merchant's dial raises it, within the gate
+  autonomyDefault: "approve_execute",    // recommend | approve_execute | autonomous — the merchant's dial, raised within the gate
   effectiveness: { measured, samples, addedValueRate },   // from the Observe→Learn loop
   demandSignal: { unfulfilledIntentCount }                // from intent-capture — why/when to build
 }
@@ -60,7 +60,7 @@ Each action type is a typed catalog entry:
 
 ## Scopes are a first-class column
 
-Most write paths need OAuth scopes we may not request. **Scopes are added per-action, as each write-path ships** — via `scopes_update`, each addition justified by a real feature the merchant opts into (the right consent model for Jefe taking actions). This is why the launch posture trims to the reads V1 uses and re-adds `write_*` as each action goes live (see the App Store launch scope-trim). `requiredScopes` is the source of truth for that sequencing: **NEEDS-SCOPE is a state, not a blocker** — an explicit, mapped step.
+Most write paths need OAuth scopes we may not request. **Scopes are added per-action, as each write-path ships** — via `scopes_update`, each addition justified by a real feature the merchant opts into (the right consent model for Jefe taking actions). The launch posture trims to the reads V1 uses **plus `write_products`** (the only write a live V1 action needs — clearance), dropping the four unused `write_*` and re-adding them per-action as each goes live (the App Store launch scope-trim → 7 scopes). `requiredScopes` is the source of truth for that sequencing: **NEEDS-SCOPE is a state, not a blocker** — an explicit, mapped step.
 
 ## Improve, don't train
 
@@ -78,7 +78,7 @@ This is the memory thesis (provenance + confidence, deterministic grounding, typ
 
 Verified against the live Shopify Admin GraphQL docs (2026-07). Only `price_markdown` is DONE; the value is seeing the whole surface — what we can build now, what needs a scope, and the genuine walls.
 
-**DONE** — `price_markdown` (dead-stock clearance): decision engine + ledger + typed execution adapter built, flagged-off (`CLEARANCE_EXECUTE_ENABLED`). \*`write_products` is held today but a launch scope-trim candidate; if trimmed, go-live re-adds it via `scopes_update`.
+**DONE** — `price_markdown` (dead-stock clearance): decision engine + ledger + typed execution adapter + the live write client + the `wireClearanceExecution` orchestrator + the surface (approve / decline / 3-mode picker) — all built and on origin, flagged-off (`CLEARANCE_EXECUTE_ENABLED`). `write_products` is **kept** at launch: clearance goes live at launch (autonomy-from-day-one), so its scope stays; the launch scope-trim dropped only the four *unused* `write_*` (orders/customers/inventory/locations), re-added per-action as those ship. Go-live remaining: chat-4-lane's plan-rec emit (fills the proposed row) → the founder's `CLEARANCE_EXECUTE_ENABLED` flip after a test round-trip.
 
 **Highest-value BUILDABLE** (scope held today, adapter-only — the fastest next builds, all reversible → the auto-eligibility sweet spot):
 - *Pricing* (`write_products`): `price_set`, `set_compare_at_price`, `bulk_price_update` — the clearance mutation (`productVariantsBulkUpdate`) generalised to promos + repricing.

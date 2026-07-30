@@ -2,13 +2,17 @@
 
 Autonomy is earned per action type. Evaluate permission, confidence, safeguards, reversibility and blast radius before execution.
 
-This file is the intended architecture for how Jefe moves from *advising* to *acting* — a synthesis of the guardrails already fixed in `AGENTS.md` (North Star) and `CLAUDE.md`, not a loosening of them. It is a v1 to build against; the founder owns the product direction it encodes.
+This file is the execution contract for how Jefe *acts* on a merchant's store — a synthesis of the guardrails fixed in `AGENTS.md` (North Star) and `CLAUDE.md`, not a loosening of them. As of 2026-07-30 the contract is **built for the first action** (dead-stock clearance / `price_markdown`), dark behind `CLEARANCE_EXECUTE_ENABLED`; this is the as-built model plus what remains for go-live. The founder owns the product direction it encodes.
 
-## The ramp
+## Three modes, per action type, from day one
 
-Advisory (now) → **approved-execute** (rung 1: the merchant approves a recommendation and Jefe executes it — human-in-the-loop) → progressively autonomous on the safe, high-confidence, reversible, low-blast-radius action types as trust is earned, until routine ones need no tap.
+Jefe acts on the merchant's behalf **from install** — not advisory-for-months. The merchant sets, **per action type**, one of three modes (persisted in `action_autonomy_policies`, read by `getActionMode`):
 
-Autonomy is **earned, memory-grounded, and per action type** — never generic or ungrounded. The merchant is always the principal: they set goals and autonomy levels and can veto or reverse any action.
+- **recommend** — Jefe surfaces the recommendation; no execution.
+- **approve_execute** — Jefe proposes; the merchant taps approve; Jefe executes (human-in-the-loop).
+- **autonomous** — Jefe executes without a tap, **only** for action instances that clear the structural auto-eligibility gate (below); an ineligible instance degrades to `approve_execute`, never a silent skip of the gate.
+
+All three are available in **v1**. `resolveAutonomyMode(merchantSetting, eligibility)` maps the merchant's dial × the gate to the effective mode for each run. Autonomy is **earned, memory-grounded, and per action type** — the track record (`business.recommendation_engagement` + measured outcomes) raises Jefe's confidence and the *recommended* default over time, but the merchant is always the principal: they own the dial and can veto or reverse any action. (The default mode for a dial the merchant hasn't set is currently `approve_execute` — propose-first, never auto-by-default — a founder-owned launch-posture choice.)
 
 ## The typed adapter (how *any* external write happens)
 
@@ -24,18 +28,21 @@ Every write to an external system (Shopify, Slack, email, …) goes through an a
 
 These are the same guardrails the whole product is built to preserve; they are *more* discipline than advisory mode, not less, and they are what make growing autonomy safe.
 
-## Rung 1 — approved-execute (the next build)
+## The execution path (as built)
 
-1. Jefe proposes a recommendation (grounded in Merchant Memory, as today).
-2. On approval, Jefe builds the typed-adapter **preview** for the concrete action and shows the merchant exactly what will change.
-3. The merchant confirms; Jefe executes through the adapter (idempotent, capped, reversible).
-4. The outcome is recorded — into the audit trail and back into Merchant Memory (an `Observe→Learn` signal on how that action performed).
+The concrete flow for the first action, end-to-end:
 
-This reuses the existing spine: memory → recommendation → **now execution** → learning. The only new surface is the adapter + preview + approval flow; the memory, provenance, and precedence machinery is unchanged.
+1. **Propose** — `proposeActionFromIntent` (the resolution layer) turns a validated LLM action-intent into a deterministic, floored **preview** (`buildClearancePreview`), computes structural eligibility + the resolved mode, and creates a **`proposed`** `ActionExecution` row (the ledger — it carries the preview + the autonomy trio). Writes nothing external.
+2. **Approve + execute** — `wireClearanceExecution` is the **single entry point** the surface calls: a merchant tap → `mode:"approve"`, the autonomous path → `mode:"auto"`. It records `proposed→approved`, then — only when `CLEARANCE_EXECUTE_ENABLED` — runs the typed adapter `applyClearance`: re-check the gate, compare-and-set against the live price (skip on drift), write via `productVariantsBulkUpdate`, one idempotent `ActionExecutionWrite` per target, auto-revert on partial failure. **Flag-off is a safe no-op** — it records approved and writes nothing (the honest dark path).
+3. **Outcome** — recorded into the ledger (`action_executions.outcome`: units moved, cash recovered, effectiveness) and back into Merchant Memory as an `Observe→Learn` signal.
+
+This reuses the existing spine — memory → recommendation → **execution** → learning; the memory, provenance, and precedence machinery is unchanged. The concrete modules and the full action catalog (states, scopes, effectiveness) live in `13_action_capability_registry.md`.
+
+**Go-live** is the one deliberate, founder-owned step: the surface wires the approve/auto paths to `wireClearanceExecution` (done), the merchant sets a non-`recommend` mode, and `CLEARANCE_EXECUTE_ENABLED` is flipped after a test round-trip.
 
 ## Autonomy: earned, but merchant-owned
 
-The **merchant holds the authority** — a *set* of sliders, one per action class (full-auto reorders while pricing stays advisory, say), never one global dial. "Earned per action type" **informs** the recommended default and Jefe's own caution; it is not a hard cap the system imposes over the merchant. The default posture the merchant starts from is **auto on the safest reversible actions** — Jefe acts from day one on what is provably safe, and the merchant dials trust up or down from there. `business.recommendation_engagement` (already in memory) is the track-record substrate that raises Jefe's confidence and the recommended default over time.
+The **merchant holds the authority** — a per-action-type dial (recommend | approve_execute | autonomous), never one global switch. "Earned per action type" **informs** the recommended default and Jefe's own caution; it is not a hard cap the system imposes over the merchant. Out of the box, a dial the merchant hasn't set defaults to **`approve_execute`** (propose-first): autonomy is *available* from day one — the merchant can set `autonomous` on any action immediately, subject to the gate — but Jefe does not auto-write before the merchant has opted in. `business.recommendation_engagement` (already in memory) + measured outcomes are the track-record substrate that raises Jefe's confidence and the recommended default over time. (Whether the recommended default should lean more autonomous on provably-safe reversible actions is a founder call — flagged.)
 
 ### The auto-eligibility gate (what makes day-one auto safe)
 
