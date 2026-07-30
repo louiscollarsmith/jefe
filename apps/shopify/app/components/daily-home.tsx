@@ -461,9 +461,42 @@ function DeclineReasonForm({ actionRunId, onCancel }: { actionRunId: string; onC
   );
 }
 
+// Edit the suggestion's magnitude — POST action.edit → reviseAction re-proposes at
+// the merchant's %, still floored at cost by the primitive (the merchant suggests,
+// the safety math is never overridden). Defaults the input to the current proposed %.
+function EditMarkdownForm({ actionRunId, currentPercent, onCancel }: { actionRunId: string; currentPercent: number; onCancel: () => void }) {
+  const [percent, setPercent] = useState(String(currentPercent));
+  return (
+    <Form method="post" style={{ display: "flex", flexDirection: "column", gap: 9, background: T.hover, borderRadius: 11, padding: "12px 13px", marginTop: 2 }}>
+      <input type="hidden" name="intent" value="action.edit" />
+      <input type="hidden" name="actionRunId" value={actionRunId} />
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: T.ink }}>Adjust the markdown Jefe proposes</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <input
+          name="markdownPercent"
+          type="number"
+          min={1}
+          max={95}
+          step={1}
+          value={percent}
+          onChange={(e) => setPercent(e.target.value)}
+          aria-label="Markdown percent"
+          style={{ width: 74, fontFamily: "inherit", fontSize: 14, padding: "7px 10px", borderRadius: 7, border: `1px solid ${T.border}`, background: T.card, color: T.ink }}
+        />
+        <span style={{ fontSize: 12.5, lineHeight: 1.4, color: T.muted }}>% off — Jefe re-checks the floor, never below cost.</span>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 12.5, padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer" }}>Re-propose</button>
+        <button type="button" onClick={onCancel} style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 12.5, padding: "8px 13px", borderRadius: 8, border: `1px solid ${T.border}`, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </Form>
+  );
+}
+
 function SuggestedActionCard({ action }: { action: SuggestedAction }) {
   const canDecide = action.executable && Boolean(action.actionRunId);
   const [showDecline, setShowDecline] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
   return (
     <div style={{ background: T.card, border: `1px solid ${T.navy}`, borderRadius: 15, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 11 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -498,14 +531,19 @@ function SuggestedActionCard({ action }: { action: SuggestedAction }) {
       {canDecide ? (
         showDecline ? (
           <DeclineReasonForm actionRunId={action.actionRunId ?? ""} onCancel={() => setShowDecline(false)} />
+        ) : showEdit ? (
+          <EditMarkdownForm actionRunId={action.actionRunId ?? ""} currentPercent={action.markdownPercent ?? 30} onCancel={() => setShowEdit(false)} />
         ) : (
-          <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+          <div style={{ display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap", alignItems: "center" }}>
             <Form method="post">
               <input type="hidden" name="intent" value="action.approve" />
               <input type="hidden" name="actionRunId" value={action.actionRunId} />
               <button type="submit" style={{ fontFamily: T.brand, background: T.navy, color: "oklch(0.97 0.01 80)", fontWeight: 700, fontSize: 13, padding: "9px 18px", borderRadius: 9, border: "none", cursor: "pointer" }}>Approve →</button>
             </Form>
             <button type="button" onClick={() => setShowDecline(true)} style={{ fontFamily: T.brand, background: "none", color: T.muted, fontWeight: 700, fontSize: 13, padding: "9px 15px", borderRadius: 9, border: `1px solid ${T.border}`, cursor: "pointer" }}>Decline</button>
+            {typeof action.markdownPercent === "number" ? (
+              <button type="button" onClick={() => setShowEdit(true)} style={{ fontFamily: T.brand, background: "none", color: T.navy, fontWeight: 700, fontSize: 12.5, padding: "9px 8px", border: "none", cursor: "pointer", marginLeft: "auto" }}>Adjust markdown · {action.markdownPercent}%</button>
+            ) : null}
           </div>
         )
       ) : (

@@ -83,7 +83,7 @@ import {
 } from "../lib/onboarding/steps";
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
-import { getActiveSuggestedAction, rejectAction } from "../lib/actions/action-resolution.server";
+import { getActiveSuggestedAction, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
 import { setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
   ACTIVE_BELIEF_STATUSES,
@@ -245,6 +245,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionRunId: String(formData.get("actionRunId") ?? ""),
       reasonCategory: reasonCategory || undefined,
       reasonText: reasonText || undefined,
+    });
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.edit") {
+    // Edit the suggestion's magnitude: re-propose at the merchant's markdown %.
+    // reviseAction floors/caps the % (the merchant suggests; the safety math is never
+    // overridden), supersedes the old proposed row, and the loader re-reads the fresh
+    // proposal on the redirect. No external write — this is still the propose half.
+    const markdownPercent = Number(formData.get("markdownPercent"));
+    await reviseAction(prisma, {
+      merchantId: merchant.id,
+      actionRunId: String(formData.get("actionRunId") ?? ""),
+      params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
     });
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
