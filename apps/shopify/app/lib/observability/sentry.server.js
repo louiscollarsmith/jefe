@@ -2,6 +2,7 @@
 
 import * as Sentry from "@sentry/node";
 import { redact } from "./redact.server.js";
+import { isBenignStreamError } from "./stream-errors.server.js";
 
 /**
  * Server-side Sentry error tracking — grouping, regressions and release tracking
@@ -28,7 +29,17 @@ export function initSentry(env = process.env) {
     // Errors only for now; performance tracing is a later item (#7).
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    beforeSend(event) {
+    beforeSend(event, hint) {
+      // Drop already-handled benign noise so a real error stands out in Sentry:
+      // a client disconnecting mid-SSR-stream, and 4xx route responses (bot POSTs
+      // to actionless routes, 404s/405s). Both are logged at WARN, not faults —
+      // filtering here (not only in handleError) also catches Sentry's own SDK
+      // auto-instrumentation, which can capture before handleError runs.
+      const original = /** @type {any} */ (hint?.originalException);
+      if (isBenignStreamError(original)) return null;
+      const status = Number(original?.status);
+      if (Number.isFinite(status) && status >= 400 && status < 500) return null;
+
       if (event.request) {
         delete event.request.cookies;
         delete event.request.data;
