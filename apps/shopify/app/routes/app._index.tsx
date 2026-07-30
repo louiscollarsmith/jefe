@@ -234,16 +234,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
   if (intent === "action.reject") {
-    // Category + optional free-text, joined into one learning signal. Categories
-    // and merchant-typed notes only — never customer PII (enforced client-side
-    // by the reason picker; capped here as a backstop).
+    // Split reason → Observe→Learn: the category chip + an optional free-text note,
+    // passed as SEPARATE fields so merchant_action_declined can group by category
+    // without parsing. Categories / merchant-typed notes only — never customer PII
+    // (the reason picker exposes no PII field; text capped here as a backstop).
     const reasonCategory = String(formData.get("reason") ?? "").trim();
     const reasonText = String(formData.get("reasonText") ?? "").trim().slice(0, 140);
-    const reason = [reasonCategory, reasonText].filter(Boolean).join(" — ") || undefined;
     await rejectAction(prisma, {
       merchantId: merchant.id,
       actionRunId: String(formData.get("actionRunId") ?? ""),
-      reason,
+      reasonCategory: reasonCategory || undefined,
+      reasonText: reasonText || undefined,
     });
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
