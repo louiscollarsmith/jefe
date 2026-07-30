@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-30
+
+### Added
+
+- Added the **win-back (farewell) email** — the churn-side counterpart to the Day-0 welcome, triggered by the Shopify `app/uninstalled` webhook. It acknowledges the exit with dignity (no guilt-trip), makes **one** honest feedback ask — "What made you uninstall?" as four one-tap options (`too_early` / `no_value` / `too_complex` / `broke`) plus an open "just reply" — and leaves a soft door open to reconnect. Same design system as the welcome (cream card on greige, Georgia display, terracotta accent, navy CTA, "— Jefe" close), 100% inline-CSS. Each feedback option is an **HMAC-signed one-tap link** (binds shop + recipient email **hash** + one locked reason code; never plaintext, can't be forged to mis-attribute a reason) to a new public `/e/feedback` endpoint, which records a **PII-free `shop_uninstall_feedback` lifecycle event** (append-only, same event-log pattern as churn capture — readback takes the latest per shop). Recipient is resolved from the persisted Shopify `Session` (owner email + name), read **before** install teardown. Idempotent (one send per shop via a new additive nullable `shops.winback_email_sent_at` guard, migration `20260730100000_winback_email_sent_guard`) and **doubly gated**: the existing `ENABLE_EMAIL` switch **and** a new win-back-specific `ENABLE_WINBACK_EMAIL` kill-switch. **Shipped inert / dark:** with `ENABLE_WINBACK_EMAIL` unset (the default), the uninstall trigger is a hard no-op — it resolves no recipient, claims no guard, and never contacts Resend — so all the code (template, tokens, endpoint, webhook hook) is in prod but **no farewell email leaves until a human flips the flag**. `app/lib/email/winback.server.js`, `app/lib/email/feedback.server.js`, `app/routes/e.feedback.tsx`, `app/lib/email/templates/jefe-winback.html`; webhook hook in `webhooks.server.js`; covered by `tests/winback-email.test.mjs` (11 tests incl. DB-backed idempotency + dark-by-default); full gate green (348/348 with DB), typecheck + lint green. Follow-ups (with Matt): flip `ENABLE_WINBACK_EMAIL` on after a review of a live render; reset the guard on reinstall so a re-churn re-sends; host the header lockup asset.
+
 ## 2026-07-29
 
 ### Added

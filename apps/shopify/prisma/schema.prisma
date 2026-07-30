@@ -84,6 +84,7 @@ model Shop {
   onboardingCompletedAt         DateTime?                           @map("onboarding_completed_at") @db.Timestamptz(6)
   uninstalledAt                 DateTime?                           @map("uninstalled_at") @db.Timestamptz(6)
   welcomeEmailSentAt            DateTime?                           @map("welcome_email_sent_at") @db.Timestamptz(6)
+  winbackEmailSentAt            DateTime?                           @map("winback_email_sent_at") @db.Timestamptz(6)
   goalsCompleted                Boolean                             @default(false) @map("goals_completed")
   houseRulesCompleted           Boolean                             @default(false) @map("house_rules_completed")
   cogsCompletionPercentage      Decimal                             @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)

@@ -22,6 +22,7 @@ import {
 import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jobs.server.js";
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { captureShopChurn } from "../../../services/analytics/churn.server.js";
+import { sendWinBackEmailOnUninstall } from "../../email/winback.server.js";
 
 const webhookLogger = baseLogger.child({ component: "shopify-webhook" });
 
@@ -167,6 +168,22 @@ export async function processShopifyWebhook(prisma, input) {
     if (created) {
       // Snapshot BEFORE teardown; best-effort and never throws.
       await captureShopChurn(prisma, shop);
+      // Fire-and-forget the Day-0-of-churn win-back email. Idempotent (a
+      // winback_email_sent_at guard dispatches it once per shop) and gated
+      // behind ENABLE_EMAIL (a no-op by default). Resolves the recipient from
+      // the persisted Session (read here, BEFORE markShopifyInstallInactive).
+      // Never awaited / self-catching so it can't delay or break uninstall.
+      void sendWinBackEmailOnUninstall(prisma, {
+        shopDomain: input.shopDomain,
+        shopId: shop.id,
+        installedAt: shop.createdAt ?? null,
+        appUrl: process.env.EMAIL_APP_URL || undefined,
+      }).catch((error) => {
+        webhookLogger.error("winback email dispatch failed", {
+          err: error,
+          shopDomain: input.shopDomain,
+        });
+      });
     }
     await markShopifyInstallInactive(prisma, input.shopDomain);
     return { status: created ? "processed" : "duplicate", ledgerEventId: event.id };
