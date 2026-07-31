@@ -224,6 +224,25 @@ model NotificationPreference {
   @@map("notification_preferences")
 }
 
+/// Durable per-(shop, category) schedule guard for time-based notifications (the
+/// morning brief). `lastFiredLocalDay` is the merchant-LOCAL day (YYYY-MM-DD) the
+/// category last fired — an atomic `updateMany` claim on "lastFiredLocalDay != today"
+/// guarantees at-most-once-per-local-day even across worker restarts/deploys (unlike
+/// the in-memory digest guard). FK-less by design (like InboundEmailEvent): a tiny
+/// operational row keyed by shop+category; merchantId/shopId are plain columns.
+model NotificationScheduleState {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId        String   @map("merchant_id") @db.Uuid
+  shopId            String   @map("shop_id") @db.Uuid
+  category          String
+  lastFiredLocalDay String?  @map("last_fired_local_day")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([shopId, category])
+  @@map("notification_schedule_states")
+}
+
 model ConnectorAccount {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId        String    @map("merchant_id") @db.Uuid
