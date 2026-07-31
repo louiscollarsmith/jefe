@@ -156,6 +156,12 @@ export async function maybeSendMorningBriefs(prisma, options = {}) {
           currency: meta.currency,
         });
         const storeName = meta.storeName || deriveStoreName(shop.shopDomain);
+        const metricLine = await buildMetricLine(prisma, {
+          merchantId: shop.merchantId,
+          shopId: shop.id,
+          currency: meta.currency,
+          now,
+        });
         const unsubscribeUrl = `${appUrl.replace(/\/+$/, "")}/e/unsubscribe?t=${signUnsubscribeToken({
           shopDomain: shop.shopDomain,
           emailHash: hashRecipient(email.destination) ?? "",
@@ -165,7 +171,7 @@ export async function maybeSendMorningBriefs(prisma, options = {}) {
           storeName,
           merchantName: null, // no reliable first name yet — honest, no fabricated greeting
           move: suggested?.headline ? { headline: suggested.headline, why: suggested.note ?? null } : null,
-          metricLine: null, // v1: the move is the brief; chat 2 enriches copy
+          metricLine, // real 30-day orders/revenue, or null when there's nothing to say
           appUrl: `${appUrl.replace(/\/+$/, "")}/?shop=${encodeURIComponent(shop.shopDomain)}`,
           unsubscribeUrl,
           humanEmail,
@@ -235,5 +241,58 @@ async function claimDay(prisma, input) {
   } catch {
     // Unique violation — another tick created the row first; it owns today.
     return false;
+  }
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Real 30-day orders + revenue as a compact "where things stand" line, or null
+ * when there's nothing honest to say (no orders in the window). One indexed
+ * aggregate — Order has a [merchant_id, processed_at] index — on the same
+ * processedAt/totalPrice basis the app home uses, so the figures are consistent.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; currency: string; now: Date }} input
+ * @returns {Promise<string | null>}
+ */
+async function buildMetricLine(prisma, input) {
+  const since = new Date(input.now.getTime() - THIRTY_DAYS_MS);
+  const agg = await prisma.order.aggregate({
+    where: { merchantId: input.merchantId, shopId: input.shopId, processedAt: { gte: since } },
+    _count: { _all: true },
+    _sum: { totalPrice: true },
+  });
+  const orders = agg._count?._all ?? 0;
+  const revenue = agg._sum?.totalPrice != null ? Number(agg._sum.totalPrice) : null;
+  return formatMetricLine({ orders, revenue, currency: input.currency });
+}
+
+/**
+ * Shape the metric line. Pure. Null when there are no orders (nothing honest to
+ * say); omits revenue when it's absent or zero. Never fabricates a figure.
+ * @param {{ orders: number; revenue: number | null; currency: string }} input
+ * @returns {string | null}
+ */
+export function formatMetricLine(input) {
+  const orders = Number(input.orders);
+  if (!Number.isFinite(orders) || orders <= 0) return null;
+  const orderText = `${orders.toLocaleString("en-GB")} ${orders === 1 ? "order" : "orders"}`;
+  const revenue = input.revenue;
+  if (revenue != null && Number.isFinite(Number(revenue)) && Number(revenue) > 0) {
+    return `${orderText} and ${formatBriefMoney(Number(revenue), input.currency)} in the last 30 days`;
+  }
+  return `${orderText} in the last 30 days`;
+}
+
+/** @param {number} amount @param {string} currency */
+function formatBriefMoney(amount, currency) {
+  try {
+    return new Intl.NumberFormat("en-GB", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    return `${Math.round(amount).toLocaleString("en-GB")} ${currency}`;
   }
 }

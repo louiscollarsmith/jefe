@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderMorningBriefEmail } from "../app/lib/email/morning-brief.server.js";
-import { resolveBriefReplyTo } from "../app/lib/notifications/morning-brief-sender.server.js";
+import { formatMetricLine, resolveBriefReplyTo } from "../app/lib/notifications/morning-brief-sender.server.js";
 
 const base = {
   storeName: "Everdew",
@@ -49,4 +49,18 @@ test("resolveBriefReplyTo points at the AI address ONLY once inbound is live (#1
     resolveBriefReplyTo({ RESEND_REPLY_TO: "matt@x.com", ENABLE_INBOUND_EMAIL: "true" }),
     "matt@x.com",
   );
+});
+
+test("formatMetricLine states real 30-day orders/revenue and omits gracefully", () => {
+  assert.equal(
+    formatMetricLine({ orders: 46, revenue: 2762, currency: "GBP" }),
+    "46 orders and £2,762 in the last 30 days",
+  );
+  // singular order + zero revenue omitted
+  assert.equal(formatMetricLine({ orders: 1, revenue: 0, currency: "GBP" }), "1 order in the last 30 days");
+  // no orders → nothing honest to say
+  assert.equal(formatMetricLine({ orders: 0, revenue: 500, currency: "GBP" }), null);
+  // missing revenue → orders only
+  assert.equal(formatMetricLine({ orders: 12, revenue: null, currency: "USD" }), "12 orders in the last 30 days");
+  assert.match(formatMetricLine({ orders: 3, revenue: 1500, currency: "USD" }), /\$1,500/);
 });

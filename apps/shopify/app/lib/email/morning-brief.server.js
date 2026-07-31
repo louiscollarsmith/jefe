@@ -63,7 +63,7 @@ export function renderMorningBriefEmail(input) {
         "Nothing needs a decision from you today. I'm still reading your orders and stock, and I'll bring the next move when it's worth your time.",
       ];
   if (input.metricLine) {
-    bodyLines.push("", `Where things stand — ${input.metricLine}.`);
+    bodyLines.push("", `Where things stand: ${input.metricLine}.`);
   }
 
   const subject = move
