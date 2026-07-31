@@ -130,6 +130,7 @@ import {
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
+import { getLatestHorizon } from "../lib/merchant-memory/horizon.server.js";
 import {
   confirmBelief,
   correctBelief,
@@ -1046,7 +1047,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // today just price_markdown. One cheap indexed getActionMode per live type, so a
       // newly-graduated action's dial lights up here with no surface edit.
       const liveActionTypes = listActionTypes().filter((t) => t.live);
-      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections, openQuestions] = await Promise.all([
+      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections, openQuestions, horizon] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
         getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
@@ -1074,6 +1075,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         // openQuestions feeds Memory's "Still guessing" group (getOpenQuestions is
         // idempotent + safe to call — ensures the initial questions, returns the open set).
         getOpenQuestions(prisma, { merchantId: merchant.id, shopId: shop.id }),
+        // Store-grounded Horizon: near-term run-out / refund items + a "watching" block,
+        // computed read-only from persisted facts (never fabricated), seasonal timeline
+        // merged in. Non-throwing → degrades to seasonal-only, so it can't 5xx the loader.
+        getLatestHorizon(prisma, { merchantId: merchant.id, shopId: shop.id }),
       ]);
       // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
       // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
@@ -1155,6 +1160,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             ? q.answerOptions.map((opt) => String(opt))
             : [],
         })),
+        horizonNear: horizon.near,
+        horizonWatching: horizon.watching,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1443,6 +1450,8 @@ export default function AppIndex() {
         changelog={data.changelog}
         emailBrief={data.emailBrief}
         openQuestions={data.openQuestions}
+        horizonNear={data.horizonNear}
+        horizonWatching={data.horizonWatching}
       />
     );
   }

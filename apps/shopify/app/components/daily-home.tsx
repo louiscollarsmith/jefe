@@ -73,6 +73,8 @@ export function DailyHome(props: {
   changelog?: ChangelogItem[]; // loadAppHomeChangelog — real CHANGELOG entries
   emailBrief?: EmailBrief | null; // morning_brief pref + real contact email; null → row hidden
   openQuestions?: MemoryQuestion[]; // getOpenQuestions — Memory's "Still guessing" feed
+  horizonNear: HorizonItem[]; // store-grounded near-term items + seasonal timeline (loader-computed)
+  horizonWatching: HorizonWatch[]; // "Watching, not acting" — honest revisit dates (loader-computed)
 }) {
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
@@ -112,10 +114,11 @@ export function DailyHome(props: {
   if (props.recommendation) queue.push({ id: "plan", title: props.recommendation.title, when: "", kind: "Plan", state: "needs_you", note: null });
   for (const a of executedActions) queue.push({ id: a.actionRunId, title: a.headline, when: formatWhen(a.appliedAt), kind: "Done", state: "did_it", note: null });
 
-  // horizon ← the real computed seasonal timeline (dates derived from today, never
-  // hardcoded). "Watching" stays empty until store-grounded near-term signals are wired.
-  const horizonNear: HorizonItem[] = buildHorizon(new Date()).map((e) => ({ id: e.key, date: e.dateLabel, title: e.title, body: e.note, action: null }));
-  const horizonWatching: HorizonWatch[] = [];
+  // horizon ← store-grounded near-term items + a "watching" block, computed server-side
+  // by getStoreGroundedHorizon (stock run-out dates, refund projection) with the seasonal
+  // timeline merged in. Passed straight through; this component never fabricates a number.
+  const horizonNear = props.horizonNear;
+  const horizonWatching = props.horizonWatching;
 
   // Settings autonomy — the full 13a roster (ACTION_ROSTER holds the design copy). Which rows are
   // LIVE is derived from the loader's `actionModes` map (built off the engine's listActionTypes(),
@@ -220,38 +223,4 @@ function formatWhen(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-}
-
-// Seasonal timeline. Dates are computed from `now`, never hardcoded — a wrong seasonal
-// date destroys the credibility this surface exists to build. (Carried over verbatim
-// from the 5a build; it's real, deterministic logic.)
-type HorizonEntry = { key: string; title: string; date: Date; note: string; dateLabel: string };
-
-function nthWeekdayOfMonth(year: number, month: number, weekday: number, n: number): Date {
-  const first = new Date(year, month, 1);
-  const shift = (weekday - first.getDay() + 7) % 7;
-  return new Date(year, month, 1 + shift + (n - 1) * 7);
-}
-function blackFridayFor(year: number): Date {
-  const thanksgiving = nthWeekdayOfMonth(year, 10, 4, 4); // 4th Thursday of November
-  return new Date(year, 10, thanksgiving.getDate() + 1);
-}
-function rollForward(now: Date, build: (year: number) => Date): Date {
-  const y = now.getFullYear();
-  const candidate = build(y);
-  return candidate.getTime() < now.getTime() ? build(y + 1) : candidate;
-}
-function dayLabel(d: Date): string {
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-}
-function buildHorizon(now: Date): HorizonEntry[] {
-  const raw: Array<{ key: string; title: string; date: Date; note: string }> = [
-    { key: "back-to-school", title: "Back-to-school demand", date: rollForward(now, (y) => new Date(y, 8, 1)), note: "Routine-building season for skincare. Stock and bundle decisions want to be set about a month out." },
-    { key: "bfcm", title: "Black Friday / Cyber weekend", date: rollForward(now, blackFridayFor), note: "Your biggest weekend. Supplier lead times run roughly nine weeks, so the real decisions land in early autumn — not the week before." },
-    { key: "christmas", title: "Christmas last-order cut-off", date: rollForward(now, (y) => new Date(y, 11, 20)), note: "The last date customers can order and still get it in time. Carrier cut-offs and stock buffers need setting well ahead." },
-    { key: "returns", title: "January returns wave", date: rollForward(now, (y) => new Date(y, 0, 6)), note: "The post-holiday returns spike. Worth deciding your returns and win-back approach before it arrives." },
-  ];
-  return raw
-    .map((e) => ({ key: e.key, title: e.title, date: e.date, note: e.note, dateLabel: dayLabel(e.date) }))
-    .sort((a, b) => a.date.getTime() - b.date.getTime());
 }
