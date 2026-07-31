@@ -33,12 +33,12 @@ function mockExecPrisma(row) {
 
 // A tiny prisma stub: canned reads for buildDeadStockClearanceProposal's 3 queries
 // + a capturing actionExecution.create. No DB needed — proves the full orchestration.
-function mockPrisma({ variants = [], inventory = [], soldLineItems = [], actionMode = null, onCreate }) {
+function mockPrisma({ variants = [], inventory = [], soldLineItems = [], actionMode = null, policy = null, onCreate }) {
   return {
     variant: { findMany: async () => variants },
     inventoryLevel: { findMany: async () => inventory },
     orderLineItem: { findMany: async () => soldLineItems },
-    actionAutonomyPolicy: { findUnique: async () => (actionMode ? { mode: actionMode } : null) },
+    actionAutonomyPolicy: { findUnique: async () => (actionMode || policy ? { mode: actionMode ?? "approve_execute", policy } : null) },
     actionExecution: {
       create: async ({ data }) => {
         onCreate?.(data);
@@ -128,6 +128,27 @@ test("the merchant's dial drives the mode: autonomous + eligible -> resolvedMode
   assert.equal(res.status, "proposed");
   assert.equal(row.merchantSetting, "autonomous");
   assert.equal(row.resolvedMode, "auto"); // reversible + capped + confident + merchant=autonomous
+});
+
+test("autonomy policy: autonomous + eligible but over the £ cap → degraded to approve", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
+    inventory: [{ variantId: "v1", available: 10 }],
+    soldLineItems: [],
+    actionMode: "autonomous",
+    policy: { autoMaxTrappedCapital: 500 }, // £500 auto cap; this run is £800 (10 × £80)
+    onCreate: (data) => { row = data; },
+  });
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 30 } },
+  });
+  assert.equal(res.status, "proposed");
+  assert.equal(row.merchantSetting, "autonomous");
+  assert.equal(row.resolvedMode, "approve"); // over-cap → ask first, not auto
+  assert.equal(res.autonomy.reason, "exceeds_autonomy_policy");
 });
 
 test("proposeActionFromIntent returns no_opportunity when there's no dead stock", async () => {

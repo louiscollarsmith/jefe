@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getRequiredScopes, validateActionIntent } from "./action-intent.server.js";
-import { getActionMode } from "./action-autonomy-policy.server.js";
+import { applyAutonomyPolicy, getActionMode, getActionPolicy } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import {
@@ -224,12 +224,21 @@ export async function proposeActionFromIntent(prisma, input) {
     input.merchantSetting ??
     (await getActionMode(prisma, { merchantId: input.merchantId, actionType: intent.actionType }));
   const eligibility = computeClearanceAutoEligibility(preview, confidence);
-  const autonomy = resolveAutonomyMode(merchantSetting, eligibility);
-
-  const runId = randomUUID();
+  const baseAutonomy = resolveAutonomyMode(merchantSetting, eligibility);
   // Persist the money summary alongside the execution preview so the Daily Home card
   // renders key numbers + top items without re-running the proposal (a read-time query).
   const proposalSummary = buildProposalSummary(proposal, preview, markdownPercent);
+  // Governance: apply the merchant's autonomy POLICY on top of the resolved mode — an
+  // "auto" run over a per-action-type cap ("autonomous up to £X") degrades to approve-
+  // first. No-op unless the mode is auto AND a cap is set AND exceeded.
+  const policy = await getActionPolicy(prisma, { merchantId: input.merchantId, actionType: intent.actionType });
+  const autonomy = applyAutonomyPolicy(baseAutonomy, policy, {
+    trappedCapital: proposalSummary.totalTrappedCapital,
+    variantCount: preview.variantCount,
+    maxDiscountPercent: preview.maxDiscountPercent,
+  });
+
+  const runId = randomUUID();
   const execution = await prisma.actionExecution.create({
     data: {
       runId,

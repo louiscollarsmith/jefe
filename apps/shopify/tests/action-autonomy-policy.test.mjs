@@ -1,11 +1,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyAutonomyPolicy,
   DEFAULT_ACTION_MODE,
   getActionMode,
+  getActionPolicy,
   isValidActionMode,
   setActionMode,
 } from "../app/lib/actions/action-autonomy-policy.server.js";
+
+test("applyAutonomyPolicy degrades an over-cap auto run to approve; leaves within-cap auto alone", () => {
+  const auto = { mode: "auto", reason: "merchant_autonomous_and_eligible" };
+  // Over the trapped-capital cap → degrade to approve, naming the violation.
+  const over = applyAutonomyPolicy(auto, { autoMaxTrappedCapital: 500 }, { trappedCapital: 900, variantCount: 3, maxDiscountPercent: 30 });
+  assert.equal(over.mode, "approve");
+  assert.equal(over.reason, "exceeds_autonomy_policy");
+  assert.deepEqual(over.policyViolations, ["over_auto_max_trapped_capital"]);
+  // Within all caps → stays auto.
+  const within = applyAutonomyPolicy(auto, { autoMaxTrappedCapital: 1000, autoMaxVariants: 5 }, { trappedCapital: 900, variantCount: 3, maxDiscountPercent: 30 });
+  assert.equal(within.mode, "auto");
+  // Empty policy → no-op.
+  assert.equal(applyAutonomyPolicy(auto, {}, { trappedCapital: 9e9 }).mode, "auto");
+});
+
+test("applyAutonomyPolicy never widens — approve/recommend pass through untouched", () => {
+  const approve = { mode: "approve", reason: "merchant_approve_execute" };
+  assert.equal(applyAutonomyPolicy(approve, { autoMaxTrappedCapital: 1 }, { trappedCapital: 9e9 }).mode, "approve");
+  const recommend = { mode: "recommend", reason: "merchant_recommend_only" };
+  assert.equal(applyAutonomyPolicy(recommend, { autoMaxVariants: 0 }, { variantCount: 9e9 }).mode, "recommend");
+});
+
+test("getActionPolicy keeps only known finite non-negative caps", async () => {
+  const prisma = {
+    actionAutonomyPolicy: {
+      findUnique: async () => ({ policy: { autoMaxTrappedCapital: 500, autoMaxVariants: -3, bogus: "x", autoMaxDiscountPercent: 40 } }),
+    },
+  };
+  const policy = await getActionPolicy(prisma, { merchantId: "m1", actionType: "price_markdown" });
+  assert.deepEqual(policy, { autoMaxTrappedCapital: 500, autoMaxDiscountPercent: 40 }); // -3 + bogus dropped
+});
 
 function mockPolicyPrisma(initial = null) {
   let row = initial;

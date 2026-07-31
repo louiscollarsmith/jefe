@@ -1101,6 +1101,7 @@ model ActionAutonomyPolicy {
   merchantId String   @map("merchant_id") @db.Uuid
   actionType String   @map("action_type") // e.g. "price_markdown"
   mode       String // "recommend" | "approve_execute" | "autonomous"
+  policy     Json?    // autonomy-as-policy caps for the "autonomous" mode, e.g. { autoMaxTrappedCapital, autoMaxVariants, autoMaxDiscountPercent } — an auto run exceeding a cap degrades to approve. Null = no extra constraint (structural caps still apply).
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
