@@ -859,6 +859,56 @@ async function recordHistory(prisma, input) {
 }
 
 /** @param {any} belief */
+/** Statuses that mean the MERCHANT is the author (they confirmed or corrected it). */
+const MERCHANT_AUTHORED_STATUSES = new Set([
+  BELIEF_STATUS.merchantConfirmed,
+  BELIEF_STATUS.merchantCorrected,
+]);
+
+/**
+ * Who a belief belongs to, for the Memory surface's grouping + left-rule.
+ * "merchant" when they confirmed/corrected it; "jefe" for a system inference.
+ * @param {string} status
+ */
+export function beliefAuthorship(status) {
+  return MERCHANT_AUTHORED_STATUSES.has(status) ? "merchant" : "jefe";
+}
+
+/**
+ * The confirm state that drives the surface's controls: "settled" (merchant-owned OR a
+ * confident inference → Edit/Forget), "unsure" (a low-confidence inference → "That's
+ * right / Not quite"). ("blocked" — Jefe can't determine it yet — is a gap/open-question
+ * state, sourced separately from the questions feed, not a regular active belief.)
+ * @param {string} status @param {number | null} confidence
+ */
+export function beliefConfirmState(status, confidence) {
+  if (MERCHANT_AUTHORED_STATUSES.has(status)) return "settled";
+  const conf = Number(confidence);
+  return Number.isFinite(conf) && conf >= 0.7 ? "settled" : "unsure";
+}
+
+/**
+ * A short provenance line, e.g. "you told Jefe · 29 Jul" / "from your store data · rechecked 31 Jul".
+ * @param {any} belief
+ */
+function beliefSourceLine(belief) {
+  const shortDate = (/** @type {any} */ d) => {
+    if (!d) return null;
+    try {
+      return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    } catch {
+      return null;
+    }
+  };
+  if (MERCHANT_AUTHORED_STATUSES.has(belief.status)) {
+    const when = shortDate(belief.lastConfirmedAt ?? belief.lastObservedAt ?? belief.lastEvaluatedAt);
+    return `you told Jefe${when ? ` · ${when}` : ""}`;
+  }
+  const when = shortDate(belief.lastEvaluatedAt ?? belief.lastObservedAt);
+  return `from your store data${when ? ` · rechecked ${when}` : ""}`;
+}
+
+/** @param {any} belief */
 function toDomainBelief(belief) {
   return {
     id: belief.id,
@@ -869,6 +919,12 @@ function toDomainBelief(belief) {
     value: belief.value,
     valueType: belief.valueType,
     status: belief.status,
+    // Memory-surface rendering fields (deterministic from status/confidence/dates). The
+    // plain-English `statement` is intentionally NOT here yet — see the memory-view design
+    // note; it's a per-belief-key rendering that needs its own pass.
+    authorship: beliefAuthorship(belief.status),
+    confirmState: beliefConfirmState(belief.status, belief.confidence),
+    sourceLine: beliefSourceLine(belief),
     confidence: belief.confidence === null ? null : Number(belief.confidence),
     confidenceReason: belief.confidenceReason,
     firstObservedAt: belief.firstObservedAt,
