@@ -5,11 +5,12 @@ import {
   notifyShopLifecycleToSlack,
 } from "../app/lib/observability/lifecycle-slack.server.js";
 
-test("formatLifecycleText: install line", () => {
+test("formatLifecycleText: install line links the storefront", () => {
   const t = formatLifecycleText({ event: "installed", shopDomain: "acme.myshopify.com" });
   assert.match(t, /🎉/);
   assert.match(t, /installed/);
-  assert.match(t, /acme\.myshopify\.com/);
+  // Slack link syntax: <url|label> — clickable through to the storefront.
+  assert.match(t, /<https:\/\/acme\.myshopify\.com\|acme\.myshopify\.com>/);
 });
 
 test("formatLifecycleText: reinstall is distinct from a fresh install", () => {

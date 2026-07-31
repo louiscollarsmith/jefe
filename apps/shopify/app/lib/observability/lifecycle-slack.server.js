@@ -25,20 +25,30 @@ const log = baseLogger.child({ component: "lifecycle-slack" });
  */
 
 /**
- * Format the Slack `{text}` line for a lifecycle event. Pure.
+ * A Slack hyperlink to the shop's storefront, labelled with the domain — so an
+ * install/uninstall line is one click from seeing the actual store.
+ * @param {string} shopDomain
+ */
+function shopLink(shopDomain) {
+  return `<https://${shopDomain}|${shopDomain}>`;
+}
+
+/**
+ * Format the Slack `{text}` line for a lifecycle event. Pure. The shop domain is
+ * a clickable link to its storefront.
  * @param {LifecycleInput} input
  * @returns {string}
  */
 export function formatLifecycleText(input) {
   if (input.event === "installed") {
     return input.reinstall
-      ? `🔄 Jefe re-installed — *${input.shopDomain}* (a churned shop came back)`
-      : `🎉 Jefe installed — *${input.shopDomain}*`;
+      ? `🔄 Jefe re-installed — ${shopLink(input.shopDomain)} (a churned shop came back)`
+      : `🎉 Jefe installed — ${shopLink(input.shopDomain)}`;
   }
   const days = typeof input.daysInstalled === "number" && input.daysInstalled > 0
     ? ` (after ${input.daysInstalled} ${input.daysInstalled === 1 ? "day" : "days"})`
     : "";
-  return `👋 Jefe uninstalled — *${input.shopDomain}*${days}`;
+  return `👋 Jefe uninstalled — ${shopLink(input.shopDomain)}${days}`;
 }
 
 /**
