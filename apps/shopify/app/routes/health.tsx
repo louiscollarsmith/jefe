@@ -10,6 +10,7 @@ import { logger } from "../lib/observability/logger.server";
 import { getLatencyPercentiles } from "../lib/observability/perf.server";
 import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
 import { getWebhookHealth } from "../lib/observability/webhook-health.server";
+import { getInboundEmailHealth } from "../lib/email/inbound/health.server.js";
 
 export const loader = async () => {
   const database = await checkDatabaseHealth(db);
@@ -22,6 +23,7 @@ export const loader = async () => {
         enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
       }),
       webhooks: getWebhookHealth(),
+      inboundEmail: getInboundEmailHealth(),
       ...buildDependencyHealth(process.env),
     },
     latency: getLatencyPercentiles(),

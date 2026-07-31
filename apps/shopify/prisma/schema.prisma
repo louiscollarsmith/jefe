@@ -128,6 +128,7 @@ model Shop {
   channelVerificationChallenges ChannelVerificationChallenge[]
   channelMessageDeliveries      ChannelMessageDelivery[]
   emailPreferences              EmailPreference[]
+  emailIdentities               EmailIdentity[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -151,6 +152,54 @@ model EmailPreference {
   @@unique([shopId, emailHash])
   @@index([shopId])
   @@map("email_preferences")
+}
+
+/// Inbound-email identity index (feature #15, Door A): sha256(normalizeEmail(owner
+/// email)) -> the shop whose owner uses that address. Lets an inbound reply route
+/// to the merchant's memory by HASH only — never plaintext, matching
+/// EmailPreference's PII posture. Populated while a merchant is active (afterAuth)
+/// so a later win-back reply — sent after the shop's Session rows are deleted on
+/// uninstall — still resolves to their memory. One row per email hash; the newest
+/// (merchantId, shopId) wins if an address moves between shops. Cascades with the
+/// shop, so a GDPR shop/redact drops the identity too. merchantId is a plain column
+/// (no FK): it is always the resolved shop's merchantId and is cascade-coupled to
+/// the shop row.
+model EmailIdentity {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  emailHash  String   @unique @map("email_hash")
+  merchantId String   @map("merchant_id") @db.Uuid
+  shopId     String   @map("shop_id") @db.Uuid
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@map("email_identities")
+}
+
+/// Inbound-email processing ledger (feature #15, Door A/B). One row per received
+/// message, keyed by the provider message id, so a webhook retry can't
+/// double-process or double-reply (the same idempotency posture as
+/// ChannelMessageDelivery for Slack). Stores identifiers + outcome only — never the
+/// email body, and the sender only as a HASH. shopId/merchantId are null when the
+/// sender can't be mapped to a shop (parked). FK-less by design: an append-only
+/// observability ledger that must survive shop deletion for audit.
+model InboundEmailEvent {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerMessageId String   @unique @map("provider_message_id")
+  door              String
+  emailHash         String?  @map("email_hash")
+  shopId            String?  @map("shop_id") @db.Uuid
+  merchantId        String?  @map("merchant_id") @db.Uuid
+  status            String   @default("received")
+  safeReason        String?  @map("safe_reason")
+  metadata          Json     @default("{}")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@map("inbound_email_events")
 }
 
 model ConnectorAccount {

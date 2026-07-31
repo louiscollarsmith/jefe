@@ -14,6 +14,7 @@ import {
 import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.server";
 import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
 import { clearWinBackGuard } from "./lib/email/winback.server.js";
+import { recordEmailIdentityOnAuth } from "./lib/email/inbound/identity.server.js";
 import { logger } from "./lib/observability/logger.server";
 import { notifyShopLifecycleToSlack } from "./lib/observability/lifecycle-slack.server.js";
 import { normalizeShopDomain } from "./lib/shopify/admin-graphql.server";
@@ -99,6 +100,21 @@ const shopify = shopifyApp({
         logger.error("Welcome email dispatch failed", {
           err: error,
           component: "welcome-email",
+          shopDomain: session.shop,
+        });
+      });
+
+      // Index the owner's email HASH → shop so a later inbound reply — including a
+      // post-uninstall win-back reply, after this shop's Session rows are deleted —
+      // routes to this merchant's memory (feature #15, Door A). Fire-and-forget and
+      // hash-only; inert until ENABLE_INBOUND_EMAIL turns the reply path on.
+      void recordEmailIdentityOnAuth(prisma, {
+        shopDomain: session.shop,
+        email: associatedUser?.email ?? null,
+      }).catch((error) => {
+        logger.error("email identity indexing failed", {
+          err: error,
+          component: "inbound-email",
           shopDomain: session.shop,
         });
       });
