@@ -21,6 +21,7 @@ import {
   churnReasonLabel,
   esc,
   fmtMs,
+  formatAccessLog,
   money,
   optionList,
   safeEqual,
@@ -34,9 +35,6 @@ const pool = new Pool({
 });
 
 const OPS_PASSWORD = process.env.OPS_PASSWORD || "";
-// OPS_PUBLIC=true opens the panel with no login (temporary, founder's call).
-// The password stays configured so re-gating later is a single flag flip.
-const OPS_PUBLIC = process.env.OPS_PUBLIC === "true";
 const PORT = Number(process.env.PORT) || 4000;
 const WINDOWS = { "24": "24h", "168": "7d", "720": "30d", "2160": "90d" };
 
@@ -47,6 +45,31 @@ function isAuthed(req) {
   const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
   const password = decoded.slice(decoded.indexOf(":") + 1);
   return safeEqual(password, OPS_PASSWORD);
+}
+
+/** Best-effort client IP: the proxy's forwarded-for chain head, else the socket. */
+function clientIp(req) {
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd.length) return fwd.split(",")[0].trim();
+  return req.socket?.remoteAddress || "";
+}
+
+/**
+ * Audit-log one access to the panel (see formatAccessLog — PII-safe: who / what /
+ * outcome / when, never the data or the password). Emitted for BOTH granted and
+ * denied requests, so unauthorised attempts are visible too.
+ */
+function logOpsAccess(req, url, outcome) {
+  process.stdout.write(
+    formatAccessLog({
+      ts: new Date().toISOString(),
+      outcome,
+      method: req.method,
+      path: url.pathname,
+      shop: url.searchParams.get("shop") || "",
+      ip: clientIp(req),
+    }) + "\n",
+  );
 }
 
 async function queryEvents(params) {
@@ -641,7 +664,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (!OPS_PUBLIC && !isAuthed(req)) {
+  if (!isAuthed(req)) {
+    logOpsAccess(req, url, "denied");
     res.writeHead(401, {
       "WWW-Authenticate": 'Basic realm="Jefe Ops"',
       "Content-Type": "text/plain",
@@ -649,6 +673,7 @@ const server = http.createServer(async (req, res) => {
     res.end(OPS_PASSWORD ? "Authentication required." : "OPS_PASSWORD is not configured.");
     return;
   }
+  logOpsAccess(req, url, "granted");
 
   if (url.pathname === "/merchant") {
     const shopDomain = url.searchParams.get("shop") || "";

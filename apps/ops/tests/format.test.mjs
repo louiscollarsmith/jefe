@@ -4,6 +4,7 @@ import {
   churnReasonLabel,
   esc,
   fmtMs,
+  formatAccessLog,
   money,
   optionList,
   safeEqual,
@@ -99,4 +100,28 @@ test("churnReasonLabel: known codes map to labels; unknown/empty fall back", () 
   assert.equal(churnReasonLabel("brand_new_reason"), "brand_new_reason");
   assert.equal(churnReasonLabel(null), "—");
   assert.equal(churnReasonLabel(""), "—");
+});
+
+test("formatAccessLog: PII-safe audit line, drops empty fields", () => {
+  const parsed = JSON.parse(
+    formatAccessLog({
+      ts: "2026-07-31T00:00:00.000Z",
+      outcome: "granted",
+      method: "GET",
+      path: "/merchant",
+      shop: "jaspers-market.myshopify.com",
+      ip: "203.0.113.7",
+    }),
+  );
+  assert.equal(parsed.ev, "ops_access");
+  assert.equal(parsed.outcome, "granted");
+  assert.equal(parsed.path, "/merchant");
+  assert.equal(parsed.shop, "jaspers-market.myshopify.com");
+  assert.equal(parsed.ip, "203.0.113.7");
+  // Empty fields are omitted (not emitted as ""), keeping the audit line lean.
+  const denied = JSON.parse(
+    formatAccessLog({ ts: "t", outcome: "denied", path: "/", shop: "", ip: "" }),
+  );
+  assert.equal(denied.outcome, "denied");
+  assert.ok(!("shop" in denied) && !("ip" in denied));
 });

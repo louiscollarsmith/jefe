@@ -89,3 +89,22 @@ const CHURN_REASON_LABELS = {
 export function churnReasonLabel(code) {
   return CHURN_REASON_LABELS[code] || code || "—";
 }
+
+/**
+ * One structured access-log line for the ops panel (which serves merchant data).
+ * PII-safe BY CONSTRUCTION: it records only WHO (source IP), WHAT (request path +
+ * the `shop` filter), the outcome (granted/denied) and WHEN — never the panel's
+ * data and never the password. Emitted as a single JSON line to stdout so
+ * Railway's log drain is the "log access to PII" audit trail the App Store
+ * Data-protection attestation needs. Empty fields are dropped to keep lines lean.
+ *
+ * @param {{ ts: string, outcome: string, method?: string, path?: string, shop?: string, ip?: string }} entry
+ */
+export function formatAccessLog(entry) {
+  const line = { ev: "ops_access", ts: entry.ts, outcome: entry.outcome };
+  if (entry.method) line.method = entry.method;
+  if (entry.path) line.path = entry.path;
+  if (entry.shop) line.shop = entry.shop;
+  if (entry.ip) line.ip = entry.ip;
+  return JSON.stringify(line);
+}
