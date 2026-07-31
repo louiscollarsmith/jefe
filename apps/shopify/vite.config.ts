@@ -35,6 +35,18 @@ if (host === "localhost") {
   };
 }
 
+// Stamp the client bundle's app version so the "new version — Refresh" banner and
+// the Sentry client release can compare the running bundle against the server's
+// /health `version`. Mirror the server's source + order
+// (app/services/deployment-health.server.js): APP_VERSION if set, else the Railway
+// commit SHA. Set it as a VITE_-prefixed env var here so Vite's loadEnv bakes
+// import.meta.env.VITE_APP_VERSION into the client at build. Empty when neither is
+// present (local dev / non-Railway build) → the banner + Sentry release stay inert.
+if (!process.env.VITE_APP_VERSION) {
+  process.env.VITE_APP_VERSION =
+    process.env.APP_VERSION || process.env.RAILWAY_GIT_COMMIT_SHA || "";
+}
+
 export default defineConfig({
   server: {
     allowedHosts: [host],
