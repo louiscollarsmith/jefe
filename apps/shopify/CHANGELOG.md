@@ -2,6 +2,10 @@
 
 ## 2026-07-31
 
+### Added
+
+- **Real-user Web Vitals tracking → ops panel + Slack (LCP/INP/CLS).** The embedded app now reports its Core Web Vitals via App Bridge (`shopify.webVitals.onReport`) to a new `/api/web-vitals` beacon, which records LCP/INP/CLS as PII-free `activity_events` (topic `performance`) — so **LCP is trackable over time in the ops panel** instead of only eyeballed in the Partner Dashboard — and tier-alerts: WARN on "needs-improvement", pages #jefe-slack (deduped per-metric via the ops alerter) on a genuinely "poor" value. It's the same metric Shopify's dashboard shows (apples-to-apples), and closes the "do we auto-monitor CWV?" gap. (Webhook delivery % has no clean Shopify API — verified — so that stays on the existing per-error→#jefe-slack path.) The client reporter is embedded-only + fully guarded (a no-op on standalone / older App Bridge, so it can't break the app); the endpoint authenticates the beacon and caps metrics per report. Pure `classifyWebVital` (Google's good / needs-improvement / poor bands) + 6 tests. `app/routes/api.web-vitals.tsx`, `app/components/web-vitals-reporter.tsx`, `app/lib/observability/web-vitals.server.js`, wired in `app/routes/app.tsx`. First half of the LCP work (tracking, so the fix is measurable); the 3140ms optimisation is next.
+
 ### Changed
 
 - **Docs resynced to reflect clearance execution LIVE (advisory → live).** `CLEARANCE_EXECUTE_ENABLED=true` has been in production since 2026-07-31, but several current-state docs still framed Jefe as advisory-only / "dark behind the flag" / awaiting go-live. Corrected the canonical docs to the now-live reality — `CLAUDE.md`, `context/11_actions_and_autonomy.md`, `context/13_action_capability_registry.md`, `HANDOVER.md`, `apps/shopify/docs/merchant-memory-state.md`, and `docs/ops/clearance-go-live.md` (marked EXECUTED; procedure + rollback retained). Each now states execution is live and *inert only until a store has costed dead stock + a non-`recommend` dial*, not "dark." Historical CHANGELOG entries are left untouched (true as written). Docs-only; no behaviour change.

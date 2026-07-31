@@ -23,6 +23,7 @@ import {
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { WebVitalsReporter } from "../components/web-vitals-reporter";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Dual-mode seam: embedded → authenticate.admin (unchanged); standalone
@@ -73,6 +74,7 @@ export default function App() {
 
   return (
     <AppProvider embedded={!standalone} apiKey={apiKey}>
+      <WebVitalsReporter enabled={!standalone} />
       <Frame
         navigation={
           focusedOnboarding ? undefined : (
