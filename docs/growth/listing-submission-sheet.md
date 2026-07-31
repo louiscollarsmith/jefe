@@ -32,7 +32,7 @@
 ## Discovery / SEO
 - **Title tag (≤60):** `Jefe — AI eCommerce Manager for Shopify Stores` *(fine as-is; optional: align to "Store Manager" to match the app name)*
 - **Meta description (≤160):** `Jefe is an AI eCommerce manager for Shopify. It learns how your store works, finds the next move, and acts on it — you approve, or let it run autonomously.`
-- **Search terms (5):** `ecommerce manager` · `AI store manager` · `store insights` · `inventory alerts` · `reorder reminders` *(recommended set — confirm these are what you entered vs. the earlier AI/Intelligence/AI-Assistance draft)*
+- **Search terms (5):** `AI` · `Intelligence` · `ecommerce manager` · `store insights` · `AI Assistance` *(as entered — editable post-launch; if the broad AI terms underperform, worth testing longer-tail terms like `inventory alerts` / `reorder reminders`)*
 
 ## Media
 - **Featured media:** demo video + thumbnail (uploaded).
@@ -48,7 +48,7 @@
 - **Demo store URL:** *(blank — N/A for an admin-embedded app; the video carries the demo)*
 
 ## Pricing
-- **Plan — internal handle:** `early-access` *(recommended; can't be changed later — confirm vs. `jefe-1` if you kept that)*
+- **Plan — internal handle:** `early-access` *(confirmed — can't be changed later)*
 - **Billing:** Free · **"This plan has additional charges" — unchecked**
 - **Public display name:** `Early Access`
 - **Top features:** `Full access while Jefe is in early access: connect your store, build your Merchant Memory, get recommendations with the evidence, and let Jefe act on them — your call.`
@@ -107,4 +107,4 @@
 - **Protected customer data:** Level 2 (`read_customers` → name/email/address/phone).
 
 ---
-*Items flagged "confirm" (search terms, plan handle) are my recommendations — update this record if what you actually entered differs.*
+*Confirmed 2026-07-31: search terms = the set above (as entered); plan handle = `early-access`.*
