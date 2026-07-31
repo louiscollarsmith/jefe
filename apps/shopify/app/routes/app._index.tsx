@@ -42,12 +42,17 @@ import {
 } from "@shopify/polaris";
 import { CheckCircleIcon, FileIcon, UploadIcon } from "@shopify/polaris-icons";
 
-// Code-split: DailyHome (~51kB, hand-rolled, no Polaris) renders only for
-// returning users (appMode "daily"). Lazy so first-run onboarding + the memory
-// view don't ship it. SSR-streamed, so the server still resolves + streams it.
-const DailyHome = lazy(() =>
-  import("../components/daily-home").then((m) => ({ default: m.DailyHome })),
-);
+// DailyHome renders DIRECTLY (not lazy) on the returning-user daily path. It was
+// lazy()+<Suspense> before, but that made its boundary hydrate asynchronously —
+// only after the chunk downloaded — and in that window a stray parent/App-Bridge
+// update trips React #421 ("update before the boundary finished hydrating"),
+// which discards the streamed SSR home and re-renders on the client, tanking LCP
+// on the hot path. A static import folds DailyHome into the app._index route
+// chunk so it hydrates synchronously with the route and that #421 window closes.
+// The shared app-home/ code stays in its own shared chunk, so onboarding/memory
+// users pay only a tiny glue delta (~1.7kB gzip, measured), not the whole module.
+// (MerchantMemoryView stays lazy below — a secondary, non-LCP-critical path.)
+import { DailyHome } from "../components/daily-home";
 
 // Code-split: the standing Merchant Memory view (appMode "memory") renders only
 // for returning users who open it — never during first-run onboarding — so it's
@@ -1100,22 +1105,22 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollPlan);
 
   if (data.appMode === "daily") {
+    // Direct render (no Suspense boundary) — see the DailyHome import note: this
+    // keeps the streamed SSR home from being discarded by React #421 on hydration.
     return (
-      <Suspense fallback={null}>
-        <DailyHome
-          storeName={data.storeName}
-          merchantName={data.merchantName}
-          metrics={data.metrics}
-          memory={data.memory}
-          recommendation={data.recommendation}
-          suggestedAction={data.suggestedAction}
-          executedActions={data.executedActions}
-          insights={data.insights}
-          goals={data.goals}
-          clearanceMode={data.clearanceMode}
-          channels={data.channels}
-        />
-      </Suspense>
+      <DailyHome
+        storeName={data.storeName}
+        merchantName={data.merchantName}
+        metrics={data.metrics}
+        memory={data.memory}
+        recommendation={data.recommendation}
+        suggestedAction={data.suggestedAction}
+        executedActions={data.executedActions}
+        insights={data.insights}
+        goals={data.goals}
+        clearanceMode={data.clearanceMode}
+        channels={data.channels}
+      />
     );
   }
 
