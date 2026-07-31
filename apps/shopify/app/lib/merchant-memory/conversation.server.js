@@ -294,7 +294,7 @@ export async function getOpenQuestions(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; message: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; message: string; relatedOpenQuestionId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendConversationMessage(prisma, input) {
   const content = input.message.trim();
@@ -326,6 +326,13 @@ export async function sendConversationMessage(prisma, input) {
     }),
   ]);
   const context = buildConversationContext(conversation.context, recentMessages);
+  // Exact-targeting: when the merchant answers a SPECIFIC open question from the surface (the
+  // answer composer posts its id), aim the interpreter at THAT question rather than the
+  // top-priority fallback in interpretMerchantMessage. An id that is no longer open harmlessly
+  // falls back to the default (the .find below simply won't match it).
+  if (input.relatedOpenQuestionId) {
+    context.currentOpenQuestionId = input.relatedOpenQuestionId;
+  }
   const operation = /** @type {any} */ (await interpretMerchantMessageWithLlm({
     message: content,
     beliefs,
