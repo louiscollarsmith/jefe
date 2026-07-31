@@ -68,10 +68,23 @@ export function DailyHome(props: {
   const horizonNear: HorizonItem[] = buildHorizon(new Date()).map((e) => ({ id: e.key, date: e.dateLabel, title: e.title, body: e.note, action: null }));
   const horizonWatching: HorizonWatch[] = [];
 
-  // Settings autonomy: the one live action type today (dead-stock clearance). Honest —
-  // it's the action Jefe can actually take; more rows appear as more actions go live.
+  // Settings autonomy — the full 13a action roster (design_handoff / sample.ts: Tidy-ups /
+  // Listing copy / Pricing / Reordering, that order + labels + detail). Per wire-or-keep
+  // (AGENTS.md → Design fidelity), every action type in the design is rendered. "Live" is
+  // grounded in the action engine (chat 9/10): only action types registered + resolvable
+  // (ACTION_REGISTRY / RESOLVERS) get a real dial — today just `price_markdown` (dead-stock
+  // clearance, surfaced as "Pricing"), wired to getActionMode/setActionMode. `tidy_up` and
+  // `listing_copy` have no primitive yet → gated "Soon". `reordering` keeps its real
+  // needs-you prompt (blockedReason), not a "Soon", per the design. `product_status_change`
+  // has a built-but-dark adapter but isn't registered, so it's intentionally not a dial here.
+  // When a type graduates into the registry, add its getActionMode read in the loader and set
+  // its row's `mode` (dropping `soon`). No fabricated dials; no fabricated numbers — the
+  // margin-floor detail stays generic (the design mock's "30%" is Everdew sample data).
   const policies: ActionPolicy[] = [
-    { actionType: "price_markdown", label: "Dead-stock clearance", detail: "Marks down dead stock to recover tied-up cash — never below your margin floor", mode: normalizeMode(props.clearanceMode), blockedReason: null },
+    { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds", mode: null, soon: true },
+    { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types", mode: null, soon: true },
+    { actionType: "price_markdown", label: "Pricing", detail: "Never below your margin floor", mode: normalizeMode(props.clearanceMode) },
+    { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", mode: null, blockedReason: "Tell me who supplies you" },
   ];
 
   const channels: ChannelRow[] = (props.channels || []).map((c) => ({

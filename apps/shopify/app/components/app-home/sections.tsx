@@ -682,7 +682,12 @@ export function QueueSection({ items }: { items: QueueItem[] }) {
 }
 
 // ── SETTINGS ───────────────────────────────────────────────────────────────────
-export type ActionPolicy = { actionType: string; label: string; detail: string; mode: ActionMode | null; blockedReason?: string | null };
+// One row per action type in the design roster (Tidy-ups / Listing copy / Pricing /
+// Reordering). `mode` set → the action type is LIVE and its autonomy dial is wired.
+// `soon` → the design element is kept visible per wire-or-keep, but gated until its
+// primitive ships (no dial that can't act). `blockedReason` → a genuine needs-your-input
+// prompt. The three are mutually exclusive; the render prefers mode → soon → blocked.
+export type ActionPolicy = { actionType: string; label: string; detail: string; mode: ActionMode | null; soon?: boolean; blockedReason?: string | null };
 export type ChannelRow = { id: string; label: string; value: string; connected: boolean };
 
 export function SettingsSection({ policies, channels }: { policies: ActionPolicy[]; channels: ChannelRow[] }) {
@@ -698,8 +703,16 @@ export function SettingsSection({ policies, channels }: { policies: ActionPolicy
               <span style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 600, color: R.ink }}>{p.label}</span>
               <span style={{ fontFamily: R.sans, fontSize: 12, color: R.ink3 }}>{p.detail}</span>
             </div>
+            {/* Live action type → the wired autonomy dial. Not-yet-live → kept visible per
+                the design (wire-or-keep) but gated with a muted "soon" chip, never a dial
+                that can't act. A genuine needs-your-input block (e.g. Reordering) falls
+                through to the rust prompt — that's an actionable ask, not a "soon". */}
             {p.mode ? (
               <ModePicker actionType={p.actionType} current={p.mode} compact />
+            ) : p.soon ? (
+              // The canonical 13a "soon" chip — mirrors the rail's Record tag (AppHome13a):
+              // muted mono on a hairline outline. A gated design element, never a rust affordance.
+              <span style={{ flex: "none", fontFamily: R.mono, fontSize: 9, letterSpacing: "0.5px", textTransform: "uppercase", color: R.metaMono, border: `1px solid ${R.hairline}`, borderRadius: 3, padding: "1px 5px", whiteSpace: "nowrap" }}>soon</span>
             ) : (
               <span style={{ flex: "none", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>{p.blockedReason || "Set up"}</span>
             )}
