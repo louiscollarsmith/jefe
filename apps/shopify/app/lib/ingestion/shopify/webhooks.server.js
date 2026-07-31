@@ -23,6 +23,7 @@ import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jo
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { captureShopChurn } from "../../../services/analytics/churn.server.js";
 import { sendWinBackEmailOnUninstall } from "../../email/winback.server.js";
+import { notifyShopLifecycleToSlack } from "../../observability/lifecycle-slack.server.js";
 
 const webhookLogger = baseLogger.child({ component: "shopify-webhook" });
 
@@ -180,6 +181,23 @@ export async function processShopifyWebhook(prisma, input) {
         appUrl: process.env.EMAIL_APP_URL || undefined,
       }).catch((error) => {
         webhookLogger.error("winback email dispatch failed", {
+          err: error,
+          shopDomain: input.shopDomain,
+        });
+      });
+
+      // Ops ping to #jefe-slack that a shop uninstalled (with tenure). Only on the
+      // genuine first delivery (`created`), never a redelivery. Fire-and-forget /
+      // no-op without ALERT_WEBHOOK_URL; must not delay or break the webhook.
+      const daysInstalled = shop.createdAt
+        ? Math.max(0, Math.floor((Date.now() - new Date(shop.createdAt).getTime()) / 86_400_000))
+        : null;
+      void notifyShopLifecycleToSlack({
+        event: "uninstalled",
+        shopDomain: input.shopDomain,
+        daysInstalled,
+      }).catch((error) => {
+        webhookLogger.error("uninstall slack notification failed", {
           err: error,
           shopDomain: input.shopDomain,
         });

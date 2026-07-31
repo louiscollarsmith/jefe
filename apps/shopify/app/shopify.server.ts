@@ -15,6 +15,8 @@ import { startShopifyBackfillLoop } from "./services/shopify-backfill-worker.ser
 import { sendWelcomeEmailOnInstall } from "./lib/email/welcome.server.js";
 import { clearWinBackGuard } from "./lib/email/winback.server.js";
 import { logger } from "./lib/observability/logger.server";
+import { notifyShopLifecycleToSlack } from "./lib/observability/lifecycle-slack.server.js";
+import { normalizeShopDomain } from "./lib/shopify/admin-graphql.server";
 import { track } from "./services/analytics/event-log.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
@@ -42,6 +44,31 @@ const shopify = shopifyApp({
   },
   hooks: {
     afterAuth: async ({ session }) => {
+      // Distinguish a genuine (re)install from a routine re-auth (token refresh /
+      // scope change): read the shop's status BEFORE the backfill queue reactivates
+      // it. No prior row → first install; previously inactive/uninstalled → reinstall;
+      // already active → just an auth, no ping. Best-effort — a read failure here must
+      // never touch the auth flow.
+      let installPing: { reinstall: boolean } | null = null;
+      try {
+        const priorShop = await prisma.shop.findUnique({
+          where: {
+            platform_shopDomain: {
+              platform: "shopify",
+              shopDomain: normalizeShopDomain(session.shop),
+            },
+          },
+          select: { status: true },
+        });
+        if (!priorShop) installPing = { reinstall: false };
+        else if (priorShop.status !== "active") installPing = { reinstall: true };
+      } catch (error) {
+        logger.error("install lifecycle status read failed", {
+          err: error,
+          shopDomain: session.shop,
+        });
+      }
+
       await queueInstallShopifyBackfill(prisma, {
         shopDomain: session.shop,
         sessionId: session.id,
@@ -87,6 +114,22 @@ const shopify = shopifyApp({
           shopDomain: session.shop,
         });
       });
+
+      // Ops ping to #jefe-slack that a shop (re)installed. Fire-and-forget, a
+      // no-op without ALERT_WEBHOOK_URL, and only on a genuine install transition
+      // (not every re-auth) via the prior-status check above.
+      if (installPing) {
+        void notifyShopLifecycleToSlack({
+          event: "installed",
+          shopDomain: session.shop,
+          reinstall: installPing.reinstall,
+        }).catch((error) => {
+          logger.error("install slack notification failed", {
+            err: error,
+            shopDomain: session.shop,
+          });
+        });
+      }
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
