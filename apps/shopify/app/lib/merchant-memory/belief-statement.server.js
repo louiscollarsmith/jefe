@@ -32,6 +32,15 @@ function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/** A percentage the way a person says it: whole numbers, but keep a decimal for sub-1% so it
+ * never reads as "0%". @param {any} n @returns {string | null} */
+function pct(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return null;
+  if (v > 0 && v < 1) return v.toFixed(1);
+  return String(Math.round(v));
+}
+
 /**
  * products.dead_stock.trailing_90d → the dead-stock summary in plain English.
  * Value shape (from the deadStock derivation): { deadStockProductCount, totalTrappedCapital,
@@ -50,9 +59,66 @@ function formatDeadStock(value) {
   return `${s}.`;
 }
 
+/**
+ * products.top_product_revenue_share.trailing_90d → revenue concentration.
+ * Value (shareOutcome): { percentage, topN, ... }. @param {any} value
+ */
+function formatTopProductShare(value) {
+  const p = pct(value?.percentage);
+  if (!p || !(Number(value?.percentage) > 0)) return null;
+  const topN = Number(value?.topN);
+  if (topN === 1) return `Your top product brings in ${p}% of your revenue.`;
+  const n = Number.isFinite(topN) && topN > 0 ? `top ${topN} products` : "top few products";
+  return `Your ${n} bring in ${p}% of your revenue.`;
+}
+
+/**
+ * products.top_returned_products.trailing_180d → the most-returned product.
+ * Value: { topReturnedProduct: { title, returnRatePercent, returnedUnits } }. @param {any} value
+ */
+function formatTopReturned(value) {
+  const top = value?.topReturnedProduct;
+  if (!top?.title) return null;
+  const rate = pct(top.returnRatePercent);
+  if (rate && Number(top.returnRatePercent) > 0) {
+    return `${top.title} comes back most — about ${rate}% of the ones you sell get returned.`;
+  }
+  const units = Number(top.returnedUnits);
+  if (Number.isFinite(units) && units > 0) {
+    return `${top.title} has the most returns lately — ${plural(units, "unit")} sent back.`;
+  }
+  return null;
+}
+
+/**
+ * inventory.low_cover_products.trailing_30d → the product closest to running out.
+ * Value: { topAtRiskProduct: { title, daysOfCover }, atRiskProductCount }. @param {any} value
+ */
+function formatLowCover(value) {
+  const top = value?.topAtRiskProduct;
+  if (!top?.title) return null;
+  const days = Number(top.daysOfCover);
+  if (!Number.isFinite(days)) return null;
+  let s = `${top.title} runs low soon — about ${plural(Math.max(0, Math.round(days)), "day")} of stock left at the current pace`;
+  const count = Number(value?.atRiskProductCount);
+  if (Number.isFinite(count) && count > 1) s += `, and ${plural(count - 1, "other")} running low`;
+  return `${s}.`;
+}
+
+/** refunds.refunded_order_rate.all_time → refund rate. Value (shareOutcome): { percentage }. @param {any} value */
+function formatRefundRate(value) {
+  const p = pct(value?.percentage);
+  if (!p) return null;
+  return `About ${p}% of your orders get refunded.`;
+}
+
 /** @type {Record<string, (value: any) => string | null>} */
 const FORMATTERS = {
   "products.dead_stock.trailing_90d": formatDeadStock,
+  "products.top_product_revenue_share.trailing_90d": formatTopProductShare,
+  "products.top_returned_products.trailing_180d": formatTopReturned,
+  "inventory.low_cover_products.trailing_30d": formatLowCover,
+  "refunds.refunded_order_rate.all_time": formatRefundRate,
 };
 
 /** Belief keys that have a statement formatter (for coverage checks / roadmap). */
