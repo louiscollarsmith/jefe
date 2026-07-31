@@ -43,7 +43,7 @@ async function loadOfflineToken(prisma, shop) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ shop: string }} session  the online action session — we take session.shop
  * @param {{ merchantId: string; actionRunId: string; mode: "approve" | "auto" }} input
- * @param {{ createGqlClient?: (opts: any) => { request: (q: string, v?: any) => Promise<any> } }} [deps]  test seam
+ * @param {{ createGqlClient?: (opts: any) => { request: (q: string, v?: any) => Promise<any> }; loadOfflineToken?: (prisma: any, shop: string) => Promise<string> }} [deps]  test/refresh seam
  * @returns {Promise<{ ok: boolean; executed: boolean; reason?: string; status?: string } & Record<string, unknown>>}
  */
 export async function wireClearanceExecution(prisma, session, input, deps = {}) {
@@ -98,7 +98,12 @@ export async function wireClearanceExecution(prisma, session, input, deps = {}) 
   }
 
   // Build the live write client scoped to the merchant's shop + offline token.
-  const accessToken = await loadOfflineToken(prisma, session.shop);
+  // The loader is injectable so background/autonomous callers pass a refresh-
+  // capable one (loadFreshOfflineToken) — Shopify 403s a stale offline token and
+  // this write rides no embedded request that would refresh it. Default keeps the
+  // raw read for tests + the flag-off no-op path.
+  const loadToken = deps.loadOfflineToken ?? loadOfflineToken;
+  const accessToken = await loadToken(prisma, session.shop);
   const createGqlClient =
     deps.createGqlClient ??
     ((opts) => new ShopifyAdminGraphqlClient(opts));

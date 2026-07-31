@@ -89,6 +89,7 @@ import {
 } from "../lib/onboarding/steps";
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
+import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import { getActiveSuggestedAction, getExecutedActionFeed, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
 import { getActionMode, setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
@@ -243,11 +244,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const actionLog = baseLogger.child({ component: "action" });
   if (intent === "action.approve") {
     const actionRunId = String(formData.get("actionRunId") ?? "");
-    const result = await wireClearanceExecution(prisma, session, {
-      merchantId: merchant.id,
-      actionRunId,
-      mode: "approve",
-    });
+    const result = await wireClearanceExecution(
+      prisma,
+      session,
+      {
+        merchantId: merchant.id,
+        actionRunId,
+        mode: "approve",
+      },
+      // Refresh the offline token right before the write. authenticate.admin only
+      // re-exchanges it when it's already within ~5 min of expiry, so a token with
+      // a little life left would otherwise be used as-is and could 403 mid-write.
+      { loadOfflineToken: (_prisma, shop) => loadFreshOfflineToken(shop) },
+    );
     // `executed` distinguishes a real store write (flag on) from the dark record
     // (flag off). No customer data — merchant + run identifiers only.
     actionLog.info("merchant approved suggested action", {

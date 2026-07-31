@@ -3,6 +3,7 @@
 import { PrismaClient } from "@prisma/client";
 import { runShopifyBackfill } from "../lib/ingestion/shopify/backfill.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server.js";
+import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server.js";
 import {
   buildOrdersBackfillQueryFilter,
   ORDERS_COUNT_QUERY,
@@ -490,11 +491,11 @@ async function runBackfillJob(prisma, job, options) {
     shopId: job.shopId,
     shopDomain: job.shop.shopDomain,
     sessionId: stringValue(payload.sessionId),
+    // Refresh-capable load: the worker rides no embedded request, so it must
+    // re-exchange an expiring offline token itself (Shopify 403s stale ones).
+    // Always the shop's offline session — background Admin API work needs offline.
     accessToken: requiresShopifyToken
-      ? await loadAccessToken(prisma, {
-          shopDomain: job.shop.shopDomain,
-          sessionId: stringValue(payload.sessionId),
-        })
+      ? await loadFreshOfflineToken(job.shop.shopDomain)
       : null,
     fetchImpl: options.fetchImpl,
     logger: options.logger ?? console,
@@ -1014,27 +1015,6 @@ async function loadBackfillCountEstimate(context, domain) {
     });
     return null;
   }
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopDomain: string; sessionId?: string | null }} input
- */
-async function loadAccessToken(prisma, input) {
-  const session = input.sessionId
-    ? await prisma.session.findFirst({
-        where: { id: input.sessionId, shop: input.shopDomain },
-      })
-    : await prisma.session.findFirst({
-        where: { shop: input.shopDomain, isOnline: false },
-        orderBy: { expires: "desc" },
-      });
-
-  if (!session?.accessToken) {
-    throw new Error("No offline Shopify session token is available.");
-  }
-
-  return session.accessToken;
 }
 
 /** @param {BackfillContext} context */
