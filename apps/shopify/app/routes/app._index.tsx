@@ -2,6 +2,7 @@ import type {
   ActionFunctionArgs,
   HeadersFunction,
   LoaderFunctionArgs,
+  ShouldRevalidateFunctionArgs,
 } from "react-router";
 import type { ChangeEvent, DragEvent, FormEvent, ReactNode } from "react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
@@ -191,6 +192,15 @@ type SlackDestinationView = {
 };
 type SlackOAuthLaunchState = "idle" | "authorising" | "failed";
 
+// A one-field autonomy-mode toggle (action.set_mode) changes nothing else on the
+// page, so skip the heavy app._index loader revalidation for it — the dial write is
+// a background fetcher. Approve/Decline/Edit are deliberately NOT skipped (they change
+// the proposed row / execute, so the card + "What Jefe did" feed must reload).
+export function shouldRevalidate({ formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+  if (formData?.get("intent") === "action.set_mode") return false;
+  return defaultShouldRevalidate;
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
@@ -303,7 +313,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (result.status === "ok")
       actionLog.info("merchant set action autonomy mode", modeMeta);
     else actionLog.warn("merchant set-mode rejected", modeMeta);
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+    // A pure preference toggle — return data (NOT a redirect) so the fetcher
+    // doesn't navigate; paired with shouldRevalidate below to skip the heavy loader.
+    return { ok: result.status === "ok", mode };
   }
 
   if (intent.startsWith("channel.")) {

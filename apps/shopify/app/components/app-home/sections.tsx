@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form } from "react-router";
+import { Form, useFetcher } from "react-router";
 import { R, RADIUS, money, figureDisplay } from "./register";
 import {
   SectionHeader,
@@ -56,13 +56,22 @@ const MODE_OPTIONS: Array<{ value: ActionMode; label: string; hint: string }> = 
 ];
 
 function ModePicker({ actionType, current, compact = false }: { actionType: string; current: ActionMode; compact?: boolean }) {
+  // A one-field preference toggle: submit via a fetcher (no navigation) so it's
+  // instant, and hold the choice in local state so the highlight persists — the
+  // loader is intentionally NOT revalidated for set_mode (shouldRevalidate in the
+  // route), so `current` won't refresh; useState is what keeps the picker correct.
+  const fetcher = useFetcher();
+  // The autonomy mode changes ONLY via this toggle (Approve/Decline/Edit never touch
+  // it), so a local optimistic state is authoritative — no effect-sync needed, and it
+  // survives the non-revalidating set_mode write (loader `current` stays put by design).
+  const [selected, setSelected] = useState<ActionMode>(current);
   return (
-    <Form method="post" style={{ display: "inline-flex" }}>
+    <fetcher.Form method="post" style={{ display: "inline-flex" }}>
       <input type="hidden" name="intent" value="action.set_mode" />
       <input type="hidden" name="actionType" value={actionType} />
       <div style={{ display: "inline-flex", border: `1px solid ${R.controlBorder}`, borderRadius: RADIUS.button, overflow: "hidden" }}>
         {MODE_OPTIONS.map((opt, i) => {
-          const active = opt.value === current;
+          const active = opt.value === selected;
           return (
             <button
               key={opt.value}
@@ -71,6 +80,7 @@ function ModePicker({ actionType, current, compact = false }: { actionType: stri
               value={opt.value}
               title={opt.hint}
               aria-pressed={active}
+              onClick={() => setSelected(opt.value)}
               style={{
                 fontFamily: R.sans,
                 fontSize: compact ? 11.5 : 12.5,
@@ -88,7 +98,7 @@ function ModePicker({ actionType, current, compact = false }: { actionType: stri
           );
         })}
       </div>
-    </Form>
+    </fetcher.Form>
   );
 }
 
