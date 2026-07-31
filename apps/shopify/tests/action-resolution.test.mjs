@@ -144,6 +144,62 @@ test("proposeActionFromIntent returns no_opportunity when there's no dead stock"
   assert.equal(res.status, "no_opportunity");
 });
 
+test("close the learn loop: no explicit markdown eases from memory after 'too aggressive' declines", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
+    inventory: [{ variantId: "v1", available: 10 }],
+    soldLineItems: [],
+    onCreate: (data) => { row = data; },
+  });
+  // Merchant's Observe→Learn belief: past clearances were declined as too aggressive.
+  prisma.merchantMemoryBelief = { findFirst: async () => ({ status: "inferred", value: { topReasonCategory: "too_aggressive", totalDeclines: 4 } }) };
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock" }, // NO markdownPercent → default adapts
+  });
+  assert.equal(res.status, "proposed");
+  assert.equal(row.proposalSummary.markdownPercent, 20); // eased 30 → 20
+  assert.equal(row.preview.changes[0].toPrice, 160); // 20% off 200, above the 80 floor
+});
+
+test("close the learn loop: an explicit markdown is respected (memory only adapts the default)", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
+    inventory: [{ variantId: "v1", available: 10 }],
+    soldLineItems: [],
+    onCreate: (data) => { row = data; },
+  });
+  prisma.merchantMemoryBelief = { findFirst: async () => ({ status: "inferred", value: { topReasonCategory: "too_aggressive", totalDeclines: 4 } }) };
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 40 } }, // explicit
+  });
+  assert.equal(res.status, "proposed");
+  assert.equal(row.proposalSummary.markdownPercent, 40); // respected, not eased
+});
+
+test("close the learn loop: default stays 30 with no decline signal", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
+    inventory: [{ variantId: "v1", available: 10 }],
+    soldLineItems: [],
+    onCreate: (data) => { row = data; },
+  });
+  // No merchantMemoryBelief accessor on the mock → no learnable signal.
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock" },
+  });
+  assert.equal(res.status, "proposed");
+  assert.equal(row.proposalSummary.markdownPercent, 30);
+});
+
 test("rejectAction refuses a non-proposed or wrong-merchant action (no write)", async () => {
   const applied = mockExecPrisma({ id: "e1", runId: "r1", merchantId: "m1", status: "applied" });
   assert.equal((await rejectAction(applied, { merchantId: "m1", actionRunId: "r1" })).status, "not_proposable");

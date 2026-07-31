@@ -26,6 +26,40 @@ import {
 } from "./clearance-adapter.server.js";
 
 /**
+ * Close the learn loop: adapt the default clearance markdown from the merchant's
+ * Observe→Learn memory. Reads the action-decline-signal belief — if the merchant has
+ * repeatedly declined clearances as "too aggressive", ease the default markdown so the
+ * next proposal is gentler. Deterministic + bounded: only ever EASES (a smaller cut is
+ * the safe direction), floored at 15%, and the primitive still floors every price at
+ * unit cost regardless. Best-effort: a memory read never blocks a proposal. Returns the
+ * base when there's no learnable signal (so it's a no-op until real declines exist).
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; baseMarkdownPercent: number }} input
+ * @returns {Promise<{ markdownPercent: number; adapted: boolean; reason?: string }>}
+ */
+async function adaptMarkdownFromMemory(prisma, input) {
+  const base = input.baseMarkdownPercent;
+  try {
+    const belief = await prisma.merchantMemoryBelief?.findFirst?.({
+      where: { merchantId: input.merchantId, shopId: input.shopId, key: "business.action_decline_signal.all_time" },
+      orderBy: { updatedAt: "desc" },
+      select: { value: true, status: true },
+    });
+    const status = String(belief?.status ?? "");
+    if (belief && !status.includes("superseded") && !status.includes("rejected")) {
+      const value = /** @type {any} */ (belief.value) ?? {};
+      if (value.topReasonCategory === "too_aggressive" && (Number(value.totalDeclines) || 0) >= 2) {
+        const gentler = Math.max(15, base - 10);
+        if (gentler < base) return { markdownPercent: gentler, adapted: true, reason: "eased_after_too_aggressive_declines" };
+      }
+    }
+  } catch {
+    // Best-effort: never block a proposal on a memory read.
+  }
+  return { markdownPercent: base, adapted: false };
+}
+
+/**
  * Resolver for `price_markdown` on `dead_stock`: the deterministic half. Reads the
  * dead-stock proposal (only costed variants, markdown floored at unit cost), builds
  * the previewed changes. Returns null when there's nothing safe to act on.
@@ -36,7 +70,13 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
   const requested = Number(intent.params?.markdownPercent);
   // The effective default markdown that produced this proposal — the exact knob the
   // merchant edits (reviseAction round-trips it). Clamp to [0,100]; default 30.
-  const markdownPercent = Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 30;
+  let markdownPercent = Number.isFinite(requested) ? Math.min(100, Math.max(0, requested)) : 30;
+  // Close the learn loop: with no explicit markdown, adapt the default DOWN from the
+  // merchant's decline history (gentler after "too aggressive" declines). Only eases.
+  if (!Number.isFinite(requested)) {
+    const adapted = await adaptMarkdownFromMemory(prisma, { merchantId, shopId, baseMarkdownPercent: markdownPercent });
+    markdownPercent = adapted.markdownPercent;
+  }
   const proposal = await buildDeadStockClearanceProposal(prisma, {
     merchantId,
     shopId,
