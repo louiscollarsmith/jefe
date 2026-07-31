@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /early-access
 
 Sitemap: https://mynamejefe.com/sitemap.xml

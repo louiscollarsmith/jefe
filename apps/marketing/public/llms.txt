@@ -1,16 +1,27 @@
 # Jefe
 
-> Jefe is an AI manager for Shopify stores. It learns how a store actually operates, then recommends the next move — with the evidence behind it — and can action it directly once a merchant trusts it to.
+> Jefe is an AI eCommerce manager for Shopify stores. It learns how a store actually operates from its own data, finds the next move with the evidence behind it, and acts on it — for each type of action the merchant chooses the mode: recommend, approve-then-execute, or fully autonomous.
 
 ## What Jefe does
 
-Jefe connects to a Shopify store and builds a structured, evolving understanding of how the business runs: its products, orders, customers, goals and constraints. It uses that understanding to make recommendations that are specific to the merchant rather than generic ecommerce advice, and — within limits the merchant sets per action — can carry out the recommended action itself.
+Jefe connects to a Shopify store and builds a structured, correctable understanding of how the business runs — its products, orders, customers, inventory, goals and constraints (its "Merchant Memory"). It uses that to find the next move worth making and show the evidence behind it, and it can act on that move through controlled, reversible steps. Autonomy is set per action type by the merchant, who is always the principal and can veto or reverse anything.
+
+## Three modes
+
+For each type of action, the merchant chooses how Jefe operates:
+
+- Recommend — Jefe surfaces the move with its evidence; the merchant acts.
+- Approve-then-execute — Jefe proposes; the merchant approves; Jefe executes.
+- Autonomous — Jefe acts within the merchant's policy and reports back.
 
 ## Status
 
-Jefe is pre-launch and running a Design Partner Program for its first 100 e-commerce managers, who help teach Jefe their store in exchange for early access.
+Jefe is in early access and has been submitted to the Shopify App Store. It runs a Design Partner Program for its first e-commerce managers, who help teach Jefe their store in exchange for early access.
 
 ## Links
 
 - Website: https://mynamejefe.com/
 - Join the Design Partner Program: https://mynamejefe.com/#signup
+- Privacy Policy: https://mynamejefe.com/privacy
+- Terms of Service: https://mynamejefe.com/terms
+- Data Processing Agreement: https://mynamejefe.com/dpa
