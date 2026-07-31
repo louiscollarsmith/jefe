@@ -9,6 +9,13 @@
  * (so a spoofed From can't reach Jefe's brain), and decides which door the mail
  * hit — Door A (jefe@, the AI) or Door B (team@, humans).
  *
+ * Used at BOTH steps of the two-step inbound flow: on the metadata-only
+ * `email.received` webhook (yields from / to / subject / id; text + auth are empty
+ * there — they aren't in the webhook), and on the full email fetched by id
+ * (`fetch.server.js`), which is where the body + the `Authentication-Results`
+ * header actually live. The same extractor handles both because it tolerates
+ * missing fields.
+ *
  * Deliberately tolerant: Resend's exact inbound field names are confirmed against
  * a live payload before go-live (chat 5), so every extractor accepts the handful
  * of shapes the payload could take and returns a `reason` rather than throwing.

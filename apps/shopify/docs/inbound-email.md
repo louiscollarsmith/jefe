@@ -25,20 +25,26 @@ turn a failure into a retry/double-send).
 
 `processInboundEmail` (`app/lib/email/inbound/service.server.js`) then:
 
+**Two-step by necessity:** Resend's `email.received` webhook is **metadata-only**
+(from / to / subject / id — no body, no SPF/DKIM). So we act off the metadata for
+classify + dedup + sender-resolution, then **fetch the full email by id**
+(`resend.emails.receiving.get`, `fetch.server.js`) to get the body (for the brain)
+and the sender's authentication (for the gate).
+
 1. **Verify the signature** — Resend's Svix scheme over the raw body
    (`signature.server.js`). Unsigned / bad → `401`. **Never acts on unauthenticated
    inbound.**
-2. **Parse + dedup** — normalise the payload (`parse.server.js`), then claim a row
-   in `inbound_email_events` keyed by the provider message id. A retry finds the
-   row and stops → no double-reply.
-3. **Verify the sender** — SPF/DKIM/DMARC (`evaluateInboundAuth`, fail-closed). A
-   spoofed From is **parked**, never actioned.
-4. **Dark gate** — if `ENABLE_INBOUND_EMAIL` isn't `true`, record + park
-   (`inbound_disabled`) and stop. Nothing auto-replies.
-5. **Route** — Door A → resolve sender→shop by **hash** (`identity.server.js`) →
-   run the brain → send Jefe's reply (`reply.server.js`, self-ID + human-door
-   footer). Door B → forward to the human inbox. Unknown sender / address →
-   parked.
+2. **Parse metadata + dedup** — from/to/subject/id off the webhook
+   (`parse.server.js`), then claim a row in `inbound_email_events` keyed by the
+   provider message id. A retry finds the row and stops → no double-reply.
+3. **Dark gate** — if `ENABLE_INBOUND_EMAIL` isn't `true`, record + park
+   (`inbound_disabled`) and stop. **Nothing is fetched, interpreted, or sent.**
+4. **Route** — Door A → resolve sender→shop by **hash** (`identity.server.js`; a
+   stranger is parked here, *before* any fetch) → **fetch the full email** →
+   **verify the sender** (SPF/DKIM/DMARC on the fetched `Authentication-Results`,
+   `evaluateInboundAuth`, fail-closed; a spoofed From is parked) → run the brain →
+   send Jefe's reply (`reply.server.js`, self-ID + human-door footer). Door B →
+   fetch → forward the body to the human inbox. Unknown address → parked.
 
 ## Identity: hash-only, and why afterAuth
 

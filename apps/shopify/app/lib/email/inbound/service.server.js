@@ -14,24 +14,30 @@ import {
   DEFAULT_AI_ADDRESS,
   DEFAULT_TEAM_ADDRESS,
 } from "./parse.server.js";
+import { fetchReceivedEmail } from "./fetch.server.js";
 import { resolveShopBySender } from "./identity.server.js";
 import { renderJefeReplyEmail } from "./reply.server.js";
 import { recordInboundEmailOutcome } from "./health.server.js";
 
 /**
  * Inbound-email orchestrator (feature #15). The signature-verified webhook route
- * hands a parsed payload here; this decides — and, when enabled, does — what
- * happens next:
+ * hands a parsed `email.received` payload here; this decides — and, when enabled,
+ * does — what happens next:
  *
  *   Door A (jefe@, the AI)  → sendConversationMessage (the SAME brain as app +
  *                             Slack) → reply back out via the gated Resend adapter.
  *   Door B (team@, humans)  → forward to the human inbox (RESEND_REPLY_TO).
  *
- * Ships DARK behind ENABLE_INBOUND_EMAIL: verified inbound is still recorded (so a
- * live round-trip is observable), but nothing runs the brain or sends until a
- * human flips the flag. Verify-before-act throughout: bad SPF/DKIM or an unknown
- * sender is parked, never actioned. Idempotent: the `inbound_email_events` ledger,
- * keyed by provider message id, means a webhook retry can't double-reply. Hash-only
+ * TWO-STEP by necessity: Resend's `email.received` webhook is metadata-only (from /
+ * to / subject / id — no body, no SPF/DKIM). So we act off the metadata for
+ * classify + dedup + sender-resolution, then FETCH the full email by id
+ * (`fetch.server.js`) to get the body (for the brain) and the sender's
+ * authentication (for the verify-before-act gate). We only fetch for a KNOWN
+ * sender on the enabled path — never for a stranger, and never while dark.
+ *
+ * Ships DARK behind ENABLE_INBOUND_EMAIL: verified inbound is recorded (so a live
+ * round-trip is observable) but nothing is fetched, interpreted, or sent until a
+ * human flips the flag. Idempotent via the `inbound_email_events` ledger. Hash-only
  * PII posture: the sender is stored only as a hash; no body is ever persisted.
  *
  * @see app/lib/channels/service.server.js `processInboundSlackDm` (the sibling path)
@@ -67,12 +73,12 @@ function getAddressConfig(env) {
 /**
  * A stable id to dedup on. Prefers the provider/Message-ID; falls back to a hash of
  * the salient fields so an identical retry with no id still dedups.
- * @param {import("./parse.server.js").ParsedInboundEmail} email
+ * @param {import("./parse.server.js").ParsedInboundEmail} meta
  * @returns {string}
  */
-function providerMessageIdFor(email) {
-  if (email.messageId) return email.messageId;
-  const basis = `${email.from}|${email.to}|${email.subject}|${email.text.slice(0, 200)}`;
+function providerMessageIdFor(meta) {
+  if (meta.messageId) return meta.messageId;
+  const basis = `${meta.from}|${meta.to}|${meta.subject}`;
   return `derived:${crypto.createHash("sha256").update(basis).digest("hex")}`;
 }
 
@@ -98,12 +104,13 @@ async function loadLatestAssistantReply(prisma, merchantId) {
  * a Resend failure can't turn into a non-200 that makes Resend retry + double-send.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ payload: any }} input Already-JSON-parsed, signature-verified body.
+ * @param {{ payload: any }} input Already-JSON-parsed, signature-verified `email.received` body.
  * @param {{
  *   env?: Record<string, string | undefined>;
  *   logger?: import("../../observability/logger.server.js").Logger;
  *   sendEmailFn?: typeof sendEmail;
  *   sendConversationFn?: typeof sendConversationMessage;
+ *   fetchReceivedEmailFn?: typeof fetchReceivedEmail;
  *   llmProvider?: any;
  * }} [opts]
  * @returns {Promise<ProcessInboundResult>}
@@ -111,15 +118,20 @@ async function loadLatestAssistantReply(prisma, merchantId) {
 export async function processInboundEmail(prisma, input, opts = {}) {
   const env = opts.env ?? process.env;
   const logger = opts.logger ?? log;
-  const sendEmailFn = opts.sendEmailFn ?? sendEmail;
-  const sendConversationFn = opts.sendConversationFn ?? sendConversationMessage;
   const startedAt = Date.now();
 
   /** @param {ProcessInboundResult["outcome"]} outcome @param {string} reason @param {"ai"|"team"|"unknown"} [door] */
   const finish = (outcome, reason, door) => {
     if (outcome !== "duplicate") {
       recordInboundEmailOutcome({
-        outcome: outcome === "failed" ? "failed" : outcome === "replied" ? "replied" : outcome === "forwarded" ? "forwarded" : "parked",
+        outcome:
+          outcome === "failed"
+            ? "failed"
+            : outcome === "replied"
+              ? "replied"
+              : outcome === "forwarded"
+                ? "forwarded"
+                : "parked",
         ms: Date.now() - startedAt,
       });
     }
@@ -136,15 +148,16 @@ export async function processInboundEmail(prisma, input, opts = {}) {
   };
 
   try {
+    // The webhook is metadata-only — this gives us from / to / subject / id.
     const parsed = parseInboundEmail(input.payload);
     if (!parsed.ok) {
       logger.warn("inbound email unparseable", { reason: parsed.reason });
       return finish("parked", parsed.reason);
     }
-    const email = parsed.email;
-    const door = classifyDoor(email.to, env);
-    const providerMessageId = providerMessageIdFor(email);
-    const senderHash = crypto.createHash("sha256").update(email.from).digest("hex");
+    const meta = parsed.email;
+    const door = classifyDoor(meta.to, env);
+    const providerMessageId = providerMessageIdFor(meta);
+    const senderHash = crypto.createHash("sha256").update(meta.from).digest("hex");
 
     // Idempotency: a retry of the same message must not be processed twice.
     const existing = await prisma.inboundEmailEvent.findUnique({
@@ -164,16 +177,12 @@ export async function processInboundEmail(prisma, input, opts = {}) {
           door,
           emailHash: senderHash,
           status: "received",
-          metadata: {
-            authSource: email.auth.source,
-            subjectLength: email.subject.length,
-            textLength: email.text.length,
-          },
+          metadata: { subjectLength: meta.subject.length },
         },
         select: { id: true },
       });
       ledgerId = row.id;
-    } catch (error) {
+    } catch {
       // Unique-violation race: another delivery claimed it first → treat as duplicate.
       logger.info("inbound email claim lost (concurrent) — treating as duplicate", {
         door,
@@ -182,19 +191,8 @@ export async function processInboundEmail(prisma, input, opts = {}) {
       return finish("duplicate", "duplicate_race");
     }
 
-    // Verify-before-act: sender authentication (SPF/DKIM/DMARC).
-    const authVerdict = evaluateInboundAuth(email.auth);
-    if (!authVerdict.pass) {
-      logger.warn("inbound email failed sender auth — parked", {
-        door,
-        authSource: email.auth.source,
-        reason: authVerdict.reason,
-      });
-      await updateLedger({ status: "parked", safeReason: authVerdict.reason });
-      return finish("parked", authVerdict.reason, door);
-    }
-
-    // Dark flag: record the verified inbound but take no action until flipped on.
+    // Dark flag: record the verified inbound but take NO action (no fetch, no
+    // interpret, no send) until a human flips it on.
     if (!isInboundEmailEnabled(env)) {
       logger.info("inbound email received while disabled — parked (dark)", { door });
       await updateLedger({ status: "parked", safeReason: "inbound_disabled" });
@@ -207,27 +205,18 @@ export async function processInboundEmail(prisma, input, opts = {}) {
       return finish("parked", "unknown_door", door);
     }
 
-    if (door === "team") {
-      return await handleTeamDoor(prisma, {
-        email,
-        env,
-        logger,
-        sendEmailFn,
-        updateLedger,
-        finish,
-      });
-    }
-
-    return await handleAiDoor(prisma, {
-      email,
+    const ctx = {
+      meta,
       env,
       logger,
-      sendEmailFn,
-      sendConversationFn,
+      sendEmailFn: opts.sendEmailFn ?? sendEmail,
+      sendConversationFn: opts.sendConversationFn ?? sendConversationMessage,
+      fetchReceivedEmailFn: opts.fetchReceivedEmailFn ?? fetchReceivedEmail,
       llmProvider: opts.llmProvider,
       updateLedger,
       finish,
-    });
+    };
+    return door === "team" ? await handleTeamDoor(prisma, ctx) : await handleAiDoor(prisma, ctx);
   } catch (error) {
     logger.error("inbound email processing crashed", { err: error });
     await updateLedger({ status: "failed", safeReason: "error" });
@@ -236,18 +225,20 @@ export async function processInboundEmail(prisma, input, opts = {}) {
 }
 
 /**
- * Door A: run the sender's message through the shared conversation brain and send
- * Jefe's reply back out (self-identified as the AI, human door in the footer).
+ * Door A: resolve the sender → fetch the full email → verify SPF/DKIM → run the
+ * conversation brain → send Jefe's reply (self-identified as the AI, human door in
+ * the footer). We resolve BEFORE fetching so a stranger is parked without an API
+ * call, and gate on the fetched email's authentication before acting.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {any} ctx
  * @returns {Promise<ProcessInboundResult>}
  */
 async function handleAiDoor(prisma, ctx) {
-  const { email, env, logger, sendEmailFn, sendConversationFn, llmProvider, updateLedger, finish } = ctx;
+  const { meta, env, logger, sendEmailFn, sendConversationFn, fetchReceivedEmailFn, llmProvider, updateLedger, finish } = ctx;
 
-  const resolved = await resolveShopBySender(prisma, email.from);
+  const resolved = await resolveShopBySender(prisma, meta.from);
   if (!resolved.shopId || !resolved.merchantId) {
-    // Never reply to a sender we can't map to a shop.
+    // Never reply to (or even fetch) a sender we can't map to a shop.
     logger.warn("inbound AI email from unknown sender — parked", { source: resolved.source });
     await updateLedger({ status: "parked", safeReason: "unknown_sender", emailHash: resolved.emailHash });
     return finish("parked", "unknown_sender", "ai");
@@ -260,19 +251,52 @@ async function handleAiDoor(prisma, ctx) {
     emailHash: resolved.emailHash,
   });
 
+  // Step 2: fetch the full email (body + auth headers) by id.
+  const fetched = await fetchReceivedEmailFn(meta.messageId, { env });
+  if (!fetched.ok || !fetched.record) {
+    logger.warn("inbound AI email fetch failed — could not retrieve body", { reason: fetched.reason });
+    await updateLedger({ status: "failed", safeReason: fetched.reason ?? "fetch_failed" });
+    return finish("failed", fetched.reason ?? "fetch_failed", "ai");
+  }
+  const full = parseInboundEmail(fetched.record);
+  if (!full.ok) {
+    logger.warn("inbound AI fetched email unparseable — parked", { reason: full.reason });
+    await updateLedger({ status: "failed", safeReason: "fetched_unparseable" });
+    return finish("failed", "fetched_unparseable", "ai");
+  }
+
+  // Verify-before-act: sender authentication (SPF/DKIM/DMARC), read from the FETCHED
+  // email's headers — it is not in the webhook metadata.
+  const authVerdict = evaluateInboundAuth(full.email.auth);
+  if (!authVerdict.pass) {
+    logger.warn("inbound AI email failed sender auth — parked", {
+      authSource: full.email.auth.source,
+      reason: authVerdict.reason,
+    });
+    await updateLedger({ status: "parked", safeReason: authVerdict.reason });
+    return finish("parked", authVerdict.reason, "ai");
+  }
+
+  const messageText = full.email.text;
+  if (!messageText) {
+    logger.warn("inbound AI email had no body — parked", { shopId: resolved.shopId });
+    await updateLedger({ status: "parked", safeReason: "empty_body" });
+    return finish("parked", "empty_body", "ai");
+  }
+
   // Same conversation service as the in-app chat + Slack: stores the merchant
   // message, interprets it, stores Jefe's reply as an assistant message.
   await sendConversationFn(prisma, {
     merchantId: resolved.merchantId,
     shopId: resolved.shopId,
-    message: email.text,
+    message: messageText,
     llmProvider,
     logger,
   });
 
   const replyText = await loadLatestAssistantReply(prisma, resolved.merchantId);
   if (!replyText) {
-    logger.warn("inbound AI email produced no reply — parked", { shopId: resolved.shopId });
+    logger.warn("inbound AI email produced no reply — failed", { shopId: resolved.shopId });
     await updateLedger({ status: "failed", safeReason: "no_reply" });
     return finish("failed", "no_reply", "ai");
   }
@@ -286,14 +310,14 @@ async function handleAiDoor(prisma, ctx) {
 
   const rendered = renderJefeReplyEmail({
     replyText,
-    originalSubject: email.subject,
+    originalSubject: meta.subject || full.email.subject,
     teamAddress,
     appUrl,
     unsubscribeUrl,
   });
 
   const sent = await sendEmailFn({
-    to: email.from,
+    to: meta.from,
     subject: rendered.subject,
     html: rendered.html,
     text: rendered.text,
@@ -312,7 +336,7 @@ async function handleAiDoor(prisma, ctx) {
   await updateLedger({
     status: sent.disabled ? "reply_stubbed" : sent.delivered ? "replied" : "reply_failed",
     safeReason: sent.disabled ? "email_disabled" : sent.delivered ? null : (sent.skipped ?? "not_delivered"),
-    metadata: { replyProviderId: sent.id ?? null, replyDisabled: Boolean(sent.disabled) },
+    metadata: { replyProviderId: sent.id ?? null, replyDisabled: Boolean(sent.disabled), authSource: full.email.auth.source },
   });
   logger.info("inbound AI email answered", {
     shopId: resolved.shopId,
@@ -324,15 +348,16 @@ async function handleAiDoor(prisma, ctx) {
 
 /**
  * Door B: forward a human-directed email to the monitored team inbox
- * (RESEND_REPLY_TO). The AI→human auto-escalation *classifier* is Phase 2; this is
- * just the address routing so team@ mail (if routed through the webhook rather than
- * a mail-host alias) is never a dead end.
+ * (RESEND_REPLY_TO). Fetches the full email so the human sees the body; if the
+ * fetch fails, forwards the metadata alone. The AI→human auto-escalation
+ * *classifier* is Phase 2; this is just the address routing so team@ mail is never
+ * a dead end.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {any} ctx
  * @returns {Promise<ProcessInboundResult>}
  */
 async function handleTeamDoor(prisma, ctx) {
-  const { email, env, logger, sendEmailFn, updateLedger, finish } = ctx;
+  const { meta, env, logger, sendEmailFn, fetchReceivedEmailFn, updateLedger, finish } = ctx;
   const humanInbox = (env.RESEND_REPLY_TO || "").trim();
   if (!humanInbox) {
     logger.warn("inbound team email but no RESEND_REPLY_TO configured — parked", {});
@@ -340,13 +365,17 @@ async function handleTeamDoor(prisma, ctx) {
     return finish("parked", "no_human_inbox", "team");
   }
 
-  const subject = `[Jefe team] ${email.subject || "(no subject)"}`;
+  const fetched = await fetchReceivedEmailFn(meta.messageId, { env });
+  const full = fetched.ok && fetched.record ? parseInboundEmail(fetched.record) : null;
+  const body = full && full.ok ? full.email.text : "(body unavailable — fetch failed; see Resend)";
+
+  const subject = `[Jefe team] ${meta.subject || "(no subject)"}`;
   const forwardText = [
-    `A merchant emailed the Jefe team door (${email.to}).`,
-    `From: ${email.from}`,
-    email.subject ? `Subject: ${email.subject}` : "",
+    `A merchant emailed the Jefe team door (${meta.to}).`,
+    `From: ${meta.from}`,
+    meta.subject ? `Subject: ${meta.subject}` : "",
     "",
-    email.text || "(no text body)",
+    body,
   ]
     .filter(Boolean)
     .join("\n");
@@ -359,7 +388,7 @@ async function handleTeamDoor(prisma, ctx) {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")}</pre>`,
     text: forwardText,
-    replyTo: email.from,
+    replyTo: meta.from,
   });
 
   await updateLedger({
