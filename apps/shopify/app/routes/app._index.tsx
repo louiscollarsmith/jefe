@@ -132,6 +132,7 @@ import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
 import { getLatestHorizon } from "../lib/merchant-memory/horizon.server.js";
 import {
+  beliefConfirmPriority,
   confirmBelief,
   correctBelief,
   getBeliefsForMerchant,
@@ -4218,6 +4219,7 @@ async function getMerchantMemoryView({
       confirmState: "settled" | "unsure";
       sourceLine: string | null;
       statement: string | null;
+      confirmPriority: number;
     }>
   >();
   for (const belief of scoped.slice(0, 80)) {
@@ -4243,6 +4245,9 @@ async function getMerchantMemoryView({
       // Plain-English statement (Jefe's voice) where a formatter exists for this belief key;
       // null otherwise, so the 13a surface keeps its own status-derived fallback.
       statement: renderBeliefStatement(belief),
+      // Confirm-queue ordering hint (higher = show sooner): impact × uncertainty, 0 for settled.
+      // Lets the surface show the few unsure beliefs that matter, not the first-by-key of a big queue.
+      confirmPriority: beliefConfirmPriority(belief.status, belief.confidence, belief.key),
     });
     groups.set(category, rows);
   }

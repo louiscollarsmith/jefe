@@ -909,6 +909,37 @@ export function beliefConfirmState(status, confidence) {
   return Number.isFinite(conf) && conf >= 0.7 ? "settled" : "unsure";
 }
 
+/** Belief keys that most steer Jefe's actions/money — worth a merchant's eyes first when unsure. */
+const HIGH_IMPACT_BELIEF_KEYS = new Set([
+  "business.primary_currency",
+  "preferences.optimisation_priority",
+  "products.dead_stock.trailing_90d",
+  "products.top_product_revenue_share.trailing_90d",
+  "policies.never_discount_products",
+  "customers.primary_customer_type",
+]);
+
+/** @param {string} key */
+function beliefImpactWeight(key) {
+  if (HIGH_IMPACT_BELIEF_KEYS.has(key)) return 3;
+  if (typeof key === "string" && (key.startsWith("policies.") || key.startsWith("preferences.") || key.startsWith("business."))) return 2;
+  return 1;
+}
+
+/**
+ * How worth-confirming an unsure belief is (higher ⇒ show sooner in a "confirm these" queue).
+ * 0 for settled beliefs (nothing to confirm). For unsure ones: impact (does it steer Jefe's
+ * actions/money?) × uncertainty (lower confidence = more worth a merchant's eyes). Deterministic —
+ * lets a surface show the FEW that matter first instead of the first-by-key of a 20+ queue.
+ * @param {string} status @param {number | null} confidence @param {string} key
+ */
+export function beliefConfirmPriority(status, confidence, key) {
+  if (beliefConfirmState(status, confidence) !== "unsure") return 0;
+  const conf = Number(confidence);
+  const uncertainty = Number.isFinite(conf) ? Math.max(0, 1 - conf) : 1;
+  return Math.round(beliefImpactWeight(key) * (0.5 + uncertainty) * 100);
+}
+
 /**
  * A short provenance line, e.g. "you told Jefe · 29 Jul" / "from your store data · rechecked 31 Jul".
  * @param {any} belief
