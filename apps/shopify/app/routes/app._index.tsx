@@ -129,6 +129,7 @@ import {
 } from "../lib/merchant-plan/service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
+import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
 import {
   confirmBelief,
   correctBelief,
@@ -4207,6 +4208,7 @@ async function getMerchantMemoryView({
       authorship: "merchant" | "jefe";
       confirmState: "settled" | "unsure";
       sourceLine: string | null;
+      statement: string | null;
     }>
   >();
   for (const belief of scoped.slice(0, 80)) {
@@ -4229,6 +4231,9 @@ async function getMerchantMemoryView({
       authorship: belief.authorship as "merchant" | "jefe",
       confirmState: belief.confirmState as "settled" | "unsure",
       sourceLine: belief.sourceLine,
+      // Plain-English statement (Jefe's voice) where a formatter exists for this belief key;
+      // null otherwise, so the 13a surface keeps its own status-derived fallback.
+      statement: renderBeliefStatement(belief),
     });
     groups.set(category, rows);
   }
