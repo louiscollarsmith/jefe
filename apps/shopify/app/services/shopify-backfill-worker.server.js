@@ -294,7 +294,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
@@ -473,7 +473,7 @@ export async function recoverStaleRunningBackfillJobs(prisma, options = {}) {
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop; merchant: import("@prisma/client").Merchant }} job
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch }} options
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; loadOfflineToken?: (shop: string) => Promise<string> }} options
  */
 async function runBackfillJob(prisma, job, options) {
   const payload = jsonObject(job.payloadJson);
@@ -494,8 +494,11 @@ async function runBackfillJob(prisma, job, options) {
     // Refresh-capable load: the worker rides no embedded request, so it must
     // re-exchange an expiring offline token itself (Shopify 403s stale ones).
     // Always the shop's offline session — background Admin API work needs offline.
+    // Injected (options.loadOfflineToken) so DB-gated tests stub the token instead
+    // of reaching the real unauthenticated.admin OAuth refresh (which throws with
+    // no refresh-token grant, as it did in CI — see the ingestion job-chain test).
     accessToken: requiresShopifyToken
-      ? await loadFreshOfflineToken(job.shop.shopDomain)
+      ? await (options.loadOfflineToken ?? loadFreshOfflineToken)(job.shop.shopDomain)
       : null,
     fetchImpl: options.fetchImpl,
     logger: options.logger ?? console,

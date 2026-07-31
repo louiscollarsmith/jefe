@@ -488,36 +488,71 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const products = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const orders = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const inventory = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const delta = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const finalize = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
     const memory = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: queuedShop.id,
+      // Stub the offline-token load: the backfill worker refreshes via the real
+      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+      // pre-refresh code read a token from the session row.
+      loadOfflineToken: async () => "test-token",
     });
 
     const shop = await prisma.shop.findUniqueOrThrow({
