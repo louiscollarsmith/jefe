@@ -28,6 +28,7 @@
  * @property {string[]} targetKinds  The target kinds this action can resolve.
  * @property {boolean} reversible    Whether the primitive can fully undo it (gates auto-eligibility).
  * @property {string} primitive      The typed executor that owns resolution + the write path.
+ * @property {string[]} [requiredScopes]  Shopify OAuth scopes the merchant must have granted for this action to WRITE (e.g. ["write_products"]). The execution gate + the scope-nudge read use this; empty/absent = no write scope needed.
  */
 
 /**
@@ -44,8 +45,22 @@ export const ACTION_REGISTRY = {
     targetKinds: ["dead_stock"],
     reversible: true,
     primitive: "clearance-adapter",
+    requiredScopes: ["write_products"],
   },
 };
+
+/**
+ * The Shopify OAuth scopes an action needs granted before it can WRITE. Empty when the
+ * action type is unknown or needs no write scope. The execution gate prechecks these
+ * (so a missing scope becomes a "grant to continue" prompt, not a failed write), and the
+ * scope-nudge read uses them to surface value-gated-on-permission opportunities.
+ * @param {string} actionType
+ * @returns {string[]}
+ */
+export function getRequiredScopes(actionType) {
+  const def = getActionDefinition(actionType);
+  return Array.isArray(def?.requiredScopes) ? def.requiredScopes : [];
+}
 
 /** @param {string} actionType */
 export function getActionDefinition(actionType) {

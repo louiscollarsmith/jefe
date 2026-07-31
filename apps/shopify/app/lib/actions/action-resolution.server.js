@@ -13,7 +13,7 @@
 // here + re-checked by the gate.
 
 import { randomUUID } from "node:crypto";
-import { validateActionIntent } from "./action-intent.server.js";
+import { getRequiredScopes, validateActionIntent } from "./action-intent.server.js";
 import { getActionMode } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
@@ -373,6 +373,75 @@ export async function getExecutedActionFeed(prisma, input) {
         : { measured: false },
     };
   });
+}
+
+/**
+ * Read the granted Shopify OAuth scopes for a shop, from its offline session (the token
+ * the write path actually uses). Empty when there's no offline session yet.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string; shopDomain?: string }} input
+ */
+async function getGrantedShopifyScopes(prisma, input) {
+  let domain = input.shopDomain;
+  if (!domain) {
+    const shop = await prisma.shop.findUnique({ where: { id: input.shopId }, select: { shopDomain: true } });
+    domain = shop?.shopDomain ?? undefined;
+  }
+  if (!domain) return [];
+  const session = await prisma.session.findFirst({
+    where: { shop: domain, isOnline: false },
+    orderBy: { expires: "desc" },
+    select: { scope: true },
+  });
+  return String(session?.scope ?? "")
+    .split(",")
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The "scope-gated opportunity" signal — when Jefe has a VALUABLE action ready but the
+ * merchant hasn't granted the Shopify scope it needs to execute. Drives the value-first
+ * re-consent nudge (the in-app prompt + the activation email): "Jefe found £X it can
+ * free for you — grant Edit-products access to let it act." Returns null when there's
+ * no opportunity, the scope is already granted, or the action needs no write scope.
+ *
+ * Value-led by design: we only nudge when there's real money on the table (a proposable
+ * clearance), so the ask reads like activation, not a bare "grant more access" request.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; shopDomain?: string; currency?: string }} input
+ * @returns {Promise<{ actionType: string; missingScopes: string[]; productCount: number; trappedCapital: string; projectedRecovery: string; headline: string } | null>}
+ */
+export async function getScopeGatedOpportunity(prisma, input) {
+  const currency = input.currency || "GBP";
+  // Is there a valuable action to offer? (clearance is the first verb.)
+  const proposal = await buildDeadStockClearanceProposal(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+  });
+  if (proposal.status !== "proposed") return null;
+  const preview = buildClearancePreview(/** @type {any} */ (proposal));
+  if (preview.variantCount === 0) return null;
+
+  const actionType = "price_markdown";
+  const required = getRequiredScopes(actionType);
+  if (required.length === 0) return null; // no write scope needed → nothing to nudge
+
+  const granted = await getGrantedShopifyScopes(prisma, { shopId: input.shopId, shopDomain: input.shopDomain });
+  const missingScopes = required.filter((scope) => !granted.includes(scope));
+  if (missingScopes.length === 0) return null; // already granted → the action can just run
+
+  // Real value gated on a missing permission → the nudge signal.
+  const summary = buildProposalSummary(proposal, preview);
+  const trapped = formatMoney(summary.totalTrappedCapital, currency);
+  return {
+    actionType,
+    missingScopes,
+    productCount: summary.variantCount,
+    trappedCapital: trapped,
+    projectedRecovery: formatMoney(summary.totalProjectedRecovery, currency),
+    headline: `Jefe found ${trapped} tied up in ${summary.variantCount} product${summary.variantCount === 1 ? "" : "s"} it can clear for you — grant "Edit products" access to let it act.`,
+  };
 }
 
 // NOTE: approval is NOT a standalone step. In the 3-mode model there is no

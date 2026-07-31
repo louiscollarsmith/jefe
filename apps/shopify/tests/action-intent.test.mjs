@@ -3,9 +3,15 @@ import test from "node:test";
 import {
   ACTION_REGISTRY,
   getActionDefinition,
+  getRequiredScopes,
   listActionCapabilities,
   validateActionIntent,
 } from "../app/lib/actions/action-intent.server.js";
+
+test("getRequiredScopes returns the write scopes an action needs, [] for unknown", () => {
+  assert.deepEqual(getRequiredScopes("price_markdown"), ["write_products"]);
+  assert.deepEqual(getRequiredScopes("nope"), []);
+});
 
 test("registry exposes price_markdown as the first typed action", () => {
   assert.ok(ACTION_REGISTRY.price_markdown);

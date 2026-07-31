@@ -6,6 +6,7 @@ import {
   formatMoney,
   getActiveSuggestedAction,
   getExecutedActionFeed,
+  getScopeGatedOpportunity,
   proposeActionFromIntent,
   rejectAction,
   reviseAction,
@@ -317,6 +318,48 @@ test("getExecutedActionFeed returns the 'what Jefe did' history with formatted o
   assert.match(feed[0].outcome.summary, /9 of 12 cleared products sold/);
   // Applied but not yet scored → outcome.measured false (surface shows "tracking…").
   assert.equal(feed[1].outcome.measured, false);
+});
+
+function scopeNudgePrisma({ scope, sold = [] }) {
+  return {
+    variant: { findMany: async () => [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }] },
+    inventoryLevel: { findMany: async () => [{ variantId: "v1", available: 10 }] },
+    orderLineItem: { findMany: async () => sold },
+    shop: { findUnique: async () => ({ shopDomain: "s.myshopify.com" }) },
+    session: { findFirst: async () => ({ scope }) },
+  };
+}
+
+test("getScopeGatedOpportunity: valuable clearance + missing write scope → value-first nudge", async () => {
+  const nudge = await getScopeGatedOpportunity(scopeNudgePrisma({ scope: "read_products,read_orders" }), {
+    merchantId: "m1",
+    shopId: "s1",
+    currency: "GBP",
+  });
+  assert.ok(nudge, "returns a nudge when real value is gated on a missing scope");
+  assert.deepEqual(nudge.missingScopes, ["write_products"]);
+  assert.equal(nudge.actionType, "price_markdown");
+  assert.equal(nudge.productCount, 1);
+  assert.equal(nudge.trappedCapital, "£800"); // 10 units × £80 cost
+  assert.match(nudge.headline, /£800 tied up in 1 product/);
+  assert.match(nudge.headline, /grant "Edit products"/);
+});
+
+test("getScopeGatedOpportunity: scope already granted → null (nothing to nudge)", async () => {
+  const nudge = await getScopeGatedOpportunity(scopeNudgePrisma({ scope: "read_products,write_products" }), {
+    merchantId: "m1",
+    shopId: "s1",
+  });
+  assert.equal(nudge, null);
+});
+
+test("getScopeGatedOpportunity: no opportunity → null even if scope is missing", async () => {
+  // Sold in window → not dead stock → no proposable action → no nudge.
+  const nudge = await getScopeGatedOpportunity(scopeNudgePrisma({ scope: "read_products", sold: [{ variantId: "v1" }] }), {
+    merchantId: "m1",
+    shopId: "s1",
+  });
+  assert.equal(nudge, null);
 });
 
 test("reviseAction re-proposes at the new markdown + supersedes the original", async () => {
