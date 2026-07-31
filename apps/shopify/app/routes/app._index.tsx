@@ -3864,6 +3864,9 @@ async function getMerchantMemoryView({
       evidenceSummary: string | null;
       statusLabel: string;
       statusTone: "success" | "attention" | "info";
+      authorship: "merchant" | "jefe";
+      confirmState: "settled" | "unsure";
+      sourceLine: string | null;
     }>
   >();
   for (const belief of scoped.slice(0, 80)) {
@@ -3880,6 +3883,12 @@ async function getMerchantMemoryView({
       evidenceSummary: belief.evidence?.[0]?.summary ?? null,
       statusLabel: memoryStatusLabel(belief.status),
       statusTone: memoryStatusTone(belief.status),
+      // Re-derived from status/confidence (toDomainBelief computes these). Dropped in a
+      // rebase; the live Memory surface needs them so merchant-authored/confirm-pending
+      // facts render with the right authorship + a settled/unsure state, not fallbacks.
+      authorship: belief.authorship as "merchant" | "jefe",
+      confirmState: belief.confirmState as "settled" | "unsure",
+      sourceLine: belief.sourceLine,
     });
     groups.set(category, rows);
   }
