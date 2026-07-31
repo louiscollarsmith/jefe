@@ -1,6 +1,9 @@
 // @ts-check
 
 import { normalizeShopDomain } from "../../shopify/admin-graphql.server.js";
+import { logger } from "../../observability/logger.server.js";
+
+const tenantLog = logger.child({ component: "tenant" });
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -11,10 +14,12 @@ export async function ensureShopifyTenant(prisma, input) {
   const existingShop = await findShopifyShop(prisma, shopDomain);
 
   if (existingShop) {
-    return activateExistingShopifyTenant(prisma, existingShop, {
-      ...input,
-      shopDomain,
-    });
+    // Self-heal a dangling merchant BEFORE touching the (required) relation
+    // downstream, so a missing Merchant can never 5xx the shop's requests.
+    const shop = existingShop.merchant
+      ? existingShop
+      : await relinkOrphanedShop(prisma, existingShop, shopDomain);
+    return activateExistingShopifyTenant(prisma, shop, { ...input, shopDomain });
   }
 
   try {
@@ -61,10 +66,44 @@ export async function ensureShopifyTenant(prisma, input) {
  * @param {string} shopDomain
  */
 async function findShopifyShop(prisma, shopDomain) {
-  return prisma.shop.findUnique({
+  const shop = await prisma.shop.findUnique({
     where: { platform_shopDomain: { platform: "shopify", shopDomain } },
-    include: { merchant: true },
   });
+  if (!shop) return null;
+  // The `merchant` relation is REQUIRED in the schema, but the DB-level FK isn't
+  // enforced yet — so a Merchant can go missing (deleted by GDPR redaction, or a
+  // delete/create race) while the Shop lingers with a dangling merchantId. An
+  // `include: { merchant: true }` on that row throws Prisma's "Field merchant is
+  // required to return data, got null" and 5xx's EVERY request/webhook for the
+  // shop (incl. app/uninstalled — the review-time incident). Fetch it separately +
+  // null-safe so the caller can self-heal. (Root-cause FK constraint: chat 10.)
+  const merchant = await prisma.merchant.findUnique({
+    where: { id: shop.merchantId },
+  });
+  return { ...shop, merchant };
+}
+
+/**
+ * Self-heal a Shop whose `merchant` relation is dangling (see findShopifyShop):
+ * mint a fresh Merchant and relink the Shop so the tenant is consistent again
+ * instead of 5xx-ing. Rare — logged at WARN so a recurring FK gap stays visible.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ id: string, merchantId: string }} shop
+ * @param {string} shopDomain
+ */
+async function relinkOrphanedShop(prisma, shop, shopDomain) {
+  const merchant = await prisma.merchant.create({ data: { name: shopDomain } });
+  const relinked = await prisma.shop.update({
+    where: { id: shop.id },
+    data: { merchantId: merchant.id },
+  });
+  tenantLog.warn("Self-healed a Shop with a dangling merchant (relinked)", {
+    shopDomain,
+    shopId: shop.id,
+    orphanedMerchantId: shop.merchantId,
+    newMerchantId: merchant.id,
+  });
+  return { ...relinked, merchant };
 }
 
 /**
@@ -73,21 +112,25 @@ async function findShopifyShop(prisma, shopDomain) {
  * @param {{ shopDomain: string; accessTokenSessionId?: string | null; scopes?: string[]; rawPayload?: unknown }} input
  */
 async function activateExistingShopifyTenant(prisma, existingShop, input) {
+  // ensureShopifyTenant already heals a dangling merchant before calling here; the
+  // `??` is defense-in-depth — it heals inline if a future caller passes an
+  // orphan, and it narrows `merchant` to non-null. No `include: { merchant: true }`
+  // on the reactivation update either — merchant is already in hand, and the
+  // include would re-expose the same dangling-relation throw.
+  const merchant =
+    existingShop.merchant ??
+    (await relinkOrphanedShop(prisma, existingShop, input.shopDomain)).merchant;
   const shop =
     existingShop.status === "uninstalled" ||
     existingShop.setupStatus === "uninstalled"
       ? await prisma.shop.update({
           where: { id: existingShop.id },
-          data: {
-            status: "active",
-            setupStatus: "installed",
-          },
-          include: { merchant: true },
+          data: { status: "active", setupStatus: "installed" },
         })
       : existingShop;
 
   await upsertConnectorAccount(prisma, {
-    merchantId: shop.merchant.id,
+    merchantId: merchant.id,
     shopId: shop.id,
     shopDomain: input.shopDomain,
     accessTokenSessionId: input.accessTokenSessionId,
@@ -95,7 +138,7 @@ async function activateExistingShopifyTenant(prisma, existingShop, input) {
     rawPayload: input.rawPayload,
   });
 
-  return { merchant: shop.merchant, shop };
+  return { merchant, shop };
 }
 
 /**
