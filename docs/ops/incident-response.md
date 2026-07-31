@@ -1,6 +1,6 @@
 # Incident Response Runbook
 
-**Status:** in force (2026-07-31) — filled by architecture at the founder's delegation; the `[CONFIRM]` substance below is now set as the operating commitment. The one item for **counsel to confirm when engaged** is the applicable lead supervisory authority (assumed UK ICO / relevant EU DPA per establishment). This exists because a documented incident-response process is a hard requirement of Shopify's Protected Customer Data **Level 2** commitments (see `docs/growth/shopify-app-store-launch.md`).
+**Status:** in force (2026-07-31) — founder-confirmed inputs, finalized by architecture. The responsible party is **the Directors of Quiver Solutions Limited**; breach notification is **without undue delay after becoming aware** (matching the live DPA §7). Lead supervisory authority: **UK ICO** (Quiver Solutions Limited is UK-registered). This exists because a documented incident-response process is a hard requirement of Shopify's Protected Customer Data **Level 2** commitments (see `docs/growth/shopify-app-store-launch.md`).
 
 Scope: any event that threatens the confidentiality, integrity, or availability of merchant or **customer** data Jefe holds, or the service itself — e.g. unauthorised access, data exposure/breach, credential/token compromise, a destructive bug, or a prod outage with data-loss risk.
 
@@ -8,9 +8,9 @@ Scope: any event that threatens the confidentiality, integrity, or availability 
 
 Small team, so one person often wears several hats — but every incident has a named **Incident Commander (IC)** who owns the response.
 
-- **Incident Commander** — runs the incident, makes containment calls, owns the timeline. Default: **Matt (founder) is IC.**
+- **Incident Commander** — runs the incident, makes containment calls, owns the timeline. Responsible party: **the Directors of Quiver Solutions Limited** (the Director on-call runs the incident).
 - **Technical lead** — investigates + executes containment/eradication (whichever engineer/agent-session is closest to the affected system).
-- **Comms/notification lead** — owns external notification (Shopify, merchants, regulators). Default: **Matt (founder).**
+- **Comms/notification lead** — owns external notification (Shopify, merchants, regulators). Responsible party: **the Directors of Quiver Solutions Limited.**
 
 ## Severity
 
@@ -41,9 +41,9 @@ When unsure, **treat it as one level more severe** until triage proves otherwise
 These are the standing commitments (founder-ratified 2026-07-31; aligned to GDPR/UK-GDPR + Shopify's Protected Customer Data terms). Counsel to confirm the specific lead supervisory authority when engaged:
 
 - **Shopify** — report a security incident affecting Shopify-derived data **without undue delay, within 24h of confirming it**, via Shopify's Partner security report channel.
-- **Affected merchants** — Jefe is a **processor** acting for the merchant (the data controller); merchants must be informed so they can meet *their* obligations. **Commitment: without undue delay, target within 48h of confirming scope** (so the merchant can meet its own 72h clock).
+- **Affected merchants** — Jefe is a **processor** acting for the merchant (the data controller); merchants must be informed so they can meet *their* obligations. **Commitment: without undue delay after becoming aware** (the GDPR processor standard, matching the live DPA §7), so the merchant can meet its own 72h clock.
 - **Affected customers** — generally notified **by the merchant** (the controller), not Jefe directly; Jefe supports the merchant on request.
-- **Regulators** — if EU/UK personal data is involved, GDPR/UK-GDPR require the controller to notify the supervisory authority, typically **within 72 hours**; as processor, Jefe informs the controller (merchant) without undue delay. If Jefe is controller for any dataset, Jefe notifies within 72h. **Lead authority assumed UK ICO / relevant EU DPA — counsel to confirm.**
+- **Regulators** — if EU/UK personal data is involved, GDPR/UK-GDPR require the controller to notify the supervisory authority, typically **within 72 hours**; as processor, Jefe informs the controller (merchant) without undue delay. If Jefe is controller for any dataset, Jefe notifies within 72h. **Lead authority: UK ICO** (Quiver Solutions Limited, UK-registered).
 
 > Notification content should state: what happened, what data was involved, when, the likely consequences, what Jefe has done, and what the recipient should do.
 
@@ -52,11 +52,11 @@ These are the standing commitments (founder-ratified 2026-07-31; aligned to GDPR
 - Deletion/redaction on uninstall + on request works and is verified (`compliance.server.js`, `handleShopifyComplianceWebhook`; the three compliance webhooks are subscribed).
 - Protected-data access is limited and **logged** (ops panel re-gated + PII-safe access logging, 2026-07-31).
 - Secrets/tokens are rotatable and (where feasible) encrypted at the app layer `[access-token app-layer encryption is a tracked gap]`.
-- Prod and test data are separated `[FOUNDER — CONFIRM the live topology]`.
+- Prod and test data are separated (verified 2026-07-31): prod customer data in a dedicated **Neon** Postgres (`*.neon.tech`); dev/test uses a **local** Postgres.
 
 ## Key contacts
 
-- Incident Commander: **Matt (founder)** — matt@mynamejefe.com
+- Incident Commander: **the Directors, Quiver Solutions Limited** — matt@mynamejefe.com
 - Shopify Partner support / security report channel: `[link]`
 - Hosting (Railway) + DB (Neon) support: `[links]`
 - Legal / DPO: `[contact, if any]`
