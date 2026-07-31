@@ -3,8 +3,6 @@ import {
   isRouteErrorResponse,
   Outlet,
   useLoaderData,
-  useLocation,
-  useNavigate,
   useRouteError,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -15,7 +13,6 @@ import {
   Box,
   Card,
   Frame,
-  Navigation,
   Page,
   Text,
 } from "@shopify/polaris";
@@ -47,44 +44,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function App() {
-  const { apiKey, showDevTools, onboardingComplete, standalone } =
-    useLoaderData<typeof loader>();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const focusedOnboarding = location.pathname === "/app" && !onboardingComplete;
-  const navigationItems = [
-    {
-      label: "Jefe",
-      selected: location.pathname === "/app",
-      onClick: () => navigate(`/app${location.search}`),
-    },
-    {
-      label: "Changelog",
-      selected: location.pathname === "/app/changelog",
-      onClick: () => navigate(`/app/changelog${location.search}`),
-    },
-  ];
+  const { apiKey, standalone } = useLoaderData<typeof loader>();
 
-  if (showDevTools) {
-    navigationItems.push({
-      label: "Dev",
-      selected: location.pathname === "/app/dev",
-      onClick: () => navigate(`/app/dev${location.search}`),
-    });
-  }
-
+  // No Polaris Frame navigation (founder call — "one nav, not two"). The 13a app home
+  // carries its own in-app nav rail (Brief/Queue/Horizon/Memory/Goals/Settings) and the
+  // changelog lives in its right rail ("New in Jefe"), so the old Frame nav (Jefe /
+  // Changelog / Dev) was a redundant second nav that read as unfinished. Dropping it hands
+  // the space back to the app (full width). Frame stays for Toast/Loading context; Dev
+  // tools remain reachable directly at /app/dev. (The grey top bar is Shopify's admin
+  // chrome around every embedded app — not ours to remove.)
   return (
     <AppProvider embedded={!standalone} apiKey={apiKey}>
       <WebVitalsReporter enabled={!standalone} />
-      <Frame
-        navigation={
-          focusedOnboarding ? undefined : (
-            <Navigation location={location.pathname}>
-              <Navigation.Section items={navigationItems} />
-            </Navigation>
-          )
-        }
-      >
+      <Frame>
         <Box paddingBlockEnd="1600">
           <AppUpdateBanner />
           <Outlet />

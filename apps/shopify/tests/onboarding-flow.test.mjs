@@ -210,10 +210,13 @@ test("channel logo image assets are bundled locally", () => {
   );
 });
 
-test("standard app navigation is hidden while onboarding is active", () => {
-  assert.match(appShellSource, /focusedOnboarding/);
-  assert.match(appShellSource, /location\.pathname === "\/app"/);
-  assert.match(appShellSource, /!onboardingComplete/);
+test("the app shell renders no competing Frame navigation (the 13a rail is the only nav)", () => {
+  // The old Polaris Frame nav (Jefe / Changelog / Dev) was dropped (founder "one nav,
+  // not two" call) — the 13a app home carries its own in-app rail, so there is no second
+  // navigation to hide during onboarding or anywhere else.
+  assert.doesNotMatch(appShellSource, /navigation=/);
+  assert.doesNotMatch(appShellSource, /<Navigation/);
+  assert.doesNotMatch(appShellSource, /focusedOnboarding/);
 });
 
 test("Slack OAuth callback navigation preserves current Shopify query context", () => {
@@ -227,7 +230,9 @@ test("Slack OAuth callback navigation preserves current Shopify query context", 
   assert.match(slackCallbackSource, /channelNotice: "slack_connected"/);
   assert.doesNotMatch(appIndexSource, /url="\/app\?/);
   assert.match(appIndexSource, /step: "channels"/);
-  assert.match(appShellSource, /navigate\(`\/app\$\{location\.search\}`\)/);
+  // (The old Frame nav's query-preserving `navigate(`/app${location.search}`)` was
+  // removed with the nav itself; the Slack flow's ?shop= preservation is via
+  // appPathFromSearch + the callback route above, asserted here, not the nav.)
 });
 
 test("onboarding Slack connect is one-click: workspace connect, channel choice deferred", () => {
