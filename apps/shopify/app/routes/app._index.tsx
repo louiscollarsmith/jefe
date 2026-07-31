@@ -780,7 +780,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // It must NOT rebuild belief snapshots or ensure/queue generation, so
       // it uses the read-only getLatest* fetchers rather than the
       // getMerchant*Experience calls used by the onboarding funnel.
-      const [metrics, insights, goals, plan] = await Promise.all([
+      const [metrics, insights, goals, plan, clearanceMode, channelConnections] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
         getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
@@ -794,6 +794,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           merchantId: merchant.id,
           shopId: shop.id,
         }),
+        // Settings (13a): real standing autonomy mode + channel state. Cheap indexed reads
+        // (one policy row / one small query), folded into THIS Promise.all so they run in
+        // parallel and add ~no serial latency to the LCP-critical daily loader (per chat 10).
+        getActionMode(prisma, { merchantId: merchant.id, actionType: "price_markdown" }),
+        listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
       ]);
       // Jefe's first visible action: the latest proposed action as a render-ready card,
       // money formatted in the shop currency. Read-only (a single indexed row) and
@@ -812,12 +817,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         currency: metrics?.currency || "GBP",
       });
-      // Settings (13a) needs the merchant's real standing autonomy mode for the live
-      // action type (dead-stock clearance) + real channel-connection state — read-only.
-      const [clearanceMode, channelConnections] = await Promise.all([
-        getActionMode(prisma, { merchantId: merchant.id, actionType: "price_markdown" }),
-        listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
-      ]);
       return {
         appMode: "daily" as const,
         shop: session.shop,
