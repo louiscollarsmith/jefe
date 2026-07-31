@@ -145,6 +145,11 @@ test("bfsWebVitalStatus needs enough samples + a known metric", () => {
   assert.equal(ok.target, 2500); // case-insensitive + carries the target
 });
 
+test("bfsWebVitalStatus enforces the BFS 100-sample minimum at the boundary", () => {
+  assert.equal(bfsWebVitalStatus("LCP", 2000, 99).state, "insufficient"); // < 100 calls
+  assert.equal(bfsWebVitalStatus("LCP", 2000, 100).state, "pass"); // exactly 100 grades
+});
+
 test("formatVitalValue: CLS as ratio, others as ms, junk as em dash", () => {
   assert.equal(formatVitalValue("LCP", 3140), "3140ms");
   assert.equal(formatVitalValue("CLS", 0.2), "0.200");

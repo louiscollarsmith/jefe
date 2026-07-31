@@ -90,15 +90,16 @@ export function churnReasonLabel(code) {
   return CHURN_REASON_LABELS[code] || code || "—";
 }
 
-// Built-for-Shopify admin-performance bar: each Core Web Vital's 75th percentile
-// must clear Google's "good" threshold — LCP ≤ 2.5s, INP ≤ 200ms, CLS ≤ 0.1.
-// These are our BFS targets; the p75/28d panel grades against them.
-// NOTE: exact values + measurement basis (p75 / window / min-sample) are being
-// confirmed with chat 6 (growth) — adjust HERE when they land; nothing else moves.
+// Built-for-Shopify admin-performance bar (confirmed against the BFS checklist,
+// 2026-07-31 via growth): each Core Web Vital's 75th percentile must clear
+// Google's "good" threshold — LCP ≤ 2.5s, INP ≤ 200ms, CLS ≤ 0.1 — measured at
+// p75 over a trailing 28-day window with ≥100 measurements ("Pass with 100+
+// calls"). p75 ≤ threshold ≡ "≥75% of loads good"; BFS-qualifying = all three
+// p75 within good AND ≥100 samples.
 export const BFS_WEB_VITAL_TARGETS = { LCP: 2500, INP: 200, CLS: 0.1 };
 
-/** Below this many samples a p75 isn't meaningful to grade — shown as "…". */
-export const BFS_MIN_SAMPLES = 50;
+/** BFS grades on 28d data with 100+ calls; below that a p75 isn't gradeable. */
+export const BFS_MIN_SAMPLES = 100;
 
 /**
  * Grade a Core Web Vital's p75 against the BFS target (lower is better for all
