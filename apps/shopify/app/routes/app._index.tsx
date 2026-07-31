@@ -129,13 +129,22 @@ import {
 } from "../lib/merchant-plan/service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
-import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
+import {
+  confirmBelief,
+  correctBelief,
+  getBeliefsForMerchant,
+  markBeliefObsolete,
+} from "../lib/merchant-memory/service.server.js";
 import {
   getDailyChatThread,
   getMerchantMemoryConversationExperience,
+  getOpenQuestions,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
-import { getBeliefDefinition } from "../lib/merchant-memory/conversational-belief-registry.server.js";
+import {
+  getBeliefDefinition,
+  validateConversationalValue,
+} from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { loadAppHomeChangelog } from "../lib/notifications/changelog-app-home.js";
 import {
   formatBriefSendTime,
@@ -744,11 +753,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent.startsWith("memory.")) {
+    // The Memory surface intents (13a app home). Thin dispatch → chat 9's memory services;
+    // all belief logic lives there. Redaction: we log belief/question IDENTIFIERS only —
+    // never the merchant's free-text statement/answer (may carry business detail) and never
+    // customer PII (the value validator rejects emails). The confirm/forget/correct/teach/
+    // answer intents revalidate in place (return data, no redirect) so the merchant stays on
+    // the Memory tab; the standalone memory-view composer (memory.message) still redirects.
+    const memoryLog = baseLogger.child({ component: "memory-surface" });
     try {
-      // The "correct anything" path: the merchant types plain English, the
-      // conversation service maps it to a correctBelief/confirmBelief structured
-      // operation, and the memory engine applies it (a merchant correction
-      // outranks inference). Thin dispatch — all logic lives in the service.
+      // memory.message — the standalone Merchant Memory view's "correct anything" composer.
+      // The merchant types plain English; the conversation service maps it to a structured
+      // confirm/correct/create operation and applies it (a merchant correction outranks
+      // inference). Redirects back to that view.
       if (intent === "memory.message") {
         const result = await sendConversationMessage(prisma, {
           merchantId: merchant.id,
@@ -769,6 +785,167 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             memoryNotice: "message_saved",
           }),
         );
+      }
+
+      // memory.confirm — "That's right": the merchant affirms an inferred belief. The UI
+      // posts the belief id; we resolve it to the belief key (scoped to this merchant) and
+      // confirm by key.
+      if (intent === "memory.confirm") {
+        const beliefId = String(formData.get("beliefId") ?? "");
+        const key = await resolveBeliefKeyById({ merchantId: merchant.id, beliefId });
+        if (!key) return { ok: false, error: "That memory could not be found.", intent };
+        await confirmBelief(prisma, {
+          merchantId: merchant.id,
+          key,
+          confirmedBy: "merchant_memory_surface",
+          evidenceSummary: "Merchant confirmed this on the memory surface.",
+          evidenceSourceType: "merchant_memory_surface",
+        });
+        memoryLog.info("merchant confirmed belief", { merchantId: merchant.id, beliefId });
+        return { ok: true };
+      }
+
+      // memory.forget — "Forget": mark the belief obsolete (kept in history, dropped from
+      // the active surface). markBeliefObsolete is a no-op that returns null if it's already
+      // gone, so a double-click is safe.
+      if (intent === "memory.forget") {
+        const beliefId = String(formData.get("beliefId") ?? "");
+        const key = await resolveBeliefKeyById({ merchantId: merchant.id, beliefId });
+        if (!key) return { ok: false, error: "That memory could not be found.", intent };
+        const result = await markBeliefObsolete(prisma, {
+          merchantId: merchant.id,
+          key,
+          reason: "merchant_forgot_via_memory_surface",
+        });
+        memoryLog.info("merchant forgot belief", {
+          merchantId: merchant.id,
+          beliefId,
+          applied: Boolean(result),
+        });
+        return { ok: true };
+      }
+
+      // memory.correct — "Not quite" / Edit: the merchant supplies a plain-English fix. A
+      // merchant correction outranks inference, but a free-text edit must never corrupt a
+      // TYPED belief. So we validate the text against the belief's own definition first: if
+      // it maps cleanly (a string / currency code / enum, etc.) we correct it directly; if
+      // it can't be parsed as this belief's type — or the belief is an observed fact that
+      // must stay separate from interpretation — we hand it to Jefe's interpreter, which
+      // validates it and either corrects the belief or records a policy/context belief.
+      if (intent === "memory.correct") {
+        const beliefId = String(formData.get("beliefId") ?? "");
+        const statement = String(formData.get("statement") ?? "").trim().slice(0, 300);
+        if (!statement) return { ok: false, error: "Tell me what’s right.", intent };
+        const belief = await prisma.merchantMemoryBelief.findFirst({
+          where: {
+            id: beliefId,
+            merchantId: merchant.id,
+            status: { in: ACTIVE_BELIEF_STATUSES },
+          },
+          select: { key: true },
+        });
+        const definition = belief ? getBeliefDefinition(belief.key) : null;
+        if (!belief || !definition) {
+          return { ok: false, error: "That memory could not be found.", intent };
+        }
+        let corrected = false;
+        if (definition.merchantCorrectable) {
+          const validated = validateConversationalValue(statement, definition) as {
+            ok: boolean;
+            value?: unknown;
+            error?: string;
+          };
+          if (validated.ok) {
+            await correctBelief(prisma, {
+              merchantId: merchant.id,
+              key: belief.key,
+              value: validated.value,
+              valueType: definition.valueType,
+              correctedBy: "merchant_memory_surface",
+              evidenceSummary: "Merchant corrected this on the memory surface.",
+              evidenceSourceType: "merchant_memory_surface",
+            });
+            corrected = true;
+          }
+        }
+        if (!corrected) {
+          const result = await sendConversationMessage(prisma, {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            message: statement,
+          });
+          if (!result.ok) {
+            const messageError = result as { error?: string };
+            return {
+              ok: false,
+              error: messageError.error ?? "That correction could not be saved.",
+              intent,
+            };
+          }
+        }
+        memoryLog.info("merchant corrected belief", {
+          merchantId: merchant.id,
+          beliefId,
+          via: corrected ? "direct" : "interpreter",
+        });
+        return { ok: true };
+      }
+
+      // memory.teach — "Teach Jefe": a brand-new fact in the merchant's words, with no target
+      // belief. The conversation interpreter figures out the key/category/value, validates it
+      // and records it via upsertMerchantSuppliedBelief (revertible via
+      // revertLatestMerchantSuppliedChange when an undo affordance is added).
+      if (intent === "memory.teach") {
+        const statement = String(formData.get("statement") ?? "").trim().slice(0, 300);
+        if (!statement) {
+          return { ok: false, error: "Tell me what you’d like me to know.", intent };
+        }
+        const result = await sendConversationMessage(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          message: statement,
+        });
+        if (!result.ok) {
+          const messageError = result as { error?: string };
+          return {
+            ok: false,
+            error: messageError.error ?? "That could not be saved.",
+            intent,
+          };
+        }
+        memoryLog.info("merchant taught jefe a new fact", { merchantId: merchant.id });
+        return { ok: true };
+      }
+
+      // memory.answer_question — "Tell me": answer an open question from the questions/gap
+      // feed. Posts through the conversation service, which validates the answer, records the
+      // belief and retracts the question. `relatedOpenQuestionId` targets the EXACT question the
+      // merchant clicked (chat 9's exact-targeting, 2bb8c31): the service sets it as the current
+      // open question before interpretation, so the answer + retraction land on that one, not a
+      // priority-order guess. A stale/answered id falls back to top-priority (never errors).
+      if (intent === "memory.answer_question") {
+        const relatedOpenQuestionId = String(formData.get("relatedOpenQuestionId") ?? "");
+        const answer = String(formData.get("answer") ?? "").trim().slice(0, 300);
+        if (!answer) return { ok: false, error: "Type an answer first.", intent };
+        const result = await sendConversationMessage(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          message: answer,
+          relatedOpenQuestionId: relatedOpenQuestionId || undefined,
+        });
+        if (!result.ok) {
+          const messageError = result as { error?: string };
+          return {
+            ok: false,
+            error: messageError.error ?? "That answer could not be saved.",
+            intent,
+          };
+        }
+        memoryLog.info("merchant answered open question", {
+          merchantId: merchant.id,
+          relatedOpenQuestionId,
+        });
+        return { ok: true };
       }
     } catch (error) {
       return {
@@ -868,7 +1045,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // today just price_markdown. One cheap indexed getActionMode per live type, so a
       // newly-graduated action's dial lights up here with no surface edit.
       const liveActionTypes = listActionTypes().filter((t) => t.live);
-      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections] = await Promise.all([
+      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections, openQuestions] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
         getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
@@ -893,6 +1070,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ),
         ),
         listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
+        // openQuestions feeds Memory's "Still guessing" group (getOpenQuestions is
+        // idempotent + safe to call — ensures the initial questions, returns the open set).
+        getOpenQuestions(prisma, { merchantId: merchant.id, shopId: shop.id }),
       ]);
       // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
       // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
@@ -965,6 +1145,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         conversation,
         changelog,
         emailBrief,
+        openQuestions: openQuestions.map((q) => ({
+          id: q.id,
+          question: q.question,
+          reason: q.reason ?? null,
+          answerType: String(q.answerType ?? "text"),
+          answerOptions: Array.isArray(q.answerOptions)
+            ? q.answerOptions.map((opt) => String(opt))
+            : [],
+        })),
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1252,6 +1441,7 @@ export default function AppIndex() {
         conversation={data.conversation}
         changelog={data.changelog}
         emailBrief={data.emailBrief}
+        openQuestions={data.openQuestions}
       />
     );
   }
@@ -3968,6 +4158,24 @@ async function getStoreMetrics({
         : null,
     currency: revenue._min.currency ?? "GBP",
   };
+}
+
+// Resolve a Memory-surface belief id (what the UI posts) to its belief key (what chat 9's
+// services operate on), scoped to this merchant + active beliefs so a merchant can only act
+// on their own live memory. Returns null when the id doesn't match an active belief.
+async function resolveBeliefKeyById({
+  merchantId,
+  beliefId,
+}: {
+  merchantId: string;
+  beliefId: string;
+}): Promise<string | null> {
+  if (!beliefId) return null;
+  const belief = await prisma.merchantMemoryBelief.findFirst({
+    where: { id: beliefId, merchantId, status: { in: ACTIVE_BELIEF_STATUSES } },
+    select: { key: true },
+  });
+  return belief?.key ?? null;
 }
 
 async function getMerchantMemoryView({

@@ -87,11 +87,23 @@ export type ExecutedAction = {
 // plain-English statement, a source line, and the right action set.
 
 export type MemoryEntry = {
-  id: string;
+  id: string; // the belief id — posted to the memory.* intents (resolved to its key server-side)
   statement: string; // plain-English (gap #1) — falls back to the belief title
   sourceLine: string | null; // provenance (gap #2)
   authored: boolean; // merchant-authored OR confirm-pending → the 3px navy rule
   confirmState: "settled" | "unsure" | "blocked";
+};
+
+// An open question from the merchant-memory questions/gap feed (getOpenQuestions). Drives
+// the "Still guessing" group — sourced from the questions feed, NOT belief status — and is
+// answered through the memory.answer_question intent (→ sendConversationMessage). No
+// fabrication: absent ⇒ the group simply doesn't render.
+export type MemoryQuestion = {
+  id: string; // open-question id — posted as relatedOpenQuestionId
+  question: string; // the plain-English question shown as the statement
+  reason: string | null; // why Jefe needs it → the source line
+  answerType: string; // "text" | "option"
+  answerOptions: string[]; // for "option" questions, the allowed answers
 };
 export type MemoryGroupKey = "worked_out" | "told" | "guessing";
 export type MemoryGroup = { key: MemoryGroupKey; label: string; entries: MemoryEntry[] };

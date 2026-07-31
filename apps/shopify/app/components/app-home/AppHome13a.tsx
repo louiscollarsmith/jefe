@@ -24,6 +24,7 @@ import type {
   Goal,
   SuggestedAction,
   ExecutedAction,
+  MemoryQuestion,
 } from "./data";
 
 // The 13a app-home shell: nav rail · content (with persistent composer) · right rail.
@@ -77,11 +78,19 @@ export type AppHome13aProps = {
   // The in-app chat thread (merchant-memory conversation), oldest→newest. Empty
   // until the merchant sends the first message.
   conversation: { messages: Array<{ id: string; role: string; content: string }> };
+  // When true, the Memory controls are live react-router <Form> posts (the DailyHome path);
+  // omitted/false ⇒ visible-but-inert (the /app-home-13a design preview).
+  interactive?: boolean;
+  // Real open questions (getOpenQuestions) driving Memory's "Still guessing" group. Absent
+  // ⇒ the group falls back to any preview beliefs, then to nothing — never fabricated.
+  openQuestions?: MemoryQuestion[];
 };
 
 export function AppHome13a(props: AppHome13aProps) {
   const [section, setSection] = useState<Section>("brief");
   const cur = props.metrics?.currency || "GBP";
+  const interactive = props.interactive ?? false;
+  const openQuestions = props.openQuestions ?? [];
   const queueWaiting = props.queue.filter((q) => q.state === "needs_you").length;
   const memoryCount = (props.memory?.groups || []).reduce((n, g) => n + g.beliefs.length, 0);
 
@@ -153,13 +162,14 @@ export function AppHome13a(props: AppHome13aProps) {
               findings={props.findings}
               cur={cur}
               headline={props.briefHeadline}
+              interactive={interactive}
             />
           ) : section === "queue" ? (
             <QueueSection items={props.queue} />
           ) : section === "horizon" ? (
             <HorizonSection near={props.horizonNear} watching={props.horizonWatching} />
           ) : section === "memory" ? (
-            <MemorySection storeName={props.storeName} memory={props.memory} />
+            <MemorySection storeName={props.storeName} memory={props.memory} interactive={interactive} openQuestions={openQuestions} />
           ) : section === "goals" ? (
             <GoalsSection goals={props.goals} changes={props.goalChanges} />
           ) : (

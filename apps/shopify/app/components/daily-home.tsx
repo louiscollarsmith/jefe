@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useFetcher } from "react-router";
 import { AppHome13a, type AppHome13aProps } from "./app-home/AppHome13a";
 import type { Finding, HorizonItem, HorizonWatch, QueueItem, GoalChange, ActionPolicy, ChannelRow } from "./app-home/sections";
-import type { Metrics, MemoryView, Recommendation, Goal, Insight, SuggestedAction, ExecutedAction, ActionMode } from "./app-home/data";
+import type { Metrics, MemoryView, Recommendation, Goal, Insight, SuggestedAction, ExecutedAction, ActionMode, MemoryQuestion } from "./app-home/data";
 
 // Re-exported for back-compat: action-resolution.server.js references this type via a
 // JSDoc `import("../../components/daily-home").SuggestedAction`.
@@ -20,7 +20,9 @@ export type { SuggestedAction } from "./app-home/data";
 // plain-English `statement` falls back to the belief title until chat 9's pass lands) ·
 // the Plan recommendation · the executable clearance suggestion · the executed-action
 // feed · goals · insights (surfaced as Brief findings) · the live per-action autonomy
-// mode + real channel connections (Settings).
+// mode + real channel connections (Settings) · the open-questions feed (Memory's "Still
+// guessing"). This is the live home, so it passes `interactive` — the Memory controls
+// (confirm / correct / forget / teach / answer) post real memory.* intents to app._index.
 
 const BOOKING_URL = "https://calendly.com/quiver-matt";
 const FOUNDER_EMAIL = "matt@mynamejefe.com";
@@ -70,6 +72,7 @@ export function DailyHome(props: {
   conversation?: ChatThread | null; // getDailyChatThread — real in-app chat thread
   changelog?: ChangelogItem[]; // loadAppHomeChangelog — real CHANGELOG entries
   emailBrief?: EmailBrief | null; // morning_brief pref + real contact email; null → row hidden
+  openQuestions?: MemoryQuestion[]; // getOpenQuestions — Memory's "Still guessing" feed
 }) {
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
@@ -194,6 +197,10 @@ export function DailyHome(props: {
     bookingUrl: BOOKING_URL,
     changelog: props.changelog ?? [], // "New in Jefe" ← real app CHANGELOG
     conversation: props.conversation ?? { messages: [] }, // real in-app chat thread
+    // This IS the live merchant home → the Memory controls post real memory.* intents,
+    // and the "Still guessing" group reads the real open-questions feed.
+    interactive: true,
+    openQuestions: props.openQuestions ?? [],
   };
 
   return <AppHome13a {...appProps} />;

@@ -23,15 +23,21 @@ import {
   type ActionMode,
   type ExecutedAction,
   type MemoryEntry,
+  type MemoryQuestion,
 } from "./data";
 
 // The six 13a sections. Presentational + the real wired clearance forms (intents
 // action.approve / action.reject / action.edit / action.set_mode — carried over
-// verbatim so the LIVE clearance loop is unchanged). Per the founder's design-fidelity
-// rule (AGENTS.md → Implementation Rules: wire-or-keep, never wire-or-remove), controls
-// that aren't wired yet — Memory confirm/correct/forget/Teach — stay visible per the
-// design; wiring them to chat 9's memory.* services is tracked as an engineering task.
-// The hard line still held everywhere here: no fabricated merchant DATA.
+// verbatim so the LIVE clearance loop is unchanged) + the now-real Memory forms.
+//
+// Memory controls are wired to chat 9's services via the memory.* intents (handled in
+// app._index): "That's right" → memory.confirm, "Not quite"/Edit → memory.correct,
+// Forget → memory.forget, "Teach Jefe" → memory.teach, and the "Still guessing / Tell me"
+// group answers open questions via memory.answer_question. They render as real
+// react-router <Form> posts ONLY when the section is given `interactive` (the live
+// DailyHome path passes it); the illustrative /app-home-13a preview omits it, so the
+// controls stay visible-but-inert there (founder's wire-or-keep rule, AGENTS.md →
+// Design fidelity). The hard line still held everywhere here: no fabricated merchant DATA.
 
 // ── shared bits ────────────────────────────────────────────────────────────────
 
@@ -246,6 +252,7 @@ export function BriefSection({
   findings,
   cur,
   headline,
+  interactive = false,
 }: {
   metrics: Metrics;
   memory: MemoryView;
@@ -256,6 +263,7 @@ export function BriefSection({
   findings: Finding[];
   cur: string;
   headline: string;
+  interactive?: boolean;
 }) {
   const groups = toMemoryGroups(memory);
   const beliefs = groups.flatMap((g) => g.entries).slice(0, 3);
@@ -303,7 +311,7 @@ export function BriefSection({
         {beliefs.length ? (
           <div>
             {beliefs.map((e, i) => (
-              <MemoryRow key={e.id} entry={e} last={i === beliefs.length - 1} />
+              <MemoryRow key={e.id} entry={e} last={i === beliefs.length - 1} interactive={interactive} />
             ))}
           </div>
         ) : (
@@ -427,29 +435,145 @@ function ExecutedFeed({ actions }: { actions: ExecutedAction[] }) {
 }
 
 // ── MEMORY (gaps #1 + #2) ─────────────────────────────────────────────────────────
-// NOTE: confirm/correct/edit/forget actions below need memory.* intents wired (chat 9)
-// before this goes live. Statements + provenance + authorship are real improvements now.
-function MemoryRow({ entry, last }: { entry: MemoryEntry; last?: boolean }) {
-  const body = (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-      <span style={{ fontFamily: R.sans, fontSize: 13.5, lineHeight: 1.4, color: R.ink }}>{entry.statement}</span>
-      {entry.sourceLine ? <SourceLine>{entry.sourceLine}{entry.confirmState === "unsure" ? " · confirm?" : ""}</SourceLine> : null}
+// The controls are REAL when `interactive` is passed (the live DailyHome path): each posts
+// a memory.* intent handled in app._index → chat 9's services. When `interactive` is false
+// (the /app-home-13a preview), they render as the exact visible-but-inert spans they were
+// before, per the founder's wire-or-keep rule. Statements + provenance + authorship carry
+// through unchanged. No fabricated DATA anywhere.
+
+// Compact inline-control styles, matching the row idiom (12.5px, no fills for text actions).
+const memActionRust: React.CSSProperties = { fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, background: "none", border: "none", padding: 0, cursor: "pointer" };
+const memActionQuiet: React.CSSProperties = { fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.ink3, background: "none", border: "none", padding: 0, cursor: "pointer" };
+const memFormSubmit: React.CSSProperties = { fontFamily: R.sans, background: R.rust, color: "#fdfbf7", fontWeight: 600, fontSize: 12.5, padding: "7px 13px", borderRadius: RADIUS.button, border: "none", cursor: "pointer" };
+const memFormCancel: React.CSSProperties = { fontFamily: R.sans, background: "none", color: R.ink3, fontWeight: 600, fontSize: 12.5, padding: "7px 11px", borderRadius: RADIUS.button, border: `1px solid ${R.controlBorder}`, cursor: "pointer" };
+const memTextarea: React.CSSProperties = { fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, padding: "7px 10px", borderRadius: RADIUS.button, border: `1px solid ${R.controlBorder}`, background: R.surface, color: R.ink, resize: "vertical" };
+const memOptChip: React.CSSProperties = { fontFamily: R.sans, fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: RADIUS.button, cursor: "pointer", border: `1px solid ${R.controlBorder}`, background: "transparent", color: R.ink3 };
+
+function humanizeOption(value: string): string {
+  const s = value.replace(/[._-]+/g, " ").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : value;
+}
+
+// The inline "correct anything" / "teach" composer. memory.correct carries the belief id
+// (resolved to its key server-side); memory.teach carries none (a brand-new fact). The
+// server validates the text against the belief definition, so a free-text edit can never
+// corrupt a typed belief — an unparseable edit is handed to Jefe's interpreter instead.
+function InlineStatementForm({
+  intent,
+  beliefId,
+  placeholder,
+  submitLabel,
+  onCancel,
+}: {
+  intent: "memory.correct" | "memory.teach";
+  beliefId?: string;
+  placeholder: string;
+  submitLabel: string;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  const ready = text.trim().length > 0;
+  // Close the composer on submit — react-router's <Form> reads the form data synchronously
+  // before React flushes this state, so the POST still goes; this just avoids leaving the box
+  // open with stale text after the row revalidates.
+  return (
+    <Form method="post" onSubmit={() => onCancel()} style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+      <input type="hidden" name="intent" value={intent} />
+      {beliefId ? <input type="hidden" name="beliefId" value={beliefId} /> : null}
+      <textarea
+        name="statement"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={placeholder}
+        rows={2}
+        maxLength={300}
+        aria-label={submitLabel}
+        style={memTextarea}
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="submit" disabled={!ready} style={{ ...memFormSubmit, opacity: ready ? 1 : 0.55, cursor: ready ? "pointer" : "default" }}>{submitLabel}</button>
+        <button type="button" onClick={onCancel} style={memFormCancel}>Cancel</button>
+      </div>
+    </Form>
+  );
+}
+
+// The live per-row actions. Confirm / Forget are single-click <Form> posts; Not quite / Edit
+// / Tell me open the inline composer above.
+function LiveMemoryActions({ entry, onEdit }: { entry: MemoryEntry; onEdit: () => void }) {
+  if (entry.confirmState === "unsure") {
+    return (
+      <div style={{ flex: "none", display: "flex", gap: 12, alignItems: "center" }}>
+        <Form method="post" style={{ display: "inline" }}>
+          <input type="hidden" name="intent" value="memory.confirm" />
+          <input type="hidden" name="beliefId" value={entry.id} />
+          <button type="submit" style={memActionRust}>That’s right</button>
+        </Form>
+        <button type="button" onClick={onEdit} style={memActionQuiet}>Not quite</button>
+      </div>
+    );
+  }
+  if (entry.confirmState === "blocked") {
+    return <button type="button" onClick={onEdit} style={{ flex: "none", ...memActionRust }}>Tell me</button>;
+  }
+  return (
+    <div style={{ flex: "none", display: "flex", gap: 12, alignItems: "center" }}>
+      <button type="button" onClick={onEdit} style={memActionQuiet}>Edit</button>
+      <Form method="post" style={{ display: "inline" }}>
+        <input type="hidden" name="intent" value="memory.forget" />
+        <input type="hidden" name="beliefId" value={entry.id} />
+        <button type="submit" style={memActionQuiet}>Forget</button>
+      </Form>
     </div>
   );
-  const actions =
-    entry.confirmState === "unsure" ? (
+}
+
+// The exact visible-but-inert spans from before wiring — rendered when the section is not
+// interactive (the design preview). Kept identical so the preview is unchanged.
+function InertMemoryActions({ confirmState }: { confirmState: MemoryEntry["confirmState"] }) {
+  if (confirmState === "unsure") {
+    return (
       <div style={{ flex: "none", display: "flex", gap: 12, alignItems: "center" }}>
         <span style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>That’s right</span>
         <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink4 }}>Not quite</span>
       </div>
-    ) : entry.confirmState === "blocked" ? (
-      <span style={{ flex: "none", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Tell me</span>
-    ) : (
-      <div style={{ flex: "none", display: "flex", gap: 12, alignItems: "center" }}>
-        <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink4 }}>Edit</span>
-        <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink4 }}>Forget</span>
-      </div>
     );
+  }
+  if (confirmState === "blocked") {
+    return <span style={{ flex: "none", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Tell me</span>;
+  }
+  return (
+    <div style={{ flex: "none", display: "flex", gap: 12, alignItems: "center" }}>
+      <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink4 }}>Edit</span>
+      <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink4 }}>Forget</span>
+    </div>
+  );
+}
+
+function MemoryRow({ entry, last, interactive = false }: { entry: MemoryEntry; last?: boolean; interactive?: boolean }) {
+  // A blocked ("still guessing") belief has nothing to correct yet, so its input teaches a
+  // fresh fact; unsure/settled beliefs correct the existing one by id.
+  const [editing, setEditing] = useState(false);
+  const composerIntent: "memory.correct" | "memory.teach" =
+    entry.confirmState === "blocked" ? "memory.teach" : "memory.correct";
+  const body = (
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <span style={{ fontFamily: R.sans, fontSize: 13.5, lineHeight: 1.4, color: R.ink }}>{entry.statement}</span>
+      {entry.sourceLine ? <SourceLine>{entry.sourceLine}{entry.confirmState === "unsure" ? " · confirm?" : ""}</SourceLine> : null}
+      {interactive && editing ? (
+        <InlineStatementForm
+          intent={composerIntent}
+          beliefId={composerIntent === "memory.correct" ? entry.id : undefined}
+          placeholder={composerIntent === "memory.teach" ? "Tell Jefe what you know…" : "What’s the right version?"}
+          submitLabel={composerIntent === "memory.teach" ? "Tell Jefe" : "Save"}
+          onCancel={() => setEditing(false)}
+        />
+      ) : null}
+    </div>
+  );
+  const actions = interactive
+    ? (editing ? null : <LiveMemoryActions entry={entry} onEdit={() => setEditing(true)} />)
+    : <InertMemoryActions confirmState={entry.confirmState} />;
 
   const inner = (
     <Row last={last} align="flex-start" style={entry.authored ? { paddingLeft: 0 } : undefined}>
@@ -461,39 +585,158 @@ function MemoryRow({ entry, last }: { entry: MemoryEntry; last?: boolean }) {
   return entry.authored ? <AuthorshipRule style={{ borderBottom: last ? "none" : `1px solid ${R.hairline}` }}><Row last align="flex-start" style={{ borderBottom: "none" }}>{body}{actions}</Row></AuthorshipRule> : inner;
 }
 
-export function MemorySection({ storeName, memory }: { storeName: string; memory: MemoryView }) {
+// The inline answer composer for an open question. Option questions render their allowed
+// answers as one-click chips; free-text questions get a short textarea. Both post
+// memory.answer_question with the open-question id so the answer lands against it.
+function AnswerForm({ q, onCancel }: { q: MemoryQuestion; onCancel: () => void }) {
+  const [text, setText] = useState("");
+  const ready = text.trim().length > 0;
+  const isOption = q.answerType === "option" && q.answerOptions.length > 0;
+  // Close on submit for the same reason as InlineStatementForm — the POST is already captured.
+  return (
+    <Form method="post" onSubmit={() => onCancel()} style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+      <input type="hidden" name="intent" value="memory.answer_question" />
+      <input type="hidden" name="relatedOpenQuestionId" value={q.id} />
+      {isOption ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          {q.answerOptions.map((opt) => (
+            <button key={opt} type="submit" name="answer" value={opt} style={memOptChip}>{humanizeOption(opt)}</button>
+          ))}
+          <button type="button" onClick={onCancel} style={memFormCancel}>Cancel</button>
+        </div>
+      ) : (
+        <>
+          <textarea
+            name="answer"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Tell Jefe…"
+            rows={2}
+            maxLength={300}
+            aria-label="Answer"
+            style={memTextarea}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="submit" disabled={!ready} style={{ ...memFormSubmit, opacity: ready ? 1 : 0.55, cursor: ready ? "pointer" : "default" }}>Send</button>
+            <button type="button" onClick={onCancel} style={memFormCancel}>Cancel</button>
+          </div>
+        </>
+      )}
+    </Form>
+  );
+}
+
+// A "Still guessing" open question. It's always the merchant's turn → the navy authorship
+// rule, like a confirm-pending belief. "Tell me" opens the answer composer (interactive),
+// or renders as the inert span in the preview.
+function QuestionRow({ q, last, interactive = false }: { q: MemoryQuestion; last?: boolean; interactive?: boolean }) {
+  const [answering, setAnswering] = useState(false);
+  const body = (
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <span style={{ fontFamily: R.sans, fontSize: 13.5, lineHeight: 1.4, color: R.ink }}>{q.question}</span>
+      {q.reason ? <SourceLine>{q.reason}</SourceLine> : null}
+      {interactive && answering ? <AnswerForm q={q} onCancel={() => setAnswering(false)} /> : null}
+    </div>
+  );
+  const action = !interactive ? (
+    <span style={{ flex: "none", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Tell me</span>
+  ) : answering ? null : (
+    <button type="button" onClick={() => setAnswering(true)} style={{ flex: "none", ...memActionRust }}>Tell me</button>
+  );
+  return (
+    <AuthorshipRule style={{ borderBottom: last ? "none" : `1px solid ${R.hairline}` }}>
+      <Row last align="flex-start" style={{ borderBottom: "none" }}>{body}{action}</Row>
+    </AuthorshipRule>
+  );
+}
+
+export function MemorySection({
+  storeName,
+  memory,
+  interactive = false,
+  openQuestions = [],
+}: {
+  storeName: string;
+  memory: MemoryView;
+  interactive?: boolean;
+  openQuestions?: MemoryQuestion[];
+}) {
+  const [teaching, setTeaching] = useState(false);
   const groups = toMemoryGroups(memory).filter((g) => g.entries.length > 0);
+  // "Still guessing" is sourced from the questions/gap feed (openQuestions), NOT belief
+  // status. Belief-derived guessing entries only occur in the illustrative preview (the
+  // live view never emits a blocked belief status); merge both under one header so neither
+  // path double-renders.
+  const beliefGroups = groups.filter((g) => g.key !== "guessing");
+  const guessingBeliefs = groups.find((g) => g.key === "guessing")?.entries ?? [];
+  const guessingCount = guessingBeliefs.length + openQuestions.length;
   const counts = memoryCounts(groups);
   const metaParts = [
     `${counts.total} ${counts.total === 1 ? "thing" : "things"}`,
     counts.told > 0 ? `${counts.told} you taught me` : null,
     counts.unsure > 0 ? `${counts.unsure} waiting on you` : null,
+    openQuestions.length > 0 ? `${openQuestions.length} to answer` : null,
   ].filter(Boolean);
+  const isEmpty = beliefGroups.length === 0 && guessingCount === 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 0 }}>
-          <DisplayHeadline>Memory</DisplayHeadline>
-          <Mono style={{ fontSize: 11 }}>{metaParts.join(" · ")}</Mono>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 0 }}>
+            <DisplayHeadline>Memory</DisplayHeadline>
+            <Mono style={{ fontSize: 11 }}>{metaParts.join(" · ")}</Mono>
+          </div>
+          {/* Teach Jefe — real composer (memory.teach) when interactive, inert in the preview. */}
+          {interactive ? (
+            <RustLink onClick={() => setTeaching((v) => !v)} style={{ flex: "none" }}>{teaching ? "Close" : "Teach Jefe"}</RustLink>
+          ) : (
+            <span style={{ flex: "none", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Teach Jefe</span>
+          )}
         </div>
+        {interactive && teaching ? (
+          <InlineStatementForm
+            intent="memory.teach"
+            placeholder="Tell Jefe something about your business — “most of my sales are wholesale”, “don’t discount the Repair Balm”."
+            submitLabel="Tell Jefe"
+            onCancel={() => setTeaching(false)}
+          />
+        ) : null}
       </div>
 
-      {groups.length === 0 ? (
+      {isEmpty ? (
         <Row last>
           <span style={{ fontFamily: R.sans, fontSize: 13, lineHeight: 1.5, color: R.ink3 }}>
             This is a file, not a feed — everything Jefe works out about {storeName || "your store"}, where it came from, and whether you’ve confirmed it. It fills up as he reads your store and as you talk to him.
           </span>
         </Row>
       ) : (
-        groups.map((g) => (
-          <div key={g.key}>
-            <SectionHeader title={g.label} meta={String(g.entries.length)} />
-            {g.entries.map((e, i) => (
-              <MemoryRow key={e.id} entry={e} last={i === g.entries.length - 1} />
-            ))}
-          </div>
-        ))
+        <>
+          {beliefGroups.map((g) => (
+            <div key={g.key}>
+              <SectionHeader title={g.label} meta={String(g.entries.length)} />
+              {g.entries.map((e, i) => (
+                <MemoryRow key={e.id} entry={e} last={i === g.entries.length - 1} interactive={interactive} />
+              ))}
+            </div>
+          ))}
+          {guessingCount > 0 ? (
+            <div>
+              <SectionHeader title="Still guessing" meta={String(guessingCount)} />
+              {guessingBeliefs.map((e, i) => (
+                <MemoryRow
+                  key={e.id}
+                  entry={e}
+                  last={openQuestions.length === 0 && i === guessingBeliefs.length - 1}
+                  interactive={interactive}
+                />
+              ))}
+              {openQuestions.map((q, i) => (
+                <QuestionRow key={q.id} q={q} last={i === openQuestions.length - 1} interactive={interactive} />
+              ))}
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );
