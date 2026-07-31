@@ -48,3 +48,12 @@ The 13a redesign (`design_handoff_jefe_app`) is built as `app/components/app-hom
 - **Goal targets + progress + "what these changed" (backlog item 13).** `goalChanges: GoalChange[]` + per-goal target/progress need real fields; omitted honestly today.
 - **Book-a-slot / voice-note (gap #3).** The rail's feedback is a real `mailto`; a real Calendly link + a voice-note upload target (from Matt) would restore those two affordances.
 - **Nav trim + sections-as-routes (chat 10 + chat 2).** Trim the App Bridge menu to one item; turn the six client-side sections into `/brief…/settings` routes for deep-linking. Coordinated, not done unilaterally.
+
+### Memory adoption wiring — the concrete contract (confirmed with chat 9, 2026-07-31)
+
+Everything the live Memory section needs, so the flip is turnkey (loop chat 9 to wire these together):
+
+- **Real belief fields — SHIPPED (`c075bf3`).** `getMerchantMemoryView` beliefs carry `authorship` ("merchant"|"jefe"), `confirmState` ("settled"|"unsure"), `sourceLine` ("you told Jefe · 29 Jul" / "from your store data · rechecked 31 Jul"). `data.ts` already consumes these verbatim.
+- **`statement` (plain-English) — chat 9's pending pass** (deterministic per-belief-key templates). Mapper falls back to the belief title until it lands.
+- **Correction intents — MY route handler → chat 9's exported services** (`app/lib/merchant-memory/service.server.js`): confirm → `confirmBelief`; "Not quite"/edit → `correctBelief`; Forget → `markBeliefObsolete`; Teach Jefe → `upsertMerchantSuppliedBelief` (+ `revertLatestMerchantSuppliedChange`). Same pattern as the clearance `action.*` intents. Gate honestly-inert until wired.
+- **"Still guessing" group — feeds off the questions/gap feed, NOT belief status.** Loader `getOpenQuestions(prisma, { merchantId, shopId })` in `app/lib/merchant-memory/conversation.server.js` → `{ id, category, questionKey, question, reason, priority, answerType, answerOptions }[]` (idempotent, safe to call). Answering one posts through `sendConversationMessage` / the `answer_open_question` op carrying `relatedOpenQuestionId` (chat 9 gives the exact intent shape at adoption) → the belief is created/updated and the question retracts.
