@@ -74,7 +74,7 @@ export type AppHome13aProps = {
   syncedLabel?: string | null; // "synced 4 min ago" — mono; omitted if unknown (honest)
   founderEmail: string; // real mailto target for feedback + founder contact
   bookingUrl?: string | null; // real Calendly link for "Book a slot"; omitted → email fallback
-  changelog: Array<{ id: string; date: string; text: string; tag?: string | null }>;
+  changelog: Array<{ id: string; date: string; text: string; tag?: string | null; body?: string | null }>;
   // The in-app chat thread (merchant-memory conversation), oldest→newest. Empty
   // until the merchant sends the first message.
   conversation: { messages: Array<{ id: string; role: string; content: string }> };
@@ -228,7 +228,8 @@ export function AppHome13a(props: AppHome13aProps) {
             {props.changelog.slice(0, 3).map((c) => (
               <div key={c.id} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 <Mono style={{ fontSize: 10 }}>{c.date}</Mono>
-                <span style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.45, color: R.ink2 }}>{c.text}</span>
+                <span style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, lineHeight: 1.4, color: R.ink }}>{c.text}</span>
+                {c.body ? <span style={{ fontFamily: R.sans, fontSize: 12, lineHeight: 1.45, color: R.ink3 }}>{c.body}</span> : null}
                 {c.tag ? <span style={{ fontFamily: R.sans, fontSize: 11.5, fontWeight: 600, color: R.rust }}>{c.tag}</span> : null}
               </div>
             ))}

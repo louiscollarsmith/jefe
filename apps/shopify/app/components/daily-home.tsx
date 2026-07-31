@@ -46,7 +46,7 @@ type ChannelConn = { provider: string; connected: boolean; maskedDestination?: s
 
 // Loader-provided shapes for the 13a home extras — all real data.
 type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
-type ChangelogItem = { id: string; date: string; text: string; tag?: string | null };
+type ChangelogItem = { id: string; date: string; text: string; tag?: string | null; body?: string | null };
 type EmailBrief = {
   address: string;
   enabled: boolean;
@@ -70,7 +70,7 @@ export function DailyHome(props: {
   actionModes?: Record<string, string>; // actionType → mode, LIVE types only (key present ⇒ live)
   channels?: ChannelConn[]; // listChannelConnections — real connect state
   conversation?: ChatThread | null; // getDailyChatThread — real in-app chat thread
-  changelog?: ChangelogItem[]; // loadAppHomeChangelog — real CHANGELOG entries
+  changelog?: ChangelogItem[]; // loadAppHomeWhatsNew — curated merchant-facing product news
   emailBrief?: EmailBrief | null; // morning_brief pref + real contact email; null → row hidden
   openQuestions?: MemoryQuestion[]; // getOpenQuestions — Memory's "Still guessing" feed
   horizonNear: HorizonItem[]; // store-grounded near-term items + seasonal timeline (loader-computed)

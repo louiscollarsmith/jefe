@@ -148,7 +148,7 @@ import {
   getBeliefDefinition,
   validateConversationalValue,
 } from "../lib/merchant-memory/conversational-belief-registry.server.js";
-import { loadAppHomeChangelog } from "../lib/notifications/changelog-app-home.js";
+import { loadAppHomeWhatsNew } from "../lib/notifications/whats-new.server.js";
 import {
   formatBriefSendTime,
   getNotificationPreference,
@@ -1115,7 +1115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const [conversation, changelog, morningBriefPref, contactEmail] =
         await Promise.all([
           getDailyChatThread(prisma, { merchantId: merchant.id, shopId: shop.id }),
-          loadAppHomeChangelog(),
+          loadAppHomeWhatsNew(),
           getNotificationPreference(prisma, {
             merchantId: merchant.id,
             category: "morning_brief",

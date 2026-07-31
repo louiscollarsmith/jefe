@@ -15,30 +15,9 @@
  * acts on its own while execution is still gated.
  */
 
-type Entry = { date: string; title: string; body: string };
-
-const ENTRIES: Entry[] = [
-  {
-    date: "July 2026",
-    title: "A proper welcome",
-    body: "When you connect Jefe, you get a real hello — and a clear picture of what Jefe is starting to learn about your store, so you know what's happening from minute one.",
-  },
-  {
-    date: "July 2026",
-    title: "Your store's memory, in one place",
-    body: "Jefe builds a living understanding of how your business actually works — your products, orders and customers — and shows it back to you to confirm or correct. The more you correct it, the sharper it gets.",
-  },
-  {
-    date: "July 2026",
-    title: "Suggestions you can act on",
-    body: "Jefe is starting to spot opportunities — like stock with cash tied up that hasn't sold in a while — and suggests what to do about it. You stay in control: approve it, adjust it, or decline with a reason Jefe learns from.",
-  },
-  {
-    date: "July 2026",
-    title: "Jefe, where you already work",
-    body: "Connect Slack and talk to Jefe without leaving your tools — with more places to reach it on the way.",
-  },
-];
+// Single source of truth for merchant-facing product news — shared with the
+// app-home "New in Jefe" rail so the two never drift.
+import { WHATS_NEW_ENTRIES } from "../lib/notifications/whats-new.server.js";
 
 function isPublicChangelogEnabled(): boolean {
   return (
@@ -65,7 +44,7 @@ function htmlResponse(body: string, status = 200) {
 }
 
 function changelogPage(): string {
-  const items = ENTRIES.map(
+  const items = WHATS_NEW_ENTRIES.map(
     (e) => `
       <li class="entry">
         <div class="date">${e.date}</div>

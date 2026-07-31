@@ -97,8 +97,8 @@ export const SAMPLE_APP_HOME: AppHome13aProps = {
   founderEmail: "matt@mynamejefe.com",
   bookingUrl: "https://calendly.com/quiver-matt",
   changelog: [
-    { id: "c1", date: "30 Jul", text: "Jefe now says what he can't see yet, with a date to revisit it.", tag: "You asked for this" },
-    { id: "c2", date: "27 Jul", text: "Memory separates what you taught him from what he guessed.", tag: null },
+    { id: "c1", date: "July 2026", text: "Talk to Jefe, right in the app", tag: null, body: "Ask Jefe anything or tell it what you know — one conversation, shared with email and Slack, and it remembers." },
+    { id: "c2", date: "July 2026", text: "Suggestions you can act on", tag: null, body: "Jefe spots opportunities and suggests what to do — you approve, adjust, or decline with a reason it learns from." },
   ],
   conversation: {
     messages: [
