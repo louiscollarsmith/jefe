@@ -24,6 +24,7 @@ import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { WebVitalsReporter } from "../components/web-vitals-reporter";
+import { AppUpdateBanner } from "../components/app-update-banner";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Dual-mode seam: embedded → authenticate.admin (unchanged); standalone
@@ -85,6 +86,7 @@ export default function App() {
         }
       >
         <Box paddingBlockEnd="1600">
+          <AppUpdateBanner />
           <Outlet />
         </Box>
       </Frame>
