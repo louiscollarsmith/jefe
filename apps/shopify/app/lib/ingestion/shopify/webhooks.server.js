@@ -20,6 +20,10 @@ import {
   upsertShopifyRefund,
 } from "./canonical.server.js";
 import { enqueueMerchantMemoryRefreshForWebhook } from "../../merchant-memory/jobs.server.js";
+import {
+  recordWebhookOutcome,
+  WEBHOOK_SLOW_MS,
+} from "../../observability/webhook-health.server.js";
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { captureShopChurn } from "../../../services/analytics/churn.server.js";
 import { sendWinBackEmailOnUninstall } from "../../email/winback.server.js";
@@ -68,6 +72,7 @@ export async function handleShopifyWebhookRequest(
     webhookId: headers.webhookId ?? null,
   });
 
+  const startedAt = Date.now();
   try {
     const result = await processShopifyWebhook(prisma, {
       rawBody,
@@ -79,11 +84,21 @@ export async function handleShopifyWebhookRequest(
       apiVersion: headers.apiVersion,
     });
 
-    log.info("Shopify webhook processed", {
-      status: /** @type {{ status?: string }} */ (result)?.status ?? "unknown",
-    });
+    const ms = Date.now() - startedAt;
+    recordWebhookOutcome({ ok: true, ms });
+    const status =
+      /** @type {{ status?: string }} */ (result)?.status ?? "unknown";
+    if (ms > WEBHOOK_SLOW_MS) {
+      // Processing this slow risks Shopify's ~5s delivery timeout even though it
+      // ultimately succeeded — surface it (the aggregate worker check pages on a
+      // sustained spike; a one-off is just a WARN).
+      log.warn("Slow Shopify webhook — delivery-timeout risk", { status, ms });
+    } else {
+      log.info("Shopify webhook processed", { status, ms });
+    }
     return Response.json(result);
   } catch (error) {
+    recordWebhookOutcome({ ok: false, ms: Date.now() - startedAt });
     // Log with context, then rethrow so the route returns 5xx and Shopify
     // retries the delivery (the previous behaviour is preserved).
     log.error("Shopify webhook processing failed", { err: error });
