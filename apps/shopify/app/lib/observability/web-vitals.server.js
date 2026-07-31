@@ -25,8 +25,17 @@ const THRESHOLDS = {
   FID: { good: 100, ni: 300 },
 };
 
-/** The three Core Web Vitals recorded as first-class perf events (vs. logged only). */
+/** The three Core Web Vitals graded against the BFS bar. */
 export const CORE_WEB_VITALS = ["LCP", "INP", "CLS"];
+
+/**
+ * Vitals recorded as first-class perf events (`activity_events`), vs. logged only.
+ * Includes **TTFB** — not a Core Web Vital, but the key LCP diagnostic: a high
+ * TTFB means the server (the `app._index` loader) dominates LCP, a low one points
+ * at render (fonts/CSS). Tracking it makes the LCP breakdown measurable so the
+ * 3140ms optimisation can target the right layer.
+ */
+export const TRACKED_WEB_VITALS = ["LCP", "INP", "CLS", "TTFB"];
 
 /**
  * @param {string} name

@@ -5,6 +5,7 @@ import {
   formatWebVital,
   isKnownWebVital,
   CORE_WEB_VITALS,
+  TRACKED_WEB_VITALS,
 } from "../app/lib/observability/web-vitals.server.js";
 
 test("classifyWebVital bands LCP (ms) at the good/poor boundaries", () => {
@@ -48,4 +49,10 @@ test("formatWebVital renders ms vs ratio and the band", () => {
 
 test("CORE_WEB_VITALS is the LCP/INP/CLS trio", () => {
   assert.deepEqual([...CORE_WEB_VITALS].sort(), ["CLS", "INP", "LCP"]);
+});
+
+test("TRACKED_WEB_VITALS adds TTFB (the LCP diagnostic) but it isn't BFS-graded", () => {
+  assert.deepEqual([...TRACKED_WEB_VITALS].sort(), ["CLS", "INP", "LCP", "TTFB"]);
+  assert.ok(TRACKED_WEB_VITALS.includes("TTFB"));
+  assert.ok(!CORE_WEB_VITALS.includes("TTFB"));
 });

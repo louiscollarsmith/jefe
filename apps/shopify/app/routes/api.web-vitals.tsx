@@ -5,7 +5,7 @@ import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.ser
 import { logger } from "../lib/observability/logger.server";
 import { track } from "../services/analytics/event-log.server";
 import {
-  CORE_WEB_VITALS,
+  TRACKED_WEB_VITALS,
   classifyWebVital,
   formatWebVital,
   isKnownWebVital,
@@ -66,9 +66,9 @@ export async function action({ request }: ActionFunctionArgs) {
       log.info(`Web Vital: ${name}`, context);
     }
 
-    // Trend the three Core Web Vitals in the ops panel; secondary metrics
-    // (FCP/TTFB/FID) are logged only, to keep the event stream lean.
-    if (CORE_WEB_VITALS.includes(name)) {
+    // Trend the graded CWV + TTFB (the LCP diagnostic) as events; the rest
+    // (FCP/FID) stay logged-only to keep the event stream lean.
+    if (TRACKED_WEB_VITALS.includes(name)) {
       await track(prisma, {
         type: "web_vital",
         topic: "performance",
