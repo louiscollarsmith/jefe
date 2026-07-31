@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  bfsWebVitalStatus,
   churnReasonLabel,
   esc,
   fmtMs,
   formatAccessLog,
+  formatVitalValue,
   money,
   optionList,
   safeEqual,
@@ -124,4 +126,28 @@ test("formatAccessLog: PII-safe audit line, drops empty fields", () => {
   );
   assert.equal(denied.outcome, "denied");
   assert.ok(!("shop" in denied) && !("ip" in denied));
+});
+
+test("bfsWebVitalStatus grades p75 against the BFS target (pass/fail/insufficient)", () => {
+  assert.equal(bfsWebVitalStatus("LCP", 2000, 100).state, "pass");
+  assert.equal(bfsWebVitalStatus("LCP", 2500, 100).state, "pass"); // inclusive target
+  assert.equal(bfsWebVitalStatus("LCP", 3140, 100).state, "fail"); // current prod value
+  assert.equal(bfsWebVitalStatus("INP", 150, 100).state, "pass");
+  assert.equal(bfsWebVitalStatus("CLS", 0.05, 100).state, "pass");
+  assert.equal(bfsWebVitalStatus("CLS", 0.3, 100).state, "fail");
+});
+
+test("bfsWebVitalStatus needs enough samples + a known metric", () => {
+  assert.equal(bfsWebVitalStatus("LCP", 2000, 10).state, "insufficient"); // too few
+  assert.equal(bfsWebVitalStatus("LCP", null, 100).state, "insufficient"); // no data
+  assert.equal(bfsWebVitalStatus("FCP", 1000, 100).state, "unknown"); // not a graded CWV
+  const ok = bfsWebVitalStatus("lcp", 2000, 100);
+  assert.equal(ok.target, 2500); // case-insensitive + carries the target
+});
+
+test("formatVitalValue: CLS as ratio, others as ms, junk as em dash", () => {
+  assert.equal(formatVitalValue("LCP", 3140), "3140ms");
+  assert.equal(formatVitalValue("CLS", 0.2), "0.200");
+  assert.equal(formatVitalValue("INP", 40), "40ms");
+  assert.equal(formatVitalValue("LCP", null), "—");
 });

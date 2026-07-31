@@ -18,10 +18,12 @@ import http from "node:http";
 import pg from "pg";
 
 import {
+  bfsWebVitalStatus,
   churnReasonLabel,
   esc,
   fmtMs,
   formatAccessLog,
+  formatVitalValue,
   money,
   optionList,
   safeEqual,
@@ -245,7 +247,23 @@ async function queryOverview() {
        WHERE type = 'email_sent' AND created_at >= now() - interval '7 days'`)
   ).rows[0];
 
-  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, emailHealth, costTrend, activityTrend };
+  // Core Web Vitals p75 over the BFS trailing window (28d), from the web_vital
+  // events the embedded app beacons — graded against BFS_WEB_VITAL_TARGETS.
+  const webVitalsBfs = (
+    await pool.query(`
+      SELECT upper(properties->>'metric') metric,
+             percentile_cont(0.75) WITHIN GROUP (
+               ORDER BY (properties->>'value')::float
+             ) p75,
+             count(*)::int n
+        FROM activity_events
+       WHERE type = 'web_vital'
+         AND properties->>'value' ~ '^[0-9.]+$'
+         AND created_at >= now() - interval '28 days'
+       GROUP BY 1`)
+  ).rows;
+
+  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, emailHealth, webVitalsBfs, costTrend, activityTrend };
 }
 
 function renderOverview(o) {
@@ -300,10 +318,25 @@ function renderOverview(o) {
   const emailRows = emailAny
     ? `<tr><td>Sent</td><td>${eh.delivered || 0}</td></tr><tr><td>Failed</td><td>${eh.failed || 0}</td></tr><tr><td>Suppressed</td><td>${eh.suppressed || 0}</td></tr>`
     : `<tr><td class="muted">No win-back emails yet.</td><td></td></tr>`;
+  const bfsByMetric = Object.fromEntries(
+    (o.webVitalsBfs || []).map((r) => [String(r.metric).toUpperCase(), r]),
+  );
+  const bfsRows = (o.webVitalsBfs || []).length
+    ? ["LCP", "INP", "CLS"]
+        .map((m) => {
+          const r = bfsByMetric[m];
+          const st = bfsWebVitalStatus(m, r ? r.p75 : null, r ? r.n : 0);
+          const badge =
+            st.state === "pass" ? "✅" : st.state === "fail" ? "🔴" : "·";
+          return `<tr><td>${m}</td><td>${formatVitalValue(m, st.p75)} / ${formatVitalValue(m, st.target)} ${badge} <span class="muted">n=${st.n}</span></td></tr>`;
+        })
+        .join("")
+    : `<tr><td class="muted">No Web Vitals yet — accumulating.</td><td></td></tr>`;
   const breakdown = `<div class="panels">
       <div class="panel"><div class="ph">LLM cost by feature · 7d</div><table class="mini"><tbody>${featureRows}</tbody></table></div>
       <div class="panel"><div class="ph">Why they left · latest per shop</div><table class="mini"><tbody>${reasonRows}</tbody></table></div>
       <div class="panel"><div class="ph">Win-back email · 7d</div><table class="mini"><tbody>${emailRows}</tbody></table></div>
+      <div class="panel"><div class="ph">Web Vitals · BFS (p75 · 28d)</div><table class="mini"><tbody>${bfsRows}</tbody></table></div>
     </div>`;
 
   // Margin per client (indicative) — net revenue − COGS − LLM cost, coverage-gated (obs #20).
