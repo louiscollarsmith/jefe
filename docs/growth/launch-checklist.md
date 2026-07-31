@@ -3,7 +3,7 @@
 > **Owner:** Jefe chat 6 (growth) as launch coordinator. **Single source of truth** for the remaining launch work. Owners + status per item; the critical path is at the bottom. Update as things land.
 > **Last updated:** 2026-07-31.
 
-**Where we are:** listing content done; execution live in prod; automated checks pass; `/privacy` live. What's left is the **data-protection substance** (so the attestation is true), the **legal set** (terms/DPA), the **assets** (real-app match + demo clip), and the **AI self-review**.
+**Where we are: ✅ SUBMITTED to the Shopify App Store (2026-07-31)** — now in review (~2 weeks, incl. the Level-2 data-protection review). Post-submit work to land DURING the review window so the attestations stay fully backed: finalize the IR runbook (Directors + notify-without-undue-delay) + enable the retention purge (Matt's window); confirm the Neon-vs-Railway sub-processor DB; ensure the live app UI / screenshots match + a seeded demo store for the reviewer. All three legal pages (`/privacy`, `/terms`, `/dpa`) are live; execution is live in prod.
 
 ---
 
@@ -16,7 +16,7 @@
 | A3 | **Protected-data-access cleanup** — keep only *Read all orders*, drop the rest | **Matt** (Partner Dashboard) | 🔴 to do |
 | A4 | **Assets** — screenshots match live app + demo video w/ execution clip (details §D) | design + product-UI + Matt + chat 10 | 🟡 in progress |
 | A5 | **AI Toolkit self-review** clean | **Matt** (run) → chat 6 / chat 10 (triage flags) | 🟡 in progress |
-| A6 | Tick "I've reviewed all App Store Requirements" → **Submit** | **Matt** | after A1–A5 |
+| A6 | Tick "I've reviewed all App Store Requirements" → **Submit** | **Matt** | ✅ **DONE — submitted 2026-07-31** |
 
 ## B. Data-protection substance (makes A1 true — same-day per chat 7's read)
 
