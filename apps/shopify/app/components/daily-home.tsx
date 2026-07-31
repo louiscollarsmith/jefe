@@ -79,11 +79,13 @@ export function DailyHome(props: {
   // has a built-but-dark adapter but isn't registered, so it's intentionally not a dial here.
   // When a type graduates into the registry, add its getActionMode read in the loader and set
   // its row's `mode` (dropping `soon`). No fabricated dials; no fabricated numbers — the
-  // margin-floor detail stays generic (the design mock's "30%" is Everdew sample data).
+  // Pricing detail states the REAL guardrail: the clearance adapter floors at unit cost
+  // (never below cost), NOT a margin % (there is no margin-floor belief; the design mock's
+  // "margin floor of 30%" was Everdew sample data). Copy per chat 11 (design/copy owner).
   const policies: ActionPolicy[] = [
     { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds", mode: null, soon: true },
     { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types", mode: null, soon: true },
-    { actionType: "price_markdown", label: "Pricing", detail: "Never below your margin floor", mode: normalizeMode(props.clearanceMode) },
+    { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you", mode: normalizeMode(props.clearanceMode) },
     { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", mode: null, blockedReason: "Tell me who supplies you" },
   ];
 
