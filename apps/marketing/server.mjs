@@ -46,10 +46,16 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-// Legal — Privacy Policy (clean URL → public/privacy.html). Terms/DPA follow once
-// their text is approved + reconciled to the autonomy-from-day-1 framing.
+// Legal — clean URLs → public/*.html. All three reconciled to the autonomy-from-day-1
+// framing before publishing; text still being refined (regions, lawyer pass) per Matt.
 app.get("/privacy", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "privacy.html"));
+});
+app.get("/terms", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "terms.html"));
+});
+app.get("/dpa", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dpa.html"));
 });
 
 app.post("/api/waitlist", async (req, res) => {
