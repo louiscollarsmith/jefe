@@ -56,12 +56,15 @@ export async function action({ request }: ActionFunctionArgs) {
     const summary = formatWebVital(name, value);
     const context = { shopDomain, metric: name, value, band };
 
-    if (band === "poor") {
-      // Stable message (name only) so the alerter dedupes to ~1 ping / cooldown
-      // per metric — the varying value rides in context, not the signature.
-      log.error(`Poor Web Vital: ${name}`, context);
-    } else if (band === "needs-improvement") {
-      log.warn(`Web Vital needs improvement: ${name}`, context);
+    // Per-event vitals are LOG-ONLY — they never page. Client-side measurements
+    // vary wildly by device/network (a single cold dev-store load is not an
+    // incident), so a per-event Slack alert is pure noise — it fired on LCP/FCP/
+    // TTFB from a test store on 2026-07-31. The BFS signal is the p75 AGGREGATE
+    // over 28d/100+ calls (the ops "Web Vitals · BFS" panel; a p75-breach alert is
+    // the proactive follow-up). Poor/needs-improvement → WARN so it's visible in
+    // logs; nothing here reaches the error→alerter path.
+    if (band === "poor" || band === "needs-improvement") {
+      log.warn(`Web Vital ${band}: ${name}`, context);
     } else {
       log.info(`Web Vital: ${name}`, context);
     }
