@@ -57,6 +57,11 @@ app.get("/terms", (_req, res) => {
 app.get("/dpa", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "dpa.html"));
 });
+// Early-access invite page (noindex, invite-only). CTA normalises the store domain
+// client-side and redirects to app.mynamejefe.com/auth/login?shop=… (verified route).
+app.get("/early-access", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "early-access.html"));
+});
 
 app.post("/api/waitlist", async (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 200) || null;
