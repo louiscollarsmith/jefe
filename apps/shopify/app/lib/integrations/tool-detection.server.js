@@ -45,6 +45,18 @@ export const TOOL_SIGNATURES = [
   { id: "paypal", name: "PayPal", category: "payments", gateways: ["paypal"] },
   { id: "afterpay", name: "Afterpay/Clearpay", category: "payments", gateways: ["afterpay", "clearpay"] },
   { id: "klarna", name: "Klarna", category: "payments", gateways: ["klarna"] },
+  // --- phase-2 seed additions (2026-07-31): distinctive namespaces / gateway ids / fulfillment
+  // handles, chosen to avoid generic-substring false positives. Still SEED — verify each against
+  // a real store before the belief is trusted (same discipline as the entries above).
+  { id: "skio", name: "Skio", category: "subscriptions", metafieldNamespaces: ["skio"] },
+  { id: "appstle", name: "Appstle Subscriptions", category: "subscriptions", metafieldNamespaces: ["appstle"] },
+  { id: "fera", name: "Fera", category: "reviews", metafieldNamespaces: ["fera"] },
+  { id: "junip", name: "Junip", category: "reviews", metafieldNamespaces: ["junip"] },
+  { id: "loyaltylion", name: "LoyaltyLion", category: "loyalty", metafieldNamespaces: ["loyaltylion"] },
+  { id: "shiphero", name: "ShipHero", category: "fulfillment", fulfillmentServices: ["shiphero"] },
+  { id: "deliverr", name: "Deliverr (Flexport)", category: "fulfillment", fulfillmentServices: ["deliverr"] },
+  { id: "sezzle", name: "Sezzle", category: "payments", gateways: ["sezzle"] },
+  { id: "affirm", name: "Affirm", category: "payments", gateways: ["affirm"] },
   // NOTE: email/analytics/support tools (Klaviyo, GA/Meta pixels, Gorgias) are detected by the
   // storefront-fingerprint feeder, not here — they leave little Shopify-signal footprint.
 ];
