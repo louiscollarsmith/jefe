@@ -27,7 +27,7 @@ Important current boundaries:
 - LLMs interpret bounded evidence and produce structured outputs. Application code validates and persists the result.
 - Merchant corrections and confirmations outrank model inference.
 - The app must not let an LLM directly mutate Shopify, Slack, WhatsApp or any other external system.
-- The typed **action/execution layer** is built for the first action (dead-stock clearance / `price_markdown`) — a proposed-row ledger (`action_executions`), the `wireClearanceExecution` approve→execute orchestrator, and the `applyClearance` typed adapter — but it stays **dark behind `CLEARANCE_EXECUTE_ENABLED`** (unset = records approval, writes nothing). The LLM never writes directly; only the deterministic typed adapter does, under the merchant's per-action mode (recommend / approve_execute / autonomous). OAuth scopes were trimmed to the 7 a live V1 uses (all reads + `write_products`); other `write_*` are re-added per-action as each ships. See `context/11_actions_and_autonomy.md` + `docs/ops/clearance-go-live.md`.
+- The typed **action/execution layer** is built for the first action (dead-stock clearance / `price_markdown`) — a proposed-row ledger (`action_executions`), the `wireClearanceExecution` approve→execute orchestrator, and the `applyClearance` typed adapter — and it is **LIVE in production** (`CLEARANCE_EXECUTE_ENABLED=true` since 2026-07-31; unsetting it reverts to the dark path — records approval, writes nothing). It is inert for a given store only until that store has costed dead stock + a non-`recommend` dial. The LLM never writes directly; only the deterministic typed adapter does, under the merchant's per-action mode (recommend / approve_execute / autonomous). OAuth scopes were trimmed to the 7 a live V1 uses (all reads + `write_products`); other `write_*` are re-added per-action as each ships. See `context/11_actions_and_autonomy.md` + `docs/ops/clearance-go-live.md`.
 - Full post-onboarding Merchant Memory chat is not a shipped UI yet. Some service code exists because Goals uses the memory conversation infrastructure.
 - React Router v8 future-flag warnings can appear during build. They are maintenance warnings, not current blockers.
 
@@ -86,7 +86,7 @@ Shopify app runtime:
 - `SCOPES`
 - `SESSION_SECRET`
 - `ENABLE_DEV_TOOLS`
-- `CLEARANCE_EXECUTE_ENABLED` (the first action's go-live flag; unset = dark, records approval but writes nothing)
+- `CLEARANCE_EXECUTE_ENABLED` (the first action's go-live flag — **`true` in production since 2026-07-31**; unset reverts to the dark path: records approval, writes nothing)
 - `ENABLE_SHOPIFY_BACKFILL_LOOP`
 - `SHOPIFY_BACKFILL_INITIAL_DELAY_MS`
 

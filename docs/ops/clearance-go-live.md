@@ -2,7 +2,9 @@
 
 The go-live sequence for Jefe's **first executable action** — dead-stock clearance (`price_markdown`). Owned across lanes; this runbook is the ordered checklist + the safety proofs. The execution contract is `context/11_actions_and_autonomy.md`; the catalog is `context/13`.
 
-## Where it stands (all on origin, green, flagged-off)
+> ✅ **EXECUTED — go-live is DONE (2026-07-31).** `CLEARANCE_EXECUTE_ENABLED=true` is set in production (Step 4 complete). Clearance execution is LIVE, running per each merchant's dial; it is inert for a store only until that store has costed dead stock + a non-`recommend` mode. This runbook is retained as the record of how go-live was done and the still-valid rollback procedure.
+
+## Where it stands (all on origin, green, LIVE in prod)
 
 - **Execute-half** — `clearance-adapter.server.js` (`applyClearance`: floor-at-gate, blast-radius cap, compare-and-set, per-target idempotent ledger writes, auto-revert on partial failure) + the live write client (`clearance-shopify-client.server.js`: `getVariantPrice` + `productVariantsBulkUpdate`).
 - **Orchestrator** — `wire-clearance-execution.server.js` (`wireClearanceExecution` — the single approve→execute entry point; records `proposed→approved`, then runs the adapter **only** when `CLEARANCE_EXECUTE_ENABLED`).
@@ -35,9 +37,9 @@ On a **test/dev store only**:
 
 The listing says Jefe **executes**. That claim is honest **only if execution is live at submit/review**. Architecture-lane pings growth-lane + founder the moment Step 4 is done, **before** submit; growth confirms the "executes" copy and greenlights submit. If go-live slips, fall back to recommends-now copy (kept in git history).
 
-## Step 4 — Enable (founder, one-way door)
+## Step 4 — Enable (founder, one-way door) · ✅ DONE 2026-07-31
 
-Flip `CLEARANCE_EXECUTE_ENABLED=true` in production (Railway env). This is the deliberate go-live — a founder call, not an agent's. Execution then runs per each merchant's dial; `approve_execute` is the unset default (propose-first, never auto-by-default).
+**Done 2026-07-31:** `CLEARANCE_EXECUTE_ENABLED=true` is set in production (Railway env). This was the deliberate go-live — a founder call. Execution now runs per each merchant's dial; `approve_execute` is the unset default (propose-first, never auto-by-default).
 
 ## Rollback
 

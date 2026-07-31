@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-31
+
+### Changed
+
+- **Docs resynced to reflect clearance execution LIVE (advisory → live).** `CLEARANCE_EXECUTE_ENABLED=true` has been in production since 2026-07-31, but several current-state docs still framed Jefe as advisory-only / "dark behind the flag" / awaiting go-live. Corrected the canonical docs to the now-live reality — `CLAUDE.md`, `context/11_actions_and_autonomy.md`, `context/13_action_capability_registry.md`, `HANDOVER.md`, `apps/shopify/docs/merchant-memory-state.md`, and `docs/ops/clearance-go-live.md` (marked EXECUTED; procedure + rollback retained). Each now states execution is live and *inert only until a store has costed dead stock + a non-`recommend` dial*, not "dark." Historical CHANGELOG entries are left untouched (true as written). Docs-only; no behaviour change.
+
+### Security
+
+- **Event retention enabled (Level-2 pre-submit) + readiness synced.** `ENABLE_EVENT_RETENTION=true` set in production with a **180-day** window (`EVENT_RETENTION_ACTIVITY_DAYS` / `EVENT_RETENTION_USAGE_DAYS = 180`); `pruneOldEvents` (worker tick) now enforces retention on the `activity_events` + `llm_usage_event` telemetry logs only (never Merchant Memory beliefs). Closes the Level-2 "Retention + deletion" commitment. Also synced `docs/ops/level-2-readiness.md` (encryption-in-transit ✅ `sslmode=require` verified in prod; retention ✅; IR ✅; compliance webhooks ✅) and filled `docs/ops/incident-response.md` `[CONFIRM]` items (named roles, notification timelines, postmortem + annual-review cadence) at the founder's delegation. Remaining Level-2 item before submit: #10 privacy-copy accuracy (chat 6). (#5 ops-panel access-logging + `OPS_PUBLIC` removal landed in parallel — chat 8, `0bf4f04`.)
+
 ## 2026-07-30
 
 ### Performance

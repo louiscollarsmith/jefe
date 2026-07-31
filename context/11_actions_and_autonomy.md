@@ -2,7 +2,7 @@
 
 Autonomy is earned per action type. Evaluate permission, confidence, safeguards, reversibility and blast radius before execution.
 
-This file is the execution contract for how Jefe *acts* on a merchant's store — a synthesis of the guardrails fixed in `AGENTS.md` (North Star) and `CLAUDE.md`, not a loosening of them. As of 2026-07-30 the contract is **built for the first action** (dead-stock clearance / `price_markdown`), dark behind `CLEARANCE_EXECUTE_ENABLED`; this is the as-built model plus what remains for go-live. The founder owns the product direction it encodes.
+This file is the execution contract for how Jefe *acts* on a merchant's store — a synthesis of the guardrails fixed in `AGENTS.md` (North Star) and `CLAUDE.md`, not a loosening of them. As of 2026-07-31 the contract is **built and LIVE for the first action** (dead-stock clearance / `price_markdown`): `CLEARANCE_EXECUTE_ENABLED=true` in production, so the execution path is active — inert for a given store only until it has costed dead stock to clear. This is the as-built, now-live model. The founder owns the product direction it encodes.
 
 ## Three modes, per action type, from day one
 
@@ -38,7 +38,7 @@ The concrete flow for the first action, end-to-end:
 
 This reuses the existing spine — memory → recommendation → **execution** → learning; the memory, provenance, and precedence machinery is unchanged. The concrete modules and the full action catalog (states, scopes, effectiveness) live in `13_action_capability_registry.md`.
 
-**Go-live** is the one deliberate, founder-owned step: the surface wires the approve/auto paths to `wireClearanceExecution` (done), the merchant sets a non-`recommend` mode, and `CLEARANCE_EXECUTE_ENABLED` is flipped after a test round-trip.
+**Go-live is DONE** (2026-07-31, founder call): the surface wires the approve/auto paths to `wireClearanceExecution`, and `CLEARANCE_EXECUTE_ENABLED=true` is set in production. Execution now runs per each merchant's dial; it stays inert for a given store until that store has a non-`recommend` mode set and a costed dead-stock variant to clear.
 
 ## Autonomy: earned, but merchant-owned
 

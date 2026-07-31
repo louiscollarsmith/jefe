@@ -1,6 +1,6 @@
 # Incident Response Runbook
 
-**Status:** draft (chat 7, 2026-07-30) — technical/ops structure is ready; **items tagged `[FOUNDER/LEGAL — CONFIRM]` are business/legal substance the founder owns and must confirm before this is authoritative** (notification timelines, regulator obligations, named roles). This exists because a documented incident-response process is a hard requirement of Shopify's Protected Customer Data **Level 2** commitments (see `docs/growth/shopify-app-store-launch.md`).
+**Status:** in force (2026-07-31) — filled by architecture at the founder's delegation; the `[CONFIRM]` substance below is now set as the operating commitment. The one item for **counsel to confirm when engaged** is the applicable lead supervisory authority (assumed UK ICO / relevant EU DPA per establishment). This exists because a documented incident-response process is a hard requirement of Shopify's Protected Customer Data **Level 2** commitments (see `docs/growth/shopify-app-store-launch.md`).
 
 Scope: any event that threatens the confidentiality, integrity, or availability of merchant or **customer** data Jefe holds, or the service itself — e.g. unauthorised access, data exposure/breach, credential/token compromise, a destructive bug, or a prod outage with data-loss risk.
 
@@ -8,9 +8,9 @@ Scope: any event that threatens the confidentiality, integrity, or availability 
 
 Small team, so one person often wears several hats — but every incident has a named **Incident Commander (IC)** who owns the response.
 
-- **Incident Commander** — runs the incident, makes containment calls, owns the timeline. Default: `[FOUNDER/LEGAL — CONFIRM: Matt as IC by default]`.
+- **Incident Commander** — runs the incident, makes containment calls, owns the timeline. Default: **Matt (founder) is IC.**
 - **Technical lead** — investigates + executes containment/eradication (whichever engineer/agent-session is closest to the affected system).
-- **Comms/notification lead** — owns external notification (Shopify, merchants, regulators). Default: founder. `[FOUNDER/LEGAL — CONFIRM]`.
+- **Comms/notification lead** — owns external notification (Shopify, merchants, regulators). Default: **Matt (founder).**
 
 ## Severity
 
@@ -34,33 +34,33 @@ When unsure, **treat it as one level more severe** until triage proves otherwise
 5. **Eradicate** — remove the root cause (patch, revoke, fix the misconfig).
 6. **Recover** — restore normal service; verify the control that failed now holds; confirm no persistence.
 7. **Notify** — see obligations below. Do this in parallel with recovery once scope is understood; do **not** wait for full resolution to start legally-required notifications.
-8. **Postmortem** — within `[FOUNDER — CONFIRM: 3 business days]`, a **blameless** postmortem: timeline, root cause, what detection/containment worked and didn't, and tracked remediation items. (Follow the `engineering:incident-response` postmortem practice.)
+8. **Postmortem** — within **3 business days**, a **blameless** postmortem: timeline, root cause, what detection/containment worked and didn't, and tracked remediation items. (Follow the `engineering:incident-response` postmortem practice.)
 
-## Data-breach notification obligations `[FOUNDER/LEGAL — CONFIRM ALL]`
+## Data-breach notification obligations
 
-These are legal/contractual and the founder + legal own the specifics. Placeholders to confirm and fill:
+These are the standing commitments (founder-ratified 2026-07-31; aligned to GDPR/UK-GDPR + Shopify's Protected Customer Data terms). Counsel to confirm the specific lead supervisory authority when engaged:
 
-- **Shopify** — Shopify's Partner Program / Protected Customer Data terms require reporting a security incident affecting Shopify-derived data. `[CONFIRM the exact channel + deadline — commonly "without undue delay" / within 24h of discovery]`.
-- **Affected merchants** — Jefe is a **processor** acting for the merchant (the data controller); merchants must be informed so they can meet *their* obligations. `[CONFIRM timeline + template]`.
-- **Affected customers** — generally notified **by the merchant**, not Jefe directly. `[CONFIRM]`.
-- **Regulators** — if EU/UK personal data is involved, GDPR/UK-GDPR require the controller to notify the supervisory authority, typically **within 72 hours**; as processor, Jefe must inform the controller (merchant) "without undue delay." `[FOUNDER/LEGAL — CONFIRM applicability, which authority, exact timelines]`.
+- **Shopify** — report a security incident affecting Shopify-derived data **without undue delay, within 24h of confirming it**, via Shopify's Partner security report channel.
+- **Affected merchants** — Jefe is a **processor** acting for the merchant (the data controller); merchants must be informed so they can meet *their* obligations. **Commitment: without undue delay, target within 48h of confirming scope** (so the merchant can meet its own 72h clock).
+- **Affected customers** — generally notified **by the merchant** (the controller), not Jefe directly; Jefe supports the merchant on request.
+- **Regulators** — if EU/UK personal data is involved, GDPR/UK-GDPR require the controller to notify the supervisory authority, typically **within 72 hours**; as processor, Jefe informs the controller (merchant) without undue delay. If Jefe is controller for any dataset, Jefe notifies within 72h. **Lead authority assumed UK ICO / relevant EU DPA — counsel to confirm.**
 
 > Notification content should state: what happened, what data was involved, when, the likely consequences, what Jefe has done, and what the recipient should do.
 
 ## Preventive controls this runbook assumes (keep them true)
 
 - Deletion/redaction on uninstall + on request works and is verified (`compliance.server.js`, `handleShopifyComplianceWebhook`; the three compliance webhooks are subscribed).
-- Protected-data access is limited and **logged** `[gap being closed — see Level-2 hardening]`.
+- Protected-data access is limited and **logged** (ops panel re-gated + PII-safe access logging, 2026-07-31).
 - Secrets/tokens are rotatable and (where feasible) encrypted at the app layer `[access-token app-layer encryption is a tracked gap]`.
 - Prod and test data are separated `[FOUNDER — CONFIRM the live topology]`.
 
-## Key contacts `[FOUNDER — CONFIRM]`
+## Key contacts
 
-- Incident Commander: `[Matt — contact]`
+- Incident Commander: **Matt (founder)** — matt@mynamejefe.com
 - Shopify Partner support / security report channel: `[link]`
 - Hosting (Railway) + DB (Neon) support: `[links]`
 - Legal / DPO: `[contact, if any]`
 
 ---
 
-*This runbook is a living document. Review after every SEV-1/2 and at least `[FOUNDER — CONFIRM: annually]` (Shopify Level-2 has an annual re-review).*
+*This runbook is a living document. Review after every SEV-1/2 and at least **annually** (Shopify Level-2 has an annual re-review).*
