@@ -79,3 +79,20 @@ test("heals + reactivates an uninstalled shop with a dangling merchant", async (
   assert.ok(calls.shopUpdate.some((d) => d.merchantId === "merchant-new"));
   assert.ok(calls.shopUpdate.some((d) => d.status === "active"));
 });
+
+test("reactivating an uninstalled shop clears the stale uninstalledAt stamp", async () => {
+  const { prisma, calls } = mockPrisma({
+    merchant: { id: "m1", name: "ok" },
+    status: "uninstalled",
+  });
+  await ensureShopifyTenant(prisma, {
+    shopDomain: "app-review.myshopify.com",
+  });
+  const reactivation = calls.shopUpdate.find((d) => d.status === "active");
+  assert.ok(reactivation, "a reactivation update fired for the uninstalled shop");
+  assert.equal(
+    reactivation.uninstalledAt,
+    null,
+    "reactivation clears Shop.uninstalledAt so a reinstalled shop isn't mislabelled as churned",
+  );
+});

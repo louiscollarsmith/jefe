@@ -61,6 +61,9 @@ export async function queueInstallShopifyBackfill(prisma, input) {
     where: { id: shop.id },
     data: {
       status: "active",
+      // Belt-and-suspenders with ensureShopifyTenant's reactivation: any Shop→active
+      // write clears the uninstall stamp so it never lingers on a live shop.
+      uninstalledAt: null,
       setupStatus: "backfill_queued",
       historicalOrderAccess: hasHistoricalOrders ? "full" : "limited",
       availableOrderHistoryDays,

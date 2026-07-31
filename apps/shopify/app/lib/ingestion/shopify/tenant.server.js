@@ -125,7 +125,10 @@ async function activateExistingShopifyTenant(prisma, existingShop, input) {
     existingShop.setupStatus === "uninstalled"
       ? await prisma.shop.update({
           where: { id: existingShop.id },
-          data: { status: "active", setupStatus: "installed" },
+          // Reactivating a reinstalled shop clears the uninstall stamp too — else a
+          // stale Shop.uninstalledAt lingers on an active shop (it's only re-set on
+          // the next uninstall) and mislabels a live shop as churned.
+          data: { status: "active", setupStatus: "installed", uninstalledAt: null },
         })
       : existingShop;
 
