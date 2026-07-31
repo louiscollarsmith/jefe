@@ -92,6 +92,7 @@ import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import { getActiveSuggestedAction, getExecutedActionFeed, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
 import { getActionMode, setActionMode } from "../lib/actions/action-autonomy-policy.server";
+import { listActionTypes } from "../lib/actions/action-intent.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
@@ -862,7 +863,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // It must NOT rebuild belief snapshots or ensure/queue generation, so
       // it uses the read-only getLatest* fetchers rather than the
       // getMerchant*Experience calls used by the onboarding funnel.
-      const [metrics, insights, goals, plan, clearanceMode, channelConnections] = await Promise.all([
+      // Settings (13a) roster: the merchant's autonomy dial for each LIVE action type —
+      // registered + its execute-flag on, from the action engine's listActionTypes() (chat 10),
+      // today just price_markdown. One cheap indexed getActionMode per live type, so a
+      // newly-graduated action's dial lights up here with no surface edit.
+      const liveActionTypes = listActionTypes().filter((t) => t.live);
+      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections] = await Promise.all([
         getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
         getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
@@ -876,12 +882,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           merchantId: merchant.id,
           shopId: shop.id,
         }),
-        // Settings (13a): real standing autonomy mode + channel state. Cheap indexed reads
-        // (one policy row / one small query), folded into THIS Promise.all so they run in
+        // Folded into THIS Promise.all (with channel state) so the Settings reads run in
         // parallel and add ~no serial latency to the LCP-critical daily loader (per chat 10).
-        getActionMode(prisma, { merchantId: merchant.id, actionType: "price_markdown" }),
+        Promise.all(
+          liveActionTypes.map(
+            async (t): Promise<[string, string]> => [
+              t.actionType,
+              await getActionMode(prisma, { merchantId: merchant.id, actionType: t.actionType }),
+            ],
+          ),
+        ),
         listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
       ]);
+      // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
+      // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
+      const actionModes = Object.fromEntries(liveActionModeEntries);
       // Jefe's first visible action: the latest proposed action as a render-ready card,
       // money formatted in the shop currency. Read-only (a single indexed row) and
       // null when nothing is proposed, so the card stays inert. Executable only when the
@@ -945,7 +960,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         executedActions,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
-        clearanceMode,
+        actionModes,
         channels: channelConnections,
         conversation,
         changelog,
@@ -1232,7 +1247,7 @@ export default function AppIndex() {
         executedActions={data.executedActions}
         insights={data.insights}
         goals={data.goals}
-        clearanceMode={data.clearanceMode}
+        actionModes={data.actionModes}
         channels={data.channels}
         conversation={data.conversation}
         changelog={data.changelog}

@@ -26,6 +26,19 @@ const BOOKING_URL = "https://calendly.com/quiver-matt";
 const FOUNDER_EMAIL = "matt@mynamejefe.com";
 const ACTION_MODES: ActionMode[] = ["recommend", "approve_execute", "autonomous"];
 
+// The 13a Settings action roster — DESIGN copy only (labels / detail / order / soon-vs-blocked
+// prompt), keyed by actionType (design_handoff / sample.ts). Which rows are LIVE is engine truth,
+// derived at render from the loader's `actionModes` map (built off listActionTypes()), NOT hardcoded
+// here — so a newly-graduated action lights its dial with zero edit. `reordering` carries a real
+// needs-you `blockedReason` (an actionable ask, not a "Soon"). No fabricated numbers: the Pricing
+// detail states the real guardrail (clearance floors at unit cost), not a margin % (chat 11).
+const ACTION_ROSTER: Array<{ actionType: string; label: string; detail: string; blockedReason?: string }> = [
+  { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds" },
+  { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types" },
+  { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you" },
+  { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", blockedReason: "Tell me who supplies you" },
+];
+
 // The real connection shape from listChannelConnections (only the fields we render).
 type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
 
@@ -52,7 +65,7 @@ export function DailyHome(props: {
   executedActions?: ExecutedAction[];
   insights: Insight[];
   goals: Goal[];
-  clearanceMode?: string | null; // getActionMode(price_markdown) — the real standing mode
+  actionModes?: Record<string, string>; // actionType → mode, LIVE types only (key present ⇒ live)
   channels?: ChannelConn[]; // listChannelConnections — real connect state
   conversation?: ChatThread | null; // getDailyChatThread — real in-app chat thread
   changelog?: ChangelogItem[]; // loadAppHomeChangelog — real CHANGELOG entries
@@ -101,26 +114,22 @@ export function DailyHome(props: {
   const horizonNear: HorizonItem[] = buildHorizon(new Date()).map((e) => ({ id: e.key, date: e.dateLabel, title: e.title, body: e.note, action: null }));
   const horizonWatching: HorizonWatch[] = [];
 
-  // Settings autonomy — the full 13a action roster (design_handoff / sample.ts: Tidy-ups /
-  // Listing copy / Pricing / Reordering, that order + labels + detail). Per wire-or-keep
-  // (AGENTS.md → Design fidelity), every action type in the design is rendered. "Live" is
-  // grounded in the action engine (chat 9/10): only action types registered + resolvable
-  // (ACTION_REGISTRY / RESOLVERS) get a real dial — today just `price_markdown` (dead-stock
-  // clearance, surfaced as "Pricing"), wired to getActionMode/setActionMode. `tidy_up` and
-  // `listing_copy` have no primitive yet → gated "Soon". `reordering` keeps its real
-  // needs-you prompt (blockedReason), not a "Soon", per the design. `product_status_change`
-  // has a built-but-dark adapter but isn't registered, so it's intentionally not a dial here.
-  // When a type graduates into the registry, add its getActionMode read in the loader and set
-  // its row's `mode` (dropping `soon`). No fabricated dials; no fabricated numbers — the
-  // Pricing detail states the REAL guardrail: the clearance adapter floors at unit cost
-  // (never below cost), NOT a margin % (there is no margin-floor belief; the design mock's
-  // "margin floor of 30%" was Everdew sample data). Copy per chat 11 (design/copy owner).
-  const policies: ActionPolicy[] = [
-    { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds", mode: null, soon: true },
-    { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types", mode: null, soon: true },
-    { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you", mode: normalizeMode(props.clearanceMode) },
-    { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", mode: null, blockedReason: "Tell me who supplies you" },
-  ];
+  // Settings autonomy — the full 13a roster (ACTION_ROSTER holds the design copy). Which rows are
+  // LIVE is derived from the loader's `actionModes` map (built off the engine's listActionTypes(),
+  // chat 10): a key present ⇒ that type is registered + its execute-flag is on ⇒ a real dial at the
+  // merchant's mode. A design row with no live mode renders its needs-you prompt (reordering's
+  // blockedReason) or a gated "Soon" (tidy_up / listing_copy) — never a dial that can't act. When an
+  // action graduates (registry entry + flag on, e.g. product_status_change), its row auto-lights with
+  // zero edit here. No fabricated dials; no fabricated numbers.
+  const actionModes = props.actionModes ?? {};
+  const policies: ActionPolicy[] = ACTION_ROSTER.map((row) => {
+    const liveMode = actionModes[row.actionType]; // present iff the type is live
+    if (liveMode != null)
+      return { actionType: row.actionType, label: row.label, detail: row.detail, mode: normalizeMode(liveMode) };
+    if (row.blockedReason)
+      return { actionType: row.actionType, label: row.label, detail: row.detail, mode: null, blockedReason: row.blockedReason };
+    return { actionType: row.actionType, label: row.label, detail: row.detail, mode: null, soon: true };
+  });
 
   // The email-brief row (real address + real send time) leads "Where Jefe reaches
   // you", ahead of the connected channels. Built ONLY when a real contact email is
