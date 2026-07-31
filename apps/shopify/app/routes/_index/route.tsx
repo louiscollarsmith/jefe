@@ -1,12 +1,32 @@
-import type { LoaderFunctionArgs, MetaFunction } from "react-router";
+import { useRef, useState } from "react";
+import type {
+  LinksFunction,
+  LoaderFunctionArgs,
+  MetaFunction,
+} from "react-router";
 import { redirect } from "react-router";
 
 export const meta: MetaFunction = () => [
-  { title: "Jefe — your eCommerce manager" },
+  { title: "Jefe — Early Access" },
   {
     name: "description",
     content:
-      "Jefe connects to your Shopify store and builds a living, structured memory of how it really runs — so the plan you get back is one you'd call your own.",
+      "Jefe learns how your Shopify store actually works, finds your next move, and — on your terms — acts on it. Invite only, for now.",
+  },
+];
+
+// Web fonts for the early-access design. Loaded via the route `links` export so
+// they land in <head> (root renders <Links/>), preconnected for speed.
+export const links: LinksFunction = () => [
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  {
+    rel: "preconnect",
+    href: "https://fonts.gstatic.com",
+    crossOrigin: "anonymous",
+  },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Schibsted+Grotesk:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap",
   },
 ];
 
@@ -14,10 +34,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
   // Preserve embedded deep-links: an inbound `?shop=` (Shopify admin entry, and
-  // what the welcome email can append to deep-link a merchant straight into
-  // their embedded app) hands off to the app shell. Everything else gets the
-  // standalone landing below, whose form signs the merchant in out-of-iframe via
-  // `/standalone/auth` (shop-domain OAuth → signed standalone session).
+  // what the welcome email appends to deep-link a merchant straight into their
+  // embedded app) hands off to the app shell. Everything else gets the
+  // early-access landing below, whose form signs the merchant in via the
+  // managed Shopify OAuth entry (`/auth/login`).
   if (url.searchParams.get("shop")) {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
@@ -25,245 +45,230 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return null;
 };
 
+// Normalise: merchants paste the whole URL. Lowercase, strip protocol, path and
+// a trailing `.myshopify.com` → leaves the store handle. Shape-only check;
+// whether the store exists is Shopify's to answer.
+function normalise(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.myshopify\.com$/, "");
+}
+function validHandle(store: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/.test(store);
+}
+
+/**
+ * Standalone front door at `app.mynamejefe.com` (logged out). This is the SAME
+ * page and SAME flow as `mynamejefe.com/early-access` — one consistent entry:
+ * enter a store handle → managed Shopify OAuth (`/auth/login`) → the app. The
+ * design mirrors /early-access exactly (navy / Instrument-Serif register). The
+ * standalone-session sign-in (`/standalone/auth` + `standalone.callback`) is
+ * left in place but intentionally not wired here until that feature ships.
+ */
 export default function Index() {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  function submit() {
+    if (submitting) return;
+    const store = normalise(inputRef.current?.value ?? "");
+    if (!validHandle(store)) {
+      setError(true);
+      inputRef.current?.focus();
+      return;
+    }
+    setError(false);
+    setSubmitting(true);
+    window.location.href = `/auth/login?shop=${store}.myshopify.com`;
+  }
+
   return (
-    <main className="JefeLanding">
-      <style dangerouslySetInnerHTML={{ __html: LANDING_CSS }} />
-      <section className="JefeLanding__card">
-        <span className="JefeLanding__mark" aria-hidden="true">
-          <svg viewBox="0 0 64 64" role="presentation">
-            <rect width="64" height="64" rx="16" fill="#33456b" />
-            <path
-              d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z"
-              fill="#f8ece7"
-            />
-            <circle cx="32" cy="49" r="4.5" fill="#c98a8a" />
-          </svg>
-        </span>
+    <main className="EA">
+      <style dangerouslySetInnerHTML={{ __html: EA_CSS }} />
+      <div className="EA-wrap">
+        <nav className="EA-nav">
+          <span className="EA-brand">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <rect width="64" height="64" rx="16" fill="#33456b" />
+              <path
+                d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z"
+                fill="#f8ece7"
+              />
+              <circle cx="32" cy="49" r="4.5" fill="#c98a8a" />
+            </svg>
+            <span className="EA-wordmark">Jefe</span>
+          </span>
+          <span className="EA-pill">Early access</span>
+        </nav>
 
-        <p className="JefeLanding__eyebrow">Your eCommerce manager</p>
+        <section className="EA-hero">
+          <h1 className="EA-h1">Your AI eCommerce manager.</h1>
+          <div className="EA-italic">Invite only — for now.</div>
+          <p className="EA-lede">
+            Jefe learns how your Shopify store actually works, finds your next
+            move, and — on your terms — acts on it. You&rsquo;re one of a small
+            group getting it early.
+          </p>
+        </section>
 
-        <h1 className="JefeLanding__heading">
-          I learn how your store actually works.
-        </h1>
-
-        <p className="JefeLanding__sub">
-          Jefe connects to your Shopify store and builds a living, structured
-          memory of how it really runs — the products, the customers, the
-          rhythms — so the plan you get back is one you&rsquo;d call your own.
-        </p>
-
-        <form
-          className="JefeLanding__form"
-          method="post"
-          action="/standalone/auth"
-        >
-          <span className="JefeLanding__inputGroup">
+        <div className="EA-card">
+          <label className="EA-cardLabel" htmlFor="shop">
+            Connect your Shopify store
+          </label>
+          <div className={error ? "EA-field EA-field--error" : "EA-field"}>
             <input
-              className="JefeLanding__input"
+              ref={inputRef}
+              id="shop"
               type="text"
-              name="shop"
               inputMode="url"
-              autoComplete="on"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              placeholder="your-store"
-              aria-label="Your Shopify store name"
+              placeholder="yourstore"
+              aria-describedby="ea-err"
+              aria-invalid={error}
+              onInput={() => {
+                if (error) setError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
             />
-            <span className="JefeLanding__inputSuffix" aria-hidden="true">
-              .myshopify.com
+            <span className="EA-suffix">.myshopify.com</span>
+          </div>
+          <div
+            className={error ? "EA-err EA-err--show" : "EA-err"}
+            id="ea-err"
+            role="alert"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M8 4.6v4.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              <circle cx="8" cy="11.4" r="0.95" fill="currentColor" />
+            </svg>
+            <span>That doesn&rsquo;t look like a .myshopify.com store — check and try again.</span>
+          </div>
+          <div className="EA-ctaRow">
+            <button className="EA-cta" type="button" onClick={submit} disabled={submitting}>
+              {submitting ? (
+                <>
+                  <span className="EA-spin" aria-hidden="true" />
+                  <span>Taking you to Shopify…</span>
+                </>
+              ) : (
+                <span>Connect store</span>
+              )}
+            </button>
+            {!submitting && (
+              <span className="EA-micro">
+                Two minutes, and it&rsquo;s free while we&rsquo;re in early access.
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="EA-steps">
+          <div className="EA-step">
+            <span className="EA-n">01</span>
+            <span className="EA-t">Shopify asks you to approve the permissions Jefe needs.</span>
+          </div>
+          <div className="EA-step">
+            <span className="EA-n">02</span>
+            <span className="EA-t">Jefe reads your store. Nothing changes while he reads.</span>
+          </div>
+          <div className="EA-step">
+            <span className="EA-n">03</span>
+            <span className="EA-t">
+              You pick the mode per action: recommend, approve then execute, or fully autonomous.
             </span>
-          </span>
-          <button className="JefeLanding__cta" type="submit">
-            Open Jefe
-          </button>
-        </form>
+          </div>
+          <div className="EA-scopes">
+            He reads your orders, products, customers, inventory and locations, and updates
+            products — for example, to mark down slow-moving stock. He never emails your
+            customers, and every change is previewed first and reversible after.
+          </div>
+        </div>
 
-        <p className="JefeLanding__helper">
-          Enter your store name to sign in — Jefe opens right here, or walks you
-          through Shopify to connect if you&rsquo;re new.
-        </p>
+        <section className="EA-contact">
+          <div className="EA-rule">
+            <div className="EA-contactBody">
+              Matt and Louis built Jefe, and you can reach either of us directly while
+              we&rsquo;re this small. If something breaks, or Jefe makes a call you disagree
+              with, we want to hear it the same day.
+            </div>
+            <div className="EA-mail">
+              <a href="mailto:hola@mynamejefe.com">hola@mynamejefe.com</a>
+            </div>
+          </div>
+        </section>
 
-        <p className="JefeLanding__sign">— Jefe</p>
-      </section>
+        <div className="EA-trust">
+          Your data is used to run Jefe for you — we never sell it.{" "}
+          <a href="https://mynamejefe.com/privacy">Privacy</a> ·{" "}
+          <a href="https://mynamejefe.com/terms">Terms</a> ·{" "}
+          <a href="https://mynamejefe.com/dpa">DPA</a>
+        </div>
 
-      <footer className="JefeLanding__footer">
-        <a href="mailto:hola@mynamejefe.com">hola@mynamejefe.com</a>
-      </footer>
+        <div className="EA-foot">
+          <span className="EA-wordmark">Jefe</span>
+        </div>
+      </div>
     </main>
   );
 }
 
-/**
- * Scoped, self-contained landing styles, kept inline in this one route so the
- * standalone front door stays atomic (no shared-CSS edit) while the full
- * standalone sign-in is built out. The palette, Georgia serif display and
- * warm first-person voice deliberately MIRROR the Day-0 welcome email
- * (`app/lib/email/templates/jefe-welcome.html`), which links here via its
- * "Watch me work" CTA — so the hop from inbox to web reads as one brand:
- * greige page #ece5da, cream card #fffcf7, ink #232a3d, terracotta accent
- * #8c4030, navy CTA #33456b (the email's button colour).
- */
-const LANDING_CSS = `
-.JefeLanding {
-  box-sizing: border-box;
-  min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  padding: 40px 20px;
-  background-color: #ece5da;
-  color: #232a3d;
-  font-family: "Schibsted Grotesk", system-ui, -apple-system, sans-serif;
-}
-.JefeLanding * { box-sizing: border-box; }
-.JefeLanding__card {
-  width: 100%;
-  max-width: 560px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 48px 44px 40px;
-  background-color: #fffcf7;
-  border: 1px solid #efe6d9;
-  border-radius: 16px;
-  box-shadow: 0 24px 60px -30px rgba(35, 42, 61, 0.35);
-}
-.JefeLanding__mark {
-  display: inline-flex;
-  width: 54px;
-  height: 54px;
-  margin-bottom: 22px;
-  filter: drop-shadow(0 12px 26px rgba(35, 42, 61, 0.18));
-}
-.JefeLanding__mark svg { width: 100%; height: 100%; display: block; }
-.JefeLanding__eyebrow {
-  margin: 0 0 16px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: #8c4030;
-}
-.JefeLanding__heading {
-  margin: 0;
-  font-family: Georgia, "Times New Roman", serif;
-  font-weight: 400;
-  font-size: 40px;
-  line-height: 1.12;
-  letter-spacing: -0.01em;
-  color: #232a3d;
-}
-.JefeLanding__sub {
-  margin: 20px 0 0;
-  max-width: 44ch;
-  font-size: 17px;
-  line-height: 1.55;
-  color: #4a5165;
-}
-.JefeLanding__form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-  max-width: 380px;
-  margin-top: 30px;
-}
-.JefeLanding__inputGroup {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
-  border: 1px solid #d9cfc0;
-  border-radius: 10px;
-  background: #fffdfa;
-}
-.JefeLanding__inputGroup:focus-within {
-  outline: 2px solid #8c4030;
-  outline-offset: 1px;
-  border-color: #8c4030;
-}
-.JefeLanding__input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #232a3d;
-  font-family: inherit;
-  font-size: 15px;
-  text-align: right;
-}
-.JefeLanding__input:focus { outline: none; }
-.JefeLanding__input::placeholder { color: #a79f92; }
-.JefeLanding__inputSuffix {
-  flex: 0 0 auto;
-  color: #6b7285;
-  font-size: 15px;
-  white-space: nowrap;
-}
-.JefeLanding__cta {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 48px;
-  padding: 0 30px;
-  border: 0;
-  border-radius: 10px;
-  background: #33456b;
-  color: #ffffff;
-  font-family: inherit;
-  font-size: 16px;
-  font-weight: 700;
-  text-decoration: none;
-  cursor: pointer;
-  box-shadow: 0 14px 30px -14px rgba(35, 42, 61, 0.75);
-  transition: background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
-}
-.JefeLanding__cta:hover {
-  background: #2b3a5f;
-  transform: translateY(-1px);
-  box-shadow: 0 18px 34px -14px rgba(35, 42, 61, 0.8);
-}
-.JefeLanding__cta:focus-visible {
-  outline: 2px solid #8c4030;
-  outline-offset: 3px;
-}
-.JefeLanding__helper {
-  margin: 18px 0 0;
-  max-width: 40ch;
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: #6b7285;
-}
-.JefeLanding__sign {
-  margin: 26px 0 0;
-  padding-top: 20px;
-  width: 100%;
-  border-top: 1px solid #e7e0d5;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 17px;
-  color: #232a3d;
-}
-.JefeLanding__footer {
-  font-size: 12px;
-  color: #8b8f9d;
-}
-.JefeLanding__footer a { color: #8b8f9d; text-decoration: none; }
-.JefeLanding__footer a:hover { color: #8c4030; text-decoration: underline; }
-@media (max-width: 600px) {
-  .JefeLanding__card { padding: 36px 24px 32px; }
-  .JefeLanding__heading { font-size: 32px; }
-  .JefeLanding__sub { font-size: 16px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .JefeLanding__cta { transition: none; }
-  .JefeLanding__cta:hover { transform: none; }
-}
+const EA_CSS = `
+.EA { min-height: 100dvh; background: #fdfbf7; font-family: 'Schibsted Grotesk', system-ui, sans-serif; color: oklch(0.30 0.02 55); -webkit-font-smoothing: antialiased; }
+.EA *, .EA *::before, .EA *::after { box-sizing: border-box; }
+.EA a { color: oklch(0.42 0.07 262); }
+.EA a:hover { color: oklch(0.30 0.06 262); }
+.EA ::selection { background: oklch(0.42 0.07 262); color: oklch(0.97 0.01 80); }
+.EA input::placeholder { color: oklch(0.64 0.015 262); }
+@keyframes eaSpin { to { transform: rotate(360deg); } }
+.EA-wrap { max-width: 660px; margin: 0 auto; padding-inline: clamp(20px, 5vw, 30px); }
+.EA-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 20px; border-bottom: 1px solid oklch(0.90 0.008 70); }
+.EA-brand { display: flex; align-items: center; gap: 8px; }
+.EA-brand svg { width: 24px; height: 24px; display: block; }
+.EA-wordmark { font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 21px; letter-spacing: 0.2px; color: oklch(0.30 0.06 262); }
+.EA-pill { font-size: 13px; color: oklch(0.44 0.05 68); border-bottom: 2px solid oklch(0.76 0.09 78); padding-bottom: 1px; }
+.EA-hero { padding-top: clamp(30px, 5vw, 42px); }
+.EA-h1 { font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: clamp(31px, 6.2vw, 43px); line-height: 1.06; letter-spacing: -1.1px; margin: 0; color: oklch(0.27 0.055 262); text-wrap: balance; }
+.EA-italic { font-family: 'Instrument Serif', serif; font-style: italic; font-size: clamp(21px, 4vw, 27px); line-height: 1.2; margin-top: 7px; color: oklch(0.54 0.09 22); }
+.EA-lede { font-size: clamp(15.5px, 2.2vw, 16.5px); line-height: 1.6; color: oklch(0.38 0.014 55); margin: 18px 0 0; max-width: 540px; text-wrap: pretty; }
+.EA-card { border: 1px solid oklch(0.80 0.025 262); border-radius: 6px; padding: clamp(20px, 4vw, 26px); background: oklch(0.998 0.003 80); margin-top: clamp(26px, 4vw, 34px); }
+.EA-cardLabel { display: block; font-size: 15px; font-weight: 700; color: oklch(0.25 0.035 262); }
+.EA-field { display: flex; align-items: stretch; margin-top: 12px; border: 1.5px solid oklch(0.78 0.02 262); border-radius: 5px; background: #fff; overflow: hidden; transition: border-color .12s; }
+.EA-field--error { border-color: oklch(0.62 0.15 25); }
+.EA-field input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-family: 'Schibsted Grotesk', sans-serif; font-size: 16px; color: oklch(0.22 0.02 40); padding: 13px 2px 13px 13px; }
+.EA-suffix { display: flex; align-items: center; padding: 0 13px 0 0; font-size: 15.5px; color: oklch(0.48 0.015 262); white-space: nowrap; user-select: none; }
+.EA-err { display: none; align-items: flex-start; gap: 7px; margin-top: 9px; font-size: 14px; line-height: 1.45; color: oklch(0.46 0.14 25); }
+.EA-err--show { display: flex; }
+.EA-err svg { flex: none; width: 15px; height: 15px; margin-top: 2px; }
+.EA-ctaRow { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 14px; }
+.EA-cta { font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 15.5px; color: #fdfbf7; background: oklch(0.34 0.065 262); border: 0; border-radius: 5px; padding: 12px 22px; cursor: pointer; display: inline-flex; align-items: center; gap: 10px; }
+.EA-cta:hover { background: oklch(0.30 0.06 262); }
+.EA-cta[disabled] { opacity: .8; cursor: default; }
+.EA-spin { width: 15px; height: 15px; border: 2px solid oklch(0.97 0.01 80 / 0.3); border-top-color: oklch(0.97 0.01 80); border-radius: 50%; animation: eaSpin .7s linear infinite; display: inline-block; }
+.EA-micro { font-size: 13.5px; line-height: 1.5; color: oklch(0.46 0.015 55); }
+.EA-steps { margin-top: 20px; }
+.EA-step { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 12px 0; border-top: 1px solid oklch(0.90 0.008 70); }
+.EA-step:last-of-type { border-bottom: 1px solid oklch(0.90 0.008 70); }
+.EA-n { width: 22px; flex: none; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: oklch(0.54 0.09 22); }
+.EA-t { flex: 1 1 240px; min-width: 220px; font-size: 14.5px; line-height: 1.5; color: oklch(0.30 0.02 55); }
+.EA-scopes { font-size: 13.5px; line-height: 1.55; color: oklch(0.46 0.015 55); margin-top: 12px; }
+.EA-contact { padding-top: clamp(30px, 5vw, 40px); }
+.EA-rule { border-left: 3px solid oklch(0.34 0.065 262); padding-left: 14px; }
+.EA-contactBody { font-size: 14.5px; line-height: 1.6; color: oklch(0.34 0.02 55); }
+.EA-mail { font-size: 13.5px; margin-top: 7px; }
+.EA-trust { font-size: 13px; line-height: 1.55; color: oklch(0.46 0.015 55); border-top: 1px solid oklch(0.90 0.008 70); padding-top: 14px; margin-top: clamp(28px, 4vw, 36px); }
+.EA-foot { padding: 22px 0 40px; }
+.EA-foot .EA-wordmark { font-size: 16px; color: oklch(0.42 0.04 262); }
+@media (prefers-reduced-motion: reduce) { .EA-spin { animation: none; } }
 `;
