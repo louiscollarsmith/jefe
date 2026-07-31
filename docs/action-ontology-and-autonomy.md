@@ -2,6 +2,8 @@
 
 **Status:** Proposal for founder sign-off on the *shape*. **Design only — nothing is built until blessed.** Dated 2026-07-29.
 
+> **Update 2026-07-31 (as-built reconciliation).** Since this was written the shape below has been validated by building it: the **first executable action shipped — dead-stock CLEARANCE (not reorder) — and is LIVE in production** (`CLEARANCE_EXECUTE_ENABLED=true`), end-to-end through the typed-adapter contract with the 3-mode autonomy dial. So the two families, the entry shape, and autonomy-as-policy are no longer "design only" for the first action — they exist in `context/13` (capability registry) + `app/lib/actions/`. Still proposal: the **demand-derived recursion** (intent-capture → cluster → promote) and breadth beyond clearance. The build-sequence below is superseded by what shipped (clearance first). The **as-built layer + the recipe to add the next action type** live in `docs/action-layer-implementation.md`.
+
 Pairs with `context/11_actions_and_autonomy.md`: that doc is the **HOW** — the typed-adapter execution contract + the earned-autonomy ramp. This is the **WHAT** — the action ontology and where it comes from — and the **POLICY** — the merchant-set autonomy slider. Together they are one design; this references `context/11` for execution mechanics rather than restating them. Once blessed, this graduates into `context/`.
 
 Review split: architecture / consistency (does the ontology fit the typed-adapter model + the memory spine + the permanent guardrails) → architecture session; product direction (which actions, the autonomy policy) → founder.
