@@ -10,7 +10,10 @@
 - **Demo store URL:** N/A for an admin-embedded app (nothing shows on a public storefront) — the feature video carries it. Revisit only if a storefront-visible surface ships.
 - **Tracking — Google Analytics:** set up a GA property + add the **Measurement ID** (and API Secret for install tracking) to the listing → the only way to see listing-view→install conversion (core growth-funnel signal). ~10 min setup; do at launch if a property exists, else early post-launch.
 - **Tracking — Google remarketing + Facebook Pixel:** **skip** unless/until we run paid ads (we're warm/direct now). Revisit if a paid-acquisition channel opens (100→1k+).
-- **"Built for Shopify" status:** target after the first cohort of reviews (badge + ranking boost + "Picked for you").
+- **"Built for Shopify" status — TRACKED CORE GOAL (Matt, 2026-07-31).** The prize: badge + search-ranking boost + "Picked for you" placement. Criteria:
+  - *Merchant utility (the gating pair):* **50 net installs on PAID plans** + **5 reviews since launch** + **4★** rating. The "paid plans" clause **gates BFS on monetization** → a **100→1k milestone** (needs Billing API + ~50 paying merchants), not a launch-window target.
+  - *Technical (28-day rolling):* mostly already met — embedded ✓, App Bridge ✓, session-token auth ✓. **Actively hold:** Core Web Vitals in admin (LCP <2.5s, CLS <0.1, INP <200ms), minimal storefront impact, clean/complete uninstall, Shopify design guidelines, no Asset API. (Theme-extensions highlight = N/A — admin-only app, not a fail.)
+  - *Levers that get us there:* reviews-at-the-aha-moment (see [design-partner-playbook.md](design-partner-playbook.md)) + the free→paid conversion motion (see [pricing-strategy.md](pricing-strategy.md)). Ask each activated partner for a review at their first "yes, that's my business" moment.
 - **Localization (German → French):** 100→1k item. Adding a language = fully translated listing + re-attest + re-review, not a checkbox.
 
 ## B. Legal — near-term (post-privacy)
