@@ -1,0 +1,205 @@
+import { useState } from "react";
+import { R, RADIUS } from "./register";
+import { Mono } from "./primitives";
+import {
+  BriefSection,
+  QueueSection,
+  HorizonSection,
+  MemorySection,
+  GoalsSection,
+  SettingsSection,
+  type Finding,
+  type HorizonItem,
+  type HorizonWatch,
+  type GoalChange,
+  type QueueItem,
+  type ActionPolicy,
+  type ChannelRow,
+} from "./sections";
+import type {
+  Metrics,
+  MemoryView,
+  Recommendation,
+  Goal,
+  SuggestedAction,
+  ExecutedAction,
+} from "./data";
+
+// The 13a app-home shell: nav rail · content (with persistent composer) · right rail.
+// Full merchant data flows in via props (the same loader data daily-home.tsx uses today,
+// plus computed findings / horizon / queue / goal-changes). Section switching is still
+// client-side (useState) — turning the six into real routes (/brief…/settings) is a
+// separate, coordinated step (chat 2 owns app._index; see QUESTIONS-FOR-MATT.md).
+//
+// This does NOT replace daily-home.tsx yet. It renders in the /app-home-13a preview and
+// is adopted into app._index only on Matt’s nod (App Store review is in flight).
+
+const JEFE_MARK = (
+  <svg viewBox="0 0 64 64" style={{ width: "100%", height: "100%", display: "block" }} aria-hidden="true">
+    <rect width="64" height="64" rx="16" fill="#33456b" />
+    <path d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z" fill="#f8ece7" />
+    <circle cx="32" cy="49" r="4.5" fill="#c98a8a" />
+  </svg>
+);
+
+const NAV: Array<{ id: Section; label: string }> = [
+  { id: "brief", label: "Brief" },
+  { id: "queue", label: "Queue" },
+  { id: "horizon", label: "Horizon" },
+  { id: "memory", label: "Memory" },
+  { id: "goals", label: "Goals" },
+  { id: "settings", label: "Settings" },
+];
+type Section = "brief" | "queue" | "horizon" | "memory" | "goals" | "settings";
+
+export type AppHome13aProps = {
+  storeName: string;
+  briefHeadline: string;
+  metrics: Metrics;
+  memory: MemoryView;
+  recommendation: Recommendation;
+  suggestedAction: SuggestedAction | null;
+  executedActions: ExecutedAction[];
+  goals: Goal[];
+  findings: Finding[];
+  goalChanges: GoalChange[];
+  horizonNear: HorizonItem[];
+  horizonWatching: HorizonWatch[];
+  queue: QueueItem[];
+  policies: ActionPolicy[];
+  channels: ChannelRow[];
+  autonomyLabel: string; // e.g. "Learning" — the rail’s autonomy state
+  syncedLabel?: string | null; // "synced 4 min ago" — mono; omitted if unknown (honest)
+  founderEmail: string; // real mailto target for feedback + founder contact
+  changelog: Array<{ id: string; date: string; text: string; tag?: string | null }>;
+};
+
+export function AppHome13a(props: AppHome13aProps) {
+  const [section, setSection] = useState<Section>("brief");
+  const cur = props.metrics?.currency || "GBP";
+  const queueWaiting = props.queue.filter((q) => q.state === "needs_you").length;
+  const memoryCount = (props.memory?.groups || []).reduce((n, g) => n + g.beliefs.length, 0);
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", background: R.surface, color: R.ink, fontFamily: R.sans }}>
+      {/* NAV */}
+      <nav aria-label="Sections" style={{ width: 198, flex: "none", borderRight: `1px solid ${R.divider}`, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 6px" }}>
+          <span style={{ width: 22, height: 22, flex: "none", display: "inline-block" }}>{JEFE_MARK}</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Jefe</span>
+          <span style={{ marginLeft: "auto", fontFamily: R.sans, fontSize: 11.5, color: R.label }}>{props.storeName}</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {NAV.map((n) => {
+            const active = section === n.id;
+            const badge = n.id === "queue" ? queueWaiting : n.id === "memory" ? memoryCount : 0;
+            return (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => setSection(n.id)}
+                aria-current={active ? "page" : undefined}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  textAlign: "left",
+                  gap: 8,
+                  padding: "8px 10px",
+                  // active state: 2px rust left-rule + warm background (rule: not a pill)
+                  borderLeft: `2px solid ${active ? R.rust : "transparent"}`,
+                  background: active ? R.activeNav : "transparent",
+                  color: active ? R.ink : R.ink3,
+                  fontWeight: active ? 600 : 400,
+                  fontFamily: R.sans,
+                  fontSize: 13.5,
+                  border: "none",
+                  borderLeftWidth: 2,
+                  borderLeftStyle: "solid",
+                  borderLeftColor: active ? R.rust : "transparent",
+                  cursor: "pointer",
+                }}
+              >
+                <span>{n.label}</span>
+                {badge > 0 ? <span style={{ fontFamily: R.sans, fontWeight: 600, fontVariantNumeric: "tabular-nums", fontSize: 12, color: active ? R.rust : R.label }}>{badge}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "0 8px" }}>
+          <span style={{ fontFamily: R.sans, fontSize: 12, color: R.label }}>Autonomy <strong style={{ color: R.ink2, fontWeight: 600 }}>{props.autonomyLabel}</strong></span>
+          <button type="button" onClick={() => setSection("settings")} style={{ alignSelf: "flex-start", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, background: "none", border: "none", padding: 0, cursor: "pointer" }}>Set his limits</button>
+          {props.syncedLabel ? <Mono style={{ fontSize: 10, marginTop: 4 }}>{props.syncedLabel}</Mono> : null}
+        </div>
+      </nav>
+
+      {/* CONTENT + composer */}
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${R.divider}` }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "26px 30px 20px" }}>
+          {section === "brief" ? (
+            <BriefSection
+              metrics={props.metrics}
+              memory={props.memory}
+              recommendation={props.recommendation}
+              suggestedAction={props.suggestedAction}
+              executedActions={props.executedActions}
+              goals={props.goals}
+              findings={props.findings}
+              cur={cur}
+              headline={props.briefHeadline}
+            />
+          ) : section === "queue" ? (
+            <QueueSection items={props.queue} />
+          ) : section === "horizon" ? (
+            <HorizonSection near={props.horizonNear} watching={props.horizonWatching} />
+          ) : section === "memory" ? (
+            <MemorySection storeName={props.storeName} memory={props.memory} />
+          ) : section === "goals" ? (
+            <GoalsSection goals={props.goals} changes={props.goalChanges} />
+          ) : (
+            <SettingsSection policies={props.policies} channels={props.channels} />
+          )}
+        </div>
+        {/* composer — chat here isn’t wired yet, so this is honest: it points to the real
+            channels rather than presenting a fake input. */}
+        <div style={{ flex: "none", borderTop: `1px solid ${R.divider}`, padding: "12px 30px", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ flex: 1, fontFamily: R.sans, fontSize: 12.5, color: R.ink3 }}>Talking to Jefe in-app is coming — for now, reply to any Jefe email or message him in Slack.</span>
+        </div>
+      </div>
+
+      {/* RIGHT RAIL — persists; first to drop at narrow widths. Feedback is REAL (mailto). */}
+      <aside style={{ width: 268, flex: "none", display: "flex", flexDirection: "column", padding: "22px 18px", gap: 24 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Tell us what to build</div>
+          <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink3 }}>What’s missing? What’s annoying? Tell us — we’d rather have the mess than a tidy summary.</div>
+          <a
+            href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — what to build")}`}
+            style={{ alignSelf: "flex-start", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}
+          >
+            Write to us
+          </a>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Talk to the founders</div>
+          <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink3 }}>Thirty minutes whenever you need it. We built Jefe and we answer our own email.</div>
+          <a href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — can we talk?")}`} style={{ alignSelf: "flex-start", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>Email us</a>
+        </div>
+
+        {props.changelog.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>New in Jefe</div>
+            {props.changelog.slice(0, 3).map((c) => (
+              <div key={c.id} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <Mono style={{ fontSize: 10 }}>{c.date}</Mono>
+                <span style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.45, color: R.ink2 }}>{c.text}</span>
+                {c.tag ? <span style={{ fontFamily: R.sans, fontSize: 11.5, fontWeight: 600, color: R.rust }}>{c.tag}</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </aside>
+    </div>
+  );
+}

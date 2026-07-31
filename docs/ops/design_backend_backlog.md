@@ -33,3 +33,18 @@ Memory beliefs (statement, status observed/confirmed/corrected, confidence, prov
 ---
 
 _Update this list as items are built. The `changelog-watcher` tool + `product_analytics_and_margin_spec.md` are adjacent internal tooling; this is the merchant-facing gap list._
+
+---
+
+## 13a app-home rebuild — what's built vs. what the live flip needs (2026-07-31, chat 11)
+
+The 13a redesign (`design_handoff_jefe_app`) is built as `app/components/app-home/*` and viewable at the **`/app-home-13a` preview** (illustrative data). Adopting it into the **live** `app._index` home needs the following real data/wiring first — until each lands, the module degrades honestly (no fabricated numbers), so nothing below blocks the *preview*, only the *live flip*.
+
+- **Memory plain-English + provenance + authorship (gaps #1/#2 — chat 9).** The live `MemoryView` is `{id,title,value,status,evidenceSummary}` — the "field · value" debug shape. `data.ts` already reads OPTIONAL fields `statement` / `sourceLine` / `authorship` / `confirmState`; the pipeline needs to populate them (a plain-English rendering per belief, a real source line, merchant-vs-Jefe authorship, and an unsure/settled/blocked confirm-state). Until then Memory shows the title as the statement + evidence-summary as the source — honest but flat.
+- **Memory confirm/correct/edit/forget + Teach Jefe intents (chat 9 + chat 2 route action).** The rendered "That's right / Not quite", "Edit / Forget", "Tell me" and "Teach Jefe" controls need real `memory.*` intents (none exist today). Wire them, or render them honestly-inert, before the live flip. The clearance intents (`action.approve/reject/edit/set_mode`) ARE wired and carried over verbatim.
+- **Findings for the Brief empty-state (gap #4).** `AppHome13a` takes a `findings: Finding[]` prop — needs a real server-side tidy-up/pattern scan (missing descriptions, refund clusters — backlog item 8). Empty ⇒ the honest "nothing's on fire" sentence stands alone.
+- **Queue as a real list (backlog item 5).** `queue: QueueItem[]` needs multi-item generation + waiting/handled/declined status. Today only the single Plan rec + the clearance suggestion are real.
+- **Horizon store-grounded items + revisit tracking.** `horizonNear` / `horizonWatching` are props — needs the stock/refund projections + whether "revisit ~21 Aug" dates are actually tracked (open question for Matt).
+- **Goal targets + progress + "what these changed" (backlog item 13).** `goalChanges: GoalChange[]` + per-goal target/progress need real fields; omitted honestly today.
+- **Book-a-slot / voice-note (gap #3).** The rail's feedback is a real `mailto`; a real Calendly link + a voice-note upload target (from Matt) would restore those two affordances.
+- **Nav trim + sections-as-routes (chat 10 + chat 2).** Trim the App Bridge menu to one item; turn the six client-side sections into `/brief…/settings` routes for deep-linking. Coordinated, not done unilaterally.
