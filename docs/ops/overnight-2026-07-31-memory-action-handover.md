@@ -76,3 +76,21 @@ signature = false detection, worse than a miss).
 - `ENABLE_TOOL_STACK_DETECTION` — OFF; needs the seed-signature verification first.
 - `PRODUCT_STATUS_EXECUTE_ENABLED`, `ENABLE_WINBACK_EMAIL`, winback-campaign flags — see
   `docs/ops/overnight-2026-07-31-architecture.md` + email memory before touching.
+
+## Update — Matt directive (2026-07-31, later): BUILD IT ALL + surface + flag ON
+
+- **`ENABLE_TOOL_STACK_DETECTION` is now `true` on prod** (Matt: "no users yet, let it run then test" —
+  the seed-signature check becomes a live/watched step, not a pre-gate). **BUT verified inert:**
+  `detectAndRecordToolStack` has **zero callers** — flag alone is a no-op until wired.
+- **Build target (Matt): "serve up what we know their current tools are, in onboarding + an
+  integrations page."** The full chain, by owner:
+  1. **Detection actually runs** (chat 10): wire a CALLER for `detectAndRecordToolStack` (backfill
+     worker tick or an onboarding loader) + the free public-storefront-fetch feeder + signature registry.
+  2. **Belief** (this lane): recordBelief seam → `business.tool_stack` belief (recipe:
+     `docs/integrations/tool-stack-phase2.md`).
+  3. **Surface** (surfaces lane — chat 11/chat 2): onboarding "here's what we can see you use
+     (Klaviyo/GA/Meta…)" + a dedicated **integrations page** listing detected tools, each with a connect CTA.
+  4. **Connect path DEFERRED** (Matt: "then decide a path forwards re integrations to these channels")
+     — decide the actual connect mechanism (OAuth per-tool vs. Alloy gateway) AFTER it's built + we see
+     real detections. My `connect_integration` action-intent is the hook, not the decision.
+- Not started here (session at context end). Handed to lanes via memory + chat 10 message.
