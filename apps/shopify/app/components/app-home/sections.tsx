@@ -27,10 +27,11 @@ import {
 
 // The six 13a sections. Presentational + the real wired clearance forms (intents
 // action.approve / action.reject / action.edit / action.set_mode — carried over
-// verbatim from daily-home.tsx so the LIVE clearance loop is unchanged). Actions that
-// are NOT yet wired (Memory confirm/edit/forget, Teach Jefe, feedback, Book a slot)
-// are built to the design but must be wired (chat 9 for memory, a real Calendly/upload
-// for the rail) BEFORE this replaces the live home — tracked in QUESTIONS-FOR-MATT.md.
+// verbatim so the LIVE clearance loop is unchanged). Per the founder's design-fidelity
+// rule (AGENTS.md → Implementation Rules: wire-or-keep, never wire-or-remove), controls
+// that aren't wired yet — Memory confirm/correct/forget/Teach — stay visible per the
+// design; wiring them to chat 9's memory.* services is tracked as an engineering task.
+// The hard line still held everywhere here: no fabricated merchant DATA.
 
 // ── shared bits ────────────────────────────────────────────────────────────────
 
