@@ -337,7 +337,9 @@ export type Finding = {
   body: string;
   kind: string; // "tidy-up" | "pattern" | ...
   when?: string | null; // mono timestamp
-  primary?: { label: string; href?: string } | null; // a real link, or omitted
+  // a real link, or omitted. `external` opens it top-level (a Shopify-admin deep-link must
+  // break out of the embedded app iframe rather than load admin inside it).
+  primary?: { label: string; href?: string; external?: boolean } | null;
   dismiss?: string | null; // secondary label, e.g. "I know about this"
 };
 
@@ -351,7 +353,12 @@ function FindingRow({ finding, last }: { finding: Finding; last?: boolean }) {
           <div style={{ display: "flex", gap: 14, alignItems: "center", marginTop: 4 }}>
             {finding.primary ? (
               finding.primary.href ? (
-                <a href={finding.primary.href} style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>{finding.primary.label}</a>
+                <a
+                  href={finding.primary.href}
+                  target={finding.primary.external ? "_top" : undefined}
+                  rel={finding.primary.external ? "noopener noreferrer" : undefined}
+                  style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}
+                >{finding.primary.label}</a>
               ) : (
                 <span style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>{finding.primary.label}</span>
               )

@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { useFetcher } from "react-router";
 import { AppHome13a, type AppHome13aProps } from "./app-home/AppHome13a";
 import type { Finding, HorizonItem, HorizonWatch, QueueItem, GoalChange, ActionPolicy, ChannelRow } from "./app-home/sections";
 import type { Metrics, MemoryView, Recommendation, Goal, Insight, SuggestedAction, ExecutedAction, ActionMode } from "./app-home/data";
@@ -43,10 +45,24 @@ export function DailyHome(props: {
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
 
-  // findings ← real insights. The prototype's "findings" ARE insight-style patterns
-  // ("your refund rate is 9%…"), so this is a faithful, honest mapping — real content,
-  // no fabricated action attached.
-  const findings: Finding[] = (props.insights || []).slice(0, 4).map((it) => ({
+  // The store-hygiene scan is DEFERRED off the LCP-critical loader (chat 10's split): DailyHome
+  // pulls it from the /api/store-hygiene resource route via useFetcher AFTER first paint, so the
+  // Brief's metrics render immediately and the tidy-up findings stream in a beat later. Best-effort
+  // (the route returns [] on any failure), so this can never delay or break the home.
+  const findingsFetcher = useFetcher<{ findings: Finding[] }>();
+  useEffect(() => {
+    if (findingsFetcher.state === "idle" && findingsFetcher.data === undefined) {
+      findingsFetcher.load("/api/store-hygiene");
+    }
+  }, [findingsFetcher]);
+
+  // findings ← the real store-hygiene scan FIRST (tidy-ups with a real primary action that
+  // deep-links to the fix in Shopify admin — never auto-applied), then real insight patterns
+  // ("your refund rate is 9%…") as actionless "noticed" notes fill any remaining room (coexist,
+  // don't supersede — chat 11). Both are real; hygiene leads because the merchant can act on it.
+  // Capped at 4 total so "Your call" stays calm (chat 11).
+  const hygieneFindings = findingsFetcher.data?.findings ?? [];
+  const insightFindings: Finding[] = (props.insights || []).map((it) => ({
     id: it.id,
     title: it.title,
     body: it.finding,
@@ -55,6 +71,7 @@ export function DailyHome(props: {
     primary: null,
     dismiss: null,
   }));
+  const findings: Finding[] = [...hygieneFindings, ...insightFindings].slice(0, 4);
 
   // queue ← real decisions + what's done. suggestedAction + recommendation = needs_you;
   // executed actions = did_it. Never a fabricated handled/declined count.

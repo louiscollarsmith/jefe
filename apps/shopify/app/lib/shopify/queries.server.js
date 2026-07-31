@@ -43,6 +43,11 @@ export const PRODUCTS_QUERY = `#graphql
           status
           vendor
           productType
+          descriptionHtml
+          seo {
+            title
+            description
+          }
           createdAt
           updatedAt
           variants(first: 100) {
