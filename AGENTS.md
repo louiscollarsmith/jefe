@@ -82,7 +82,19 @@ Historical context, reset audits and previous product prompts live under `docs/a
 
 ## Architecture Decisions
 
-Architecture, design, refactor and cross-cutting **consistency** decisions are owned by the **architecture session** (currently "Jefe chat 7 — architecture", 2026-07-29). Route those questions there via cross-session message rather than to the founder, so decisions stay coherent across sessions. The architecture owner escalates to the founder only what is genuinely his: product scope, irreversible / one-way-door changes, and safety-rail / merchant-write-guardrail questions. This binds current and future sessions; when the role passes to a successor, update the holder named here. Details and the coordination model: `docs/ops/build-deploy-and-coordination.md`.
+Architecture, design, refactor and cross-cutting **consistency** decisions are owned by the **architecture session** (currently **Jefe chat 10 — architecture II**, from 2026-07-31; previously chat 7). Route those questions there via cross-session message rather than to the founder, so decisions stay coherent across sessions. The architecture owner escalates to the founder only what is genuinely his: product scope, irreversible / one-way-door changes, and safety-rail / merchant-write-guardrail questions. This binds current and future sessions; when the role passes to a successor, update the holder named here.
+
+**Architecture review gate (founder directive, 2026-07-31).** Anything that touches the **core spine** comes through the architecture session for a check *before it lands* — not only design questions, but the change itself. Flag it via cross-session message; the owner acks fast for pattern-following changes and reviews the design for new contracts. The core spine:
+- the **action layer** — the capability registry + resolvers (`action-intent.server.js`), the typed adapters (`*-adapter.server.js`) + write clients, the `action_executions` / `action_execution_writes` ledger, `wire-*-execution`, and the autonomy-policy resolution;
+- **new action intents** on the shared route action, and the **loader structure** of `app/routes/app._index.tsx` (additive reads folded into the existing `Promise.all` are a light heads-up; new intents or restructures need the check);
+- the **Prisma schema + migrations**, and the **tenant/session model** (`Shop` / `Merchant` / `Session`);
+- the **Shopify auth/token config** (`shopify.server.ts`) + the admin GraphQL client + offline-token handling;
+- the **Merchant Memory belief registry** + derivation dispatch (`deterministic-belief-registry`, `shopify-derivations`);
+- the **LLM provider/config** (`app/lib/llm/provider` · `config` · `providers`);
+- the **gate / hooks / observability infra** (`scripts/preflight.sh`, `.githooks`, the logger / event-log / redact) and the canonical docs (`AGENTS.md`, `CLAUDE.md`, `context/`).
+Lane-local surface components, copy, styling, and read-only fetchers that follow an established pattern don't need the gate — build them in your lane. When unsure, flag it: a 30-second ack beats an incoherent spine.
+
+Details and the coordination model: `docs/ops/build-deploy-and-coordination.md`.
 
 ## Before Coding
 
