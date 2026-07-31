@@ -201,7 +201,7 @@ export function AppHome13a(props: AppHome13aProps) {
             {props.bookingUrl ? (
               <a href={props.bookingUrl} target="_blank" rel="noreferrer" style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}>Book a slot</a>
             ) : null}
-            <a href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — can we talk?")}`} style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>Email us</a>
+            <a href={`mailto:hola@mynamejefe.com?subject=${encodeURIComponent("Jefe — can we talk?")}`} target="_blank" rel="noreferrer" style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>Email us</a>
           </div>
         </div>
 
