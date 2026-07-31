@@ -28,6 +28,7 @@
  * @property {string[]} targetKinds  The target kinds this action can resolve.
  * @property {boolean} reversible    Whether the primitive can fully undo it (gates auto-eligibility).
  * @property {string} primitive      The typed executor that owns resolution + the write path.
+ * @property {string} [executeFlag]  The env var that must equal "true" for this action to WRITE — its deliberate go-live switch (e.g. "CLEARANCE_EXECUTE_ENABLED"). Absent = not yet wired for execution.
  * @property {string[]} [requiredScopes]  Shopify OAuth scopes the merchant must have granted for this action to WRITE (e.g. ["write_products"]). The execution gate + the scope-nudge read use this; empty/absent = no write scope needed.
  */
 
@@ -45,6 +46,7 @@ export const ACTION_REGISTRY = {
     targetKinds: ["dead_stock"],
     reversible: true,
     primitive: "clearance-adapter",
+    executeFlag: "CLEARANCE_EXECUTE_ENABLED",
     requiredScopes: ["write_products"],
   },
 };
@@ -75,6 +77,24 @@ export function listActionCapabilities() {
     actionType,
     description: def.description,
     targetKinds: def.targetKinds,
+  }));
+}
+
+/**
+ * Engine-facts roster of registered action types — the single source of truth for any surface
+ * that needs to know which autonomy dials are LIVE (e.g. the Settings roster). Deliberately no
+ * `label`/order/detail — those are design copy, owned by the surface; this returns engine truth
+ * only. `live` = registered here (the wired-contract: a registry entry implies its resolver +
+ * primitive) AND its `executeFlag` env is exactly "true" (the deliberate go-live switch). When an
+ * action graduates — a registry entry with its flag on — its dial lights up with no component edit.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {Array<{ actionType: string, live: boolean, requiredScopes: string[] }>}
+ */
+export function listActionTypes(env = process.env) {
+  return Object.entries(ACTION_REGISTRY).map(([actionType, def]) => ({
+    actionType,
+    live: Boolean(def.executeFlag && env[def.executeFlag] === "true"),
+    requiredScopes: Array.isArray(def.requiredScopes) ? def.requiredScopes : [],
   }));
 }
 
