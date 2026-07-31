@@ -193,6 +193,35 @@ export async function getMerchantMemoryConversationExperience(prisma, input) {
 }
 
 /**
+ * Read-only view of the merchant's conversation for the Daily Home composer — the
+ * most recent messages, oldest-first for display. Deliberately thin: unlike
+ * getMerchantMemoryConversationExperience it does NO ensure/gap/open-question
+ * writes and does NOT create a conversation, so it is safe on the fast, read-only
+ * home (the conversation is created lazily on the first posted message via
+ * sendConversationMessage). Returns { messages: [] } when no conversation exists.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; take?: number }} input
+ */
+export async function getDailyChatThread(prisma, input) {
+  const conversation = await prisma.merchantMemoryConversation.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? undefined,
+      status: "active",
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!conversation) return { messages: [] };
+  // Most-recent N, then reversed to ascending (oldest→newest) for the thread.
+  const rows = await prisma.merchantMemoryConversationMessage.findMany({
+    where: { conversationId: conversation.id, merchantId: input.merchantId },
+    orderBy: { createdAt: "desc" },
+    take: input.take ?? 20,
+  });
+  return { messages: rows.reverse().map(serializeMessage) };
+}
+
+/**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null }} input
  */

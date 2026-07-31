@@ -88,7 +88,7 @@ export const SAMPLE_APP_HOME: AppHome13aProps = {
     { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", mode: null, blockedReason: "Tell me who supplies you" },
   ],
   channels: [
-    { id: "email", label: "Morning brief by email", value: "maya@everdew.co.uk · 7:30am", connected: true },
+    { id: "email", label: "Morning brief by email", value: "maya@everdew.co.uk · 7:30am", connected: true, editable: true, category: "morning_brief", enabled: true, time24: "07:30", frequency: "daily", note: "Not sending yet — starts when briefs go live" },
     { id: "slack", label: "Slack", value: "Not connected", connected: false },
     { id: "whatsapp", label: "WhatsApp", value: "Not connected", connected: false },
   ],
@@ -100,4 +100,11 @@ export const SAMPLE_APP_HOME: AppHome13aProps = {
     { id: "c1", date: "30 Jul", text: "Jefe now says what he can't see yet, with a date to revisit it.", tag: "You asked for this" },
     { id: "c2", date: "27 Jul", text: "Memory separates what you taught him from what he guessed.", tag: null },
   ],
+  conversation: {
+    messages: [
+      { id: "cm1", role: "assistant", content: "I've been reading Everdew. Rosehip Serum and Camomile Bath Oil are carrying most of your revenue — want me to keep an eye on their stock?" },
+      { id: "cm2", role: "merchant", content: "Yes. And don't discount the Repair Balm." },
+      { id: "cm3", role: "assistant", content: "Noted — I'll treat “never discount the Repair Balm” as your rule. A correction from you outranks anything I inferred." },
+    ],
+  },
 };

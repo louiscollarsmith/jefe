@@ -29,6 +29,19 @@ const ACTION_MODES: ActionMode[] = ["recommend", "approve_execute", "autonomous"
 // The real connection shape from listChannelConnections (only the fields we render).
 type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
 
+// Loader-provided shapes for the 13a home extras — all real data.
+type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
+type ChangelogItem = { id: string; date: string; text: string; tag?: string | null };
+type EmailBrief = {
+  address: string;
+  enabled: boolean;
+  sendTime: string | null;
+  hour: number | null;
+  minute: number | null;
+  frequency: string;
+  sending: boolean;
+};
+
 export function DailyHome(props: {
   storeName: string;
   merchantName?: string;
@@ -41,6 +54,9 @@ export function DailyHome(props: {
   goals: Goal[];
   clearanceMode?: string | null; // getActionMode(price_markdown) — the real standing mode
   channels?: ChannelConn[]; // listChannelConnections — real connect state
+  conversation?: ChatThread | null; // getDailyChatThread — real in-app chat thread
+  changelog?: ChangelogItem[]; // loadAppHomeChangelog — real CHANGELOG entries
+  emailBrief?: EmailBrief | null; // morning_brief pref + real contact email; null → row hidden
 }) {
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
@@ -106,12 +122,44 @@ export function DailyHome(props: {
     { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", mode: null, blockedReason: "Tell me who supplies you" },
   ];
 
-  const channels: ChannelRow[] = (props.channels || []).map((c) => ({
-    id: c.provider,
-    label: channelLabel(c.provider),
-    value: c.connected ? (c.maskedDestination || c.accountName || "Connected") : "Not connected",
-    connected: c.connected,
-  }));
+  // The email-brief row (real address + real send time) leads "Where Jefe reaches
+  // you", ahead of the connected channels. Built ONLY when a real contact email is
+  // known — never fabricated. While scheduled delivery is dark, the note says so
+  // honestly rather than implying Jefe emails today.
+  const emailBrief = props.emailBrief ?? null;
+  const emailRow: ChannelRow | null = emailBrief
+    ? {
+        id: "email",
+        label: "Morning brief by email",
+        value:
+          emailBrief.enabled && emailBrief.sendTime
+            ? `${emailBrief.address} · ${emailBrief.sendTime}`
+            : emailBrief.address,
+        connected: true,
+        editable: true,
+        category: "morning_brief",
+        enabled: emailBrief.enabled,
+        frequency: emailBrief.frequency,
+        time24:
+          emailBrief.hour != null && emailBrief.minute != null
+            ? `${String(emailBrief.hour).padStart(2, "0")}:${String(emailBrief.minute).padStart(2, "0")}`
+            : null,
+        note: !emailBrief.enabled
+          ? "Paused — you won’t get the morning brief"
+          : emailBrief.sending
+            ? null
+            : "Not sending yet — starts when briefs go live",
+      }
+    : null;
+  const channels: ChannelRow[] = [
+    ...(emailRow ? [emailRow] : []),
+    ...(props.channels || []).map((c) => ({
+      id: c.provider,
+      label: channelLabel(c.provider),
+      value: c.connected ? (c.maskedDestination || c.accountName || "Connected") : "Not connected",
+      connected: c.connected,
+    })),
+  ];
 
   const waiting = (suggestedAction ? 1 : 0) + (props.recommendation ? 1 : 0) + findings.length;
 
@@ -135,7 +183,8 @@ export function DailyHome(props: {
     syncedLabel: null, // no real "synced Xm ago" signal yet → omitted, not faked
     founderEmail: FOUNDER_EMAIL,
     bookingUrl: BOOKING_URL,
-    changelog: [], // "New in Jefe" reads the app CHANGELOG — wired as a follow-up
+    changelog: props.changelog ?? [], // "New in Jefe" ← real app CHANGELOG
+    conversation: props.conversation ?? { messages: [] }, // real in-app chat thread
   };
 
   return <AppHome13a {...appProps} />;

@@ -695,7 +695,63 @@ export function QueueSection({ items }: { items: QueueItem[] }) {
 // primitive ships (no dial that can't act). `blockedReason` → a genuine needs-your-input
 // prompt. The three are mutually exclusive; the render prefers mode → soon → blocked.
 export type ActionPolicy = { actionType: string; label: string; detail: string; mode: ActionMode | null; soon?: boolean; blockedReason?: string | null };
-export type ChannelRow = { id: string; label: string; value: string; connected: boolean };
+export type ChannelRow = {
+  id: string;
+  label: string;
+  value: string;
+  connected: boolean;
+  // Optional extras for an editable notification row (the email brief). Plain
+  // channel rows omit these and render unchanged.
+  editable?: boolean;
+  category?: string;
+  enabled?: boolean;
+  note?: string | null;
+  time24?: string | null; // "HH:MM" default for the native time input
+  frequency?: string;
+};
+
+// The email-brief row in "Where Jefe reaches you": shows the REAL contact address
+// + send time, with an inline "Change" form that posts notification.set. Honest by
+// construction — it renders only what the loader resolved (the row is omitted when
+// no address is known) and carries the loader's "not sending yet" note while
+// scheduled delivery is still dark.
+function EmailBriefRow({ row, last }: { row: ChannelRow; last?: boolean }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <div>
+      <Row last={Boolean(last) && !editing} align="flex-start">
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 600, color: R.ink }}>{row.label}</span>
+          <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink3 }}>{row.value}</span>
+          {row.note ? <SourceLine>{row.note}</SourceLine> : null}
+        </div>
+        <RustLink onClick={() => setEditing((v) => !v)}>{editing ? "Close" : "Change"}</RustLink>
+      </Row>
+      {editing ? (
+        <Form method="post" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "2px 0 14px", borderBottom: last ? "none" : `1px solid ${R.hairline}` }}>
+          <input type="hidden" name="intent" value="notification.set" />
+          <input type="hidden" name="category" value={row.category ?? "morning_brief"} />
+          <input type="hidden" name="frequency" value={row.frequency ?? "daily"} />
+          {/* hidden false + checkbox true → unchecked disables, checked enables
+              (formDataHasTruthyValue reads getAll().some) */}
+          <input type="hidden" name="enabled" value="false" />
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: R.sans, fontSize: 12.5, color: R.ink2 }}>
+            <input type="checkbox" name="enabled" value="true" defaultChecked={row.enabled ?? true} />
+            Send me the morning brief
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: R.sans, fontSize: 12.5, color: R.ink2 }}>
+            Send time
+            <input type="time" name="time" defaultValue={row.time24 ?? "07:30"} style={{ fontFamily: R.sans, fontSize: 13, padding: "6px 8px", borderRadius: RADIUS.button, border: `1px solid ${R.controlBorder}`, background: R.surface, color: R.ink }} />
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <RustButton type="submit">Save</RustButton>
+            <GhostButton onClick={() => setEditing(false)}>Cancel</GhostButton>
+          </div>
+        </Form>
+      ) : null}
+    </div>
+  );
+}
 
 export function SettingsSection({ policies, channels }: { policies: ActionPolicy[]; channels: ChannelRow[] }) {
   return (
@@ -734,13 +790,17 @@ export function SettingsSection({ policies, channels }: { policies: ActionPolicy
 
       <div>
         <SectionHeader title="Where Jefe reaches you" />
-        {channels.map((c, i) => (
-          <Row key={c.id} last={i === channels.length - 1}>
-            <span style={{ flex: 1, fontFamily: R.sans, fontSize: 13, fontWeight: 600, color: R.ink }}>{c.label}</span>
-            <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink3 }}>{c.value}</span>
-            {!c.connected ? <span style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Connect</span> : null}
-          </Row>
-        ))}
+        {channels.map((c, i) =>
+          c.editable ? (
+            <EmailBriefRow key={c.id} row={c} last={i === channels.length - 1} />
+          ) : (
+            <Row key={c.id} last={i === channels.length - 1}>
+              <span style={{ flex: 1, fontFamily: R.sans, fontSize: 13, fontWeight: 600, color: R.ink }}>{c.label}</span>
+              <span style={{ fontFamily: R.sans, fontSize: 12.5, color: R.ink3 }}>{c.value}</span>
+              {!c.connected ? <span style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust }}>Connect</span> : null}
+            </Row>
+          ),
+        )}
       </div>
     </div>
   );

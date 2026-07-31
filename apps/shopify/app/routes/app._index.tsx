@@ -130,10 +130,21 @@ import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { getBeliefsForMerchant } from "../lib/merchant-memory/service.server.js";
 import {
+  getDailyChatThread,
   getMerchantMemoryConversationExperience,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
 import { getBeliefDefinition } from "../lib/merchant-memory/conversational-belief-registry.server.js";
+import { loadAppHomeChangelog } from "../lib/notifications/changelog-app-home.js";
+import {
+  formatBriefSendTime,
+  getNotificationPreference,
+  setNotificationPreference,
+} from "../lib/notifications/service.server.js";
+import {
+  ensureShopContactEmail,
+  getShopContactEmail,
+} from "../lib/notifications/contact-email.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import {
@@ -330,6 +341,63 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // A pure preference toggle — return data (NOT a redirect) so the fetcher
     // doesn't navigate; paired with shouldRevalidate below to skip the heavy loader.
     return { ok: result.status === "ok", mode };
+  }
+
+  if (intent === "chat.message") {
+    // In-app chat with Jefe on the Daily Home. Reuses the merchant-memory
+    // conversation service, but — unlike memory.message, which opens the Polaris
+    // memory view — redirects back to the daily home so the merchant stays put.
+    const result = await sendConversationMessage(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      message: String(formData.get("message") ?? ""),
+    });
+    if (!result.ok) {
+      const messageError = result as { error?: string };
+      return {
+        ok: false,
+        error: messageError.error ?? "That message could not be sent.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+
+  if (intent === "notification.set") {
+    // A merchant notification/communication preference (e.g. the morning brief's
+    // send time / on-off). Stored preference only — NO external send happens here.
+    const category = String(formData.get("category") ?? "");
+    const patch: {
+      enabled?: boolean;
+      schedule?: { frequency: string; hour: number; minute: number };
+    } = {};
+    if (formData.has("enabled")) {
+      patch.enabled = formDataHasTruthyValue(formData, "enabled");
+    }
+    const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(
+      String(formData.get("time") ?? "").trim(),
+    );
+    if (timeMatch) {
+      patch.schedule = {
+        frequency: String(formData.get("frequency") ?? "daily") || "daily",
+        hour: Number(timeMatch[1]),
+        minute: Number(timeMatch[2]),
+      };
+    }
+    const result = await setNotificationPreference(prisma, {
+      merchantId: merchant.id,
+      category,
+      patch,
+    });
+    const notificationMeta = {
+      merchantId: merchant.id,
+      category,
+      status: result.status,
+    };
+    if (result.status === "ok")
+      actionLog.info("merchant set notification preference", notificationMeta);
+    else actionLog.warn("merchant set-notification rejected", notificationMeta);
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
 
   if (intent.startsWith("channel.")) {
@@ -831,6 +899,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         currency: metrics?.currency || "GBP",
       });
+      // 13a home extras: the real in-app chat thread (thin read — NO memory writes
+      // on the home), the "New in Jefe" changelog, and the email-brief preference.
+      // ensureShopContactEmail best-effort populates Shop.contactEmail from
+      // shop{email} — fire-and-forget so its (first-load-only) Admin GraphQL call
+      // stays OFF the LCP path; the email row shows from the next load once
+      // persisted (hidden until then — never a fabricated address).
+      void ensureShopContactEmail(prisma, {
+        shopId: shop.id,
+        shopDomain: session.shop,
+        accessToken: session.accessToken,
+      }).catch(() => {});
+      const [conversation, changelog, morningBriefPref, contactEmail] =
+        await Promise.all([
+          getDailyChatThread(prisma, { merchantId: merchant.id, shopId: shop.id }),
+          loadAppHomeChangelog(),
+          getNotificationPreference(prisma, {
+            merchantId: merchant.id,
+            category: "morning_brief",
+          }),
+          getShopContactEmail(prisma, { shopId: shop.id }),
+        ]);
+      const emailBrief = contactEmail
+        ? {
+            address: contactEmail,
+            enabled: morningBriefPref?.enabled ?? true,
+            sendTime: formatBriefSendTime(morningBriefPref?.schedule),
+            hour: morningBriefPref?.schedule?.hour ?? null,
+            minute: morningBriefPref?.schedule?.minute ?? null,
+            frequency: morningBriefPref?.schedule?.frequency ?? "daily",
+            // Phase 1: the preference is real + stored, but scheduled delivery is
+            // not live yet — surfaced honestly rather than implying Jefe emails now.
+            sending: false,
+          }
+        : null;
       return {
         appMode: "daily" as const,
         shop: session.shop,
@@ -845,6 +947,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         goals: goals?.selectedRun?.horizons ?? [],
         clearanceMode,
         channels: channelConnections,
+        conversation,
+        changelog,
+        emailBrief,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1129,6 +1234,9 @@ export default function AppIndex() {
         goals={data.goals}
         clearanceMode={data.clearanceMode}
         channels={data.channels}
+        conversation={data.conversation}
+        changelog={data.changelog}
+        emailBrief={data.emailBrief}
       />
     );
   }

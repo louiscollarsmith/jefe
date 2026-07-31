@@ -64,6 +64,7 @@ model Merchant {
   channelOAuthStates            ChannelOAuthState[]
   channelVerificationChallenges ChannelVerificationChallenge[]
   channelMessageDeliveries      ChannelMessageDelivery[]
+  notificationPreferences       NotificationPreference[]
 
   @@map("merchants")
 }
@@ -88,6 +89,7 @@ model Shop {
   winbackEmail2SentAt           DateTime?                           @map("winback_email2_sent_at") @db.Timestamptz(6)
   winbackEmail3SentAt           DateTime?                           @map("winback_email3_sent_at") @db.Timestamptz(6)
   winbackRecipientEmail         String?                             @map("winback_recipient_email")
+  contactEmail                  String?                             @map("contact_email")
   goalsCompleted                Boolean                             @default(false) @map("goals_completed")
   houseRulesCompleted           Boolean                             @default(false) @map("house_rules_completed")
   cogsCompletionPercentage      Decimal                             @default(0) @map("cogs_completion_percentage") @db.Decimal(5, 2)
@@ -200,6 +202,26 @@ model InboundEmailEvent {
 
   @@index([status, createdAt])
   @@map("inbound_email_events")
+}
+
+/// Per-merchant notification preference — one row per (merchant, category). Mirrors
+/// ActionAutonomyPolicy: no row (or a null field) = the registry default; a row
+/// carries only the merchant's explicit overrides, each normalized on read so a bad
+/// stored value is never trusted. Composes with (never duplicates) Channels (the
+/// "where") and EmailPreference (the hard email opt-out). Additive; safe empty.
+model NotificationPreference {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId String   @map("merchant_id") @db.Uuid
+  category   String   // registry key, e.g. "morning_brief" | "action_needs_approval"
+  enabled    Boolean? // null = use the category's registry default
+  channels   Json?    // string[] of provider keys ("email"|"slack"|"whatsapp"); null = default, [] = muted
+  schedule   Json?    // { frequency:"daily"|"weekdays"|"off", hour:0-23, minute:0-59, timezone? }; null = default (schedulable categories only)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, category])
+  @@map("notification_preferences")
 }
 
 model ConnectorAccount {

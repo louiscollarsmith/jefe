@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { Form } from "react-router";
 import { R, RADIUS } from "./register";
-import { Mono } from "./primitives";
+import { Mono, RustButton, RustLink } from "./primitives";
 import {
   BriefSection,
   QueueSection,
@@ -73,6 +74,9 @@ export type AppHome13aProps = {
   founderEmail: string; // real mailto target for feedback + founder contact
   bookingUrl?: string | null; // real Calendly link for "Book a slot"; omitted → email fallback
   changelog: Array<{ id: string; date: string; text: string; tag?: string | null }>;
+  // The in-app chat thread (merchant-memory conversation), oldest→newest. Empty
+  // until the merchant sends the first message.
+  conversation: { messages: Array<{ id: string; role: string; content: string }> };
 };
 
 export function AppHome13a(props: AppHome13aProps) {
@@ -162,11 +166,9 @@ export function AppHome13a(props: AppHome13aProps) {
             <SettingsSection policies={props.policies} channels={props.channels} />
           )}
         </div>
-        {/* composer — chat here isn’t wired yet, so this is honest: it points to the real
-            channels rather than presenting a fake input. */}
-        <div style={{ flex: "none", borderTop: `1px solid ${R.divider}`, padding: "12px 30px", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ flex: 1, fontFamily: R.sans, fontSize: 12.5, color: R.ink3 }}>Talking to Jefe in-app is coming — for now, reply to any Jefe email or message him in Slack.</span>
-        </div>
+        {/* composer — real in-app chat with Jefe. Posts chat.message (reusing the
+            merchant-memory conversation) and stays on the daily home. */}
+        <Composer conversation={props.conversation} />
       </div>
 
       {/* RIGHT RAIL — persists; first to drop at narrow widths. Feedback is REAL (mailto). */}
@@ -175,12 +177,17 @@ export function AppHome13a(props: AppHome13aProps) {
           <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Tell us what to build</div>
           <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink3 }}>What’s missing? What’s annoying? Tell us — we’d rather have the mess than a tidy summary.</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <a
-              href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — what to build")}`}
-              style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}
+            {/* Founder call: this is a CHAT, not an email — it drops the merchant
+                into the in-app composer (one conversation with Jefe), where "what
+                to build" is captured as intent signal. The human door stays the
+                "Talk to the founders" section below. */}
+            <button
+              type="button"
+              onClick={focusComposer}
+              style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", border: "none", cursor: "pointer" }}
             >
-              Write to us
-            </a>
+              Tell Jefe →
+            </button>
             {/* Record: kept visible (founder call) but honestly gated — the upload/
                 transcription target is a separate build (chat 10). Not a live no-op. */}
             <span
@@ -218,6 +225,63 @@ export function AppHome13a(props: AppHome13aProps) {
           </div>
         ) : null}
       </aside>
+    </div>
+  );
+}
+
+// Focus (and scroll to) the persistent composer input — lets rail affordances
+// ("Tell Jefe →") drop the merchant straight into the in-app chat. No-op during
+// SSR / before hydration.
+function focusComposer() {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById("jefe-chat-input");
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.focus();
+}
+
+// The persistent composer — real in-app chat with Jefe. The input posts
+// chat.message (which reuses the merchant-memory conversation service and
+// redirects back here). Keyed on message count so a successful send remounts the
+// form and clears the input. The thread (recent messages) expands above the bar.
+function Composer({ conversation }: { conversation: AppHome13aProps["conversation"] }) {
+  const messages = conversation?.messages ?? [];
+  const hasThread = messages.length > 0;
+  // Default to showing the thread when one exists, so a reply is visible right
+  // after sending; collapsible for merchants who want the bar back.
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{ flex: "none", borderTop: `1px solid ${R.divider}` }}>
+      {hasThread && open ? (
+        <div style={{ maxHeight: 260, overflowY: "auto", padding: "14px 30px", display: "flex", flexDirection: "column", gap: 12, borderBottom: `1px solid ${R.hairline}` }}>
+          {messages.map((m) => (
+            <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <Mono style={{ fontSize: 10 }}>{m.role === "merchant" ? "You" : "Jefe"}</Mono>
+              <span style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: m.role === "merchant" ? R.ink : R.ink2, whiteSpace: "pre-wrap" }}>{m.content}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ padding: "12px 30px", display: "flex", alignItems: "center", gap: 10 }}>
+        {hasThread ? (
+          <RustLink onClick={() => setOpen((v) => !v)} style={{ flex: "none" }}>
+            {open ? "Hide chat" : `Chat · ${messages.length}`}
+          </RustLink>
+        ) : null}
+        <Form method="post" key={messages.length} style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="hidden" name="intent" value="chat.message" />
+          <input
+            id="jefe-chat-input"
+            name="message"
+            required
+            autoComplete="off"
+            aria-label="Message Jefe"
+            placeholder="Tell Jefe something, or ask why — he remembers, and a correction from you outranks anything he inferred."
+            style={{ flex: 1, minWidth: 0, fontFamily: R.sans, fontSize: 13, padding: "9px 12px", borderRadius: RADIUS.button, border: `1px solid ${R.controlBorder}`, background: R.surface, color: R.ink }}
+          />
+          <RustButton type="submit">Send</RustButton>
+        </Form>
+      </div>
     </div>
   );
 }
