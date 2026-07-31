@@ -95,6 +95,7 @@ export const SAMPLE_APP_HOME: AppHome13aProps = {
   autonomyLabel: "Learning",
   syncedLabel: "synced 4 min ago",
   founderEmail: "matt@mynamejefe.com",
+  bookingUrl: "https://calendly.com/quiver-matt",
   changelog: [
     { id: "c1", date: "30 Jul", text: "Jefe now says what he can't see yet, with a date to revisit it.", tag: "You asked for this" },
     { id: "c2", date: "27 Jul", text: "Memory separates what you taught him from what he guessed.", tag: null },

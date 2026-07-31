@@ -84,7 +84,7 @@ import {
 import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
 import { getActiveSuggestedAction, getExecutedActionFeed, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
-import { setActionMode } from "../lib/actions/action-autonomy-policy.server";
+import { getActionMode, setActionMode } from "../lib/actions/action-autonomy-policy.server";
 import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
@@ -800,6 +800,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         currency: metrics?.currency || "GBP",
       });
+      // Settings (13a) needs the merchant's real standing autonomy mode for the live
+      // action type (dead-stock clearance) + real channel-connection state — read-only.
+      const [clearanceMode, channelConnections] = await Promise.all([
+        getActionMode(prisma, { merchantId: merchant.id, actionType: "price_markdown" }),
+        listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
+      ]);
       return {
         appMode: "daily" as const,
         shop: session.shop,
@@ -812,6 +818,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         executedActions,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
+        clearanceMode,
+        channels: channelConnections,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1093,6 +1101,8 @@ export default function AppIndex() {
           executedActions={data.executedActions}
           insights={data.insights}
           goals={data.goals}
+          clearanceMode={data.clearanceMode}
+          channels={data.channels}
         />
       </Suspense>
     );

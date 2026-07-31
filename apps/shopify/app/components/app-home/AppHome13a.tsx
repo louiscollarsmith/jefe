@@ -71,6 +71,7 @@ export type AppHome13aProps = {
   autonomyLabel: string; // e.g. "Learning" — the rail’s autonomy state
   syncedLabel?: string | null; // "synced 4 min ago" — mono; omitted if unknown (honest)
   founderEmail: string; // real mailto target for feedback + founder contact
+  bookingUrl?: string | null; // real Calendly link for "Book a slot"; omitted → email fallback
   changelog: Array<{ id: string; date: string; text: string; tag?: string | null }>;
 };
 
@@ -173,18 +174,35 @@ export function AppHome13a(props: AppHome13aProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Tell us what to build</div>
           <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink3 }}>What’s missing? What’s annoying? Tell us — we’d rather have the mess than a tidy summary.</div>
-          <a
-            href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — what to build")}`}
-            style={{ alignSelf: "flex-start", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}
-          >
-            Write to us
-          </a>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <a
+              href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — what to build")}`}
+              style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}
+            >
+              Write to us
+            </a>
+            {/* Record: kept visible (founder call) but honestly gated — the upload/
+                transcription target is a separate build (chat 10). Not a live no-op. */}
+            <span
+              aria-disabled="true"
+              title="Voice notes are coming soon"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.label, background: "transparent", border: `1px solid ${R.controlBorder}`, borderRadius: RADIUS.button, padding: "6px 12px", cursor: "default" }}
+            >
+              Record a voice note
+              <span style={{ fontFamily: R.mono, fontSize: 9, letterSpacing: "0.5px", textTransform: "uppercase", color: R.metaMono, border: `1px solid ${R.hairline}`, borderRadius: 3, padding: "1px 4px" }}>soon</span>
+            </span>
+          </div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Talk to the founders</div>
           <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink3 }}>Thirty minutes whenever you need it. We built Jefe and we answer our own email.</div>
-          <a href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — can we talk?")}`} style={{ alignSelf: "flex-start", fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>Email us</a>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            {props.bookingUrl ? (
+              <a href={props.bookingUrl} target="_blank" rel="noreferrer" style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: "#fdfbf7", background: R.rust, borderRadius: RADIUS.button, padding: "7px 13px", textDecoration: "none" }}>Book a slot</a>
+            ) : null}
+            <a href={`mailto:${props.founderEmail}?subject=${encodeURIComponent("Jefe — can we talk?")}`} style={{ fontFamily: R.sans, fontSize: 12.5, fontWeight: 600, color: R.rust, textDecoration: "none" }}>Email us</a>
+          </div>
         </div>
 
         {props.changelog.length ? (
