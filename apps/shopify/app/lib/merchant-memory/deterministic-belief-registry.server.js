@@ -4984,6 +4984,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
     "caveat": "A feedback signal for the earned-autonomy ramp; PII-safe (reason categories only). Dormant until actions are executable (declines flow once the write flag is on).",
     "sourceUrl": "https://shopify.dev/docs/apps/build/online-store"
+  },
+  {
+    "key": "business.tool_stack",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "current_state",
+    "calculation": "detectToolStack(shopify signals) — match native Shopify signals (metafield namespaces, payment gateways, order/customer tags, fulfilment services) against the seed tool-signature registry; value = detected tools with per-tool confidence, value confidence = strongest single matched signal",
+    "minimumData": "At least 1 third-party tool signature matched from observed Shopify signals",
+    "confidenceRule": "max per-tool matched-signal confidence (metafield/gateway ~0.9, tag ~0.6); model inference, merchant-correctable",
+    "legacyConfidenceRule": "max per-tool matched-signal confidence (metafield/gateway ~0.9, tag ~0.6); model inference, merchant-correctable",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": false,
+      "legacy_rule": "max per-tool matched-signal confidence (metafield/gateway ~0.9, tag ~0.6); model inference, merchant-correctable"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage", "low_sample"],
+    "refreshCadence": "Backfill + relevant webhooks; on tool-stack detection run",
+    "dependencies": ["orders", "customer_identities"],
+    "tranche": "Tool stack v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Model inference from native Shopify signals — never a merchant-confirmed fact; supersedable by merchant correction. Every signature is SEED until verified against real stores (a wrong signature is a false detection). The strongest signals (metafield namespaces) arrive via the live-query feeder gated on ENABLE_TOOL_STACK_DETECTION; order-derived signals stay dormant until Order.rawPayload is selected in loadDerivationContext. PII-safe: tool ids/categories + signal kinds only, never customer data.",
+    "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/latest/objects/Shop"
   }
 ];
 

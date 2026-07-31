@@ -24,6 +24,11 @@ import { getConfidenceConfig } from "./deterministic-confidence-registry.server.
 import { DETERMINISTIC_BELIEF_REGISTRY } from "./deterministic-belief-registry.server.js";
 import { currentDefinitionVersion } from "./derivation-versioning.server.js";
 import { buildDeterministicEvidence } from "./evidence-builders.server.js";
+import { detectToolStack } from "../integrations/tool-detection.server.js";
+import {
+  toolStackBeliefContent,
+  toolStackSignalsFromRecords,
+} from "../integrations/tool-stack-belief.server.js";
 
 const STALE_INVENTORY_HOURS = 72;
 const LARGE_BASKET_ITEM_THRESHOLD = 4;
@@ -266,6 +271,11 @@ async function loadDerivationContext(prisma, input) {
     uniqueVariantsByOrder,
     lineItemOrderIds,
     successfulRefundCoverage,
+    // Tool-stack detection signals from already-fetched records (no new query). Order-derived
+    // signals (gateways/tags/fulfilment) stay dormant until Order.rawPayload is selected above;
+    // the strongest signals (metafield namespaces) arrive via the live-query feeder. Consumed by
+    // the `business.tool_stack` derivation below.
+    toolStackSignals: toolStackSignalsFromRecords({ orders, customerIdentities }),
     sourceCounts: {
       products: products.length,
       variants: variants.length,
@@ -359,6 +369,8 @@ function deriveDefinition(context, definition) {
         return clearanceEffectiveness(context, definition);
       case "business.action_decline_signal.all_time":
         return actionDeclineSignal(context, definition);
+      case "business.tool_stack":
+        return toolStack(context, definition);
       case "products.revenue_by_product_type.trailing_90d":
         return revenueByProductType(context, definition, 90);
       case "products.revenue_by_vendor.trailing_90d":
@@ -1538,6 +1550,41 @@ function actionDeclineSignal(context, definition) {
     summary: `${total} suggestions declined; most common reason: ${topReasonCategory}.`,
     sampleSize: total,
     supportingValues: { totalDeclines: total },
+  });
+}
+
+// business.tool_stack — the DB-derivation feeder for tool-stack detection. Runs the pure
+// `detectToolStack` over signals extracted from already-fetched records (context.toolStackSignals)
+// and shapes the shared belief content. MODEL INFERENCE: value confidence is the strongest single
+// matched signal, so a weak tag-only guess never publishes as near-certain, and the standard
+// `derived()` path writes it at systemInference precedence (merchant-correctable). The live-query
+// feeder (detectAndRecordToolStack → recordBelief seam) writes the same belief key from signals we
+// don't ingest (metafield namespaces); reconciling the two feeders is a deferred design call.
+function toolStack(context, definition) {
+  const signals = context.toolStackSignals ?? {};
+  const detected = detectToolStack(signals);
+  if (detected.length < 1) {
+    return skipped(
+      definition,
+      "insufficient_data",
+      "No third-party tool signatures matched the observed Shopify signals.",
+      {
+        metafieldNamespaces: (signals.metafieldNamespaces ?? []).length,
+        gateways: (signals.gateways ?? []).length,
+        orderTags: (signals.orderTags ?? []).length,
+        customerTags: (signals.customerTags ?? []).length,
+        fulfillmentServices: (signals.fulfillmentServices ?? []).length,
+      },
+    );
+  }
+  const content = toolStackBeliefContent(detected);
+  return derived(context, definition, {
+    value: content.value,
+    confidence: content.confidence,
+    confidenceReason: content.confidenceReason,
+    summary: content.summary,
+    sampleSize: detected.length,
+    supportingValues: { toolIds: content.value.toolIds, categories: content.value.categories },
   });
 }
 

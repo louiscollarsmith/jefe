@@ -11,6 +11,7 @@ import { getBeliefDefinition } from "./conversational-belief-registry.server.js"
 import { isDerivationVersionChange } from "./derivation-versioning.server.js";
 import { deriveMerchantMemoryBeliefs } from "./shopify-derivations.server.js";
 import { runStoreUnderstandingPass } from "./store-understanding.server.js";
+import { makeToolStackBeliefRecorder } from "../integrations/tool-stack-belief.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -260,6 +261,27 @@ export async function upsertDerivedBelief(prisma, input) {
       ...input.evidence,
     });
     return { belief, changed: valueChanged, skipped: false };
+  });
+}
+
+/**
+ * Bind the real derived-belief write path (`upsertDerivedBelief`) to the tool-stack detection
+ * orchestrator's injected `recordBelief` seam. The integrations wiring (a separate lane) calls
+ * `detectAndRecordToolStack({ ..., recordBelief: toolStackBeliefRecorder(prisma, { shopId, logger }) })`
+ * once the orchestrator has a caller; until then the seam is inert. The belief is written at
+ * systemInference precedence (model inference) and superseded by any merchant correction — never
+ * merchant-confirmed. Kept here (not in the pure integrations module) so that module stays a leaf
+ * and `service`/`shopify-derivations` can both depend on it without an import cycle.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId?: string | null; logger?: { info?: Function; warn?: Function; error?: Function } }} [options]
+ */
+export function toolStackBeliefRecorder(prisma, options = {}) {
+  return makeToolStackBeliefRecorder({
+    upsertDerivedBelief,
+    prisma,
+    shopId: options.shopId ?? null,
+    logger: options.logger,
   });
 }
 
