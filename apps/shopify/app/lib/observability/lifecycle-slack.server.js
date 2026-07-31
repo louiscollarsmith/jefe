@@ -24,13 +24,26 @@ const log = baseLogger.child({ component: "lifecycle-slack" });
  * @property {number | null} [daysInstalled] For uninstalls: tenure, if known.
  */
 
+// The Jefe ops panel base URL (merchant drill-down lives at /merchant?shop=…).
+// Env-overridable, but the prod default is correct so no config is required.
+const OPS_APP_URL = (process.env.OPS_APP_URL || "https://admin.mynamejefe.com").replace(/\/+$/, "");
+
 /**
- * A Slack hyperlink to the shop's storefront, labelled with the domain — so an
- * install/uninstall line is one click from seeing the actual store.
+ * Primary Slack link: the shop domain → its Jefe **ops merchant view** (net
+ * revenue, margin, COGS coverage, churn reason, activity) — the high-value "who
+ * just (un)installed?" click for the team, not just the public storefront.
  * @param {string} shopDomain
  */
 function shopLink(shopDomain) {
-  return `<https://${shopDomain}|${shopDomain}>`;
+  return `<${OPS_APP_URL}/merchant?shop=${encodeURIComponent(shopDomain)}|${shopDomain}>`;
+}
+
+/**
+ * Secondary link → the actual storefront, for a quick look at the real store.
+ * @param {string} shopDomain
+ */
+function storeLink(shopDomain) {
+  return `<https://${shopDomain}|store ↗>`;
 }
 
 /**
@@ -40,15 +53,16 @@ function shopLink(shopDomain) {
  * @returns {string}
  */
 export function formatLifecycleText(input) {
+  const links = `${shopLink(input.shopDomain)} · ${storeLink(input.shopDomain)}`;
   if (input.event === "installed") {
     return input.reinstall
-      ? `🔄 Jefe re-installed — ${shopLink(input.shopDomain)} (a churned shop came back)`
-      : `🎉 Jefe installed — ${shopLink(input.shopDomain)}`;
+      ? `🔄 Jefe re-installed — ${links} (a churned shop came back)`
+      : `🎉 Jefe installed — ${links}`;
   }
   const days = typeof input.daysInstalled === "number" && input.daysInstalled > 0
     ? ` (after ${input.daysInstalled} ${input.daysInstalled === 1 ? "day" : "days"})`
     : "";
-  return `👋 Jefe uninstalled — ${shopLink(input.shopDomain)}${days}`;
+  return `👋 Jefe uninstalled — ${links}${days}`;
 }
 
 /**
