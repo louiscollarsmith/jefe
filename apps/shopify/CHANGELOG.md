@@ -5,6 +5,8 @@
 ### Added
 
 - **Conductor workspaces now copy local environment files into new branches.** Added a root `.worktreeinclude` so new Conductor workspaces carry the gitignored `.env` files for the root app, Shopify app, ops dashboard, growth/marketing apps and synthetic Shopify tool. This keeps local setup stable across workspace branches without committing secret values. `.worktreeinclude`.
+- **Ops dashboard setup now has a committed local environment template.** Added `apps/ops/.env.example` with the same local Postgres URL as the Shopify app, fail-closed shared password and local port settings the internal panel expects, so a new workspace can run ops without copying real secret values. `apps/ops/.env.example`.
+- **Ops dashboard local start now reads its `.env`.** Updated the ops app start/dev scripts to load `apps/ops/.env` when present, so local Basic Auth and database settings work from the copied template while Railway-injected variables still take precedence. `apps/ops/package.json`.
 
 ## 2026-07-31
 
