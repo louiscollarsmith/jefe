@@ -11,7 +11,7 @@ import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js"
 const FIXED_NOW = new Date("2026-07-28T12:00:00.000Z");
 
 const EXPECTED_SHOPIFY_SCOPES =
-  "read_products,write_products,read_orders,read_all_orders,read_customers,read_inventory,read_locations";
+  "read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations";
 
 test("deployment health reports the configured app environment", () => {
   assert.deepEqual(

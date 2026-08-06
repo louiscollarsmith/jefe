@@ -8,6 +8,10 @@
 - **Ops dashboard setup now has a committed local environment template.** Added `apps/ops/.env.example` with the same local Postgres URL as the Shopify app, fail-closed shared password and local port settings the internal panel expects, so a new workspace can run ops without copying real secret values. `apps/ops/.env.example`.
 - **Ops dashboard local start now reads its `.env`.** Updated the ops app start/dev scripts to load `apps/ops/.env` when present, so local Basic Auth and database settings work from the copied template while Railway-injected variables still take precedence. `apps/ops/package.json`.
 
+### Changed
+
+- **Shopify local setup scopes now include order, customer and inventory writes.** Updated the Shopify app env template, app config and local setup docs so wipe/seed preflight checks have the write scopes they require: `write_orders`, `write_customers` and `write_inventory`. `apps/shopify/.env.example`, `shopify.app.toml`.
+
 ## 2026-07-31
 
 ### Changed

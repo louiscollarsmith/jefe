@@ -85,7 +85,7 @@ SHOPIFY_API_VERSION=2026-07
 SHOPIFY_API_KEY=
 SHOPIFY_API_SECRET=
 SHOPIFY_APP_URL=https://<railway-staging-url>
-SCOPES=read_products,write_products,read_orders,read_all_orders,read_customers,read_inventory,read_locations
+SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations
 SHOP_CUSTOM_DOMAIN=
 
 DATABASE_URL=
