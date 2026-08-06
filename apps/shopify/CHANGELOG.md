@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-06
+
+### Added
+
+- **Conductor workspaces now copy local environment files into new branches.** Added a root `.worktreeinclude` so new Conductor workspaces carry the gitignored `.env` files for the root app, Shopify app, ops dashboard, growth/marketing apps and synthetic Shopify tool. This keeps local setup stable across workspace branches without committing secret values. `.worktreeinclude`.
+
 ## 2026-07-31
 
 ### Changed

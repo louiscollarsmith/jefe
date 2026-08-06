@@ -1,0 +1,12 @@
+.env
+.env.*
+apps/shopify/.env
+apps/shopify/.env.*
+apps/ops/.env
+apps/ops/.env.*
+apps/growth/.env
+apps/growth/.env.*
+apps/marketing/.env
+apps/marketing/.env.*
+tools/synthetic-shopify/.env
+tools/synthetic-shopify/.env.*
