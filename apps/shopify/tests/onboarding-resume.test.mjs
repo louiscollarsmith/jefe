@@ -11,14 +11,15 @@ import {
 test("ONBOARDING_STEPS is the canonical order", () => {
   assert.deepEqual(
     [...ONBOARDING_STEPS],
-    ["connect", "channels", "insights", "goals", "plan"],
+    ["connect", "insights", "goals", "plan"],
   );
 });
 
 test("onboardingStepIndex orders steps; -1 for unknown/missing", () => {
   assert.equal(onboardingStepIndex("connect"), 0);
-  assert.equal(onboardingStepIndex("plan"), 4);
-  assert.ok(onboardingStepIndex("goals") > onboardingStepIndex("channels"));
+  assert.equal(onboardingStepIndex("plan"), 3);
+  assert.ok(onboardingStepIndex("goals") > onboardingStepIndex("insights"));
+  assert.equal(onboardingStepIndex("channels"), -1);
   assert.equal(onboardingStepIndex("nope"), -1);
   assert.equal(onboardingStepIndex(null), -1);
 });
@@ -35,26 +36,16 @@ test("readFurthestStep validates and defaults to connect", () => {
   assert.equal(readFurthestStep([1, 2]), "connect");
 });
 
-test("resolveOnboardingStep: channels stays reachable while memory generates", () => {
-  // BUG-1 guarantee: explicit channels (or a channelProvider) is never clamped
-  // back to connect by the readiness gate.
+test("resolveOnboardingStep: channels is no longer an onboarding step", () => {
   assert.equal(
     resolveOnboardingStep({
       requestedStep: "channels",
       memoryReady: false,
       backfillComplete: false,
     }),
-    "channels",
+    "connect",
   );
-  assert.equal(
-    resolveOnboardingStep({
-      requestedStep: null,
-      hasChannelProvider: true,
-      memoryReady: false,
-      backfillComplete: false,
-    }),
-    "channels",
-  );
+  assert.equal(readFurthestStep({ furthestStep: "channels" }), "connect");
 });
 
 test("resolveOnboardingStep: an explicit content-step request is honored even before data is ready", () => {
@@ -114,9 +105,9 @@ test("resolveOnboardingStep: no explicit step resumes at the furthest reached", 
       requestedStep: null,
       memoryReady: true,
       backfillComplete: true,
-      furthestStep: "channels",
+      furthestStep: "insights",
     }),
-    "channels",
+    "insights",
   );
   assert.equal(
     resolveOnboardingStep({

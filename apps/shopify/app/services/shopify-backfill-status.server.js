@@ -9,6 +9,7 @@ import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.s
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
 import { DEFAULT_BACKFILL_DAYS } from "../lib/shopify/backfill-window.server.js";
+import { normalizeShopDomain } from "../lib/shopify/admin-graphql.server.js";
 
 export { DEFAULT_BACKFILL_DAYS };
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
@@ -22,12 +23,19 @@ export const BACKFILL_DOMAINS = [
   "refunds",
   MEMORY_BACKFILL_DOMAIN,
 ];
+export const INITIAL_COMMERCE_BACKFILL_DOMAINS = [
+  "products",
+  "inventory",
+  "orders",
+  "customers",
+  "refunds",
+];
 
 const JOB_PRIORITIES = {
   shop_backfill_start: 10,
   products_backfill: 20,
-  orders_backfill_365d: 30,
-  inventory_backfill: 40,
+  inventory_backfill: 30,
+  orders_backfill_365d: 40,
   backfill_delta_sync: 50,
   backfill_finalize: 70,
   [MEMORY_REFRESH_JOB_TYPE]: 80,
@@ -41,13 +49,19 @@ const JOB_PRIORITIES = {
  * @param {{ shopDomain: string; sessionId?: string | null; scopes?: string[]; rawPayload?: unknown }} input
  */
 export async function queueInstallShopifyBackfill(prisma, input) {
+  const shopDomain = normalizeShopDomain(input.shopDomain);
+  const existingShop = await prisma.shop.findUnique({
+    where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+    include: { backfillStatuses: true },
+  });
+  const isReinstall = wasUninstalled(existingShop);
   const scopes = input.scopes ?? [];
   const hasHistoricalOrders = hasReadAllOrders(scopes);
   const availableOrderHistoryDays = hasHistoricalOrders
     ? DEFAULT_BACKFILL_DAYS
     : FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS;
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
-    shopDomain: input.shopDomain,
+    shopDomain,
     accessTokenSessionId: input.sessionId,
     scopes,
     rawPayload: Object.assign(
@@ -55,6 +69,28 @@ export async function queueInstallShopifyBackfill(prisma, input) {
       jsonObject(input.rawPayload),
     ),
   });
+
+  if (
+    existingShop &&
+    !isReinstall &&
+    initialCommerceBackfillComplete(existingShop.backfillStatuses)
+  ) {
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: {
+        status: "active",
+        uninstalledAt: null,
+        historicalOrderAccess: hasHistoricalOrders ? "full" : "limited",
+        availableOrderHistoryDays,
+      },
+    });
+    return prisma.backfillJob.findUnique({
+      where: {
+        shopId_jobType: { shopId: shop.id, jobType: "shop_backfill_start" },
+      },
+    });
+  }
+
   const backfillStartedAt = new Date();
 
   await prisma.shop.update({
@@ -73,28 +109,38 @@ export async function queueInstallShopifyBackfill(prisma, input) {
   });
 
   await Promise.all(
-    BACKFILL_DOMAINS.map((domain) =>
-      upsertBackfillStatus(prisma, {
+    BACKFILL_DOMAINS.map((domain) => {
+      if (!shouldResetBackfillDomain(existingShop, domain, isReinstall)) {
+        return Promise.resolve(null);
+      }
+
+      return upsertBackfillStatus(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
         domain,
         status:
           domain === "shop" || domain === "webhooks" ? "complete" : "queued",
         startedAt:
-          domain === "shop" || domain === "webhooks" ? backfillStartedAt : null,
+          domain === "shop" || domain === "webhooks"
+            ? backfillStartedAt
+            : null,
         completedAt:
-          domain === "shop" || domain === "webhooks" ? backfillStartedAt : null,
+          domain === "shop" || domain === "webhooks"
+            ? backfillStartedAt
+            : null,
         recordsProcessed: 0,
         lastError: null,
         metadata:
           domain === "orders"
             ? {
                 availableOrderHistoryDays,
-                historicalOrderAccess: hasHistoricalOrders ? "full" : "limited",
+                historicalOrderAccess: hasHistoricalOrders
+                  ? "full"
+                  : "limited",
               }
             : {},
-      }),
-    ),
+      });
+    }),
   );
 
   return enqueueBackfillJob(prisma, {
@@ -260,6 +306,40 @@ export function splitScopes(scopes) {
 /** @param {string | string[] | null | undefined} scopes */
 export function hasReadAllOrders(scopes) {
   return splitScopes(scopes).includes("read_all_orders");
+}
+
+/**
+ * @param {{ status?: string | null; setupStatus?: string | null; uninstalledAt?: Date | string | null } | null} shop
+ */
+function wasUninstalled(shop) {
+  return Boolean(
+    shop &&
+      (shop.status === "uninstalled" ||
+        shop.setupStatus === "uninstalled" ||
+        shop.uninstalledAt),
+  );
+}
+
+/**
+ * @param {Array<{ domain: string; status: string | null }>} statuses
+ */
+function initialCommerceBackfillComplete(statuses) {
+  return INITIAL_COMMERCE_BACKFILL_DOMAINS.every((domain) =>
+    isCompleteStatus(statuses.find((status) => status.domain === domain)?.status),
+  );
+}
+
+/**
+ * @param {{ backfillStatuses?: Array<{ domain: string; status: string | null }> } | null} shop
+ * @param {string} domain
+ * @param {boolean} isReinstall
+ */
+function shouldResetBackfillDomain(shop, domain, isReinstall) {
+  if (isReinstall) return true;
+  if (domain === "shop" || domain === "webhooks") return true;
+  return !isCompleteStatus(
+    shop?.backfillStatuses?.find((status) => status.domain === domain)?.status,
+  );
 }
 
 /** @param {string} jobType */

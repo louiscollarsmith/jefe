@@ -41,6 +41,7 @@ import {
   buildMerchantGoalsPrompt,
   buildMerchantGoalsSystemPrompt,
 } from "./prompt.server.js";
+import { ensureMerchantPlanQueued } from "../merchant-plan/service.server.js";
 
 const ACTIVE_RUN_STATUSES = [GOAL_RUN_STATUS.queued, GOAL_RUN_STATUS.running];
 
@@ -366,6 +367,11 @@ export async function generateMerchantGoals(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       runId: run.id,
+    });
+    await ensureMerchantPlanQueued(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      resetAttempts: true,
     });
     return { status: GOAL_RUN_STATUS.completed, runId: run.id };
   } catch (error) {

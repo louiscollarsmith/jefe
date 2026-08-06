@@ -96,6 +96,7 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
     ...(insightRun?.findings ?? []).flatMap((finding) => finding.supportingBeliefIds),
   ]);
   const selectedBeliefs = beliefs
+    .filter((belief) => !isGeneratedOnboardingBelief(belief))
     .map((belief) => ({
       belief,
       score: beliefRelevanceScore(belief, directlySupportedBeliefIds),
@@ -221,6 +222,15 @@ function normalizeBelief(belief) {
     evidence: evidence.map((item) => safeText(item.summary, 140)).filter(Boolean).slice(0, 2),
     caveat: importantCaveat(belief, confidence),
   };
+}
+
+/** @param {any} belief */
+function isGeneratedOnboardingBelief(belief) {
+  return (belief.evidence ?? []).some(
+    (evidence) =>
+      evidence?.sourceType === "merchant_goals" &&
+      evidence?.evidenceType === "model_goal_generation",
+  );
 }
 
 function authorityLevel(precedence, status) {

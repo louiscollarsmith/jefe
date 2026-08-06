@@ -2,9 +2,17 @@
 
 import { MAX_BACKFILL_DAYS } from "./backfill-window.server.js";
 
-export const PRODUCTS_COUNT_QUERY = `#graphql
-  query JefeProductsCount {
-    productsCount(limit: null) {
+export const PRODUCT_VARIANTS_COUNT_QUERY = `#graphql
+  query JefeProductVariantsCount {
+    productVariantsCount(limit: null) {
+      count
+    }
+  }
+`;
+
+export const CUSTOMERS_COUNT_QUERY = `#graphql
+  query JefeCustomersCount {
+    customersCount(limit: null) {
       count
     }
   }

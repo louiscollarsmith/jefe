@@ -1,7 +1,7 @@
 // @ts-check
 
 export const MERCHANT_PLAN_JOB_TYPE = "merchant_plan_generate";
-export const MERCHANT_PLAN_PROMPT_VERSION = "merchant-plan-v1";
+export const MERCHANT_PLAN_PROMPT_VERSION = "merchant-plan-v2";
 export const MERCHANT_PLAN_SCHEMA_VERSION = "merchant-plan-schema-v1";
 export const MERCHANT_PLAN_SNAPSHOT_VERSION = "merchant-plan-snapshot-v1";
 

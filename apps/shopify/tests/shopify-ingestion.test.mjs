@@ -17,6 +17,7 @@ import {
 import {
   ensurePostOnboardingRecommendationsQueued,
   processNextBackfillJob,
+  processReadyBackfillJobs,
   recoverStaleRunningBackfillJobs,
 } from "../app/services/shopify-backfill-worker.server.js";
 import {
@@ -450,6 +451,9 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
   const sessionId = `offline-${suffix}`;
 
   try {
+    await prisma.shop.deleteMany({
+      where: { platform: "shopify", shopDomain },
+    });
     await prisma.session.create({
       data: {
         id: sessionId,
@@ -484,76 +488,32 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       select: { id: true },
     });
 
-    const start = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
+    const processedJobs = [
+      await processNextBackfillJobEventually(prisma, {
+        logger: silentLogger,
+        fetchImpl: createEvidenceBackfillFetch(suffix),
+        shopId: queuedShop.id,
+        loadOfflineToken: async () => "test-token",
+      }),
+    ];
+    await prisma.backfillJob.updateMany({
+      where: { shopId: queuedShop.id, status: "queued" },
+      data: { runAfter: new Date(0) },
     });
-    const products = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
-    const orders = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
-    const inventory = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
-    const delta = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
-    const finalize = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
-    const memory = await processNextBackfillJob(prisma, {
-      logger: silentLogger,
-      fetchImpl: createEvidenceBackfillFetch(suffix),
-      shopId: queuedShop.id,
-      // Stub the offline-token load: the backfill worker refreshes via the real
-      // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
-      // grant). Injecting a token exercises the job chain + fetchImpl, same as the
-      // pre-refresh code read a token from the session row.
-      loadOfflineToken: async () => "test-token",
-    });
+    for (let i = 0; i < 8; i += 1) {
+      processedJobs.push(
+        await processNextBackfillJobEventually(prisma, {
+          logger: silentLogger,
+          fetchImpl: createEvidenceBackfillFetch(suffix),
+          shopId: queuedShop.id,
+          // Stub the offline-token load: the backfill worker refreshes via the real
+          // unauthenticated.admin OAuth path, which throws in tests (no refresh-token
+          // grant). Injecting a token exercises the job chain + fetchImpl, same as the
+          // pre-refresh code read a token from the session row.
+          loadOfflineToken: async () => "test-token",
+        }),
+      );
+    }
 
     const shop = await prisma.shop.findUniqueOrThrow({
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
@@ -565,15 +525,44 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       },
     });
     const progress = await getShopBackfillProgress(prisma, { shopId: shop.id });
+    const jobsAtAssertion = await prisma.backfillJob.findMany({
+      where: { shopId: shop.id },
+      orderBy: [{ priority: "asc" }, { updatedAt: "asc" }],
+      select: { jobType: true, status: true, priority: true },
+    });
+    const jobStateMessage = JSON.stringify(jobsAtAssertion);
 
-    assert.equal(start.jobType, "shop_backfill_start");
-    assert.equal(products.jobType, "products_backfill");
-    assert.equal(orders.jobType, "orders_backfill_365d");
-    assert.equal(inventory.jobType, "inventory_backfill");
-    assert.equal(delta.jobType, "backfill_delta_sync");
-    assert.equal(finalize.jobType, "backfill_finalize");
-    assert.equal(memory.jobType, "merchant_memory_rebuild");
-    assert.equal(memory.status, "succeeded");
+    const processedTypes = processedJobs.map((job) => job?.jobType);
+    for (const jobType of [
+      "shop_backfill_start",
+      "products_backfill",
+      "inventory_backfill",
+      "orders_backfill_365d",
+      "backfill_delta_sync",
+      "backfill_finalize",
+      "merchant_memory_rebuild",
+    ]) {
+      assert.ok(processedTypes.includes(jobType), jobStateMessage);
+    }
+    assert.equal(
+      processedJobs.find((job) => job?.jobType === "merchant_memory_rebuild")
+        ?.status,
+      "succeeded",
+    );
+    assert.deepEqual(
+      jobsAtAssertion
+        .filter((job) =>
+          ["products_backfill", "inventory_backfill", "orders_backfill_365d"].includes(
+            job.jobType,
+          ),
+        )
+        .map((job) => [job.jobType, job.priority]),
+      [
+        ["products_backfill", 20],
+        ["inventory_backfill", 30],
+        ["orders_backfill_365d", 40],
+      ],
+    );
     assert.equal(shop.setupStatus, "ready");
     assert.equal(shop.products.length, 1);
     assert.equal(shop.orders.length, 1);
@@ -581,14 +570,141 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
     assert.equal(shop.inventoryLevels.length, 1);
     assert.equal(progress.productsComplete, true);
     assert.equal(progress.evidenceReady, true);
+    assert.equal(progress.statuses.products.totalRecordsEstimate, 1);
+    assert.equal(progress.statuses.customers.totalRecordsEstimate, 1);
+    assert.equal(progress.statuses.orders.totalRecordsEstimate, 1);
+
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain,
+      sessionId,
+      scopes: [
+        "read_products",
+        "read_orders",
+        "read_all_orders",
+        "read_customers",
+        "read_inventory",
+        "read_locations",
+      ],
+      rawPayload: { source: "same_install_oauth_callback" },
+    });
+    const normalOauthProgress = await getShopBackfillProgress(prisma, {
+      shopId: shop.id,
+    });
+    const queuedCommerceJobsAfterOauth = await prisma.backfillJob.count({
+      where: {
+        shopId: shop.id,
+        status: "queued",
+        jobType: {
+          in: [
+            "shop_backfill_start",
+            "products_backfill",
+            "inventory_backfill",
+            "orders_backfill_365d",
+          ],
+        },
+      },
+    });
+    assert.equal(queuedCommerceJobsAfterOauth, 0);
+    assert.equal(normalOauthProgress.statuses.products.status, "complete");
+    assert.equal(normalOauthProgress.statuses.inventory.status, "complete");
+    assert.equal(normalOauthProgress.statuses.orders.status, "complete");
+    assert.equal(normalOauthProgress.statuses.customers.status, "complete");
+    assert.equal(normalOauthProgress.statuses.refunds.status, "complete");
+
+    await enqueueBackfillJob(prisma, {
+      merchantId: shop.merchantId,
+      shopId: shop.id,
+      jobType: "shop_backfill_start",
+      payload: {
+        shopDomain,
+        sessionId,
+        scopes: [
+          "read_products",
+          "read_orders",
+          "read_all_orders",
+          "read_customers",
+          "read_inventory",
+          "read_locations",
+        ],
+      },
+    });
+    const guardedStart = await processNextBackfillJobEventually(prisma, {
+      logger: silentLogger,
+      fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: shop.id,
+      loadOfflineToken: async () => "test-token",
+    });
+    const queuedCommerceJobsAfterGuardedStart = await prisma.backfillJob.count({
+      where: {
+        shopId: shop.id,
+        status: "queued",
+        jobType: {
+          in: [
+            "products_backfill",
+            "inventory_backfill",
+            "orders_backfill_365d",
+          ],
+        },
+      },
+    });
+    assert.equal(guardedStart.jobType, "shop_backfill_start");
+    assert.equal(guardedStart.result.queued, 0);
+    assert.deepEqual(guardedStart.result.incompleteDomains, []);
+    assert.equal(queuedCommerceJobsAfterGuardedStart, 0);
+
+    await markShopifyInstallInactive(prisma, shopDomain);
+    await prisma.session.create({
+      data: {
+        id: `${sessionId}-reinstall`,
+        shop: shopDomain,
+        state: "test",
+        isOnline: false,
+        scope:
+          "read_products,read_orders,read_all_orders,read_customers,read_inventory,read_locations",
+        accessToken: "test-token",
+      },
+    });
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain,
+      sessionId: `${sessionId}-reinstall`,
+      scopes: [
+        "read_products",
+        "read_orders",
+        "read_all_orders",
+        "read_customers",
+        "read_inventory",
+        "read_locations",
+      ],
+      rawPayload: { source: "reinstall_oauth_callback" },
+    });
+    const reinstalledProgress = await getShopBackfillProgress(prisma, {
+      shopId: shop.id,
+    });
+    const requeuedStart = await prisma.backfillJob.findUniqueOrThrow({
+      where: {
+        shopId_jobType: { shopId: shop.id, jobType: "shop_backfill_start" },
+      },
+    });
+    assert.equal(requeuedStart.status, "queued");
+    assert.equal(reinstalledProgress.statuses.products.status, "queued");
+    assert.equal(reinstalledProgress.statuses.inventory.status, "queued");
+    assert.equal(reinstalledProgress.statuses.orders.status, "queued");
+    assert.equal(reinstalledProgress.statuses.customers.status, "queued");
+    assert.equal(reinstalledProgress.statuses.refunds.status, "queued");
 
     await prisma.backfillJob.updateMany({
       where: { shopId: shop.id },
       data: { status: "failed" },
     });
+    const failedForRetry = await prisma.backfillJob.count({
+      where: { shopId: shop.id, status: "failed" },
+    });
     const retry = await retryFailedBackfillJobs(prisma, { shopId: shop.id });
-    assert.equal(retry.retried, 8);
+    assert.equal(retry.retried, failedForRetry);
   } finally {
+    await prisma.shop.deleteMany({
+      where: { platform: "shopify", shopDomain },
+    });
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.session.deleteMany({ where: { shop: shopDomain } });
     await prisma.$disconnect();
@@ -639,7 +755,7 @@ test("stale running evidence backfill jobs are recovered", async (t) => {
   }
 });
 
-test("completed full memory rebuild queues Plan and Goals refresh for an onboarded shop", async (t) => {
+test("completed full memory rebuild queues Insights; downstream generation cascades", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for recommendation refresh tests");
     return;
@@ -665,28 +781,19 @@ test("completed full memory rebuild queues Plan and Goals refresh for an onboard
       jobType: MEMORY_REFRESH_JOB_TYPE,
       payload: { reason: "test_new_orders", categories: [] },
     });
-    const result = await processNextBackfillJob(prisma, {
+    const result = await processNextBackfillJobEventually(prisma, {
       logger: silentLogger,
       shopId: fixture.shop.id,
     });
 
-    const planJob = await prisma.backfillJob.findFirst({
-      where: { shopId: fixture.shop.id, jobType: MERCHANT_PLAN_JOB_TYPE },
-    });
-    const goalsJob = await prisma.backfillJob.findFirst({
-      where: { shopId: fixture.shop.id, jobType: MERCHANT_GOALS_JOB_TYPE },
-    });
     const insightsJob = await prisma.backfillJob.findFirst({
       where: { shopId: fixture.shop.id, jobType: MERCHANT_INSIGHTS_JOB_TYPE },
     });
 
-    assert.equal(result.jobType, MEMORY_REFRESH_JOB_TYPE);
-    assert.equal(result.status, "succeeded");
-    assert.ok(planJob, "Plan job should be queued after a rebuild for an onboarded shop");
-    assert.equal(planJob.status, "queued");
-    assert.ok(goalsJob, "Goals job should be queued after a rebuild for an onboarded shop");
-    assert.equal(goalsJob.status, "queued");
-    assert.ok(insightsJob, "Insights job should still be queued after a full rebuild");
+    assert.equal(result?.jobType, MEMORY_REFRESH_JOB_TYPE);
+    assert.equal(result?.status, "succeeded");
+    assert.ok(insightsJob, "Insights job should be queued after a full rebuild");
+    assert.match(insightsJob.status, /^(queued|running)$/);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Recommendation Refresh Test ${suffix}` },
@@ -721,7 +828,7 @@ test("completed full memory rebuild does not queue Plan or Goals before onboardi
       jobType: MEMORY_REFRESH_JOB_TYPE,
       payload: { reason: "test_new_orders", categories: [] },
     });
-    const result = await processNextBackfillJob(prisma, {
+    const result = await processNextBackfillJobEventually(prisma, {
       logger: silentLogger,
       shopId: fixture.shop.id,
     });
@@ -736,7 +843,7 @@ test("completed full memory rebuild does not queue Plan or Goals before onboardi
       where: { shopId: fixture.shop.id, jobType: MERCHANT_INSIGHTS_JOB_TYPE },
     });
 
-    assert.equal(result.status, "succeeded");
+    assert.equal(result?.status, "succeeded");
     assert.equal(
       planJob,
       null,
@@ -839,10 +946,12 @@ test("an unchanged belief snapshot reuses completed Plan and Goals runs without 
     const goalsJob = await prisma.backfillJob.findFirst({
       where: { shopId: fixture.shop.id, jobType: MERCHANT_GOALS_JOB_TYPE },
     });
+    const insightsJob = await prisma.backfillJob.findFirst({
+      where: { shopId: fixture.shop.id, jobType: MERCHANT_INSIGHTS_JOB_TYPE },
+    });
 
     assert.equal(outcome.status, "ensured");
-    assert.equal(outcome.plan, "reused");
-    assert.equal(outcome.goals, "reused");
+    assert.equal(outcome.insights, "queued");
     assert.equal(
       planRunsAfter,
       planRunsBefore,
@@ -858,16 +967,9 @@ test("an unchanged belief snapshot reuses completed Plan and Goals runs without 
       "completed",
       "The completed Plan run stays completed and is not re-queued",
     );
-    assert.equal(
-      planJob,
-      null,
-      "No Plan generation job is enqueued when the snapshot is unchanged",
-    );
-    assert.equal(
-      goalsJob,
-      null,
-      "No Goals generation job is enqueued when the snapshot is unchanged",
-    );
+    assert.equal(planJob, null);
+    assert.equal(goalsJob, null);
+    assert.equal(insightsJob?.status, "queued");
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Recommendation Refresh Test ${suffix}` },
@@ -1026,6 +1128,21 @@ function uniqueSuffix() {
   );
 }
 
+async function processNextBackfillJobEventually(prisma, options) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (options?.shopId) {
+      await prisma.backfillJob.updateMany({
+        where: { shopId: options.shopId, status: "queued" },
+        data: { runAfter: new Date(0) },
+      });
+    }
+    const result = await processNextBackfillJob(prisma, options);
+    if (result) return result;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
 function mockRestProductPayload(suffix) {
   return {
     id: 9000,
@@ -1173,8 +1290,11 @@ function mockGraphqlInventoryItemPayload(suffix) {
 function createEvidenceBackfillFetch(suffix) {
   return async (_url, init) => {
     const body = JSON.parse(init.body);
-    if (body.query.includes("JefeProductsCount")) {
-      return Response.json({ data: { productsCount: { count: 1 } } });
+    if (body.query.includes("JefeProductVariantsCount")) {
+      return Response.json({ data: { productVariantsCount: { count: 1 } } });
+    }
+    if (body.query.includes("JefeCustomersCount")) {
+      return Response.json({ data: { customersCount: { count: 1 } } });
     }
     if (body.query.includes("JefeOrdersCount")) {
       return Response.json({ data: { ordersCount: { count: 1 } } });

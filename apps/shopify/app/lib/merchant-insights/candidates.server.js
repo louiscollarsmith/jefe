@@ -49,6 +49,7 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
 
   const scored = withRecencyScores(
     beliefs
+      .filter((belief) => !isGeneratedOnboardingBelief(belief))
       .map((belief) => {
         const candidate = normalizeBeliefCandidate(belief);
         if (!candidate) return null;
@@ -101,6 +102,15 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     droppedCategories: selection.droppedCategories,
     memoryRefreshRunId: memoryRefreshRun?.id ?? null,
   };
+}
+
+/** @param {any} belief */
+function isGeneratedOnboardingBelief(belief) {
+  return (belief.evidence ?? []).some(
+    (evidence) =>
+      evidence?.sourceType === "merchant_goals" &&
+      evidence?.evidenceType === "model_goal_generation",
+  );
 }
 
 /**
