@@ -12,8 +12,6 @@ app. It runs as its own service with its own login.
 ```bash
 cd apps/ops
 npm install
-OPS_PASSWORD=choose-a-password \
-DATABASE_URL="postgresql://…"   # read access to the Jefe Postgres
 npm start                        # http://localhost:4000
 ```
 
@@ -23,6 +21,9 @@ npm start                        # http://localhost:4000
 - **Data:** read-only queries against `activity_events` (written by `track()` in
   `apps/shopify`). Point `DATABASE_URL` (or `DATABASE_PUBLIC_URL`) at the target
   environment — for prod, prefer a **read-only** Postgres user.
+- **Local env:** `npm start` loads `apps/ops/.env` when it exists. Start from
+  `.env.example`, which points at the same local Postgres database as
+  `apps/shopify`.
 
 ## Deploy (Railway)
 
@@ -30,7 +31,7 @@ Deploy `apps/ops` as its own Railway service:
 
 - Root directory: `apps/ops`, start command: `npm start`.
 - Variables: `DATABASE_URL` (read-only user recommended), `OPS_PASSWORD`, `PORT`
-  (Railway sets `PORT`).
+  (Railway sets `PORT`). Platform variables override `.env` values.
 - Healthcheck path: `/healthz`.
 
 ## Security notes
