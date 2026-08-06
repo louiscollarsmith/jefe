@@ -30,6 +30,12 @@ const CUSTOMER_COUNT_INSPECTION = `query SyntheticCustomerCountInspection {
   customersCount { count }
 }`;
 
+const ACCESS_SCOPES = `query SyntheticSeedAccessScopes {
+  currentAppInstallation {
+    accessScopes { handle }
+  }
+}`;
+
 export async function inspectDestination({ shopDomain, accessToken }) {
   const client = createClient({ shopDomain, accessToken });
   const inspection = await client.request(SHOP_INSPECTION, {
@@ -82,6 +88,14 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
       }),
     { shopDomain: safe.shopDomain, credentialSource: credential.source },
   );
+  const currentScopes = await readCurrentScopes(
+    createClient({
+      shopDomain: safe.shopDomain,
+      accessToken: credential.accessToken,
+    }),
+  );
+  const requiredScopes = requiredImportScopes(dataset, inspection);
+  const missingScopes = missingImportScopes(currentScopes, requiredScopes);
   markPhase(manifest, "create_manifest", "completed", 1);
   markPhase(manifest, "generate_dataset", "completed", 1);
   markPhase(manifest, "validate_destination", "completed", 1);
@@ -100,9 +114,17 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
     credentialSource: credential.source,
     credentialExpires: credential.expires,
     credentialRefreshed: credential.refreshed,
+    requiredScopes,
+    currentScopes,
+    missingScopes,
   });
 
   if (dryRun) return { dryRun: true, manifest, inspection };
+  if (missingScopes.length > 0) {
+    throw new Error(
+      `Refusing live seed because the Shopify token is missing required scopes: ${missingScopes.join(", ")}.`,
+    );
+  }
 
   const client = createRefreshableClient({
     shopDomain: safe.shopDomain,
@@ -125,6 +147,36 @@ export async function importDatasetToShopify({ dataset, manifest, dryRun = false
   await writeBeliefCoverage(dataset, manifest, () => persistRun({ dataset, manifest }));
   persistRun({ dataset, manifest });
   return { dryRun: false, manifest };
+}
+
+async function readCurrentScopes(client) {
+  const data = await client.request(ACCESS_SCOPES);
+  return (data.currentAppInstallation?.accessScopes || [])
+    .map((scope) => scope.handle)
+    .filter(Boolean);
+}
+
+export function requiredImportScopes(dataset, inspection = {}) {
+  const scopes = [
+    "read_products",
+    "write_products",
+    "read_locations",
+    "read_inventory",
+    "write_inventory",
+    "read_customers",
+    "write_customers",
+    "read_orders",
+    "write_orders",
+  ];
+  const existingLocationNames = new Set((inspection.locations?.nodes || []).map((location) => location.name));
+  const missingSyntheticLocation = (dataset.inventoryLocations || []).some((location) => !existingLocationNames.has(location.name));
+  if (missingSyntheticLocation) scopes.splice(4, 0, "write_locations");
+  return scopes;
+}
+
+export function missingImportScopes(currentScopes, requiredScopes) {
+  const current = new Set(currentScopes);
+  return requiredScopes.filter((scope) => !current.has(scope));
 }
 
 export async function hydrateExistingSyntheticMappings(client, dataset, manifest, inspection, logger, persist) {

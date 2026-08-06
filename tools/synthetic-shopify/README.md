@@ -103,6 +103,7 @@ The manifest is the resume boundary and stores source-to-Shopify ID mappings.
 ## Profiles
 
 - `smoke`: 250 non-test orders, 180 customers, 365 days.
+- `local_300`: 300 non-test orders, 260 customers, 365 days. Use this for `jefe-local-store.myshopify.com`.
 - `realistic`: 590 non-test orders, 780 customers, 365 days, 24 active products, 3 archived products, 2 draft products.
 - `load`: 3,000 non-test orders, 1,850 customers, 365 days.
 
@@ -113,6 +114,14 @@ The same `--seed` and `--as-of` reproduce the same source dataset.
 The generator, planner, manifest/resume bookkeeping, validation, belief-coverage report and live Shopify import phases are implemented and tested.
 
 Live Shopify writes are fail-closed and can create products, collections, variants, locations, inventory levels, customers, historical orders and refunds against the Admin GraphQL 2026-07 API. Inventory and refund mutations use Shopify idempotency keys, order creation is paced/retried for Shopify attempt limits, and failed mutation responses are printed with GraphQL `errors` or mutation `userErrors`.
+
+Live seed preflights the target token's scopes before writing. A full local-store seed needs:
+
+```text
+read_products,write_products,read_locations,read_inventory,write_inventory,read_customers,write_customers,read_orders,write_orders
+```
+
+If the synthetic locations are not already present in the target store, it also needs `write_locations`.
 
 Order creation defaults to a 12.5 second delay between successful orders (`4.8` orders/minute) to stay below Shopify development-store limits. Override with `SYNTHETIC_SHOPIFY_ORDER_DELAY_MS` only when the target store has a higher confirmed order-create limit.
 
@@ -136,6 +145,25 @@ npm --prefix tools/synthetic-shopify run synthetic-shopify -- wipe \
   --shop jefe-local-store.myshopify.com \
   --include-orders \
   --yes
+```
+
+After wiping `jefe-local-store.myshopify.com`, reseed it with the local 300-order profile:
+
+```bash
+ALLOW_SYNTHETIC_SHOPIFY_SEED=true \
+SYNTHETIC_SHOPIFY_ALLOWED_SHOPS=jefe-local-store.myshopify.com \
+npm --prefix tools/synthetic-shopify run synthetic-shopify -- seed \
+  --shop jefe-local-store.myshopify.com \
+  --profile local_300 \
+  --seed 1042026 \
+  --as-of 2026-08-06T12:00:00+01:00
+```
+
+If the app database was reset before seeding, restore or recreate the offline Shopify `Session` row first, then run the app backfill so the local DB contains the newly seeded store records:
+
+```bash
+cd apps/shopify
+npm run shopify:backfill -- --shop jefe-local-store.myshopify.com
 ```
 
 Required Shopify scopes for product/customer wipe:

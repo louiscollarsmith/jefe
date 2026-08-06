@@ -22,8 +22,10 @@ import {
   isAlreadyExistsError,
   mapExistingProductVariants,
   missingInventoryItemIds,
+  missingImportScopes,
   orderDelayMs,
   refreshInventoryQuantityEntriesForProduct,
+  requiredImportScopes,
   staleInventoryQuantityIndexes,
   syncProductVariants,
 } from "../src/importers/shopify.mjs";
@@ -83,6 +85,30 @@ test("realistic profile matches required core counts and commercial ranges", () 
   assert.ok(dataset.metrics.basket.averageItems >= 2 && dataset.metrics.basket.averageItems <= 2.4);
 });
 
+test("local_300 profile gives local-store a 365-day dataset of about 300 orders", () => {
+  const dataset = generateSyntheticShopifyDataset({
+    profile: "local_300",
+    seed: 1042026,
+    asOf,
+    shopDomain: "jefe-local-store.myshopify.com",
+  });
+  const report = validateSyntheticDataset(dataset);
+
+  assert.equal(report.ok, true);
+  assert.equal(dataset.meta.orderHistoryDays, 365);
+  assert.equal(dataset.plannedCounts.activeProducts, 22);
+  assert.equal(dataset.plannedCounts.archivedProducts, 2);
+  assert.equal(dataset.plannedCounts.draftProducts, 1);
+  assert.equal(dataset.plannedCounts.customers, 260);
+  assert.equal(dataset.plannedCounts.nonTestOrders, 300);
+  assert.equal(dataset.plannedCounts.testOrders, 5);
+  assert.equal(dataset.plannedCounts.orders, 305);
+  assert.equal(dataset.plannedCounts.guestOrders, 24);
+  assert.ok(dataset.plannedCounts.refunds >= 20 && dataset.plannedCounts.refunds <= 25);
+  assert.ok(dataset.metrics.customers.knownCustomerShare >= 90);
+  assert.ok(dataset.metrics.refunds.refundedOrderIncidence >= 6 && dataset.metrics.refunds.refundedOrderIncidence <= 8);
+});
+
 test("customer repeat orders resolve to the same synthetic customer entity", () => {
   const dataset = generateSyntheticShopifyDataset({
     profile: "realistic",
@@ -123,7 +149,7 @@ test("seasonality and recency windows are present", () => {
 });
 
 test("all profile orders are generated inside the last 365 days", () => {
-  for (const profile of ["smoke", "realistic", "load"]) {
+  for (const profile of ["smoke", "local_300", "realistic", "load"]) {
     const dataset = generateSyntheticShopifyDataset({
       profile,
       seed: 1042026,
@@ -423,6 +449,51 @@ test("order create pacing defaults below Shopify dev-store limit", () => {
     if (originalDelay === undefined) delete process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS;
     else process.env.SYNTHETIC_SHOPIFY_ORDER_DELAY_MS = originalDelay;
   }
+});
+
+test("live seed scope preflight reports customer, order and inventory write gaps before importing", () => {
+  const dataset = generateSyntheticShopifyDataset({
+    profile: "local_300",
+    seed: 1042026,
+    asOf,
+    shopDomain: "jefe-local-store.myshopify.com",
+  });
+  const required = requiredImportScopes(dataset, {
+    locations: {
+      nodes: [
+        { name: "London Warehouse" },
+        { name: "Events & Sampling" },
+      ],
+    },
+  });
+
+  assert.equal(required.includes("write_locations"), false);
+  assert.deepEqual(
+    missingImportScopes(
+      [
+        "read_all_orders",
+        "read_customers",
+        "read_inventory",
+        "read_locations",
+        "read_orders",
+        "read_products",
+        "write_products",
+      ],
+      required,
+    ),
+    ["write_inventory", "write_customers", "write_orders"],
+  );
+});
+
+test("live seed scope preflight requires write_locations only when synthetic locations are absent", () => {
+  const dataset = generateSyntheticShopifyDataset({
+    profile: "local_300",
+    seed: 1042026,
+    asOf,
+    shopDomain: "jefe-local-store.myshopify.com",
+  });
+
+  assert.equal(requiredImportScopes(dataset, { locations: { nodes: [] } }).includes("write_locations"), true);
 });
 
 test("refund create falls back to payment-only input after Shopify calculation errors", async () => {
@@ -982,7 +1053,7 @@ test("coverage command reads the active deterministic belief registry", () => {
     asOf,
   });
   const report = buildBeliefCoverageReport(dataset);
-  assert.equal(report.length, 104);
+  assert.equal(report.length, 133);
   assert.ok(report.some((entry) => entry.beliefKey === "orders.total_order_count"));
   assert.ok(report.some((entry) => entry.expectedOutcome === "derived_zero"));
 });
