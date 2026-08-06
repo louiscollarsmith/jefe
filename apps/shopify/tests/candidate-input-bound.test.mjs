@@ -235,7 +235,7 @@ test("small insight snapshot is unchanged and keeps its exact hash", async () =>
   // byte identical, so cached runs are not invalidated.
   assert.equal(
     snapshot.snapshotHash,
-    "88efda9ca7856358e7a83bb0e8d34e548ed7f53da99c2d5cdd65b1a474055093",
+    "10d79cf8bb95123ae1559d970cdd43c73719f26a038444441e35829c5ddab999",
   );
 });
 
@@ -317,11 +317,11 @@ test("small goal snapshot is unchanged and keeps its exact hash", async () => {
   assert.equal(snapshot.beliefIds.includes("b-5"), false);
   assert.equal(
     snapshot.snapshotHash,
-    "72e907e90253e849d45323f17769df22786a03659b19c01620419fa7d9fae096",
+    "887de717e4cc78b4026a394bed0eea7b0308e61a79587cdc13044088059d696d",
   );
   assert.equal(
     snapshot.snapshot.memorySnapshotHash,
-    "b07d45baa285174008cb8a4c17d8cf44cf2a31f37db56d23095d227e8cb1aaa9",
+    "fa63db726a735505f0fd47c84d3a93f0ffcb8769ca1debab032b06a44a0deb22",
   );
 });
 

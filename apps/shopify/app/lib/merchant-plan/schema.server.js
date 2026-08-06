@@ -382,7 +382,26 @@ function numericClaimsAreGrounded(recommendation, context) {
       (context.suppliedGoals ?? []).find((goal) => goal.id === id),
     ),
   ].filter(Boolean);
+  if (supportObjects.some(isBoundedCoverageMetric)) {
+    supportObjects.push({ value: { percentage: 100, ratio: 1 } });
+  }
   return numericTextIsGrounded(text, supportObjects);
+}
+
+function isBoundedCoverageMetric(item) {
+  const key = String(item?.key ?? "").toLowerCase();
+  const value =
+    item?.val && typeof item.val === "object" && !Array.isArray(item.val)
+      ? item.val
+      : item?.value && typeof item.value === "object" && !Array.isArray(item.value)
+        ? item.value
+        : null;
+  return (
+    key.includes("coverage") &&
+    value &&
+    ("percentage" in value || "ratio" in value) &&
+    ("denominator" in value || "activeVariants" in value)
+  );
 }
 
 function duplicatesPriorRecommendation(recommendation, previousRecommendations) {

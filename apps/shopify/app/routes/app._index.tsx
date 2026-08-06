@@ -4,8 +4,8 @@ import type {
   LoaderFunctionArgs,
   ShouldRevalidateFunctionArgs,
 } from "react-router";
-import type { ChangeEvent, DragEvent, FormEvent, ReactNode } from "react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Form,
   redirect,
@@ -31,7 +31,6 @@ import {
   Card,
   Checkbox,
   Collapsible,
-  Icon,
   InlineGrid,
   InlineStack,
   Modal,
@@ -40,7 +39,6 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
-import { CheckCircleIcon, FileIcon, UploadIcon } from "@shopify/polaris-icons";
 
 // DailyHome renders DIRECTLY (not lazy) on the returning-user daily path. It was
 // lazy()+<Suspense> before, but that made its boundary hydrate asynchronously —
@@ -114,7 +112,6 @@ import {
   getLatestMerchantGoals,
   getMerchantGoalsExperience,
   processMerchantGoalMessage,
-  processMerchantGoalsDocument,
 } from "../lib/merchant-goals/service.server.js";
 import {
   GOAL_HORIZONS,
@@ -168,8 +165,6 @@ import {
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
-const GOALS_DOCUMENT_ACCEPT = ".pdf,.docx,.md,.markdown,.txt";
-const GOALS_DOCUMENT_TYPES = ["PDF", "Word", "Markdown", "Text"];
 const SHOP_METADATA_QUERY = `#graphql
   query JefeShopMetadata {
     shop {
@@ -648,28 +643,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           appPathFromSearch(new URL(request.url).search, {
             step: "goals",
             goalsNotice: "message_saved",
-          }),
-        );
-      }
-
-      if (intent === "goals.upload") {
-        const result = await processMerchantGoalsDocument(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          file: formData.get("goalsFile"),
-        });
-        if (!result.ok) {
-          const uploadError = result as { error?: string };
-          return {
-            ok: false,
-            error: uploadError.error ?? "That file could not be read.",
-            intent,
-          };
-        }
-        return redirect(
-          appPathFromSearch(new URL(request.url).search, {
-            step: "goals",
-            goalsNotice: "file_saved",
           }),
         );
       }
@@ -1283,28 +1256,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop.id,
     }),
   ]);
-  const slackConnection = channelConnections.find(
-    (item) => item.provider === "slack",
-  );
-  const shouldLoadSlackDestinations =
-    activeStep === "channels" &&
-    slackConnection &&
-    [
-      CHANNEL_STATUS.needsConfiguration,
-      CHANNEL_STATUS.connected,
-      CHANNEL_STATUS.degraded,
-    ].includes(slackConnection.status);
-  const slackDestinationResult = shouldLoadSlackDestinations
-    ? await listSlackDestinations(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-      })
-        .then((destinations) => ({ destinations, error: null }))
-        .catch((error) => ({
-          destinations: [],
-          error: channelActionError(error).message,
-        }))
-    : { destinations: [], error: null };
+  const slackDestinationResult = { destinations: [], error: null };
   if (activeStep === "insights" && readiness.memoryReady && backfill.complete) {
     await ensureMerchantInsightsQueued(prisma, {
       merchantId: merchant.id,
@@ -1406,7 +1358,7 @@ export default function AppIndex() {
   const safeActionError = getSafeActionError(actionData);
   const canContinueToInsights =
     data.appMode === "onboarding"
-      ? data.memoryReady && Boolean(data.backfill.complete)
+      ? Boolean(data.backfill.importsComplete)
       : false;
   const shouldPollConnect =
     data.appMode === "onboarding" &&
@@ -1416,7 +1368,9 @@ export default function AppIndex() {
   const shouldPollInsights =
     data.appMode === "onboarding" &&
     data.activeStep === "insights" &&
-    shouldPollMerchantInsights(data.insights);
+    (!data.memoryReady ||
+      !data.backfill.complete ||
+      shouldPollMerchantInsights(data.insights));
   const shouldPollGoals =
     data.appMode === "onboarding" &&
     data.activeStep === "goals" &&
@@ -1479,15 +1433,6 @@ export default function AppIndex() {
           metrics={data.metrics}
           connected={data.connected}
           canContinue={canContinueToInsights}
-        />
-      ) : data.activeStep === "channels" ? (
-        <ChannelsStep
-          merchantName={data.merchantName}
-          connections={data.channelConnections}
-          slackDestinations={data.slackDestinations}
-          slackDestinationError={data.slackDestinationError}
-          hasVerifiedChannel={data.hasVerifiedChannel}
-          actionError={safeActionError}
         />
       ) : data.activeStep === "insights" ? (
         <InsightsStep
@@ -1685,9 +1630,9 @@ function OnboardingStepper({
               navigate(
                 appPathFromSearch(location.search, {
                   step,
-                  channelProvider: step === "connect" ? null : undefined,
-                  channelMode: step === "connect" ? null : undefined,
-                  channelNotice: step === "connect" ? null : undefined,
+                  channelProvider: null,
+                  channelMode: null,
+                  channelNotice: null,
                 }),
               )
             }
@@ -1732,7 +1677,11 @@ function ConnectStep({
         <Card padding="500">
           <BlockStack gap="500">
             <MetricGrid backfill={backfill} metrics={metrics} />
-            <LearningMilestones backfill={backfill} metrics={metrics} />
+            <LearningMilestones
+              backfill={backfill}
+              connected={connected}
+              metrics={metrics}
+            />
           </BlockStack>
         </Card>
       </div>
@@ -1743,7 +1692,7 @@ function ConnectStep({
             onClick={() =>
               navigate(
                 appPathFromSearch(location.search, {
-                  step: "channels",
+                  step: "insights",
                   channelProvider: null,
                   channelMode: null,
                   channelNotice: null,
@@ -1752,7 +1701,7 @@ function ConnectStep({
             }
             variant="primary"
           >
-            Continue to Channels
+            Continue to Insights
           </Button>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
@@ -1774,25 +1723,48 @@ function MetricGrid({
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
 }) {
   const tiles = [
-    backfill.productsComplete || metrics.skus > 0 || metrics.variants > 0
-      ? { label: "SKUs", value: formatInteger(metrics.skus) }
-      : { label: "SKUs", value: null },
-    backfill.customersComplete || metrics.customers > 0
-      ? { label: "customers", value: formatInteger(metrics.customers) }
-      : { label: "customers", value: null },
-    backfill.ordersComplete || metrics.orders > 0
-      ? { label: "orders", value: formatInteger(metrics.orders) }
-      : { label: "orders", value: null },
-    backfill.ordersComplete || metrics.monthlyRevenue
-      ? {
-          label: "revenue/month",
-          value: formatCurrency(metrics.monthlyRevenue ?? 0, metrics.currency),
-        }
-      : { label: "revenue/month", value: null },
+    {
+      label: "SKUs",
+      value: importTileValue({
+        imported: metrics.skus,
+        total: backfill.skuTotalEstimate,
+        complete: backfill.productsComplete,
+      }),
+    },
+    {
+      label: "stock levels",
+      value: importTileValue({
+        imported: metrics.inventoryRecords,
+        complete: backfill.inventoryComplete,
+      }),
+    },
+    {
+      label: "customers",
+      value: importTileValue({
+        imported: metrics.customers,
+        total: backfill.customersTotalEstimate,
+        complete: backfill.customersComplete,
+      }),
+    },
+    {
+      label: "orders",
+      value: importTileValue({
+        imported: metrics.orders,
+        total: backfill.ordersTotalEstimate,
+        complete: backfill.ordersComplete,
+      }),
+    },
+    {
+      label: "refunds",
+      value: importTileValue({
+        imported: metrics.refunds,
+        complete: backfill.refundsComplete,
+      }),
+    },
   ];
 
   return (
-    <InlineGrid columns={{ xs: 2, sm: 4 }} gap="300">
+    <InlineGrid columns={{ xs: 1, sm: 5 }} gap="300">
       {tiles.map((metric) => (
         <Box
           key={metric.label}
@@ -1818,60 +1790,153 @@ function MetricGrid({
   );
 }
 
+function importTileValue({
+  imported,
+  total,
+  complete,
+}: {
+  imported: number;
+  total?: number | null;
+  complete: boolean;
+}) {
+  const importedCount = Math.max(0, imported);
+  const hasTotal = typeof total === "number" && Number.isFinite(total);
+  if (complete) return formatInteger(importedCount);
+  if (importedCount <= 0 && (!hasTotal || total > 0)) return null;
+  if (hasTotal) {
+    return `${formatInteger(importedCount)} of ${formatInteger(total)}`;
+  }
+  return formatInteger(importedCount);
+}
+
 function LearningMilestones({
   backfill,
+  connected,
   metrics,
 }: {
   backfill: ReturnType<typeof summarizeBackfill>;
+  connected: boolean;
   metrics: Awaited<ReturnType<typeof getStoreMetrics>>;
 }) {
-  const skusComplete =
-    backfill.productsComplete || metrics.skus > 0 || metrics.variants > 0;
-  const ordersComplete = backfill.ordersComplete || metrics.orders > 0;
-  const noticingComplete = backfill.complete;
+  const milestones = [
+    {
+      key: "connected",
+      complete: connected,
+      done: "Connected to your Shopify store",
+      pending: "Connecting to your Shopify store",
+    },
+    {
+      key: "skus",
+      ...importMilestoneState({
+        status: backfill.productsStatus,
+        total: backfill.skuTotalEstimate,
+        imported: metrics.skus,
+        complete: backfill.productsComplete,
+        done: "Mapped every SKU and variant",
+        estimating: "Estimating SKUs and variants",
+        importing: "Importing SKUs and variants",
+      }),
+    },
+    {
+      key: "inventory",
+      ...importMilestoneState({
+        status: backfill.inventoryStatus,
+        imported: metrics.inventoryRecords,
+        complete: backfill.inventoryComplete,
+        done: "Mapped stock levels",
+        estimating: "Estimating stock levels",
+        importing: "Importing stock levels",
+      }),
+    },
+    {
+      key: "customers",
+      ...importMilestoneState({
+        status: backfill.customersStatus,
+        total: backfill.customersTotalEstimate,
+        imported: metrics.customers,
+        complete: backfill.customersComplete,
+        done: "Indexed customers",
+        estimating: "Estimating customers",
+        importing: "Importing customers",
+      }),
+    },
+    {
+      key: "orders",
+      ...importMilestoneState({
+        status: backfill.ordersStatus,
+        total: backfill.ordersTotalEstimate,
+        imported: metrics.orders,
+        complete: backfill.ordersComplete,
+        done: "Read up to 24 months of orders",
+        estimating: "Estimating orders",
+        importing: "Importing up to 24 months of orders",
+      }),
+    },
+    {
+      key: "refunds",
+      ...importMilestoneState({
+        status: backfill.refundsStatus,
+        imported: metrics.refunds,
+        complete: backfill.refundsComplete,
+        done: "Read refunds",
+        estimating: "Estimating refunds",
+        importing: "Importing refunds",
+      }),
+    },
+  ];
 
   return (
     <BlockStack gap="200">
-      <Milestone complete>Connected to your Shopify store</Milestone>
-      <Milestone current={!skusComplete} complete={skusComplete}>
-        {skusComplete ? "Mapped every SKU and variant" : "Reading your SKUs"}
-      </Milestone>
-      {skusComplete ? (
-        <Milestone current={!ordersComplete} complete={ordersComplete}>
-          {ordersComplete
-            ? "Read up to 24 months of orders and refunds"
-            : "Reading your orders"}
+      {milestones.map((milestone) => (
+        <Milestone key={milestone.key} complete={milestone.complete}>
+          {milestone.complete ? milestone.done : milestone.pending}
         </Milestone>
-      ) : null}
-      {ordersComplete ? (
-        <Milestone current={!noticingComplete} complete={noticingComplete}>
-          Noticing a few things worth talking about...
-        </Milestone>
-      ) : null}
+      ))}
     </BlockStack>
   );
+}
+
+function importMilestoneState({
+  status,
+  total,
+  imported,
+  complete,
+  done,
+  estimating,
+  importing,
+}: {
+  status: string | null;
+  total?: number | null;
+  imported: number;
+  complete: boolean;
+  done: string;
+  estimating: string;
+  importing: string;
+}) {
+  const hasEstimate = typeof total === "number" && Number.isFinite(total);
+  const hasStarted =
+    status === "running" || status === "complete" || imported > 0 || hasEstimate;
+  return {
+    complete,
+    done,
+    pending: hasStarted ? importing : estimating,
+  };
 }
 
 function Milestone({
   children,
   complete,
-  current,
 }: {
   children: ReactNode;
   complete?: boolean;
-  current?: boolean;
 }) {
   return (
-    <div
-      className={`JefeMilestone ${complete ? "is-complete" : ""} ${
-        current ? "is-current" : ""
-      }`}
-    >
+    <div className={`JefeMilestone ${complete ? "is-complete" : "is-current"}`}>
       <span className={`JefeMilestoneIcon ${complete ? "is-complete" : ""}`}>
-        {current && !complete ? (
-          <Spinner size="small" accessibilityLabel="In progress" />
-        ) : (
+        {complete ? (
           "✓"
+        ) : (
+          <Spinner size="small" accessibilityLabel="In progress" />
         )}
       </span>
       <span className="JefeMilestoneText">{children}</span>
@@ -1879,6 +1944,9 @@ function Milestone({
   );
 }
 
+// Kept while Channels is removed from first-run onboarding; the connector UI and
+// actions remain intact for post-onboarding channel setup.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function ChannelsStep({
   merchantName,
   connections,
@@ -2092,6 +2160,7 @@ function InsightsStep({
       <InsightStatusScene
         title="I'm turning your store data into a first understanding of the business."
         detail={backfill.detail}
+        skeleton
         action={
           <Button
             onClick={() =>
@@ -2145,10 +2214,19 @@ function InsightsStep({
     currentRun?.status === INSIGHT_RUN_STATUS.insufficientData ||
     (!selectedRun && (insights?.candidateCount ?? 0) < 3)
   ) {
+    const validationRejected = isInsightValidationRejection(currentRun);
     return (
       <InsightStatusScene
-        title="I don't have enough supported signals for useful findings yet."
-        detail="The available Merchant Memory is still too thin or uncertain, so I won't make up insights."
+        title={
+          validationRejected
+            ? "I rejected the first generated findings."
+            : "I don't have enough supported signals for useful findings yet."
+        }
+        detail={
+          validationRejected
+            ? "The model output did not pass Jefe's grounding checks, so I didn't show it as business truth."
+            : "The available Merchant Memory is still too thin or uncertain, so I won't make up insights."
+        }
         action={
           <InlineStack gap="300" align="center">
             <Button
@@ -2324,22 +2402,11 @@ function GoalsStep({
     )
     .slice(-6);
   const [message, setMessage] = useState("");
-  const navigation = useNavigation();
-  const goalUploadError =
-    actionError &&
-    typeof actionError === "object" &&
-    "intent" in actionError &&
-    actionError.intent === "goals.upload";
-  const goalUploadSubmitting =
-    navigation.state !== "idle" &&
-    navigation.formData?.get("intent") === "goals.upload";
   const goalGenerationActive =
     currentRun?.status === GOAL_RUN_STATUS.queued ||
     currentRun?.status === GOAL_RUN_STATUS.running ||
     goals?.activeJob?.status === "queued" ||
     goals?.activeJob?.status === "running";
-  const documentUploadRegenerating =
-    goalsNotice === "file_saved" && goalGenerationActive;
 
   if (!memoryReady || !backfill.complete) {
     return (
@@ -2365,7 +2432,7 @@ function GoalsStep({
     );
   }
 
-  if (goalGenerationActive && !documentUploadRegenerating) {
+  if (goalGenerationActive) {
     return (
       <InsightStatusScene
         title="I'm turning what I know into a first direction."
@@ -2492,9 +2559,7 @@ function GoalsStep({
       ) : null}
 
       <div
-        className={`JefeGoalGrid ${
-          documentUploadRegenerating ? "is-updating" : ""
-        }`}
+        className="JefeGoalGrid"
       >
         {GOAL_HORIZONS.map((horizon) => {
           const goal = horizons.find(
@@ -2555,12 +2620,6 @@ function GoalsStep({
           </Form>
         </BlockStack>
       </div>
-
-      <GoalsDocumentUploadCard
-        uploading={goalUploadSubmitting}
-        success={goalsNotice === "file_saved" && !goalUploadError}
-        regenerating={documentUploadRegenerating}
-      />
 
       <InlineStack gap="300" align="center">
         <Button
@@ -3023,153 +3082,6 @@ function PlanInfoBlock({ title, body }: { title: string; body: string }) {
   );
 }
 
-function GoalsDocumentUploadCard({
-  regenerating,
-  uploading,
-  success,
-}: {
-  regenerating: boolean;
-  uploading: boolean;
-  success: boolean;
-}) {
-  const formRef = useRef<HTMLFormElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [fileName, setFileName] = useState("");
-  const [dragging, setDragging] = useState(false);
-
-  const submitSelectedFile = (files: FileList | null) => {
-    const file = files?.[0];
-    if (!file || uploading) return;
-    setFileName(file.name);
-    formRef.current?.requestSubmit();
-  };
-
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    submitSelectedFile(event.currentTarget.files);
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setDragging(false);
-    if (inputRef.current) {
-      inputRef.current.files = event.dataTransfer.files;
-    }
-    submitSelectedFile(event.dataTransfer.files);
-  };
-
-  const cardState = uploading ? "processing" : success ? "success" : "idle";
-  const documentName = fileName || "Business plan";
-
-  return (
-    <Form
-      ref={formRef}
-      method="post"
-      encType="multipart/form-data"
-      className="JefeGoalDocumentForm"
-    >
-      <input type="hidden" name="intent" value="goals.upload" />
-      <input
-        ref={inputRef}
-        className="JefeGoalDocumentInput"
-        type="file"
-        name="goalsFile"
-        accept={GOALS_DOCUMENT_ACCEPT}
-        onChange={handleFileChange}
-        aria-label="Upload a planning document"
-      />
-      <div
-        className={`JefeGoalDocumentCard is-${cardState} ${
-          dragging ? "is-dragging" : ""
-        }`}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={() => setDragging(false)}
-        onDrop={handleDrop}
-      >
-        {uploading ? (
-          <BlockStack gap="300">
-            <InlineStack gap="200" blockAlign="center">
-              <span className="JefeGoalDocumentIcon" aria-hidden="true">
-                <Icon source={FileIcon} />
-              </span>
-              <BlockStack gap="050">
-                <Text as="p" fontWeight="bold">
-                  {documentName}
-                </Text>
-                <Text as="p" tone="subdued">
-                  Reading document...
-                </Text>
-              </BlockStack>
-            </InlineStack>
-            <div className="JefeGoalDocumentProgress" aria-hidden="true" />
-            <ul className="JefeGoalDocumentList">
-              <li>extracting objectives</li>
-              <li>identifying priorities</li>
-              <li>understanding constraints</li>
-              <li>comparing against Merchant Memory</li>
-            </ul>
-          </BlockStack>
-        ) : success ? (
-          <BlockStack gap="300">
-            <InlineStack gap="200" blockAlign="center">
-              <span className="JefeGoalDocumentIcon is-success" aria-hidden="true">
-                <Icon source={CheckCircleIcon} />
-              </span>
-              <BlockStack gap="050">
-                <Text as="p" fontWeight="bold">
-                  Business plan understood
-                </Text>
-                <Text as="p" tone="subdued">
-                  {regenerating
-                    ? "I'm updating your proposed goals now..."
-                    : "I've updated the proposed goals with this context."}
-                </Text>
-              </BlockStack>
-            </InlineStack>
-            <ul className="JefeGoalDocumentList">
-              <li>planning priorities added to Merchant Memory</li>
-              <li>commercial constraints compared with current goals</li>
-              <li>growth objectives carried into the next generation</li>
-            </ul>
-          </BlockStack>
-        ) : (
-          <InlineStack align="space-between" blockAlign="center" gap="400">
-            <InlineStack gap="200" blockAlign="center" wrap={false}>
-              <span className="JefeGoalDocumentIcon" aria-hidden="true">
-                <Icon source={FileIcon} />
-              </span>
-              <BlockStack gap="100">
-                <Text as="p" fontWeight="bold">
-                  Already have a business plan?
-                </Text>
-                <Text as="p" tone="subdued">
-                  If you&apos;ve already written goals, a strategy document,
-                  board deck or business plan, upload it and I&apos;ll use it to
-                  reshape these goals.
-                </Text>
-                <Text as="p" tone="subdued">
-                  Supported: {GOALS_DOCUMENT_TYPES.join(" • ")}
-                </Text>
-              </BlockStack>
-            </InlineStack>
-            <Button
-              size="large"
-              icon={UploadIcon}
-              disabled={uploading}
-              onClick={() => inputRef.current?.click()}
-            >
-              Upload a document
-            </Button>
-          </InlineStack>
-        )}
-      </div>
-    </Form>
-  );
-}
-
 function InsightStatusScene({
   title,
   detail,
@@ -3306,13 +3218,6 @@ function InsightCard({
                   </BlockStack>
                 </Box>
               ))}
-              {!confirmed && !corrected ? (
-                <Form method="post">
-                  <input type="hidden" name="intent" value="insights.confirm" />
-                  <input type="hidden" name="findingId" value={finding.id} />
-                  <Button submit>Looks right</Button>
-                </Form>
-              ) : null}
             </BlockStack>
           </Collapsible>
           {correcting ? (
@@ -4121,6 +4026,8 @@ async function getStoreMetrics({
     variants,
     skus,
     customers,
+    inventoryRecords,
+    refunds,
     revenue,
     monthlyRevenueRows,
   ] = await Promise.all([
@@ -4135,6 +4042,8 @@ async function getStoreMetrics({
       },
     }),
     prisma.customerIdentity.count({ where: { merchantId, shopId } }),
+    prisma.inventoryLevel.count({ where: { merchantId, shopId } }),
+    prisma.refund.count({ where: { merchantId, shopId } }),
     prisma.order.aggregate({
       where: { merchantId, shopId },
       _sum: { totalPrice: true },
@@ -4162,6 +4071,8 @@ async function getStoreMetrics({
     variants,
     skus,
     customers,
+    inventoryRecords,
+    refunds,
     revenue: revenueValue && revenueValue > 0 ? revenueValue : null,
     monthlyRevenue:
       monthlyRevenueValue && monthlyRevenueValue > 0
@@ -4307,6 +4218,7 @@ function summarizeBackfill(
 ) {
   const progress = readiness.progress;
   const memoryStatus = readiness.memoryStatus;
+  const commerceImports = summarizeCommerceImports(progress);
 
   if (readiness.memoryReady) {
     return {
@@ -4321,10 +4233,8 @@ function summarizeBackfill(
       statusLabel: "Ready",
       complete: Boolean(progress?.evidenceReady && memoryStatus === "complete"),
       spinning: !(progress?.evidenceReady && memoryStatus === "complete"),
-      productsComplete: Boolean(progress?.productsComplete),
-      customersComplete: Boolean(progress?.customersComplete),
-      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "success" as const,
+      ...commerceImports,
     };
   }
 
@@ -4336,10 +4246,8 @@ function summarizeBackfill(
       statusLabel: "Failed",
       complete: false,
       spinning: false,
-      productsComplete: Boolean(progress?.productsComplete),
-      customersComplete: Boolean(progress?.customersComplete),
-      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "critical" as const,
+      ...commerceImports,
     };
   }
 
@@ -4357,10 +4265,8 @@ function summarizeBackfill(
       statusLabel: activeJob.status === "running" ? "Running" : "Queued",
       complete: false,
       spinning: true,
-      productsComplete: Boolean(progress?.productsComplete),
-      customersComplete: Boolean(progress?.customersComplete),
-      ordersComplete: Boolean(progress?.ordersComplete),
       tone: "attention" as const,
+      ...commerceImports,
     };
   }
 
@@ -4371,13 +4277,11 @@ function summarizeBackfill(
       statusLabel: memoryStatus === "failed" ? "Failed" : "Building",
       complete: false,
       spinning: memoryStatus !== "failed",
-      productsComplete: Boolean(progress?.productsComplete),
-      customersComplete: Boolean(progress?.customersComplete),
-      ordersComplete: Boolean(progress?.ordersComplete),
       tone:
         memoryStatus === "failed"
           ? ("critical" as const)
           : ("attention" as const),
+      ...commerceImports,
     };
   }
 
@@ -4388,10 +4292,8 @@ function summarizeBackfill(
       statusLabel: "Learning",
       complete: false,
       spinning: true,
-      productsComplete: Boolean(progress.productsComplete),
-      customersComplete: Boolean(progress.customersComplete),
-      ordersComplete: Boolean(progress.ordersComplete),
       tone: "attention" as const,
+      ...commerceImports,
     };
   }
 
@@ -4402,11 +4304,51 @@ function summarizeBackfill(
     statusLabel: "Preparing",
     complete: false,
     spinning: true,
-    productsComplete: false,
-    customersComplete: false,
-    ordersComplete: false,
     tone: "info" as const,
+    ...commerceImports,
   };
+}
+
+function summarizeCommerceImports(
+  progress: Awaited<ReturnType<typeof getShopBackfillProgress>>,
+) {
+  const statusFor = (domain: string) => progress?.statuses?.[domain] ?? null;
+  const productsStatus = statusFor("products");
+  const customersStatus = statusFor("customers");
+  const ordersStatus = statusFor("orders");
+  const inventoryStatus = statusFor("inventory");
+  const refundsStatus = statusFor("refunds");
+
+  return {
+    productsComplete: Boolean(progress?.productsComplete),
+    customersComplete: Boolean(progress?.customersComplete),
+    ordersComplete: Boolean(progress?.ordersComplete),
+    inventoryComplete: Boolean(progress?.inventoryComplete),
+    refundsComplete: refundsStatus?.status === "complete",
+    importsComplete: Boolean(
+      progress?.productsComplete &&
+        progress.customersComplete &&
+        progress.ordersComplete &&
+        progress.inventoryComplete &&
+        refundsStatus?.status === "complete",
+    ),
+    productsStatus: statusLabel(productsStatus?.status),
+    customersStatus: statusLabel(customersStatus?.status),
+    ordersStatus: statusLabel(ordersStatus?.status),
+    inventoryStatus: statusLabel(inventoryStatus?.status),
+    refundsStatus: statusLabel(refundsStatus?.status),
+    skuTotalEstimate: numericEstimate(productsStatus?.totalRecordsEstimate),
+    customersTotalEstimate: numericEstimate(customersStatus?.totalRecordsEstimate),
+    ordersTotalEstimate: numericEstimate(ordersStatus?.totalRecordsEstimate),
+  };
+}
+
+function statusLabel(value: unknown) {
+  return typeof value === "string" ? value : null;
+}
+
+function numericEstimate(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function hasAnyBackfillState(
@@ -4573,7 +4515,6 @@ function StatusBadge({ status }: { status: string }) {
 
 function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
   if (step === "connect") return "Connect";
-  if (step === "channels") return "Channels";
   if (step === "goals") return "Goals";
   if (step === "plan") return "Plan";
   return "Insights";
@@ -4584,6 +4525,17 @@ function confidenceLabel(confidence: string) {
   if (confidence === "medium") return "Well supported";
   if (confidence === "emerging") return "Emerging pattern";
   return "Some uncertainty remains";
+}
+
+function isInsightValidationRejection(
+  run: { result?: unknown; safeErrorCode?: string | null } | null | undefined,
+) {
+  if (run?.safeErrorCode === "invalid_model_output") return true;
+  const result =
+    run?.result && typeof run.result === "object" && !Array.isArray(run.result)
+      ? (run.result as { reason?: unknown })
+      : null;
+  return result?.reason === "llm_validation_failed_no_deterministic_fallback";
 }
 
 function merchantInsightErrorCopy(
@@ -5045,7 +4997,6 @@ function normalizeOnboardingStep(
   // Thin URL adapter over the pure, unit-tested resolver in lib/onboarding/steps.
   return resolveOnboardingStep({
     requestedStep: url.searchParams.get("step"),
-    hasChannelProvider: Boolean(url.searchParams.get("channelProvider")),
     memoryReady,
     backfillComplete,
     furthestStep,

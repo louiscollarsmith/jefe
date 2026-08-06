@@ -20,6 +20,7 @@ import {
   MAX_ONBOARDING_INSIGHTS,
   MERCHANT_INSIGHTS_JOB_TYPE,
 } from "../app/lib/merchant-insights/constants.server.js";
+import { MERCHANT_GOALS_JOB_TYPE } from "../app/lib/merchant-goals/constants.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -443,9 +444,17 @@ test("merchant insight generation persists validated findings and review confirm
       }),
       logger: silentLogger,
     });
-    const run = await prisma.merchantInsightRun.findFirstOrThrow({
-      where: { merchantId: merchant.id, shopId: shop.id },
+    const run = await prisma.merchantInsightRun.findUniqueOrThrow({
+      where: { id: queued.run.id },
       include: { findings: true },
+    });
+    const goalsJob = await prisma.backfillJob.findUnique({
+      where: {
+        shopId_jobType: {
+          shopId: shop.id,
+          jobType: MERCHANT_GOALS_JOB_TYPE,
+        },
+      },
     });
     await confirmMerchantInsightFinding(prisma, {
       merchantId: merchant.id,
@@ -458,6 +467,7 @@ test("merchant insight generation persists validated findings and review confirm
 
     assert.equal(result.status, INSIGHT_RUN_STATUS.completed);
     assert.equal(run.findings.length, 1);
+    assert.equal(goalsJob?.status, "queued");
     assert.equal(reviewed.reviewStatus, "confirmed");
   } finally {
     await prisma.merchant.deleteMany({

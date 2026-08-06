@@ -374,7 +374,7 @@ async function generateValidatedPlan(provider, input) {
   let validationError = null;
   let lastResult = null;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     const llmResult = await provider.generateStructuredJson({
       systemPrompt: buildMerchantPlanSystemPrompt(),
       prompt: buildMerchantPlanPrompt(input.snapshot.snapshot, {

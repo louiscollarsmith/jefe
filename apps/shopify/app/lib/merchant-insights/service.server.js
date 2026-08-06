@@ -41,6 +41,7 @@ import {
   buildMerchantInsightCorrectionSystemPrompt,
   parseAndValidateMerchantInsightCorrection,
 } from "./correction-processor.server.js";
+import { ensureMerchantGoalsQueued } from "../merchant-goals/service.server.js";
 
 const ACTIVE_RUN_STATUSES = [
   INSIGHT_RUN_STATUS.queued,
@@ -286,6 +287,11 @@ export async function generateMerchantInsights(prisma, input) {
       runId: run.id,
       insightCount: parsed.insights.length,
     });
+    await ensureMerchantGoalsQueued(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      resetAttempts: true,
+    });
     return {
       status: INSIGHT_RUN_STATUS.completed,
       runId: run.id,
@@ -320,6 +326,11 @@ export async function generateMerchantInsights(prisma, input) {
           shopId: input.shopId,
           runId: run.id,
           insightCount: fallbackInsights.length,
+        });
+        await ensureMerchantGoalsQueued(prisma, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          resetAttempts: true,
         });
         return {
           status: INSIGHT_RUN_STATUS.completed,
@@ -986,6 +997,7 @@ function serializeRun(run) {
     beliefSnapshotHash: run.beliefSnapshotHash,
     safeErrorCode: run.safeErrorCode,
     lastError: run.lastError,
+    result: run.result ?? null,
     completedAt: run.completedAt?.toISOString?.() ?? null,
     failedAt: run.failedAt?.toISOString?.() ?? null,
     supersededAt: run.supersededAt?.toISOString?.() ?? null,

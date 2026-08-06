@@ -7,6 +7,7 @@ import {
 } from "../app/lib/llm/numeric-grounding.server.js";
 import { parseAndValidateMerchantGoalsOutput } from "../app/lib/merchant-goals/schema.server.js";
 import { parseAndValidateMerchantInsightsOutput } from "../app/lib/merchant-insights/schema.server.js";
+import { parseAndValidateMerchantPlanOutput } from "../app/lib/merchant-plan/schema.server.js";
 
 // These tests run without DATABASE_URL: the numeric-grounding guard and the
 // validators that use it are pure functions over already-parsed model output.
@@ -182,3 +183,92 @@ test("(d) goal validation rejects an ungrounded target number and accepts a grou
   );
   assert.equal(grounded.ok, true);
 });
+
+test("(e) plan validation allows 100% only for cited bounded coverage metrics", () => {
+  const coverageBelief = {
+    id: "belief-coverage",
+    key: "products.cost_coverage",
+    val: {
+      percentage: 0,
+      ratio: 0,
+      denominator: 30,
+      activeVariants: 30,
+    },
+  };
+  const goal = {
+    id: "goal-1",
+    title: "Establish profit visibility",
+    description: "Build margin visibility from current cost coverage.",
+  };
+  const insight = {
+    id: "insight-1",
+    title: "Costs are missing",
+    finding: "Cost coverage is currently 0% across 30 active variants.",
+  };
+  const plan = {
+    candidates: [
+      candidate("candidate_1", "Populate cost-per-item data"),
+      candidate("candidate_2", "Audit inventory records"),
+      candidate("candidate_3", "Review product categorisation"),
+    ],
+    selectedRecommendation: {
+      candidateId: "candidate_1",
+      title: "Populate cost-per-item data",
+      summary: "Add missing cost data for the active variants.",
+      primaryGoalId: "goal-1",
+      supportingGoalIds: [],
+      whyThisAction:
+        "Cost coverage is at 0%, so adding costs creates the baseline for profit visibility.",
+      whyNow: "This is the foundation for margin decisions.",
+      startToday: "Start with the active variants that are missing cost data.",
+      executionSteps: [
+        {
+          title: "Gather costs",
+          description: "Collect unit costs for the active variants.",
+        },
+      ],
+      successSignal: {
+        description: "Cost coverage moves from 0% toward 100%.",
+        timeframe: "As costs are entered.",
+      },
+      expectedBenefit: "Jefe can reason from profit instead of revenue alone.",
+      supportingBeliefIds: ["belief-coverage"],
+      supportingInsightIds: ["insight-1"],
+      confidence: "strong",
+    },
+  };
+
+  const grounded = parseAndValidateMerchantPlanOutput(plan, {
+    allowedBeliefIds: new Set(["belief-coverage"]),
+    allowedInsightIds: new Set(["insight-1"]),
+    allowedGoalIds: new Set(["goal-1"]),
+    suppliedBeliefs: [coverageBelief],
+    suppliedInsights: [insight],
+    suppliedGoals: [goal],
+  });
+  assert.equal(grounded.ok, true);
+
+  const ungrounded = parseAndValidateMerchantPlanOutput(plan, {
+    allowedBeliefIds: new Set(["belief-coverage"]),
+    allowedInsightIds: new Set(["insight-1"]),
+    allowedGoalIds: new Set(["goal-1"]),
+    suppliedBeliefs: [{ ...coverageBelief, key: "products.active_variants" }],
+    suppliedInsights: [insight],
+    suppliedGoals: [goal],
+  });
+  assert.equal(ungrounded.ok, false);
+  assert.match(ungrounded.error, /unsupported numerical claims/);
+});
+
+function candidate(id, action) {
+  return {
+    id,
+    action,
+    goalAlignment: "Supports the current goal.",
+    whyRelevant: "The supplied memory makes this relevant.",
+    supportingBeliefIds: ["belief-coverage"],
+    supportingInsightIds: ["insight-1"],
+    expectedEffort: "small",
+    timeToUsefulSignal: "as soon as the work starts",
+  };
+}

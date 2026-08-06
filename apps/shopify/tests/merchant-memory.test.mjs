@@ -1988,6 +1988,14 @@ test("Merchant Memory refresh jobs are debounced, retryable and process without 
     const jobCount = await prisma.backfillJob.count({
       where: { shopId: shop.id, jobType: MEMORY_REFRESH_JOB_TYPE },
     });
+    await prisma.backfillJob.updateMany({
+      where: {
+        shopId: shop.id,
+        jobType: MEMORY_REFRESH_JOB_TYPE,
+        status: "queued",
+      },
+      data: { runAfter: new Date(0) },
+    });
     const processed = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       shopId: shop.id,

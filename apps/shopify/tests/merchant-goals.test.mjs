@@ -17,6 +17,7 @@ import {
   GOAL_RUN_STATUS,
   MERCHANT_GOALS_JOB_TYPE,
 } from "../app/lib/merchant-goals/constants.server.js";
+import { MERCHANT_PLAN_JOB_TYPE } from "../app/lib/merchant-plan/constants.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -298,48 +299,17 @@ test("goals onboarding asks merchants to review generated goals", () => {
   assert.doesNotMatch(routeSource, /Still thinking/);
 });
 
-test("goals onboarding accepts planning document uploads for supported formats", () => {
-  assert.match(routeSource, /name="goalsFile"/);
-  assert.match(routeSource, /\.pdf,\.docx,\.md,\.markdown,\.txt/);
-  assert.match(routeSource, /intent" value="goals\.upload"/);
-  assert.match(routeSource, /processMerchantGoalsDocument/);
-  assert.match(routeSource, /Already have a business plan\?/);
-  assert.match(routeSource, /Upload a document/);
-  assert.match(routeSource, /JefeGoalDocumentInput/);
-  assert.match(routeSource, /onDrop=\{handleDrop\}/);
-  assert.doesNotMatch(routeSource, /Upload goals file/);
-  assert.doesNotMatch(routeSource, /Choose file/);
-  assert.match(
-    fs.readFileSync(
-      new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
-      "utf8",
-    ),
-    /pdf-parse[\s\S]*mammoth|mammoth[\s\S]*pdf-parse/,
-  );
-  assert.match(
-    fs.readFileSync(
-      new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
-      "utf8",
-    ),
-    /PDFParse[\s\S]*getText[\s\S]*destroy/,
-  );
-  assert.match(
-    fs.readFileSync(
-      new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
-      "utf8",
-    ),
-    /goals_document_context/,
-  );
-  assert.match(routeSource, /success=\{goalsNotice === "file_saved" && !goalUploadError\}/);
-  assert.match(routeSource, /regenerating=\{documentUploadRegenerating\}/);
-  assert.match(routeSource, /I've updated the proposed goals with this context\./);
-  assert.match(
-    fs.readFileSync(
-      new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
-      "utf8",
-    ),
-    /goalDirection/,
-  );
+test("goals onboarding uses chat refinement, not planning document upload", () => {
+  assert.match(routeSource, /name="intent" value="goals\.message"/);
+  assert.match(routeSource, /Tell me what to change about this direction/);
+  assert.doesNotMatch(routeSource, /name="goalsFile"/);
+  assert.doesNotMatch(routeSource, /\.pdf,\.docx,\.md,\.markdown,\.txt/);
+  assert.doesNotMatch(routeSource, /intent" value="goals\.upload"/);
+  assert.doesNotMatch(routeSource, /processMerchantGoalsDocument/);
+  assert.doesNotMatch(routeSource, /Already have a business plan\?/);
+  assert.doesNotMatch(routeSource, /Upload a document/);
+  assert.doesNotMatch(routeSource, /JefeGoalDocumentInput/);
+  assert.doesNotMatch(routeSource, /documentUploadRegenerating/);
 });
 
 test("merchant goal generation persists horizons and Merchant Memory goals", async (t) => {
@@ -488,8 +458,18 @@ test("goal generation retries once when model cites unsupported belief IDs", asy
       logger: silentLogger,
     });
 
+    const planJob = await prisma.backfillJob.findUnique({
+      where: {
+        shopId_jobType: {
+          shopId: shop.id,
+          jobType: MERCHANT_PLAN_JOB_TYPE,
+        },
+      },
+    });
+
     assert.equal(result.status, GOAL_RUN_STATUS.completed);
     assert.equal(calls, 2);
+    assert.equal(planJob?.status, "queued");
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Goals Test ${suffix}` },

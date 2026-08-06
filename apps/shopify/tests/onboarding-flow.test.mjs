@@ -44,17 +44,15 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes Connect, Channels, Insights, Goals and Plan with optional Channels", () => {
+test("onboarding exposes Connect, Insights, Goals and Plan", () => {
   assert.deepEqual(
     [...ONBOARDING_STEPS],
-    ["connect", "channels", "insights", "goals", "plan"],
+    ["connect", "insights", "goals", "plan"],
   );
   assert.match(appIndexSource, /"Connect"/);
-  assert.match(appIndexSource, /"Channels"/);
   assert.match(appIndexSource, /"Insights"/);
   assert.match(appIndexSource, /"Goals"/);
   assert.match(appIndexSource, /"Plan"/);
-  assert.match(appIndexSource, /Continue to Channels/);
   assert.match(appIndexSource, /Continue to Insights/);
   assert.match(appIndexSource, /Continue to Goals/);
   assert.match(appIndexSource, /Continue to Plan/);
@@ -62,9 +60,8 @@ test("onboarding exposes Connect, Channels, Insights, Goals and Plan with option
   assert.match(appIndexSource, /Tell me what winning looks like/);
   assert.match(appIndexSource, /Here&apos;s where I&apos;d start\./);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
-  // The channels-reachable-during-generation guarantee and the full step
-  // resolution now live in lib/onboarding/steps.js and are unit-tested
-  // behaviorally in onboarding-resume.test.mjs, rather than string-matched here.
+  assert.doesNotMatch(appIndexSource, /data\.activeStep === "channels"/);
+  assert.doesNotMatch(appIndexSource, /Continue to Channels/);
   assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
 });
@@ -76,7 +73,36 @@ test("Connect step starts Shopify backfill and shows learning progress", () => {
   assert.match(appIndexSource, /enqueueMerchantMemoryRefresh/);
   assert.match(appIndexSource, /MetricGrid/);
   assert.match(appIndexSource, /LearningMilestones/);
+  assert.match(appIndexSource, /importTileValue/);
   assert.match(appIndexSource, /JefeMetricSkeleton/);
+  assert.match(appIndexSource, /importedCount <= 0/);
+  assert.match(appIndexSource, /stock levels/);
+  assert.match(appIndexSource, /refundsComplete/);
+  assert.match(appIndexSource, /importsComplete/);
+  assert.match(appIndexSource, /Boolean\(data\.backfill\.importsComplete\)/);
+  assert.doesNotMatch(
+    appIndexSource,
+    /data\.memoryReady && Boolean\(data\.backfill\.complete\)/,
+  );
+  assert.match(appIndexSource, /Estimating SKUs and variants/);
+  assert.match(appIndexSource, /Importing SKUs and variants/);
+  assert.match(appIndexSource, /Mapped stock levels/);
+  assert.match(appIndexSource, /Estimating stock levels/);
+  assert.match(appIndexSource, /Importing stock levels/);
+  assert.match(appIndexSource, /Estimating customers/);
+  assert.match(appIndexSource, /Importing customers/);
+  assert.match(appIndexSource, /Estimating orders/);
+  assert.match(appIndexSource, /Importing up to 24 months of orders/);
+  assert.match(appIndexSource, /Estimating refunds/);
+  assert.match(appIndexSource, /Importing refunds/);
+  assert.match(appIndexSource, /importMilestoneState/);
+  assert.match(appIndexSource, /status === "running"/);
+  assert.match(appIndexSource, /!data\.memoryReady/);
+  assert.match(appIndexSource, /!data\.backfill\.complete/);
+  assert.match(appIndexSource, /detail=\{backfill\.detail\}[\s\S]*skeleton/);
+  assert.doesNotMatch(appIndexSource, /orders and refunds/);
+  assert.doesNotMatch(appIndexSource, /revenue\/month/);
+  assert.doesNotMatch(appIndexSource, /Noticing a few things worth talking about/);
   assert.match(appIndexSource, /useConnectStatusPolling/);
   assert.match(appIndexSource, /revalidator\.revalidate\(\)/);
   assert.doesNotMatch(appIndexSource, /runShopifyBackfill/);
@@ -88,16 +114,23 @@ test("onboarding does not expose the retired goal form or interview path", () =>
   assert.doesNotMatch(appIndexSource, /updateInterviewStatus/);
   assert.doesNotMatch(appIndexSource, /Memory updated/);
   assert.match(appIndexSource, /processMerchantGoalMessage/);
-  assert.match(appIndexSource, /processMerchantGoalsDocument/);
+  assert.doesNotMatch(appIndexSource, /processMerchantGoalsDocument/);
 });
 
-test("channels onboarding exposes Slack, WhatsApp, Teams and iMessage provider cards", () => {
+test("Insights onboarding distinguishes queued work from rejected generated findings", () => {
+  assert.match(appIndexSource, /I'm choosing the patterns that seem most important/);
+  assert.match(appIndexSource, /I rejected the first generated findings/);
+  assert.match(appIndexSource, /did not pass Jefe's grounding checks/);
+  assert.match(appIndexSource, /isInsightValidationRejection/);
+  assert.match(appIndexSource, /llm_validation_failed_no_deterministic_fallback/);
+});
+
+test("channel connector UI remains available outside the onboarding step order", () => {
   assert.match(appIndexSource, /Connect Slack/);
   assert.match(appIndexSource, /WhatsApp/);
   assert.match(appIndexSource, /Teams/);
   assert.match(appIndexSource, /iMessage/);
   assert.match(appIndexSource, /Coming soon/);
-  // Channels remain optional — merchants can proceed without connecting one.
   assert.match(appIndexSource, /Channel setup is optional for now\./);
   assert.doesNotMatch(appIndexSource, /Discord/);
   assert.doesNotMatch(appIndexSource, /Telegram/);
@@ -235,9 +268,9 @@ test("Slack OAuth callback navigation preserves current Shopify query context", 
   // appPathFromSearch + the callback route above, asserted here, not the nav.)
 });
 
-test("onboarding Slack connect is one-click: workspace connect, channel choice deferred", () => {
-  // The OAuth callback returns to the channels step without force-opening the
-  // picker or telling the merchant to pick a channel during onboarding.
+test("Slack connect is one-click: workspace connect, channel choice deferred", () => {
+  // The OAuth callback returns without force-opening the picker or telling the
+  // merchant to pick a channel during setup.
   assert.doesNotMatch(slackCallbackSource, /choose the channel/);
   assert.match(slackCallbackSource, /workspace is connected/);
   // A connected-but-unconfigured Slack (needs_configuration) presents as
@@ -365,10 +398,9 @@ test("the onboarding route has its own graceful error boundary (no raw stack ove
   assert.match(appIndexSource, /Jefe is still getting set up/);
 });
 
-test("onboarding papercuts: insight-confirm gives feedback; no dev-copy empty tile", () => {
-  // #9: confirming an insight now shows a success banner (previously only
-  // corrections did, so "Looks right" reloaded with no acknowledgement).
-  assert.match(appIndexSource, /insightNotice === "confirmed"/);
+test("onboarding papercuts: insight cards only ask for corrections; no dev-copy empty tile", () => {
+  assert.match(appIndexSource, /Something&apos;s not right/);
+  assert.doesNotMatch(appIndexSource, /Looks right/);
   // #6: the empty-goal tile no longer leaks dev copy.
   assert.doesNotMatch(appIndexSource, /Goal needs retry/);
 });

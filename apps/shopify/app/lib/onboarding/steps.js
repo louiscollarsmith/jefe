@@ -7,11 +7,11 @@
  * takes primitives (no URL / no Prisma) precisely so it stays unit-testable.
  */
 
-/** @typedef {"connect" | "channels" | "insights" | "goals" | "plan"} OnboardingStep */
+/** @typedef {"connect" | "insights" | "goals" | "plan"} OnboardingStep */
 
 /** Ordered onboarding steps. Index order defines "furthest reached". */
 /** @type {readonly OnboardingStep[]} */
-export const ONBOARDING_STEPS = ["connect", "channels", "insights", "goals", "plan"];
+export const ONBOARDING_STEPS = ["connect", "insights", "goals", "plan"];
 
 /**
  * Position of a step in the onboarding order; -1 if it isn't a known step.
@@ -42,8 +42,6 @@ export function readFurthestStep(metadata) {
  * Resolve which onboarding step to show. Pure + primitive-only so it is
  * unit-testable without a URL or the DB.
  *
- * - Channels stays reachable even while memory is still generating (it needs no
- *   backfilled data) — otherwise "Skip"/"Continue to Channels" bounce to Connect.
  * - An explicit Insights/Goals/Plan request is honored even before the data is
  *   ready — the step renders its OWN "still building…" waiting scene rather than
  *   bouncing to Connect (that dead-end is what left those scenes unreachable).
@@ -52,7 +50,6 @@ export function readFurthestStep(metadata) {
  *
  * @param {{
  *   requestedStep?: string | null;
- *   hasChannelProvider?: boolean;
  *   memoryReady: boolean;
  *   backfillComplete: boolean;
  *   furthestStep?: OnboardingStep;
@@ -62,7 +59,6 @@ export function readFurthestStep(metadata) {
 export function resolveOnboardingStep(input) {
   const requested = input.requestedStep ?? null;
   const furthest = input.furthestStep ?? "connect";
-  if (requested === "channels" || input.hasChannelProvider) return "channels";
   // Honor an explicit content-step request even while memory/backfill are still
   // running: that step renders its OWN "still building…" waiting scene, which is
   // both a better experience than silently bouncing the merchant back to Connect

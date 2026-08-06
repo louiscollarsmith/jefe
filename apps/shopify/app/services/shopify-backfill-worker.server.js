@@ -6,14 +6,16 @@ import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server.j
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server.js";
 import {
   buildOrdersBackfillQueryFilter,
+  CUSTOMERS_COUNT_QUERY,
   ORDERS_COUNT_QUERY,
-  PRODUCTS_COUNT_QUERY,
+  PRODUCT_VARIANTS_COUNT_QUERY,
 } from "../lib/shopify/queries.server.js";
 import {
   DEFAULT_BACKFILL_DAYS,
   enqueueBackfillJob,
   FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS,
   hasReadAllOrders,
+  INITIAL_COMMERCE_BACKFILL_DOMAINS,
   splitScopes,
   upsertBackfillStatus,
 } from "./shopify-backfill-status.server.js";
@@ -30,13 +32,11 @@ import {
 } from "../lib/merchant-insights/service.server.js";
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 import {
-  ensureMerchantGoalsQueued,
   generateMerchantGoals,
   markMerchantGoalsJobFailed,
 } from "../lib/merchant-goals/service.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import {
-  ensureMerchantPlanQueued,
   generateMerchantPlan,
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
@@ -60,6 +60,7 @@ import { recordWorkerTick } from "../lib/observability/heartbeat.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
+const MAX_READY_JOBS_PER_TICK = 10;
 const STALE_RUNNING_JOB_TIMEOUT_MS = 15 * 60_000;
 const DELTA_SYNC_OVERLAP_HOURS = 24;
 
@@ -237,7 +238,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     loopRunning = true;
     recordWorkerTick();
     try {
-      await processNextBackfillJob(workerPrisma, { logger });
+      await processReadyBackfillJobs(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
@@ -295,6 +296,26 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
 }
 
 /**
+ * Drain immediately-ready jobs in one worker tick. Backfill jobs enqueue their
+ * next phase as soon as a phase succeeds; processing only one job per 15s loop
+ * made onboarding feel artificially stalled between products, inventory, orders,
+ * delta sync, finalize, memory and generated onboarding work.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
+ */
+export async function processReadyBackfillJobs(prisma, options = {}) {
+  const maxJobs = Math.max(1, options.maxJobs ?? MAX_READY_JOBS_PER_TICK);
+  const results = [];
+  for (let processed = 0; processed < maxJobs; processed += 1) {
+    const result = await processNextBackfillJob(prisma, options);
+    if (!result) break;
+    results.push(result);
+  }
+  return results;
+}
+
+/**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
  */
@@ -303,6 +324,7 @@ export async function processNextBackfillJob(prisma, options = {}) {
   await recoverStaleRunningBackfillJobs(prisma, {
     now,
     logger: options.logger,
+    shopId: options.shopId,
   });
   const job = await prisma.backfillJob.findFirst({
     where: {
@@ -371,6 +393,8 @@ async function runClaimedBackfillJob(prisma, job, options) {
       data: {
         status: "succeeded",
         completedAt: new Date(),
+        failedAt: null,
+        lastError: null,
         resultJson: result ?? {},
       },
     });
@@ -441,7 +465,7 @@ async function runClaimedBackfillJob(prisma, job, options) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ now?: Date; timeoutMs?: number; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
+ * @param {{ now?: Date; timeoutMs?: number; logger?: Pick<Console, "info" | "warn" | "error">; shopId?: string }} [options]
  */
 export async function recoverStaleRunningBackfillJobs(prisma, options = {}) {
   const now = options.now ?? new Date();
@@ -451,6 +475,7 @@ export async function recoverStaleRunningBackfillJobs(prisma, options = {}) {
     where: {
       status: "running",
       startedAt: { lt: staleStartedBefore },
+      shopId: options.shopId,
     },
     data: {
       status: "queued",
@@ -587,28 +612,74 @@ async function handleBackfillStart(prisma, context) {
 
   await applyBackfillCountEstimates(prisma, context);
 
-  await Promise.all([
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "products_backfill",
-      payload,
-    }),
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "orders_backfill_365d",
-      payload,
-    }),
-    enqueueBackfillJob(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      jobType: "inventory_backfill",
-      payload,
-    }),
-  ]);
+  const incompleteDomains = await incompleteInitialCommerceDomains(
+    prisma,
+    context.shopId,
+  );
+  const runAfter = new Date(0);
+  const jobs = [];
+  if (incompleteDomains.includes("products")) {
+    jobs.push(
+      enqueueBackfillJob(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        jobType: "products_backfill",
+        runAfter,
+        payload,
+      }),
+    );
+  }
+  if (incompleteDomains.includes("inventory")) {
+    jobs.push(
+      enqueueBackfillJob(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        jobType: "inventory_backfill",
+        runAfter,
+        payload,
+      }),
+    );
+  }
+  if (
+    incompleteDomains.includes("orders") ||
+    incompleteDomains.includes("customers") ||
+    incompleteDomains.includes("refunds")
+  ) {
+    jobs.push(
+      enqueueBackfillJob(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        jobType: "orders_backfill_365d",
+        runAfter,
+        payload,
+      }),
+    );
+  }
 
-  return { queued: 3, orderHistoryDays: context.orderHistoryDays };
+  await Promise.all(jobs);
+
+  return {
+    queued: jobs.length,
+    incompleteDomains,
+    orderHistoryDays: context.orderHistoryDays,
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {string} shopId
+ */
+async function incompleteInitialCommerceDomains(prisma, shopId) {
+  const statuses = await prisma.shopBackfillStatus.findMany({
+    where: { shopId, domain: { in: INITIAL_COMMERCE_BACKFILL_DOMAINS } },
+    select: { domain: true, status: true },
+  });
+  return INITIAL_COMMERCE_BACKFILL_DOMAINS.filter(
+    (domain) =>
+      !isCompleteStatus(
+        statuses.find((status) => status.domain === domain)?.status,
+      ),
+  );
 }
 
 /**
@@ -815,29 +886,24 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
       merchantId: context.merchantId,
       shopId: context.shopId,
     });
-    await ensurePostOnboardingRecommendationsQueued(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-    });
   }
 
   return result;
 }
 
 /**
- * After a completed FULL Merchant Memory rebuild, keep the post-onboarding
- * recommendation (Plan) — and the Goals it stands on — current with the latest
- * memory, so the Daily Home surfaces a fresh "move" instead of the one frozen at
- * onboarding time.
+ * After a completed FULL Merchant Memory rebuild, start the generated onboarding
+ * chain by queueing Insights. Completed Insights queue Goals, and completed
+ * Goals queue Plan, so each artifact is generated from the upstream artifact the
+ * merchant will actually see.
  *
  * Gated strictly on shop.onboardingCompletedAt: during onboarding the funnel
  * (app._index) already drives Goals and Plan step by step, so this must never
  * fire mid-onboarding. It only takes over once the merchant has finished.
  *
- * Both ensure*Queued helpers key their run on the belief snapshot hash and reuse
- * an existing run when the snapshot is unchanged (status "reused" -> no job
- * enqueued, no LLM call), so an unchanged rebuild triggers no wasteful
- * regeneration.
+ * The ensure*Queued helpers key each run on the relevant snapshot hash and reuse
+ * existing runs when the snapshot is unchanged (status "reused" -> no job
+ * enqueued, no LLM call).
  *
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string }} input
@@ -851,22 +917,12 @@ export async function ensurePostOnboardingRecommendationsQueued(prisma, input) {
     return { status: "skipped_not_onboarded" };
   }
 
-  // Goals first: the Plan snapshot is built on top of the latest completed Goal
-  // run (buildMerchantPlanSnapshot requires hasGoals and folds goal content into
-  // its hash), so refreshing Goals from the new memory keeps the Plan from being
-  // anchored to goals derived from stale beliefs. The Plan job self-heals to the
-  // fresh Goals at generation time (loadPreparedRun rebuilds the snapshot), and
-  // the worker runs Goals (priority 100) before Plan (priority 110).
-  const goals = await ensureMerchantGoalsQueued(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-  });
-  const plan = await ensureMerchantPlanQueued(prisma, {
+  const insights = await ensureMerchantInsightsQueued(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
   });
 
-  return { status: "ensured", goals: goals.status, plan: plan.status };
+  return { status: "ensured", insights: insights.status };
 }
 
 /**
@@ -956,15 +1012,17 @@ async function markComplete(prisma, context, domain, recordsProcessed) {
  * @param {BackfillContext} context
  */
 async function applyBackfillCountEstimates(prisma, context) {
-  const [products, orders] = await Promise.all([
-    loadBackfillCountEstimate(context, "products"),
+  const [productVariants, orders, customers] = await Promise.all([
+    loadBackfillCountEstimate(context, "productVariants"),
     loadBackfillCountEstimate(context, "orders"),
+    loadBackfillCountEstimate(context, "customers"),
   ]);
 
   await Promise.all(
     [
-      ["products", products],
+      ["products", productVariants],
       ["orders", orders],
+      ["customers", customers],
     ]
       .filter((entry) => typeof entry[1] === "number")
       .map(([domain, totalRecordsEstimate]) =>
@@ -985,7 +1043,7 @@ async function applyBackfillCountEstimates(prisma, context) {
 
 /**
  * @param {BackfillContext} context
- * @param {"products" | "orders"} domain
+ * @param {"productVariants" | "orders" | "customers"} domain
  */
 async function loadBackfillCountEstimate(context, domain) {
   try {
@@ -997,11 +1055,19 @@ async function loadBackfillCountEstimate(context, domain) {
       fetchImpl: context.fetchImpl,
     });
 
-    if (domain === "products") {
-      const data = /** @type {{ productsCount?: { count?: number } }} */ (
-        await client.request(PRODUCTS_COUNT_QUERY)
+    if (domain === "productVariants") {
+      const data = /** @type {{ productVariantsCount?: { count?: number } }} */ (
+        await client.request(PRODUCT_VARIANTS_COUNT_QUERY)
       );
-      const count = data.productsCount?.count;
+      const count = data.productVariantsCount?.count;
+      return typeof count === "number" && Number.isFinite(count) ? count : null;
+    }
+
+    if (domain === "customers") {
+      const data = /** @type {{ customersCount?: { count?: number } }} */ (
+        await client.request(CUSTOMERS_COUNT_QUERY)
+      );
+      const count = data.customersCount?.count;
       return typeof count === "number" && Number.isFinite(count) ? count : null;
     }
 

@@ -25,6 +25,10 @@ Perform two logical stages in the structured output:
 
 Candidate actions must differ in substance, not wording. Prefer the strongest combination of impact, evidence, feasibility and time to useful feedback. Do not automatically choose the biggest-sounding action.
 
+You must return at least three candidates. If the evidence clearly supports only one best recommendation, still include two other materially different but lower-priority candidates so Jefe can show that the choice was considered.
+
+Avoid invented measurement targets. Do not use generic completion numbers such as 100%, seven days, 30 days, doubled, halved, top 10, or similar unless that exact number is present in a cited belief, insight or goal. For data-completion work, describe directional progress from the current grounded baseline instead of inventing an ideal target.
+
 Do not recommend something already accepted, rejected, completed or stated as unsuitable in previousRecommendations or merchantContext.
 
 When — and only when — the selected recommendation maps to one of Jefe's registered executable capabilities (actionCapabilities) AND the supplied memory directly supports acting now, also emit an actionIntent naming that capability, so Jefe can offer to carry it out. Choose actionType and targetKind from actionCapabilities only; any magnitude you give (for example markdownPercent) is advisory — Jefe computes the safe, floored, capped parameters itself and never applies your number directly. If no registered capability cleanly fits, omit actionIntent. Never invent a capability, and never let the availability of an action change which recommendation you choose — pick the best recommendation first, then attach an actionIntent only if one genuinely fits.
@@ -41,7 +45,7 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
     promptVersion: MERCHANT_PLAN_PROMPT_VERSION,
     schemaVersion: MERCHANT_PLAN_SCHEMA_VERSION,
     validationNotice: options.validationError
-      ? `Previous output was rejected: ${options.validationError}. Regenerate the candidates and selected recommendation. Cite only supplied IDs and choose one focused action.`
+      ? `Previous output was rejected: ${options.validationError}. Regenerate the candidates and selected recommendation. Return at least three candidates, cite only supplied IDs, choose one focused action, and remove every unsupported number or replace it with directional wording grounded in the cited memory.`
       : null,
     task:
       "Given what Jefe knows about this business and where the merchant wants to go, what is the single most useful thing they should do next?",
