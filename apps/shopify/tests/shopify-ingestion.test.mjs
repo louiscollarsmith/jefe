@@ -711,6 +711,133 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
   }
 });
 
+test("routine OAuth does not reset an in-flight install backfill", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for ingestion tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  const shopDomain = `oauth-inflight-${suffix}.myshopify.com`;
+  const sessionId = `offline-${suffix}`;
+
+  try {
+    await prisma.shop.deleteMany({
+      where: { platform: "shopify", shopDomain },
+    });
+    await prisma.session.create({
+      data: {
+        id: sessionId,
+        shop: shopDomain,
+        state: "test",
+        isOnline: false,
+        scope:
+          "read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations,write_locations",
+        accessToken: "test-token",
+      },
+    });
+
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain,
+      sessionId,
+      scopes: [
+        "read_products",
+        "write_products",
+        "read_orders",
+        "write_orders",
+        "read_all_orders",
+        "read_customers",
+        "write_customers",
+        "read_inventory",
+        "write_inventory",
+        "read_locations",
+        "write_locations",
+      ],
+    });
+    const shop = await prisma.shop.findUniqueOrThrow({
+      where: { platform_shopDomain: { platform: "shopify", shopDomain } },
+      select: { id: true },
+    });
+
+    const startJob = await processNextBackfillJobEventually(prisma, {
+      logger: silentLogger,
+      fetchImpl: createEvidenceBackfillFetch(suffix),
+      shopId: shop.id,
+      loadOfflineToken: async () => "test-token",
+    });
+    assert.equal(startJob?.jobType, "shop_backfill_start");
+
+    const queuedOrderJob = await prisma.backfillJob.findUniqueOrThrow({
+      where: {
+        shopId_jobType: { shopId: shop.id, jobType: "orders_backfill_365d" },
+      },
+    });
+    assert.ok(
+      queuedOrderJob.runAfter > new Date("2020-01-01T00:00:00Z"),
+      "newly spawned child jobs should be immediately eligible without a 1970 runAfter",
+    );
+
+    const originalRunAfter = new Date("2026-08-07T08:47:03.805Z");
+    const originalStartedAt = new Date("2026-08-07T08:47:03.849Z");
+    await prisma.backfillJob.update({
+      where: {
+        shopId_jobType: { shopId: shop.id, jobType: "orders_backfill_365d" },
+      },
+      data: {
+        status: "running",
+        runAfter: originalRunAfter,
+        startedAt: originalStartedAt,
+        attemptCount: 1,
+        resultJson: { orders: 305, lineItems: 559 },
+      },
+    });
+
+    await queueInstallShopifyBackfill(prisma, {
+      shopDomain,
+      sessionId,
+      scopes: [
+        "read_products",
+        "read_orders",
+        "read_all_orders",
+        "read_customers",
+        "read_inventory",
+        "read_locations",
+      ],
+      rawPayload: { source: "routine_oauth_callback" },
+    });
+
+    const orderJobAfterOauth = await prisma.backfillJob.findUniqueOrThrow({
+      where: {
+        shopId_jobType: { shopId: shop.id, jobType: "orders_backfill_365d" },
+      },
+    });
+    assert.equal(orderJobAfterOauth.status, "running");
+    assert.equal(orderJobAfterOauth.attemptCount, 1);
+    assert.equal(
+      orderJobAfterOauth.runAfter.toISOString(),
+      originalRunAfter.toISOString(),
+    );
+    assert.equal(
+      orderJobAfterOauth.startedAt.toISOString(),
+      originalStartedAt.toISOString(),
+    );
+    assert.deepEqual(orderJobAfterOauth.resultJson, {
+      orders: 305,
+      lineItems: 559,
+    });
+  } finally {
+    await prisma.shop.deleteMany({
+      where: { platform: "shopify", shopDomain },
+    });
+    await prisma.merchant.deleteMany({ where: { name: shopDomain } });
+    await prisma.session.deleteMany({ where: { shop: shopDomain } });
+    await prisma.$disconnect();
+  }
+});
+
 test("stale running evidence backfill jobs are recovered", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for ingestion tests");

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-07
+
+### Changed
+
+- **Insight corrections now keep the last trusted cards visible while Jefe updates them.** When a merchant corrects an onboarding insight and Jefe queues a replacement insight run, the Insights step no longer drops back to the loading skeleton if there is already a completed insight set to review. The previous trusted cards stay visible, corrected cards keep their corrected state, and a banner explains that Jefe is preparing the replacement set from the merchant's correction. `app/routes/app._index.tsx`.
+- **Routine Shopify OAuth no longer restarts an in-flight install backfill.** Re-authorising an already-active shop now preserves any existing install backfill job/status instead of resetting product, inventory or order imports back to queued. True reinstalls after uninstall still reset and re-run the import. Newly spawned child jobs now use the current timestamp for `runAfter` instead of `1970-01-01`, while remaining immediately eligible for the worker. `app/services/shopify-backfill-status.server.js`, `app/services/shopify-backfill-worker.server.js`.
+
 ## 2026-08-06
 
 ### Added
