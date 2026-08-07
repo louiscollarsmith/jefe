@@ -301,13 +301,33 @@ test("goal prompt asks for commercial outcomes before strategy", () => {
 });
 
 test("goals onboarding asks merchants to review generated goals", () => {
-  assert.match(routeSource, /Update your goals by chatting with Jefe/);
+  assert.match(routeSource, /JefeGoalCheckpointTrail/);
+  assert.match(routeSource, /JefeGoalFocusedCard/);
+  assert.match(routeSource, /GoalFocusedSkeleton/);
+  assert.match(routeSource, /JefeGoalRevisionNote/);
+  assert.match(routeSource, /pendingGoalRevision/);
+  assert.match(routeSource, /currentGoalRefreshing/);
+  assert.match(routeSource, /goalRefreshFailed/);
+  assert.match(routeSource, /Retry goal refresh/);
+  assert.match(routeSource, /rate-limited the request/);
+  assert.match(routeSource, /latestGoalCoachingRevision/);
+  assert.match(routeSource, /formatAffectedGoalCheckpoints/);
+  assert.match(routeSource, /refreshStartIndex/);
+  assert.match(routeSource, /failedStartIndex/);
+  assert.match(routeSource, /Jefe is updating these goals/);
+  assert.match(routeSource, /Jefe is recalculating/);
+  assert.match(routeSource, /Retry the goal refresh before confirming/);
+  assert.match(routeSource, /className="JefeGoalGuideChat"/);
+  assert.match(routeSource, /Say 'looks good' to confirm, or tell Jefe what to change/);
+  assert.match(routeSource, /name: "goalHorizon"/);
+  assert.match(routeSource, /isGoalConfirmationMessage/);
+  assert.match(routeSource, /Here's the roadmap we agreed/);
+  assert.match(routeSource, /Continue to Plan →/);
+  assert.match(routeSource, /Skip for now →/);
   assert.match(routeSource, /OnboardingChat/);
   assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingGoals/);
-  assert.match(routeSource, /GoalTileSkeleton/);
-  assert.match(routeSource, /Updating/);
   assert.match(routeSource, /setMessage\(""\)/);
-  assert.match(routeSource, /isGoalConversationAssistantMessage/);
+  assert.doesNotMatch(routeSource, /Update your goals by chatting with Jefe/);
   assert.doesNotMatch(routeSource, /Still thinking/);
   assert.doesNotMatch(
     routeSource,
@@ -319,7 +339,7 @@ test("goals onboarding asks merchants to review generated goals", () => {
 test("goals onboarding uses chat refinement, not planning document upload", () => {
   assert.match(routeSource, /intent="goals\.message"/);
   assert.match(onboardingChatSource, /name="intent" value={intent}/);
-  assert.match(routeSource, /goals_coaching_context/);
+  assert.match(serviceSource, /goals_coaching_context/);
   assert.doesNotMatch(routeSource, /name="goalsFile"/);
   assert.doesNotMatch(routeSource, /\.pdf,\.docx,\.md,\.markdown,\.txt/);
   assert.doesNotMatch(routeSource, /intent" value="goals\.upload"/);
@@ -346,6 +366,7 @@ test("merchant goal generation persists horizons and Merchant Memory goals", asy
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedGoalGenerationJob(prisma, shop.id);
     const beliefIds = queued.snapshot.beliefIds;
     const result = await generateMerchantGoals(prisma, {
       merchantId: merchant.id,
@@ -408,6 +429,7 @@ test("goal generation retries once when model cites unsupported belief IDs", asy
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedGoalGenerationJob(prisma, shop.id);
     const beliefIds = queued.snapshot.beliefIds;
     const result = await generateMerchantGoals(prisma, {
       merchantId: merchant.id,
@@ -543,6 +565,7 @@ test("completed goal runs can be explicitly requeued for document regeneration",
     const requeued = await ensureMerchantGoalsQueued(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
+      runAfter: new Date("2999-01-01T00:00:00Z"),
       resetAttempts: true,
     });
     const run = await prisma.merchantGoalRun.findUniqueOrThrow({
@@ -640,6 +663,7 @@ test("goal coaching records evidence and queues regeneration", async (t) => {
       merchantId: merchant.id,
       shopId: shop.id,
       message: "Profitability matters more than international expansion.",
+      goalHorizon: "sixMonths",
       llmProvider: createMockLlmProvider({
         operation: {
           operationType: "create_merchant_belief",
@@ -685,8 +709,13 @@ test("goal coaching records evidence and queues regeneration", async (t) => {
 
     assert.equal(result.ok, true);
     assert.ok(evidence);
-    assert.match(evidence.summary, /Merchant goal direction:/);
+    assert.match(evidence.summary, /Merchant goal direction for 6 and 12 month horizons:/);
     assert.match(evidence.summary, /grounded commercial goal/);
+    assert.equal(evidence.metadata.goalHorizon, "sixMonths");
+    assert.deepEqual(evidence.metadata.affectedHorizons, [
+      "sixMonths",
+      "twelveMonths",
+    ]);
     assert.ok(job);
     assert.match(
       assistantNote?.content ?? "",
@@ -694,8 +723,12 @@ test("goal coaching records evidence and queues regeneration", async (t) => {
     );
     assert.equal(
       assistantNote?.structuredOperation?.interpretedDirection,
-      "Use the goal set to strengthen margin, translated into a grounded commercial goal rather than copied as a literal instruction.",
+      "Use the 6 month horizon to strengthen margin, translated into a grounded commercial goal rather than copied as a literal instruction.",
     );
+    assert.deepEqual(assistantNote?.structuredOperation?.affectedHorizons, [
+      "sixMonths",
+      "twelveMonths",
+    ]);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Goals Test ${suffix}` },
@@ -798,6 +831,15 @@ async function createGoalFixture(prisma, suffix) {
     });
   }
   return { merchant, shop };
+}
+
+async function removeQueuedGoalGenerationJob(prisma, shopId) {
+  await prisma.backfillJob.deleteMany({
+    where: {
+      shopId,
+      jobType: MERCHANT_GOALS_JOB_TYPE,
+    },
+  });
 }
 
 function uniqueSuffix() {

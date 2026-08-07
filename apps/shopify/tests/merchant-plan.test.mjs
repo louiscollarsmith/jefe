@@ -371,6 +371,7 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedPlanGenerationJob(prisma, shop.id);
     const snapshot = queued.snapshot.snapshot;
     const result = await generateMerchantPlan(prisma, {
       merchantId: merchant.id,
@@ -457,6 +458,7 @@ test("Plan generation emits the plan-rec actionIntent → a proposed clearance r
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedPlanGenerationJob(prisma, shop.id);
     const snapshot = queued.snapshot.snapshot;
     await generateMerchantPlan(prisma, {
       merchantId: merchant.id,
@@ -516,6 +518,7 @@ test("Plan refinement records evidence, marks the current Plan and queues regene
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedPlanGenerationJob(prisma, shop.id);
     const snapshot = queued.snapshot.snapshot;
     await generateMerchantPlan(prisma, {
       merchantId: merchant.id,
@@ -870,6 +873,15 @@ async function createPlanFixture(prisma, suffix) {
   });
 
   return { merchant, shop };
+}
+
+async function removeQueuedPlanGenerationJob(prisma, shopId) {
+  await prisma.backfillJob.deleteMany({
+    where: {
+      shopId,
+      jobType: MERCHANT_PLAN_JOB_TYPE,
+    },
+  });
 }
 
 function uniqueSuffix() {

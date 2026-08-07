@@ -17,6 +17,7 @@ import {
 import {
   INSIGHT_RUN_STATUS,
   MAX_INSIGHT_BELIEFS,
+  MAX_INSIGHTS,
   MAX_ONBOARDING_INSIGHTS,
   MERCHANT_INSIGHTS_JOB_TYPE,
 } from "../app/lib/merchant-insights/constants.server.js";
@@ -189,6 +190,44 @@ test("structured insight validation rejects unsupported belief IDs and accepts g
   assert.equal(valid.ok, true);
   assert.equal(invalidId.ok, false);
   assert.match(invalidId.error, /not supplied/);
+});
+
+test("structured insight validation rejects overlong onboarding copy", () => {
+  const suppliedBeliefs = [
+    {
+      id: "belief-1",
+      value: { percentage: 34 },
+      evidence: [
+        { summary: "Hero product contributes 34 percent of revenue." },
+      ],
+    },
+  ];
+  const baseInsight = {
+    title: "Hero product drives 34% of revenue",
+    finding: "One product contributes 34% of revenue, making it unusually important to the store's commercial shape.",
+    whyItMatters:
+      "That gives Jefe a specific dependency to account for before future recommendations.",
+    supportingBeliefIds: ["belief-1"],
+    confidence: "high",
+    category: "revenue",
+  };
+  const context = {
+    allowedBeliefIds: new Set(["belief-1"]),
+    suppliedBeliefs,
+  };
+
+  for (const [field, value, pattern] of [
+    ["title", "A".repeat(71), /title is too long/],
+    ["finding", "A".repeat(191), /finding is too long/],
+    ["whyItMatters", "A".repeat(131), /whyItMatters explanation is too long/],
+  ]) {
+    const result = parseAndValidateMerchantInsightsOutput(
+      { insights: [{ ...baseInsight, [field]: value }] },
+      context,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.error, pattern);
+  }
 });
 
 test("structured insight validation rejects generic or unsupported interpretation", () => {
@@ -383,22 +422,30 @@ test("insight prompt retries with validation feedback and allowed belief IDs", (
   assert.match(promptSource, /validationNotice/);
   assert.match(promptSource, /allowedSupportingBeliefIds/);
   assert.match(promptSource, /Previous output was rejected/);
+  assert.match(promptSource, /Select up to five possible findings/);
+  assert.match(promptSource, /Lead with the strongest metric or concrete fact/);
+  assert.match(promptSource, /merchant-specific interpretation/);
+  assert.match(promptSource, /Do not waste an insight on information a merchant would already know/);
 });
 
-test("onboarding reveal is capped to the strongest five insights", () => {
+test("insight generation and onboarding reveal are capped to five insights", () => {
+  assert.equal(MAX_INSIGHTS, 5);
   assert.equal(MAX_ONBOARDING_INSIGHTS, 5);
   assert.match(routeSource, /MAX_ONBOARDING_INSIGHTS/);
   assert.match(routeSource, /selectedRun\?\.findings \?\? \[\]\)\.slice/);
 });
 
-test("insight correction UI uses natural language instead of belief selection", () => {
-  assert.match(routeSource, /Help me understand what I got wrong\./);
-  assert.match(routeSource, /Tell me what I&apos;ve misunderstood/);
-  assert.match(routeSource, /name="insightText"/);
-  assert.match(routeSource, /name="supportingBeliefIds"/);
-  assert.match(routeSource, /value={correctionText}/);
-  assert.match(routeSource, /onChange={setCorrectionText}/);
-  assert.match(routeSource, /Submit correction/);
+test("onboarding insight cards do not expose correction UI", () => {
+  assert.match(routeSource, /See more/);
+  assert.match(routeSource, /Show less/);
+  assert.doesNotMatch(routeSource, /Something&apos;s not right/);
+  assert.doesNotMatch(routeSource, /Help me understand what I got wrong\./);
+  assert.doesNotMatch(routeSource, /Tell me what I&apos;ve misunderstood/);
+  assert.doesNotMatch(routeSource, /name="insightText"/);
+  assert.doesNotMatch(routeSource, /name="supportingBeliefIds"/);
+  assert.doesNotMatch(routeSource, /value={correctionText}/);
+  assert.doesNotMatch(routeSource, /onChange={setCorrectionText}/);
+  assert.doesNotMatch(routeSource, /Submit correction/);
   assert.doesNotMatch(routeSource, /name="beliefId"/);
   assert.doesNotMatch(routeSource, /setSelectedBeliefId/);
 });
@@ -419,6 +466,7 @@ test("merchant insight generation persists validated findings and review confirm
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedInsightGenerationJob(prisma, shop.id);
     const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
       (belief) => belief.key === "orders.average_order_value.all_time",
     );
@@ -494,6 +542,7 @@ test("insight generation retries once after invalid model output", async (t) => 
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedInsightGenerationJob(prisma, shop.id);
     const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
       (belief) => belief.key === "orders.average_order_value.all_time",
     );
@@ -579,6 +628,7 @@ test("insight generation degrades to deterministic observations when the model n
       merchantId: merchant.id,
       shopId: shop.id,
     });
+    await removeQueuedInsightGenerationJob(prisma, shop.id);
     const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
       (belief) => belief.key === "orders.average_order_value.all_time",
     );
@@ -630,8 +680,8 @@ test("insight generation degrades to deterministic observations when the model n
     assert.equal(result.degraded, true);
     assert.equal(calls, 2); // both attempts were tried before degrading
 
-    const run = await prisma.merchantInsightRun.findFirstOrThrow({
-      where: { merchantId: merchant.id, shopId: shop.id },
+    const run = await prisma.merchantInsightRun.findUniqueOrThrow({
+      where: { id: queued.run.id },
       include: { findings: true },
     });
     assert.equal(run.status, INSIGHT_RUN_STATUS.completed);
@@ -1000,6 +1050,7 @@ async function createCompletedInsightRun(prisma, merchantId, shopId) {
     merchantId,
     shopId,
   });
+  await removeQueuedInsightGenerationJob(prisma, shopId);
   const averageOrderValueBelief = queued.snapshot.snapshot.beliefs.find(
     (belief) => belief.key === "orders.average_order_value.all_time",
   );
@@ -1030,6 +1081,15 @@ async function createCompletedInsightRun(prisma, merchantId, shopId) {
     include: { findings: true },
   });
   return { run, averageOrderValueBelief };
+}
+
+async function removeQueuedInsightGenerationJob(prisma, shopId) {
+  await prisma.backfillJob.deleteMany({
+    where: {
+      shopId,
+      jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+    },
+  });
 }
 
 function uniqueSuffix() {
