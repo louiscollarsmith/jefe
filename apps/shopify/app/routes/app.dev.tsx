@@ -121,6 +121,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shopDomain: session.shop,
       sessionId: session.id,
       scopes,
+      force: true,
       rawPayload: { source: "dev_queue_evidence_backfill" },
     });
     return { ok: true, result: "Queued evidence backfill." };

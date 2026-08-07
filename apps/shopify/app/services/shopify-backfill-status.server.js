@@ -46,13 +46,13 @@ const JOB_PRIORITIES = {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shopDomain: string; sessionId?: string | null; scopes?: string[]; rawPayload?: unknown }} input
+ * @param {{ shopDomain: string; sessionId?: string | null; scopes?: string[]; rawPayload?: unknown; force?: boolean }} input
  */
 export async function queueInstallShopifyBackfill(prisma, input) {
   const shopDomain = normalizeShopDomain(input.shopDomain);
   const existingShop = await prisma.shop.findUnique({
     where: { platform_shopDomain: { platform: "shopify", shopDomain } },
-    include: { backfillStatuses: true },
+    include: { backfillStatuses: true, backfillJobs: true },
   });
   const isReinstall = wasUninstalled(existingShop);
   const scopes = input.scopes ?? [];
@@ -71,9 +71,10 @@ export async function queueInstallShopifyBackfill(prisma, input) {
   });
 
   if (
+    !input.force &&
     existingShop &&
     !isReinstall &&
-    initialCommerceBackfillComplete(existingShop.backfillStatuses)
+    hasInstallBackfillState(existingShop)
   ) {
     await prisma.shop.update({
       where: { id: shop.id },
@@ -321,12 +322,15 @@ function wasUninstalled(shop) {
 }
 
 /**
- * @param {Array<{ domain: string; status: string | null }>} statuses
+ * A routine OAuth callback must not restart an install backfill that is already
+ * queued, running, failed or complete. Reinstall is handled before this guard.
+ * @param {{ backfillStartedAt?: Date | string | null; backfillCompletedAt?: Date | string | null; backfillStatuses?: Array<{ domain: string }>; backfillJobs?: Array<{ jobType: string }> } | null} shop
  */
-function initialCommerceBackfillComplete(statuses) {
-  return INITIAL_COMMERCE_BACKFILL_DOMAINS.every((domain) =>
-    isCompleteStatus(statuses.find((status) => status.domain === domain)?.status),
-  );
+function hasInstallBackfillState(shop) {
+  if (!shop) return false;
+  if (shop.backfillStartedAt || shop.backfillCompletedAt) return true;
+  if ((shop.backfillStatuses ?? []).length > 0) return true;
+  return (shop.backfillJobs ?? []).length > 0;
 }
 
 /**

@@ -2269,6 +2269,14 @@ function InsightsStep({
     0,
     MAX_ONBOARDING_INSIGHTS,
   );
+  const insightsUpdating =
+    currentRun?.status === INSIGHT_RUN_STATUS.queued ||
+    currentRun?.status === INSIGHT_RUN_STATUS.running ||
+    insights?.activeJob?.status === "queued" ||
+    insights?.activeJob?.status === "running";
+  const currentRunInsufficient =
+    currentRun?.status === INSIGHT_RUN_STATUS.insufficientData ||
+    (!selectedRun && (insights?.candidateCount ?? 0) < 3);
   const correctionError =
     rawActionData &&
     typeof rawActionData === "object" &&
@@ -2307,12 +2315,7 @@ function InsightsStep({
     );
   }
 
-  if (
-    currentRun?.status === INSIGHT_RUN_STATUS.queued ||
-    currentRun?.status === INSIGHT_RUN_STATUS.running ||
-    insights?.activeJob?.status === "queued" ||
-    insights?.activeJob?.status === "running"
-  ) {
+  if (!selectedRun && insightsUpdating) {
     return (
       <InsightStatusScene
         step="insights"
@@ -2338,10 +2341,7 @@ function InsightsStep({
     );
   }
 
-  if (
-    currentRun?.status === INSIGHT_RUN_STATUS.insufficientData ||
-    (!selectedRun && (insights?.candidateCount ?? 0) < 3)
-  ) {
+  if (!selectedRun && currentRunInsufficient) {
     const validationRejected = isInsightValidationRejection(currentRun);
     return (
       <InsightStatusScene
@@ -2425,8 +2425,11 @@ function InsightsStep({
       {insights?.stale ? (
         <Banner tone="warning">
           <Text as="p">
-            These insights are from the previous valid memory set. I&apos;ll
-            replace them after the latest generation succeeds.
+            {insightsUpdating
+              ? "I'm updating these insights with your correction. You can keep reviewing this set while the replacement is prepared."
+              : currentRunInsufficient
+                ? "These insights are from the previous valid memory set. I don't have enough newer supported signals to replace them yet."
+                : "These insights are from the previous valid memory set. I'll replace them after the latest generation succeeds."}
           </Text>
         </Banner>
       ) : null}

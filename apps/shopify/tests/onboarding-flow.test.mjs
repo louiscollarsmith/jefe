@@ -140,6 +140,17 @@ test("Insights onboarding distinguishes queued work from rejected generated find
   assert.match(appIndexSource, /llm_validation_failed_no_deterministic_fallback/);
 });
 
+test("Insights onboarding keeps the last trusted cards visible while replacements generate", () => {
+  assert.match(appIndexSource, /const insightsUpdating =/);
+  assert.match(appIndexSource, /if \(!selectedRun && insightsUpdating\)/);
+  assert.match(appIndexSource, /I'm updating these insights with your correction/);
+  assert.match(appIndexSource, /You can keep reviewing this set/);
+  assert.doesNotMatch(
+    appIndexSource,
+    /if \(\s*currentRun\?\.status === INSIGHT_RUN_STATUS\.queued/,
+  );
+});
+
 test("channel connector UI remains available outside the onboarding step order", () => {
   assert.match(appIndexSource, /Connect Slack/);
   assert.match(appIndexSource, /WhatsApp/);
