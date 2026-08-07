@@ -8,8 +8,9 @@ import {
   BELIEF_PRECEDENCE,
 } from "../merchant-memory/constants.server.js";
 import {
+  CONVERSATION_TOPICS,
   addAssistantConversationNote,
-  sendConversationMessage,
+  addMerchantConversationNote,
 } from "../merchant-memory/conversation.server.js";
 import {
   recordEvidence,
@@ -461,29 +462,118 @@ export async function processMerchantGoalMessage(prisma, input) {
   const message = input.message.trim();
   if (message.length < 2) return { ok: false, error: "Message is required." };
   const now = new Date();
+  const interpretedDirection = interpretGoalCoachingDirection(message);
   await recordEvidence(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     sourceType: "merchant_goals",
     sourceReference: "goals_onboarding_conversation",
     evidenceType: "merchant_goal_coaching",
-    summary: `Merchant coached Jefe's goals: ${message.slice(0, 240)}`,
-    metadata: { originalMessage: message },
+    summary: `Merchant goal direction: ${interpretedDirection}`,
+    metadata: { originalMessage: message, interpretedDirection },
     observedAt: now,
   });
-  await sendConversationMessage(prisma, {
+  await addMerchantConversationNote(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
+    topic: CONVERSATION_TOPICS.onboardingGoals,
     message,
-    llmProvider: input.llmProvider,
-    logger: input.logger,
   });
   await ensureMerchantGoalsQueued(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     resetAttempts: true,
   });
+  await addAssistantConversationNote(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    topic: CONVERSATION_TOPICS.onboardingGoals,
+    content: buildGoalCoachingConversationMessage(interpretedDirection),
+    operation: {
+      operationType: "goals_coaching_context",
+      reason: "Jefe used merchant guidance to regenerate Goals onboarding.",
+      merchantStatement: message,
+      interpretedDirection,
+    },
+  });
   return { ok: true };
+}
+
+/** @param {string} message */
+function buildGoalCoachingConversationMessage(message) {
+  return `I interpreted your guidance as: ${message}`;
+}
+
+/** @param {string} message */
+function interpretGoalCoachingDirection(message) {
+  const compacted = compactGoalCoachingSummary(message, 220);
+  const horizon = detectGoalCoachingHorizon(compacted);
+  const metric = detectGoalCoachingMetric(compacted);
+  const target = detectGoalCoachingTarget(compacted);
+  const horizonPhrase = horizon ? `the ${horizon} horizon` : "the goal set";
+
+  if (target && metric) {
+    return `Use ${horizonPhrase} to pursue a ${target} ${metric} outcome, translated into a grounded commercial goal rather than copied as a literal instruction.`;
+  }
+  if (metric) {
+    return `Use ${horizonPhrase} to strengthen ${metric}, translated into a grounded commercial goal rather than copied as a literal instruction.`;
+  }
+  return `Use ${horizonPhrase} as merchant coaching, translated into a sharper goal grounded in Merchant Memory.`;
+}
+
+/** @param {string} text */
+function detectGoalCoachingHorizon(text) {
+  const horizons = [];
+  if (/\b3\s*(?:month|months|mo|mos|m)\b/i.test(text)) horizons.push("3 month");
+  if (/\b6\s*(?:month|months|mo|mos|m)\b/i.test(text)) horizons.push("6 month");
+  if (/\b12\s*(?:month|months|mo|mos|m)\b/i.test(text)) horizons.push("12 month");
+  return horizons.join(" and ");
+}
+
+/** @param {string} text */
+function detectGoalCoachingMetric(text) {
+  if (/\brevenue\b|\bsales\b|\bturnover\b/i.test(text)) return "revenue";
+  if (
+    /\brepeat\b.*\bpurchase\b|\bpurchase rate\b|\bretention\b|\blifetime value\b|\bltv\b/i.test(
+      text,
+    )
+  ) {
+    return "repeat purchase rate";
+  }
+  if (
+    /\b(customer spend|spend per customer|buyer spend|order value|aov|average order)\b/i.test(
+      text,
+    )
+  ) {
+    return "customer spend";
+  }
+  if (/\bmargin\b|\bprofit\b|\bprofitability\b|\bgross profit\b/i.test(text)) {
+    return "margin";
+  }
+  if (/\bconversion\b|\bconvert\b/i.test(text)) return "conversion";
+  if (/\bcash\b|\bworking capital\b|\bdead stock\b|\bstock\b/i.test(text)) {
+    return "cash efficiency";
+  }
+  return null;
+}
+
+/** @param {string} text */
+function detectGoalCoachingTarget(text) {
+  if (/\b(exactly\s+)?double\b|\b2x\b|\btwo\s+times\b/i.test(text)) return "2x";
+  if (/\btriple\b|\b3x\b|\bthree\s+times\b/i.test(text)) return "3x";
+  const percentMatch = text.match(/\b(\d{1,3})\s?%\b/);
+  if (percentMatch) return `${percentMatch[1]}%`;
+  return null;
+}
+
+/**
+ * @param {string} text
+ * @param {number} maxLength
+ */
+function compactGoalCoachingSummary(text, maxLength) {
+  const compacted = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (compacted.length <= maxLength) return compacted;
+  return `${compacted.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
 }
 
 /**
@@ -579,6 +669,7 @@ export async function processMerchantGoalsDocument(prisma, input) {
   await addAssistantConversationNote(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
+    topic: CONVERSATION_TOPICS.onboardingGoals,
     content: buildGoalsDocumentConversationMessage({
       fileName: document.fileName,
       changeCount: parsed.changes.length,

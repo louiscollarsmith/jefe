@@ -29,8 +29,16 @@ const routeSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
 );
+const onboardingChatSource = fs.readFileSync(
+  new URL("../app/components/onboarding-chat.tsx", import.meta.url),
+  "utf8",
+);
 const promptSource = fs.readFileSync(
   new URL("../app/lib/merchant-goals/prompt.server.js", import.meta.url),
+  "utf8",
+);
+const serviceSource = fs.readFileSync(
+  new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
   "utf8",
 );
 
@@ -282,26 +290,36 @@ test("goal prompt asks for commercial outcomes before strategy", () => {
   assert.match(promptSource, /business outcome, not the operating method/);
   assert.match(promptSource, /revenue, growth, repeat purchase, margin, cash/);
   assert.match(promptSource, /Every title must include at least one commercial outcome term/);
-  assert.match(promptSource, /short commercial outcome title/);
+  assert.match(promptSource, /short synthesized commercial outcome title/);
   assert.match(promptSource, /strategy behind the outcome/);
   assert.match(promptSource, /goalCoaching is present/);
   assert.match(promptSource, /explicit 3, 6 or 12 month objectives/);
   assert.match(promptSource, /supplied KPIs/);
+  assert.match(promptSource, /Do not paste the merchant's raw goalCoaching wording/);
+  assert.match(promptSource, /synthesize it with Merchant Memory/);
   assert.match(promptSource, /merchant_goal_document_context comes from an uploaded planning document/);
 });
 
 test("goals onboarding asks merchants to review generated goals", () => {
-  assert.match(
-    routeSource,
-    /Happy with these goals\? Reply to guide or update them\./,
-  );
-  assert.match(routeSource, /Tell me what to change about this direction/);
+  assert.match(routeSource, /Update your goals by chatting with Jefe/);
+  assert.match(routeSource, /OnboardingChat/);
+  assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingGoals/);
+  assert.match(routeSource, /GoalTileSkeleton/);
+  assert.match(routeSource, /Updating/);
+  assert.match(routeSource, /setMessage\(""\)/);
+  assert.match(routeSource, /isGoalConversationAssistantMessage/);
   assert.doesNotMatch(routeSource, /Still thinking/);
+  assert.doesNotMatch(
+    routeSource,
+    /These goals are from the previous valid memory set/,
+  );
+  assert.match(serviceSource, /repeat purchase rate/);
 });
 
 test("goals onboarding uses chat refinement, not planning document upload", () => {
-  assert.match(routeSource, /name="intent" value="goals\.message"/);
-  assert.match(routeSource, /Tell me what to change about this direction/);
+  assert.match(routeSource, /intent="goals\.message"/);
+  assert.match(onboardingChatSource, /name="intent" value={intent}/);
+  assert.match(routeSource, /goals_coaching_context/);
   assert.doesNotMatch(routeSource, /name="goalsFile"/);
   assert.doesNotMatch(routeSource, /\.pdf,\.docx,\.md,\.markdown,\.txt/);
   assert.doesNotMatch(routeSource, /intent" value="goals\.upload"/);
@@ -653,10 +671,31 @@ test("goal coaching records evidence and queues regeneration", async (t) => {
         status: "queued",
       },
     });
+    const assistantNote = await prisma.merchantMemoryConversationMessage.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        role: "assistant",
+        structuredOperation: {
+          path: ["operationType"],
+          equals: "goals_coaching_context",
+        },
+      },
+    });
 
     assert.equal(result.ok, true);
     assert.ok(evidence);
+    assert.match(evidence.summary, /Merchant goal direction:/);
+    assert.match(evidence.summary, /grounded commercial goal/);
     assert.ok(job);
+    assert.match(
+      assistantNote?.content ?? "",
+      /I interpreted your guidance as:/,
+    );
+    assert.equal(
+      assistantNote?.structuredOperation?.interpretedDirection,
+      "Use the goal set to strengthen margin, translated into a grounded commercial goal rather than copied as a literal instruction.",
+    );
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Goals Test ${suffix}` },

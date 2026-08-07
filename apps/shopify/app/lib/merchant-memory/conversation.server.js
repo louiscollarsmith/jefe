@@ -34,6 +34,12 @@ import { getLlmConfig } from "../llm/config.server.js";
 
 export { OPERATION_STATUS, OPERATION_TYPES };
 
+export const CONVERSATION_TOPICS = Object.freeze({
+  memory: "memory",
+  onboardingGoals: "onboarding_goals",
+  onboardingPlan: "onboarding_plan",
+});
+
 const INITIAL_OPEN_QUESTIONS = [
   {
     category: "preferences",
@@ -144,11 +150,14 @@ export function buildUnfulfilledIntentEvent(input, content, operation) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string }} input
  */
 export async function getMerchantMemoryConversationExperience(prisma, input) {
-  await ensureInitialOpenQuestions(prisma, input);
-  await ensureGapDrivenOpenQuestions(prisma, input);
+  const topic = conversationTopic(input);
+  if (topic === CONVERSATION_TOPICS.memory) {
+    await ensureInitialOpenQuestions(prisma, input);
+    await ensureGapDrivenOpenQuestions(prisma, input);
+  }
   const [conversation, summary] = await Promise.all([
     getOrCreateConversation(prisma, input),
     getMerchantMemorySummary(prisma, input),
@@ -159,7 +168,7 @@ export async function getMerchantMemoryConversationExperience(prisma, input) {
     merchantId: input.merchantId,
   });
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && conversation.topic === CONVERSATION_TOPICS.memory) {
     await prisma.merchantMemoryConversationMessage.create({
       data: {
         conversationId: conversation.id,
@@ -207,6 +216,7 @@ export async function getDailyChatThread(prisma, input) {
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId ?? undefined,
+      topic: CONVERSATION_TOPICS.memory,
       status: "active",
     },
     orderBy: { updatedAt: "desc" },
@@ -323,7 +333,7 @@ export async function getOpenQuestions(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; message: string; relatedOpenQuestionId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string; relatedOpenQuestionId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendConversationMessage(prisma, input) {
   const content = input.message.trim();
@@ -495,12 +505,35 @@ export async function sendConversationMessage(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; content: string; operation?: any; relatedBeliefIds?: string[] }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string }} input
+ */
+export async function addMerchantConversationNote(prisma, input) {
+  const content = input.message.trim();
+  if (!content) return { ok: false, error: "Message is required." };
+  const conversation = await getOrCreateConversation(prisma, input);
+  await prisma.merchantMemoryConversationMessage.create({
+    data: {
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      role: "merchant",
+      content,
+      safeSummary: summarizeMerchantStatement(content),
+    },
+  });
+  return { ok: true };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; content: string; operation?: any; relatedBeliefIds?: string[] }} input
  */
 export async function addAssistantConversationNote(prisma, input) {
   const content = input.content.trim();
   if (!content) return { ok: false, error: "Message is required." };
-  await ensureInitialOpenQuestions(prisma, input);
+  if (conversationTopic(input) === CONVERSATION_TOPICS.memory) {
+    await ensureInitialOpenQuestions(prisma, input);
+  }
   const conversation = await getOrCreateConversation(prisma, input);
   await createAssistantMessage(prisma, {
     conversation,
@@ -1052,13 +1085,15 @@ async function ensureGapDrivenOpenQuestions(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string }} input
  */
 async function getOrCreateConversation(prisma, input) {
+  const topic = conversationTopic(input);
   const existing = await prisma.merchantMemoryConversation.findFirst({
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId ?? undefined,
+      topic,
       status: "active",
     },
     orderBy: { updatedAt: "desc" },
@@ -1068,9 +1103,15 @@ async function getOrCreateConversation(prisma, input) {
     data: {
       merchantId: input.merchantId,
       shopId: input.shopId ?? null,
+      topic,
       context: {},
     },
   });
+}
+
+/** @param {{ topic?: string }} input */
+function conversationTopic(input) {
+  return input.topic ?? CONVERSATION_TOPICS.memory;
 }
 
 /**
@@ -1511,6 +1552,7 @@ function serializeMessage(message) {
 function serializeConversation(conversation) {
   return {
     id: conversation.id,
+    topic: conversation.topic,
     status: conversation.status,
     createdAt: conversation.createdAt.toISOString(),
     updatedAt: conversation.updatedAt.toISOString(),

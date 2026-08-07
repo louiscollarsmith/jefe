@@ -86,6 +86,138 @@ export type AppHome13aProps = {
   openQuestions?: MemoryQuestion[];
 };
 
+export function AppHome13aLoading({ storeName }: { storeName: string }) {
+  const navBadges: Partial<Record<Section, string>> = {
+    queue: "",
+    memory: "",
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", background: R.surface, color: R.ink, fontFamily: R.sans }}>
+      <nav aria-label="Sections" style={{ width: 198, flex: "none", borderRight: `1px solid ${R.divider}`, padding: "16px 12px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 6px" }}>
+          <span style={{ width: 22, height: 22, flex: "none", display: "inline-block" }}>{JEFE_MARK}</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Jefe</span>
+          <span style={{ marginLeft: "auto", fontFamily: R.sans, fontSize: 11.5, color: R.label }}>{storeName}</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {NAV.map((n) => {
+            const active = n.id === "brief";
+            const badge = navBadges[n.id];
+            return (
+              <div
+                key={n.id}
+                aria-current={active ? "page" : undefined}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  textAlign: "left",
+                  gap: 8,
+                  padding: "8px 10px",
+                  borderLeft: `2px solid ${active ? R.rust : "transparent"}`,
+                  background: active ? R.activeNav : "transparent",
+                  color: active ? R.ink : R.ink3,
+                  fontWeight: active ? 600 : 400,
+                  fontFamily: R.sans,
+                  fontSize: 13.5,
+                }}
+              >
+                <span>{n.label}</span>
+                {badge != null ? <span className="JefeAppHomeSkeleton is-nav-badge" aria-hidden="true" /> : null}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8, padding: "0 8px" }}>
+          <span className="JefeAppHomeSkeleton is-nav-line" aria-hidden="true" />
+          <span className="JefeAppHomeSkeleton is-nav-link" aria-hidden="true" />
+        </div>
+      </nav>
+
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: `1px solid ${R.divider}` }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "26px 30px 20px" }}>
+          <div className="JefeAppHomeLoadingMain" role="status" aria-label="Opening Jefe" aria-live="polite">
+            <Mono>Opening Jefe</Mono>
+            <span className="JefeAppHomeSkeleton is-headline" aria-hidden="true" />
+            <div className="JefeAppHomeLoadingMetrics" aria-hidden="true">
+              {[1, 2, 3, 4].map((item) => (
+                <div key={item} className="JefeAppHomeLoadingMetric">
+                  <span className="JefeAppHomeSkeleton is-metric-label" />
+                  <span className="JefeAppHomeSkeleton is-metric-value" />
+                </div>
+              ))}
+            </div>
+            <div className="JefeAppHomeLoadingSection">
+              <div className="JefeAppHomeLoadingSectionHeader">
+                <span>Your call</span>
+                <Mono>loading</Mono>
+              </div>
+              {[1, 2, 3, 4].map((item) => (
+                <div key={item} className="JefeAppHomeLoadingRow" aria-hidden="true">
+                  <span className="JefeAppHomeSkeleton is-row-title" />
+                  <span className="JefeAppHomeSkeleton is-row-copy" />
+                </div>
+              ))}
+            </div>
+            <div className="JefeAppHomeLoadingSection">
+              <div className="JefeAppHomeLoadingSectionHeader">
+                <span>What I&apos;ve worked out so far</span>
+                <Mono>loading</Mono>
+              </div>
+              {[1, 2, 3].map((item) => (
+                <div key={item} className="JefeAppHomeLoadingRow" aria-hidden="true">
+                  <span className="JefeAppHomeSkeleton is-row-title" />
+                  <span className="JefeAppHomeSkeleton is-row-copy-short" />
+                </div>
+              ))}
+            </div>
+            <div className="JefeAppHomeLoadingSection">
+              <div className="JefeAppHomeLoadingSectionHeader">
+                <span>What we&apos;re working on</span>
+                <Mono>goals</Mono>
+              </div>
+              {[1, 2].map((item) => (
+                <div key={item} className="JefeAppHomeLoadingGoal" aria-hidden="true">
+                  <span className="JefeAppHomeSkeleton is-goal-label" />
+                  <span className="JefeAppHomeSkeleton is-goal-text" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div style={{ flex: "none", borderTop: `1px solid ${R.divider}`, padding: "12px 30px" }}>
+          <span className="JefeAppHomeSkeleton is-composer" aria-hidden="true" />
+        </div>
+      </div>
+
+      <aside style={{ width: 268, flex: "none", display: "flex", flexDirection: "column", padding: "22px 18px", gap: 24 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Tell us what to build</div>
+          <span className="JefeAppHomeSkeleton is-rail-copy" aria-hidden="true" />
+          <span className="JefeAppHomeSkeleton is-rail-button" aria-hidden="true" />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>Talk to the founders</div>
+          <span className="JefeAppHomeSkeleton is-rail-copy" aria-hidden="true" />
+          <span className="JefeAppHomeSkeleton is-rail-button" aria-hidden="true" />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontFamily: R.sans, fontSize: 13, fontWeight: 700, color: R.ink, paddingBottom: 7, borderBottom: `1px solid ${R.frame}` }}>New in Jefe</div>
+          {[1, 2, 3].map((item) => (
+            <div key={item} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span className="JefeAppHomeSkeleton is-rail-date" aria-hidden="true" />
+              <span className="JefeAppHomeSkeleton is-rail-title" aria-hidden="true" />
+              <span className="JefeAppHomeSkeleton is-rail-copy" aria-hidden="true" />
+            </div>
+          ))}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 export function AppHome13a(props: AppHome13aProps) {
   const [section, setSection] = useState<Section>("brief");
   const cur = props.metrics?.currency || "GBP";
