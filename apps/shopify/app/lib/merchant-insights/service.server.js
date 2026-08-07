@@ -29,6 +29,7 @@ import {
 } from "./constants.server.js";
 import {
   MERCHANT_INSIGHTS_OUTPUT_SCHEMA,
+  MERCHANT_INSIGHT_COPY_LIMITS,
   parseAndValidateMerchantInsightsOutput,
 } from "./schema.server.js";
 import {
@@ -509,22 +510,26 @@ function buildValidatedObservationFinding(belief, context) {
     typeof belief.label === "string" && belief.label.trim()
       ? belief.label.trim()
       : humanizeInsightBeliefKey(belief.key);
-  const title = label.slice(0, 80);
+  const title = truncateInsightCopy(label, MERCHANT_INSIGHT_COPY_LIMITS.title);
   const category = insightCategoryForBelief(belief.cat);
   const confidence = beliefConfidenceLabel(belief.conf);
   const caveat =
-    "Automated observation from your store data — shown because Jefe couldn't compose a fuller insight this time.";
+    "Automated observation from your store data. Jefe could not compose a fuller insight this time.";
   const whyItMatters =
     "A direct observation from your own store data, with no interpretation added.";
 
   const summary =
     typeof belief.evidence === "string" ? belief.evidence.trim() : "";
   const candidateFindings = [];
-  if (summary.length >= 12) candidateFindings.push(summary.slice(0, 280));
+  if (summary.length >= 12) {
+    candidateFindings.push(
+      truncateInsightCopy(summary, MERCHANT_INSIGHT_COPY_LIMITS.finding),
+    );
+  }
   candidateFindings.push(
-    `Jefe is tracking your ${label.toLowerCase()} directly from your store data.`.slice(
-      0,
-      280,
+    truncateInsightCopy(
+      `Jefe is tracking your ${label.toLowerCase()} directly from your store data.`,
+      MERCHANT_INSIGHT_COPY_LIMITS.finding,
     ),
   );
   candidateFindings.push("Jefe recorded this directly from your store data.");
@@ -546,6 +551,12 @@ function buildValidatedObservationFinding(belief, context) {
     if (check.ok && check.insights.length === 1) return check.insights[0];
   }
   return null;
+}
+
+function truncateInsightCopy(text, maxLength) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 /**

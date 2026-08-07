@@ -1,8 +1,8 @@
 // @ts-check
 
 export const MERCHANT_INSIGHTS_JOB_TYPE = "merchant_insights_generate";
-export const MERCHANT_INSIGHTS_PROMPT_VERSION = "merchant-insights-v5";
-export const MERCHANT_INSIGHTS_SCHEMA_VERSION = "merchant-insights-schema-v1";
+export const MERCHANT_INSIGHTS_PROMPT_VERSION = "merchant-insights-v6";
+export const MERCHANT_INSIGHTS_SCHEMA_VERSION = "merchant-insights-schema-v2";
 export const MERCHANT_INSIGHTS_SNAPSHOT_VERSION =
   "merchant-insights-snapshot-v3";
 
@@ -36,7 +36,7 @@ export const INSIGHT_CATEGORIES = [
   "other",
 ];
 
-export const MAX_INSIGHTS = 10;
+export const MAX_INSIGHTS = 5;
 export const MAX_ONBOARDING_INSIGHTS = 5;
 export const MIN_USEFUL_INSIGHT_BELIEFS = 3;
 

@@ -456,21 +456,29 @@ export async function markMerchantGoalsJobFailed(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; message: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; message: string; goalHorizon?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function processMerchantGoalMessage(prisma, input) {
   const message = input.message.trim();
   if (message.length < 2) return { ok: false, error: "Message is required." };
   const now = new Date();
-  const interpretedDirection = interpretGoalCoachingDirection(message);
+  const goalHorizon = normalizeGoalHorizonKey(input.goalHorizon);
+  const affectedHorizons = affectedGoalHorizonKeys(goalHorizon);
+  const affectedHorizonSummary = formatAffectedGoalHorizons(affectedHorizons);
+  const interpretedDirection = interpretGoalCoachingDirection(message, goalHorizon);
   await recordEvidence(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     sourceType: "merchant_goals",
     sourceReference: "goals_onboarding_conversation",
     evidenceType: "merchant_goal_coaching",
-    summary: `Merchant goal direction: ${interpretedDirection}`,
-    metadata: { originalMessage: message, interpretedDirection },
+    summary: `Merchant goal direction for ${affectedHorizonSummary}: ${interpretedDirection}`,
+    metadata: {
+      originalMessage: message,
+      interpretedDirection,
+      goalHorizon,
+      affectedHorizons,
+    },
     observedAt: now,
   });
   await addMerchantConversationNote(prisma, {
@@ -494,9 +502,50 @@ export async function processMerchantGoalMessage(prisma, input) {
       reason: "Jefe used merchant guidance to regenerate Goals onboarding.",
       merchantStatement: message,
       interpretedDirection,
+      goalHorizon,
+      affectedHorizons,
     },
   });
   return { ok: true };
+}
+
+/** @param {string | null | undefined} horizonKey */
+function normalizeGoalHorizonKey(horizonKey) {
+  if (!horizonKey) return null;
+  return GOAL_HORIZONS.some((horizon) => horizon.key === horizonKey)
+    ? horizonKey
+    : null;
+}
+
+/** @param {string | null} horizonKey */
+function affectedGoalHorizonKeys(horizonKey) {
+  const horizonIndex = horizonKey
+    ? GOAL_HORIZONS.findIndex((horizon) => horizon.key === horizonKey)
+    : 0;
+  const startIndex = horizonIndex >= 0 ? horizonIndex : 0;
+  return GOAL_HORIZONS.slice(startIndex).map((horizon) => horizon.key);
+}
+
+/** @param {string} horizonKey */
+function goalHorizonMonthForKey(horizonKey) {
+  return GOAL_HORIZONS.find((horizon) => horizon.key === horizonKey)?.months;
+}
+
+/** @param {string[]} horizonKeys */
+function formatAffectedGoalHorizons(horizonKeys) {
+  const months = horizonKeys
+    .map((horizonKey) => goalHorizonMonthForKey(horizonKey))
+    .filter(Boolean);
+  if (months.length === 0) return "all goal horizons";
+  if (months.length === 1) return `${months[0]} month horizon`;
+  const leadMonths = months.slice(0, -1).join(", ");
+  return `${leadMonths} and ${months[months.length - 1]} month horizons`;
+}
+
+/** @param {string | null} horizonKey */
+function goalCoachingHorizonLabel(horizonKey) {
+  const months = horizonKey ? goalHorizonMonthForKey(horizonKey) : null;
+  return months ? `${months} month` : "";
 }
 
 /** @param {string} message */
@@ -504,10 +553,14 @@ function buildGoalCoachingConversationMessage(message) {
   return `I interpreted your guidance as: ${message}`;
 }
 
-/** @param {string} message */
-function interpretGoalCoachingDirection(message) {
+/**
+ * @param {string} message
+ * @param {string | null} goalHorizon
+ */
+function interpretGoalCoachingDirection(message, goalHorizon = null) {
   const compacted = compactGoalCoachingSummary(message, 220);
-  const horizon = detectGoalCoachingHorizon(compacted);
+  const horizon =
+    detectGoalCoachingHorizon(compacted) || goalCoachingHorizonLabel(goalHorizon);
   const metric = detectGoalCoachingMetric(compacted);
   const target = detectGoalCoachingTarget(compacted);
   const horizonPhrase = horizon ? `the ${horizon} horizon` : "the goal set";

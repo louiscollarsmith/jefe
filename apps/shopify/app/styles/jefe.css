@@ -12,12 +12,45 @@
   width: 100%;
 }
 
+.JefeOnboardingTopbar {
+  align-items: center;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  margin: 0 auto;
+  max-width: 1180px;
+  position: relative;
+  width: 100%;
+  z-index: 2;
+}
+
 .JefeStepper {
   flex: 0 0 auto;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 12px;
   align-items: center;
+}
+
+.JefeOnboardingSkipForm {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.JefeOnboardingSkipButton {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  opacity: 0.55;
+  padding: 0;
+}
+
+.JefeOnboardingSkipButton:disabled {
+  cursor: default;
 }
 
 .JefeStepperItem {
@@ -37,6 +70,7 @@
 
 .JefeStepperItem:focus-visible,
 .JefeOnboardingShell a:focus-visible,
+.JefeOnboardingSkipButton:focus-visible,
 .JefeMemoryView a:focus-visible {
   outline: 2px solid #1f3a63;
   outline-offset: 3px;
@@ -171,6 +205,108 @@
   animation: JefeStepPending 900ms ease-in-out infinite;
 }
 
+.JefeGoalGuide {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(18px, 2.2vw, 28px);
+  width: 100%;
+}
+
+.JefeGoalCheckpointTrail {
+  align-items: center;
+  display: flex;
+  gap: 38px;
+  justify-content: center;
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.JefeGoalCheckpoint {
+  align-items: center;
+  border: 1px solid #d8d0c8;
+  border-radius: 999px;
+  color: #6d7175;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  gap: 8px;
+  letter-spacing: 0.02em;
+  min-height: 32px;
+  padding: 0 16px;
+  position: relative;
+}
+
+.JefeGoalCheckpoint:not(:last-child)::after {
+  background: #d8d0c8;
+  content: "";
+  height: 1px;
+  left: calc(100% + 10px);
+  position: absolute;
+  width: 18px;
+}
+
+.JefeGoalCheckpoint.is-active {
+  border-color: #d76f68;
+  color: #9b332c;
+}
+
+.JefeGoalCheckpoint.is-complete {
+  background: #eef8f0;
+  border-color: #7fc08d;
+  color: #26723d;
+}
+
+.JefeGoalCheckpoint.is-refreshing {
+  border-color: #7d98bf;
+  color: #1f3a63;
+}
+
+.JefeGoalCheckpoint.is-failed {
+  border-color: #d08a39;
+  color: #8a4b07;
+}
+
+.JefeGoalCheckpoint.is-refreshing .JefeGoalCheckpointStatus {
+  animation: JefeStepPending 900ms ease-in-out infinite;
+}
+
+.JefeGoalCheckpointStatus {
+  min-width: 10px;
+  text-align: center;
+}
+
+.JefeGoalFocusedCard {
+  background: #fffdfa;
+  border: 1px solid #d8d0c8;
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(39, 55, 77, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 162px;
+  padding: clamp(22px, 3vw, 36px);
+  width: 100%;
+}
+
+.JefeGoalFocusedCard.is-refreshing .JefeGoalSkeleton {
+  margin-top: 0;
+}
+
+.JefeGoalRevisionNote {
+  align-items: center;
+  background: rgba(232, 246, 255, 0.78);
+  border: 1px solid rgba(45, 133, 177, 0.36);
+  border-radius: 8px;
+  color: #1f3a63;
+  display: flex;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px 16px;
+  width: 100%;
+}
+
 .JefeGoalGrid {
   display: grid;
   gap: 12px;
@@ -187,8 +323,26 @@
   border: 1px solid #d8d0c8;
   border-radius: 8px;
   box-shadow: 0 10px 26px rgba(39, 55, 77, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-height: 116px;
+  position: relative;
   padding: 16px;
+}
+
+.JefeGoalTile.is-confirmed {
+  min-height: 172px;
+  padding: 22px;
+}
+
+.JefeGoalConfirmedMark {
+  color: #3f9d5d;
+  font-size: 18px;
+  font-weight: 800;
+  position: absolute;
+  right: 18px;
+  top: 18px;
 }
 
 .JefeGoalSkeleton {
@@ -229,16 +383,20 @@
 }
 
 .JefeOnboardingChat {
-  margin: clamp(26px, 3.5vw, 48px) auto 0;
+  margin: clamp(18px, 2.4vw, 30px) auto 0;
   max-width: 760px;
   width: 100%;
+}
+
+.JefeGoalGuideChat {
+  margin-top: 0;
 }
 
 .JefeOnboardingChatMessages {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  margin: 0 auto 20px;
+  gap: 12px;
+  margin: 0 auto 12px;
   width: min(100%, 720px);
 }
 
@@ -271,70 +429,71 @@
 }
 
 .JefeOnboardingChatComposer {
-  align-items: flex-end;
+  align-items: center;
   background: #fffdfa;
   border: 1px solid #d8d0c8;
   border-radius: 10px;
   box-shadow: 0 18px 42px rgba(39, 55, 77, 0.12);
-  display: flex;
+  display: grid;
   gap: 12px;
-  padding: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 54px;
+  padding: 8px 10px;
   width: 100%;
 }
 
 .JefeOnboardingChatField {
+  align-items: center;
+  display: flex;
   flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
 }
 
-.JefeOnboardingChatField .Polaris-TextField {
+.JefeOnboardingChatLabel {
+  clip: rect(0 0 0 0);
+  border: 0;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.JefeOnboardingChatInput {
+  -webkit-appearance: none;
+  appearance: none;
   background: transparent;
   border: 0;
-  box-shadow: none;
-}
-
-.JefeOnboardingChatField .Polaris-TextField__Backdrop {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: 0 !important;
-}
-
-.JefeOnboardingChatField .Polaris-TextField__Backdrop::after {
-  content: none;
-}
-
-.JefeOnboardingChatField
-  .Polaris-TextField--focus
-  > .Polaris-TextField__Input
-  ~ .Polaris-TextField__Backdrop,
-.JefeOnboardingChatField
-  .Polaris-TextField:focus-within
-  > .Polaris-TextField__Input
-  ~ .Polaris-TextField__Backdrop,
-.JefeOnboardingChatField
-  .Polaris-TextField__Input:focus-visible
-  ~ .Polaris-TextField__Backdrop {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: 0 !important;
-}
-
-.JefeOnboardingChatField .Polaris-TextField__Input {
-  min-height: 50px;
-  padding-inline: 0;
+  box-sizing: border-box;
+  color: #1f2933;
+  display: block;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.35;
+  min-height: 36px;
+  min-width: 0;
   padding-block: 0;
+  padding-inline: 0;
+  width: 100%;
 }
 
-.JefeOnboardingChatField .Polaris-TextField--focus > .Polaris-TextField__Input,
-.JefeOnboardingChatField
-  .Polaris-TextField:focus-within
-  > .Polaris-TextField__Input,
-.JefeOnboardingChatField .Polaris-TextField__Input:focus-visible {
-  background: transparent !important;
-  box-shadow: none !important;
-  outline: 0 !important;
+.JefeOnboardingChatInput::placeholder {
+  color: #7d8792;
+  opacity: 1;
+}
+
+.JefeOnboardingChatInput:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.JefeOnboardingChatComposer .Polaris-Button {
+  align-self: stretch;
+  flex: 0 0 auto;
+  min-width: 92px;
 }
 
 .JefeGoalDocumentForm {
@@ -788,6 +947,20 @@
   padding-right: 128px;
 }
 
+.JefeInsightPreview {
+  -webkit-box-orient: vertical;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.JefeInsightExpandAction {
+  align-self: flex-start;
+  display: flex;
+  justify-content: flex-start;
+}
+
 .JefeInsightSignal {
   position: absolute;
   right: 16px;
@@ -807,16 +980,6 @@
   justify-content: center;
   line-height: 1;
   width: 28px;
-}
-
-.JefeInsightCorrectionForm {
-  background: #f7f2ee;
-  border: 1px solid #ded8d3;
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
 }
 
 .JefeInsightSkeleton {
@@ -1111,6 +1274,16 @@
     padding: 18px 14px;
   }
 
+  .JefeOnboardingTopbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .JefeOnboardingSkipForm {
+    margin-left: 0;
+  }
+
   .JefeOnboardingScene {
     padding-top: 24px;
   }
@@ -1121,6 +1294,23 @@
 
   .JefeGoalGrid {
     grid-template-columns: 1fr;
+  }
+
+  .JefeGoalCheckpointTrail {
+    gap: 22px;
+    overflow-x: auto;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .JefeGoalCheckpoint {
+    flex: 0 0 auto;
+    padding-inline: 12px;
+  }
+
+  .JefeGoalCheckpoint:not(:last-child)::after {
+    left: calc(100% + 6px);
+    width: 10px;
   }
 
   .JefePlanCardHeader {
@@ -1407,6 +1597,7 @@ body:has(.JefeOnboardingShell.is-cinematic) {
 }
 
 /* Lift interactive content above the ambient layer */
+.JefeOnboardingShell.is-cinematic .JefeOnboardingTopbar,
 .JefeOnboardingShell.is-cinematic .JefeStepper,
 .JefeOnboardingShell.is-cinematic .JefeOnboardingScene {
   position: relative;
@@ -1573,11 +1764,6 @@ body:has(.JefeOnboardingShell.is-cinematic) {
   color: var(--jc-blush-accent);
 }
 
-.JefeOnboardingShell.is-cinematic .JefeInsightCorrectionForm {
-  background: var(--jc-surface-2);
-  border-color: var(--jc-border-2);
-}
-
 .JefeOnboardingShell.is-cinematic .JefeInsightSkeleton {
   background:
     linear-gradient(
@@ -1592,6 +1778,50 @@ body:has(.JefeOnboardingShell.is-cinematic) {
 }
 
 /* ---- Goals ---- */
+.JefeOnboardingShell.is-cinematic .JefeGoalGuide {
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint {
+  background: oklch(0.2 0.03 265 / 0.56);
+  border-color: var(--jc-border);
+  color: var(--jc-ink-3);
+  font-family: var(--jc-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  min-height: 30px;
+  text-transform: uppercase;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint:not(:last-child)::after {
+  background: var(--jc-border);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint.is-active {
+  background: oklch(0.28 0.045 18 / 0.52);
+  border-color: oklch(0.62 0.12 18 / 0.72);
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint.is-complete {
+  background: oklch(0.24 0.07 155 / 0.44);
+  border-color: oklch(0.56 0.14 155 / 0.54);
+  color: oklch(0.82 0.1 155);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint.is-refreshing {
+  background: oklch(0.24 0.055 232 / 0.5);
+  border-color: oklch(0.55 0.14 232 / 0.5);
+  color: oklch(0.84 0.06 232);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalCheckpoint.is-failed {
+  background: oklch(0.28 0.065 70 / 0.44);
+  border-color: oklch(0.7 0.12 70 / 0.5);
+  color: oklch(0.86 0.09 75);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalFocusedCard,
 .JefeOnboardingShell.is-cinematic .JefeGoalTile {
   background: var(--jc-card);
   border-color: var(--jc-border);
@@ -1599,6 +1829,22 @@ body:has(.JefeOnboardingShell.is-cinematic) {
   box-shadow: 0 14px 40px -24px oklch(0.5 0.1 285 / 0.5);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalFocusedCard {
+  min-height: 174px;
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalRevisionNote {
+  background: oklch(0.22 0.07 232 / 0.52);
+  border-color: oklch(0.55 0.14 232 / 0.5);
+  color: oklch(0.84 0.06 232);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeGoalConfirmedMark {
+  color: oklch(0.82 0.1 155);
 }
 
 .JefeOnboardingShell.is-cinematic .JefeOnboardingChat {
@@ -1627,6 +1873,14 @@ body:has(.JefeOnboardingShell.is-cinematic) {
   box-shadow: 0 16px 44px -24px oklch(0.5 0.1 285 / 0.6);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeOnboardingChatInput {
+  color: var(--jc-ink);
+}
+
+.JefeOnboardingShell.is-cinematic .JefeOnboardingChatInput::placeholder {
+  color: oklch(0.76 0.02 265);
 }
 
 .JefeOnboardingShell.is-cinematic .JefeGoalSkeletonLine {

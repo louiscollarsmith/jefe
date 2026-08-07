@@ -1,6 +1,6 @@
-import type { FormEvent } from "react";
+import { type FormEvent, useId } from "react";
 import { Form } from "react-router";
-import { BlockStack, Button, Text, TextField } from "@shopify/polaris";
+import { BlockStack, Button, Text } from "@shopify/polaris";
 
 export type OnboardingChatMessage = {
   id: string;
@@ -18,6 +18,7 @@ type OnboardingChatProps = {
   statusMessage?: string | null;
   statusActive?: boolean;
   intent: string;
+  className?: string;
   hiddenFields?: OnboardingChatHiddenField[];
   label: string;
   placeholder: string;
@@ -27,7 +28,6 @@ type OnboardingChatProps = {
   disabled?: boolean;
   submitDisabled?: boolean;
   submitLoading?: boolean;
-  rows?: number;
 };
 
 export function OnboardingChat({
@@ -35,6 +35,7 @@ export function OnboardingChat({
   statusMessage = null,
   statusActive = false,
   intent,
+  className,
   hiddenFields = [],
   label,
   placeholder,
@@ -44,12 +45,12 @@ export function OnboardingChat({
   disabled = false,
   submitDisabled = false,
   submitLoading = false,
-  rows = 2,
 }: OnboardingChatProps) {
+  const inputId = useId();
   const showMessages = messages.length > 0 || Boolean(statusMessage);
 
   return (
-    <div className="JefeOnboardingChat">
+    <div className={`JefeOnboardingChat${className ? ` ${className}` : ""}`}>
       <BlockStack gap="300">
         {showMessages ? (
           <div className="JefeOnboardingChatMessages" aria-live="polite">
@@ -85,14 +86,16 @@ export function OnboardingChat({
           ))}
           <div className="JefeOnboardingChatComposer">
             <div className="JefeOnboardingChatField">
-              <TextField
-                label={label}
-                labelHidden
+              <label className="JefeOnboardingChatLabel" htmlFor={inputId}>
+                {label}
+              </label>
+              <input
+                id={inputId}
+                className="JefeOnboardingChatInput"
                 name="message"
                 value={value}
-                onChange={onChange}
+                onChange={(event) => onChange(event.currentTarget.value)}
                 placeholder={placeholder}
-                multiline={rows}
                 autoComplete="off"
                 disabled={disabled}
               />

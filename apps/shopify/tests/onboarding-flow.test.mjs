@@ -28,6 +28,10 @@ const appHomeSource = fs.readFileSync(
   new URL("../app/components/app-home/AppHome13a.tsx", import.meta.url),
   "utf8",
 );
+const onboardingChatSource = fs.readFileSync(
+  new URL("../app/components/onboarding-chat.tsx", import.meta.url),
+  "utf8",
+);
 const jefeStylesSource = fs.readFileSync(
   new URL("../app/styles/jefe.css", import.meta.url),
   "utf8",
@@ -133,7 +137,8 @@ test("onboarding does not expose the retired goal form or interview path", () =>
 });
 
 test("Insights onboarding distinguishes queued work from rejected generated findings", () => {
-  assert.match(appIndexSource, /I'm choosing the patterns that seem most important/);
+  assert.match(appIndexSource, /I'm choosing the strongest evidence-backed patterns/);
+  assert.match(appIndexSource, /comparing products, orders, customers and inventory/);
   assert.match(appIndexSource, /I rejected the first generated findings/);
   assert.match(appIndexSource, /did not pass Jefe's grounding checks/);
   assert.match(appIndexSource, /isInsightValidationRejection/);
@@ -143,7 +148,7 @@ test("Insights onboarding distinguishes queued work from rejected generated find
 test("Insights onboarding keeps the last trusted cards visible while replacements generate", () => {
   assert.match(appIndexSource, /const insightsUpdating =/);
   assert.match(appIndexSource, /if \(!selectedRun && insightsUpdating\)/);
-  assert.match(appIndexSource, /I'm updating these insights with your correction/);
+  assert.match(appIndexSource, /I'm updating these insights with the latest memory/);
   assert.match(appIndexSource, /You can keep reviewing this set/);
   assert.doesNotMatch(
     appIndexSource,
@@ -424,9 +429,44 @@ test("the onboarding route has its own graceful error boundary (no raw stack ove
   assert.match(appIndexSource, /Jefe is still getting set up/);
 });
 
-test("onboarding papercuts: insight cards only ask for corrections; no dev-copy empty tile", () => {
-  assert.match(appIndexSource, /Something&apos;s not right/);
+test("onboarding papercuts: insight cards are compact; no correction UI or dev-copy empty tile", () => {
+  assert.match(appIndexSource, /See more/);
+  assert.match(appIndexSource, /Show less/);
+  assert.match(appIndexSource, /JefeInsightPreview/);
+  assert.doesNotMatch(appIndexSource, /Something&apos;s not right/);
+  assert.doesNotMatch(appIndexSource, /Help me understand what I got wrong/);
+  assert.doesNotMatch(appIndexSource, /name="insightText"/);
+  assert.doesNotMatch(appIndexSource, /name="supportingBeliefIds"/);
   assert.doesNotMatch(appIndexSource, /Looks right/);
   // #6: the empty-goal tile no longer leaks dev copy.
   assert.doesNotMatch(appIndexSource, /Goal needs retry/);
+});
+
+test("onboarding header keeps progress left and skip setup right on every step", () => {
+  assert.match(appIndexSource, /className="JefeOnboardingTopbar"/);
+  assert.match(appIndexSource, /<OnboardingStepper activeStep=\{activeStep\} \/>/);
+  assert.match(appIndexSource, /className="JefeOnboardingSkipForm"/);
+  assert.match(appIndexSource, /className="JefeOnboardingSkipButton"/);
+  assert.match(appIndexSource, /Skip setup — go to Jefe →/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingTopbar \{/);
+  assert.match(jefeStylesSource, /justify-content: space-between;/);
+  assert.match(jefeStylesSource, /\.JefeStepper \{[\s\S]*justify-content: flex-start;/);
+  assert.doesNotMatch(appIndexSource, /connected \? \(\s*<div/);
+});
+
+test("onboarding chat composer keeps compact shared spacing", () => {
+  assert.match(jefeStylesSource, /\.JefeOnboardingChat \{[\s\S]*clamp\(18px, 2\.4vw, 30px\)/);
+  assert.match(jefeStylesSource, /\.JefeGoalGuideChat \{[\s\S]*margin-top: 0;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatComposer \{[\s\S]*min-height: 54px;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatComposer \{[\s\S]*display: grid;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatComposer \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatField \{[\s\S]*width: 100%;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatInput \{[\s\S]*display: block;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatInput \{[\s\S]*min-height: 36px;/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatInput \{[\s\S]*width: 100%;/);
+  assert.match(onboardingChatSource, /className="JefeOnboardingChatInput"/);
+  assert.match(onboardingChatSource, /className="JefeOnboardingChatLabel"/);
+  assert.match(jefeStylesSource, /\.JefeOnboardingChatComposer \.Polaris-Button \{[\s\S]*flex: 0 0 auto;/);
+  assert.doesNotMatch(onboardingChatSource, /<TextField/);
+  assert.doesNotMatch(onboardingChatSource, /rows = 2/);
 });

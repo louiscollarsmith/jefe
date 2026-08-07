@@ -107,7 +107,6 @@ import {
   getMerchantInsightsExperience,
 } from "../lib/merchant-insights/service.server.js";
 import {
-  INSIGHT_REVIEW_STATUS,
   INSIGHT_RUN_STATUS,
   MAX_ONBOARDING_INSIGHTS,
 } from "../lib/merchant-insights/constants.js";
@@ -245,11 +244,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(formData.get("intent") ?? "");
 
   if (intent === "onboarding.skip") {
-    // Skip the WHOLE funnel (distinct from the per-step "Skip for now →" that
-    // just advances one step): mark the shop onboarded (source "skipped") and
-    // drop the merchant on the home. The button is gated on `connected`, so this
-    // only fires post-Connect (skipping before Shopify is connected would land
-    // on an empty home).
+    // Skip the whole setup: mark the shop onboarded (source "skipped") and drop
+    // the merchant on the home.
     await skipOnboarding(prisma, { shopId: shop.id });
     return redirect(
       appPathFromSearch(new URL(request.url).search, {
@@ -637,6 +633,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           merchantId: merchant.id,
           shopId: shop.id,
           message: String(formData.get("message") ?? ""),
+          goalHorizon: String(formData.get("goalHorizon") ?? ""),
         });
         if (!result.ok) {
           const messageError = result as { error?: string };
@@ -1456,7 +1453,6 @@ export default function AppIndex() {
     <OnboardingShell
       activeStep={visibleStep}
       cinematic={data.cinematic}
-      connected={data.connected}
     >
       {pendingDestination && showTransitionScene ? (
         <OnboardingTransitionScene
@@ -1479,7 +1475,6 @@ export default function AppIndex() {
           insights={data.insights}
           evidence={data.insightEvidence}
           actionError={safeActionError}
-          rawActionData={actionData}
         />
       ) : data.activeStep === "goals" ? (
         <GoalsStep
@@ -1543,24 +1538,15 @@ function oauthPopupFeatures() {
 function OnboardingShell({
   activeStep,
   cinematic,
-  connected,
   children,
 }: {
   activeStep: (typeof ONBOARDING_STEPS)[number];
   cinematic?: boolean;
-  connected?: boolean;
   children: ReactNode;
 }) {
-  const location = useLocation();
-  const navigate = useNavigate();
   const navigation = useNavigation();
   const pendingDestination = getPendingOnboardingDestination(navigation);
   const navigationPending = pendingDestination !== null;
-  const stepIndex = ONBOARDING_STEPS.indexOf(activeStep);
-  const nextStep =
-    stepIndex >= 0 && stepIndex < ONBOARDING_STEPS.length - 1
-      ? ONBOARDING_STEPS[stepIndex + 1]
-      : null;
 
   return (
     <main
@@ -1569,81 +1555,22 @@ function OnboardingShell({
       }`}
     >
       {cinematic ? <div className="JefeCinematicAmbient" aria-hidden="true" /> : null}
-      {connected ? (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            position: "relative",
-            zIndex: 2,
-          }}
-        >
-          {/* Skip the WHOLE funnel — for a returning/experienced merchant who
-              wants straight into Jefe. Only shown once Shopify is connected
-              (skipping before Connect lands on an empty home). */}
-          <Form method="post">
-            <input type="hidden" name="intent" value="onboarding.skip" />
-            <button
-              type="submit"
-              disabled={navigationPending}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: navigationPending ? "default" : "pointer",
-                fontFamily: "inherit",
-                fontSize: 12.5,
-                fontWeight: 600,
-                color: "inherit",
-                opacity: 0.55,
-              }}
-            >
-              Skip setup — go to Jefe →
-            </button>
-          </Form>
-        </div>
-      ) : null}
-      <OnboardingStepper activeStep={activeStep} />
-      <section className="JefeOnboardingScene">{children}</section>
-      {nextStep ? (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            position: "relative",
-            zIndex: 1,
-            paddingTop: 20,
-          }}
-        >
-          {/* Every step is skippable — you can always move forward even if the
-              step's data isn't ready yet. */}
+      <div className="JefeOnboardingTopbar">
+        <OnboardingStepper activeStep={activeStep} />
+        {/* Skip the WHOLE funnel — for a returning/experienced merchant who
+            wants straight into Jefe. */}
+        <Form method="post" className="JefeOnboardingSkipForm">
+          <input type="hidden" name="intent" value="onboarding.skip" />
           <button
-            type="button"
+            type="submit"
             disabled={navigationPending}
-            onClick={() =>
-              navigate(
-                appPathFromSearch(location.search, {
-                  step: nextStep,
-                  channelProvider: null,
-                  channelMode: null,
-                  channelNotice: null,
-                }),
-              )
-            }
-            style={{
-              background: "none",
-              border: "none",
-              cursor: navigationPending ? "default" : "pointer",
-              fontFamily: "inherit",
-              fontSize: 13,
-              fontWeight: 600,
-              color: "inherit",
-              opacity: 0.6,
-            }}
+            className="JefeOnboardingSkipButton"
           >
-            Skip for now →
+            Skip setup — go to Jefe →
           </button>
-        </div>
-      ) : null}
+        </Form>
+      </div>
+      <section className="JefeOnboardingScene">{children}</section>
     </main>
   );
 }
@@ -2250,19 +2177,15 @@ function InsightsStep({
   insights,
   evidence,
   actionError,
-  rawActionData,
 }: {
   backfill: ReturnType<typeof summarizeBackfill>;
   memoryReady: boolean;
   insights: Awaited<ReturnType<typeof getMerchantInsightsExperience>> | null;
   evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
   actionError: SafeActionError;
-  rawActionData: unknown;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const searchParams = new URLSearchParams(location.search);
-  const insightNotice = searchParams.get("insightNotice");
   const selectedRun = insights?.selectedRun;
   const currentRun = insights?.currentRun;
   const findings = (selectedRun?.findings ?? []).slice(
@@ -2277,24 +2200,13 @@ function InsightsStep({
   const currentRunInsufficient =
     currentRun?.status === INSIGHT_RUN_STATUS.insufficientData ||
     (!selectedRun && (insights?.candidateCount ?? 0) < 3);
-  const correctionError =
-    rawActionData &&
-    typeof rawActionData === "object" &&
-    "findingId" in rawActionData
-      ? {
-          findingId: String(
-            (rawActionData as { findingId?: unknown }).findingId ?? "",
-          ),
-          message: getSafeActionError(rawActionData),
-        }
-      : null;
 
   if (!memoryReady || !backfill.complete) {
     return (
       <InsightStatusScene
         step="insights"
-        title="I'm turning your store data into a first understanding of the business."
-        detail={backfill.detail}
+        title="I'm checking the store data before choosing insights."
+        detail={`${backfill.detail} Jefe is reading products, orders, customers and inventory so the first findings are backed by evidence.`}
         skeleton
         action={
           <Button
@@ -2319,8 +2231,8 @@ function InsightsStep({
     return (
       <InsightStatusScene
         step="insights"
-        title="I'm choosing the patterns that seem most important."
-        detail="This page will update when the first insight set is ready."
+        title="I'm choosing the strongest evidence-backed patterns."
+        detail="Jefe is comparing products, orders, customers and inventory, then keeping only findings specific enough to be useful."
         skeleton
         action={
           <Button
@@ -2426,7 +2338,7 @@ function InsightsStep({
         <Banner tone="warning">
           <Text as="p">
             {insightsUpdating
-              ? "I'm updating these insights with your correction. You can keep reviewing this set while the replacement is prepared."
+              ? "I'm updating these insights with the latest memory. You can keep reviewing this set while the replacement is prepared."
               : currentRunInsufficient
                 ? "These insights are from the previous valid memory set. I don't have enough newer supported signals to replace them yet."
                 : "These insights are from the previous valid memory set. I'll replace them after the latest generation succeeds."}
@@ -2436,22 +2348,6 @@ function InsightsStep({
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
-      {insightNotice === "confirmed" ? (
-        <Banner tone="success">
-          <Text as="p">
-            Thanks — I&apos;ll treat this as confirmed and lean on it.
-          </Text>
-        </Banner>
-      ) : null}
-      {insightNotice === "corrected" ? (
-        <Banner tone="success">
-          <Text as="p">
-            Thanks — I&apos;ll update my understanding and use this when I
-            generate future insights.
-          </Text>
-        </Banner>
-      ) : null}
-
       <div className="JefeInsightList">
         {findings.map((finding: (typeof findings)[number]) => (
           <InsightCard
@@ -2460,11 +2356,6 @@ function InsightsStep({
             evidence={evidence.filter((item) =>
               finding.supportingBeliefIds.includes(item.id),
             )}
-            correctionError={
-              correctionError && correctionError.findingId === finding.id
-                ? correctionError.message
-                : null
-            }
           />
         ))}
       </div>
@@ -2512,32 +2403,34 @@ function GoalsStep({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const searchParams = new URLSearchParams(location.search);
-  const goalsNotice = searchParams.get("goalsNotice");
   const currentRun = goals?.currentRun;
   const selectedRun = goals?.selectedRun;
   const horizons = selectedRun?.horizons ?? [];
-  const messages: OnboardingChatMessage[] = (conversation?.messages ?? [])
-    .filter(
-      (item) =>
-        item.role !== "assistant" || isGoalConversationAssistantMessage(item),
-    )
-    .filter(
-      (item) =>
-        (item.role === "merchant" || item.role === "assistant") &&
-        typeof item.id === "string" &&
-        typeof item.content === "string",
-    )
-    .map((item) => ({
-      id: item.id,
-      role:
-        item.role === "merchant"
-          ? ("merchant" as const)
-          : ("assistant" as const),
-      content: item.content,
-    }))
-    .slice(-8);
+  const goalItems = GOAL_HORIZONS.map((horizon) => {
+    const goal = horizons.find(
+      (item: { horizon: string }) => item.horizon === horizon.key,
+    );
+    return {
+      key: horizon.key,
+      label: horizon.label,
+      months: horizon.months,
+      title: goal?.title ?? "Still shaping this one...",
+      body: goal?.description ?? "",
+    };
+  });
   const [message, setMessage] = useState("");
+  const [currentGoalIndex, setCurrentGoalIndex] = useState(0);
+  const [showGoalSummary, setShowGoalSummary] = useState(false);
+  const [confirmedGoalKeys, setConfirmedGoalKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [revisionNotes, setRevisionNotes] = useState<Record<string, string>>(
+    {},
+  );
+  const [pendingGoalRevision, setPendingGoalRevision] = useState<{
+    startIndex: number;
+    message: string;
+  } | null>(null);
   const navigation = useNavigation();
   const submittingGoalMessage =
     navigation.state !== "idle" &&
@@ -2550,20 +2443,138 @@ function GoalsStep({
     currentRun?.status === GOAL_RUN_STATUS.running ||
     goals?.activeJob?.status === "queued" ||
     goals?.activeJob?.status === "running";
-  const refinementRegenerating =
-    goalsNotice === "message_saved" && goalGenerationActive && horizons.length > 0;
-  const showGoalSkeletons = submittingGoalMessage || refinementRegenerating;
-  const visibleMessages = submittedGoalMessage
-    ? [
-        ...messages,
-        {
-          id: "pending-goal-message",
-          role: "merchant" as const,
-          content: submittedGoalMessage,
-        },
-      ]
-    : messages;
-  const assistantUpdateText = showGoalSkeletons ? "Updating" : null;
+  const goalRefreshFailed =
+    Boolean(selectedRun && goals?.stale) &&
+    (currentRun?.status === GOAL_RUN_STATUS.failed ||
+      currentRun?.status === GOAL_RUN_STATUS.modelDisabled ||
+      currentRun?.status === GOAL_RUN_STATUS.insufficientData);
+  const latestStoredGoalRevision = latestGoalCoachingRevision(
+    conversation?.messages ?? [],
+  );
+  const latestStoredRevisionStartIndex = latestStoredGoalRevision?.affectedHorizons
+    ?.length
+    ? goalItems.findIndex(
+        (goal) => goal.key === latestStoredGoalRevision.affectedHorizons[0],
+      )
+    : -1;
+  const failedRefreshStartIndex = goalRefreshFailed
+    ? pendingGoalRevision?.startIndex ??
+      (latestStoredRevisionStartIndex >= 0 ? latestStoredRevisionStartIndex : 0)
+    : null;
+  const currentGoal =
+    goalItems[Math.min(currentGoalIndex, goalItems.length - 1)] ?? goalItems[0];
+  const refreshCanStillBeActive = submittingGoalMessage || goalGenerationActive;
+  const activeRefreshStartIndex =
+    pendingGoalRevision && refreshCanStillBeActive
+      ? pendingGoalRevision.startIndex
+      : goalGenerationActive && goals?.stale
+        ? latestStoredRevisionStartIndex >= 0
+          ? latestStoredRevisionStartIndex
+          : 0
+        : null;
+  const currentGoalRefreshing =
+    activeRefreshStartIndex !== null && currentGoalIndex >= activeRefreshStartIndex;
+  const currentGoalRefreshFailed =
+    failedRefreshStartIndex !== null && currentGoalIndex >= failedRefreshStartIndex;
+  const activeRefreshGoalLabel =
+    activeRefreshStartIndex !== null || failedRefreshStartIndex !== null
+      ? formatAffectedGoalCheckpoints(
+          goalItems,
+          activeRefreshStartIndex ?? failedRefreshStartIndex ?? 0,
+        )
+      : "";
+  const storedGoalRevisionStillRelevant =
+    submittingGoalMessage || goalGenerationActive || goalRefreshFailed;
+  const currentRevisionNote =
+    currentGoal && submittedGoalMessage
+      ? submittedGoalMessage
+      : currentGoal
+        ? (revisionNotes[currentGoal.key] ??
+          (storedGoalRevisionStillRelevant
+            ? latestStoredGoalRevision?.message
+            : "") ??
+          "")
+        : "";
+  const activeRefreshMessage =
+    currentGoalRefreshing && pendingGoalRevision
+      ? pendingGoalRevision.message
+      : currentRevisionNote;
+  const confirmCurrentGoal = () => {
+    if (!currentGoal) return;
+    setConfirmedGoalKeys((previous) => {
+      const next = new Set(previous);
+      next.add(currentGoal.key);
+      return next;
+    });
+    setRevisionNotes((previous) => {
+      const next = { ...previous };
+      delete next[currentGoal.key];
+      return next;
+    });
+    setPendingGoalRevision(null);
+    setMessage("");
+    if (currentGoalIndex >= goalItems.length - 1) {
+      setShowGoalSummary(true);
+    } else {
+      setCurrentGoalIndex((index) => Math.min(index + 1, goalItems.length - 1));
+    }
+  };
+  const skipToGoalSummary = () => {
+    setConfirmedGoalKeys(new Set(goalItems.map((item) => item.key)));
+    setPendingGoalRevision(null);
+    setShowGoalSummary(true);
+    setMessage("");
+  };
+  const handleGoalBack = () => {
+    if (showGoalSummary) {
+      setShowGoalSummary(false);
+      setCurrentGoalIndex(Math.max(goalItems.length - 1, 0));
+      return;
+    }
+    if (currentGoalIndex > 0) {
+      setCurrentGoalIndex((index) => Math.max(index - 1, 0));
+      setMessage("");
+      return;
+    }
+    navigate(
+      appPathFromSearch(location.search, {
+        step: "insights",
+        channelProvider: null,
+        channelMode: null,
+        channelNotice: null,
+      }),
+    );
+  };
+  const handleGoalChatSubmit = (event: FormEvent<HTMLFormElement>) => {
+    const trimmed = message.trim();
+    if (!trimmed || !currentGoal) {
+      event.preventDefault();
+      return;
+    }
+    if (isGoalConfirmationMessage(trimmed)) {
+      event.preventDefault();
+      confirmCurrentGoal();
+      return;
+    }
+    const refreshStartIndex = currentGoalIndex;
+    setPendingGoalRevision({ startIndex: refreshStartIndex, message: trimmed });
+    setConfirmedGoalKeys((previous) => {
+      const next = new Set<string>();
+      previous.forEach((key) => {
+        const goalIndex = goalItems.findIndex((item) => item.key === key);
+        if (goalIndex >= 0 && goalIndex < refreshStartIndex) {
+          next.add(key);
+        }
+      });
+      return next;
+    });
+    setShowGoalSummary(false);
+    setRevisionNotes((previous) => ({
+      ...previous,
+      [currentGoal.key]: trimmed,
+    }));
+    setTimeout(() => setMessage(""), 0);
+  };
 
   if (!memoryReady || !backfill.complete) {
     return (
@@ -2590,7 +2601,7 @@ function GoalsStep({
     );
   }
 
-  if (goalGenerationActive && !refinementRegenerating) {
+  if (goalGenerationActive && horizons.length === 0) {
     return (
       <InsightStatusScene
         step="goals"
@@ -2690,94 +2701,319 @@ function GoalsStep({
   }
 
   return (
-    <OnboardingStepScene step="goals">
+    <div className="JefeGoalGuide">
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
-      <div
-        className={`JefeGoalGrid ${showGoalSkeletons ? "is-updating" : ""}`}
-        aria-busy={showGoalSkeletons || undefined}
-      >
-        {GOAL_HORIZONS.map((horizon) => {
-          const goal = horizons.find(
-            (item: { horizon: string }) => item.horizon === horizon.key,
-          );
-          return (
-            <div className="JefeGoalTile" key={horizon.key}>
-              <Text as="p" tone="subdued" fontWeight="bold">
-                {horizon.label}
-              </Text>
-              {showGoalSkeletons ? (
-                <GoalTileSkeleton />
-              ) : (
-                <>
-                  <Text as="h2" variant="headingMd">
-                    {goal?.title ?? "Still shaping this one…"}
-                  </Text>
-                  {goal?.description ? (
-                    <Text as="p" tone="subdued">
-                      {goal.description}
-                    </Text>
-                  ) : null}
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <OnboardingChat
-        messages={visibleMessages}
-        statusMessage={assistantUpdateText}
-        statusActive={showGoalSkeletons}
-        intent="goals.message"
-        label="Update Goals"
-        placeholder="Update your goals by chatting with Jefe..."
-        value={message}
-        onChange={setMessage}
-        onSubmit={() => {
-          setTimeout(() => setMessage(""), 0);
-        }}
-        disabled={submittingGoalMessage}
-        submitDisabled={!message.trim() || submittingGoalMessage}
-        submitLoading={submittingGoalMessage}
+      <GoalCheckpointTrail
+        goals={goalItems}
+        currentIndex={showGoalSummary ? goalItems.length : currentGoalIndex}
+        confirmedKeys={confirmedGoalKeys}
+        refreshStartIndex={activeRefreshStartIndex}
+        failedStartIndex={failedRefreshStartIndex}
       />
-
-      <InlineStack gap="300" align="center">
-        <Button
-          onClick={() =>
-            navigate(
-              appPathFromSearch(location.search, {
-                step: "insights",
-                channelProvider: null,
-                channelMode: null,
-                channelNotice: null,
-              }),
-            )
-          }
-        >
-          Back
-        </Button>
-        <Form method="post">
-          <input type="hidden" name="intent" value="goals.finish" />
-          <Button submit variant="primary">
-            Continue to Plan
-          </Button>
-        </Form>
-      </InlineStack>
-    </OnboardingStepScene>
+      {goalRefreshFailed ? (
+        <Banner tone="warning">
+          <BlockStack gap="200">
+            <Text as="p">
+              Jefe tried to refresh {activeRefreshGoalLabel}, but the goal model
+              did not complete. {merchantGoalErrorCopy(currentRun)}
+            </Text>
+            <Form method="post">
+              <input type="hidden" name="intent" value="goals.retry" />
+              <Button submit>Retry goal refresh</Button>
+            </Form>
+          </BlockStack>
+        </Banner>
+      ) : null}
+      {showGoalSummary ? (
+        <>
+          <GoalGuideHeader
+            eyebrow="GOALS SET"
+            title="Here's the roadmap we agreed."
+            detail="Three checkpoints, confirmed one at a time. Jefe will plan the first move next."
+          />
+          <div className="JefeGoalGrid">
+            {goalItems.map((goal) => (
+              <div className="JefeGoalTile is-confirmed" key={goal.key}>
+                <span className="JefeGoalConfirmedMark" aria-hidden="true">
+                  ✓
+                </span>
+                <Text as="p" tone="subdued" fontWeight="bold">
+                  {goal.label}
+                </Text>
+                <Text as="h2" variant="headingMd">
+                  {goal.title}
+                </Text>
+                {goal.body ? (
+                  <Text as="p" tone="subdued">
+                    {goal.body}
+                  </Text>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <InlineStack gap="300" align="center">
+            <Button onClick={handleGoalBack}>Back</Button>
+            <Form method="post">
+              <input type="hidden" name="intent" value="goals.finish" />
+              <Button submit variant="primary">
+                Continue to Plan →
+              </Button>
+            </Form>
+          </InlineStack>
+        </>
+      ) : (
+        <>
+          <GoalGuideHeader
+            eyebrow="A FEW QUESTIONS"
+            title={`Tell me what winning looks like in ${currentGoal?.months ?? 3} months.`}
+            detail={`Based on everything I've learned so far, this is where I think we should be heading for the next ${currentGoal?.months ?? 3} months. Help me refine it.`}
+          />
+          <div
+            className={`JefeGoalFocusedCard ${
+              currentGoalRefreshing ? "is-refreshing" : ""
+            }`}
+            aria-busy={currentGoalRefreshing ? true : undefined}
+          >
+            {currentGoalRefreshing ? (
+              <GoalFocusedSkeleton label={currentGoal?.label ?? ""} />
+            ) : (
+              <>
+                <Text as="p" tone="subdued" fontWeight="bold">
+                  {currentGoal?.label}
+                </Text>
+                <Text as="h2" variant="headingXl">
+                  {currentGoal?.title}
+                </Text>
+                {currentGoal?.body ? (
+                  <Text as="p" tone="subdued">
+                    {currentGoal.body}
+                  </Text>
+                ) : null}
+              </>
+            )}
+          </div>
+          {activeRefreshMessage ? (
+            <div className="JefeGoalRevisionNote" role="status">
+              <span aria-hidden="true">✎</span>
+              <Text as="p">
+                {currentGoalRefreshing
+                  ? `Got it — Jefe is recalculating ${activeRefreshGoalLabel} from: "${activeRefreshMessage}". Confirm this checkpoint once the updated goals appear.`
+                  : `Got it — noted: "${activeRefreshMessage}". Adjust above, then confirm to move on.`}
+              </Text>
+            </div>
+          ) : null}
+          <OnboardingChat
+            className="JefeGoalGuideChat"
+            messages={[]}
+            intent="goals.message"
+            hiddenFields={
+              currentGoal ? [{ name: "goalHorizon", value: currentGoal.key }] : []
+            }
+            label="Confirm or revise goal"
+            placeholder={
+              currentGoalRefreshFailed
+                ? "Retry the goal refresh before confirming..."
+                : currentGoalRefreshing
+                ? "Jefe is updating these goals..."
+                : "Say 'looks good' to confirm, or tell Jefe what to change..."
+            }
+            value={message}
+            onChange={setMessage}
+            onSubmit={handleGoalChatSubmit}
+            disabled={
+              submittingGoalMessage ||
+              currentGoalRefreshing ||
+              currentGoalRefreshFailed
+            }
+            submitDisabled={
+              !message.trim() ||
+              submittingGoalMessage ||
+              currentGoalRefreshing ||
+              currentGoalRefreshFailed
+            }
+            submitLoading={submittingGoalMessage}
+          />
+          <InlineStack gap="300" align="center">
+            <Button onClick={handleGoalBack}>Back</Button>
+            <Button variant="plain" onClick={skipToGoalSummary}>
+              Skip for now →
+            </Button>
+          </InlineStack>
+        </>
+      )}
+    </div>
   );
 }
 
-function GoalTileSkeleton() {
+type GoalGuideItem = {
+  key: string;
+  label: string;
+  months: number;
+  title: string;
+  body: string;
+};
+
+function GoalCheckpointTrail({
+  goals,
+  currentIndex,
+  confirmedKeys,
+  refreshStartIndex,
+  failedStartIndex,
+}: {
+  goals: GoalGuideItem[];
+  currentIndex: number;
+  confirmedKeys: Set<string>;
+  refreshStartIndex?: number | null;
+  failedStartIndex?: number | null;
+}) {
   return (
-    <div className="JefeGoalSkeleton" aria-hidden="true">
-      <div className="JefeGoalSkeletonLine is-title" />
-      <div className="JefeGoalSkeletonLine is-title-short" />
-      <div className="JefeGoalSkeletonLine" />
-      <div className="JefeGoalSkeletonLine is-short" />
-    </div>
+    <ol className="JefeGoalCheckpointTrail" aria-label="Goal checkpoints">
+      {goals.map((goal, index) => {
+        const refreshing =
+          refreshStartIndex !== null &&
+          refreshStartIndex !== undefined &&
+          index >= refreshStartIndex;
+        const failed =
+          !refreshing &&
+          failedStartIndex !== null &&
+          failedStartIndex !== undefined &&
+          index >= failedStartIndex;
+        const complete =
+          !refreshing &&
+          !failed &&
+          (confirmedKeys.has(goal.key) || currentIndex >= goals.length);
+        const active = !complete && index === currentIndex;
+        return (
+          <li
+            className={`JefeGoalCheckpoint ${complete ? "is-complete" : ""} ${
+              active ? "is-active" : ""
+            } ${refreshing ? "is-refreshing" : ""} ${
+              failed ? "is-failed" : ""
+            }`}
+            key={goal.key}
+          >
+            <span className="JefeGoalCheckpointStatus" aria-hidden="true">
+              {complete ? "✓" : refreshing ? "…" : failed ? "!" : index + 1}
+            </span>
+            <span>{goal.label}</span>
+          </li>
+        );
+      })}
+    </ol>
   );
+}
+
+type LatestGoalCoachingRevision = {
+  message: string;
+  affectedHorizons: string[];
+};
+
+function latestGoalCoachingRevision(
+  messages: Array<{ role: string; structuredOperation?: unknown }>,
+): LatestGoalCoachingRevision | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const operation = message.structuredOperation;
+    if (!operation || typeof operation !== "object") continue;
+    const typedOperation = operation as {
+      operationType?: unknown;
+      merchantStatement?: unknown;
+      affectedHorizons?: unknown;
+    };
+    if (typedOperation.operationType !== "goals_coaching_context") continue;
+    const merchantStatement =
+      typeof typedOperation.merchantStatement === "string"
+        ? typedOperation.merchantStatement.trim()
+        : "";
+    if (!merchantStatement) continue;
+    const affectedHorizons = Array.isArray(typedOperation.affectedHorizons)
+      ? typedOperation.affectedHorizons.filter(
+          (horizon): horizon is string => typeof horizon === "string",
+        )
+      : [];
+    return { message: merchantStatement, affectedHorizons };
+  }
+  return null;
+}
+
+function GoalFocusedSkeleton({ label }: { label: string }) {
+  return (
+    <>
+      <Text as="p" tone="subdued" fontWeight="bold">
+        {label}
+      </Text>
+      <div className="JefeGoalSkeleton" aria-hidden="true">
+        <span className="JefeGoalSkeletonLine is-title" />
+        <span className="JefeGoalSkeletonLine is-title-short" />
+        <span className="JefeGoalSkeletonLine" />
+        <span className="JefeGoalSkeletonLine is-short" />
+      </div>
+    </>
+  );
+}
+
+function formatAffectedGoalCheckpoints(goals: GoalGuideItem[], startIndex: number) {
+  const labels = goals.slice(startIndex).map((goal) => `${goal.months}`);
+  if (labels.length === 0) return "these goals";
+  if (labels.length === 1) return `the ${labels[0]} month goal`;
+  const lead = labels.slice(0, -1).join(", ");
+  return `the ${lead} and ${labels[labels.length - 1]} month goals`;
+}
+
+function GoalGuideHeader({
+  eyebrow,
+  title,
+  detail,
+}: {
+  eyebrow: string;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <BlockStack gap="150" inlineAlign="center">
+      <Text as="p" fontWeight="bold">
+        {eyebrow}
+      </Text>
+      <h1 className="JefeDisplayHeading">{title}</h1>
+      <Text as="p" tone="subdued" alignment="center">
+        {detail}
+      </Text>
+    </BlockStack>
+  );
+}
+
+function isGoalConfirmationMessage(message: string) {
+  const normalized = message
+    .toLowerCase()
+    .replace(/[.!?,;:'"’‘“”]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return false;
+  const exactConfirmations = new Set([
+    "ok",
+    "okay",
+    "yes",
+    "yep",
+    "yeah",
+    "confirmed",
+    "confirm",
+    "approved",
+    "approve",
+    "looks good",
+    "look good",
+    "sounds good",
+    "sound good",
+    "thats good",
+    "that works",
+    "works for me",
+    "good",
+    "fine",
+    "great",
+  ]);
+  if (exactConfirmations.has(normalized)) return true;
+  return /^(looks|sounds) good( to me)?$/.test(normalized);
 }
 
 function PlanStep({
@@ -3211,16 +3447,14 @@ function InsightStatusScene({
 }) {
   return (
     <OnboardingStepScene step={step}>
-      {!skeleton ? (
-        <BlockStack gap="150" inlineAlign="center">
-          <Text as="p" fontWeight="bold" alignment="center">
-            {title}
-          </Text>
-          <Text as="p" tone="subdued" alignment="center">
-            {detail}
-          </Text>
-        </BlockStack>
-      ) : null}
+      <BlockStack gap="150" inlineAlign="center">
+        <Text as="p" fontWeight="bold" alignment="center">
+          {title}
+        </Text>
+        <Text as="p" tone="subdued" alignment="center">
+          {detail}
+        </Text>
+      </BlockStack>
       {skeleton ? (
         <div className="JefeInsightList" role="status" aria-live="polite">
           {[1, 2, 3].map((item) => (
@@ -3240,19 +3474,13 @@ function InsightStatusScene({
 function InsightCard({
   finding,
   evidence,
-  correctionError,
 }: {
   finding: NonNullable<
     Awaited<ReturnType<typeof getMerchantInsightsExperience>>["selectedRun"]
   >["findings"][number];
   evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
-  correctionError: SafeActionError;
 }) {
   const [open, setOpen] = useState(false);
-  const [correcting, setCorrecting] = useState(false);
-  const [correctionText, setCorrectionText] = useState("");
-  const confirmed = finding.reviewStatus === INSIGHT_REVIEW_STATUS.confirmed;
-  const corrected = finding.reviewStatus === INSIGHT_REVIEW_STATUS.corrected;
 
   return (
     <div className="JefeInsightCard">
@@ -3260,138 +3488,80 @@ function InsightCard({
         {finding.orderIndex}
       </div>
       <div className="JefeInsightSignal">
-        <Badge tone={corrected ? "attention" : confirmed ? "success" : "info"}>
-          {corrected
-            ? "Corrected"
-            : confirmed
-              ? "Confirmed"
-              : confidenceLabel(finding.confidence)}
-        </Badge>
+        <Badge tone="info">{confidenceLabel(finding.confidence)}</Badge>
       </div>
       <div className="JefeInsightBody">
-        <BlockStack gap="300">
+        <BlockStack gap="200">
           <div className="JefeInsightPrimary">
             <BlockStack gap="100">
               <Text as="h2" variant="headingMd">
                 {finding.title}
               </Text>
-              <Text as="p">{finding.finding}</Text>
+              <div className="JefeInsightPreview">
+                <Text as="p">{finding.finding}</Text>
+              </div>
             </BlockStack>
           </div>
-          <Text as="p" tone="subdued">
-            {finding.whyItMatters}
-          </Text>
-          {finding.caveat ? (
-            <Text as="p" tone="subdued">
-              {finding.caveat}
-            </Text>
-          ) : null}
-          <InlineStack gap="200" align="space-between" blockAlign="center">
+          <div className="JefeInsightExpandAction">
             <Button
               variant="plain"
               onClick={() => setOpen((value) => !value)}
               ariaExpanded={open}
-              ariaControls={`insight-evidence-${finding.id}`}
+              ariaControls={`insight-detail-${finding.id}`}
             >
-              Why Jefe thinks this
+              {open ? "Show less" : "See more"}
             </Button>
-            {!corrected ? (
-              <Button onClick={() => setCorrecting((value) => !value)}>
-                Something&apos;s not right
-              </Button>
-            ) : null}
-          </InlineStack>
+          </div>
           <Collapsible
             open={open}
-            id={`insight-evidence-${finding.id}`}
+            id={`insight-detail-${finding.id}`}
             transition={{ duration: "150ms", timingFunction: "ease" }}
           >
-            <BlockStack gap="200">
-              {evidence.map((item) => (
-                <Box
-                  key={item.id}
-                  padding="300"
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                >
-                  <BlockStack gap="100">
-                    <Text as="p" fontWeight="semibold">
-                      {item.title}
-                    </Text>
-                    <Text as="p" tone="subdued">
-                      {item.value}
-                    </Text>
-                    {item.evidenceSummary ? (
-                      <Text as="p" tone="subdued">
-                        {item.evidenceSummary}
-                      </Text>
-                    ) : null}
-                    <Text as="p" tone="subdued">
-                      {item.sourceLabel}
-                      {item.lastEvaluatedAt
-                        ? ` · Checked ${item.lastEvaluatedAt}`
-                        : ""}
-                    </Text>
-                  </BlockStack>
-                </Box>
-              ))}
+            <BlockStack gap="300">
+              <BlockStack gap="100">
+                <Text as="p" tone="subdued">
+                  {finding.whyItMatters}
+                </Text>
+                {finding.caveat ? (
+                  <Text as="p" tone="subdued">
+                    {finding.caveat}
+                  </Text>
+                ) : null}
+              </BlockStack>
+              {evidence.length ? (
+                <BlockStack gap="200">
+                  {evidence.map((item) => (
+                    <Box
+                      key={item.id}
+                      padding="300"
+                      background="bg-surface-secondary"
+                      borderRadius="200"
+                    >
+                      <BlockStack gap="100">
+                        <Text as="p" fontWeight="semibold">
+                          {item.title}
+                        </Text>
+                        <Text as="p" tone="subdued">
+                          {item.value}
+                        </Text>
+                        {item.evidenceSummary ? (
+                          <Text as="p" tone="subdued">
+                            {item.evidenceSummary}
+                          </Text>
+                        ) : null}
+                        <Text as="p" tone="subdued">
+                          {item.sourceLabel}
+                          {item.lastEvaluatedAt
+                            ? ` · Checked ${item.lastEvaluatedAt}`
+                            : ""}
+                        </Text>
+                      </BlockStack>
+                    </Box>
+                  ))}
+                </BlockStack>
+              ) : null}
             </BlockStack>
           </Collapsible>
-          {correcting ? (
-            <Form method="post" className="JefeInsightCorrectionForm">
-              <input type="hidden" name="intent" value="insights.correct" />
-              <input type="hidden" name="findingId" value={finding.id} />
-              <input
-                type="hidden"
-                name="insightText"
-                value={`${finding.title}\n\n${finding.finding}\n\n${finding.whyItMatters}`}
-              />
-              <input
-                type="hidden"
-                name="supportingBeliefIds"
-                value={finding.supportingBeliefIds.join(",")}
-              />
-              <BlockStack gap="100">
-                <Text as="h3" variant="headingSm">
-                  Help me understand what I got wrong.
-                </Text>
-                <Text as="p" tone="subdued">
-                  Tell me what I&apos;ve misunderstood. It might be that the
-                  data is incomplete, I&apos;ve interpreted something
-                  incorrectly, or there&apos;s important context I don&apos;t
-                  know yet.
-                </Text>
-              </BlockStack>
-              <TextField
-                label="Correction"
-                labelHidden
-                name="correction"
-                value={correctionText}
-                onChange={setCorrectionText}
-                autoComplete="off"
-                multiline={5}
-                placeholder={`e.g. "We're seasonal, so having no recent orders is completely normal."`}
-                error={
-                  correctionError
-                    ? safeActionErrorMessage(correctionError)
-                    : undefined
-                }
-              />
-              <InlineStack gap="200">
-                <Button submit variant="primary">
-                  Submit correction
-                </Button>
-                <Button
-                  onClick={() => {
-                    setCorrectionText("");
-                    setCorrecting(false);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </InlineStack>
-            </Form>
-          ) : null}
         </BlockStack>
       </div>
     </div>
@@ -4712,40 +4882,6 @@ function shouldPollMerchantPlan(
   );
 }
 
-function isGoalDocumentConversationMessage(message: {
-  role: string;
-  structuredOperation?: unknown;
-}) {
-  if (message.role !== "assistant") return false;
-  const operation = message.structuredOperation;
-  if (!operation || typeof operation !== "object") return false;
-  const typedOperation = operation as { operationType?: unknown };
-  return (
-    typedOperation.operationType === "goals_document_context"
-  );
-}
-
-function isGoalConversationAssistantMessage(message: {
-  role: string;
-  structuredOperation?: unknown;
-}) {
-  return (
-    isGoalDocumentConversationMessage(message) ||
-    isGoalCoachingConversationMessage(message)
-  );
-}
-
-function isGoalCoachingConversationMessage(message: {
-  role: string;
-  structuredOperation?: unknown;
-}) {
-  if (message.role !== "assistant") return false;
-  const operation = message.structuredOperation;
-  if (!operation || typeof operation !== "object") return false;
-  const typedOperation = operation as { operationType?: unknown };
-  return typedOperation.operationType === "goals_coaching_context";
-}
-
 function isPlanConversationAssistantMessage(message: {
   role: string;
   structuredOperation?: unknown;
@@ -4757,7 +4893,9 @@ function isPlanConversationAssistantMessage(message: {
   return typedOperation.operationType === "plan_refinement_context";
 }
 
-function merchantGoalErrorCopy(run: { safeErrorCode?: string | null } | null) {
+function merchantGoalErrorCopy(
+  run: { safeErrorCode?: string | null; lastError?: string | null } | null,
+) {
   if (run?.safeErrorCode === "llm_disabled") {
     return "Goal generation is currently disabled, so I cannot create a trustworthy first plan yet.";
   }
@@ -4766,6 +4904,12 @@ function merchantGoalErrorCopy(run: { safeErrorCode?: string | null } | null) {
   }
   if (run?.safeErrorCode === "llm_timeout") {
     return "The model took too long to respond. You can retry without losing current setup progress.";
+  }
+  if (
+    run?.safeErrorCode === "llm_provider_failed" &&
+    /quota|rate/i.test(run.lastError ?? "")
+  ) {
+    return "The model provider rate-limited the request, so Jefe kept the previous goals instead of showing an untrusted rewrite.";
   }
   return "The goal job failed safely. I have not shown any untrusted or sample goals.";
 }

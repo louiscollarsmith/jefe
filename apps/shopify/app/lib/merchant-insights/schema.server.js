@@ -8,6 +8,18 @@ import {
   MAX_INSIGHTS,
 } from "./constants.server.js";
 
+export const MERCHANT_INSIGHT_COPY_LIMITS = {
+  title: 70,
+  finding: 190,
+  whyItMatters: 130,
+  caveat: 180,
+};
+
+const MAX_INSIGHT_TITLE_LENGTH = MERCHANT_INSIGHT_COPY_LIMITS.title;
+const MAX_INSIGHT_FINDING_LENGTH = MERCHANT_INSIGHT_COPY_LIMITS.finding;
+const MAX_INSIGHT_WHY_LENGTH = MERCHANT_INSIGHT_COPY_LIMITS.whyItMatters;
+const MAX_INSIGHT_CAVEAT_LENGTH = MERCHANT_INSIGHT_COPY_LIMITS.caveat;
+
 export const MERCHANT_INSIGHTS_OUTPUT_SCHEMA = {
   type: Type.OBJECT,
   required: ["insights"],
@@ -107,10 +119,10 @@ export function parseAndValidateMerchantInsightsOutput(raw, context) {
 function normalizeInsight(value) {
   const item = asRecord(value);
   if (!item) return invalid("Every insight must be an object.");
-  const title = cleanText(item.title, 80);
-  const finding = cleanText(item.finding, 280);
-  const whyItMatters = cleanText(item.whyItMatters, 180);
-  const caveat = cleanText(item.caveat, 220, true);
+  const title = cleanText(item.title, false);
+  const finding = cleanText(item.finding, false);
+  const whyItMatters = cleanText(item.whyItMatters, false);
+  const caveat = cleanText(item.caveat, true);
   const supportingBeliefIds = Array.isArray(item.supportingBeliefIds)
     ? [
         ...new Set(
@@ -129,6 +141,18 @@ function normalizeInsight(value) {
     return invalid("Every insight needs a useful finding.");
   if (!whyItMatters || whyItMatters.length < 12) {
     return invalid("Every insight needs a useful whyItMatters explanation.");
+  }
+  if (title.length > MAX_INSIGHT_TITLE_LENGTH) {
+    return invalid("Insight title is too long.");
+  }
+  if (finding.length > MAX_INSIGHT_FINDING_LENGTH) {
+    return invalid("Insight finding is too long.");
+  }
+  if (whyItMatters.length > MAX_INSIGHT_WHY_LENGTH) {
+    return invalid("Insight whyItMatters explanation is too long.");
+  }
+  if (caveat && caveat.length > MAX_INSIGHT_CAVEAT_LENGTH) {
+    return invalid("Insight caveat is too long.");
   }
   if (!INSIGHT_CONFIDENCE.includes(confidence)) {
     return invalid("Insight used an unsupported confidence label.");
@@ -253,15 +277,14 @@ function normalizeDuplicateKey(title, finding) {
 
 /**
  * @param {unknown} value
- * @param {number} max
- * @param {boolean} [nullable]
+ * @param {boolean} nullable
  */
-function cleanText(value, max, nullable = false) {
+function cleanText(value, nullable) {
   if (value === null || value === undefined) return nullable ? null : "";
   if (typeof value !== "string") return "";
   const cleaned = value.replace(/\s+/g, " ").trim();
   if (!cleaned) return nullable ? null : "";
-  return cleaned.slice(0, max);
+  return cleaned;
 }
 
 /** @param {string} value */
