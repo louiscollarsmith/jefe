@@ -616,7 +616,7 @@ async function handleBackfillStart(prisma, context) {
     prisma,
     context.shopId,
   );
-  const runAfter = new Date(0);
+  const runAfter = new Date();
   const jobs = [];
   if (incompleteDomains.includes("products")) {
     jobs.push(
