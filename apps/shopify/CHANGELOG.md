@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-07
+
+### Changed
+
+- **Onboarding page moves now show immediate progress without changing headers.** Clicking through first-run setup now keeps each step's normal header stable and swaps only the body content to the destination step's loading skeleton while Jefe finishes loading the real page data, so moving from Connect to Insights, Goals, Plan, or Jefe no longer feels like a stalled click. The Connect button also shows its own loading state while Insights opens. `app/routes/app._index.tsx`, `app/styles/jefe.css`.
+- **Goals coaching now feels like a chat instead of a form.** Merchants now guide Jefe from a centered chat bar, see their message appear as a right-aligned chat bubble, and see Jefe's interpreted reply kept inline for each turn so the two-way context stays visible. The composer clears immediately after sending, has a single square-edged input surface with the Send button inside it, and no duplicate outlines or inner active colouring. The stale-goals warning is no longer shown in this flow; the existing 3, 6 and 12 month goal cards stay in place with skeleton bodies during the update. Goal coaching is stored as interpreted direction so Jefe synthesises merchant input into sharper, grounded goals instead of copying the prompt text into the cards. `app/routes/app._index.tsx`, `app/lib/merchant-goals/{service,prompt}.server.js`, `app/styles/jefe.css`.
+- **Plan refinement now uses the same chat pattern without leaking Goals context.** The Plan screen now uses the shared onboarding chat composer, keeps the Plan evidence toggle left-aligned with Insights, clears submitted text immediately, shows the merchant message and Jefe's interpretation as a two-way thread, and removes the old boxed refinement prompt. Onboarding chat history is now scoped by durable topic (`memory`, `onboarding_goals`, `onboarding_plan`) so Goals and Plan conversations stay separate. `app/components/onboarding-chat.tsx`, `app/routes/app._index.tsx`, `app/lib/merchant-memory/conversation.server.js`, `app/lib/merchant-plan/service.server.js`, `prisma/schema.prisma`.
+- **The Plan card now reads as one clear first move.** The onboarding Plan screen now presents Jefe's recommendation as a focused action card with a clear approval status, action count, start-today callout, numbered carry-out steps and a lighter evidence disclosure, while keeping the Plan chat underneath for guidance and changes. `app/routes/app._index.tsx`, `app/styles/jefe.css`.
+- **Opening Jefe after setup now shows the home loading screen.** Accepting the Plan now immediately switches to the Jefe home frame with home-shaped loading skeletons instead of showing the Plan/onboarding loading state while the home data loads. `app/routes/app._index.tsx`, `app/components/app-home/AppHome13a.tsx`, `app/components/daily-home.tsx`, `app/styles/jefe.css`.
+
 ## 2026-08-06
 
 ### Added

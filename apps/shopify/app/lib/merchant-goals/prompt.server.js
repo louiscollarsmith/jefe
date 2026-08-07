@@ -18,6 +18,8 @@ If goalCoaching is present, treat it as the merchant's latest direction. Goal co
 
 When goalCoaching contains explicit 3, 6 or 12 month objectives, preserve the merchant's horizon structure. Carry over supplied KPIs, numeric targets, strategic exclusions and named outcomes. Do not replace an explicit merchant objective with a looser inferred one.
 
+Do not paste the merchant's raw goalCoaching wording into titles or descriptions. Use it as inspiration and synthesize it with Merchant Memory into a more useful, specific commercial goal. For example, turn a bare instruction such as "double revenue in 12 months" into a grounded 12-month revenue goal that names the supported route, constraint or focus area from memory.
+
 Each goal title must name the business outcome, not the operating method. Prefer revenue, growth, repeat purchase, margin, cash or customer expansion language when the memory supports it. Use operational findings such as inventory, assortment, stock visibility or fulfilment as the route in the description, not as the goal title.
 
 Avoid generic ecommerce advice. Do not output bland goals such as "increase revenue", "reduce refunds", "grow customers", or anything that could be pasted unchanged onto hundreds of stores. A good title is specific, such as "Grow revenue from proven sellers"; a bad title is an internal strategy label, such as "Inventory visibility alignment".
@@ -47,18 +49,18 @@ export function buildMerchantGoalsPrompt(snapshot, options = {}) {
     allowedSupportingBeliefIds: snapshot.beliefs.map((belief) => belief.id),
     outputContract: {
       threeMonths: {
-        title: "short commercial outcome title",
-        description: "one sentence explaining the strategy behind the outcome",
+        title: "short synthesized commercial outcome title, not pasted merchant wording",
+        description: "one sentence explaining the grounded strategy behind the outcome",
         supportingBeliefIds: ["belief id supplied in this prompt"],
       },
       sixMonths: {
-        title: "short commercial outcome title",
-        description: "one sentence explaining the strategy behind the outcome",
+        title: "short synthesized commercial outcome title, not pasted merchant wording",
+        description: "one sentence explaining the grounded strategy behind the outcome",
         supportingBeliefIds: ["belief id supplied in this prompt"],
       },
       twelveMonths: {
-        title: "short commercial outcome title",
-        description: "one sentence explaining the strategy behind the outcome",
+        title: "short synthesized commercial outcome title, not pasted merchant wording",
+        description: "one sentence explaining the grounded strategy behind the outcome",
         supportingBeliefIds: ["belief id supplied in this prompt"],
       },
     },

@@ -2,6 +2,11 @@
 
 import { LlmOutputValidationError } from "../llm/errors.server.js";
 import { createLlmProvider } from "../llm/provider.server.js";
+import {
+  CONVERSATION_TOPICS,
+  addAssistantConversationNote,
+  addMerchantConversationNote,
+} from "../merchant-memory/conversation.server.js";
 import { recordEvidence } from "../merchant-memory/service.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
@@ -440,6 +445,7 @@ export async function processMerchantPlanMessage(prisma, input) {
   const message = input.message.trim();
   if (message.length < 2) return { ok: false, error: "Message is required." };
   const now = new Date();
+  const interpretedDirection = interpretPlanRefinementDirection(message);
   await prisma.$transaction(async (tx) => {
     await recordEvidence(tx, {
       merchantId: input.merchantId,
@@ -449,8 +455,12 @@ export async function processMerchantPlanMessage(prisma, input) {
         ? `merchant_plan_recommendation:${input.recommendationId}`
         : "plan_onboarding_conversation",
       evidenceType: "merchant_plan_refinement",
-      summary: `Merchant refined Jefe's Plan: ${message.slice(0, 240)}`,
-      metadata: { originalMessage: message, recommendationId: input.recommendationId ?? null },
+      summary: `Merchant refined Jefe's Plan: ${interpretedDirection}`,
+      metadata: {
+        originalMessage: message,
+        interpretedDirection,
+        recommendationId: input.recommendationId ?? null,
+      },
       observedAt: now,
     });
     if (input.recommendationId) {
@@ -468,13 +478,63 @@ export async function processMerchantPlanMessage(prisma, input) {
       });
     }
   });
+  await addMerchantConversationNote(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    topic: CONVERSATION_TOPICS.onboardingPlan,
+    message,
+  });
   await ensureMerchantPlanQueued(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     resetAttempts: true,
     runAfter: input.runAfter,
   });
+  await addAssistantConversationNote(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    topic: CONVERSATION_TOPICS.onboardingPlan,
+    content: buildPlanRefinementConversationMessage(interpretedDirection),
+    operation: {
+      operationType: "plan_refinement_context",
+      reason: "Captured merchant guidance for Plan regeneration.",
+      recommendationId: input.recommendationId ?? null,
+      merchantStatement: message,
+      interpretedDirection,
+    },
+  });
   return { ok: true };
+}
+
+function buildPlanRefinementConversationMessage(interpretedDirection) {
+  return `I interpreted your guidance as: ${interpretedDirection}`;
+}
+
+function interpretPlanRefinementDirection(message) {
+  const normalized = message.toLowerCase();
+  const directions = [];
+
+  if (/(avoid|no|don't|do not).{0,24}(email|campaign|newsletter)/.test(normalized)) {
+    directions.push("de-prioritise email-led work for this Plan");
+  }
+  if (/(stock|inventory|dead stock|cleanup|clearance)/.test(normalized)) {
+    directions.push("make the first move more operational and stock-focused");
+  }
+  if (/(avoid|no|don't|do not).{0,24}(discount|sale|markdown)/.test(normalized)) {
+    directions.push("avoid discount-led growth unless the memory strongly supports it");
+  }
+  if (/(lighter|simpler|smaller|easier|quick|low effort)/.test(normalized)) {
+    directions.push("keep the recommendation lightweight enough to start quickly");
+  }
+  if (/(customer|retention|repeat|loyal|vip)/.test(normalized)) {
+    directions.push("ground the first move in customer retention and repeat purchase behaviour");
+  }
+
+  if (directions.length === 0) {
+    return "use the merchant's latest guidance as planning context, synthesised into a sharper first move rather than copied literally";
+  }
+
+  return `${directions.join("; ")}.`;
 }
 
 /**

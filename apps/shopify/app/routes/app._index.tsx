@@ -50,7 +50,11 @@ import {
 // The shared app-home/ code stays in its own shared chunk, so onboarding/memory
 // users pay only a tiny glue delta (~1.7kB gzip, measured), not the whole module.
 // (MerchantMemoryView stays lazy below — a secondary, non-LCP-critical path.)
-import { DailyHome } from "../components/daily-home";
+import { DailyHome, DailyHomeLoading } from "../components/daily-home";
+import {
+  OnboardingChat,
+  type OnboardingChatMessage,
+} from "../components/onboarding-chat";
 
 // Code-split: the standing Merchant Memory view (appMode "memory") renders only
 // for returning users who open it — never during first-run onboarding — so it's
@@ -136,6 +140,7 @@ import {
   markBeliefObsolete,
 } from "../lib/merchant-memory/service.server.js";
 import {
+  CONVERSATION_TOPICS,
   getDailyChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
@@ -165,6 +170,8 @@ import {
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
+type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+type OnboardingNavigationDestination = OnboardingStep | "home";
 const SHOP_METADATA_QUERY = `#graphql
   query JefeShopMetadata {
     shop {
@@ -1301,6 +1308,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? await getMerchantMemoryConversationExperience(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
+          topic: CONVERSATION_TOPICS.onboardingGoals,
+        })
+      : null;
+  const planConversation =
+    activeStep === "plan" && readiness.memoryReady && backfill.complete
+      ? await getMerchantMemoryConversationExperience(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          topic: CONVERSATION_TOPICS.onboardingPlan,
         })
       : null;
   const insightEvidence = insights?.selectedRun?.findings?.length
@@ -1348,6 +1364,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     goals,
     goalsConversation,
     plan,
+    planConversation,
     planEvidence,
   };
 };
@@ -1355,6 +1372,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
   const safeActionError = getSafeActionError(actionData);
   const canContinueToInsights =
     data.appMode === "onboarding"
@@ -1384,6 +1402,11 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
+
+  const pendingDestination = getPendingOnboardingDestination(navigation);
+  if (pendingDestination === "home") {
+    return <DailyHomeLoading storeName={data.storeName} />;
+  }
 
   if (data.appMode === "daily") {
     // Direct render (no Suspense boundary) — see the DailyHome import note: this
@@ -1424,9 +1447,24 @@ export default function AppIndex() {
     );
   }
 
+  const pendingStep = pendingDestination;
+  const visibleStep = pendingStep ?? data.activeStep;
+  const showTransitionScene =
+    pendingDestination !== null && pendingDestination !== data.activeStep;
+
   return (
-    <OnboardingShell activeStep={data.activeStep} cinematic={data.cinematic} connected={data.connected}>
-      {data.activeStep === "connect" ? (
+    <OnboardingShell
+      activeStep={visibleStep}
+      cinematic={data.cinematic}
+      connected={data.connected}
+    >
+      {pendingDestination && showTransitionScene ? (
+        <OnboardingTransitionScene
+          destination={pendingDestination}
+          fallbackStep={data.activeStep}
+          storeName={data.storeName}
+        />
+      ) : data.activeStep === "connect" ? (
         <ConnectStep
           storeName={data.storeName}
           backfill={data.backfill}
@@ -1456,6 +1494,7 @@ export default function AppIndex() {
           backfill={data.backfill}
           memoryReady={data.memoryReady}
           plan={data.plan}
+          conversation={data.planConversation}
           evidence={data.planEvidence}
           actionError={safeActionError}
         />
@@ -1514,6 +1553,9 @@ function OnboardingShell({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigation = useNavigation();
+  const pendingDestination = getPendingOnboardingDestination(navigation);
+  const navigationPending = pendingDestination !== null;
   const stepIndex = ONBOARDING_STEPS.indexOf(activeStep);
   const nextStep =
     stepIndex >= 0 && stepIndex < ONBOARDING_STEPS.length - 1
@@ -1543,10 +1585,11 @@ function OnboardingShell({
             <input type="hidden" name="intent" value="onboarding.skip" />
             <button
               type="submit"
+              disabled={navigationPending}
               style={{
                 background: "none",
                 border: "none",
-                cursor: "pointer",
+                cursor: navigationPending ? "default" : "pointer",
                 fontFamily: "inherit",
                 fontSize: 12.5,
                 fontWeight: 600,
@@ -1575,6 +1618,7 @@ function OnboardingShell({
               step's data isn't ready yet. */}
           <button
             type="button"
+            disabled={navigationPending}
             onClick={() =>
               navigate(
                 appPathFromSearch(location.search, {
@@ -1588,7 +1632,7 @@ function OnboardingShell({
             style={{
               background: "none",
               border: "none",
-              cursor: "pointer",
+              cursor: navigationPending ? "default" : "pointer",
               fontFamily: "inherit",
               fontSize: 13,
               fontWeight: 600,
@@ -1611,11 +1655,14 @@ function OnboardingStepper({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigation = useNavigation();
+  const pendingDestination = getPendingOnboardingDestination(navigation);
 
   return (
     <nav className="JefeStepper" aria-label="Onboarding progress">
       {ONBOARDING_STEPS.map((step, index) => {
         const active = step === activeStep;
+        const pending = pendingDestination === step;
         const complete =
           ONBOARDING_STEPS.indexOf(step) < ONBOARDING_STEPS.indexOf(activeStep);
         return (
@@ -1624,7 +1671,9 @@ function OnboardingStepper({
             key={step}
             className={`JefeStepperItem ${active ? "is-active" : ""} ${
               complete ? "is-complete" : ""
-            }`}
+            } ${pending ? "is-pending" : ""}`}
+            disabled={pendingDestination !== null}
+            aria-busy={pending || undefined}
             aria-current={active ? "step" : undefined}
             onClick={() =>
               navigate(
@@ -1663,15 +1712,19 @@ function ConnectStep({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigation = useNavigation();
+  const continueTarget = appPathFromSearch(location.search, {
+    step: "insights",
+    channelProvider: null,
+    channelMode: null,
+    channelNotice: null,
+  });
+  const continuingToInsights =
+    getPendingOnboardingDestination(navigation) === "insights";
 
   return (
     <BlockStack gap="500" inlineAlign="center">
-      <JefeMark />
-      <BlockStack gap="200" inlineAlign="center">
-        <h1 className="JefeDisplayHeading">
-          Hi - I&apos;m <span>Jefe</span>. Getting to know {storeName}...
-        </h1>
-      </BlockStack>
+      <OnboardingSceneHeader step="connect" storeName={storeName} />
 
       <div className="JefeLearningCard">
         <Card padding="500">
@@ -1689,17 +1742,9 @@ function ConnectStep({
       <div className="JefeConnectAction">
         {canContinue ? (
           <Button
-            onClick={() =>
-              navigate(
-                appPathFromSearch(location.search, {
-                  step: "insights",
-                  channelProvider: null,
-                  channelMode: null,
-                  channelNotice: null,
-                }),
-              )
-            }
+            onClick={() => navigate(continueTarget)}
             variant="primary"
+            loading={continuingToInsights}
           >
             Continue to Insights
           </Button>
@@ -1711,6 +1756,87 @@ function ConnectStep({
           <span aria-hidden="true" />
         )}
       </div>
+    </BlockStack>
+  );
+}
+
+function OnboardingTransitionScene({
+  destination,
+  fallbackStep,
+  storeName,
+}: {
+  destination: OnboardingNavigationDestination;
+  fallbackStep: OnboardingStep;
+  storeName: string;
+}) {
+  const copy = onboardingTransitionCopy(destination);
+  const headerStep = destination === "home" ? fallbackStep : destination;
+
+  return (
+    <OnboardingStepScene step={headerStep} storeName={storeName}>
+      <div
+        className="JefeInsightList"
+        role="status"
+        aria-label={copy.status}
+        aria-live="polite"
+      >
+        {[1, 2, 3].map((item) => (
+          <div key={item} className="JefeInsightSkeleton" aria-hidden="true" />
+        ))}
+      </div>
+    </OnboardingStepScene>
+  );
+}
+
+function OnboardingStepScene({
+  step,
+  storeName,
+  children,
+}: {
+  step: OnboardingStep;
+  storeName?: string;
+  children: ReactNode;
+}) {
+  return (
+    <BlockStack gap="500" inlineAlign="center">
+      <OnboardingSceneHeader step={step} storeName={storeName} />
+      {children}
+    </BlockStack>
+  );
+}
+
+function OnboardingSceneHeader({
+  step,
+  storeName,
+}: {
+  step: OnboardingStep;
+  storeName?: string;
+}) {
+  if (step === "connect") {
+    return (
+      <>
+        <JefeMark />
+        <BlockStack gap="200" inlineAlign="center">
+          <h1 className="JefeDisplayHeading">
+            Hi - I&apos;m <span>Jefe</span>. Getting to know{" "}
+            {storeName ?? "your store"}...
+          </h1>
+        </BlockStack>
+      </>
+    );
+  }
+
+  const header = onboardingSceneHeaderCopy(step);
+
+  return (
+    <BlockStack gap="150" inlineAlign="center">
+      <Text as="p" fontWeight="bold">
+        {header.eyebrow}
+      </Text>
+      <h1 className="JefeDisplayHeading">{header.title}</h1>
+      <Text as="p" tone="subdued" alignment="center">
+        {header.detail}
+      </Text>
     </BlockStack>
   );
 }
@@ -2158,6 +2284,7 @@ function InsightsStep({
   if (!memoryReady || !backfill.complete) {
     return (
       <InsightStatusScene
+        step="insights"
         title="I'm turning your store data into a first understanding of the business."
         detail={backfill.detail}
         skeleton
@@ -2188,6 +2315,7 @@ function InsightsStep({
   ) {
     return (
       <InsightStatusScene
+        step="insights"
         title="I'm choosing the patterns that seem most important."
         detail="This page will update when the first insight set is ready."
         skeleton
@@ -2217,6 +2345,7 @@ function InsightsStep({
     const validationRejected = isInsightValidationRejection(currentRun);
     return (
       <InsightStatusScene
+        step="insights"
         title={
           validationRejected
             ? "I rejected the first generated findings."
@@ -2261,6 +2390,7 @@ function InsightsStep({
   ) {
     return (
       <InsightStatusScene
+        step="insights"
         title="I couldn't generate a trustworthy insight set."
         detail={merchantInsightErrorCopy(currentRun)}
         action={
@@ -2291,18 +2421,7 @@ function InsightsStep({
   }
 
   return (
-    <BlockStack gap="500" inlineAlign="center">
-      <BlockStack gap="150" inlineAlign="center">
-        <Text as="p" fontWeight="bold">
-          WHAT I&apos;VE LEARNED
-        </Text>
-        <h1 className="JefeDisplayHeading">Here&apos;s what stands out.</h1>
-        <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve looked across your store and pulled out the things that seem
-          most important about how your business works.
-        </Text>
-      </BlockStack>
-
+    <OnboardingStepScene step="insights">
       {insights?.stale ? (
         <Banner tone="warning">
           <Text as="p">
@@ -2369,7 +2488,7 @@ function InsightsStep({
           </Button>
         </Form>
       </InlineStack>
-    </BlockStack>
+    </OnboardingStepScene>
   );
 }
 
@@ -2395,22 +2514,58 @@ function GoalsStep({
   const currentRun = goals?.currentRun;
   const selectedRun = goals?.selectedRun;
   const horizons = selectedRun?.horizons ?? [];
-  const messages = (conversation?.messages ?? [])
+  const messages: OnboardingChatMessage[] = (conversation?.messages ?? [])
     .filter(
       (item) =>
-        item.role !== "assistant" || isGoalDocumentConversationMessage(item),
+        item.role !== "assistant" || isGoalConversationAssistantMessage(item),
     )
-    .slice(-6);
+    .filter(
+      (item) =>
+        (item.role === "merchant" || item.role === "assistant") &&
+        typeof item.id === "string" &&
+        typeof item.content === "string",
+    )
+    .map((item) => ({
+      id: item.id,
+      role:
+        item.role === "merchant"
+          ? ("merchant" as const)
+          : ("assistant" as const),
+      content: item.content,
+    }))
+    .slice(-8);
   const [message, setMessage] = useState("");
+  const navigation = useNavigation();
+  const submittingGoalMessage =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "goals.message";
+  const submittedGoalMessage = submittingGoalMessage
+    ? String(navigation.formData?.get("message") ?? "").trim()
+    : "";
   const goalGenerationActive =
     currentRun?.status === GOAL_RUN_STATUS.queued ||
     currentRun?.status === GOAL_RUN_STATUS.running ||
     goals?.activeJob?.status === "queued" ||
     goals?.activeJob?.status === "running";
+  const refinementRegenerating =
+    goalsNotice === "message_saved" && goalGenerationActive && horizons.length > 0;
+  const showGoalSkeletons = submittingGoalMessage || refinementRegenerating;
+  const visibleMessages = submittedGoalMessage
+    ? [
+        ...messages,
+        {
+          id: "pending-goal-message",
+          role: "merchant" as const,
+          content: submittedGoalMessage,
+        },
+      ]
+    : messages;
+  const assistantUpdateText = showGoalSkeletons ? "Updating" : null;
 
   if (!memoryReady || !backfill.complete) {
     return (
       <InsightStatusScene
+        step="goals"
         title="I'm still building the memory I need before planning."
         detail={backfill.detail}
         action={
@@ -2432,9 +2587,10 @@ function GoalsStep({
     );
   }
 
-  if (goalGenerationActive) {
+  if (goalGenerationActive && !refinementRegenerating) {
     return (
       <InsightStatusScene
+        step="goals"
         title="I'm turning what I know into a first direction."
         detail="This page will update when the goals are ready."
         skeleton
@@ -2463,6 +2619,7 @@ function GoalsStep({
   ) {
     return (
       <InsightStatusScene
+        step="goals"
         title="I don't have enough supported memory to propose useful goals yet."
         detail="I won't make up a plan until there is enough Merchant Memory to work from."
         action={
@@ -2499,6 +2656,7 @@ function GoalsStep({
   ) {
     return (
       <InsightStatusScene
+        step="goals"
         title="I couldn't generate a trustworthy goal set."
         detail={merchantGoalErrorCopy(currentRun)}
         action={
@@ -2529,37 +2687,13 @@ function GoalsStep({
   }
 
   return (
-    <BlockStack gap="500" inlineAlign="center">
-      <BlockStack gap="150" inlineAlign="center">
-        <Text as="p" fontWeight="bold">
-          A FEW QUESTIONS
-        </Text>
-        <h1 className="JefeDisplayHeading">Tell me what winning looks like.</h1>
-        <Text as="p" tone="subdued" alignment="center">
-          Based on everything I&apos;ve learned so far, this is where I think we
-          should be heading. Help me refine it.
-        </Text>
-      </BlockStack>
-
-      {goals?.stale ? (
-        <Banner tone="warning">
-          <Text as="p">
-            These goals are from the previous valid memory set. I&apos;ll
-            replace them after the latest generation succeeds.
-          </Text>
-        </Banner>
-      ) : null}
+    <OnboardingStepScene step="goals">
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
-      {goalsNotice === "message_saved" ? (
-        <Banner tone="success">
-          <Text as="p">I&apos;ll use that context to regenerate the goals.</Text>
-        </Banner>
-      ) : null}
-
       <div
-        className="JefeGoalGrid"
+        className={`JefeGoalGrid ${showGoalSkeletons ? "is-updating" : ""}`}
+        aria-busy={showGoalSkeletons || undefined}
       >
         {GOAL_HORIZONS.map((horizon) => {
           const goal = horizons.find(
@@ -2570,56 +2704,41 @@ function GoalsStep({
               <Text as="p" tone="subdued" fontWeight="bold">
                 {horizon.label}
               </Text>
-              <Text as="h2" variant="headingMd">
-                {goal?.title ?? "Still shaping this one…"}
-              </Text>
-              {goal?.description ? (
-                <Text as="p" tone="subdued">
-                  {goal.description}
-                </Text>
-              ) : null}
+              {showGoalSkeletons ? (
+                <GoalTileSkeleton />
+              ) : (
+                <>
+                  <Text as="h2" variant="headingMd">
+                    {goal?.title ?? "Still shaping this one…"}
+                  </Text>
+                  {goal?.description ? (
+                    <Text as="p" tone="subdued">
+                      {goal.description}
+                    </Text>
+                  ) : null}
+                </>
+              )}
             </div>
           );
         })}
       </div>
 
-      <div className="JefeGoalsConversation">
-        <BlockStack gap="300">
-          <Text as="p" fontWeight="bold">
-            Happy with these goals? Reply to guide or update them.
-          </Text>
-          {messages.length > 0 ? (
-            <div className="JefeGoalMessages">
-              {messages.map((item) => (
-                <div
-                  key={item.id}
-                  className={`JefeGoalMessage is-${item.role}`}
-                >
-                  <Text as="p">{item.content}</Text>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <Form method="post" className="JefeGoalMessageForm">
-            <input type="hidden" name="intent" value="goals.message" />
-            <TextField
-              label="Coach Jefe"
-              labelHidden
-              name="message"
-              value={message}
-              onChange={setMessage}
-              placeholder="Tell me what to change about this direction..."
-              multiline={3}
-              autoComplete="off"
-            />
-            <InlineStack align="end">
-              <Button submit variant="primary" disabled={!message.trim()}>
-                Send
-              </Button>
-            </InlineStack>
-          </Form>
-        </BlockStack>
-      </div>
+      <OnboardingChat
+        messages={visibleMessages}
+        statusMessage={assistantUpdateText}
+        statusActive={showGoalSkeletons}
+        intent="goals.message"
+        label="Update Goals"
+        placeholder="Update your goals by chatting with Jefe..."
+        value={message}
+        onChange={setMessage}
+        onSubmit={() => {
+          setTimeout(() => setMessage(""), 0);
+        }}
+        disabled={submittingGoalMessage}
+        submitDisabled={!message.trim() || submittingGoalMessage}
+        submitLoading={submittingGoalMessage}
+      />
 
       <InlineStack gap="300" align="center">
         <Button
@@ -2643,7 +2762,18 @@ function GoalsStep({
           </Button>
         </Form>
       </InlineStack>
-    </BlockStack>
+    </OnboardingStepScene>
+  );
+}
+
+function GoalTileSkeleton() {
+  return (
+    <div className="JefeGoalSkeleton" aria-hidden="true">
+      <div className="JefeGoalSkeletonLine is-title" />
+      <div className="JefeGoalSkeletonLine is-title-short" />
+      <div className="JefeGoalSkeletonLine" />
+      <div className="JefeGoalSkeletonLine is-short" />
+    </div>
   );
 }
 
@@ -2651,12 +2781,16 @@ function PlanStep({
   backfill,
   memoryReady,
   plan,
+  conversation,
   evidence,
   actionError,
 }: {
   backfill: ReturnType<typeof summarizeBackfill>;
   memoryReady: boolean;
   plan: Awaited<ReturnType<typeof getMerchantPlanExperience>> | null;
+  conversation: Awaited<
+    ReturnType<typeof getMerchantMemoryConversationExperience>
+  > | null;
   evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
   actionError: SafeActionError;
 }) {
@@ -2667,11 +2801,34 @@ function PlanStep({
   const currentRun = plan?.currentRun;
   const selectedRun = plan?.selectedRun;
   const recommendation = selectedRun?.recommendation;
+  const messages: OnboardingChatMessage[] = (conversation?.messages ?? [])
+    .filter(
+      (item) =>
+        item.role !== "assistant" || isPlanConversationAssistantMessage(item),
+    )
+    .filter(
+      (item) =>
+        (item.role === "merchant" || item.role === "assistant") &&
+        typeof item.id === "string" &&
+        typeof item.content === "string",
+    )
+    .map((item) => ({
+      id: item.id,
+      role:
+        item.role === "merchant"
+          ? ("merchant" as const)
+          : ("assistant" as const),
+      content: item.content,
+    }))
+    .slice(-8);
   const [message, setMessage] = useState("");
   const navigation = useNavigation();
   const submittingPlanMessage =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "plan.message";
+  const submittedPlanMessage = submittingPlanMessage
+    ? String(navigation.formData?.get("message") ?? "").trim()
+    : "";
   const planGenerationActive =
     currentRun?.status === PLAN_RUN_STATUS.queued ||
     currentRun?.status === PLAN_RUN_STATUS.running ||
@@ -2679,10 +2836,23 @@ function PlanStep({
     plan?.activeJob?.status === "running";
   const refinementRegenerating =
     planNotice === "message_saved" && planGenerationActive;
+  const showPlanUpdate = submittingPlanMessage || refinementRegenerating;
+  const visibleMessages: OnboardingChatMessage[] = submittedPlanMessage
+    ? [
+        ...messages,
+        {
+          id: "pending-plan-message",
+          role: "merchant" as const,
+          content: submittedPlanMessage,
+        },
+      ]
+    : messages;
+  const assistantUpdateText = showPlanUpdate ? "Updating" : null;
 
   if (!memoryReady || !backfill.complete) {
     return (
       <InsightStatusScene
+        step="plan"
         title="I'm still building the memory I need before choosing a first move."
         detail={backfill.detail}
         action={
@@ -2707,6 +2877,7 @@ function PlanStep({
   if (planGenerationActive && !refinementRegenerating) {
     return (
       <InsightStatusScene
+        step="plan"
         title="I'm choosing the most useful first move."
         detail="This page will update when the Plan is ready."
         skeleton
@@ -2736,6 +2907,7 @@ function PlanStep({
   ) {
     return (
       <InsightStatusScene
+        step="plan"
         title="I don't have enough agreed direction to choose a useful first move yet."
         detail="Review the proposed goals first, then I can turn them into a practical Plan."
         action={
@@ -2772,6 +2944,7 @@ function PlanStep({
   ) {
     return (
       <InsightStatusScene
+        step="plan"
         title="I couldn't generate a trustworthy first move."
         detail={merchantPlanErrorCopy(currentRun)}
         action={
@@ -2802,18 +2975,7 @@ function PlanStep({
   }
 
   return (
-    <BlockStack gap="500" inlineAlign="center">
-      <BlockStack gap="150" inlineAlign="center">
-        <Text as="p" fontWeight="bold">
-          FIRST MOVE
-        </Text>
-        <h1 className="JefeDisplayHeading">Here&apos;s where I&apos;d start.</h1>
-        <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve compared what I know about the business with the goals we
-          agreed and chosen one practical action to begin now.
-        </Text>
-      </BlockStack>
-
+    <OnboardingStepScene step="plan">
       {plan?.stale ? (
         <Banner tone="warning">
           <Text as="p">
@@ -2825,13 +2987,6 @@ function PlanStep({
       {actionError ? (
         <InlineError message={safeActionErrorMessage(actionError)} />
       ) : null}
-      {planNotice === "message_saved" ? (
-        <Banner tone="success">
-          <Text as="p">
-            I&apos;ll use that context to choose a better first move.
-          </Text>
-        </Banner>
-      ) : null}
 
       {recommendation ? (
         <PlanRecommendationCard
@@ -2842,40 +2997,25 @@ function PlanStep({
       ) : null}
 
       {recommendation ? (
-        <div className="JefePlanRefinement">
-          <BlockStack gap="300">
-            <Text as="p" fontWeight="bold">
-              Want a different first move? Tell me what to change.
-            </Text>
-            <Form method="post" className="JefeGoalMessageForm">
-              <input type="hidden" name="intent" value="plan.message" />
-              <input
-                type="hidden"
-                name="recommendationId"
-                value={recommendation.id}
-              />
-              <TextField
-                label="Refine Plan"
-                labelHidden
-                name="message"
-                value={message}
-                onChange={setMessage}
-                placeholder="e.g. Make this lighter, avoid discounts, or focus on stock before email..."
-                multiline={3}
-                autoComplete="off"
-              />
-              <InlineStack align="end">
-                <Button
-                  submit
-                  variant="primary"
-                  disabled={!message.trim() || submittingPlanMessage}
-                >
-                  Send
-                </Button>
-              </InlineStack>
-            </Form>
-          </BlockStack>
-        </div>
+        <OnboardingChat
+          messages={visibleMessages}
+          statusMessage={assistantUpdateText}
+          statusActive={showPlanUpdate}
+          intent="plan.message"
+          hiddenFields={[
+            { name: "recommendationId", value: recommendation.id },
+          ]}
+          label="Update Plan"
+          placeholder="Update your Plan by chatting with Jefe..."
+          value={message}
+          onChange={setMessage}
+          onSubmit={() => {
+            setTimeout(() => setMessage(""), 0);
+          }}
+          disabled={submittingPlanMessage}
+          submitDisabled={!message.trim() || submittingPlanMessage}
+          submitLoading={submittingPlanMessage}
+        />
       ) : null}
 
       <InlineStack gap="300" align="center">
@@ -2907,7 +3047,7 @@ function PlanStep({
           </Form>
         ) : null}
       </InlineStack>
-    </BlockStack>
+    </OnboardingStepScene>
   );
 }
 
@@ -2928,43 +3068,44 @@ function PlanRecommendationCard({
   const steps = Array.isArray(recommendation.executionSteps)
     ? recommendation.executionSteps
     : [];
-  const successSignal =
-    recommendation.successSignal &&
-    typeof recommendation.successSignal === "object"
-      ? (recommendation.successSignal as {
-          description?: string;
-          timeframe?: string;
-          target?: string | null;
-        })
-      : {};
-
   return (
     <div className={`JefePlanCard ${updating ? "is-updating" : ""}`}>
       <BlockStack gap="400">
-        <InlineStack align="space-between" blockAlign="start" gap="300">
-          <BlockStack gap="150">
-            <Badge tone="attention">Needs your OK</Badge>
-            <Text as="h2" variant="headingLg">
-              {recommendation.title}
+        <div className="JefePlanCardHeader">
+          <div className="JefePlanApprovalPill">
+            <span aria-hidden="true" />
+            <Text as="span" fontWeight="bold">
+              Needs your OK
             </Text>
-            <Text as="p">{recommendation.summary}</Text>
-          </BlockStack>
-          <Badge tone={planConfidenceTone(recommendation.confidence)}>
-            {planConfidenceLabel(recommendation.confidence)}
-          </Badge>
-        </InlineStack>
-
-        <div className="JefePlanStartToday">
-          <Text as="p" fontWeight="bold">
-            Start today
+          </div>
+          <Text as="p" tone="subdued">
+            Action 1 of 1 · Ready to review
           </Text>
-          <Text as="p">{recommendation.startToday}</Text>
         </div>
 
-        <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
-          <PlanInfoBlock title="Why this action" body={recommendation.whyThisAction} />
-          <PlanInfoBlock title="Why now" body={recommendation.whyNow} />
-        </InlineGrid>
+        <BlockStack gap="200">
+          <Text as="h2" variant="headingXl">
+            {recommendation.title}
+          </Text>
+          <div className="JefePlanSummary">
+            <Text as="p">{recommendation.summary}</Text>
+          </div>
+          <div className="JefePlanSupportPill">
+            <Text as="span" fontWeight="semibold">
+              {planConfidenceLabel(recommendation.confidence)}
+            </Text>
+          </div>
+        </BlockStack>
+
+        <div className="JefePlanStartToday">
+          <span className="JefePlanStartIcon" aria-hidden="true" />
+          <BlockStack gap="050">
+            <Text as="p" fontWeight="bold">
+              Start today
+            </Text>
+            <Text as="p">{recommendation.startToday}</Text>
+          </BlockStack>
+        </div>
 
         <BlockStack gap="200">
           <Text as="p" fontWeight="bold">
@@ -2987,23 +3128,6 @@ function PlanRecommendationCard({
           </div>
         </BlockStack>
 
-        <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
-          <PlanInfoBlock
-            title="Expected benefit"
-            body={recommendation.expectedBenefit}
-          />
-          <PlanInfoBlock
-            title="Success signal"
-            body={[
-              successSignal.description,
-              successSignal.timeframe ? `Timeframe: ${successSignal.timeframe}` : null,
-              successSignal.target ? `Target: ${successSignal.target}` : null,
-            ]
-              .filter(Boolean)
-              .join(" ")}
-          />
-        </InlineGrid>
-
         {recommendation.assumption || recommendation.caveat ? (
           <Box padding="300" background="bg-surface-secondary" borderRadius="200">
             <BlockStack gap="100">
@@ -3021,14 +3145,16 @@ function PlanRecommendationCard({
           </Box>
         ) : null}
 
-        <Button
-          variant="plain"
+        <button
+          className="JefePlanEvidenceToggle"
+          type="button"
           onClick={() => setOpen((value) => !value)}
-          ariaExpanded={open}
-          ariaControls={`plan-evidence-${recommendation.id}`}
+          aria-expanded={open}
+          aria-controls={`plan-evidence-${recommendation.id}`}
         >
-          Why Jefe thinks this
-        </Button>
+          Why Jefe suggests this
+          <span aria-hidden="true">{open ? "^" : "v"}</span>
+        </button>
         <Collapsible
           open={open}
           id={`plan-evidence-${recommendation.id}`}
@@ -3067,45 +3193,33 @@ function PlanRecommendationCard({
   );
 }
 
-function PlanInfoBlock({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="JefePlanInfoBlock">
-      <BlockStack gap="100">
-        <Text as="p" fontWeight="bold">
-          {title}
-        </Text>
-        <Text as="p" tone="subdued">
-          {body}
-        </Text>
-      </BlockStack>
-    </div>
-  );
-}
-
 function InsightStatusScene({
+  step,
   title,
   detail,
   action,
   skeleton = false,
 }: {
+  step: OnboardingStep;
   title: string;
   detail: string;
   action: ReactNode;
   skeleton?: boolean;
 }) {
   return (
-    <BlockStack gap="500" inlineAlign="center">
-      <BlockStack gap="150" inlineAlign="center">
-        <Text as="p" fontWeight="bold">
-          WHAT I&apos;VE LEARNED
-        </Text>
-        <h1 className="JefeDisplayHeading">{title}</h1>
-        <Text as="p" tone="subdued" alignment="center">
-          {detail}
-        </Text>
-      </BlockStack>
+    <OnboardingStepScene step={step}>
+      {!skeleton ? (
+        <BlockStack gap="150" inlineAlign="center">
+          <Text as="p" fontWeight="bold" alignment="center">
+            {title}
+          </Text>
+          <Text as="p" tone="subdued" alignment="center">
+            {detail}
+          </Text>
+        </BlockStack>
+      ) : null}
       {skeleton ? (
-        <div className="JefeInsightList" aria-live="polite">
+        <div className="JefeInsightList" role="status" aria-live="polite">
           {[1, 2, 3].map((item) => (
             <div
               key={item}
@@ -3116,7 +3230,7 @@ function InsightStatusScene({
         </div>
       ) : null}
       {action}
-    </BlockStack>
+    </OnboardingStepScene>
   );
 }
 
@@ -4608,6 +4722,38 @@ function isGoalDocumentConversationMessage(message: {
   );
 }
 
+function isGoalConversationAssistantMessage(message: {
+  role: string;
+  structuredOperation?: unknown;
+}) {
+  return (
+    isGoalDocumentConversationMessage(message) ||
+    isGoalCoachingConversationMessage(message)
+  );
+}
+
+function isGoalCoachingConversationMessage(message: {
+  role: string;
+  structuredOperation?: unknown;
+}) {
+  if (message.role !== "assistant") return false;
+  const operation = message.structuredOperation;
+  if (!operation || typeof operation !== "object") return false;
+  const typedOperation = operation as { operationType?: unknown };
+  return typedOperation.operationType === "goals_coaching_context";
+}
+
+function isPlanConversationAssistantMessage(message: {
+  role: string;
+  structuredOperation?: unknown;
+}) {
+  if (message.role !== "assistant") return false;
+  const operation = message.structuredOperation;
+  if (!operation || typeof operation !== "object") return false;
+  const typedOperation = operation as { operationType?: unknown };
+  return typedOperation.operationType === "plan_refinement_context";
+}
+
 function merchantGoalErrorCopy(run: { safeErrorCode?: string | null } | null) {
   if (run?.safeErrorCode === "llm_disabled") {
     return "Goal generation is currently disabled, so I cannot create a trustworthy first plan yet.";
@@ -4638,12 +4784,6 @@ function planConfidenceLabel(confidence: string) {
   if (confidence === "strong") return "Strong support";
   if (confidence === "reasonable") return "Reasonable support";
   return "Emerging support";
-}
-
-function planConfidenceTone(confidence: string) {
-  if (confidence === "strong") return "success" as const;
-  if (confidence === "reasonable") return "info" as const;
-  return "attention" as const;
 }
 
 function memoryStatusLabel(status: string) {
@@ -4986,6 +5126,86 @@ function appPathFromSearch(
   }
   const nextSearch = params.toString();
   return nextSearch ? `/app?${nextSearch}` : "/app";
+}
+
+function getPendingOnboardingDestination(
+  navigation: ReturnType<typeof useNavigation>,
+): OnboardingNavigationDestination | null {
+  if (navigation.state === "idle") return null;
+
+  const formIntent = String(navigation.formData?.get("intent") ?? "");
+  if (formIntent === "onboarding.skip" || formIntent === "plan.finish") {
+    return "home";
+  }
+  if (formIntent === "insights.finish") return "goals";
+  if (formIntent === "goals.finish") return "plan";
+
+  const location = navigation.location;
+  if (!location || location.pathname !== "/app") return null;
+
+  const requestedStep = new URLSearchParams(location.search).get("step");
+  return isOnboardingStep(requestedStep) ? requestedStep : null;
+}
+
+function isOnboardingStep(step: string | null): step is OnboardingStep {
+  return ONBOARDING_STEPS.includes(step as OnboardingStep);
+}
+
+function onboardingSceneHeaderCopy(step: Exclude<OnboardingStep, "connect">) {
+  const copyByStep: Record<
+    Exclude<OnboardingStep, "connect">,
+    {
+      eyebrow: string;
+      title: string;
+      detail: string;
+    }
+  > = {
+    insights: {
+      eyebrow: "WHAT I'VE LEARNED",
+      title: "Here's what stands out.",
+      detail:
+        "I've looked across your store and pulled out the things that seem most important about how your business works.",
+    },
+    goals: {
+      eyebrow: "A FEW QUESTIONS",
+      title: "Tell me what winning looks like.",
+      detail:
+        "Based on everything I've learned so far, this is where I think we should be heading. Help me refine it.",
+    },
+    plan: {
+      eyebrow: "FIRST MOVE",
+      title: "Here's where I'd start.",
+      detail:
+        "I've compared what I know about the business with the goals we agreed and chosen one practical action to begin now.",
+    },
+  };
+
+  return copyByStep[step];
+}
+
+function onboardingTransitionCopy(destination: OnboardingNavigationDestination) {
+  if (destination === "home") {
+    return {
+      status: "Loading Jefe...",
+    };
+  }
+
+  const statusByStep: Record<OnboardingStep, { status: string }> = {
+    connect: {
+      status: "Loading Connect...",
+    },
+    insights: {
+      status: "Loading Insights...",
+    },
+    goals: {
+      status: "Loading Goals...",
+    },
+    plan: {
+      status: "Loading Plan...",
+    },
+  };
+
+  return statusByStep[destination];
 }
 
 function normalizeOnboardingStep(

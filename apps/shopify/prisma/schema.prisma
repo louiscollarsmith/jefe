@@ -800,6 +800,7 @@ model MerchantMemoryConversation {
   id         String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId String                              @map("merchant_id") @db.Uuid
   shopId     String?                             @map("shop_id") @db.Uuid
+  topic      String                              @default("memory")
   status     String                              @default("active")
   context    Json                                @default("{}") @map("context_json")
   createdAt  DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -809,6 +810,7 @@ model MerchantMemoryConversation {
   messages   MerchantMemoryConversationMessage[]
 
   @@index([merchantId, status, updatedAt])
+  @@index([merchantId, shopId, topic, status, updatedAt])
   @@index([shopId, status])
   @@map("merchant_memory_conversations")
 }

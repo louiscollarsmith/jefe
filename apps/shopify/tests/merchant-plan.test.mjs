@@ -338,6 +338,23 @@ test("Plan generation is wired to the async worker and not browser page load", (
   assert.doesNotMatch(routeSource, /generateMerchantPlan\(/);
 });
 
+test("Plan onboarding uses the shared topic-scoped chat composer", () => {
+  assert.match(routeSource, /Update your Plan by chatting with Jefe/);
+  assert.match(routeSource, /OnboardingChat/);
+  assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingPlan/);
+  assert.match(routeSource, /isPlanConversationAssistantMessage/);
+  assert.match(routeSource, /JefePlanApprovalPill/);
+  assert.match(routeSource, /Action 1 of 1 · Ready to review/);
+  assert.match(routeSource, /JefePlanStartIcon/);
+  assert.match(routeSource, /Why Jefe suggests this/);
+  assert.doesNotMatch(routeSource, /JefePlanRefinement/);
+  assert.doesNotMatch(routeSource, /Why this action/);
+  assert.doesNotMatch(
+    routeSource,
+    /I&apos;ll use that context to choose a better first move/,
+  );
+});
+
 test("merchant Plan generation persists exactly one recommendation", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Plan persistence tests");
@@ -543,6 +560,14 @@ test("Plan refinement records evidence, marks the current Plan and queues regene
         status: "queued",
       },
     });
+    const conversation = await prisma.merchantMemoryConversation.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        topic: "onboarding_plan",
+      },
+      include: { messages: { orderBy: { createdAt: "asc" } } },
+    });
 
     assert.equal(result.ok, true);
     assert.equal(
@@ -550,7 +575,15 @@ test("Plan refinement records evidence, marks the current Plan and queues regene
       PLAN_REVIEW_STATUS.refinementRequested,
     );
     assert.ok(evidence);
+    assert.match(evidence.summary, /stock-focused/);
     assert.ok(job);
+    assert.ok(conversation);
+    assert.equal(conversation.messages.at(-2).role, "merchant");
+    assert.equal(conversation.messages.at(-1).role, "assistant");
+    assert.match(
+      conversation.messages.at(-1).content,
+      /I interpreted your guidance as:/,
+    );
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Plan Test ${suffix}` },

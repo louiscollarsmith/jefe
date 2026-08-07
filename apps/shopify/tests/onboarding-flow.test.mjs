@@ -24,6 +24,10 @@ const rootSource = fs.readFileSync(
   new URL("../app/root.tsx", import.meta.url),
   "utf8",
 );
+const appHomeSource = fs.readFileSync(
+  new URL("../app/components/app-home/AppHome13a.tsx", import.meta.url),
+  "utf8",
+);
 const jefeStylesSource = fs.readFileSync(
   new URL("../app/styles/jefe.css", import.meta.url),
   "utf8",
@@ -58,12 +62,23 @@ test("onboarding exposes Connect, Insights, Goals and Plan", () => {
   assert.match(appIndexSource, /Continue to Plan/);
   assert.match(appIndexSource, /Accept Plan and open Jefe/);
   assert.match(appIndexSource, /Tell me what winning looks like/);
-  assert.match(appIndexSource, /Here&apos;s where I&apos;d start\./);
+  assert.match(appIndexSource, /Here(?:&apos;|')s where I(?:&apos;|')d start\./);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
   assert.doesNotMatch(appIndexSource, /data\.activeStep === "channels"/);
   assert.doesNotMatch(appIndexSource, /Continue to Channels/);
   assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
   assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
+});
+
+test("accepting the plan shows the home loading shell while opening Jefe", () => {
+  assert.match(appIndexSource, /import \{ DailyHome, DailyHomeLoading \}/);
+  assert.match(appIndexSource, /pendingDestination === "home"[\s\S]*<DailyHomeLoading storeName=\{data\.storeName\} \/>/);
+  assert.match(appHomeSource, /export function AppHome13aLoading/);
+  assert.match(appHomeSource, /Opening Jefe/);
+  assert.match(appHomeSource, /Your call/);
+  assert.match(appHomeSource, /What I&apos;ve worked out so far/);
+  assert.match(appHomeSource, /What we&apos;re working on/);
+  assert.match(jefeStylesSource, /\.JefeAppHomeSkeleton/);
 });
 
 test("Connect step starts Shopify backfill and shows learning progress", () => {

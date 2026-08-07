@@ -1,6 +1,10 @@
 import { useEffect } from "react";
 import { useFetcher } from "react-router";
-import { AppHome13a, type AppHome13aProps } from "./app-home/AppHome13a";
+import {
+  AppHome13a,
+  AppHome13aLoading,
+  type AppHome13aProps,
+} from "./app-home/AppHome13a";
 import type { Finding, HorizonItem, HorizonWatch, QueueItem, GoalChange, ActionPolicy, ChannelRow } from "./app-home/sections";
 import type { Metrics, MemoryView, Recommendation, Goal, Insight, SuggestedAction, ExecutedAction, ActionMode, MemoryQuestion } from "./app-home/data";
 
@@ -207,6 +211,10 @@ export function DailyHome(props: {
   };
 
   return <AppHome13a {...appProps} />;
+}
+
+export function DailyHomeLoading({ storeName }: { storeName: string }) {
+  return <AppHome13aLoading storeName={storeName} />;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
