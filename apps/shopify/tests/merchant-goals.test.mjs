@@ -367,10 +367,14 @@ test("goal generation is wired to the async worker and not browser page load", (
 
 test("goal prompt asks for commercial outcomes before strategy", () => {
   assert.match(promptSource, /business outcome, not the operating method/);
-  assert.match(promptSource, /revenue, growth, repeat purchase, margin, cash/);
+  assert.match(promptSource, /revenue, sales, growth, repeat purchase, retention, margin, cash/);
   assert.match(promptSource, /Every title must include at least one commercial outcome term/);
   assert.match(promptSource, /short synthesized commercial outcome title/);
   assert.match(promptSource, /strategy behind the outcome/);
+  assert.match(promptSource, /plain merchant English, not consultant phrasing/);
+  assert.match(promptSource, /materially different from each other/);
+  assert.match(promptSource, /Do not add arbitrary numerical targets/);
+  assert.match(promptSource, /Do not make negative judgements/);
   assert.match(promptSource, /goalCoaching is present/);
   assert.match(promptSource, /explicit 3, 6 or 12 month objectives/);
   assert.match(promptSource, /supplied KPIs/);
@@ -409,7 +413,7 @@ test("goals onboarding asks merchants to review generated goals", () => {
   assert.match(routeSource, /goalConfirmation/);
   assert.match(routeSource, /getGoalConfirmationActionData/);
   assert.match(routeSource, /Here's the roadmap we agreed/);
-  assert.match(routeSource, /Continue to Plan →/);
+  assert.match(routeSource, /Choose my first move →/);
   assert.match(routeSource, /Skip for now →/);
   assert.match(routeSource, /OnboardingChat/);
   assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingGoals/);

@@ -664,6 +664,36 @@
   margin-left: 2px;
 }
 
+.JefePlanReasoningChain {
+  background: #f8f1eb;
+  border: 1px solid #ead8ce;
+  border-radius: 10px;
+  color: #27231f;
+  display: grid;
+  gap: 10px;
+  padding: 18px 20px;
+}
+
+.JefePlanReasoningItem {
+  display: grid;
+  gap: 4px;
+}
+
+.JefePlanReasoningItem p {
+  color: inherit;
+}
+
+.JefePlanReasoningItem p:first-child {
+  color: #5a4038;
+}
+
+.JefePlanReasoningArrow {
+  color: #c4534f;
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1;
+}
+
 .JefePlanSteps {
   display: grid;
   gap: 20px;
@@ -1994,6 +2024,28 @@ body:has(.JefeOnboardingShell.is-cinematic) {
   font-size: 14px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanReasoningChain {
+  background: oklch(0.17 0.035 265 / 0.72);
+  border-color: oklch(0.43 0.06 265);
+  color: oklch(0.87 0.018 80);
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanReasoningItem p {
+  color: oklch(0.82 0.018 265);
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanReasoningItem p:first-child {
+  color: oklch(0.92 0.045 35);
+  font-family: var(--jc-mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.JefeOnboardingShell.is-cinematic .JefePlanReasoningArrow {
+  color: var(--jc-cta);
 }
 
 .JefeOnboardingShell.is-cinematic .JefePlanStartIcon,

@@ -28,6 +28,10 @@ const routeSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
 );
+const promptSource = fs.readFileSync(
+  new URL("../app/lib/merchant-plan/prompt.server.js", import.meta.url),
+  "utf8",
+);
 
 const silentLogger = {
   info() {},
@@ -98,7 +102,7 @@ test("Plan snapshot is bounded to safe memory, goals, insights, context and prio
             id: "context-2",
             sourceType: "merchant_plan",
             evidenceType: "merchant_plan_refinement",
-            summary: "Merchant refined Jefe's Plan: keep it lightweight.",
+            summary: "Merchant refined Jefe's First Move: keep it lightweight.",
             observedAt: new Date("2026-07-26T11:00:00Z"),
           },
         ];
@@ -338,8 +342,14 @@ test("Plan generation is wired to the async worker and not browser page load", (
   assert.doesNotMatch(routeSource, /generateMerchantPlan\(/);
 });
 
-test("Plan onboarding uses the shared topic-scoped chat composer", () => {
-  assert.match(routeSource, /Update your Plan by chatting with Jefe/);
+test("Plan onboarding presents the shared topic as First Move", () => {
+  assert.match(routeSource, /Update your First Move by chatting with Jefe/);
+  assert.match(routeSource, /First Move/);
+  assert.match(routeSource, /Start with this →/);
+  assert.match(routeSource, /JefePlanReasoningChain/);
+  assert.match(routeSource, /Your goal/);
+  assert.match(routeSource, /What I&apos;ve learned/);
+  assert.match(routeSource, /My recommendation/);
   assert.match(routeSource, /OnboardingChat/);
   assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingPlan/);
   assert.match(routeSource, /isPlanConversationAssistantMessage/);
@@ -353,6 +363,18 @@ test("Plan onboarding uses the shared topic-scoped chat composer", () => {
     routeSource,
     /I&apos;ll use that context to choose a better first move/,
   );
+  assert.doesNotMatch(routeSource, /Update your Plan by chatting with Jefe/);
+  assert.doesNotMatch(routeSource, /Accept Plan and open Jefe/);
+});
+
+test("Plan prompt frames merchant-facing output as First Move without renaming internals", () => {
+  assert.equal(MERCHANT_PLAN_JOB_TYPE, "merchant_plan_generate");
+  assert.match(promptSource, /choosing the merchant's First Move/);
+  assert.match(promptSource, /It is one practical First Move/);
+  assert.match(promptSource, /what First Move should they start with/);
+  assert.match(promptSource, /connect the agreed goal, the relevant thing Jefe has learned, and the recommended First Move/);
+  assert.match(promptSource, /safe summaries of merchant coaching, planning documents, corrections and First Move refinements/);
+  assert.match(promptSource, /prior First Move recommendations/);
 });
 
 test("merchant Plan generation persists exactly one recommendation", async (t) => {
@@ -403,6 +425,8 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
     assert.equal(recommendations.length, 1);
     assert.equal(run.recommendation.title, "Send a focused reorder nudge");
     assert.equal(experience.currentRun.id, run.id);
+    assert.equal(experience.goals.length, 3);
+    assert.equal(experience.goals[0].title, snapshot.goals[0].title);
     assert.equal(experience.stale, false);
     assert.equal(Array.isArray(run.result.candidateSummaries), true);
     assert.equal(JSON.stringify(run.result).includes("chain-of-thought"), false);

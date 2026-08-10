@@ -1680,13 +1680,18 @@ function ConnectStep({
 
       <div className="JefeConnectAction">
         {canContinue ? (
-          <Button
-            onClick={() => navigate(continueTarget)}
-            variant="primary"
-            loading={continuingToInsights}
-          >
-            Continue to Insights
-          </Button>
+          <BlockStack gap="200" inlineAlign="center">
+            <Text as="p" tone="subdued" alignment="center">
+              I&apos;ve got enough information to start understanding how your business works.
+            </Text>
+            <Button
+              onClick={() => navigate(continueTarget)}
+              variant="primary"
+              loading={continuingToInsights}
+            >
+              See what I found →
+            </Button>
+          </BlockStack>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
             Connect Shopify
@@ -2372,28 +2377,33 @@ function InsightsStep({
         ))}
       </div>
 
-      <InlineStack gap="300" align="center">
-        <Button
-          onClick={() =>
-            navigate(
-              appPathFromSearch(location.search, {
-                step: "connect",
-                channelProvider: null,
-                channelMode: null,
-                channelNotice: null,
-              }),
-            )
-          }
-        >
-          Back
-        </Button>
-        <Form method="post">
-          <input type="hidden" name="intent" value="insights.finish" />
-          <Button submit variant="primary">
-            Continue to Goals
+      <BlockStack gap="300" inlineAlign="center">
+        <Text as="p" tone="subdued" alignment="center">
+          I&apos;ve got a picture of how the business works. Now let&apos;s decide where you want to take it.
+        </Text>
+        <InlineStack gap="300" align="center">
+          <Button
+            onClick={() =>
+              navigate(
+                appPathFromSearch(location.search, {
+                  step: "connect",
+                  channelProvider: null,
+                  channelMode: null,
+                  channelNotice: null,
+                }),
+              )
+            }
+          >
+            Back
           </Button>
-        </Form>
-      </InlineStack>
+          <Form method="post">
+            <input type="hidden" name="intent" value="insights.finish" />
+            <Button submit variant="primary">
+              Set my goals →
+            </Button>
+          </Form>
+        </InlineStack>
+      </BlockStack>
     </OnboardingStepScene>
   );
 }
@@ -2670,7 +2680,7 @@ function GoalsStep({
       <InsightStatusScene
         step="goals"
         title="I don't have enough supported memory to propose useful goals yet."
-        detail="I won't make up a plan until there is enough Merchant Memory to work from."
+        detail="I won't make up a direction until there is enough Merchant Memory to work from."
         action={
           <InlineStack gap="300" align="center">
             <Button
@@ -2766,7 +2776,7 @@ function GoalsStep({
           <GoalGuideHeader
             eyebrow="GOALS SET"
             title="Here's the roadmap we agreed."
-            detail="Three checkpoints, confirmed one at a time. Jefe will plan the first move next."
+            detail="Got it. I'll use these goals to decide what deserves your attention and what I think you should do next."
           />
           <div className="JefeGoalGrid">
             {goalItems.map((goal) => (
@@ -2793,7 +2803,7 @@ function GoalsStep({
             <Form method="post">
               <input type="hidden" name="intent" value="goals.finish" />
               <Button submit variant="primary">
-                Continue to Plan →
+                Choose my first move →
               </Button>
             </Form>
           </InlineStack>
@@ -3067,6 +3077,15 @@ function PlanStep({
   const currentRun = plan?.currentRun;
   const selectedRun = plan?.selectedRun;
   const recommendation = selectedRun?.recommendation;
+  const primaryGoalTitle = recommendation
+    ? plan?.goals?.find(
+        (goal: { id: string }) => goal.id === recommendation.primaryGoalId,
+      )?.title ??
+      plan?.goals?.find(
+        (goal: { horizon: string }) => goal.horizon === "threeMonths",
+      )?.title ??
+      "The goal we agreed"
+    : null;
   const messages: OnboardingChatMessage[] = (conversation?.messages ?? [])
     .filter(
       (item) =>
@@ -3145,7 +3164,7 @@ function PlanStep({
       <InsightStatusScene
         step="plan"
         title="I'm choosing the most useful first move."
-        detail="This page will update when the Plan is ready."
+        detail="This page will update when the First Move is ready."
         skeleton
         action={
           <Button
@@ -3175,7 +3194,7 @@ function PlanStep({
       <InsightStatusScene
         step="plan"
         title="I don't have enough agreed direction to choose a useful first move yet."
-        detail="Review the proposed goals first, then I can turn them into a practical Plan."
+        detail="Review the proposed goals first, then I can turn them into a practical first move."
         action={
           <InlineStack gap="300" align="center">
             <Button
@@ -3194,7 +3213,7 @@ function PlanStep({
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
               <Button submit variant="primary">
-                Retry Plan
+                Retry First Move
               </Button>
             </Form>
           </InlineStack>
@@ -3231,7 +3250,7 @@ function PlanStep({
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
               <Button submit variant="primary">
-                Retry Plan
+                Retry First Move
               </Button>
             </Form>
           </InlineStack>
@@ -3245,7 +3264,7 @@ function PlanStep({
       {plan?.stale ? (
         <Banner tone="warning">
           <Text as="p">
-            This Plan is from the previous valid memory set. I&apos;ll replace it
+            This First Move is from the previous valid memory set. I&apos;ll replace it
             after the latest generation succeeds.
           </Text>
         </Banner>
@@ -3257,6 +3276,7 @@ function PlanStep({
       {recommendation ? (
         <PlanRecommendationCard
           recommendation={recommendation}
+          goalTitle={primaryGoalTitle}
           evidence={evidence}
           updating={refinementRegenerating}
         />
@@ -3271,8 +3291,8 @@ function PlanStep({
           hiddenFields={[
             { name: "recommendationId", value: recommendation.id },
           ]}
-          label="Update Plan"
-          placeholder="Update your Plan by chatting with Jefe..."
+          label="Update First Move"
+          placeholder="Update your First Move by chatting with Jefe..."
           value={message}
           onChange={setMessage}
           onSubmit={() => {
@@ -3308,7 +3328,7 @@ function PlanStep({
               value={recommendation.id}
             />
             <Button submit variant="primary">
-              Accept Plan and open Jefe
+              Start with this →
             </Button>
           </Form>
         ) : null}
@@ -3319,6 +3339,7 @@ function PlanStep({
 
 function PlanRecommendationCard({
   recommendation,
+  goalTitle,
   evidence,
   updating,
 }: {
@@ -3327,6 +3348,7 @@ function PlanRecommendationCard({
       Awaited<ReturnType<typeof getMerchantPlanExperience>>["selectedRun"]
     >["recommendation"]
   >;
+  goalTitle: string | null;
   evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
   updating: boolean;
 }) {
@@ -3334,6 +3356,11 @@ function PlanRecommendationCard({
   const steps = Array.isArray(recommendation.executionSteps)
     ? recommendation.executionSteps
     : [];
+  const learnedSignal =
+    recommendation.whyNow ||
+    evidence.find((item) => item.evidenceSummary)?.evidenceSummary ||
+    evidence[0]?.value ||
+    recommendation.whyThisAction;
   return (
     <div className={`JefePlanCard ${updating ? "is-updating" : ""}`}>
       <BlockStack gap="400">
@@ -3371,6 +3398,39 @@ function PlanRecommendationCard({
             </Text>
             <Text as="p">{recommendation.startToday}</Text>
           </BlockStack>
+        </div>
+
+        <div className="JefePlanReasoningChain">
+          <div className="JefePlanReasoningItem">
+            <Text as="p" fontWeight="bold">
+              Your goal
+            </Text>
+            <Text as="p" tone="subdued">
+              {goalTitle ?? "The goal we agreed"}
+            </Text>
+          </div>
+          <div className="JefePlanReasoningArrow" aria-hidden="true">
+            ↓
+          </div>
+          <div className="JefePlanReasoningItem">
+            <Text as="p" fontWeight="bold">
+              What I&apos;ve learned
+            </Text>
+            <Text as="p" tone="subdued">
+              {learnedSignal}
+            </Text>
+          </div>
+          <div className="JefePlanReasoningArrow" aria-hidden="true">
+            ↓
+          </div>
+          <div className="JefePlanReasoningItem">
+            <Text as="p" fontWeight="bold">
+              My recommendation
+            </Text>
+            <Text as="p" tone="subdued">
+              {recommendation.title}
+            </Text>
+          </div>
         </div>
 
         <BlockStack gap="200">
@@ -4830,7 +4890,7 @@ function StatusBadge({ status }: { status: string }) {
 function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
   if (step === "connect") return "Connect";
   if (step === "goals") return "Goals";
-  if (step === "plan") return "Plan";
+  if (step === "plan") return "First Move";
   return "Insights";
 }
 
@@ -4924,7 +4984,7 @@ function merchantGoalErrorCopy(
   run: { safeErrorCode?: string | null; lastError?: string | null } | null,
 ) {
   if (run?.safeErrorCode === "llm_disabled") {
-    return "Goal generation is currently disabled, so I cannot create a trustworthy first plan yet.";
+    return "Goal generation is currently disabled, so I cannot create a trustworthy first direction yet.";
   }
   if (run?.safeErrorCode === "invalid_model_output") {
     return "The model response did not pass Jefe's grounding checks, so I rejected it.";
@@ -4943,7 +5003,7 @@ function merchantGoalErrorCopy(
 
 function merchantPlanErrorCopy(run: { safeErrorCode?: string | null } | null) {
   if (run?.safeErrorCode === "llm_disabled") {
-    return "Plan generation is currently disabled, so I cannot choose a trustworthy first move yet.";
+    return "First Move generation is currently disabled, so I cannot choose a trustworthy first move yet.";
   }
   if (run?.safeErrorCode === "invalid_model_output") {
     return "The model response did not pass Jefe's grounding checks, so I rejected it.";
@@ -4951,7 +5011,7 @@ function merchantPlanErrorCopy(run: { safeErrorCode?: string | null } | null) {
   if (run?.safeErrorCode === "llm_timeout") {
     return "The model took too long to respond. You can retry without losing current setup progress.";
   }
-  return "The Plan job failed safely. I have not shown any untrusted or sample recommendation.";
+  return "The First Move job failed safely. I have not shown any untrusted or sample recommendation.";
 }
 
 function planConfidenceLabel(confidence: string) {
@@ -5375,7 +5435,7 @@ function onboardingTransitionCopy(destination: OnboardingNavigationDestination) 
       status: "Loading Goals...",
     },
     plan: {
-      status: "Loading Plan...",
+      status: "Loading First Move...",
     },
   };
 
