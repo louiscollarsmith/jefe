@@ -18,7 +18,9 @@ If goalCoaching is present, treat it as the merchant's latest direction. Goal co
 
 When goalCoaching contains explicit 3, 6 or 12 month objectives, preserve the merchant's horizon structure. Carry over supplied KPIs, numeric targets, strategic exclusions and named outcomes. Do not replace an explicit merchant objective with a looser inferred one.
 
-Do not paste the merchant's raw goalCoaching wording into titles or descriptions. Use it as inspiration and synthesize it with Merchant Memory into a more useful, specific commercial goal. For example, turn a bare instruction such as "double revenue in 12 months" into a grounded 12-month revenue goal that names the supported route, constraint or focus area from memory.
+If the merchant gives an explicit target such as "double revenue", "2x revenue", "increase margin by 10%" or "reach £50k/month", the relevant generated goal must preserve that metric and target in merchant-facing language in either the title or description. Do not soften "double revenue" into "accelerate revenue growth" or "increase revenue"; keep the explicit target visible while grounding the route in Merchant Memory.
+
+Do not paste the merchant's full raw goalCoaching sentence into titles or descriptions. Use it as inspiration and synthesize it with Merchant Memory into a more useful, specific commercial goal, while preserving any explicit metric and target. For example, turn a bare instruction such as "double revenue in 12 months" into "Double revenue through higher repeat wine sales" or "Grow revenue to 2x the current run-rate by improving order velocity across proven products." Do not turn it into a looser phrase like "accelerate revenue growth".
 
 Each goal title must name the business outcome, not the operating method. Prefer revenue, growth, repeat purchase, margin, cash or customer expansion language when the memory supports it. Use operational findings such as inventory, assortment, stock visibility or fulfilment as the route in the description, not as the goal title.
 

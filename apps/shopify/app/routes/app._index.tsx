@@ -5,7 +5,7 @@ import type {
   ShouldRevalidateFunctionArgs,
 } from "react-router";
 import type { FormEvent, ReactNode } from "react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   Form,
   redirect,
@@ -629,11 +629,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
 
       if (intent === "goals.message") {
+        const message = String(formData.get("message") ?? "");
+        const goalHorizon = String(formData.get("goalHorizon") ?? "");
         const result = await processMerchantGoalMessage(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-          message: String(formData.get("message") ?? ""),
-          goalHorizon: String(formData.get("goalHorizon") ?? ""),
+          message,
+          goalHorizon,
         });
         if (!result.ok) {
           const messageError = result as { error?: string };
@@ -641,6 +643,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             ok: false,
             error: messageError.error ?? "That message could not be saved.",
             intent,
+          };
+        }
+        if (result.confirmed) {
+          return {
+            ok: true,
+            intent,
+            goalConfirmation: true,
+            goalHorizon,
+            message,
           };
         }
         return redirect(
@@ -1483,6 +1494,7 @@ export default function AppIndex() {
           goals={data.goals}
           conversation={data.goalsConversation}
           actionError={safeActionError}
+          actionData={actionData}
         />
       ) : (
         <PlanStep
@@ -2392,6 +2404,7 @@ function GoalsStep({
   goals,
   conversation,
   actionError,
+  actionData,
 }: {
   backfill: ReturnType<typeof summarizeBackfill>;
   memoryReady: boolean;
@@ -2400,6 +2413,7 @@ function GoalsStep({
     ReturnType<typeof getMerchantMemoryConversationExperience>
   > | null;
   actionError: SafeActionError;
+  actionData: unknown;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -2431,6 +2445,7 @@ function GoalsStep({
     startIndex: number;
     message: string;
   } | null>(null);
+  const processedServerConfirmationRef = useRef("");
   const navigation = useNavigation();
   const submittingGoalMessage =
     navigation.state !== "idle" &&
@@ -2463,6 +2478,7 @@ function GoalsStep({
     : null;
   const currentGoal =
     goalItems[Math.min(currentGoalIndex, goalItems.length - 1)] ?? goalItems[0];
+  const currentGoalKey = currentGoal?.key ?? null;
   const refreshCanStillBeActive = submittingGoalMessage || goalGenerationActive;
   const activeRefreshStartIndex =
     pendingGoalRevision && refreshCanStillBeActive
@@ -2499,16 +2515,16 @@ function GoalsStep({
     currentGoalRefreshing && pendingGoalRevision
       ? pendingGoalRevision.message
       : currentRevisionNote;
-  const confirmCurrentGoal = () => {
-    if (!currentGoal) return;
+  const confirmCurrentGoal = useCallback(() => {
+    if (!currentGoalKey) return;
     setConfirmedGoalKeys((previous) => {
       const next = new Set(previous);
-      next.add(currentGoal.key);
+      next.add(currentGoalKey);
       return next;
     });
     setRevisionNotes((previous) => {
       const next = { ...previous };
-      delete next[currentGoal.key];
+      delete next[currentGoalKey];
       return next;
     });
     setPendingGoalRevision(null);
@@ -2518,7 +2534,26 @@ function GoalsStep({
     } else {
       setCurrentGoalIndex((index) => Math.min(index + 1, goalItems.length - 1));
     }
-  };
+  }, [
+    currentGoalIndex,
+    currentGoalKey,
+    goalItems.length,
+    setConfirmedGoalKeys,
+    setCurrentGoalIndex,
+    setMessage,
+    setPendingGoalRevision,
+    setRevisionNotes,
+    setShowGoalSummary,
+  ]);
+  useEffect(() => {
+    const confirmation = getGoalConfirmationActionData(actionData);
+    if (!confirmation || !currentGoalKey) return;
+    if (confirmation.goalHorizon !== currentGoalKey) return;
+    const signature = `${confirmation.goalHorizon}:${confirmation.message}`;
+    if (processedServerConfirmationRef.current === signature) return;
+    processedServerConfirmationRef.current = signature;
+    confirmCurrentGoal();
+  }, [actionData, currentGoalKey, confirmCurrentGoal]);
   const skipToGoalSummary = () => {
     setConfirmedGoalKeys(new Set(goalItems.map((item) => item.key)));
     setPendingGoalRevision(null);
@@ -2985,35 +3020,27 @@ function GoalGuideHeader({
 }
 
 function isGoalConfirmationMessage(message: string) {
-  const normalized = message
-    .toLowerCase()
-    .replace(/[.!?,;:'"’‘“”]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return false;
-  const exactConfirmations = new Set([
-    "ok",
-    "okay",
-    "yes",
-    "yep",
-    "yeah",
-    "confirmed",
-    "confirm",
-    "approved",
-    "approve",
-    "looks good",
-    "look good",
-    "sounds good",
-    "sound good",
-    "thats good",
-    "that works",
-    "works for me",
-    "good",
-    "fine",
-    "great",
-  ]);
-  if (exactConfirmations.has(normalized)) return true;
-  return /^(looks|sounds) good( to me)?$/.test(normalized);
+  return message.trim().toLowerCase() === "looks good";
+}
+
+function getGoalConfirmationActionData(actionData: unknown) {
+  if (!actionData || typeof actionData !== "object") return null;
+  const data = actionData as {
+    intent?: unknown;
+    goalConfirmation?: unknown;
+    goalHorizon?: unknown;
+    message?: unknown;
+  };
+  if (data.intent !== "goals.message" || data.goalConfirmation !== true) {
+    return null;
+  }
+  if (typeof data.goalHorizon !== "string" || typeof data.message !== "string") {
+    return null;
+  }
+  return {
+    goalHorizon: data.goalHorizon,
+    message: data.message,
+  };
 }
 
 function PlanStep({

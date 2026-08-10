@@ -4,6 +4,7 @@ import { Buffer } from "node:buffer";
 import { Type } from "@google/genai";
 import { LlmOutputValidationError } from "../llm/errors.server.js";
 import { createLlmProvider } from "../llm/provider.server.js";
+import { logger as baseLogger } from "../observability/logger.server.js";
 import {
   BELIEF_PRECEDENCE,
 } from "../merchant-memory/constants.server.js";
@@ -45,6 +46,7 @@ import {
 import { ensureMerchantPlanQueued } from "../merchant-plan/service.server.js";
 
 const ACTIVE_RUN_STATUSES = [GOAL_RUN_STATUS.queued, GOAL_RUN_STATUS.running];
+const log = baseLogger.child({ component: "merchant-goals" });
 
 export const GOALS_DOCUMENT_OUTPUT_SCHEMA = {
   type: Type.OBJECT,
@@ -73,6 +75,16 @@ export const GOALS_DOCUMENT_OUTPUT_SCHEMA = {
       },
     },
     regenerateGoals: { type: Type.BOOLEAN },
+  },
+};
+
+export const GOAL_MESSAGE_CONFIRMATION_SCHEMA = {
+  type: Type.OBJECT,
+  required: ["isConfirmation", "confidence"],
+  properties: {
+    isConfirmation: { type: Type.BOOLEAN },
+    confidence: { type: Type.NUMBER },
+    reason: { type: Type.STRING, nullable: true },
   },
 };
 
@@ -415,6 +427,7 @@ async function generateValidatedGoals(provider, input) {
     const parsed = parseAndValidateMerchantGoalsOutput(llmResult.json, {
       allowedBeliefIds,
       suppliedBeliefs: input.snapshot.snapshot.beliefs,
+      goalCoaching: input.snapshot.snapshot.goalCoaching,
     });
     if (parsed.ok) return { llmResult, parsed };
 
@@ -461,6 +474,14 @@ export async function markMerchantGoalsJobFailed(prisma, input) {
 export async function processMerchantGoalMessage(prisma, input) {
   const message = input.message.trim();
   if (message.length < 2) return { ok: false, error: "Message is required." };
+  const confirmation = await classifyGoalMessageConfirmation(prisma, input, message);
+  if (confirmation.isConfirmation) {
+    return {
+      ok: true,
+      confirmed: true,
+      confidence: confirmation.confidence,
+    };
+  }
   const now = new Date();
   const goalHorizon = normalizeGoalHorizonKey(input.goalHorizon);
   const affectedHorizons = affectedGoalHorizonKeys(goalHorizon);
@@ -507,6 +528,86 @@ export async function processMerchantGoalMessage(prisma, input) {
     },
   });
   return { ok: true };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; goalHorizon?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {string} message
+ */
+async function classifyGoalMessageConfirmation(prisma, input, message) {
+  try {
+    const provider =
+      input.llmProvider ??
+      createLlmProvider({
+        logger: input.logger ?? log,
+        usage: {
+          prisma,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          feature: "goals_confirmation",
+        },
+      });
+    if (!provider.enabled || !provider.generateStructuredJson) {
+      return { isConfirmation: false, confidence: 0 };
+    }
+    const result = await provider.generateStructuredJson({
+      systemPrompt: buildGoalMessageConfirmationSystemPrompt(),
+      prompt: buildGoalMessageConfirmationPrompt({
+        message,
+        goalHorizon: normalizeGoalHorizonKey(input.goalHorizon),
+      }),
+      schema: GOAL_MESSAGE_CONFIRMATION_SCHEMA,
+      maxInputTokens: 1200,
+      maxOutputTokens: 180,
+      timeoutMs: 5_000,
+    });
+    return parseGoalMessageConfirmation(result.json);
+  } catch (error) {
+    const logger = input.logger ?? log;
+    logger.warn("Goal confirmation classifier failed", {
+      error: error instanceof Error ? error.name : "Error",
+    });
+    return { isConfirmation: false, confidence: 0 };
+  }
+}
+
+function buildGoalMessageConfirmationSystemPrompt() {
+  return `Classify a merchant's short Goals onboarding chat message.
+
+Return isConfirmation=true only when the merchant is clearly accepting the currently displayed goal and wants to continue to the next checkpoint or plan.
+
+Return false when the merchant asks for a change, gives a new target, adds context, expresses uncertainty, asks a question, or says anything ambiguous.
+
+Examples that are confirmation: "proceed to next", "continue", "move on", "this works", "approved".
+Examples that are not confirmation: "make it more aggressive", "double revenue", "can we focus on margin?", "not sure", "what does this mean?".
+
+Do not infer hidden intent. If unsure, return false.`;
+}
+
+/** @param {{ message: string; goalHorizon: string | null }} input */
+function buildGoalMessageConfirmationPrompt(input) {
+  return JSON.stringify({
+    task: "Is this message a confirmation of the currently displayed goal?",
+    goalHorizon: input.goalHorizon,
+    merchantMessage: input.message,
+    outputContract: {
+      isConfirmation: "boolean",
+      confidence: "number from 0 to 1",
+      reason: "short safe reason, no sensitive data",
+    },
+  });
+}
+
+/** @param {unknown} raw */
+function parseGoalMessageConfirmation(raw) {
+  const object = raw && typeof raw === "object" ? raw : {};
+  const isConfirmation = object.isConfirmation === true;
+  const confidence =
+    typeof object.confidence === "number" && Number.isFinite(object.confidence)
+      ? Math.max(0, Math.min(1, object.confidence))
+      : 0;
+  return { isConfirmation: isConfirmation && confidence >= 0.7, confidence };
 }
 
 /** @param {string | null | undefined} horizonKey */
