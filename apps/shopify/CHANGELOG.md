@@ -6,6 +6,7 @@
 
 - **Goals now preserve explicit merchant targets during refinement.** When a merchant tells Jefe to hit a concrete goal such as doubling revenue in a specific horizon, Goals generation now keeps that target visible in the proposed goal instead of softening it into generic growth language. The goal prompt now says to preserve the metric and target, and validation rejects regenerated goals that drop a detected merchant-supplied target before retrying. `app/lib/merchant-goals/constants.js`, `app/lib/merchant-goals/{prompt,schema,service}.server.js`, `tests/merchant-goals.test.mjs`.
 - **Goals review now recognises natural confirmations.** Merchants no longer have to type the exact "looks good" phrase to move through the 3, 6 and 12 month goal review. Jefe now asks the LLM whether a chat message is a clear confirmation such as "proceed to next"; if it is not clearly accepting the displayed goal, the message still follows the normal goal-refinement path. `app/routes/app._index.tsx`, `app/lib/merchant-goals/service.server.js`, `tests/merchant-goals.test.mjs`.
+- **CI schema drift check now recognises the existing conversation-topic index.** The Prisma schema now names the Merchant Memory conversation topic index exactly as the shipped migration created it, so fresh CI databases no longer fail the migration diff gate on an index rename only. `prisma/schema.prisma`.
 
 ## 2026-08-07
 

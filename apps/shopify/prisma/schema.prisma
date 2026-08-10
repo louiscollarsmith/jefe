@@ -810,7 +810,7 @@ model MerchantMemoryConversation {
   messages   MerchantMemoryConversationMessage[]
 
   @@index([merchantId, status, updatedAt])
-  @@index([merchantId, shopId, topic, status, updatedAt])
+  @@index([merchantId, shopId, topic, status, updatedAt], map: "merchant_memory_conversations_merchant_id_shop_id_topic_status_")
   @@index([shopId, status])
   @@map("merchant_memory_conversations")
 }
