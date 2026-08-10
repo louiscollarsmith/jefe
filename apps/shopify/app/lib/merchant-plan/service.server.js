@@ -126,6 +126,12 @@ export async function getMerchantPlanExperience(prisma, input) {
     snapshotHash: snapshot.snapshotHash,
     candidateCount: snapshot.candidateCount,
     hasGoals: snapshot.hasGoals,
+    goals: snapshot.snapshot.goals.map((goal) => ({
+      id: goal.id,
+      horizon: goal.horizon,
+      title: goal.title,
+      description: goal.description,
+    })),
     currentRun: serializeRun(currentRun),
     previousCompletedRun: serializeRun(previousCompletedRun),
     selectedRun: serializeRun(selectedRun),
@@ -455,7 +461,7 @@ export async function processMerchantPlanMessage(prisma, input) {
         ? `merchant_plan_recommendation:${input.recommendationId}`
         : "plan_onboarding_conversation",
       evidenceType: "merchant_plan_refinement",
-      summary: `Merchant refined Jefe's Plan: ${interpretedDirection}`,
+      summary: `Merchant refined Jefe's First Move: ${interpretedDirection}`,
       metadata: {
         originalMessage: message,
         interpretedDirection,
@@ -497,7 +503,7 @@ export async function processMerchantPlanMessage(prisma, input) {
     content: buildPlanRefinementConversationMessage(interpretedDirection),
     operation: {
       operationType: "plan_refinement_context",
-      reason: "Captured merchant guidance for Plan regeneration.",
+      reason: "Captured merchant guidance for First Move regeneration.",
       recommendationId: input.recommendationId ?? null,
       merchantStatement: message,
       interpretedDirection,
@@ -515,7 +521,7 @@ function interpretPlanRefinementDirection(message) {
   const directions = [];
 
   if (/(avoid|no|don't|do not).{0,24}(email|campaign|newsletter)/.test(normalized)) {
-    directions.push("de-prioritise email-led work for this Plan");
+    directions.push("de-prioritise email-led work for this First Move");
   }
   if (/(stock|inventory|dead stock|cleanup|clearance)/.test(normalized)) {
     directions.push("make the first move more operational and stock-focused");
@@ -563,7 +569,7 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
     sourceType: "merchant_plan",
     sourceReference: `merchant_plan_recommendation:${recommendation.id}`,
     evidenceType: "merchant_plan_accepted",
-    summary: `Merchant accepted Jefe's first Plan recommendation: ${recommendation.title}`,
+    summary: `Merchant accepted Jefe's First Move recommendation: ${recommendation.title}`,
     metadata: {
       recommendationId: recommendation.id,
       runId: recommendation.runId,

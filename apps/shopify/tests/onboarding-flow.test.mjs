@@ -52,7 +52,7 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes Connect, Insights, Goals and Plan", () => {
+test("onboarding exposes Connect, Insights, Goals and First Move", () => {
   assert.deepEqual(
     [...ONBOARDING_STEPS],
     ["connect", "insights", "goals", "plan"],
@@ -60,14 +60,16 @@ test("onboarding exposes Connect, Insights, Goals and Plan", () => {
   assert.match(appIndexSource, /"Connect"/);
   assert.match(appIndexSource, /"Insights"/);
   assert.match(appIndexSource, /"Goals"/);
-  assert.match(appIndexSource, /"Plan"/);
-  assert.match(appIndexSource, /Continue to Insights/);
-  assert.match(appIndexSource, /Continue to Goals/);
-  assert.match(appIndexSource, /Continue to Plan/);
-  assert.match(appIndexSource, /Accept Plan and open Jefe/);
+  assert.match(appIndexSource, /"First Move"/);
+  assert.match(appIndexSource, /See what I found →/);
+  assert.match(appIndexSource, /Set my goals →/);
+  assert.match(appIndexSource, /Choose my first move →/);
+  assert.match(appIndexSource, /Start with this →/);
   assert.match(appIndexSource, /Tell me what winning looks like/);
   assert.match(appIndexSource, /Here(?:&apos;|')s where I(?:&apos;|')d start\./);
   assert.match(appIndexSource, /normalizeOnboardingStep/);
+  assert.doesNotMatch(appIndexSource, /Continue to Plan/);
+  assert.doesNotMatch(appIndexSource, /Accept Plan and open Jefe/);
   assert.doesNotMatch(appIndexSource, /data\.activeStep === "channels"/);
   assert.doesNotMatch(appIndexSource, /Continue to Channels/);
   assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
