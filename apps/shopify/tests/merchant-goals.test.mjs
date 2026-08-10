@@ -220,6 +220,85 @@ test("structured goal validation rejects unsupported belief IDs and generic goal
   assert.match(generic.error, /generic/);
 });
 
+test("structured goal validation preserves explicit merchant target coaching", () => {
+  const goalCoaching = [
+    {
+      summary:
+        "Merchant goal direction for 3, 6 and 12 month horizons: Use the 3 month horizon to pursue a 2x revenue outcome, translated into a grounded commercial goal rather than copied as a literal instruction.",
+      observedAt: "2026-08-10T09:48:38.586Z",
+    },
+  ];
+  const baseGoal = {
+    title: "Increase repeat revenue",
+    description: "Use the catalogue shape to create a clearer replenishment path.",
+    supportingBeliefIds: ["belief-1"],
+  };
+  const droppedTarget = parseAndValidateMerchantGoalsOutput(
+    {
+      threeMonths: {
+        title: "Accelerate revenue growth through core product sales",
+        description:
+          "Drive an immediate uplift in revenue by increasing order velocity across active selling days.",
+        supportingBeliefIds: ["belief-1"],
+      },
+      sixMonths: baseGoal,
+      twelveMonths: {
+        ...baseGoal,
+        title: "Expand specialist range growth",
+      },
+    },
+    { allowedBeliefIds: new Set(["belief-1"]), goalCoaching },
+  );
+  const preservedTarget = parseAndValidateMerchantGoalsOutput(
+    {
+      threeMonths: {
+        title: "Double revenue through core product sales",
+        description:
+          "Grow revenue to 2x the current run-rate by increasing order velocity across proven products.",
+        supportingBeliefIds: ["belief-1"],
+      },
+      sixMonths: baseGoal,
+      twelveMonths: {
+        ...baseGoal,
+        title: "Expand specialist range growth",
+      },
+    },
+    { allowedBeliefIds: new Set(["belief-1"]), goalCoaching },
+  );
+  const explicitTwelveMonthTarget = parseAndValidateMerchantGoalsOutput(
+    {
+      threeMonths: {
+        title: "Accelerate revenue growth through core product sales",
+        description:
+          "Drive an immediate uplift in revenue by increasing order velocity across active selling days.",
+        supportingBeliefIds: ["belief-1"],
+      },
+      sixMonths: baseGoal,
+      twelveMonths: {
+        title: "Double revenue through specialist range growth",
+        description:
+          "Grow revenue to 2x the current run-rate by expanding proven products without diluting focus.",
+        supportingBeliefIds: ["belief-1"],
+      },
+    },
+    {
+      allowedBeliefIds: new Set(["belief-1"]),
+      goalCoaching: [
+        {
+          summary:
+            "Merchant goal direction for 3, 6 and 12 month horizons: Use the 12 month horizon to pursue a 2x revenue outcome, translated into a grounded commercial goal rather than copied as a literal instruction.",
+          observedAt: "2026-08-10T09:48:38.586Z",
+        },
+      ],
+    },
+  );
+
+  assert.equal(droppedTarget.ok, false);
+  assert.match(droppedTarget.error, /merchant-supplied 2x revenue target/);
+  assert.equal(preservedTarget.ok, true);
+  assert.equal(explicitTwelveMonthTarget.ok, true);
+});
+
 test("getLatestMerchantGoals reads the latest completed run without a snapshot or queueing", async () => {
   const calls = [];
   // Mock prisma implements ONLY merchantGoalRun.findFirst. If the reader tried
@@ -295,7 +374,10 @@ test("goal prompt asks for commercial outcomes before strategy", () => {
   assert.match(promptSource, /goalCoaching is present/);
   assert.match(promptSource, /explicit 3, 6 or 12 month objectives/);
   assert.match(promptSource, /supplied KPIs/);
-  assert.match(promptSource, /Do not paste the merchant's raw goalCoaching wording/);
+  assert.match(promptSource, /must preserve that metric and target/);
+  assert.match(promptSource, /Do not soften "double revenue" into "accelerate revenue growth"/);
+  assert.match(promptSource, /Do not paste the merchant's full raw goalCoaching sentence/);
+  assert.match(promptSource, /while preserving any explicit metric and target/);
   assert.match(promptSource, /synthesize it with Merchant Memory/);
   assert.match(promptSource, /merchant_goal_document_context comes from an uploaded planning document/);
 });
@@ -318,15 +400,22 @@ test("goals onboarding asks merchants to review generated goals", () => {
   assert.match(routeSource, /Jefe is recalculating/);
   assert.match(routeSource, /Retry the goal refresh before confirming/);
   assert.match(routeSource, /className="JefeGoalGuideChat"/);
-  assert.match(routeSource, /Say 'looks good' to confirm, or tell Jefe what to change/);
+  assert.match(
+    routeSource,
+    /Say 'looks good' to confirm, or tell Jefe what to change/,
+  );
   assert.match(routeSource, /name: "goalHorizon"/);
   assert.match(routeSource, /isGoalConfirmationMessage/);
+  assert.match(routeSource, /goalConfirmation/);
+  assert.match(routeSource, /getGoalConfirmationActionData/);
   assert.match(routeSource, /Here's the roadmap we agreed/);
   assert.match(routeSource, /Continue to Plan →/);
   assert.match(routeSource, /Skip for now →/);
   assert.match(routeSource, /OnboardingChat/);
   assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingGoals/);
   assert.match(routeSource, /setMessage\(""\)/);
+  assert.match(serviceSource, /GOAL_MESSAGE_CONFIRMATION_SCHEMA/);
+  assert.match(serviceSource, /proceed to next/);
   assert.doesNotMatch(routeSource, /Update your goals by chatting with Jefe/);
   assert.doesNotMatch(routeSource, /Still thinking/);
   assert.doesNotMatch(
@@ -729,6 +818,68 @@ test("goal coaching records evidence and queues regeneration", async (t) => {
       "sixMonths",
       "twelveMonths",
     ]);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Goals Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("goal chat confirmation detected by LLM advances without regenerating goals", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Goal persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createGoalFixture(prisma, suffix);
+    const result = await processMerchantGoalMessage(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      message: "Proceed to next.",
+      goalHorizon: "sixMonths",
+      llmProvider: createMockLlmProvider({
+        operation: {
+          isConfirmation: true,
+          confidence: 0.92,
+          reason: "Merchant asked to continue.",
+        },
+      }),
+      logger: silentLogger,
+    });
+    const evidence = await prisma.merchantMemoryEvidence.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        evidenceType: "merchant_goal_coaching",
+      },
+    });
+    const goalJob = await prisma.backfillJob.findFirst({
+      where: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: MERCHANT_GOALS_JOB_TYPE,
+      },
+    });
+    const conversationMessage =
+      await prisma.merchantMemoryConversationMessage.findFirst({
+        where: {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          safeSummary: "Proceed to next.",
+        },
+      });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.confirmed, true);
+    assert.equal(evidence, null);
+    assert.equal(goalJob, null);
+    assert.equal(conversationMessage, null);
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Goals Test ${suffix}` },
