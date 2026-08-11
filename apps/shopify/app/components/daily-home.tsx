@@ -191,7 +191,7 @@ function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSe
     return (
       <section style={cardStyle}>
         <Mono>ALL CLEAR</Mono>
-          <h2 style={cardTitleStyle}>Nothing&apos;s on fire — you&apos;re all clear.</h2>
+        <h2 style={cardTitleStyle}>Nothing&apos;s on fire — you&apos;re all clear.</h2>
       </section>
     );
   }
@@ -210,7 +210,7 @@ function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSe
           {subtitle ? <p style={summaryStyle}>{subtitle}</p> : null}
           <Link
             to={searchWith(currentSearch, { actionChat: chatTarget })}
-            style={{ ...primaryButtonStyle, marginTop: subtitle ? 0 : 26 }}
+            style={primaryButtonStyle}
           >
             Talk this through →
           </Link>
@@ -218,7 +218,7 @@ function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSe
         </>
       ) : (
         <>
-          <div style={{ marginTop: 20 }}>
+          <div style={moveDetailBlockStyle}>
             <Mono>PROGRESS</Mono>
             <div style={checklistStyle}>
               {move.checklist.map((item) => (
@@ -232,7 +232,7 @@ function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSe
             </div>
           </div>
           {move.successSignal ? (
-            <div style={{ marginTop: 22 }}>
+            <div style={moveDetailBlockStyle}>
               <Mono>WHAT SUCCESS LOOKS LIKE</Mono>
               <p style={summaryStyle}>{move.successSignal}</p>
             </div>
@@ -422,7 +422,6 @@ function ActionChat({
             "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you are ready.",
         },
       ];
-  const subtitle = informativeSubtitle(move.summary, move.title);
   return (
     <main style={pageStyle}>
       <div style={chatShellStyle}>
@@ -432,13 +431,12 @@ function ActionChat({
           </Link>
           <DateLabel>{formatToday()}</DateLabel>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 20 }}>
           <Mono>ABOUT THIS MOVE</Mono>
           <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
         </div>
         <h1 style={chatTitleStyle}>{move.title}</h1>
-        {subtitle ? <p style={chatSummaryStyle}>{subtitle}</p> : null}
-        <div style={{ ...chatDividerStyle, marginTop: subtitle ? 0 : 28 }} />
+        <div style={{ ...chatDividerStyle, marginTop: 20 }} />
         <div style={messagesStyle}>
           {messages.map((message) => (
             <div
@@ -577,7 +575,16 @@ function StatusPill({ tone, children }: { tone: "yellow" | "green"; children: Re
         color: green ? COLORS.green : "#111827",
       }}
     >
-      <span aria-hidden="true">●</span>
+      <span
+        aria-hidden="true"
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 999,
+          background: "currentColor",
+          flex: "none",
+        }}
+      />
       {children}
     </span>
   );
@@ -726,8 +733,7 @@ function compactWhyThis(value: string) {
     .replace(/\btwo\b/g, "2")
     .replace(/\s+/g, " ")
     .trim();
-  if (compact.length <= 96) return compact;
-  return `${compact.slice(0, 93).trim()}...`;
+  return compact;
 }
 
 function informativeSubtitle(summary: string, title: string) {
@@ -794,16 +800,19 @@ const pageStyle: CSSProperties = {
   background: COLORS.page,
   color: COLORS.ink,
   fontFamily: FONT.sans,
-  padding: "58px 24px 104px",
+  padding: "48px 24px 96px",
 };
 const shellStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 40,
   maxWidth: 760,
   margin: "0 auto",
   width: "100%",
 };
 const chatShellStyle: CSSProperties = {
   maxWidth: 760,
-  minHeight: "calc(100vh - 124px)",
+  minHeight: "calc(100vh - 96px)",
   margin: "0 auto",
   display: "flex",
   flexDirection: "column",
@@ -814,7 +823,6 @@ const headerStyle: CSSProperties = {
   justifyContent: "space-between",
   alignItems: "center",
   gap: 24,
-  marginBottom: 42,
 };
 const markStyle: CSSProperties = {
   width: 32,
@@ -827,29 +835,29 @@ const markStyle: CSSProperties = {
   justifyContent: "center",
   fontWeight: 800,
 };
-const smallMarkStyle: CSSProperties = { ...markStyle, width: 24, height: 24, borderRadius: 6, fontSize: 13, flex: "none" };
+const smallMarkStyle: CSSProperties = { ...markStyle, width: 22, height: 22, borderRadius: 6, fontSize: 12, flex: "none" };
 const monoStyle: CSSProperties = {
   color: COLORS.meta,
   fontFamily: FONT.mono,
-  fontSize: 12,
-  fontWeight: 750,
-  letterSpacing: "0.12em",
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.14em",
   textTransform: "uppercase",
 };
 const dateStyle: CSSProperties = {
   color: COLORS.meta,
   fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 650,
-  letterSpacing: "0.04em",
+  fontSize: 12,
+  fontWeight: 500,
+  letterSpacing: 0,
   whiteSpace: "nowrap",
 };
 const headlineStyle: CSSProperties = {
   fontFamily: FONT.serif,
   fontSize: 40,
-  lineHeight: 1.08,
-  fontWeight: 600,
-  margin: "0 0 46px",
+  lineHeight: 1.15,
+  fontWeight: 500,
+  margin: 0,
   letterSpacing: 0,
 };
 const headlineEmStyle: CSSProperties = { color: COLORS.navy, fontStyle: "italic" };
@@ -858,135 +866,143 @@ const cardStyle: CSSProperties = {
   border: `1px solid ${COLORS.border}`,
   borderRadius: 16,
   boxShadow: "0 16px 42px rgba(39,55,77,0.08)",
-  padding: "56px 52px 50px",
-  marginBottom: 44,
+  display: "flex",
+  flexDirection: "column",
+  gap: 22,
+  padding: "clamp(24px, 3.5vw, 40px)",
 };
 const cardTopStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
   gap: 20,
-  marginBottom: 28,
 };
 const cardTitleStyle: CSSProperties = {
   fontFamily: FONT.serif,
-  fontSize: 32,
-  lineHeight: 1.12,
+  fontSize: 27,
+  lineHeight: 1.28,
   margin: 0,
-  fontWeight: 700,
+  fontWeight: 500,
   letterSpacing: 0,
 };
 const summaryStyle: CSSProperties = {
   color: COLORS.body,
-  fontSize: 18,
+  fontSize: 16,
   lineHeight: 1.55,
-  margin: "26px 0 28px",
+  margin: 0,
   maxWidth: 760,
 };
 const primaryButtonStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
+  alignSelf: "flex-start",
   background: COLORS.navy,
   color: "#fff",
   borderRadius: 8,
-  padding: "14px 22px",
-  fontSize: 16,
-  fontWeight: 800,
+  padding: "12px 22px",
+  fontSize: 14,
+  fontWeight: 700,
   textDecoration: "none",
 };
 const whyStyle: CSSProperties = {
   borderTop: `1px solid ${COLORS.hairline}`,
-  marginTop: 30,
-  paddingTop: 26,
+  paddingTop: 22,
 };
 const whyGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) 28px minmax(0, 1.2fr) 28px minmax(0, 1fr)",
-  columnGap: 18,
+  gridTemplateColumns: "minmax(0, 1fr) 18px minmax(0, 1fr) 18px minmax(0, 1fr)",
+  columnGap: 12,
   alignItems: "start",
-  marginTop: 17,
+  marginTop: 14,
 };
 const whyArrowStyle: CSSProperties = {
   alignSelf: "start",
   color: COLORS.border,
-  fontSize: 25,
+  fontSize: 18,
   lineHeight: 1,
-  paddingTop: 28,
+  paddingTop: 26,
   textAlign: "center",
 };
 const whyValueStyle: CSSProperties = {
-  display: "-webkit-box",
-  fontSize: 16,
-  fontWeight: 750,
-  lineHeight: 1.22,
-  marginTop: 7,
-  maxHeight: 78,
-  overflow: "hidden",
-  WebkitBoxOrient: "vertical",
-  WebkitLineClamp: 4,
+  fontSize: 14,
+  fontWeight: 600,
+  lineHeight: 1.35,
+  marginTop: 6,
+  overflowWrap: "break-word",
 };
 const pillStyle: CSSProperties = {
   alignItems: "center",
   border: "1px solid",
   borderRadius: 8,
   display: "inline-flex",
-  gap: 8,
-  fontSize: 14,
-  fontWeight: 800,
-  padding: "7px 14px",
+  gap: 7,
+  fontSize: 12,
+  fontWeight: 700,
+  padding: "6px 14px",
   whiteSpace: "nowrap",
+};
+const moveDetailBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
 };
 const checklistStyle: CSSProperties = {
   display: "flex",
   gap: 18,
   flexWrap: "wrap",
-  marginTop: 14,
   color: COLORS.body,
 };
 const checkItemStyle: CSSProperties = {
   alignItems: "center",
   display: "inline-flex",
   gap: 7,
-  fontSize: 15,
+  fontSize: 14.5,
 };
 const signalStyle: CSSProperties = {
   display: "flex",
   gap: 12,
   flexWrap: "wrap",
   color: COLORS.meta,
-  fontSize: 15,
-  marginTop: 24,
+  fontSize: 14.5,
 };
-const sectionStyle: CSSProperties = { marginTop: 46 };
+const sectionStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+};
 const sectionTitleStyle: CSSProperties = {
   fontFamily: FONT.serif,
-  fontSize: 26,
+  fontSize: 19,
   lineHeight: 1.15,
-  fontWeight: 700,
-  margin: "0 0 20px",
+  fontWeight: 500,
+  margin: 0,
 };
 const compactCardStyle: CSSProperties = {
   background: COLORS.card,
   border: `1px solid ${COLORS.border}`,
   borderRadius: 12,
-  padding: "23px 26px",
+  fontSize: 14.5,
+  padding: "18px 20px",
 };
 const rowTopStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   gap: 20,
   alignItems: "center",
+  fontSize: 14.5,
 };
 const miniChecklistStyle: CSSProperties = {
   display: "flex",
   gap: 18,
   flexWrap: "wrap",
   color: COLORS.body,
-  marginTop: 18,
+  fontSize: 14.5,
+  marginTop: 14,
 };
 const signalCompactStyle: CSSProperties = {
-  marginTop: 14,
   color: COLORS.meta,
+  fontSize: 14.5,
+  marginTop: 12,
 };
 const historyRowStyle: CSSProperties = {
   alignItems: "flex-start",
@@ -994,11 +1010,12 @@ const historyRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   gap: 24,
+  fontSize: 14.5,
   padding: "17px 0 18px",
 };
 const historyCopyStyle: CSSProperties = {
   color: COLORS.muted,
-  fontSize: 15,
+  fontSize: 14.5,
   lineHeight: 1.4,
   margin: "4px 0 0",
 };
@@ -1007,7 +1024,7 @@ const historyMetaStyle: CSSProperties = {
   display: "flex",
   flex: "none",
   gap: 12,
-  fontSize: 13,
+  fontSize: 12,
 };
 const watchRowStyle: CSSProperties = {
   alignItems: "center",
@@ -1015,13 +1032,14 @@ const watchRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   gap: 20,
+  fontSize: 14.5,
   padding: "16px 0 17px",
 };
 const footerLinkStyle: CSSProperties = {
   color: COLORS.navy,
   display: "block",
-  fontWeight: 800,
-  marginTop: 18,
+  fontSize: 14.5,
+  fontWeight: 700,
   textAlign: "right",
   textDecoration: "none",
 };
@@ -1029,6 +1047,7 @@ const goalsGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
   gap: 32,
+  fontSize: 14.5,
 };
 const chatTopStyle: CSSProperties = {
   display: "flex",
@@ -1037,57 +1056,51 @@ const chatTopStyle: CSSProperties = {
 };
 const backLinkStyle: CSSProperties = {
   color: COLORS.body,
-  fontWeight: 800,
+  fontSize: 14,
+  fontWeight: 700,
   textDecoration: "none",
 };
 const chatTitleStyle: CSSProperties = {
   fontFamily: FONT.serif,
-  fontSize: 34,
-  lineHeight: 1.12,
-  margin: "20px 0 0",
-  fontWeight: 700,
-};
-const chatSummaryStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 18,
-  lineHeight: 1.55,
-  margin: "20px 0 26px",
-  maxWidth: 710,
+  fontSize: 26,
+  lineHeight: 1.28,
+  margin: "14px 0 0",
+  fontWeight: 500,
 };
 const chatDividerStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
   display: "flex",
   flexDirection: "column",
-  gap: 16,
-  padding: "31px 0",
+  gap: 14,
+  padding: "24px 0",
 };
 const messageRowStyle: CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
-  gap: 12,
+  gap: 10,
 };
 const assistantBubbleStyle: CSSProperties = {
   color: COLORS.body,
-  fontSize: 17,
-  lineHeight: 1.55,
-  maxWidth: 640,
+  fontSize: 15,
+  lineHeight: 1.6,
+  maxWidth: "86%",
   whiteSpace: "pre-wrap",
 };
 const merchantBubbleStyle: CSSProperties = {
   background: COLORS.navy,
-  borderRadius: 12,
+  borderRadius: 18,
   color: "#fff",
   fontSize: 15,
-  lineHeight: 1.45,
-  maxWidth: 520,
-  padding: "12px 15px",
+  lineHeight: 1.6,
+  maxWidth: "76%",
+  padding: "11px 16px",
   whiteSpace: "pre-wrap",
 };
 const thinkingStyle: CSSProperties = {
   color: COLORS.meta,
-  fontSize: 17,
-  lineHeight: 1.55,
+  fontSize: 15,
+  lineHeight: 1.6,
   paddingTop: 1,
 };
 const chatComposerWrapStyle: CSSProperties = {
@@ -1118,7 +1131,7 @@ const composerStyle: CSSProperties = {
   borderRadius: 12,
   display: "flex",
   gap: 10,
-  padding: 10,
+  padding: "8px 8px 8px 16px",
   boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
 };
 const composerInputStyle: CSSProperties = {
@@ -1127,10 +1140,10 @@ const composerInputStyle: CSSProperties = {
   color: COLORS.ink,
   flex: 1,
   fontFamily: FONT.sans,
-  fontSize: 16,
+  fontSize: 14.5,
   minWidth: 0,
   outline: "none",
-  padding: "12px 14px",
+  padding: 0,
 };
 const sendButtonStyle: CSSProperties = {
   background: COLORS.navy,
@@ -1139,9 +1152,9 @@ const sendButtonStyle: CSSProperties = {
   color: "#fff",
   cursor: "pointer",
   fontFamily: FONT.sans,
-  fontSize: 15,
-  fontWeight: 800,
-  padding: "12px 20px",
+  fontSize: 14,
+  fontWeight: 700,
+  padding: "10px 18px",
 };
 const decisionRowStyle: CSSProperties = {
   alignItems: "center",
@@ -1152,7 +1165,7 @@ const decisionRowStyle: CSSProperties = {
 const approveButtonStyle: CSSProperties = {
   ...sendButtonStyle,
   borderRadius: 8,
-  padding: "14px 24px",
+  padding: "12px 22px",
 };
 const quietDecisionButtonStyle: CSSProperties = {
   background: "transparent",
@@ -1160,7 +1173,7 @@ const quietDecisionButtonStyle: CSSProperties = {
   color: COLORS.muted,
   cursor: "pointer",
   fontFamily: FONT.sans,
-  fontSize: 15,
-  fontWeight: 800,
-  padding: "14px 0",
+  fontSize: 14,
+  fontWeight: 700,
+  padding: "12px 0",
 };
