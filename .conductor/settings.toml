@@ -1,0 +1,19 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+run_mode = "concurrent"
+
+[scripts.run.dev]
+available_in = [ "local" ]
+command = "cd apps/shopify && npm run dev"
+default = true
+icon = "play"
+
+[scripts.run.dev_web]
+available_in = [ "local" ]
+command = "cd apps/shopify && npm run dev:web"
+icon = "monitor"
+
+[scripts.run.preflight]
+command = "bash scripts/preflight.sh"
+icon = "check"

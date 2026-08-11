@@ -57,7 +57,9 @@ npm run dev
 
 Use `npm run dev:split-worker` when debugging the app server and Shopify import worker separately.
 
-Before every push, run the one gate (and again after any rebase):
+For local visual iteration, keep `npm run dev` running and use hot reload; do not run the full suite just to inspect each UI or backend edit. Use focused checks while coding when they are useful.
+
+Before every push or merge candidate, run the one gate (and again after any rebase):
 
 ```bash
 bash scripts/preflight.sh        # prisma generate → typecheck → lint → test → build

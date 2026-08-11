@@ -3,7 +3,9 @@
 
 # Local context and generated workspace files
 .context/
-.conductor/
+.conductor/*
+!.conductor/
+!.conductor/settings.toml
 
 # Dependencies
 node_modules/
