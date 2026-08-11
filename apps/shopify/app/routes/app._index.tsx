@@ -140,9 +140,12 @@ import {
 } from "../lib/merchant-memory/service.server.js";
 import {
   CONVERSATION_TOPICS,
+  addActionChatNote,
+  getActionChatThread,
   getDailyChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
+  sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
 import {
@@ -286,7 +289,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionRunId,
       executed: result.executed,
     });
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
   }
   if (intent === "action.reject") {
     // Split reason → Observe→Learn: the category chip + an optional free-text note,
@@ -312,7 +315,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (result.status === "rejected")
       actionLog.info("merchant declined suggested action", declineMeta);
     else actionLog.warn("merchant decline did not apply", declineMeta);
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
   }
   if (intent === "action.edit") {
     // Edit the suggestion's magnitude: re-propose at the merchant's markdown %.
@@ -335,6 +338,91 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (result.status === "revised")
       actionLog.info("merchant revised suggested action", editMeta);
     else actionLog.warn("merchant revise did not apply", editMeta);
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.revise_scope") {
+    const actionRunId = String(formData.get("actionRunId") ?? "");
+    const recommendationId = String(formData.get("recommendationId") ?? "") || null;
+    const maxProducts = Number(formData.get("maxProducts"));
+    const result = await reviseAction(prisma, {
+      merchantId: merchant.id,
+      actionRunId,
+      params: Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : undefined,
+    });
+    const revisedRunId =
+      result.status === "revised" && result.execution?.runId
+        ? String(result.execution.runId)
+        : actionRunId;
+    if (result.status === "revised") {
+      await addActionChatNote(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionRunId: revisedRunId,
+        recommendationId,
+        note: "I narrowed the typed preview to one product and re-checked the safety floor. Review the updated move before approving it.",
+      });
+      actionLog.info("merchant revised action scope", {
+        merchantId: merchant.id,
+        actionRunId,
+        revisedRunId,
+        maxProducts: Number.isInteger(maxProducts) ? maxProducts : null,
+      });
+    } else {
+      actionLog.warn("merchant action scope revision did not apply", {
+        merchantId: merchant.id,
+        actionRunId,
+        status: result.status,
+      });
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.defer") {
+    const actionRunId = String(formData.get("actionRunId") ?? "");
+    const reasonCategory = String(formData.get("reason") ?? "defer").trim() || "defer";
+    const result = await rejectAction(prisma, {
+      merchantId: merchant.id,
+      actionRunId,
+      reasonCategory,
+      reasonText: String(formData.get("reasonText") ?? "").trim().slice(0, 140) || undefined,
+    });
+    if (result.status === "rejected")
+      actionLog.info("merchant deferred suggested action", {
+        merchantId: merchant.id,
+        actionRunId,
+        reasonCategory,
+      });
+    else
+      actionLog.warn("merchant defer did not apply", {
+        merchantId: merchant.id,
+        actionRunId,
+        reasonCategory,
+        status: result.status,
+      });
+    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
+  }
+  if (intent === "action.chat.message") {
+    const actionRunId = String(formData.get("actionRunId") ?? "") || null;
+    const recommendationId = String(formData.get("recommendationId") ?? "") || null;
+    const result = await sendActionChatMessage(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionRunId,
+      recommendationId,
+      message: String(formData.get("message") ?? ""),
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: result.error ?? "That message could not be sent.",
+        intent,
+      };
+    }
+    actionLog.info("merchant sent action chat message", {
+      merchantId: merchant.id,
+      actionRunId,
+      recommendationId,
+    });
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
   if (intent === "action.set_mode") {
@@ -1089,6 +1177,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         currency: metrics?.currency || "GBP",
       });
+      const actionChatId = url.searchParams.get("actionChat");
+      const primaryRecommendationId =
+        suggestedAction?.sourceRecommendation?.id ??
+        plan?.selectedRun?.recommendation?.id ??
+        executedActions.find((action) => action.sourceRecommendation?.id)?.sourceRecommendation?.id ??
+        null;
+      const primaryActionRunId =
+        suggestedAction?.actionRunId ?? executedActions[0]?.actionRunId ?? null;
+      const actionChatThread = actionChatId
+        ? await getActionChatThread(prisma, {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            recommendationId: actionChatId === primaryRecommendationId ? actionChatId : null,
+            actionRunId: actionChatId === primaryRecommendationId ? primaryActionRunId : actionChatId,
+          })
+        : { topic: null, messages: [] };
       // 13a home extras: the real in-app chat thread (thin read — NO memory writes
       // on the home), the "New in Jefe" changelog, and the email-brief preference.
       // ensureShopContactEmail best-effort populates Shop.contactEmail from
@@ -1138,6 +1242,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         actionModes,
         channels: channelConnections,
         conversation,
+        actionChatId,
+        actionChatThread,
         changelog,
         emailBrief,
         openQuestions: openQuestions.map((q) => ({
@@ -1433,6 +1539,8 @@ export default function AppIndex() {
         actionModes={data.actionModes}
         channels={data.channels}
         conversation={data.conversation}
+        actionChatId={data.actionChatId}
+        actionChatThread={data.actionChatThread}
         changelog={data.changelog}
         emailBrief={data.emailBrief}
         openQuestions={data.openQuestions}
@@ -1680,18 +1788,13 @@ function ConnectStep({
 
       <div className="JefeConnectAction">
         {canContinue ? (
-          <BlockStack gap="200" inlineAlign="center">
-            <Text as="p" tone="subdued" alignment="center">
-              I&apos;ve got enough information to start understanding how your business works.
-            </Text>
-            <Button
-              onClick={() => navigate(continueTarget)}
-              variant="primary"
-              loading={continuingToInsights}
-            >
-              See what I found →
-            </Button>
-          </BlockStack>
+          <Button
+            onClick={() => navigate(continueTarget)}
+            variant="primary"
+            loading={continuingToInsights}
+          >
+            Continue to Insights
+          </Button>
         ) : !connected ? (
           <Button url="/auth/login" variant="primary">
             Connect Shopify
@@ -2377,33 +2480,28 @@ function InsightsStep({
         ))}
       </div>
 
-      <BlockStack gap="300" inlineAlign="center">
-        <Text as="p" tone="subdued" alignment="center">
-          I&apos;ve got a picture of how the business works. Now let&apos;s decide where you want to take it.
-        </Text>
-        <InlineStack gap="300" align="center">
-          <Button
-            onClick={() =>
-              navigate(
-                appPathFromSearch(location.search, {
-                  step: "connect",
-                  channelProvider: null,
-                  channelMode: null,
-                  channelNotice: null,
-                }),
-              )
-            }
-          >
-            Back
+      <InlineStack gap="300" align="center">
+        <Button
+          onClick={() =>
+            navigate(
+              appPathFromSearch(location.search, {
+                step: "connect",
+                channelProvider: null,
+                channelMode: null,
+                channelNotice: null,
+              }),
+            )
+          }
+        >
+          Back
+        </Button>
+        <Form method="post">
+          <input type="hidden" name="intent" value="insights.finish" />
+          <Button submit variant="primary">
+            Continue to Goals
           </Button>
-          <Form method="post">
-            <input type="hidden" name="intent" value="insights.finish" />
-            <Button submit variant="primary">
-              Set my goals →
-            </Button>
-          </Form>
-        </InlineStack>
-      </BlockStack>
+        </Form>
+      </InlineStack>
     </OnboardingStepScene>
   );
 }
@@ -2680,7 +2778,7 @@ function GoalsStep({
       <InsightStatusScene
         step="goals"
         title="I don't have enough supported memory to propose useful goals yet."
-        detail="I won't make up a direction until there is enough Merchant Memory to work from."
+        detail="I won't make up a plan until there is enough Merchant Memory to work from."
         action={
           <InlineStack gap="300" align="center">
             <Button
@@ -2776,7 +2874,7 @@ function GoalsStep({
           <GoalGuideHeader
             eyebrow="GOALS SET"
             title="Here's the roadmap we agreed."
-            detail="Got it. I'll use these goals to decide what deserves your attention and what I think you should do next."
+            detail="Three checkpoints, confirmed one at a time. Jefe will plan the first move next."
           />
           <div className="JefeGoalGrid">
             {goalItems.map((goal) => (
@@ -2803,7 +2901,7 @@ function GoalsStep({
             <Form method="post">
               <input type="hidden" name="intent" value="goals.finish" />
               <Button submit variant="primary">
-                Choose my first move →
+                Continue to Plan →
               </Button>
             </Form>
           </InlineStack>
@@ -3077,15 +3175,6 @@ function PlanStep({
   const currentRun = plan?.currentRun;
   const selectedRun = plan?.selectedRun;
   const recommendation = selectedRun?.recommendation;
-  const primaryGoalTitle = recommendation
-    ? plan?.goals?.find(
-        (goal: { id: string }) => goal.id === recommendation.primaryGoalId,
-      )?.title ??
-      plan?.goals?.find(
-        (goal: { horizon: string }) => goal.horizon === "threeMonths",
-      )?.title ??
-      "The goal we agreed"
-    : null;
   const messages: OnboardingChatMessage[] = (conversation?.messages ?? [])
     .filter(
       (item) =>
@@ -3164,7 +3253,7 @@ function PlanStep({
       <InsightStatusScene
         step="plan"
         title="I'm choosing the most useful first move."
-        detail="This page will update when the First Move is ready."
+        detail="This page will update when the Plan is ready."
         skeleton
         action={
           <Button
@@ -3194,7 +3283,7 @@ function PlanStep({
       <InsightStatusScene
         step="plan"
         title="I don't have enough agreed direction to choose a useful first move yet."
-        detail="Review the proposed goals first, then I can turn them into a practical first move."
+        detail="Review the proposed goals first, then I can turn them into a practical Plan."
         action={
           <InlineStack gap="300" align="center">
             <Button
@@ -3213,7 +3302,7 @@ function PlanStep({
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
               <Button submit variant="primary">
-                Retry First Move
+                Retry Plan
               </Button>
             </Form>
           </InlineStack>
@@ -3250,7 +3339,7 @@ function PlanStep({
             <Form method="post">
               <input type="hidden" name="intent" value="plan.retry" />
               <Button submit variant="primary">
-                Retry First Move
+                Retry Plan
               </Button>
             </Form>
           </InlineStack>
@@ -3264,7 +3353,7 @@ function PlanStep({
       {plan?.stale ? (
         <Banner tone="warning">
           <Text as="p">
-            This First Move is from the previous valid memory set. I&apos;ll replace it
+            This Plan is from the previous valid memory set. I&apos;ll replace it
             after the latest generation succeeds.
           </Text>
         </Banner>
@@ -3276,7 +3365,6 @@ function PlanStep({
       {recommendation ? (
         <PlanRecommendationCard
           recommendation={recommendation}
-          goalTitle={primaryGoalTitle}
           evidence={evidence}
           updating={refinementRegenerating}
         />
@@ -3291,8 +3379,8 @@ function PlanStep({
           hiddenFields={[
             { name: "recommendationId", value: recommendation.id },
           ]}
-          label="Update First Move"
-          placeholder="Update your First Move by chatting with Jefe..."
+          label="Update Plan"
+          placeholder="Update your Plan by chatting with Jefe..."
           value={message}
           onChange={setMessage}
           onSubmit={() => {
@@ -3328,7 +3416,7 @@ function PlanStep({
               value={recommendation.id}
             />
             <Button submit variant="primary">
-              Start with this →
+              Accept Plan and open Jefe
             </Button>
           </Form>
         ) : null}
@@ -3339,7 +3427,6 @@ function PlanStep({
 
 function PlanRecommendationCard({
   recommendation,
-  goalTitle,
   evidence,
   updating,
 }: {
@@ -3348,7 +3435,6 @@ function PlanRecommendationCard({
       Awaited<ReturnType<typeof getMerchantPlanExperience>>["selectedRun"]
     >["recommendation"]
   >;
-  goalTitle: string | null;
   evidence: Awaited<ReturnType<typeof getInsightEvidenceView>>;
   updating: boolean;
 }) {
@@ -3356,11 +3442,6 @@ function PlanRecommendationCard({
   const steps = Array.isArray(recommendation.executionSteps)
     ? recommendation.executionSteps
     : [];
-  const learnedSignal =
-    recommendation.whyNow ||
-    evidence.find((item) => item.evidenceSummary)?.evidenceSummary ||
-    evidence[0]?.value ||
-    recommendation.whyThisAction;
   return (
     <div className={`JefePlanCard ${updating ? "is-updating" : ""}`}>
       <BlockStack gap="400">
@@ -3398,39 +3479,6 @@ function PlanRecommendationCard({
             </Text>
             <Text as="p">{recommendation.startToday}</Text>
           </BlockStack>
-        </div>
-
-        <div className="JefePlanReasoningChain">
-          <div className="JefePlanReasoningItem">
-            <Text as="p" fontWeight="bold">
-              Your goal
-            </Text>
-            <Text as="p" tone="subdued">
-              {goalTitle ?? "The goal we agreed"}
-            </Text>
-          </div>
-          <div className="JefePlanReasoningArrow" aria-hidden="true">
-            ↓
-          </div>
-          <div className="JefePlanReasoningItem">
-            <Text as="p" fontWeight="bold">
-              What I&apos;ve learned
-            </Text>
-            <Text as="p" tone="subdued">
-              {learnedSignal}
-            </Text>
-          </div>
-          <div className="JefePlanReasoningArrow" aria-hidden="true">
-            ↓
-          </div>
-          <div className="JefePlanReasoningItem">
-            <Text as="p" fontWeight="bold">
-              My recommendation
-            </Text>
-            <Text as="p" tone="subdued">
-              {recommendation.title}
-            </Text>
-          </div>
         </div>
 
         <BlockStack gap="200">
@@ -4890,7 +4938,7 @@ function StatusBadge({ status }: { status: string }) {
 function onboardingStepLabel(step: (typeof ONBOARDING_STEPS)[number]) {
   if (step === "connect") return "Connect";
   if (step === "goals") return "Goals";
-  if (step === "plan") return "First Move";
+  if (step === "plan") return "Plan";
   return "Insights";
 }
 
@@ -4984,7 +5032,7 @@ function merchantGoalErrorCopy(
   run: { safeErrorCode?: string | null; lastError?: string | null } | null,
 ) {
   if (run?.safeErrorCode === "llm_disabled") {
-    return "Goal generation is currently disabled, so I cannot create a trustworthy first direction yet.";
+    return "Goal generation is currently disabled, so I cannot create a trustworthy first plan yet.";
   }
   if (run?.safeErrorCode === "invalid_model_output") {
     return "The model response did not pass Jefe's grounding checks, so I rejected it.";
@@ -5003,7 +5051,7 @@ function merchantGoalErrorCopy(
 
 function merchantPlanErrorCopy(run: { safeErrorCode?: string | null } | null) {
   if (run?.safeErrorCode === "llm_disabled") {
-    return "First Move generation is currently disabled, so I cannot choose a trustworthy first move yet.";
+    return "Plan generation is currently disabled, so I cannot choose a trustworthy first move yet.";
   }
   if (run?.safeErrorCode === "invalid_model_output") {
     return "The model response did not pass Jefe's grounding checks, so I rejected it.";
@@ -5011,7 +5059,7 @@ function merchantPlanErrorCopy(run: { safeErrorCode?: string | null } | null) {
   if (run?.safeErrorCode === "llm_timeout") {
     return "The model took too long to respond. You can retry without losing current setup progress.";
   }
-  return "The First Move job failed safely. I have not shown any untrusted or sample recommendation.";
+  return "The Plan job failed safely. I have not shown any untrusted or sample recommendation.";
 }
 
 function planConfidenceLabel(confidence: string) {
@@ -5435,7 +5483,7 @@ function onboardingTransitionCopy(destination: OnboardingNavigationDestination) 
       status: "Loading Goals...",
     },
     plan: {
-      status: "Loading First Move...",
+      status: "Loading Plan...",
     },
   };
 

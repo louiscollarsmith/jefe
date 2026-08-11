@@ -45,6 +45,7 @@ import {
 } from "../app/lib/merchant-plan/constants.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
+const TEST_BACKFILL_JOB_HOLD_UNTIL = new Date("2999-01-01T00:00:00.000Z");
 const silentLogger = {
   info() {},
   warn() {},
@@ -448,7 +449,7 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
   });
   const suffix = uniqueSuffix();
   const shopDomain = `jobs-${suffix}.myshopify.com`;
-  const sessionId = `offline-${suffix}`;
+  const sessionId = `offline_${shopDomain}`;
 
   try {
     await prisma.shop.deleteMany({
@@ -488,21 +489,19 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       select: { id: true },
     });
 
-    const processedJobs = [
-      await processNextBackfillJobEventually(prisma, {
-        logger: silentLogger,
-        fetchImpl: createEvidenceBackfillFetch(suffix),
-        shopId: queuedShop.id,
-        loadOfflineToken: async () => "test-token",
-      }),
-    ];
-    await prisma.backfillJob.updateMany({
-      where: { shopId: queuedShop.id, status: "queued" },
-      data: { runAfter: new Date(0) },
-    });
-    for (let i = 0; i < 8; i += 1) {
+    const processedJobs = [];
+    for (const jobType of [
+      "shop_backfill_start",
+      "products_backfill",
+      "inventory_backfill",
+      "orders_backfill_365d",
+      "backfill_delta_sync",
+      "backfill_finalize",
+      MEMORY_REFRESH_JOB_TYPE,
+    ]) {
       processedJobs.push(
         await processNextBackfillJobEventually(prisma, {
+          jobType,
           logger: silentLogger,
           fetchImpl: createEvidenceBackfillFetch(suffix),
           shopId: queuedShop.id,
@@ -528,11 +527,16 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
     const jobsAtAssertion = await prisma.backfillJob.findMany({
       where: { shopId: shop.id },
       orderBy: [{ priority: "asc" }, { updatedAt: "asc" }],
-      select: { jobType: true, status: true, priority: true },
+      select: {
+        jobType: true,
+        status: true,
+        priority: true,
+        lastError: true,
+        resultJson: true,
+      },
     });
     const jobStateMessage = JSON.stringify(jobsAtAssertion);
 
-    const processedTypes = processedJobs.map((job) => job?.jobType);
     for (const jobType of [
       "shop_backfill_start",
       "products_backfill",
@@ -542,12 +546,16 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       "backfill_finalize",
       "merchant_memory_rebuild",
     ]) {
-      assert.ok(processedTypes.includes(jobType), jobStateMessage);
+      assert.equal(
+        jobsAtAssertion.find((job) => job.jobType === jobType)?.status,
+        "succeeded",
+        jobStateMessage,
+      );
     }
     assert.equal(
-      processedJobs.find((job) => job?.jobType === "merchant_memory_rebuild")
-        ?.status,
-      "succeeded",
+      jobsAtAssertion.some((job) => job.status === "failed"),
+      false,
+      jobStateMessage,
     );
     assert.deepEqual(
       jobsAtAssertion
@@ -632,6 +640,7 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: shop.id,
+      jobType: "shop_backfill_start",
       loadOfflineToken: async () => "test-token",
     });
     const queuedCommerceJobsAfterGuardedStart = await prisma.backfillJob.count({
@@ -722,7 +731,7 @@ test("routine OAuth does not reset an in-flight install backfill", async (t) => 
   });
   const suffix = uniqueSuffix();
   const shopDomain = `oauth-inflight-${suffix}.myshopify.com`;
-  const sessionId = `offline-${suffix}`;
+  const sessionId = `offline_${shopDomain}`;
 
   try {
     await prisma.shop.deleteMany({
@@ -766,6 +775,7 @@ test("routine OAuth does not reset an in-flight install backfill", async (t) => 
       logger: silentLogger,
       fetchImpl: createEvidenceBackfillFetch(suffix),
       shopId: shop.id,
+      jobType: "shop_backfill_start",
       loadOfflineToken: async () => "test-token",
     });
     assert.equal(startJob?.jobType, "shop_backfill_start");
@@ -780,8 +790,8 @@ test("routine OAuth does not reset an in-flight install backfill", async (t) => 
       "newly spawned child jobs should be immediately eligible without a 1970 runAfter",
     );
 
-    const originalRunAfter = new Date("2026-08-07T08:47:03.805Z");
-    const originalStartedAt = new Date("2026-08-07T08:47:03.849Z");
+    const originalStartedAt = new Date();
+    const originalRunAfter = new Date(originalStartedAt.getTime() - 1_000);
     await prisma.backfillJob.update({
       where: {
         shopId_jobType: { shopId: shop.id, jobType: "orders_backfill_365d" },
@@ -855,20 +865,23 @@ test("stale running evidence backfill jobs are recovered", async (t) => {
       shopDomain,
       scopes: ["read_products"],
     });
+    const now = new Date();
+    const staleForExplicitCall = new Date(now.getTime() - 1_000);
     await prisma.backfillJob.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
         jobType: "products_backfill",
         status: "running",
-        startedAt: new Date("2026-07-13T08:00:00Z"),
+        startedAt: staleForExplicitCall,
       },
     });
 
     const result = await recoverStaleRunningBackfillJobs(prisma, {
-      now: new Date("2026-07-13T09:00:00Z"),
-      timeoutMs: 15 * 60 * 1000,
+      now,
+      timeoutMs: 0,
       logger: silentLogger,
+      shopId: shop.id,
     });
     const job = await prisma.backfillJob.findFirstOrThrow({
       where: { shopId: shop.id },
@@ -911,6 +924,7 @@ test("completed full memory rebuild queues Insights; downstream generation casca
     const result = await processNextBackfillJobEventually(prisma, {
       logger: silentLogger,
       shopId: fixture.shop.id,
+      jobType: MEMORY_REFRESH_JOB_TYPE,
     });
 
     const insightsJob = await prisma.backfillJob.findFirst({
@@ -958,6 +972,7 @@ test("completed full memory rebuild does not queue Plan or Goals before onboardi
     const result = await processNextBackfillJobEventually(prisma, {
       logger: silentLogger,
       shopId: fixture.shop.id,
+      jobType: MEMORY_REFRESH_JOB_TYPE,
     });
 
     const planJob = await prisma.backfillJob.findFirst({
@@ -1260,10 +1275,14 @@ async function processNextBackfillJobEventually(prisma, options) {
     if (options?.shopId) {
       await prisma.backfillJob.updateMany({
         where: { shopId: options.shopId, status: "queued" },
-        data: { runAfter: new Date(0) },
+        data: { runAfter: TEST_BACKFILL_JOB_HOLD_UNTIL },
       });
     }
-    const result = await processNextBackfillJob(prisma, options);
+    const result = await processNextBackfillJob(prisma, {
+      ...options,
+      ignoreRunAfter: true,
+      holdQueuedJobsUntil: TEST_BACKFILL_JOB_HOLD_UNTIL,
+    });
     if (result) return result;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }

@@ -1,5 +1,5 @@
-import type { MetaFunction } from "react-router";
-import { AppHome13a } from "../components/app-home/AppHome13a";
+import { useLocation, type MetaFunction } from "react-router";
+import { DailyHome } from "../components/daily-home";
 import { SAMPLE_APP_HOME } from "../components/app-home/sample";
 import { R } from "../components/app-home/register";
 
@@ -7,8 +7,7 @@ import { R } from "../components/app-home/register";
 // like /cinematic and /daily. It renders the REAL production components (AppHome13a +
 // sections + primitives) with illustrative sample data, so what you review here is the
 // actual component output, not a throwaway mock. Public (no auth, no App Bridge), never
-// shown to a merchant; the sample "Everdew" data is the handoff's, chosen to prove the
-// register on a THIN store.
+// shown to a merchant; the sample "Everdew" data is illustrative.
 //
 // It's a normal hydrated route so section-switching works and the wired <Form> controls
 // have router context. The no-op action below keeps the preview's mode-picker POSTs inert
@@ -26,6 +25,8 @@ export async function action() {
 }
 
 export default function AppHome13aPreview() {
+  const location = useLocation();
+  const actionChatId = new URLSearchParams(location.search).get("actionChat");
   return (
     <div style={{ minHeight: "100vh", background: "#e8e4dd" }}>
       <div
@@ -40,10 +41,16 @@ export default function AppHome13aPreview() {
           borderBottom: `1px solid ${R.frame}`,
         }}
       >
-        Design preview · /app-home-13a · 13a visual register · illustrative “Everdew” data — not merchant-facing, forms inert
+        Design preview · /app-home-13a · Home Brief register · illustrative Everdew data - not merchant-facing
       </div>
       <div style={{ maxWidth: 1180, margin: "16px auto", background: R.surface, border: `1px solid ${R.frame}`, borderRadius: 4, overflow: "hidden" }}>
-        <AppHome13a {...SAMPLE_APP_HOME} />
+        <DailyHome
+          {...SAMPLE_APP_HOME}
+          insights={[]}
+          channels={[]}
+          actionChatId={actionChatId}
+          actionChatThread={{ topic: actionChatId ? `action:${actionChatId}` : null, messages: [] }}
+        />
       </div>
     </div>
   );

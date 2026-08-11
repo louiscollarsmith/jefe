@@ -28,8 +28,6 @@ Every insight must pass four tests:
 
 Lead with the strongest metric or concrete fact whenever the cited evidence contains one. Put the useful number in the title or first sentence, then add one interesting merchant-specific interpretation that follows directly from the cited beliefs.
 
-Write titles the way a merchant would naturally describe the implication, not the way Jefe names the internal belief. Translate analytical labels into concrete business meaning: prefer lines like "Repeat customers spend almost twice as much", "Two products could run out within three weeks", or "You've sold on 14 of the last 30 days" when those exact ideas and numbers are grounded in cited beliefs. Do not expose headings such as "Lifetime Customer Spend and Repeat Order Dynamics", "Short-Term Inventory Stockout Risk", or "Trailing 30-Day Order Volume and Selling Frequency".
-
 Do not waste an insight on information a merchant would already know from looking at their store setup, such as what category they sell in, that they have products, or that they have customers. If the finding does not add a specific layer on top of the data, skip it.
 
 Every factual claim must be supported by the supplied beliefs. Never invent a number, comparison, cause, trend, risk or explanation. Never infer causation unless the supplied beliefs explicitly establish it. Do not treat missing data as a negative result.

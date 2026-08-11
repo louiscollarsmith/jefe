@@ -1,8 +1,18 @@
 // @ts-check
 
+import { Type } from "@google/genai";
 import {
   createLlmProvider,
 } from "../llm/provider.server.js";
+import { redact } from "../observability/redact.server.js";
+import { getMerchantContextForQuestion } from "./context-retriever.server.js";
+import {
+  commerceCalculationCatalogForPrompt,
+  calculationScopeFromActionContext,
+  executeCommerceCalculations,
+  heuristicCommerceCalculationRequests,
+  shouldPlanCommerceCalculations,
+} from "./commerce-calculations.server.js";
 import {
   STRUCTURED_OPERATION_SCHEMA,
   parseAndValidateStructuredOperation,
@@ -38,7 +48,102 @@ export const CONVERSATION_TOPICS = Object.freeze({
   memory: "memory",
   onboardingGoals: "onboarding_goals",
   onboardingPlan: "onboarding_plan",
+  action: "action",
 });
+
+const ACTION_CHAT_REPLY_SCHEMA = {
+  type: Type.OBJECT,
+  required: ["reply"],
+  properties: {
+    reply: { type: Type.STRING },
+    confidence: { type: Type.NUMBER, nullable: true },
+  },
+};
+
+const COMMERCE_CALCULATION_PLAN_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    requests: {
+      type: Type.ARRAY,
+      nullable: true,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING, nullable: true },
+          kind: { type: Type.STRING },
+          measure: { type: Type.STRING },
+          dimensions: {
+            type: Type.ARRAY,
+            nullable: true,
+            items: { type: Type.STRING },
+          },
+          filters: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              scope: { type: Type.STRING, nullable: true },
+              productIds: {
+                type: Type.ARRAY,
+                nullable: true,
+                items: { type: Type.STRING },
+              },
+              variantIds: {
+                type: Type.ARRAY,
+                nullable: true,
+                items: { type: Type.STRING },
+              },
+              vendor: { type: Type.STRING, nullable: true },
+              productType: { type: Type.STRING, nullable: true },
+              sku: { type: Type.STRING, nullable: true },
+              channel: { type: Type.STRING, nullable: true },
+              country: { type: Type.STRING, nullable: true },
+              actionRunId: { type: Type.STRING, nullable: true },
+              statuses: {
+                type: Type.ARRAY,
+                nullable: true,
+                items: { type: Type.STRING },
+              },
+            },
+          },
+          window: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              days: { type: Type.NUMBER, nullable: true },
+              from: { type: Type.STRING, nullable: true },
+              to: { type: Type.STRING, nullable: true },
+              label: { type: Type.STRING, nullable: true },
+            },
+          },
+          comparison: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              windows: {
+                type: Type.ARRAY,
+                nullable: true,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    days: { type: Type.NUMBER, nullable: true },
+                    from: { type: Type.STRING, nullable: true },
+                    to: { type: Type.STRING, nullable: true },
+                    label: { type: Type.STRING, nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          topN: { type: Type.NUMBER, nullable: true },
+          horizonDays: { type: Type.NUMBER, nullable: true },
+        },
+      },
+    },
+  },
+};
+
+const ACTION_CHAT_LATEST_MESSAGE_MAX = 900;
+const ACTION_CHAT_THREAD_MESSAGE_MAX = 600;
 
 const INITIAL_OPEN_QUESTIONS = [
   {
@@ -229,6 +334,527 @@ export async function getDailyChatThread(prisma, input) {
     take: input.take ?? 20,
   });
   return { messages: rows.reverse().map(serializeMessage) };
+}
+
+/**
+ * @param {{ recommendationId?: string | null; actionRunId?: string | null }} input
+ */
+export function actionConversationTopic(input) {
+  const stableId =
+    typeof input.recommendationId === "string" && input.recommendationId.trim()
+      ? input.recommendationId.trim()
+      : typeof input.actionRunId === "string" && input.actionRunId.trim()
+        ? input.actionRunId.trim()
+        : "unknown";
+  return `${CONVERSATION_TOPICS.action}:${stableId}`;
+}
+
+/**
+ * Read-only action-scoped chat thread. Does not create memory questions or the
+ * global memory conversation.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; take?: number }} input
+ */
+export async function getActionChatThread(prisma, input) {
+  const topic = actionConversationTopic(input);
+  const conversation = await prisma.merchantMemoryConversation.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? undefined,
+      topic,
+      status: "active",
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!conversation) return { topic, messages: [] };
+  const rows = await prisma.merchantMemoryConversationMessage.findMany({
+    where: { conversationId: conversation.id, merchantId: input.merchantId },
+    orderBy: { createdAt: "asc" },
+    take: input.take ?? 40,
+  });
+  return { topic, messages: rows.map(serializeMessage) };
+}
+
+/**
+ * Persist a merchant message against one action and answer with an LLM over scoped
+ * action context. This keeps the action chat scoped to the move; it does not
+ * interpret the message into Merchant Memory and does not write to Shopify.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function sendActionChatMessage(prisma, input) {
+  const content = input.message.trim();
+  if (!content) return { ok: false, error: "Message is required." };
+  const topic = actionConversationTopic(input);
+  const conversation = await getOrCreateConversation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    topic,
+  });
+  await prisma.merchantMemoryConversationMessage.create({
+    data: {
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      role: "merchant",
+      content,
+      safeSummary: summarizeMerchantStatement(content),
+    },
+  });
+  const [actionContext, recentMessages] = await Promise.all([
+    getMerchantContextForQuestion(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionRunId: input.actionRunId,
+      recommendationId: input.recommendationId,
+      message: content,
+      logger: input.logger,
+    }),
+    listRecentActionMessages(prisma, {
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      take: 10,
+    }),
+  ]);
+  await updateConversationContext(prisma, conversation, {
+    currentActionRunId: actionContext.actionRunId ?? null,
+    actionRunId: actionContext.actionRunId ?? null,
+    recommendationId: actionContext.recommendationId ?? null,
+    planEvidenceSnapshotId:
+      actionContext.planEvidenceAtRecommendationTime?.snapshotId ?? null,
+  });
+  const reply = await generateActionChatReply({
+    message: content,
+    actionContext,
+    recentMessages,
+    llmProvider: input.llmProvider,
+    logger: input.logger,
+    usage: {
+      prisma,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      feature: "action_chat",
+    },
+  });
+  await createAssistantMessage(prisma, {
+    conversation,
+    content: reply.content,
+    operation: {
+      operationType: "action_chat_reply",
+      reason: reply.source === "llm" ? "LLM action-scoped reply." : "Fallback action-scoped reply.",
+      actionRunId: actionContext.actionRunId ?? null,
+      recommendationId: actionContext.recommendationId ?? null,
+      source: reply.source,
+    },
+    operationStatus: null,
+  });
+  return { ok: true, topic };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; note: string }} input
+ */
+export async function addActionChatNote(prisma, input) {
+  const topic = actionConversationTopic(input);
+  const conversation = await getOrCreateConversation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    topic,
+  });
+  await updateConversationContext(prisma, conversation, {
+    currentActionRunId: input.actionRunId ?? null,
+    actionRunId: input.actionRunId ?? null,
+    recommendationId: input.recommendationId ?? null,
+  });
+  await createAssistantMessage(prisma, {
+    conversation,
+    content: input.note,
+    operation: {
+      operationType: "action_chat_note",
+      reason: "Action revision note.",
+      actionRunId: input.actionRunId ?? null,
+      recommendationId: input.recommendationId ?? null,
+    },
+    operationStatus: null,
+  });
+  return { ok: true, topic };
+}
+
+/** @param {unknown} value */
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, any>} */ (value)
+    : null;
+}
+
+/** @param {unknown} value */
+function text(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+/** @param {string} value */
+function parseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ conversationId: string; merchantId: string; take?: number }} input
+ */
+async function listRecentActionMessages(prisma, input) {
+  const rows = await prisma.merchantMemoryConversationMessage.findMany({
+    where: {
+      conversationId: input.conversationId,
+      merchantId: input.merchantId,
+    },
+    orderBy: { createdAt: "desc" },
+    take: input.take ?? 10,
+  });
+  return rows.reverse().map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
+/**
+ * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
+ */
+async function generateActionChatReply(input) {
+  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
+  const calculationResults = await buildActionChatCalculationResults({
+    prisma: input.usage?.prisma,
+    merchantId: input.usage?.merchantId ?? null,
+    shopId: input.usage?.shopId ?? null,
+    message: input.message,
+    actionContext: input.actionContext,
+    provider: provider ?? undefined,
+    logger: input.logger,
+  });
+  const fallback = {
+    source: "fallback",
+    content: buildActionChatReply(input.message, input.actionContext, calculationResults),
+  };
+  if (!provider?.enabled || !provider.generateStructuredJson) return fallback;
+
+  try {
+    const result = await provider.generateStructuredJson({
+      systemPrompt: buildActionChatSystemPrompt(),
+      prompt: buildActionChatPrompt({ ...input, calculationResults }),
+      schema: ACTION_CHAT_REPLY_SCHEMA,
+      maxOutputTokens: 700,
+    });
+    const reply = parseActionChatReply(result.json);
+    if (!reply) return fallback;
+    return { source: "llm", content: reply };
+  } catch (error) {
+    input.logger?.warn?.("LLM action chat reply unavailable; using fallback", {
+      provider: provider.provider,
+      model: provider.model,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return fallback;
+  }
+}
+
+/**
+ * @param {{ prisma?: any; merchantId?: string | null; shopId?: string | null; message: string; actionContext: any; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function buildActionChatCalculationResults(input) {
+  if (!input.prisma || !input.merchantId || !shouldPlanCommerceCalculations(input.message)) {
+    return null;
+  }
+  const requests = await planActionChatCalculationRequests(input);
+  if (!requests.length) return null;
+  const packet = await executeCommerceCalculations(input.prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    requests,
+    actionContext: input.actionContext,
+    source: "current_system",
+    logger: input.logger,
+  });
+  const okResults = packet.results.filter((result) => result.ok);
+  if (!okResults.length) {
+    input.logger?.warn?.("commerce calculation planner produced no executable results", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      requestedCount: requests.length,
+      rejectedCount: packet.results.length,
+    });
+    return null;
+  }
+  return { ...packet, results: okResults };
+}
+
+/**
+ * @param {{ prisma?: any; merchantId?: string | null; shopId?: string | null; message: string; actionContext: any; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function planActionChatCalculationRequests(input) {
+  const fallback = heuristicCommerceCalculationRequests({
+    message: input.message,
+    actionContext: input.actionContext,
+  });
+  const provider = input.provider;
+  if (!provider?.enabled || !provider.generateStructuredJson) return fallback;
+  try {
+    const result = await provider.generateStructuredJson({
+      systemPrompt: buildCommerceCalculationPlannerSystemPrompt(),
+      prompt: buildCommerceCalculationPlannerPrompt(input),
+      schema: COMMERCE_CALCULATION_PLAN_SCHEMA,
+      maxOutputTokens: 700,
+    });
+    const planned = parseCalculationPlan(result.json);
+    return planned.length ? planned : fallback;
+  } catch (error) {
+    input.logger?.warn?.("commerce calculation planner unavailable; using heuristic plan", {
+      provider: provider.provider,
+      model: provider.model,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return fallback;
+  }
+}
+
+function buildCommerceCalculationPlannerSystemPrompt() {
+  return [
+    "You select allowlisted commerce calculations for Jefe action chat.",
+    "Return at most 3 requests from the supplied catalog. Do not request SQL, raw records, customer data, credentials or full documents.",
+    "Use filters.scope=current_move when the merchant asks about this recommendation/action.",
+    "If no calculation is needed, return an empty requests array.",
+  ].join("\n");
+}
+
+/**
+ * @param {{ message: string; actionContext: any }} input
+ */
+function buildCommerceCalculationPlannerPrompt(input) {
+  const scope = calculationScopeFromActionContext(input.actionContext);
+  return JSON.stringify({
+    latestMerchantMessage: safePromptText(input.message, ACTION_CHAT_LATEST_MESSAGE_MAX),
+    commerceCalculationCatalog: commerceCalculationCatalogForPrompt(),
+    currentMoveScope: scope,
+    contextSummary: compactCalculationPlanningContext(input.actionContext),
+    responseContract: {
+      requests: "Array of allowlisted CommerceCalculationRequest objects. Empty array if not needed.",
+    },
+  });
+}
+
+/** @param {unknown} raw */
+function parseCalculationPlan(raw) {
+  const value = typeof raw === "string" ? parseJson(raw) : raw;
+  const record = asRecord(value);
+  const requests = Array.isArray(record?.requests) ? record.requests : [];
+  return requests
+    .filter((/** @type {unknown} */ request) => request && typeof request === "object")
+    .slice(0, 3);
+}
+
+function buildActionChatSystemPrompt() {
+  return [
+    "You are Jefe, an AI eCommerce manager, inside a chat scoped to exactly one proposed action.",
+    "Answer the merchant's latest message using only the supplied plan evidence at recommendation time, current system context, calculation results and recent thread.",
+    "Use planEvidenceAtRecommendationTime for why Jefe made this recommendation. Use currentSystemContext for what Jefe can see right now.",
+    "Use calculationResults for quantified answers. If a value is not in calculationResults or context, do not invent it.",
+    "If recommendation-time evidence and current context differ, clearly label the difference instead of blending the two.",
+    "Do not invent product names, counts, prices, dates, supplier details or performance results. If the context does not contain the requested detail, say that plainly and explain what Jefe can verify from the current context.",
+    "Do not approve, decline, execute, promise an external write, or create a standing Merchant Memory rule. Scope changes and approvals happen through the visible controls.",
+    "Keep replies concise, natural and specific. Use short bullets only when they make the answer easier to scan.",
+  ].join("\n");
+}
+
+/**
+ * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; calculationResults?: any }} input
+ */
+function buildActionChatPrompt(input) {
+  const recentThread = input.recentMessages.slice(-8).map((message) => ({
+    role: safePromptRole(message.role),
+    content: safePromptText(message.content, ACTION_CHAT_THREAD_MESSAGE_MAX),
+  }));
+  return JSON.stringify({
+    latestMerchantMessage: safePromptText(input.message, ACTION_CHAT_LATEST_MESSAGE_MAX),
+    planEvidenceAtRecommendationTime:
+      input.actionContext?.planEvidenceAtRecommendationTime ?? null,
+    currentSystemContext: input.actionContext?.currentSystemContext ?? null,
+    calculationResults: input.calculationResults ?? null,
+    retrieval: input.actionContext?.retrieval ?? null,
+    recentThread,
+    responseContract: {
+      reply: "Merchant-facing answer. No markdown tables. No invented data.",
+    },
+  });
+}
+
+/** @param {unknown} role */
+function safePromptRole(role) {
+  const value = typeof role === "string" ? role : "";
+  return ["merchant", "assistant", "system"].includes(value) ? value : "message";
+}
+
+/**
+ * Redact merchant-entered text before it crosses the AI boundary. The original
+ * message stays in the scoped thread; provider prompts receive only this copy.
+ * @param {unknown} value
+ * @param {number} max
+ */
+function safePromptText(value, max) {
+  const raw = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const redacted = redact(raw, { maxString: max });
+  const text = typeof redacted === "string" ? redacted : raw.slice(0, max);
+  return text
+    .replace(/\b(customer|client|buyer|recipient)\s+(?:name\s*)?[:#-]?\s+[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,3}/gi, "$1 [redacted-name]")
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, (match) =>
+      /^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[redacted-phone]",
+    )
+    .slice(0, max);
+}
+
+/** @param {unknown} raw */
+function parseActionChatReply(raw) {
+  const value = typeof raw === "string" ? parseJson(raw) : raw;
+  const reply = text(asRecord(value)?.reply);
+  if (!reply || reply.length < 2) return null;
+  return reply.slice(0, 1800);
+}
+
+/**
+ * @param {string} message
+ * @param {any} actionContext
+ * @param {any} [calculationResults]
+ */
+function buildActionChatReply(message, actionContext, calculationResults = null) {
+  const normalized = message.toLowerCase();
+  const title = actionTitleFromContext(actionContext) || "this move";
+  if (/revenue|sales|loss|lost|risk|impact|amount|dollars?|\$|£|€|worth/.test(normalized)) {
+    const lines = calculationLinesFromResults(calculationResults);
+    if (lines.length) {
+      return `Here is what I can calculate from Jefe's current commerce data:\n\n${lines.map((line) => `- ${line}`).join("\n")}`;
+    }
+  }
+  if (/why|reason|how.*got|how.*here/.test(normalized)) {
+    const why = recommendationReasonFromContext(actionContext);
+    return [
+      why.whyThis ? `Why this: ${why.whyThis}` : null,
+      why.whyNow ? `Why now: ${why.whyNow}` : null,
+      "If you want to change the scope, use one of the options below and I will re-check the typed preview before anything can be approved.",
+    ].filter(Boolean).join("\n\n");
+  }
+  if (/what|which|two|product|products|items|names/.test(normalized)) {
+    const products = productLinesFromContext(actionContext);
+    if (products.length) {
+      return `I can see these product details in Jefe's context:\n\n${products.map((line) => `- ${line}`).join("\n")}`;
+    }
+  }
+  if (/one product|just one|smaller|scope/.test(normalized)) {
+    return "Yes. Choose \"Can we do just one product?\" and I will narrow the typed preview to the highest-priority product before you approve anything.";
+  }
+  if (/discount.?free|no discount|without discount|keep.*price/.test(normalized)) {
+    return "Understood. I will treat discount-free feedback as applying to this move only, not as a standing rule. If this makes the current move wrong, choose \"Not right now\" and Jefe will hold it.";
+  }
+  if (/remind|next week|later|hold|defer/.test(normalized)) {
+    return "Understood. Use \"Remind me next week\" or \"Not right now\" and I will hold this move instead of asking you to approve it.";
+  }
+  return `I am keeping this thread about ${title}. Ask why, change the scope, or approve/hold it below.`;
+}
+
+/** @param {any} actionContext */
+function compactCalculationPlanningContext(actionContext) {
+  return allContextBlocks(actionContext).slice(0, 12).map((block) => ({
+    kind: block?.kind,
+    source: block?.source,
+    key: block?.data?.key ?? null,
+    title: block?.data?.title ?? null,
+    summary: block?.data?.summary ?? null,
+    itemCount: Array.isArray(block?.data?.items) ? block.data.items.length : null,
+  }));
+}
+
+/** @param {any} packet */
+function calculationLinesFromResults(packet) {
+  if (!packet || !Array.isArray(packet.results)) return [];
+  const lines = [];
+  for (const result of packet.results.slice(0, 3)) {
+    const value = result.totals?.atRiskRevenue ?? result.totals?.value;
+    const currency = result.currency ? `${result.currency} ` : "";
+    if (Number.isFinite(Number(value))) {
+      lines.push(`${labelForCalculation(result)}: ${currency}${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}${result.window?.label ? ` (${result.window.label})` : ""}`);
+    }
+    for (const row of Array.isArray(result.rows) ? result.rows.slice(0, 5) : []) {
+      if (!Number.isFinite(Number(row.value))) continue;
+      const label = row.title || row.label || Object.values(row.dimensions ?? {}).join(" / ");
+      if (label) lines.push(`${label}: ${currency}${Number(row.value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+    }
+  }
+  return [...new Set(lines)].slice(0, 8);
+}
+
+/** @param {any} result */
+function labelForCalculation(result) {
+  if (result.kind === "impact_estimate") return "Estimated at-risk revenue";
+  if (result.measure === "line_revenue" || result.measure === "revenue") return "Revenue";
+  if (result.measure === "units_sold") return "Units sold";
+  if (result.measure === "average_order_value") return "Average order value";
+  if (result.measure === "gross_margin") return "Gross margin";
+  return result.measure;
+}
+
+/** @param {any} actionContext */
+function actionTitleFromContext(actionContext) {
+  const recommendation = allContextBlocks(actionContext).find((block) => block.kind === "recommendation");
+  return text(recommendation?.data?.title);
+}
+
+/** @param {any} actionContext */
+function recommendationReasonFromContext(actionContext) {
+  const recommendation = allContextBlocks(actionContext).find((block) => block.kind === "recommendation");
+  return {
+    whyThis: text(recommendation?.data?.whyThisAction),
+    whyNow: text(recommendation?.data?.whyNow),
+  };
+}
+
+/** @param {any} actionContext */
+function productLinesFromContext(actionContext) {
+  const lines = [];
+  for (const section of [
+    ["When this plan was made", actionContext?.planEvidenceAtRecommendationTime?.blocks],
+    ["Right now", actionContext?.currentSystemContext?.blocks],
+  ]) {
+    const [label, blocks] = section;
+    for (const block of Array.isArray(blocks) ? blocks : []) {
+      if (block?.kind !== "structured_evidence" || !Array.isArray(block?.data?.items)) continue;
+      for (const item of block.data.items.slice(0, 5)) {
+        const title = text(item.title);
+        if (!title) continue;
+        const details = [
+          Number.isFinite(Number(item.daysOfCover)) ? `${Number(item.daysOfCover)} days cover` : null,
+          Number.isFinite(Number(item.available)) ? `${Number(item.available)} available` : null,
+          Number.isFinite(Number(item.dailyVelocity)) ? `selling ${Number(item.dailyVelocity)}/day` : null,
+          Number.isFinite(Number(item.unitsOnHand)) ? `${Number(item.unitsOnHand)} units on hand` : null,
+        ].filter(Boolean).join(", ");
+        lines.push(`${label}: ${title}${details ? ` (${details})` : ""}`);
+      }
+    }
+  }
+  return [...new Set(lines)].slice(0, 8);
+}
+
+/** @param {any} actionContext */
+function allContextBlocks(actionContext) {
+  return [
+    ...(Array.isArray(actionContext?.planEvidenceAtRecommendationTime?.blocks)
+      ? actionContext.planEvidenceAtRecommendationTime.blocks
+      : []),
+    ...(Array.isArray(actionContext?.currentSystemContext?.blocks)
+      ? actionContext.currentSystemContext.blocks
+      : []),
+  ];
 }
 
 /**

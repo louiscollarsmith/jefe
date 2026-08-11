@@ -33,8 +33,11 @@ export type MemoryBelief = {
 export type MemoryView = { groups: Array<{ category: string; label: string; beliefs: MemoryBelief[] }> } | null;
 
 export type Recommendation = {
+  id?: string;
+  runId?: string;
   title: string;
   summary: string;
+  primaryGoalId?: string | null;
   whyThisAction: string;
   whyNow: string;
   executionSteps: Array<{ title: string; description: string }>;
@@ -52,6 +55,16 @@ export type SuggestedAction = {
   headline: string;
   keyNumbers?: Array<{ label: string; value: string }>;
   topItems?: Array<{ title: string; detail?: string }>;
+  sourceRecommendation?: {
+    id: string | null;
+    runId: string | null;
+    title: string;
+    summary: string;
+    whyThisAction: string;
+    whyNow: string;
+    successSignal: { description?: string; timeframe?: string; target?: string | null } | null;
+    primaryGoalId?: string | null;
+  } | null;
   executable: boolean;
   actionRunId?: string;
   actionType?: string;
@@ -74,11 +87,21 @@ export type ExecutedActionOutcome =
 export type ExecutedAction = {
   actionRunId: string;
   actionType: string;
-  status: string; // "applied" | "partially_applied" | "reverted"
+  status: string; // "applied" | "partially_applied" | "reverted" | "rejected"
   headline: string;
   appliedAt: string | null;
   revertedAt: string | null;
+  rejectedAt?: string | null;
+  declineLearning?: string | null;
+  sourceRecommendation?: SuggestedAction["sourceRecommendation"];
+  baselineSignal?: string | null;
+  currentSignal?: string | null;
   outcome: ExecutedActionOutcome;
+};
+
+export type ActionChatThread = {
+  topic: string | null;
+  messages: Array<{ id: string; role: string; content: string; createdAt?: string }>;
 };
 
 // ── Memory mapping ─────────────────────────────────────────────────────────────

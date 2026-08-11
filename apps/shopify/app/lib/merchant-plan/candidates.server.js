@@ -14,6 +14,7 @@ import {
   MERCHANT_PLAN_SNAPSHOT_VERSION,
   PLAN_REVIEW_STATUS,
 } from "./constants.server.js";
+import { expandBeliefRowsForContext } from "../merchant-memory/context-retriever.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -95,8 +96,8 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
     ...(goalRun?.horizons ?? []).flatMap((goal) => goal.supportingBeliefIds),
     ...(insightRun?.findings ?? []).flatMap((finding) => finding.supportingBeliefIds),
   ]);
-  const selectedBeliefs = beliefs
-    .filter((belief) => !isGeneratedOnboardingBelief(belief))
+  const eligibleBeliefs = beliefs.filter((belief) => !isGeneratedOnboardingBelief(belief));
+  const seedBeliefRows = eligibleBeliefs
     .map((belief) => ({
       belief,
       score: beliefRelevanceScore(belief, directlySupportedBeliefIds),
@@ -109,7 +110,13 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
         String(a.belief.key).localeCompare(String(b.belief.key)),
     )
     .slice(0, MAX_PLAN_BELIEFS)
-    .map((item) => normalizeBelief(item.belief))
+    .map((item) => item.belief);
+  const selectedBeliefs = expandBeliefRowsForContext({
+    allBeliefs: eligibleBeliefs,
+    seedBeliefs: seedBeliefRows,
+    max: MAX_PLAN_BELIEFS,
+  })
+    .map((belief) => normalizeBelief(belief))
     .filter(Boolean);
 
   const goals = (goalRun?.horizons ?? []).map((goal) => ({
@@ -214,7 +221,7 @@ function normalizeBelief(belief) {
     key: belief.key,
     cat: belief.category,
     label: safeText(definition?.label ?? humanizeBeliefKey(belief.key), 80),
-    val: safeValue(belief.value),
+    val: safeValue(belief.value, belief.key),
     type: belief.valueType,
     conf: Number.isFinite(confidence) ? Number(confidence.toFixed(2)) : null,
     status: String(belief.status ?? ""),
@@ -241,8 +248,63 @@ function authorityLevel(precedence, status) {
   return "system_inference";
 }
 
-function safeValue(value) {
-  return compactValue(value, null, 0);
+function safeValue(value, key = null) {
+  return compactKnownStructuredValue(key, value) ?? compactValue(value, null, 0);
+}
+
+function compactKnownStructuredValue(key, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (key === "inventory.low_cover_products.trailing_30d") {
+    const items = Array.isArray(value.items) ? value.items : [];
+    return {
+      items: items.slice(0, 5).map((item) => ({
+        productId: safeText(item?.productId, 80),
+        title: safeText(item?.title, 120),
+        unitsSold: numberOrNull(item?.unitsSold),
+        available: numberOrNull(item?.available),
+        dailyVelocity: numberOrNull(item?.dailyVelocity),
+        daysOfCover: numberOrNull(item?.daysOfCover),
+      })),
+      topAtRiskProduct: value.topAtRiskProduct
+        ? {
+            productId: safeText(value.topAtRiskProduct?.productId, 80),
+            title: safeText(value.topAtRiskProduct?.title, 120),
+            unitsSold: numberOrNull(value.topAtRiskProduct?.unitsSold),
+            available: numberOrNull(value.topAtRiskProduct?.available),
+            dailyVelocity: numberOrNull(value.topAtRiskProduct?.dailyVelocity),
+            daysOfCover: numberOrNull(value.topAtRiskProduct?.daysOfCover),
+          }
+        : null,
+      atRiskProductCount: numberOrNull(value.atRiskProductCount),
+      thresholdDays: numberOrNull(value.thresholdDays),
+      window: safeText(value.window, 80),
+    };
+  }
+  if (key === "products.dead_stock.trailing_90d") {
+    const items = Array.isArray(value.items) ? value.items : [];
+    return {
+      items: items.slice(0, 5).map((item) => ({
+        productId: safeText(item?.productId, 80),
+        title: safeText(item?.title, 120),
+        unitsOnHand: numberOrNull(item?.unitsOnHand),
+        trappedCapital: numberOrNull(item?.trappedCapital),
+      })),
+      topDeadProduct: value.topDeadProduct
+        ? {
+            productId: safeText(value.topDeadProduct?.productId, 80),
+            title: safeText(value.topDeadProduct?.title, 120),
+            unitsOnHand: numberOrNull(value.topDeadProduct?.unitsOnHand),
+            trappedCapital: numberOrNull(value.topDeadProduct?.trappedCapital),
+          }
+        : null,
+      deadStockProductCount: numberOrNull(value.deadStockProductCount),
+      costCoveredProductCount: numberOrNull(value.costCoveredProductCount),
+      totalTrappedCapital: numberOrNull(value.totalTrappedCapital),
+      currency: safeText(value.currency, 12),
+      window: safeText(value.window, 80),
+    };
+  }
+  return null;
 }
 
 function compactValue(value, key, depth) {
@@ -273,6 +335,11 @@ function humanizeBeliefKey(key) {
 
 function isLowSignalValueKey(key) {
   return /policy|formula|rule|url|source|dependency|included|excluded|handling|provenance|raw/i.test(key ?? "");
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 /** @param {unknown} value @param {number} max */

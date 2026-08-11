@@ -59,6 +59,7 @@ model Merchant {
   merchantGoalHorizons          MerchantGoalHorizon[]
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
+  merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -124,6 +125,7 @@ model Shop {
   merchantGoalHorizons          MerchantGoalHorizon[]
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
+  merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
   channelOAuthStates            ChannelOAuthState[]
@@ -1011,6 +1013,7 @@ model MerchantPlanRun {
   merchant              Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
   recommendation        MerchantPlanRecommendation?
+  evidenceSnapshots     MerchantPlanEvidenceSnapshot[]
 
   @@unique([shopId, snapshotHash, promptVersion, schemaVersion])
   @@index([merchantId, status, createdAt])
@@ -1050,11 +1053,35 @@ model MerchantPlanRecommendation {
   run                  MerchantPlanRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   merchant             Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   shop                 Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  evidenceSnapshot     MerchantPlanEvidenceSnapshot?
 
   @@index([merchantId, reviewStatus, createdAt])
   @@index([shopId, reviewStatus, createdAt])
   @@index([primaryGoalId])
   @@map("merchant_plan_recommendations")
+}
+
+model MerchantPlanEvidenceSnapshot {
+  id                 String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recommendationId   String                     @unique @map("recommendation_id") @db.Uuid
+  runId              String                     @map("run_id") @db.Uuid
+  merchantId         String                     @map("merchant_id") @db.Uuid
+  shopId             String                     @map("shop_id") @db.Uuid
+  snapshotVersion    String                     @map("snapshot_version")
+  sourceSnapshotHash String?                    @map("source_snapshot_hash")
+  blocksJson         Json                       @default("[]") @map("blocks_json")
+  limitsJson         Json                       @default("{}") @map("limits_json")
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  recommendation     MerchantPlanRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  run                MerchantPlanRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  merchant           Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop               Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, createdAt])
+  @@index([shopId, createdAt])
+  @@index([runId])
+  @@map("merchant_plan_evidence_snapshots")
 }
 
 /// Append-only activity/event log for the internal observability panel. Every

@@ -425,9 +425,6 @@ test("insight prompt retries with validation feedback and allowed belief IDs", (
   assert.match(promptSource, /Select up to five possible findings/);
   assert.match(promptSource, /Lead with the strongest metric or concrete fact/);
   assert.match(promptSource, /merchant-specific interpretation/);
-  assert.match(promptSource, /merchant would naturally describe the implication/);
-  assert.match(promptSource, /Translate analytical labels into concrete business meaning/);
-  assert.match(promptSource, /Do not expose headings such as "Lifetime Customer Spend and Repeat Order Dynamics"/);
   assert.match(promptSource, /Do not waste an insight on information a merchant would already know/);
 });
 

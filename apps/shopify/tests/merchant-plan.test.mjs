@@ -28,10 +28,6 @@ const routeSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
 );
-const promptSource = fs.readFileSync(
-  new URL("../app/lib/merchant-plan/prompt.server.js", import.meta.url),
-  "utf8",
-);
 
 const silentLogger = {
   info() {},
@@ -102,7 +98,7 @@ test("Plan snapshot is bounded to safe memory, goals, insights, context and prio
             id: "context-2",
             sourceType: "merchant_plan",
             evidenceType: "merchant_plan_refinement",
-            summary: "Merchant refined Jefe's First Move: keep it lightweight.",
+            summary: "Merchant refined Jefe's Plan: keep it lightweight.",
             observedAt: new Date("2026-07-26T11:00:00Z"),
           },
         ];
@@ -144,6 +140,85 @@ test("Plan snapshot is bounded to safe memory, goals, insights, context and prio
   assert.equal(serialized.includes("+44 7700"), false);
   assert.equal(serialized.includes("missing-belief"), false);
   assert.equal(serialized.includes("rawPayload"), false);
+});
+
+test("Plan snapshot expands stockout counts into low-cover product evidence", async () => {
+  const beliefs = [
+    beliefFixture({
+      id: "belief-count",
+      key: "inventory.at_risk_stockout_count.trailing_30d",
+      category: "inventory",
+      value: { count: 2 },
+      valueType: "number",
+      evidenceSummary: "Two selling products have fewer than 21 days of stock cover.",
+    }),
+    beliefFixture({
+      id: "belief-low-cover",
+      key: "inventory.low_cover_products.trailing_30d",
+      category: "inventory",
+      valueType: "structured",
+      value: {
+        items: [
+          { productId: "p1", title: "Yuzu Tonic", unitsSold: 30, available: 6, dailyVelocity: 1, daysOfCover: 6 },
+          { productId: "p2", title: "Cherry Cola", unitsSold: 30, available: 12, dailyVelocity: 1, daysOfCover: 12 },
+        ],
+        topAtRiskProduct: { productId: "p1", title: "Yuzu Tonic", unitsSold: 30, available: 6, dailyVelocity: 1, daysOfCover: 6 },
+        atRiskProductCount: 2,
+        thresholdDays: 21,
+        window: "trailing_30d",
+      },
+      evidenceSummary: "Low-cover product list calculated from orders and inventory.",
+    }),
+  ];
+  const prisma = {
+    merchantGoalRun: {
+      async findFirst() {
+        return {
+          id: "goal-run-1",
+          horizons: [
+            goalFixture("goal-3", "threeMonths", 1, ["belief-count"]),
+            goalFixture("goal-6", "sixMonths", 2, []),
+            goalFixture("goal-12", "twelveMonths", 3, []),
+          ],
+        };
+      },
+    },
+    merchantInsightRun: {
+      async findFirst() {
+        return {
+          id: "insight-run-1",
+          findings: [
+            {
+              id: "insight-1",
+              title: "Stock cover risk",
+              finding: "Low-cover products could interrupt momentum.",
+              whyItMatters: "Jefe should protect current demand.",
+              category: "inventory",
+              confidence: "high",
+              reviewStatus: "confirmed",
+              supportingBeliefIds: ["belief-count"],
+            },
+          ],
+        };
+      },
+    },
+    merchantMemoryBelief: { async findMany() { return beliefs; } },
+    merchantMemoryEvidence: { async findMany() { return []; } },
+    merchantPlanRecommendation: { async findMany() { return []; } },
+  };
+
+  const snapshot = await buildMerchantPlanSnapshot(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+  });
+  const keys = snapshot.snapshot.beliefs.map((belief) => belief.key);
+  const serialized = JSON.stringify(snapshot.snapshot.beliefs);
+
+  assert.ok(keys.includes("inventory.at_risk_stockout_count.trailing_30d"));
+  assert.ok(keys.includes("inventory.low_cover_products.trailing_30d"));
+  assert.match(serialized, /Yuzu Tonic/);
+  assert.match(serialized, /Cherry Cola/);
+  assert.match(serialized, /daysOfCover/);
 });
 
 test("Plan structured validation rejects unsupported IDs, generic plans and missing success signals", () => {
@@ -342,14 +417,8 @@ test("Plan generation is wired to the async worker and not browser page load", (
   assert.doesNotMatch(routeSource, /generateMerchantPlan\(/);
 });
 
-test("Plan onboarding presents the shared topic as First Move", () => {
-  assert.match(routeSource, /Update your First Move by chatting with Jefe/);
-  assert.match(routeSource, /First Move/);
-  assert.match(routeSource, /Start with this →/);
-  assert.match(routeSource, /JefePlanReasoningChain/);
-  assert.match(routeSource, /Your goal/);
-  assert.match(routeSource, /What I&apos;ve learned/);
-  assert.match(routeSource, /My recommendation/);
+test("Plan onboarding uses the shared topic-scoped chat composer", () => {
+  assert.match(routeSource, /Update your Plan by chatting with Jefe/);
   assert.match(routeSource, /OnboardingChat/);
   assert.match(routeSource, /CONVERSATION_TOPICS\.onboardingPlan/);
   assert.match(routeSource, /isPlanConversationAssistantMessage/);
@@ -363,18 +432,6 @@ test("Plan onboarding presents the shared topic as First Move", () => {
     routeSource,
     /I&apos;ll use that context to choose a better first move/,
   );
-  assert.doesNotMatch(routeSource, /Update your Plan by chatting with Jefe/);
-  assert.doesNotMatch(routeSource, /Accept Plan and open Jefe/);
-});
-
-test("Plan prompt frames merchant-facing output as First Move without renaming internals", () => {
-  assert.equal(MERCHANT_PLAN_JOB_TYPE, "merchant_plan_generate");
-  assert.match(promptSource, /choosing the merchant's First Move/);
-  assert.match(promptSource, /It is one practical First Move/);
-  assert.match(promptSource, /what First Move should they start with/);
-  assert.match(promptSource, /connect the agreed goal, the relevant thing Jefe has learned, and the recommended First Move/);
-  assert.match(promptSource, /safe summaries of merchant coaching, planning documents, corrections and First Move refinements/);
-  assert.match(promptSource, /prior First Move recommendations/);
 });
 
 test("merchant Plan generation persists exactly one recommendation", async (t) => {
@@ -416,6 +473,9 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
     const recommendations = await prisma.merchantPlanRecommendation.findMany({
       where: { merchantId: merchant.id, shopId: shop.id },
     });
+    const evidenceSnapshot = await prisma.merchantPlanEvidenceSnapshot.findUnique({
+      where: { recommendationId: recommendations[0].id },
+    });
     const experience = await getMerchantPlanExperience(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -423,10 +483,11 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
 
     assert.equal(result.status, PLAN_RUN_STATUS.completed);
     assert.equal(recommendations.length, 1);
+    assert.ok(evidenceSnapshot);
+    assert.equal(evidenceSnapshot.snapshotVersion, "plan_evidence_snapshot_v1");
+    assert.equal(Array.isArray(evidenceSnapshot.blocksJson), true);
     assert.equal(run.recommendation.title, "Send a focused reorder nudge");
     assert.equal(experience.currentRun.id, run.id);
-    assert.equal(experience.goals.length, 3);
-    assert.equal(experience.goals[0].title, snapshot.goals[0].title);
     assert.equal(experience.stale, false);
     assert.equal(Array.isArray(run.result.candidateSummaries), true);
     assert.equal(JSON.stringify(run.result).includes("chain-of-thought"), false);
@@ -728,6 +789,7 @@ function beliefFixture({
   key,
   category = "orders",
   value,
+  valueType = "string",
   status = "inferred",
   evidenceSummary,
 }) {
@@ -738,7 +800,7 @@ function beliefFixture({
     category,
     key,
     value,
-    valueType: "string",
+    valueType,
     status,
     confidence: "0.9000",
     confidenceReason: "Supported by stored evidence.",

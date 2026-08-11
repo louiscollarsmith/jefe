@@ -36,13 +36,11 @@ function clampPercent(value) {
  * below cost are excluded from the markdown set and only counted (belowCostCount),
  * since discounting them further is a loss the merchant must choose.
  * @param {Array<{ productId?: string; variantId?: string; title?: string | null; unitsOnHand: number; currentPrice: number; unitCost: number }>} items
- * @param {{ defaultDiscountPercent?: number }} [options]
+ * @param {{ defaultDiscountPercent?: number; maxProducts?: number }} [options]
  */
 export function sizeClearanceMarkdowns(items, options = {}) {
   const defaultDiscount = clampPercent(options.defaultDiscountPercent ?? 30) / 100;
   const results = [];
-  let totalTrappedCapital = 0;
-  let totalProjectedRecovery = 0;
   let belowCostCount = 0;
 
   for (const item of Array.isArray(items) ? items : []) {
@@ -60,8 +58,6 @@ export function sizeClearanceMarkdowns(items, options = {}) {
     const discountPercent = round1(((price - suggestedPrice) / price) * 100);
     const trappedCapital = round2(units * cost);
     const projectedRecovery = round2(units * suggestedPrice);
-    totalTrappedCapital += trappedCapital;
-    totalProjectedRecovery += projectedRecovery;
     results.push({
       productId: item.productId ?? null,
       variantId: item.variantId ?? null,
@@ -78,12 +74,26 @@ export function sizeClearanceMarkdowns(items, options = {}) {
   }
 
   results.sort((a, b) => b.trappedCapital - a.trappedCapital);
+  const maxProducts = Number(options.maxProducts);
+  const scoped =
+    Number.isInteger(maxProducts) && maxProducts > 0
+      ? results.slice(0, maxProducts)
+      : results;
+  const scopedTotals = scoped.reduce(
+    (acc, item) => ({
+      totalTrappedCapital: acc.totalTrappedCapital + item.trappedCapital,
+      totalProjectedRecovery: acc.totalProjectedRecovery + item.projectedRecovery,
+    }),
+    { totalTrappedCapital: 0, totalProjectedRecovery: 0 },
+  );
+
   return {
-    items: results,
-    deadStockVariantCount: results.length,
+    items: scoped,
+    deadStockVariantCount: scoped.length,
+    eligibleDeadStockVariantCount: results.length,
     belowCostCount,
-    totalTrappedCapital: round2(totalTrappedCapital),
-    totalProjectedRecovery: round2(totalProjectedRecovery),
+    totalTrappedCapital: round2(scopedTotals.totalTrappedCapital),
+    totalProjectedRecovery: round2(scopedTotals.totalProjectedRecovery),
   };
 }
 
@@ -93,7 +103,7 @@ export function sizeClearanceMarkdowns(items, options = {}) {
  * and a KNOWN unit cost (so the markdown can be safely floored) — and sizes the
  * markdowns. Read-only: returns a proposal, writes nothing.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; windowDays?: number; now?: Date; options?: { defaultDiscountPercent?: number } }} input
+ * @param {{ merchantId: string; shopId: string; windowDays?: number; now?: Date; options?: { defaultDiscountPercent?: number; maxProducts?: number } }} input
  */
 export async function buildDeadStockClearanceProposal(prisma, input) {
   const now = input.now ?? new Date();

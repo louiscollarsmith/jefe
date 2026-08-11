@@ -1,56 +1,47 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
-import {
-  AppHome13a,
-  AppHome13aLoading,
-  type AppHome13aProps,
-} from "./app-home/AppHome13a";
-import type { Finding, HorizonItem, HorizonWatch, QueueItem, GoalChange, ActionPolicy, ChannelRow } from "./app-home/sections";
-import type { Metrics, MemoryView, Recommendation, Goal, Insight, SuggestedAction, ExecutedAction, ActionMode, MemoryQuestion } from "./app-home/data";
+import { Form, Link, useLocation, useNavigation } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import type { HorizonItem, HorizonWatch } from "./app-home/sections";
+import type {
+  ActionChatThread,
+  ExecutedAction,
+  Goal,
+  Insight,
+  MemoryQuestion,
+  MemoryView,
+  Metrics,
+  Recommendation,
+  SuggestedAction,
+} from "./app-home/data";
 
 // Re-exported for back-compat: action-resolution.server.js references this type via a
 // JSDoc `import("../../components/daily-home").SuggestedAction`.
 export type { SuggestedAction } from "./app-home/data";
 
-// The live, data-driven Jefe app home in the "13a" register (design_handoff_jefe_app).
-// This component IS the live adoption of the redesign: it maps the app._index loader's
-// REAL merchant data into <AppHome13a>, with honest fallbacks where the richer 13a data
-// isn't wired yet (per-goal behaviour changes, a store-grounded horizon, a tidy-up scan)
-// so no section fabricates a number. The clearance suggested-action card + "What Jefe
-// did" feed live inside AppHome13a's sections and post the same action.* intents this
-// route already handles. Supersedes the earlier hand-rolled "5a" build.
-//
-// Real data in play: metrics · memory (with chat 9's authorship/provenance/confirm-state;
-// plain-English `statement` falls back to the belief title until chat 9's pass lands) ·
-// the Plan recommendation · the executable clearance suggestion · the executed-action
-// feed · goals · insights (surfaced as Brief findings) · the live per-action autonomy
-// mode + real channel connections (Settings) · the open-questions feed (Memory's "Still
-// guessing"). This is the live home, so it passes `interactive` — the Memory controls
-// (confirm / correct / forget / teach / answer) post real memory.* intents to app._index.
+const COLORS = {
+  page: "#fbfaf7",
+  card: "#fffdfa",
+  border: "#d8d0c8",
+  hairline: "#ede7de",
+  ink: "#1f2933",
+  body: "#4d463f",
+  muted: "#6d7175",
+  meta: "#8a8177",
+  navy: "#1f3a63",
+  yellow: "#ffe85c",
+  greenWash: "#eef8f0",
+  greenBorder: "#7fc08d",
+  green: "#26723d",
+};
 
-const BOOKING_URL = "https://calendly.com/quiver-matt";
-const FOUNDER_EMAIL = "matt@mynamejefe.com";
-const ACTION_MODES: ActionMode[] = ["recommend", "approve_execute", "autonomous"];
+const FONT = {
+  sans: "'Schibsted Grotesk', system-ui, -apple-system, sans-serif",
+  serif: "Georgia, 'Times New Roman', serif",
+  mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
+};
 
-// The 13a Settings action roster — DESIGN copy only (labels / detail / order / soon-vs-blocked
-// prompt), keyed by actionType (design_handoff / sample.ts). Which rows are LIVE is engine truth,
-// derived at render from the loader's `actionModes` map (built off listActionTypes()), NOT hardcoded
-// here — so a newly-graduated action lights its dial with zero edit. `reordering` carries a real
-// needs-you `blockedReason` (an actionable ask, not a "Soon"). No fabricated numbers: the Pricing
-// detail states the real guardrail (clearance floors at unit cost), not a margin % (chat 11).
-const ACTION_ROSTER: Array<{ actionType: string; label: string; detail: string; blockedReason?: string }> = [
-  { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds" },
-  { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types" },
-  { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you" },
-  { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", blockedReason: "Tell me who supplies you" },
-];
-
-// The real connection shape from listChannelConnections (only the fields we render).
-type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
-
-// Loader-provided shapes for the 13a home extras — all real data.
 type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
-type ChangelogItem = { id: string; date: string; text: string; tag?: string | null; body?: string | null };
+type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
 type EmailBrief = {
   address: string;
   enabled: boolean;
@@ -59,6 +50,26 @@ type EmailBrief = {
   minute: number | null;
   frequency: string;
   sending: boolean;
+};
+
+type PrimaryMove = {
+  title: string;
+  summary: string;
+  whyThisAction: string;
+  whyNow: string;
+  successSignal: string | null;
+  recommendationId: string | null;
+  recommendationRunId: string | null;
+  actionRunId: string | null;
+  actionType: string | null;
+  executable: boolean;
+  state: "proposed" | "in_progress" | "empty";
+  statusLabel: string;
+  statusTone: "yellow" | "green";
+  approvedAt: string | null;
+  baselineSignal: string | null;
+  currentSignal: string | null;
+  checklist: Array<{ label: string; done: boolean }>;
 };
 
 export function DailyHome(props: {
@@ -71,164 +82,1085 @@ export function DailyHome(props: {
   executedActions?: ExecutedAction[];
   insights: Insight[];
   goals: Goal[];
-  actionModes?: Record<string, string>; // actionType → mode, LIVE types only (key present ⇒ live)
-  channels?: ChannelConn[]; // listChannelConnections — real connect state
-  conversation?: ChatThread | null; // getDailyChatThread — real in-app chat thread
-  changelog?: ChangelogItem[]; // loadAppHomeWhatsNew — curated merchant-facing product news
-  emailBrief?: EmailBrief | null; // morning_brief pref + real contact email; null → row hidden
-  openQuestions?: MemoryQuestion[]; // getOpenQuestions — Memory's "Still guessing" feed
-  horizonNear: HorizonItem[]; // store-grounded near-term items + seasonal timeline (loader-computed)
-  horizonWatching: HorizonWatch[]; // "Watching, not acting" — honest revisit dates (loader-computed)
+  actionModes?: Record<string, string>;
+  channels?: ChannelConn[];
+  conversation?: ChatThread | null;
+  actionChatId?: string | null;
+  actionChatThread?: ActionChatThread | null;
+  changelog?: Array<{ id: string; date: string; text: string; tag?: string | null; body?: string | null }>;
+  emailBrief?: EmailBrief | null;
+  openQuestions?: MemoryQuestion[];
+  horizonNear: HorizonItem[];
+  horizonWatching: HorizonWatch[];
 }) {
+  const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
-  const executedActions = props.executedActions ?? [];
-
-  // The store-hygiene scan is DEFERRED off the LCP-critical loader (chat 10's split): DailyHome
-  // pulls it from the /api/store-hygiene resource route via useFetcher AFTER first paint, so the
-  // Brief's metrics render immediately and the tidy-up findings stream in a beat later. Best-effort
-  // (the route returns [] on any failure), so this can never delay or break the home.
-  const findingsFetcher = useFetcher<{ findings: Finding[] }>();
-  useEffect(() => {
-    if (findingsFetcher.state === "idle" && findingsFetcher.data === undefined) {
-      findingsFetcher.load("/api/store-hygiene");
-    }
-  }, [findingsFetcher]);
-
-  // findings ← the real store-hygiene scan FIRST (tidy-ups with a real primary action that
-  // deep-links to the fix in Shopify admin — never auto-applied), then real insight patterns
-  // ("your refund rate is 9%…") as actionless "noticed" notes fill any remaining room (coexist,
-  // don't supersede — chat 11). Both are real; hygiene leads because the merchant can act on it.
-  // Capped at 4 total so "Your call" stays calm (chat 11).
-  const hygieneFindings = findingsFetcher.data?.findings ?? [];
-  const insightFindings: Finding[] = (props.insights || []).map((it) => ({
-    id: it.id,
-    title: it.title,
-    body: it.finding,
-    kind: "noticed",
-    when: null,
-    primary: null,
-    dismiss: null,
-  }));
-  const findings: Finding[] = [...hygieneFindings, ...insightFindings].slice(0, 4);
-
-  // queue ← real decisions + what's done. suggestedAction + recommendation = needs_you;
-  // executed actions = did_it. Never a fabricated handled/declined count.
-  const queue: QueueItem[] = [];
-  if (suggestedAction) queue.push({ id: "suggested", title: suggestedAction.headline, when: "", kind: "Action", state: "needs_you", note: null });
-  if (props.recommendation) queue.push({ id: "plan", title: props.recommendation.title, when: "", kind: "Plan", state: "needs_you", note: null });
-  for (const a of executedActions) queue.push({ id: a.actionRunId, title: a.headline, when: formatWhen(a.appliedAt), kind: "Done", state: "did_it", note: null });
-
-  // horizon ← store-grounded near-term items + a "watching" block, computed server-side
-  // by getStoreGroundedHorizon (stock run-out dates, refund projection) with the seasonal
-  // timeline merged in. Passed straight through; this component never fabricates a number.
-  const horizonNear = props.horizonNear;
-  const horizonWatching = props.horizonWatching;
-
-  // Settings autonomy — the full 13a roster (ACTION_ROSTER holds the design copy). Which rows are
-  // LIVE is derived from the loader's `actionModes` map (built off the engine's listActionTypes(),
-  // chat 10): a key present ⇒ that type is registered + its execute-flag is on ⇒ a real dial at the
-  // merchant's mode. A design row with no live mode renders its needs-you prompt (reordering's
-  // blockedReason) or a gated "Soon" (tidy_up / listing_copy) — never a dial that can't act. When an
-  // action graduates (registry entry + flag on, e.g. product_status_change), its row auto-lights with
-  // zero edit here. No fabricated dials; no fabricated numbers.
-  const actionModes = props.actionModes ?? {};
-  const policies: ActionPolicy[] = ACTION_ROSTER.map((row) => {
-    const liveMode = actionModes[row.actionType]; // present iff the type is live
-    if (liveMode != null)
-      return { actionType: row.actionType, label: row.label, detail: row.detail, mode: normalizeMode(liveMode) };
-    if (row.blockedReason)
-      return { actionType: row.actionType, label: row.label, detail: row.detail, mode: null, blockedReason: row.blockedReason };
-    return { actionType: row.actionType, label: row.label, detail: row.detail, mode: null, soon: true };
-  });
-
-  // The email-brief row (real address + real send time) leads "Where Jefe reaches
-  // you", ahead of the connected channels. Built ONLY when a real contact email is
-  // known — never fabricated. While scheduled delivery is dark, the note says so
-  // honestly rather than implying Jefe emails today.
-  const emailBrief = props.emailBrief ?? null;
-  const emailRow: ChannelRow | null = emailBrief
-    ? {
-        id: "email",
-        label: "Morning brief by email",
-        value:
-          emailBrief.enabled && emailBrief.sendTime
-            ? `${emailBrief.address} · ${emailBrief.sendTime}`
-            : emailBrief.address,
-        connected: true,
-        editable: true,
-        category: "morning_brief",
-        enabled: emailBrief.enabled,
-        frequency: emailBrief.frequency,
-        time24:
-          emailBrief.hour != null && emailBrief.minute != null
-            ? `${String(emailBrief.hour).padStart(2, "0")}:${String(emailBrief.minute).padStart(2, "0")}`
-            : null,
-        note: !emailBrief.enabled
-          ? "Paused — you won’t get the morning brief"
-          : emailBrief.sending
-            ? null
-            : "Not sending yet — starts when briefs go live",
-      }
-    : null;
-  const channels: ChannelRow[] = [
-    ...(emailRow ? [emailRow] : []),
-    ...(props.channels || []).map((c) => ({
-      id: c.provider,
-      label: channelLabel(c.provider),
-      value: c.connected ? (c.maskedDestination || c.accountName || "Connected") : "Not connected",
-      connected: c.connected,
-    })),
-  ];
-
-  const waiting = (suggestedAction ? 1 : 0) + (props.recommendation ? 1 : 0) + findings.length;
-
-  const appProps: AppHome13aProps = {
-    storeName: props.storeName,
-    briefHeadline: waiting > 0 ? "Here’s what’s worth your time." : "Nothing’s on fire — you’re all clear.",
-    metrics: props.metrics,
-    memory: props.memory,
+  const actions = props.executedActions ?? [];
+  const primaryMove = buildPrimaryMove({
     recommendation: props.recommendation,
     suggestedAction,
-    executedActions,
+    actions,
     goals: props.goals,
-    findings,
-    goalChanges: [] as GoalChange[], // no per-goal behaviour tracking yet → honest note
-    horizonNear,
-    horizonWatching,
-    queue,
-    policies,
-    channels,
-    autonomyLabel: "Learning",
-    syncedLabel: null, // no real "synced Xm ago" signal yet → omitted, not faked
-    founderEmail: FOUNDER_EMAIL,
-    bookingUrl: BOOKING_URL,
-    changelog: props.changelog ?? [], // "New in Jefe" ← real app CHANGELOG
-    conversation: props.conversation ?? { messages: [] }, // real in-app chat thread
-    // This IS the live merchant home → the Memory controls post real memory.* intents,
-    // and the "Still guessing" group reads the real open-questions feed.
-    interactive: true,
-    openQuestions: props.openQuestions ?? [],
-  };
+  });
+  const chatOpen = Boolean(props.actionChatId);
 
-  return <AppHome13a {...appProps} />;
+  if (chatOpen) {
+    return (
+      <ActionChat
+        move={primaryMove}
+        thread={props.actionChatThread ?? { topic: null, messages: [] }}
+        backTo={searchWith(location.search, { actionChat: null })}
+      />
+    );
+  }
+
+  const alsoInProgress = actions.filter(
+    (action) =>
+      (action.status === "applied" || action.status === "partially_applied") &&
+      action.outcome.measured === false &&
+      action.actionRunId !== primaryMove.actionRunId,
+  );
+  const history = actions.filter(
+    (action) =>
+      action.status === "rejected" ||
+      action.status === "reverted" ||
+      ((action.status === "applied" || action.status === "partially_applied") &&
+        action.outcome.measured === true),
+  );
+  const watching = buildWatching(props.insights, props.horizonWatching);
+
+  return (
+    <main style={pageStyle}>
+      <div style={shellStyle}>
+        <Header storeName={props.storeName} />
+        <h1 style={headlineStyle}>
+          {primaryMove.state === "in_progress" ? (
+            <>
+              Here&apos;s what we&apos;re working <em style={headlineEmStyle}>on.</em>
+            </>
+          ) : (
+            <>
+              Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
+            </>
+          )}
+        </h1>
+        <PrimaryMoveCard move={primaryMove} currentSearch={location.search} />
+        <AlsoInProgress actions={alsoInProgress} />
+        <ActionHistory actions={history} />
+        <WatchingSection items={watching} />
+        <GoalsSection goals={props.goals} />
+      </div>
+    </main>
+  );
 }
 
 export function DailyHomeLoading({ storeName }: { storeName: string }) {
-  return <AppHome13aLoading storeName={storeName} />;
+  return (
+    <main style={pageStyle}>
+      <div style={shellStyle}>
+        <Header storeName={storeName} />
+        <h1 style={headlineStyle}>
+          Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
+        </h1>
+        <section style={cardStyle} aria-label="Opening Jefe">
+          <Mono>OPENING JEFE</Mono>
+          <div style={{ height: 28 }} />
+          <div style={{ height: 24, maxWidth: 420, background: COLORS.hairline, borderRadius: 8 }} />
+          <div style={{ height: 16, maxWidth: 580, background: COLORS.hairline, borderRadius: 8, marginTop: 22 }} />
+          <div style={{ height: 16, maxWidth: 500, background: COLORS.hairline, borderRadius: 8, marginTop: 10 }} />
+        </section>
+      </div>
+    </main>
+  );
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-function normalizeMode(mode: string | null | undefined): ActionMode {
-  return mode && (ACTION_MODES as string[]).includes(mode) ? (mode as ActionMode) : "approve_execute";
+function Header({ storeName }: { storeName: string }) {
+  return (
+    <header style={headerStyle}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={markStyle}>J</span>
+        <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
+      </div>
+      <DateLabel>{formatToday()}</DateLabel>
+    </header>
+  );
 }
-function channelLabel(provider: string): string {
-  if (provider === "slack") return "Slack";
-  if (provider === "whatsapp") return "WhatsApp";
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
+
+function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSearch: string }) {
+  if (move.state === "empty") {
+    return (
+      <section style={cardStyle}>
+        <Mono>ALL CLEAR</Mono>
+          <h2 style={cardTitleStyle}>Nothing&apos;s on fire — you&apos;re all clear.</h2>
+      </section>
+    );
+  }
+
+  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
+  const subtitle = informativeSubtitle(move.summary, move.title);
+  return (
+    <section style={cardStyle}>
+      <div style={cardTopStyle}>
+        <Mono>{move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}</Mono>
+        <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
+      </div>
+      <h2 style={cardTitleStyle}>{move.title}</h2>
+      {move.state === "proposed" ? (
+        <>
+          {subtitle ? <p style={summaryStyle}>{subtitle}</p> : null}
+          <Link
+            to={searchWith(currentSearch, { actionChat: chatTarget })}
+            style={{ ...primaryButtonStyle, marginTop: subtitle ? 0 : 26 }}
+          >
+            Talk this through →
+          </Link>
+          <WhyThis move={move} />
+        </>
+      ) : (
+        <>
+          <div style={{ marginTop: 20 }}>
+            <Mono>PROGRESS</Mono>
+            <div style={checklistStyle}>
+              {move.checklist.map((item) => (
+                <span key={item.label} style={checkItemStyle}>
+                  <span aria-hidden="true" style={{ color: item.done ? COLORS.green : COLORS.meta }}>
+                    {item.done ? "✓" : "○"}
+                  </span>
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          </div>
+          {move.successSignal ? (
+            <div style={{ marginTop: 22 }}>
+              <Mono>WHAT SUCCESS LOOKS LIKE</Mono>
+              <p style={summaryStyle}>{move.successSignal}</p>
+            </div>
+          ) : null}
+          {move.baselineSignal || move.currentSignal ? (
+            <div style={signalStyle}>
+              <span>{move.baselineSignal ?? "Starting point"}</span>
+              <span aria-hidden="true">→</span>
+              <strong>{move.currentSignal ?? move.baselineSignal}</strong>
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
 }
-function formatWhen(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+function WhyThis({ move }: { move: PrimaryMove }) {
+  return (
+    <div style={whyStyle}>
+      <Mono>WHY THIS</Mono>
+      <div style={whyGridStyle}>
+        <WhyCell label="3-MONTH GOAL" value={move.successSignal ?? "Move the business goal forward"} />
+        <span style={whyArrowStyle}>→</span>
+        <WhyCell label="WHAT I'VE LEARNED" value={compactWhyThis(move.whyThisAction || move.whyNow)} />
+        <span style={whyArrowStyle}>→</span>
+        <WhyCell label="RECOMMENDED MOVE" value={move.title} accent />
+      </div>
+    </div>
+  );
 }
+
+function WhyCell({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <Mono>{label}</Mono>
+      <div
+        title={value}
+        style={{
+          ...whyValueStyle,
+          color: accent ? COLORS.navy : COLORS.ink,
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function AlsoInProgress({ actions }: { actions: ExecutedAction[] }) {
+  if (!actions.length) return null;
+  return (
+    <section style={sectionStyle}>
+      <h2 style={sectionTitleStyle}>Also in progress</h2>
+      {actions.slice(0, 3).map((action) => (
+        <div key={action.actionRunId} style={compactCardStyle}>
+          <div style={rowTopStyle}>
+            <strong>{action.sourceRecommendation?.title || action.headline}</strong>
+            <StatusPill tone="green">Approved {formatShortDate(action.appliedAt)}</StatusPill>
+          </div>
+          <div style={miniChecklistStyle}>
+            <span>✓ variants selected</span>
+            <span>✓ markdown applied</span>
+            <span>○ sell-through observed</span>
+          </div>
+          {action.baselineSignal || action.currentSignal ? (
+            <div style={signalCompactStyle}>
+              {action.baselineSignal} <span>→</span> <strong>{action.currentSignal ?? action.baselineSignal}</strong>
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ActionHistory({ actions }: { actions: ExecutedAction[] }) {
+  if (!actions.length) return null;
+  return (
+    <section style={sectionStyle}>
+      <h2 style={sectionTitleStyle}>Action history</h2>
+      <div>
+        {actions.slice(0, 6).map((action) => {
+          const declined = action.status === "rejected";
+          return (
+            <div key={action.actionRunId} style={historyRowStyle}>
+              <div>
+                <strong>{action.sourceRecommendation?.title || action.headline}</strong>
+                <p style={historyCopyStyle}>
+                  {declined
+                    ? action.declineLearning ?? "Jefe learned this was not the right move right now."
+                    : action.outcome.measured
+                      ? action.outcome.summary ?? "Done."
+                      : "Jefe is tracking the result."}
+                </p>
+              </div>
+              <div style={historyMetaStyle}>
+                <Mono>{formatShortDate(declined ? action.rejectedAt ?? null : action.appliedAt ?? action.revertedAt)}</Mono>
+                <strong style={{ color: declined ? COLORS.meta : COLORS.green }}>
+                  {declined ? "declined" : "done"}
+                </strong>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function WatchingSection({ items }: { items: Array<{ id: string; title: string; body: string }> }) {
+  if (!items.length) return null;
+  return (
+    <section style={sectionStyle}>
+      <h2 style={sectionTitleStyle}>What I&apos;m watching</h2>
+      {items.map((item) => (
+        <div key={item.id} style={watchRowStyle}>
+          <div>
+            <strong>{item.title}</strong>
+            <p style={historyCopyStyle}>{item.body}</p>
+          </div>
+          <span style={{ color: COLORS.border }}>→</span>
+        </div>
+      ))}
+      <Link to="?view=memory" style={footerLinkStyle}>
+        See everything Jefe knows →
+      </Link>
+    </section>
+  );
+}
+
+function GoalsSection({ goals }: { goals: Goal[] }) {
+  if (!goals.length) return null;
+  return (
+    <section id="goals" style={sectionStyle}>
+      <h2 style={sectionTitleStyle}>Where we&apos;re heading</h2>
+      <div style={goalsGridStyle}>
+        {goals.slice(0, 3).map((goal) => (
+          <div key={goal.id}>
+            <Mono>{horizonLabel(goal.horizon)}</Mono>
+            <strong style={{ display: "block", marginTop: 8 }}>{goal.title}</strong>
+          </div>
+        ))}
+      </div>
+      <a href="#goals" style={footerLinkStyle}>
+        View goals →
+      </a>
+    </section>
+  );
+}
+
+function ActionChat({
+  move,
+  thread,
+  backTo,
+}: {
+  move: PrimaryMove;
+  thread: ActionChatThread;
+  backTo: string;
+}) {
+  const navigation = useNavigation();
+  const pendingIntent = navigation.formData?.get("intent");
+  const isThinking =
+    navigation.state !== "idle" && pendingIntent === "action.chat.message";
+  const pendingMessage =
+    isThinking && typeof navigation.formData?.get("message") === "string"
+      ? String(navigation.formData.get("message")).trim()
+      : "";
+  const [composerMessage, setComposerMessage] = useState("");
+  const submittedMessageRef = useRef("");
+  useEffect(() => {
+    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
+  }, [isThinking, pendingMessage]);
+  useEffect(() => {
+    if (!isThinking && submittedMessageRef.current) {
+      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
+      submittedMessageRef.current = "";
+    }
+  }, [isThinking, composerMessage]);
+  const messages = thread.messages.length
+    ? thread.messages
+    : [
+        {
+          id: "opening",
+          role: "assistant",
+          content:
+            "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you are ready.",
+        },
+      ];
+  const subtitle = informativeSubtitle(move.summary, move.title);
+  return (
+    <main style={pageStyle}>
+      <div style={chatShellStyle}>
+        <div style={chatTopStyle}>
+          <Link to={backTo} style={backLinkStyle}>
+            ← Back
+          </Link>
+          <DateLabel>{formatToday()}</DateLabel>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 28 }}>
+          <Mono>ABOUT THIS MOVE</Mono>
+          <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
+        </div>
+        <h1 style={chatTitleStyle}>{move.title}</h1>
+        {subtitle ? <p style={chatSummaryStyle}>{subtitle}</p> : null}
+        <div style={{ ...chatDividerStyle, marginTop: subtitle ? 0 : 28 }} />
+        <div style={messagesStyle}>
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              style={{
+                ...messageRowStyle,
+                justifyContent: message.role === "merchant" ? "flex-end" : "flex-start",
+              }}
+            >
+              {message.role !== "merchant" ? <span style={smallMarkStyle}>J</span> : null}
+              <div style={message.role === "merchant" ? merchantBubbleStyle : assistantBubbleStyle}>
+                {message.content}
+              </div>
+            </div>
+          ))}
+          {pendingMessage ? (
+            <div style={{ ...messageRowStyle, justifyContent: "flex-end" }}>
+              <div style={merchantBubbleStyle}>{pendingMessage}</div>
+            </div>
+          ) : null}
+          {isThinking ? (
+            <div style={messageRowStyle} aria-live="polite">
+              <span style={smallMarkStyle}>J</span>
+              <div style={thinkingStyle}>Thinking</div>
+            </div>
+          ) : null}
+        </div>
+        <div style={chatComposerWrapStyle}>
+          <div style={chipsStyle}>
+            <ChatPrompt message="Why this one?" move={move} />
+            <ChatPrompt message="What exactly would you order?" move={move} />
+            {move.actionRunId ? (
+              <Form method="post">
+                <input type="hidden" name="intent" value="action.revise_scope" />
+                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+                <input type="hidden" name="maxProducts" value="1" />
+                <ChipButton>Can we do just one product?</ChipButton>
+              </Form>
+            ) : null}
+            {move.actionRunId ? (
+              <Form method="post">
+                <input type="hidden" name="intent" value="action.defer" />
+                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input type="hidden" name="reason" value="defer" />
+                <ChipButton>Remind me next week</ChipButton>
+              </Form>
+            ) : null}
+          </div>
+          <Form method="post" style={composerStyle}>
+            <input type="hidden" name="intent" value="action.chat.message" />
+            <MoveHiddenFields move={move} />
+            <input
+              name="message"
+              required
+              autoComplete="off"
+              aria-label="Ask about this move"
+              placeholder="Ask about this move, or tell me what to change..."
+              value={composerMessage}
+              onChange={(event) => setComposerMessage(event.currentTarget.value)}
+              style={composerInputStyle}
+              disabled={isThinking}
+            />
+            <button type="submit" style={sendButtonStyle} disabled={isThinking}>
+              {isThinking ? "Thinking" : "Send"}
+            </button>
+          </Form>
+          <div style={decisionRowStyle}>
+            {move.actionRunId && move.executable ? (
+              <Form method="post">
+                <input type="hidden" name="intent" value="action.approve" />
+                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <button type="submit" style={approveButtonStyle}>
+                  Approve
+                </button>
+              </Form>
+            ) : null}
+            {move.actionRunId ? (
+              <Form method="post">
+                <input type="hidden" name="intent" value="action.defer" />
+                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input type="hidden" name="reason" value="defer" />
+                <button type="submit" style={quietDecisionButtonStyle}>
+                  Not right now
+                </button>
+              </Form>
+            ) : null}
+            {!move.actionRunId || !move.executable ? (
+              <span style={{ color: COLORS.muted, fontWeight: 700 }}>
+                This move is advisory until a typed action preview is available.
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
+  return (
+    <Form method="post">
+      <input type="hidden" name="intent" value="action.chat.message" />
+      <MoveHiddenFields move={move} />
+      <input type="hidden" name="message" value={message} />
+      <ChipButton>{message}</ChipButton>
+    </Form>
+  );
+}
+
+function MoveHiddenFields({ move }: { move: PrimaryMove }) {
+  return (
+    <>
+      <input type="hidden" name="actionRunId" value={move.actionRunId ?? ""} />
+      <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+    </>
+  );
+}
+
+function ChipButton({ children }: { children: ReactNode }) {
+  return (
+    <button type="submit" style={chipStyle}>
+      {children}
+    </button>
+  );
+}
+
+function StatusPill({ tone, children }: { tone: "yellow" | "green"; children: ReactNode }) {
+  const green = tone === "green";
+  return (
+    <span
+      style={{
+        ...pillStyle,
+        background: green ? COLORS.greenWash : COLORS.yellow,
+        borderColor: green ? COLORS.greenBorder : COLORS.yellow,
+        color: green ? COLORS.green : "#111827",
+      }}
+    >
+      <span aria-hidden="true">●</span>
+      {children}
+    </span>
+  );
+}
+
+function Mono({ children }: { children: ReactNode }) {
+  return <span style={monoStyle}>{children}</span>;
+}
+
+function DateLabel({ children }: { children: ReactNode }) {
+  return <span style={dateStyle}>{children}</span>;
+}
+
+function buildPrimaryMove(input: {
+  recommendation: Recommendation;
+  suggestedAction: SuggestedAction | null;
+  actions: ExecutedAction[];
+  goals: Goal[];
+}): PrimaryMove {
+  const inProgress = input.actions.find(
+    (action) =>
+      (action.status === "applied" || action.status === "partially_applied") &&
+      action.outcome.measured === false,
+  );
+  const source =
+    input.suggestedAction?.sourceRecommendation ??
+    inProgress?.sourceRecommendation ??
+    recommendationSource(input.recommendation);
+  if (!source && !input.suggestedAction && !inProgress) {
+    return {
+      title: "Nothing's on fire - you're all clear.",
+      summary: "",
+      whyThisAction: "",
+      whyNow: "",
+      successSignal: null,
+      recommendationId: null,
+      recommendationRunId: null,
+      actionRunId: null,
+      actionType: null,
+      executable: false,
+      state: "empty",
+      statusLabel: "All clear",
+      statusTone: "green",
+      approvedAt: null,
+      baselineSignal: null,
+      currentSignal: null,
+      checklist: [],
+    };
+  }
+
+  const title = source?.title || input.suggestedAction?.headline || inProgress?.headline || "Review Jefe's next move";
+  const summary = source?.summary || input.suggestedAction?.headline || "Jefe has a move ready to discuss.";
+  const success = successSignalText(source?.successSignal ?? input.recommendation?.successSignal ?? null);
+  if (inProgress && !input.suggestedAction) {
+    return {
+      title,
+      summary,
+      whyThisAction: source?.whyThisAction || "",
+      whyNow: source?.whyNow || "",
+      successSignal: success,
+      recommendationId: source?.id ?? null,
+      recommendationRunId: source?.runId ?? null,
+      actionRunId: inProgress.actionRunId,
+      actionType: inProgress.actionType,
+      executable: false,
+      state: "in_progress",
+      statusLabel: `Approved ${formatShortDate(inProgress.appliedAt)}`,
+      statusTone: "green",
+      approvedAt: inProgress.appliedAt,
+      baselineSignal: inProgress.baselineSignal ?? null,
+      currentSignal: inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
+      checklist: [
+        { label: "variants selected", done: true },
+        { label: "markdown applied", done: true },
+        { label: "sell-through observed", done: inProgress.outcome.measured },
+      ],
+    };
+  }
+
+  return {
+    title,
+    summary,
+    whyThisAction: source?.whyThisAction || input.recommendation?.whyThisAction || "",
+    whyNow: source?.whyNow || input.recommendation?.whyNow || "",
+    successSignal: goalTitle(source?.primaryGoalId ?? input.recommendation?.primaryGoalId ?? null, input.goals) ?? success,
+    recommendationId: source?.id ?? input.recommendation?.id ?? null,
+    recommendationRunId: source?.runId ?? input.recommendation?.runId ?? null,
+    actionRunId: input.suggestedAction?.actionRunId ?? null,
+    actionType: input.suggestedAction?.actionType ?? null,
+    executable: input.suggestedAction?.executable ?? false,
+    state: "proposed",
+    statusLabel: "Needs your OK",
+    statusTone: "yellow",
+    approvedAt: null,
+    baselineSignal: baselineFromSuggested(input.suggestedAction),
+    currentSignal: baselineFromSuggested(input.suggestedAction),
+    checklist: [],
+  };
+}
+
+function recommendationSource(recommendation: Recommendation) {
+  if (!recommendation) return null;
+  return {
+    id: recommendation.id ?? null,
+    runId: recommendation.runId ?? null,
+    title: recommendation.title,
+    summary: recommendation.summary,
+    whyThisAction: recommendation.whyThisAction,
+    whyNow: recommendation.whyNow,
+    successSignal: recommendation.successSignal,
+    primaryGoalId: recommendation.primaryGoalId ?? null,
+  };
+}
+
+function baselineFromSuggested(action: SuggestedAction | null) {
+  const products = action?.keyNumbers?.find((item) => item.label === "Products")?.value;
+  const trapped = action?.keyNumbers?.find((item) => item.label === "Trapped capital")?.value;
+  if (products && trapped) return `${products} product${products === "1" ? "" : "s"} · ${trapped} tied up`;
+  return null;
+}
+
+type SuccessSignalLike = {
+  description?: unknown;
+  timeframe?: unknown;
+  target?: unknown;
+} | null;
+
+function successSignalText(signal: SuccessSignalLike) {
+  if (!signal || typeof signal !== "object") return null;
+  const description = typeof signal.description === "string" ? signal.description : "";
+  const timeframe = typeof signal.timeframe === "string" ? signal.timeframe : "";
+  const target = typeof signal.target === "string" ? signal.target : "";
+  return [description, target, timeframe].filter(Boolean).join(" · ") || null;
+}
+
+function compactWhyThis(value: string) {
+  const firstSentence = value
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)[0]
+    ?.trim();
+  let compact = firstSentence || value.trim();
+  compact = compact
+    .replace(/\bbased on trailing sell rates\b\.?/i, "")
+    .replace(/\bhold fewer than 21 days of stock cover\b/i, "have fewer than 21 days of stock")
+    .replace(/\bTwo\b/g, "2")
+    .replace(/\btwo\b/g, "2")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (compact.length <= 96) return compact;
+  return `${compact.slice(0, 93).trim()}...`;
+}
+
+function informativeSubtitle(summary: string, title: string) {
+  const cleanSummary = summary.replace(/\s+/g, " ").trim();
+  const cleanTitle = title.replace(/\s+/g, " ").trim();
+  if (!cleanSummary) return null;
+  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase()) return null;
+  return cleanSummary;
+}
+
+function goalTitle(goalId: string | null, goals: Goal[]) {
+  if (!goalId) return null;
+  return goals.find((goal) => goal.id === goalId)?.title ?? null;
+}
+
+function buildWatching(insights: Insight[], horizonWatching: HorizonWatch[]) {
+  const fromInsights = (insights || []).map((insight) => ({
+    id: `insight-${insight.id}`,
+    title: insight.title,
+    body: insight.finding,
+  }));
+  const fromHorizon = (horizonWatching || []).map((item) => ({
+    id: `horizon-${item.id}`,
+    title: item.title,
+    body: item.reason,
+  }));
+  return [...fromInsights, ...fromHorizon].slice(0, 3);
+}
+
+function horizonLabel(horizon: string) {
+  if (horizon === "threeMonths") return "3 MONTHS";
+  if (horizon === "sixMonths") return "6 MONTHS";
+  if (horizon === "twelveMonths") return "12 MONTHS";
+  return horizon.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
+}
+
+function formatToday() {
+  return new Date().toLocaleDateString("en-GB", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+  });
+}
+
+function formatShortDate(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+function searchWith(search: string, updates: Record<string, string | null>) {
+  const params = new URLSearchParams(search);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const next = params.toString();
+  return next ? `?${next}` : "/app";
+}
+
+const pageStyle: CSSProperties = {
+  minHeight: "100vh",
+  background: COLORS.page,
+  color: COLORS.ink,
+  fontFamily: FONT.sans,
+  padding: "58px 24px 104px",
+};
+const shellStyle: CSSProperties = {
+  maxWidth: 760,
+  margin: "0 auto",
+  width: "100%",
+};
+const chatShellStyle: CSSProperties = {
+  maxWidth: 760,
+  minHeight: "calc(100vh - 124px)",
+  margin: "0 auto",
+  display: "flex",
+  flexDirection: "column",
+  width: "100%",
+};
+const headerStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 24,
+  marginBottom: 42,
+};
+const markStyle: CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: 8,
+  background: COLORS.navy,
+  color: "#fff",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontWeight: 800,
+};
+const smallMarkStyle: CSSProperties = { ...markStyle, width: 24, height: 24, borderRadius: 6, fontSize: 13, flex: "none" };
+const monoStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 12,
+  fontWeight: 750,
+  letterSpacing: "0.12em",
+  textTransform: "uppercase",
+};
+const dateStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 650,
+  letterSpacing: "0.04em",
+  whiteSpace: "nowrap",
+};
+const headlineStyle: CSSProperties = {
+  fontFamily: FONT.serif,
+  fontSize: 40,
+  lineHeight: 1.08,
+  fontWeight: 600,
+  margin: "0 0 46px",
+  letterSpacing: 0,
+};
+const headlineEmStyle: CSSProperties = { color: COLORS.navy, fontStyle: "italic" };
+const cardStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 16,
+  boxShadow: "0 16px 42px rgba(39,55,77,0.08)",
+  padding: "56px 52px 50px",
+  marginBottom: 44,
+};
+const cardTopStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 20,
+  marginBottom: 28,
+};
+const cardTitleStyle: CSSProperties = {
+  fontFamily: FONT.serif,
+  fontSize: 32,
+  lineHeight: 1.12,
+  margin: 0,
+  fontWeight: 700,
+  letterSpacing: 0,
+};
+const summaryStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 18,
+  lineHeight: 1.55,
+  margin: "26px 0 28px",
+  maxWidth: 760,
+};
+const primaryButtonStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  background: COLORS.navy,
+  color: "#fff",
+  borderRadius: 8,
+  padding: "14px 22px",
+  fontSize: 16,
+  fontWeight: 800,
+  textDecoration: "none",
+};
+const whyStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+  marginTop: 30,
+  paddingTop: 26,
+};
+const whyGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) 28px minmax(0, 1.2fr) 28px minmax(0, 1fr)",
+  columnGap: 18,
+  alignItems: "start",
+  marginTop: 17,
+};
+const whyArrowStyle: CSSProperties = {
+  alignSelf: "start",
+  color: COLORS.border,
+  fontSize: 25,
+  lineHeight: 1,
+  paddingTop: 28,
+  textAlign: "center",
+};
+const whyValueStyle: CSSProperties = {
+  display: "-webkit-box",
+  fontSize: 16,
+  fontWeight: 750,
+  lineHeight: 1.22,
+  marginTop: 7,
+  maxHeight: 78,
+  overflow: "hidden",
+  WebkitBoxOrient: "vertical",
+  WebkitLineClamp: 4,
+};
+const pillStyle: CSSProperties = {
+  alignItems: "center",
+  border: "1px solid",
+  borderRadius: 8,
+  display: "inline-flex",
+  gap: 8,
+  fontSize: 14,
+  fontWeight: 800,
+  padding: "7px 14px",
+  whiteSpace: "nowrap",
+};
+const checklistStyle: CSSProperties = {
+  display: "flex",
+  gap: 18,
+  flexWrap: "wrap",
+  marginTop: 14,
+  color: COLORS.body,
+};
+const checkItemStyle: CSSProperties = {
+  alignItems: "center",
+  display: "inline-flex",
+  gap: 7,
+  fontSize: 15,
+};
+const signalStyle: CSSProperties = {
+  display: "flex",
+  gap: 12,
+  flexWrap: "wrap",
+  color: COLORS.meta,
+  fontSize: 15,
+  marginTop: 24,
+};
+const sectionStyle: CSSProperties = { marginTop: 46 };
+const sectionTitleStyle: CSSProperties = {
+  fontFamily: FONT.serif,
+  fontSize: 26,
+  lineHeight: 1.15,
+  fontWeight: 700,
+  margin: "0 0 20px",
+};
+const compactCardStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 12,
+  padding: "23px 26px",
+};
+const rowTopStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 20,
+  alignItems: "center",
+};
+const miniChecklistStyle: CSSProperties = {
+  display: "flex",
+  gap: 18,
+  flexWrap: "wrap",
+  color: COLORS.body,
+  marginTop: 18,
+};
+const signalCompactStyle: CSSProperties = {
+  marginTop: 14,
+  color: COLORS.meta,
+};
+const historyRowStyle: CSSProperties = {
+  alignItems: "flex-start",
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 24,
+  padding: "17px 0 18px",
+};
+const historyCopyStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 15,
+  lineHeight: 1.4,
+  margin: "4px 0 0",
+};
+const historyMetaStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flex: "none",
+  gap: 12,
+  fontSize: 13,
+};
+const watchRowStyle: CSSProperties = {
+  alignItems: "center",
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 20,
+  padding: "16px 0 17px",
+};
+const footerLinkStyle: CSSProperties = {
+  color: COLORS.navy,
+  display: "block",
+  fontWeight: 800,
+  marginTop: 18,
+  textAlign: "right",
+  textDecoration: "none",
+};
+const goalsGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 32,
+};
+const chatTopStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+};
+const backLinkStyle: CSSProperties = {
+  color: COLORS.body,
+  fontWeight: 800,
+  textDecoration: "none",
+};
+const chatTitleStyle: CSSProperties = {
+  fontFamily: FONT.serif,
+  fontSize: 34,
+  lineHeight: 1.12,
+  margin: "20px 0 0",
+  fontWeight: 700,
+};
+const chatSummaryStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 18,
+  lineHeight: 1.55,
+  margin: "20px 0 26px",
+  maxWidth: 710,
+};
+const chatDividerStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
+const messagesStyle: CSSProperties = {
+  flex: "1 1 auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+  padding: "31px 0",
+};
+const messageRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 12,
+};
+const assistantBubbleStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 17,
+  lineHeight: 1.55,
+  maxWidth: 640,
+  whiteSpace: "pre-wrap",
+};
+const merchantBubbleStyle: CSSProperties = {
+  background: COLORS.navy,
+  borderRadius: 12,
+  color: "#fff",
+  fontSize: 15,
+  lineHeight: 1.45,
+  maxWidth: 520,
+  padding: "12px 15px",
+  whiteSpace: "pre-wrap",
+};
+const thinkingStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 17,
+  lineHeight: 1.55,
+  paddingTop: 1,
+};
+const chatComposerWrapStyle: CSSProperties = {
+  flex: "none",
+  paddingTop: 16,
+};
+const chipsStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 7,
+  marginBottom: 14,
+};
+const chipStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  color: COLORS.body,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  fontWeight: 700,
+  padding: "8px 10px",
+};
+const composerStyle: CSSProperties = {
+  alignItems: "center",
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 12,
+  display: "flex",
+  gap: 10,
+  padding: 10,
+  boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
+};
+const composerInputStyle: CSSProperties = {
+  background: "transparent",
+  border: 0,
+  color: COLORS.ink,
+  flex: 1,
+  fontFamily: FONT.sans,
+  fontSize: 16,
+  minWidth: 0,
+  outline: "none",
+  padding: "12px 14px",
+};
+const sendButtonStyle: CSSProperties = {
+  background: COLORS.navy,
+  border: 0,
+  borderRadius: 9,
+  color: "#fff",
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 15,
+  fontWeight: 800,
+  padding: "12px 20px",
+};
+const decisionRowStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  gap: 18,
+  marginTop: 16,
+};
+const approveButtonStyle: CSSProperties = {
+  ...sendButtonStyle,
+  borderRadius: 8,
+  padding: "14px 24px",
+};
+const quietDecisionButtonStyle: CSSProperties = {
+  background: "transparent",
+  border: 0,
+  color: COLORS.muted,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 15,
+  fontWeight: 800,
+  padding: "14px 0",
+};

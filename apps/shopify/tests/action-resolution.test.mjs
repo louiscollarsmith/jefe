@@ -87,6 +87,16 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
     merchantId: "m1",
     shopId: "s1",
     intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 30 } },
+    sourceRecommendation: {
+      id: "rec-1",
+      runId: "plan-run-1",
+      title: "Protect cash tied up in old stock",
+      summary: "Clear one safe set of old stock.",
+      whyThisAction: "Dead stock is tying up cash.",
+      whyNow: "The products have not sold in 90 days.",
+      successSignal: { description: "Sell-through improves", timeframe: "3 weeks", target: null },
+      primaryGoalId: "goal-3",
+    },
   });
 
   assert.equal(res.status, "proposed");
@@ -104,11 +114,42 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
   assert.equal(row.proposalSummary.totalTrappedCapital, 800); // 10 units × £80 cost
   assert.equal(row.proposalSummary.totalProjectedRecovery, 1400); // 10 units × £140
   assert.equal(row.proposalSummary.markdownPercent, 30); // the requested % (intent params)
+  assert.equal(row.proposalSummary.sourceRecommendation.id, "rec-1");
+  assert.equal(row.proposalSummary.sourceRecommendation.title, "Protect cash tied up in old stock");
   assert.deepEqual(row.proposalSummary.topItems[0], { title: "Parka", unitsOnHand: 10, trappedCapital: 800 });
   // The card data: advisory (executable false), money in keyNumbers, carries the runId.
   assert.equal(res.suggestedAction.executable, false);
   assert.equal(res.suggestedAction.actionRunId, row.runId);
   assert.equal(res.suggestedAction.keyNumbers.find((n) => n.label === "Projected recovery").value, 1400);
+});
+
+test("proposeActionFromIntent: maxProducts scopes the proposal before preview", async () => {
+  let row = null;
+  const prisma = mockPrisma({
+    variants: [
+      { id: "low", productId: "p1", price: 200, unitCost: 20, product: { title: "Low" } },
+      { id: "high", productId: "p2", price: 200, unitCost: 80, product: { title: "High" } },
+    ],
+    inventory: [
+      { variantId: "low", available: 2 },
+      { variantId: "high", available: 10 },
+    ],
+    soldLineItems: [],
+    onCreate: (data) => { row = data; },
+  });
+
+  const res = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 30, maxProducts: 1 } },
+  });
+
+  assert.equal(res.status, "proposed");
+  assert.equal(row.preview.variantCount, 1);
+  assert.equal(row.preview.changes[0].variantId, "high");
+  assert.equal(row.proposalSummary.scope.maxProducts, 1);
+  assert.equal(row.proposalSummary.eligibleVariantCount, 2);
+  assert.equal(row.proposalSummary.totalTrappedCapital, 800);
 });
 
 test("the merchant's dial drives the mode: autonomous + eligible -> resolvedMode auto", async () => {
@@ -235,6 +276,35 @@ test("rejectAction drops a proposed action: proposed -> rejected", async () => {
   assert.equal(res.execution.status, "rejected");
 });
 
+test("rejectAction persists decline learning in proposalSummary", async () => {
+  let updated = null;
+  const prisma = mockExecPrisma({
+    id: "e1",
+    runId: "r1",
+    merchantId: "m1",
+    shopId: "s1",
+    status: "proposed",
+    actionType: "price_markdown",
+    proposalSummary: { sourceRecommendation: { id: "rec-1", title: "Clear old stock" } },
+  });
+  const originalUpdate = prisma.actionExecution.update;
+  prisma.actionExecution.update = async (args) => {
+    updated = args.data;
+    return originalUpdate(args);
+  };
+
+  const res = await rejectAction(prisma, {
+    merchantId: "m1",
+    actionRunId: "r1",
+    reasonCategory: "discount_free",
+  });
+
+  assert.equal(res.status, "rejected");
+  assert.equal(updated.proposalSummary.sourceRecommendation.id, "rec-1");
+  assert.equal(updated.proposalSummary.decline.reasonCategory, "discount_free");
+  assert.match(updated.proposalSummary.decline.learning, /discount-free/);
+});
+
 test("buildActionDeclinedEvent captures the split decline reason as a PII-safe signal", () => {
   const ev = buildActionDeclinedEvent(
     { merchantId: "m1", shopId: "s1", actionType: "price_markdown", runId: "r1" },
@@ -302,6 +372,15 @@ test("getActiveSuggestedAction: latest proposed row → formatted card (advisory
       markdownPercent: 30,
       totalTrappedCapital: 1000,
       totalProjectedRecovery: 1720,
+      sourceRecommendation: {
+        id: "rec-9",
+        runId: "run-plan-9",
+        title: "Protect your best sellers",
+        summary: "Reorder before stockout.",
+        whyThisAction: "Demand is ahead of cover.",
+        whyNow: "The runway is short.",
+        successSignal: { description: "Stockout avoided" },
+      },
       topItems: [{ title: "Parka", unitsOnHand: 10, trappedCapital: 810 }],
     },
     preview: { variantCount: 2 },
@@ -322,6 +401,8 @@ test("getActiveSuggestedAction: latest proposed row → formatted card (advisory
   assert.equal(sa.keyNumbers.find((n) => n.label === "Products").value, "2");
   assert.equal(sa.topItems[0].detail, "10 units · £810 tied up");
   assert.equal(sa.markdownPercent, 30); // the edit control's reference value
+  assert.equal(sa.sourceRecommendation.id, "rec-9");
+  assert.equal(sa.sourceRecommendation.title, "Protect your best sellers");
 });
 
 test("getActiveSuggestedAction returns null when nothing is proposed", async () => {

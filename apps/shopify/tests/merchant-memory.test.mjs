@@ -1999,6 +1999,7 @@ test("Merchant Memory refresh jobs are debounced, retryable and process without 
     const processed = await processNextBackfillJob(prisma, {
       logger: silentLogger,
       shopId: shop.id,
+      jobType: MEMORY_REFRESH_JOB_TYPE,
     });
     const catalogBeliefs = await prisma.merchantMemoryBelief.count({
       where: { merchantId: merchant.id, category: "catalog" },
@@ -2010,6 +2011,21 @@ test("Merchant Memory refresh jobs are debounced, retryable and process without 
     });
 
     assert.equal(jobCount, 1);
+    if (!processed) {
+      const jobs = await prisma.backfillJob.findMany({
+        where: { shopId: shop.id },
+        orderBy: [{ priority: "asc" }, { updatedAt: "asc" }],
+        select: {
+          jobType: true,
+          status: true,
+          priority: true,
+          runAfter: true,
+          startedAt: true,
+          lastError: true,
+        },
+      });
+      assert.fail(`Expected memory refresh job to process: ${JSON.stringify(jobs)}`);
+    }
     assert.equal(processed.jobType, MEMORY_REFRESH_JOB_TYPE);
     assert.equal(processed.status, "succeeded");
     assert.ok(catalogBeliefs > 0);
