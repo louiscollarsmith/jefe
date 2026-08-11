@@ -4,12 +4,13 @@
 // its own GoogleGenAI client from config and sends the audio as an inline part, so it doesn't
 // touch the shared text-only provider. Metered through the cost ledger (feature "voice_feedback").
 //
-// Model: defaults to the app model, overridable via VOICE_TRANSCRIBE_MODEL — because the default
-// (`gemini-3.1-flash-lite`) may or may not accept audio input. VERIFY the chosen model transcribes
-// audio before flipping ENABLE_VOICE_FEEDBACK (a go-live step); until then this is dark/unused.
+// Model: defaults to the Gemini fallback model, overridable via VOICE_TRANSCRIBE_MODEL. The shared
+// text model may be Groq-only and may not accept audio input. VERIFY the chosen Gemini model
+// transcribes audio before flipping ENABLE_VOICE_FEEDBACK (a go-live step); until then this is
+// dark/unused.
 
 import { GoogleGenAI } from "@google/genai";
-import { getLlmConfig } from "./config.server.js";
+import { DEFAULT_LLM_FALLBACK_MODEL, getLlmConfig } from "./config.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
 
 const TRANSCRIBE_PROMPT =
@@ -17,7 +18,12 @@ const TRANSCRIBE_PROMPT =
 
 /** @param {NodeJS.ProcessEnv} [env] */
 export function getVoiceTranscribeModel(env = process.env) {
-  return env.VOICE_TRANSCRIBE_MODEL || getLlmConfig().model;
+  return (
+    env.VOICE_TRANSCRIBE_MODEL ||
+    env.LLM_FALLBACK_MODEL ||
+    getLlmConfig().fallbackModel ||
+    DEFAULT_LLM_FALLBACK_MODEL
+  );
 }
 
 /** Pure: pull the transcript text out of a GoogleGenAI response (with a parts fallback). */
@@ -59,6 +65,7 @@ export async function transcribeVoiceNote(input) {
   } catch (err) {
     if (input.prisma) {
       await recordLlmUsage(input.prisma, {
+        provider: "gemini",
         model, feature: "voice_feedback", runType: "transcription", status: "error",
         merchantId: input.merchantId, shopId: input.shopId, usage: null,
       }).catch(() => {});
@@ -69,6 +76,7 @@ export async function transcribeVoiceNote(input) {
   const transcript = extractTranscript(response).trim();
   if (input.prisma) {
     await recordLlmUsage(input.prisma, {
+      provider: "gemini",
       model, feature: "voice_feedback", runType: "transcription", status: "ok",
       merchantId: input.merchantId, shopId: input.shopId,
       usage: {

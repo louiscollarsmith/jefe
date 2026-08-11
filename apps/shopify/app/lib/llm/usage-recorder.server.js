@@ -28,6 +28,7 @@ const log = baseLogger.child({ component: "llm-usage" });
  *   feature: string;
  *   runType?: string | null;
  *   runId?: string | null;
+ *   provider?: string | null;
  *   model: string;
  *   usage?: LlmUsage | null;
  *   latencyMs?: number | null;
@@ -49,7 +50,7 @@ export async function recordLlmUsage(prisma, input) {
         feature: input.feature,
         runType: input.runType ?? null,
         runId: input.runId ?? null,
-        provider: "gemini",
+        provider: input.provider || "gemini",
         model: input.model,
         inputTokens: Math.max(0, Math.round(inputTokens) || 0),
         outputTokens: Math.max(0, Math.round(outputTokens) || 0),

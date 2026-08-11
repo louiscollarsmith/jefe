@@ -1,7 +1,9 @@
 // @ts-check
 
-export const DEFAULT_LLM_PROVIDER = "gemini";
-export const DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite";
+export const DEFAULT_LLM_PROVIDER = "groq";
+export const DEFAULT_LLM_MODEL = "openai/gpt-oss-120b";
+export const DEFAULT_LLM_FALLBACK_PROVIDER = "gemini";
+export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.5-flash-lite";
 export const DEFAULT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;
@@ -9,14 +11,19 @@ export const DEFAULT_LLM_MAX_RETRIES = 1;
 
 export function getLlmConfig() {
   const geminiApiKey = process.env.GEMINI_API_KEY || "";
+  const groqApiKey = process.env.GROQ_API_KEY || "";
   const enabled =
     process.env.LLM_ENABLED === "true" ||
-    (process.env.LLM_ENABLED !== "false" && Boolean(geminiApiKey));
+    (process.env.LLM_ENABLED !== "false" && Boolean(geminiApiKey || groqApiKey));
   return {
     enabled,
     provider: process.env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
     model: process.env.LLM_MODEL || DEFAULT_LLM_MODEL,
+    fallbackProvider:
+      process.env.LLM_FALLBACK_PROVIDER || DEFAULT_LLM_FALLBACK_PROVIDER,
+    fallbackModel: process.env.LLM_FALLBACK_MODEL || DEFAULT_LLM_FALLBACK_MODEL,
     geminiApiKey,
+    groqApiKey,
     timeoutMs: positiveInteger(
       process.env.LLM_TIMEOUT_MS,
       DEFAULT_LLM_TIMEOUT_MS,

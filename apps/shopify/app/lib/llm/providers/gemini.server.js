@@ -37,6 +37,8 @@ export function createGeminiProvider(input) {
       }
 
       return {
+        provider: "gemini",
+        model: input.config.model,
         operation: parsed.operation,
         usage: result.usage,
         attempts: result.attempts,
@@ -137,6 +139,8 @@ async function generateStructuredJson(input) {
       });
 
       return {
+        provider: "gemini",
+        model: input.config.model,
         json,
         usage,
         attempts: attempt,

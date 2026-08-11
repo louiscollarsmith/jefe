@@ -16,8 +16,12 @@ test("isVoiceFeedbackEnabled reads the flag (default off)", () => {
   assert.equal(isVoiceFeedbackEnabled({}), false);
 });
 
-test("getVoiceTranscribeModel: default falls back to the app model; override wins", () => {
-  assert.equal(typeof getVoiceTranscribeModel({}), "string");
+test("getVoiceTranscribeModel: default falls back to Gemini; override wins", () => {
+  assert.equal(getVoiceTranscribeModel({}), "gemini-3.5-flash-lite");
+  assert.equal(
+    getVoiceTranscribeModel({ LLM_FALLBACK_MODEL: "gemini-audio" }),
+    "gemini-audio",
+  );
   assert.equal(getVoiceTranscribeModel({ VOICE_TRANSCRIBE_MODEL: "gemini-x-audio" }), "gemini-x-audio");
 });
 

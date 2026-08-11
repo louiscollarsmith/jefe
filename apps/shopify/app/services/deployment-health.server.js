@@ -1,5 +1,12 @@
 // @ts-check
 
+import {
+  DEFAULT_LLM_FALLBACK_MODEL,
+  DEFAULT_LLM_FALLBACK_PROVIDER,
+  DEFAULT_LLM_MODEL,
+  DEFAULT_LLM_PROVIDER,
+} from "../lib/llm/config.server.js";
+
 /**
  * Liveness payload for the `/health` route.
  *
@@ -141,7 +148,7 @@ export function buildWorkerHealth(lastTickAt, opts = {}) {
  * Non-gating: informational, never fails the check.
  *
  * @param {Record<string, string | undefined>} [env]
- * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string } }}
+ * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string } }}
  */
 export function buildDependencyHealth(env = process.env) {
   return {
@@ -150,8 +157,12 @@ export function buildDependencyHealth(env = process.env) {
     llm: {
       enabled:
         env.LLM_ENABLED === "true" ||
-        (env.LLM_ENABLED !== "false" && Boolean(env.GEMINI_API_KEY)),
-      provider: env.LLM_PROVIDER || "gemini",
+        (env.LLM_ENABLED !== "false" &&
+          Boolean(env.GEMINI_API_KEY || env.GROQ_API_KEY)),
+      provider: env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
+      model: env.LLM_MODEL || DEFAULT_LLM_MODEL,
+      fallbackProvider: env.LLM_FALLBACK_PROVIDER || DEFAULT_LLM_FALLBACK_PROVIDER,
+      fallbackModel: env.LLM_FALLBACK_MODEL || DEFAULT_LLM_FALLBACK_MODEL,
     },
   };
 }

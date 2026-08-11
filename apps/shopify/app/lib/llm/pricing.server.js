@@ -5,27 +5,28 @@
  * (`llm_usage_event.cost_usd`) and margin math: update this map and every derived cost corrects
  * itself.
  *
- * ⚠️ PLACEHOLDER / UNVERIFIED. The provider is Google **Gemini** (default model
- * `gemini-3.1-flash-lite`); Lewis holds the Gemini billing account and the real per-model rates
- * were not available when the ledger shipped (2026-07-28). Every entry is `verified: false` —
- * treat absolute costs as indicative only until the real rates are pasted in here and flipped to
- * `verified: true`. Do NOT present these numbers as fact.
+ * Pricing sources:
+ * - Groq GPT-OSS 120B: https://console.groq.com/docs/model/openai/gpt-oss-120b
+ * - Google Gemini: https://ai.google.dev/gemini-api/docs/pricing
+ *
+ * Free-tier calls are free of charge up to provider quota. The rates below are paid-tier fallback
+ * rates so the cost ledger stays conservative if the project moves onto paid usage; they are not a
+ * promise that local development will be billed.
  */
 
 /** @typedef {{ inputPer1M: number; outputPer1M: number; verified: boolean }} ModelRate */
 
 /** @type {Record<string, ModelRate>} */
 export const LLM_MODEL_PRICING = {
-  // The app default (config.DEFAULT_LLM_MODEL / env LLM_MODEL). Flash-lite tier.
-  "gemini-3.1-flash-lite": { inputPer1M: 0.1, outputPer1M: 0.4, verified: false },
-  // Add other models AS THEY'RE ACTUALLY USED, with REAL rates from Google's pricing page — e.g.
-  //   "gemini-3.1-flash": { inputPer1M: <real>, outputPer1M: <real>, verified: true },
-  //   "gemini-3.1-pro":   { inputPer1M: <real>, outputPer1M: <real>, verified: true },
-  // Deliberately left out rather than guessed — an invented rate would corrupt margin figures.
+  // App default (config.DEFAULT_LLM_MODEL / env LLM_MODEL).
+  "openai/gpt-oss-120b": { inputPer1M: 0.15, outputPer1M: 0.6, verified: true },
+  "gemini-3.5-flash": { inputPer1M: 1.5, outputPer1M: 9, verified: true },
+  "gemini-3.5-flash-lite": { inputPer1M: 0.3, outputPer1M: 2.5, verified: true },
+  "gemini-3.1-flash-lite": { inputPer1M: 0.25, outputPer1M: 1.5, verified: true },
 };
 
 /** Fallback for an unlisted model — conservative + explicitly unverified. */
-export const DEFAULT_MODEL_RATE = { inputPer1M: 0.1, outputPer1M: 0.4, verified: false };
+export const DEFAULT_MODEL_RATE = { inputPer1M: 1.5, outputPer1M: 9, verified: false };
 
 /**
  * @param {string} model

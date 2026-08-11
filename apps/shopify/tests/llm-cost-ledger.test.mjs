@@ -17,10 +17,10 @@ function fakePrisma() {
 }
 
 test("priceUsd computes cost from token counts and the pricing table", () => {
-  // flash-lite placeholder: $0.10/1M in, $0.40/1M out
-  assert.equal(priceUsd("gemini-3.1-flash-lite", 1_000_000, 1_000_000), 0.5);
-  assert.equal(priceUsd("gemini-3.1-flash-lite", 500_000, 0), 0.05);
-  assert.equal(priceUsd("gemini-3.1-flash-lite", 0, 0), 0);
+  // Groq GPT-OSS 120B: $0.15/1M in, $0.60/1M out.
+  assert.equal(priceUsd("openai/gpt-oss-120b", 1_000_000, 1_000_000), 0.75);
+  assert.equal(priceUsd("openai/gpt-oss-120b", 500_000, 0), 0.075);
+  assert.equal(priceUsd("openai/gpt-oss-120b", 0, 0), 0);
 });
 
 test("priceUsd falls back to a default for unknown models and rounds to 6dp", () => {
@@ -29,8 +29,9 @@ test("priceUsd falls back to a default for unknown models and rounds to 6dp", ()
   assert.equal(cost, Math.round(cost * 1e6) / 1e6);
 });
 
-test("pricing is flagged unverified (placeholder until real rates)", () => {
-  assert.equal(priceFor("gemini-3.1-flash-lite").verified, false);
+test("published LLM pricing is verified", () => {
+  assert.equal(priceFor("openai/gpt-oss-120b").verified, true);
+  assert.equal(priceFor("gemini-3.5-flash-lite").verified, true);
 });
 
 test("recordLlmUsage writes a ledger row with computed cost", async () => {
@@ -41,7 +42,8 @@ test("recordLlmUsage writes a ledger row with computed cost", async () => {
     feature: "insights",
     runType: "MerchantInsightRun",
     runId: "r1",
-    model: "gemini-3.1-flash-lite",
+    provider: "groq",
+    model: "openai/gpt-oss-120b",
     usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 },
     latencyMs: 1234,
     status: "ok",
@@ -49,17 +51,24 @@ test("recordLlmUsage writes a ledger row with computed cost", async () => {
   assert.equal(ok, true);
   const row = prisma.created[0];
   assert.equal(row.feature, "insights");
-  assert.equal(row.model, "gemini-3.1-flash-lite");
+  assert.equal(row.provider, "groq");
+  assert.equal(row.model, "openai/gpt-oss-120b");
   assert.equal(row.inputTokens, 1_000_000);
   assert.equal(row.outputTokens, 1_000_000);
-  assert.equal(row.costUsd, 0.5);
+  assert.equal(row.costUsd, 0.75);
   assert.equal(row.latencyMs, 1234);
   assert.equal(row.status, "ok");
 });
 
 test("recordLlmUsage tolerates missing usage (failed call) as zero cost", async () => {
   const prisma = fakePrisma();
-  await recordLlmUsage(prisma, { feature: "plan", model: "gemini-3.1-flash-lite", usage: null, status: "error" });
+  await recordLlmUsage(prisma, {
+    feature: "plan",
+    provider: "groq",
+    model: "openai/gpt-oss-120b",
+    usage: null,
+    status: "error",
+  });
   const row = prisma.created[0];
   assert.equal(row.inputTokens, 0);
   assert.equal(row.outputTokens, 0);

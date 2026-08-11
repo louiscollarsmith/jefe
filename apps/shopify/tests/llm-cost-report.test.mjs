@@ -8,8 +8,8 @@ import {
 import { shapeCostSummary, summarizeLlmCost } from "../app/lib/llm/cost-report.server.js";
 
 test("computeLlmCostUsd matches per-model rates (object API)", () => {
-  // 1M input × $0.10 + 1M output × $0.40 = 0.5  (update if the verified rate changes)
-  assert.equal(computeLlmCostUsd({ model: "gemini-3.1-flash-lite", inputTokens: 1_000_000, outputTokens: 1_000_000 }), 0.5);
+  // 1M input x $0.15 + 1M output x $0.60 = 0.75.
+  assert.equal(computeLlmCostUsd({ model: "openai/gpt-oss-120b", inputTokens: 1_000_000, outputTokens: 1_000_000 }), 0.75);
 });
 
 test("computeLlmCostUsd falls back safely for unknown models + non-finite tokens", () => {
@@ -18,29 +18,29 @@ test("computeLlmCostUsd falls back safely for unknown models + non-finite tokens
   assert.equal(c, Math.round(c * 1e6) / 1e6);
 });
 
-test("every shipped rate stays verified:false until the founder confirms real Gemini rates", () => {
+test("every shipped LLM rate is backed by published pricing", () => {
   for (const [model, r] of Object.entries(LLM_MODEL_PRICING)) {
-    assert.equal(r.verified, false, `${model} must stay verified:false until confirmed`);
+    assert.equal(r.verified, true, `${model} should use published pricing`);
   }
 });
 
 test("legacy priceUsd stays behaviourally identical (reversibility of the pricing refactor)", () => {
-  assert.equal(priceUsd("gemini-3.1-flash-lite", 500_000, 0), 0.05);
+  assert.equal(priceUsd("openai/gpt-oss-120b", 500_000, 0), 0.075);
 });
 
 test("shapeCostSummary aggregates by model + feature with totals + the verified flag", () => {
   const rows = [
-    { model: "gemini-3.1-flash-lite", feature: "insights", _sum: { costUsd: 0.5, totalTokens: 2_000_000 }, _count: { _all: 3 } },
-    { model: "gemini-3.1-flash-lite", feature: "goals", _sum: { costUsd: 0.25, totalTokens: 1_000_000 }, _count: { _all: 2 } },
+    { model: "openai/gpt-oss-120b", feature: "insights", _sum: { costUsd: 0.5, totalTokens: 2_000_000 }, _count: { _all: 3 } },
+    { model: "openai/gpt-oss-120b", feature: "goals", _sum: { costUsd: 0.25, totalTokens: 1_000_000 }, _count: { _all: 2 } },
     { model: "gemini-3.1-pro", feature: "insights", _sum: { costUsd: 1.0, totalTokens: 500_000 }, _count: { _all: 1 } },
   ];
   const s = shapeCostSummary(rows);
   assert.equal(s.totalCostUsd, 1.75);
   assert.equal(s.totalCalls, 6);
   assert.equal(s.byModel[0].model, "gemini-3.1-pro", "highest cost first");
-  assert.equal(s.byModel.find((m) => m.model === "gemini-3.1-flash-lite").costUsd, 0.75);
+  assert.equal(s.byModel.find((m) => m.model === "openai/gpt-oss-120b").costUsd, 0.75);
   assert.equal(s.byFeature.find((f) => f.feature === "insights").costUsd, 1.5);
-  assert.equal(s.allRatesVerified, false, "placeholder rates → not confirmed");
+  assert.equal(s.allRatesVerified, false, "unknown models keep the summary unverified");
 });
 
 test("shapeCostSummary is defensive against empty / malformed input", () => {
@@ -55,7 +55,7 @@ test("summarizeLlmCost builds the groupBy (window) + shapes it (mock prisma)", a
     llmUsageEvent: {
       groupBy: async (args) => {
         captured = args;
-        return [{ model: "gemini-3.1-flash-lite", feature: "insights", _sum: { costUsd: 0.5, totalTokens: 100 }, _count: { _all: 1 } }];
+        return [{ model: "openai/gpt-oss-120b", feature: "insights", _sum: { costUsd: 0.5, totalTokens: 100 }, _count: { _all: 1 } }];
       },
     },
   };
@@ -64,5 +64,5 @@ test("summarizeLlmCost builds the groupBy (window) + shapes it (mock prisma)", a
   assert.deepEqual(captured.by, ["model", "feature"]);
   assert.equal(captured.where.createdAt.gte, since);
   assert.equal(s.totalCostUsd, 0.5);
-  assert.equal(s.byModel[0].model, "gemini-3.1-flash-lite");
+  assert.equal(s.byModel[0].model, "openai/gpt-oss-120b");
 });

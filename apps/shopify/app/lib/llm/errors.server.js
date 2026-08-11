@@ -21,6 +21,21 @@ export class LlmOutputValidationError extends Error {
   }
 }
 
+export class LlmProviderHttpError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ provider?: string; status?: number | null; code?: string | number | null; retryAfter?: string | null }} [metadata]
+   */
+  constructor(message, metadata = {}) {
+    super(message);
+    this.name = "LlmProviderHttpError";
+    this.provider = metadata.provider ?? null;
+    this.status = metadata.status ?? null;
+    this.code = metadata.code ?? null;
+    this.retryAfter = metadata.retryAfter ?? null;
+  }
+}
+
 /**
  * @param {string} text
  */

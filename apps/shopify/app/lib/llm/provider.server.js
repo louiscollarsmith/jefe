@@ -1,8 +1,13 @@
 // @ts-check
 
 import { getLlmConfig } from "./config.server.js";
-import { LlmDisabledError } from "./errors.server.js";
+import {
+  LlmDisabledError,
+  LlmInputLimitError,
+  LlmOutputValidationError,
+} from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
+import { createGroqProvider } from "./providers/groq.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
 
@@ -18,18 +23,159 @@ export function createLlmProvider(input = {}) {
   if (!config.enabled) {
     return createDisabledProvider(config);
   }
-  if (config.provider !== "gemini") {
-    throw new Error(`Unsupported LLM_PROVIDER: ${config.provider}`);
-  }
-  if (!config.geminiApiKey) {
-    throw new Error("GEMINI_API_KEY is required when LLM_ENABLED=true.");
-  }
   // Default to the structured logger (tagged for filtering) when a caller does
   // not inject one. The provider only ever logs request metadata — token
   // counts, timings and error names — never prompt or response bodies.
   const logger = input.logger ?? baseLogger.child({ component: "llm" });
-  const provider = createGeminiProvider({ config, logger });
+  const primary = createProviderForTarget({
+    config,
+    logger,
+    provider: config.provider,
+    model: config.model,
+  });
+  const fallback = createFallbackProvider(config, logger);
+  if (!primary) {
+    if (fallback) {
+      logger.warn("Primary LLM provider is not configured; using fallback", {
+        provider: config.provider,
+        model: config.model,
+        fallbackProvider: fallback.provider,
+        fallbackModel: fallback.model,
+      });
+      return input.usage ? withUsageRecording(fallback, input.usage) : fallback;
+    }
+    throw missingApiKeyError(config.provider);
+  }
+
+  const provider = fallback
+    ? withFallbackProvider(primary, fallback, logger)
+    : primary;
   return input.usage ? withUsageRecording(provider, input.usage) : provider;
+}
+
+/**
+ * @param {{ config: any; logger: Pick<Console, "info" | "warn" | "error">; provider: string; model: string }} input
+ * @returns {LlmProvider | null}
+ */
+function createProviderForTarget(input) {
+  const { config, logger, provider, model } = input;
+  const targetConfig = { ...config, provider, model };
+  if (provider === "gemini") {
+    return config.geminiApiKey
+      ? createGeminiProvider({ config: targetConfig, logger })
+      : null;
+  }
+  if (provider === "groq") {
+    return config.groqApiKey
+      ? createGroqProvider({ config: targetConfig, logger })
+      : null;
+  }
+  throw new Error(`Unsupported LLM_PROVIDER: ${provider}`);
+}
+
+/**
+ * @param {any} config
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ * @returns {LlmProvider | null}
+ */
+function createFallbackProvider(config, logger) {
+  if (!config.fallbackProvider || !config.fallbackModel) return null;
+  if (
+    config.fallbackProvider === config.provider &&
+    config.fallbackModel === config.model
+  ) {
+    return null;
+  }
+  return createProviderForTarget({
+    config,
+    logger,
+    provider: config.fallbackProvider,
+    model: config.fallbackModel,
+  });
+}
+
+/**
+ * @param {string} provider
+ */
+function missingApiKeyError(provider) {
+  if (provider === "groq") {
+    return new Error("GROQ_API_KEY is required when LLM_ENABLED=true.");
+  }
+  if (provider === "gemini") {
+    return new Error("GEMINI_API_KEY is required when LLM_ENABLED=true.");
+  }
+  return new Error(`API key is required for LLM_PROVIDER=${provider}.`);
+}
+
+/**
+ * @param {LlmProvider} primary
+ * @param {LlmProvider} fallback
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ * @returns {LlmProvider}
+ */
+export function withFallbackProvider(primary, fallback, logger) {
+  /**
+   * @param {"generateStructuredOperation" | "generateStructuredJson"} methodName
+   * @returns {(request: any) => Promise<any>}
+   */
+  const wrap = (methodName) => async (request) => {
+    const primaryMethod = /** @type {any} */ (primary[methodName]);
+    if (!primaryMethod) {
+      throw new Error(`LLM provider does not support ${methodName}.`);
+    }
+    try {
+      return await primaryMethod.call(primary, request);
+    } catch (error) {
+      if (!isLlmFallbackError(error)) throw error;
+      const fallbackMethod = /** @type {any} */ (fallback[methodName]);
+      if (!fallbackMethod) throw error;
+      logger.warn("LLM primary provider failed; using fallback", {
+        provider: primary.provider,
+        model: primary.model,
+        fallbackProvider: fallback.provider,
+        fallbackModel: fallback.model,
+        error: safeErrorName(error),
+        statusCode:
+          /** @type {{ status?: unknown }} */ (error ?? {}).status ?? null,
+      });
+      const result = await fallbackMethod.call(fallback, request);
+      return {
+        ...result,
+        fallback: {
+          fromProvider: primary.provider,
+          fromModel: primary.model,
+        },
+      };
+    }
+  };
+  return /** @type {LlmProvider} */ ({
+    ...primary,
+    fallbackProvider: fallback.provider,
+    fallbackModel: fallback.model,
+    generateStructuredOperation: wrap("generateStructuredOperation"),
+    generateStructuredJson: primary.generateStructuredJson && fallback.generateStructuredJson
+      ? wrap("generateStructuredJson")
+      : undefined,
+  });
+}
+
+/**
+ * @param {unknown} error
+ */
+export function isLlmFallbackError(error) {
+  if (error instanceof LlmOutputValidationError) return false;
+  if (error instanceof LlmInputLimitError) return false;
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  const status = Number(
+    /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).status ??
+      /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).code,
+  );
+  if (status === 429 || status === 498) return true;
+  if (status >= 500 && status <= 599) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /rate limit|too many requests|capacity|timeout|timed out|network|fetch failed|ECONNRESET/i.test(
+    message,
+  );
 }
 
 /**
@@ -53,12 +199,15 @@ function withUsageRecording(provider, ctx) {
       feature: ctx.feature,
       runType: ctx.runType,
       runId: ctx.runId,
+      provider: provider.provider,
       model: provider.model,
     };
     try {
       const result = await method(request);
       void recordLlmUsage(ctx.prisma, {
         ...base,
+        provider: result.provider ?? base.provider,
+        model: result.model ?? base.model,
         usage: result.usage,
         latencyMs: result.durationMs,
         status: "ok",
@@ -81,7 +230,7 @@ function withUsageRecording(provider, ctx) {
 }
 
 /**
- * @param {ReturnType<typeof getLlmConfig>} config
+ * @param {any} config
  */
 export function createDisabledProvider(config) {
   return {
@@ -119,6 +268,8 @@ export function createMockLlmProvider(input) {
       }
       if (input.error) throw input.error;
       return {
+        provider: "mock",
+        model: "mock-structured-operation",
         operation: input.operation,
         usage: input.usage ?? {
           inputTokens: 10,
@@ -138,6 +289,8 @@ export function createMockLlmProvider(input) {
       }
       if (input.error) throw input.error;
       return {
+        provider: "mock",
+        model: "mock-structured-operation",
         json: input.operation,
         usage: input.usage ?? {
           inputTokens: 10,
@@ -157,6 +310,8 @@ export function createMockLlmProvider(input) {
  *   provider: string;
  *   model: string;
  *   enabled: boolean;
+ *   fallbackProvider?: string;
+ *   fallbackModel?: string;
  *   generateStructuredOperation: (request: {
  *     systemPrompt: string;
  *     prompt: string;
@@ -165,6 +320,8 @@ export function createMockLlmProvider(input) {
  *     maxOutputTokens?: number;
  *     timeoutMs?: number;
  *   }) => Promise<{
+ *     provider?: string;
+ *     model?: string;
  *     operation: any;
  *     usage: {
  *       inputTokens?: number | null;
@@ -174,6 +331,7 @@ export function createMockLlmProvider(input) {
  *     };
  *     attempts: number;
  *     durationMs: number;
+ *     fallback?: { fromProvider: string; fromModel: string };
  *   }>;
  *   generateStructuredJson?: (request: {
  *     systemPrompt: string;
@@ -183,6 +341,8 @@ export function createMockLlmProvider(input) {
  *     maxOutputTokens?: number;
  *     timeoutMs?: number;
  *   }) => Promise<{
+ *     provider?: string;
+ *     model?: string;
  *     json: any;
  *     usage: {
  *       inputTokens?: number | null;
@@ -192,6 +352,14 @@ export function createMockLlmProvider(input) {
  *     };
  *     attempts: number;
  *     durationMs: number;
+ *     fallback?: { fromProvider: string; fromModel: string };
  *   }>;
  * }} LlmProvider
  */
+
+/**
+ * @param {unknown} error
+ */
+function safeErrorName(error) {
+  return error instanceof Error ? error.name : "UnknownError";
+}
