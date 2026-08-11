@@ -3,11 +3,11 @@ import { DailyHome } from "../components/daily-home";
 import { SAMPLE_APP_HOME } from "../components/app-home/sample";
 import { R } from "../components/app-home/register";
 
-// Public design-preview of the redesigned app home in the "13a" register — a review asset
-// like /cinematic and /daily. It renders the REAL production components (AppHome13a +
-// sections + primitives) with illustrative sample data, so what you review here is the
-// actual component output, not a throwaway mock. Public (no auth, no App Bridge), never
-// shown to a merchant; the sample "Everdew" data is illustrative.
+// Public design-preview of the app home — a review asset like /cinematic and /daily. It
+// renders the REAL production DailyHome brief with illustrative sample data, so what you
+// review here is the actual component output, not a throwaway mock. Public (no auth, no
+// App Bridge), never shown to a merchant; the sample "Everdew" data is illustrative.
+// (The "13a" AppHome13a shell is shelved, not deleted — the live home is the DailyHome brief.)
 //
 // It's a normal hydrated route so section-switching works and the wired <Form> controls
 // have router context. The no-op action below keeps the preview's mode-picker POSTs inert

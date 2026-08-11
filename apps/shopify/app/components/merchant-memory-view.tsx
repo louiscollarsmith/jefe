@@ -12,11 +12,17 @@ import {
   TextField,
 } from "@shopify/polaris";
 
-// Presentation-only. The loader (`getMerchantMemoryView` in app._index) shapes
-// each belief into display-ready rows — including `statusLabel` / `statusTone`
-// — so this component carries no formatting helpers and code-splits cleanly out
-// of the route module. Its data contract is declared explicitly here; any drift
-// from the loader's return shape is caught at the render/call site in app._index.
+// The reachable Merchant Memory surface (?view=memory). After the action-chat home
+// redesign this is the ONLY place a merchant reaches Merchant Memory, so the founder's
+// call is: make correction work here, entirely through the free-text composer — no
+// per-belief buttons. So this view is deliberately conversational:
+//   • it renders what Jefe believes in plain English (the `statement` + provenance the
+//     loader computes), ordered by how much each is worth confirming (`confirmPriority`);
+//   • it surfaces the open questions only the merchant can answer;
+//   • and the ONE input is the composer, which posts `memory.message` →
+//     sendConversationMessage → interpret/validate/commit (confirm / correct / answer,
+//     and — once the interpreter's obsolete op lands — forget).
+// Presentation-only: the loader shapes each belief; this component just renders it.
 
 type MemoryBelief = {
   id: string;
@@ -28,6 +34,13 @@ type MemoryBelief = {
   evidenceSummary: string | null;
   statusLabel: string;
   statusTone: "success" | "attention" | "info";
+  // Rich fields getMerchantMemoryView now computes — plain-English statement in Jefe's
+  // voice, a provenance line, and a confirm-priority (higher = more worth your eyes).
+  statement?: string | null;
+  sourceLine?: string | null;
+  authorship?: "merchant" | "jefe" | null;
+  confirmState?: "settled" | "unsure" | null;
+  confirmPriority?: number;
 };
 
 type MemoryData = {
@@ -38,8 +51,13 @@ type MemoryData = {
   }>;
 };
 
+type OpenQuestion = { id: string; question: string; reason: string | null };
+
 type MemoryConversation = {
   messages: Array<{ id: string; role: string; content: string }>;
+  // getMerchantMemoryConversationExperience surfaces the top open questions in its summary
+  // (already capped, so this stays a short, paced list — not a wall).
+  summary?: { openQuestions?: OpenQuestion[] | null } | null;
 };
 
 export function MerchantMemoryView({
@@ -55,6 +73,16 @@ export function MerchantMemoryView({
 }) {
   const [message, setMessage] = useState("");
   const messages = (conversation?.messages ?? []).slice(-6);
+  const openQuestions = conversation?.summary?.openQuestions ?? [];
+  // Highest confirm-priority first, so what's most worth your eyes leads; settled beliefs
+  // (priority 0) sink to the bottom of each group as browsable reference.
+  const groups = memory.groups.map((group) => ({
+    ...group,
+    beliefs: [...group.beliefs].sort(
+      (a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0),
+    ),
+  }));
+
   return (
     <main className="JefeMemoryView">
       <BlockStack gap="600">
@@ -74,13 +102,14 @@ export function MerchantMemoryView({
         <Card>
           <BlockStack gap="300">
             <Text as="h2" variant="headingMd">
-              Tell me what&apos;s wrong or missing
+              Talk to me — I&apos;ll update what I know
             </Text>
             <Text as="p" tone="subdued">
-              Correct me in plain English — &ldquo;most of my sales are
-              wholesale,&rdquo; &ldquo;my cost on hoodies is £14&rdquo; — and
-              I&apos;ll update what I know. A correction from you outranks
-              anything I&apos;ve only inferred.
+              Everything here you can change just by telling me, in plain English.
+              Confirm something (&ldquo;that&apos;s right&rdquo;), correct it
+              (&ldquo;most of my sales are wholesale, not retail&rdquo;), or answer
+              one of the questions below. A correction from you outranks anything
+              I&apos;ve only inferred.
             </Text>
             {messages.length > 0 ? (
               <BlockStack gap="150">
@@ -100,12 +129,12 @@ export function MerchantMemoryView({
               <input type="hidden" name="intent" value="memory.message" />
               <BlockStack gap="200">
                 <TextField
-                  label="Correct Jefe"
+                  label="Tell Jefe"
                   labelHidden
                   name="message"
                   value={message}
                   onChange={setMessage}
-                  placeholder="e.g. Most of my sales are wholesale, not retail"
+                  placeholder="e.g. That's right — or, most of my sales are wholesale, not retail"
                   multiline={3}
                   autoComplete="off"
                 />
@@ -119,7 +148,42 @@ export function MerchantMemoryView({
           </BlockStack>
         </Card>
 
-        {memory.groups.length === 0 ? (
+        {openQuestions.length > 0 ? (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingMd">
+                A few things only you can tell me
+              </Text>
+              <Text as="p" tone="subdued">
+                Answer any of these in the box above — it&apos;s the fastest way
+                to sharpen what I know.
+              </Text>
+              <BlockStack gap="200">
+                {openQuestions.map((question) => (
+                  <Box
+                    key={question.id}
+                    paddingBlockEnd="200"
+                    borderBlockEndWidth="025"
+                    borderColor="border"
+                  >
+                    <BlockStack gap="050">
+                      <Text as="p" fontWeight="semibold">
+                        {question.question}
+                      </Text>
+                      {question.reason ? (
+                        <Text as="p" tone="subdued">
+                          {question.reason}
+                        </Text>
+                      ) : null}
+                    </BlockStack>
+                  </Box>
+                ))}
+              </BlockStack>
+            </BlockStack>
+          </Card>
+        ) : null}
+
+        {groups.length === 0 ? (
           <Card>
             <Text as="p">
               Merchant Memory is still being built. Come back once Shopify
@@ -128,7 +192,7 @@ export function MerchantMemoryView({
           </Card>
         ) : (
           <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-            {memory.groups.map((group) => (
+            {groups.map((group) => (
               <Card key={group.category}>
                 <BlockStack gap="300">
                   <Text as="h2" variant="headingMd">
@@ -145,14 +209,22 @@ export function MerchantMemoryView({
                         <BlockStack gap="100">
                           <InlineStack align="space-between" gap="300">
                             <Text as="p" fontWeight="semibold">
-                              {belief.title}
+                              {belief.statement || belief.title}
                             </Text>
                             <Badge tone={belief.statusTone}>
                               {belief.statusLabel}
                             </Badge>
                           </InlineStack>
-                          <Text as="p">{belief.value}</Text>
-                          {belief.evidenceSummary ? (
+                          {/* With a plain-English statement the raw value is redundant;
+                              show it only as the fallback when no statement exists. */}
+                          {belief.statement ? null : (
+                            <Text as="p">{belief.value}</Text>
+                          )}
+                          {belief.sourceLine ? (
+                            <Text as="p" tone="subdued">
+                              {belief.sourceLine}
+                            </Text>
+                          ) : belief.evidenceSummary ? (
                             <Text as="p" tone="subdued">
                               {belief.evidenceSummary}
                             </Text>
