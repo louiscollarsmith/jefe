@@ -770,6 +770,8 @@ function inventoryResult(request, dataset, source) {
     const bucket = grouped.get(key) ?? {
       dimensions: group.dimensions,
       label: group.label,
+      productId: product?.id ?? variant.productId ?? null,
+      title: safeText(product?.title, 180) || group.label,
       available: 0,
       retailValue: 0,
       trappedCapital: 0,
@@ -791,13 +793,15 @@ function inventoryResult(request, dataset, source) {
   }
   const unitsByProduct = unitsSoldByProduct(dataset.lineItems, dataset);
   const rows = [...grouped.values()].map((bucket) => {
-    const productId = bucket.dimensions.productId ?? bucket.dimensions.product;
+    const productId = bucket.productId ?? bucket.dimensions.productId ?? bucket.dimensions.product;
     const unitsSold = productId ? number(unitsByProduct.get(String(productId))) : 0;
     const dailyUnits = unitsSold / Math.max(number(request.window.days), 1);
     const stockCoverDays = dailyUnits > 0 ? bucket.available / dailyUnits : null;
     return {
       dimensions: bucket.dimensions,
       label: bucket.label,
+      productId: bucket.productId ?? null,
+      title: bucket.title,
       value:
         request.measure === "inventory_units"
           ? round(bucket.available)
