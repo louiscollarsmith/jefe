@@ -66,7 +66,7 @@ Historical context, reset audits and previous product prompts live under `docs/a
 - Land work by pushing the worktree directly: `git push origin HEAD:main`. If rejected, `git fetch origin main && git rebase origin/main`, **re-run preflight**, then push again.
 - **Never leave commits on the local `main` branch.** Committing to the shared main checkout without pushing diverges your work the instant anyone else pushes — it then can't cleanly rebase and blocks every session using that checkout. (This stranded two commits on 2026-07-30.) Keep the main checkout reset to `origin/main`; treat it read-only.
 
-**Preflight before EVERY push — no exceptions.** Run `bash scripts/preflight.sh` (prisma generate → typecheck → lint → test → build); push only if green. Enable the structural backstop once (shared across all worktrees): `git config core.hooksPath .githooks`.
+**Local iteration is fast; preflight is the integration gate.** Run the dev server / hot reload to visualise UI and backend changes, and use focused checks while coding. Do **not** run the full suite after every local edit just to inspect the app. Run `bash scripts/preflight.sh` (prisma generate → typecheck → lint → test → build) before pushing/merging to `origin/main`; push only if green. Enable the structural backstop once (shared across all worktrees): `git config core.hooksPath .githooks`.
 - **Re-run preflight after ANY rebase/fetch that moved your base.** A sibling's commit can delete a symbol you import (a JS missing-export passes typecheck **and** build, failing only at runtime/test) or trip a consistency guard. A pre-rebase green gate is void post-rebase.
 - **"It's just config/docs" is NOT an exception** — guard tests assert config (scope declarations, cross-file consistency). Two red-mains on 2026-07-30 came from skipping the gate on a rebase and on a "config-only" edit.
 
@@ -114,5 +114,5 @@ For UI work, state:
 - Update `apps/shopify/CHANGELOG.md` using today's UK/London date.
 - Use merchant/operator-facing language.
 - Confirm new server code is observable: it logs through the structured logger, captures/propagates errors to the central hooks, and (for any new endpoint, service or dependency) has a health or self-check. See `apps/shopify/docs/observability.md`.
-- Run `bash scripts/preflight.sh` (prisma generate, typecheck, lint, tests, build) before pushing — and **again after any rebase**. Push only if green.
+- Run `bash scripts/preflight.sh` (prisma generate, typecheck, lint, tests, build) only for the integration gate: before pushing/merging — and **again after any rebase**. For local visual checks, keep the dev server running and report any focused checks instead of the full suite. Push only if green.
 - Summarise changes, risks, follow-up work and any checks that could not be run.

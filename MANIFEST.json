@@ -33,11 +33,12 @@
   ],
   "archive": "docs/archive/",
   "shopify_app": "apps/shopify",
-  "checks": [
-    "cd apps/shopify && npm run typecheck",
-    "cd apps/shopify && npm run lint",
-    "cd apps/shopify && npm test",
-    "cd apps/shopify && npm run build",
+  "local_iteration": {
+    "run": "cd apps/shopify && npm run dev",
+    "policy": "Use the dev server and focused checks while iterating locally. Do not run the full suite just to visualise UI or backend changes."
+  },
+  "merge_checks": [
+    "bash scripts/preflight.sh",
     "cd tools/synthetic-shopify && npm test"
   ]
 }

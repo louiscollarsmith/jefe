@@ -47,13 +47,21 @@ npm run dev
 
 `npm run dev` starts Shopify's standard local embedded app server. Use `npm run dev:split-worker` when you want the web server and Shopify import worker in separate processes while debugging first-install backfills.
 
-Useful checks:
+For fast local iteration, leave `npm run dev` running and use hot reload. Do not run the full suite just to visualise each UI or backend change.
+
+Focused checks while coding:
 
 ```bash
 cd apps/shopify
 npm run typecheck
 npm run lint
 npm test
+```
+
+Before a push or merge candidate, run the full gate:
+
+```bash
+bash scripts/preflight.sh
 ```
 
 ## Current Execution Focus
