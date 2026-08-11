@@ -10,3 +10,5 @@ apps/marketing/.env
 apps/marketing/.env.*
 tools/synthetic-shopify/.env
 tools/synthetic-shopify/.env.*
+tools/quiver-corpus/.env
+tools/quiver-corpus/.env.*

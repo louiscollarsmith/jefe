@@ -2,10 +2,13 @@
 
 ## 2026-08-12
 
+### Added
+
+- **Real merchants can now be replayed through Jefe as simulated stores.** Added `tools/quiver-corpus`, which maps orders from Quiver's Redshift warehouse into Jefe's canonical commerce records so the existing pipeline — deterministic beliefs, evidence, insights, goals, plan and action chat — can be run against real businesses and inspected in Ops, without a parallel pipeline or a bespoke parser. Corpus stores are structurally isolated from real tenants: they use a `quiver_sim` platform and an unresolvable `*.corpus.invalid` domain, so they carry no Shopify session or token and the action layer cannot write to any store from one. Customer emails are pseudonymised with a required salt, personal columns are off unless explicitly enabled, and Quiver's full stringified platform payload is never carried. The mapping layer and its write guards are built and covered by 18 tests; the data pull itself is still waiting on Metabase access, and the gaps in what Quiver can tell us — no stock, no cost, no per-line prices — are stamped onto every corpus store so a belief is never built on absence. `tools/quiver-corpus/`, `MANIFEST.json`, `.worktreeinclude`.
+
 ### Changed
 
 - **Memory correction works again after the home redesign — through the free-text composer.** The action-chat home redesign (PRs #65–79) orphaned the 13a Memory correction controls: the `memory.*` handlers + `beliefConfirmPriority`/authorship/`confirmState`/`sourceLine`/`statement` all still compute server-side, but nothing rendered them, so merchants could no longer confirm/correct/answer — only a bare free-text box. Per the founder's call — make it work *within the free-text composer*, not with per-belief buttons — the reachable Merchant Memory view (`?view=memory`) is now conversational: it renders Jefe's beliefs in **plain English with provenance** (the `statement`/`sourceLine` the loader already computed and this view ignored), **orders them by `confirmPriority`** (most worth confirming first), and **surfaces the open questions** only the merchant can answer. So a merchant confirms ("that's right"), corrects ("most of my sales are wholesale") or answers a question just by typing, and `memory.message` → `sendConversationMessage` interprets and commits it. No new buttons — the composer stays the single input. **Forget-by-typing is the one remaining gap:** it needs an `obsolete_belief` operation in the interpreter (chat 9's lane, coordinated) since the conversational path has no obsolete op today. `app/components/merchant-memory-view.tsx`.
-
 ## 2026-08-11
 
 ### Changed

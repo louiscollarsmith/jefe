@@ -39,6 +39,7 @@
   },
   "merge_checks": [
     "bash scripts/preflight.sh",
-    "cd tools/synthetic-shopify && npm test"
+    "cd tools/synthetic-shopify && npm test",
+    "cd tools/quiver-corpus && npm test"
   ]
 }
