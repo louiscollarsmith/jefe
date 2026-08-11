@@ -133,6 +133,331 @@ export function formatVitalValue(metric, value) {
     : `${Math.round(Number(value))}ms`;
 }
 
+/** @param {unknown} v */
+function n(v) {
+  const value = Number(v ?? 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** @param {unknown} value */
+function record(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : null;
+}
+
+/**
+ * Classify one merchant for the ops header. The inputs are already aggregate,
+ * PII-free counts from read-only SQL.
+ *
+ * @param {{
+ *   shop?: { status?: string | null, onboarding_completed_at?: unknown, onboardingCompletedAt?: unknown, backfill_completed_at?: unknown, backfillCompletedAt?: unknown } | null,
+ *   reliabilityEvents24h?: number,
+ *   failedGenerationRuns?: number,
+ *   failedMemoryRuns?: number,
+ *   failedActions?: number,
+ *   failedActionWrites?: number,
+ *   staleMemory?: boolean,
+ *   activeBeliefCount?: number
+ * }} input
+ */
+export function classifyMerchantHealth(input = {}) {
+  const shop = input.shop ?? null;
+  if (!shop) {
+    return {
+      state: "no_record",
+      label: "no record",
+      severity: "muted",
+      summary: "No shop record found; showing activity only.",
+    };
+  }
+  if (shop.status === "uninstalled") {
+    return {
+      state: "churned",
+      label: "churned",
+      severity: "warn",
+      summary: "Shop is uninstalled.",
+    };
+  }
+
+  const failures =
+    n(input.reliabilityEvents24h) +
+    n(input.failedGenerationRuns) +
+    n(input.failedMemoryRuns) +
+    n(input.failedActions) +
+    n(input.failedActionWrites);
+  const missingMemory =
+    (shop.backfill_completed_at || shop.backfillCompletedAt) && n(input.activeBeliefCount) === 0;
+  if (failures > 0 || input.staleMemory || missingMemory) {
+    return {
+      state: "needs_attention",
+      label: "needs attention",
+      severity: "warn",
+      summary: failures > 0
+        ? `${failures} live issue${failures === 1 ? "" : "s"} detected.`
+        : input.staleMemory
+          ? "Merchant Memory has not refreshed recently."
+          : "Backfill finished but no active Merchant Memory beliefs were found.",
+    };
+  }
+
+  if (!(shop.onboarding_completed_at || shop.onboardingCompletedAt) || !(shop.backfill_completed_at || shop.backfillCompletedAt)) {
+    return {
+      state: "not_ready",
+      label: "not ready",
+      severity: "info",
+      summary: "Install is still moving through onboarding or evidence backfill.",
+    };
+  }
+
+  return {
+    state: "healthy",
+    label: "healthy",
+    severity: "good",
+    summary: "No live issues detected.",
+  };
+}
+
+const ACTION_STATUS_LABELS = {
+  proposed: "Proposed",
+  approved: "Approved",
+  applied: "Applied",
+  partially_applied: "Partially applied",
+  reverted: "Reverted",
+  failed: "Failed",
+  superseded: "Superseded",
+  rejected: "Rejected",
+};
+
+/** @param {string | null | undefined} status */
+export function actionStatusLabel(status) {
+  if (!status) return "Unknown";
+  return ACTION_STATUS_LABELS[status] || String(status).replaceAll("_", " ");
+}
+
+/** @param {string | null | undefined} status */
+export function actionStatusSeverity(status) {
+  if (status === "failed" || status === "partially_applied") return "warn";
+  if (status === "applied") return "good";
+  if (status === "reverted" || status === "rejected" || status === "superseded") return "muted";
+  return "info";
+}
+
+/**
+ * @param {{ status?: string | null, outcomeStatus?: string | null, outcome?: unknown, error?: string | null }} action
+ * @param {string} [currency]
+ */
+export function actionProgressLabel(action = {}, currency = "GBP") {
+  const status = action.status ?? "unknown";
+  if (status === "proposed") return "Proposed - waiting for approval or autonomy.";
+  if (status === "approved") return "Approved - waiting for execution.";
+  if (status === "failed") {
+    return action.error ? `Failed - ${String(action.error).slice(0, 120)}` : "Failed.";
+  }
+  if (status === "rejected") return "Rejected by merchant; no store write made.";
+  if (status === "superseded") return "Superseded by a newer proposal.";
+  if (status === "reverted") return "Reverted; previous values restored where recorded.";
+  if (status === "applied" || status === "partially_applied") {
+    const outcome =
+      action.outcomeStatus === "measured"
+        ? formatActionOutcome(action.outcome, currency)
+        : "No measured outcome recorded yet.";
+    return `${actionStatusLabel(status)} - ${outcome}`;
+  }
+  return actionStatusLabel(status);
+}
+
+/**
+ * Compact, honest display for a plan success signal.
+ * @param {unknown} signal
+ */
+export function formatSuccessSignal(signal) {
+  const sig = record(signal);
+  if (!sig) return "No success signal recorded.";
+  const description = typeof sig.description === "string" ? sig.description.trim() : "";
+  const target = typeof sig.target === "string" ? sig.target.trim() : "";
+  const timeframe = typeof sig.timeframe === "string" ? sig.timeframe.trim() : "";
+  const parts = [];
+  if (description) parts.push(description);
+  if (target) parts.push(`target: ${target}`);
+  if (timeframe) parts.push(timeframe);
+  return parts.length ? parts.join(" · ") : "No success signal recorded.";
+}
+
+/**
+ * Compact display for an action outcome. Returns an explicit empty state when
+ * the ledger has not measured the action yet.
+ * @param {unknown} outcome
+ * @param {string} [currency]
+ */
+export function formatActionOutcome(outcome, currency = "GBP") {
+  const out = record(outcome);
+  if (!out) return "No measured outcome recorded yet.";
+  const variantsCleared = n(out.variantsCleared);
+  const variantsSold = n(out.variantsSold);
+  const unitsMoved = n(out.unitsMoved);
+  const recovered = n(out.revenueRecovered);
+  const effectiveness = n(out.effectivenessRatePercent);
+  const parts = [];
+  if (variantsCleared || variantsSold) {
+    parts.push(`${variantsSold} of ${variantsCleared} cleared product${variantsCleared === 1 ? "" : "s"} sold`);
+  }
+  if (unitsMoved) parts.push(`${unitsMoved} unit${unitsMoved === 1 ? "" : "s"} moved`);
+  if (recovered) parts.push(`${money(recovered, currency)} recovered`);
+  if (effectiveness) parts.push(`${Math.round(effectiveness)}% effectiveness`);
+  return parts.length ? parts.join(" · ") : "No measured outcome recorded yet.";
+}
+
+/**
+ * Compact display for the persisted proposal snapshot. It never re-computes the
+ * opportunity; it only reports the values saved with the action row.
+ * @param {unknown} summary
+ * @param {string} [currency]
+ */
+export function formatProposalSummary(summary, currency = "GBP") {
+  const s = record(summary);
+  if (!s) return "No proposal summary recorded.";
+  const variants = n(s.variantCount);
+  const markdown = Number(s.markdownPercent);
+  const trapped = n(s.totalTrappedCapital);
+  const recovery = n(s.totalProjectedRecovery);
+  const parts = [];
+  if (variants) parts.push(`${variants} product${variants === 1 ? "" : "s"}`);
+  if (Number.isFinite(markdown)) parts.push(`-${Math.round(markdown)}%`);
+  if (trapped) parts.push(`${money(trapped, currency)} tied up`);
+  if (recovery) parts.push(`${money(recovery, currency)} projected recovery`);
+  return parts.length ? parts.join(" · ") : "No proposal summary recorded.";
+}
+
+/**
+ * Display action_execution_writes grouped counts.
+ * @param {Array<{ status?: string | null, n?: number | string | null }> | Record<string, unknown> | null | undefined} counts
+ */
+export function formatWriteCounts(counts) {
+  /** @type {Record<string, number>} */
+  const byStatus = {};
+  if (Array.isArray(counts)) {
+    for (const row of counts) {
+      const status = row?.status ? String(row.status) : "unknown";
+      byStatus[status] = (byStatus[status] ?? 0) + n(row?.n);
+    }
+  } else if (counts && typeof counts === "object") {
+    for (const [status, value] of Object.entries(counts)) byStatus[status] = n(value);
+  }
+  const labels = [
+    ["pending", "pending"],
+    ["applied", "applied"],
+    ["skipped_drift", "drift skipped"],
+    ["failed", "failed"],
+    ["unknown", "unknown"],
+  ];
+  const parts = labels
+    .filter(([status]) => byStatus[status] > 0)
+    .map(([status, label]) => `${byStatus[status]} ${label}`);
+  return parts.length ? parts.join(" · ") : "No writes recorded.";
+}
+
+/**
+ * Render a bounded conversation snippet for Ops. Merchant turns prefer the
+ * server-written safe summary; assistant turns prefer the actual saved reply,
+ * since summaries for action chat replies often only say "LLM action-scoped
+ * reply" and hide the operator-relevant answer.
+ * @param {{ role?: string | null, safe_summary?: string | null, safeSummary?: string | null, content?: string | null } | null | undefined} message
+ * @param {number} [max]
+ */
+const GENERIC_ACTION_REPLY_SUMMARIES = new Set([
+  "llm action-scoped reply.",
+  "fallback action-scoped reply.",
+]);
+
+/** @param {unknown} value */
+function isGenericActionReplySummary(value) {
+  return GENERIC_ACTION_REPLY_SUMMARIES.has(String(value ?? "").trim().toLowerCase());
+}
+
+export function formatConversationSnippet(message, max = 320) {
+  const isAssistant = String(message?.role || "").toLowerCase() === "assistant";
+  const summary = message?.safe_summary ?? message?.safeSummary;
+  const content = message?.content;
+  const text = String(
+    (isAssistant || isGenericActionReplySummary(summary)) && content
+      ? content
+      : summary ?? content ?? "",
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "No message content recorded.";
+  const limit = Number.isFinite(Number(max)) && Number(max) > 20 ? Number(max) : 320;
+  return text.length > limit ? `${text.slice(0, limit - 3).trimEnd()}...` : text;
+}
+
+/**
+ * Shorten stable IDs enough for an operator to compare rows without turning the
+ * chat card into a UUID dump. Full IDs remain in the DB and URL params.
+ * @param {unknown} value
+ */
+export function shortRef(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
+  return s.length > 12 ? s.slice(0, 12) : s;
+}
+
+/** @param {unknown} value */
+function stringField(value) {
+  const s = typeof value === "string" ? value.trim() : "";
+  return s || "";
+}
+
+/**
+ * Format the indirect plan/action chat association stored on
+ * merchant_memory_conversations.context_json. Action chats are keyed by topic,
+ * while the resolved recommendation/action IDs are persisted in context_json.
+ *
+ * @param {unknown} context
+ * @param {string} [topic]
+ */
+export function formatConversationContext(context, topic = "") {
+  const ctx = record(context) || {};
+  const topicText = String(topic || "");
+  const parts = [];
+  if (topicText === "onboarding_plan") parts.push("Onboarding plan thread");
+  if (topicText.startsWith("action:")) {
+    const topicId = topicText.slice("action:".length).trim();
+    if (topicId) parts.push(`Thread key ${shortRef(topicId)}`);
+  }
+
+  const recommendationId = stringField(ctx.recommendationId);
+  const actionRunId = stringField(ctx.actionRunId) || stringField(ctx.currentActionRunId);
+  const planEvidenceSnapshotId = stringField(ctx.planEvidenceSnapshotId);
+  if (recommendationId) parts.push(`Recommendation ${shortRef(recommendationId)}`);
+  if (actionRunId) parts.push(`Action run ${shortRef(actionRunId)}`);
+  if (planEvidenceSnapshotId) parts.push(`Evidence snapshot ${shortRef(planEvidenceSnapshotId)}`);
+
+  return parts.length ? parts.join(" · ") : "No chat context recorded.";
+}
+
+/**
+ * Format assistant structured_operation_json for Ops. This intentionally keeps
+ * the detailed analysis packet out of the UI; it only shows the safe linkage and
+ * reply source needed to audit the conversation state.
+ *
+ * @param {unknown} operation
+ */
+export function formatStructuredOperation(operation) {
+  const op = record(operation);
+  if (!op) return "";
+  const parts = [];
+  const operationType = stringField(op.operationType) || stringField(op.type);
+  const source = stringField(op.source);
+  const recommendationId = stringField(op.recommendationId);
+  const actionRunId = stringField(op.actionRunId);
+  if (operationType) parts.push(operationType.replaceAll("_", " "));
+  if (source) parts.push(`source ${source}`);
+  if (recommendationId) parts.push(`Recommendation ${shortRef(recommendationId)}`);
+  if (actionRunId) parts.push(`Action run ${shortRef(actionRunId)}`);
+  return parts.join(" · ");
+}
+
 /**
  * One structured access-log line for the ops panel (which serves merchant data).
  * PII-safe BY CONSTRUCTION: it records only WHO (source IP), WHAT (request path +
