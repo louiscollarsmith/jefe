@@ -40,6 +40,10 @@ const conversationSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/conversation.server.js", import.meta.url),
   "utf8",
 );
+const commerceAnalystSource = fs.readFileSync(
+  new URL("../app/lib/merchant-memory/commerce-analyst.server.js", import.meta.url),
+  "utf8",
+);
 const commerceCalculationsSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/commerce-calculations.server.js", import.meta.url),
   "utf8",
@@ -155,6 +159,13 @@ test("approve and decline decisions are reachable only from the action chat surf
   assert.match(chatSource, /value="action\.chat\.message"/);
 });
 
+test("action chat keeps the recommendation subtitle under the move title", () => {
+  const chatSource = dailyHomeSource.slice(dailyHomeSource.indexOf("function ActionChat"));
+  assert.match(chatSource, /const subtitle = informativeSubtitle\(move\.summary, move\.title\)/);
+  assert.match(chatSource, /<h1 style=\{chatTitleStyle\}>\{move\.title\}<\/h1>/);
+  assert.match(chatSource, /subtitle \? <p style=\{chatSubtitleStyle\}>\{subtitle\}<\/p> : null/);
+});
+
 test("action chat submits identifiers only and rebuilds factual context server-side", () => {
   assert.match(appIndexSource, /sendActionChatMessage\(prisma, \{/);
   assert.doesNotMatch(appIndexSource, /formData\.get\("actionTitle"\)/);
@@ -167,16 +178,20 @@ test("action chat submits identifiers only and rebuilds factual context server-s
   assert.doesNotMatch(dailyHomeSource, /name="whyNow"/);
 });
 
-test("action chat quantification uses the allowlisted commerce calculation executor", () => {
-  assert.match(conversationSource, /commerceCalculationCatalogForPrompt/);
-  assert.match(conversationSource, /executeCommerceCalculations/);
-  assert.match(conversationSource, /calculationResults/);
+test("action chat quantification uses the governed commerce analyst executor", () => {
+  assert.match(conversationSource, /answerCommerceQuestion/);
+  assert.match(commerceAnalystSource, /commerceCalculationCatalogForPrompt/);
+  assert.match(commerceAnalystSource, /executeCommerceCalculations/);
+  assert.match(commerceAnalystSource, /analysisPacket/);
+  assert.match(commerceAnalystSource, /MAX_TOTAL_ROWS = 150/);
+  assert.match(commerceAnalystSource, /recommended_purchase_units/);
   assert.match(commerceCalculationsSource, /COMMERCE_CALCULATION_CATALOG_VERSION/);
   assert.match(commerceCalculationsSource, /REQUEST_KINDS/);
   assert.match(commerceCalculationsSource, /MEASURES/);
   assert.match(commerceCalculationsSource, /DIMENSIONS/);
   assert.doesNotMatch(commerceCalculationsSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
   assert.doesNotMatch(conversationSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
+  assert.doesNotMatch(commerceAnalystSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
 });
 
 test("action chat composer clears the submitted draft after send", () => {

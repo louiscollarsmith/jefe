@@ -9,6 +9,7 @@ import {
 
 const COUNT_BELIEF_ID = "11111111-1111-4111-8111-111111111111";
 const LOW_COVER_BELIEF_ID = "22222222-2222-4222-8222-222222222222";
+const ACTION_RECOMMENDATION_ID = "33333333-3333-4333-8333-333333333333";
 const silentLogger = {
   info() {},
   warn() {},
@@ -120,7 +121,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
             { title: "Camomile Bath Oil", unitsOnHand: 8, trappedCapital: "£90" },
           ],
           sourceRecommendation: {
-            id: "rec-1",
+            id: ACTION_RECOMMENDATION_ID,
             title: "Clear old stock",
             summary: "Move two products that have not sold.",
             whyThisAction: "Cash is tied up.",
@@ -133,7 +134,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
     },
     merchantPlanRecommendation: {
       findFirst: async () => ({
-        id: "rec-1",
+        id: ACTION_RECOMMENDATION_ID,
         runId: "plan-run-1",
         merchantId: "m1",
         shopId: "s1",
@@ -244,7 +245,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
   const result = await sendActionChatMessage(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    recommendationId: "rec-1",
+    recommendationId: ACTION_RECOMMENDATION_ID,
     actionRunId: "run-1",
     actionTitle: "Clear old stock",
     whyThis: "Cash is tied up.",
@@ -254,7 +255,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
   });
 
   assert.equal(result.ok, true);
-  assert.equal(conversations[0].topic, "action:rec-1");
+  assert.equal(conversations[0].topic, `action:${ACTION_RECOMMENDATION_ID}`);
   assert.notEqual(conversations[0].topic, "memory");
   assert.equal(messages[0].role, "merchant");
   assert.equal(messages[1].role, "assistant");
@@ -316,7 +317,7 @@ test("action chat plans and executes commerce calculations before answering", as
   const result = await sendActionChatMessage(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    recommendationId: "rec-1",
+    recommendationId: ACTION_RECOMMENDATION_ID,
     actionRunId: "run-1",
     message: "Can you quantify the predicted loss of revenue?",
     llmProvider,
@@ -325,7 +326,7 @@ test("action chat plans and executes commerce calculations before answering", as
   assert.equal(result.ok, true);
   assert.equal(prompts.length, 2);
   assert.match(prompts[0].prompt, /commerceCalculationCatalog/);
-  assert.match(prompts[1].prompt, /calculationResults/);
+  assert.match(prompts[1].prompt, /analysisPacket/);
   assert.match(prompts[1].prompt, /atRiskRevenue/);
   assert.match(prompts[1].prompt, /Picnic Xinomavro/);
   assert.match(prompts[1].prompt, /180/);
@@ -364,15 +365,87 @@ test("action chat rejects invalid calculation plans and still answers from conte
   await sendActionChatMessage(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    recommendationId: "rec-1",
+    recommendationId: ACTION_RECOMMENDATION_ID,
     actionRunId: "run-1",
     message: "Can you quantify the predicted loss of revenue?",
     llmProvider,
     logger: silentLogger,
   });
 
-  assert.match(prompts[1].prompt, /"calculationResults":null/);
+  assert.match(prompts[1].prompt, /analysisPacket/);
   assert.doesNotMatch(prompts[1].prompt, /SELECT|sql/i);
+});
+
+test("action chat gives an opinionated replenishment quantity when commerce data supports it", async () => {
+  const prompts = [];
+  const { prisma, messages } = createTwoProductReplenishmentChatPrisma();
+  const llmProvider = {
+    provider: "mock",
+    model: "mock-action-chat",
+    enabled: true,
+    generateStructuredOperation: async () => {
+      throw new Error("not used");
+    },
+    generateStructuredJson: async (request) => {
+      prompts.push(request);
+      if (request.prompt.includes("commerceAnalystToolCatalog")) {
+        return {
+          json: {
+            toolCalls: [
+              {
+                id: "current_move_stock_cover",
+                kind: "commerce_calculation",
+                request: {
+                  id: "current_move_stock_cover",
+                  kind: "ranking",
+                  measure: "stock_cover_days",
+                  dimensions: ["product"],
+                  filters: { scope: "current_move" },
+                  window: { days: 30, label: "trailing_30d" },
+                  topN: 12,
+                },
+              },
+              {
+                id: "recommended_purchase_units",
+                kind: "derive",
+                operation: "recommended_purchase_units",
+                sourceResultId: "current_move_stock_cover",
+                formula: "ceil(max(0, dailyUnits * targetCoverDays - availableUnits))",
+                outputField: "recommendedUnits",
+                assumptions: { targetCoverDays: 30, targetCoverDaysSource: "default_30_day_cover" },
+              },
+            ],
+          },
+          usage: { estimatedInputTokens: 10, inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+          attempts: 1,
+          durationMs: 2,
+        };
+      }
+      return {
+        json: { reply: "I do not have specific purchase quantity recommendations in my current data." },
+        usage: { estimatedInputTokens: 20, inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+        attempts: 1,
+        durationMs: 3,
+      };
+    },
+  };
+
+  const result = await sendActionChatMessage(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    recommendationId: ACTION_RECOMMENDATION_ID,
+    actionRunId: "run-1",
+    message: "How much should I purchase of each?",
+    llmProvider,
+    logger: silentLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1].prompt, /analysisPacket/);
+  assert.match(messages.at(-1).content, /3 units of Picnic Xinomavro/);
+  assert.match(messages.at(-1).content, /3 units of Pear Skin Sipon/);
+  assert.doesNotMatch(messages.at(-1).content, /do not have specific purchase quantity/i);
 });
 
 test("addActionChatNote keeps revision notes in the existing action thread", async () => {
@@ -450,7 +523,7 @@ function createCalculationChatPrisma() {
         status: "proposed",
         resolvedMode: "approve",
         proposalSummary: {
-          sourceRecommendation: { id: "rec-1", runId: "plan-run-1", title: "Restock Low-Cover Wine Products" },
+          sourceRecommendation: { id: ACTION_RECOMMENDATION_ID, runId: "plan-run-1", title: "Restock Low-Cover Wine Products" },
         },
         preview: {},
       }),
@@ -458,7 +531,7 @@ function createCalculationChatPrisma() {
     },
     merchantPlanRecommendation: {
       findFirst: async () => ({
-        id: "rec-1",
+        id: ACTION_RECOMMENDATION_ID,
         runId: "plan-run-1",
         merchantId: "m1",
         shopId: "s1",
@@ -524,6 +597,135 @@ function createCalculationChatPrisma() {
       ],
     },
     inventoryLevel: { findMany: async () => [{ merchantId: "m1", shopId: "s1", variantId: "v1", available: 0 }] },
+    refund: { findMany: async () => [] },
+  };
+  return { prisma, messages };
+}
+
+function createTwoProductReplenishmentChatPrisma() {
+  const conversations = [];
+  const messages = [];
+  const now = new Date("2026-08-11T09:30:00.000Z");
+  const orders = [
+    { id: "o1", merchantId: "m1", shopId: "s1", currency: "GBP", totalPrice: 180, totalDiscount: 0, processedAt: new Date(now.getTime() - 10 * 86400000), financialStatus: "paid", sourceName: "web", shippingCountry: "GB" },
+    { id: "o2", merchantId: "m1", shopId: "s1", currency: "GBP", totalPrice: 144, totalDiscount: 0, processedAt: new Date(now.getTime() - 8 * 86400000), financialStatus: "paid", sourceName: "web", shippingCountry: "GB" },
+  ];
+  const orderById = new Map(orders.map((order) => [order.id, order]));
+  const prisma = {
+    merchantMemoryConversation: {
+      findFirst: async ({ where }) => conversations.find((c) => c.topic === where.topic) ?? null,
+      create: async ({ data }) => {
+        const row = { id: `conv-${conversations.length + 1}`, status: "active", createdAt: now, updatedAt: now, ...data };
+        conversations.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => ({ ...conversations.find((c) => c.id === where.id), ...data }),
+    },
+    merchantMemoryConversationMessage: {
+      create: async ({ data }) => {
+        const row = { id: `msg-${messages.length + 1}`, createdAt: now, structuredOperation: null, operationStatus: null, relatedBeliefIds: [], relatedOpenQuestionId: null, ...data };
+        messages.push(row);
+        return row;
+      },
+      findMany: async ({ where }) => messages.filter((message) => message.conversationId === where.conversationId),
+    },
+    actionExecution: {
+      findFirst: async () => ({
+        merchantId: "m1",
+        shopId: "s1",
+        runId: "run-1",
+        actionType: "restock",
+        actionKind: "low_cover_replenishment",
+        status: "proposed",
+        resolvedMode: "approve",
+        proposalSummary: {
+          sourceRecommendation: { id: ACTION_RECOMMENDATION_ID, runId: "plan-run-1", title: "Restock Low-Cover Wine Products" },
+        },
+        preview: {},
+      }),
+      findMany: async () => [],
+    },
+    merchantPlanRecommendation: {
+      findFirst: async () => ({
+        id: ACTION_RECOMMENDATION_ID,
+        runId: "plan-run-1",
+        merchantId: "m1",
+        shopId: "s1",
+        title: "Restock Low-Cover Wine Products",
+        summary: "Review supplier replenishment options for specific wine products.",
+        whyThisAction: "Two selling products hold fewer than 21 days of stock cover.",
+        whyNow: "Acting now prevents stockouts.",
+        supportingBeliefIds: [COUNT_BELIEF_ID],
+        supportingInsightIds: [],
+        run: { snapshotHash: "plan-hash-1" },
+        evidenceSnapshot: null,
+      }),
+    },
+    merchantPlanEvidenceSnapshot: {
+      findUnique: async () => null,
+      create: async ({ data }) => ({ id: "snapshot-1", createdAt: now, updatedAt: now, ...data }),
+    },
+    merchantMemoryBelief: {
+      findMany: async () => [
+        {
+          id: COUNT_BELIEF_ID,
+          key: "inventory.at_risk_stockout_count.trailing_30d",
+          category: "inventory",
+          value: { count: 2 },
+          valueType: "number",
+          status: "inferred",
+          confidence: "0.8500",
+          confidenceReason: "Direct deterministic observation.",
+          evidence: [],
+        },
+        {
+          id: LOW_COVER_BELIEF_ID,
+          key: "inventory.low_cover_products.trailing_30d",
+          category: "inventory",
+          value: {
+            items: [
+              { productId: "p1", variantId: "v1", title: "Picnic Xinomavro", available: 0, unitsSold: 3, dailyVelocity: 0.1, daysOfCover: 0 },
+              { productId: "p2", variantId: "v2", title: "Pear Skin Sipon", available: 0, unitsSold: 3, dailyVelocity: 0.1, daysOfCover: 0 },
+            ],
+            atRiskProductCount: 2,
+            thresholdDays: 21,
+            window: "trailing_30d",
+          },
+          valueType: "structured",
+          status: "inferred",
+          confidence: "0.8500",
+          confidenceReason: "Direct deterministic observation.",
+          evidence: [],
+        },
+      ],
+    },
+    merchantGoalHorizon: { findMany: async () => [] },
+    merchantInsightFinding: { findMany: async () => [] },
+    product: {
+      findMany: async () => [
+        { id: "p1", merchantId: "m1", shopId: "s1", title: "Picnic Xinomavro", vendor: "Picnic", productType: "Wine", status: "ACTIVE" },
+        { id: "p2", merchantId: "m1", shopId: "s1", title: "Pear Skin Sipon", vendor: "Pear", productType: "Wine", status: "ACTIVE" },
+      ],
+    },
+    variant: {
+      findMany: async () => [
+        { id: "v1", merchantId: "m1", shopId: "s1", productId: "p1", title: "Default", sku: "PX", price: 60, currency: "GBP", unitCost: 20 },
+        { id: "v2", merchantId: "m1", shopId: "s1", productId: "p2", title: "Default", sku: "PS", price: 48, currency: "GBP", unitCost: 16 },
+      ],
+    },
+    order: { findMany: async () => orders },
+    orderLineItem: {
+      findMany: async () => [
+        { merchantId: "m1", shopId: "s1", orderId: "o1", productId: "p1", variantId: "v1", sku: "PX", title: "Picnic Xinomavro", quantity: 3, unitPrice: 60, totalPrice: 180, discount: 0, order: orderById.get("o1") },
+        { merchantId: "m1", shopId: "s1", orderId: "o2", productId: "p2", variantId: "v2", sku: "PS", title: "Pear Skin Sipon", quantity: 3, unitPrice: 48, totalPrice: 144, discount: 0, order: orderById.get("o2") },
+      ],
+    },
+    inventoryLevel: {
+      findMany: async () => [
+        { merchantId: "m1", shopId: "s1", variantId: "v1", available: 0 },
+        { merchantId: "m1", shopId: "s1", variantId: "v2", available: 0 },
+      ],
+    },
     refund: { findMany: async () => [] },
   };
   return { prisma, messages };

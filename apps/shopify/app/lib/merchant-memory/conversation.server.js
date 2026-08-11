@@ -6,13 +6,7 @@ import {
 } from "../llm/provider.server.js";
 import { redact } from "../observability/redact.server.js";
 import { getMerchantContextForQuestion } from "./context-retriever.server.js";
-import {
-  commerceCalculationCatalogForPrompt,
-  calculationScopeFromActionContext,
-  executeCommerceCalculations,
-  heuristicCommerceCalculationRequests,
-  shouldPlanCommerceCalculations,
-} from "./commerce-calculations.server.js";
+import { answerCommerceQuestion } from "./commerce-analyst.server.js";
 import {
   STRUCTURED_OPERATION_SCHEMA,
   parseAndValidateStructuredOperation,
@@ -57,88 +51,6 @@ const ACTION_CHAT_REPLY_SCHEMA = {
   properties: {
     reply: { type: Type.STRING },
     confidence: { type: Type.NUMBER, nullable: true },
-  },
-};
-
-const COMMERCE_CALCULATION_PLAN_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    requests: {
-      type: Type.ARRAY,
-      nullable: true,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          id: { type: Type.STRING, nullable: true },
-          kind: { type: Type.STRING },
-          measure: { type: Type.STRING },
-          dimensions: {
-            type: Type.ARRAY,
-            nullable: true,
-            items: { type: Type.STRING },
-          },
-          filters: {
-            type: Type.OBJECT,
-            nullable: true,
-            properties: {
-              scope: { type: Type.STRING, nullable: true },
-              productIds: {
-                type: Type.ARRAY,
-                nullable: true,
-                items: { type: Type.STRING },
-              },
-              variantIds: {
-                type: Type.ARRAY,
-                nullable: true,
-                items: { type: Type.STRING },
-              },
-              vendor: { type: Type.STRING, nullable: true },
-              productType: { type: Type.STRING, nullable: true },
-              sku: { type: Type.STRING, nullable: true },
-              channel: { type: Type.STRING, nullable: true },
-              country: { type: Type.STRING, nullable: true },
-              actionRunId: { type: Type.STRING, nullable: true },
-              statuses: {
-                type: Type.ARRAY,
-                nullable: true,
-                items: { type: Type.STRING },
-              },
-            },
-          },
-          window: {
-            type: Type.OBJECT,
-            nullable: true,
-            properties: {
-              days: { type: Type.NUMBER, nullable: true },
-              from: { type: Type.STRING, nullable: true },
-              to: { type: Type.STRING, nullable: true },
-              label: { type: Type.STRING, nullable: true },
-            },
-          },
-          comparison: {
-            type: Type.OBJECT,
-            nullable: true,
-            properties: {
-              windows: {
-                type: Type.ARRAY,
-                nullable: true,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    days: { type: Type.NUMBER, nullable: true },
-                    from: { type: Type.STRING, nullable: true },
-                    to: { type: Type.STRING, nullable: true },
-                    label: { type: Type.STRING, nullable: true },
-                  },
-                },
-              },
-            },
-          },
-          topN: { type: Type.NUMBER, nullable: true },
-          horizonDays: { type: Type.NUMBER, nullable: true },
-        },
-      },
-    },
   },
 };
 
@@ -526,25 +438,34 @@ async function listRecentActionMessages(prisma, input) {
  */
 async function generateActionChatReply(input) {
   const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
-  const calculationResults = await buildActionChatCalculationResults({
-    prisma: input.usage?.prisma,
-    merchantId: input.usage?.merchantId ?? null,
-    shopId: input.usage?.shopId ?? null,
-    message: input.message,
-    actionContext: input.actionContext,
-    provider: provider ?? undefined,
-    logger: input.logger,
-  });
+  const commerceAnswer = input.usage?.prisma && input.usage?.merchantId
+    ? await answerCommerceQuestion(input.usage.prisma, {
+        merchantId: input.usage.merchantId,
+        shopId: input.usage.shopId ?? null,
+        message: input.message,
+        actionContext: input.actionContext,
+        recentMessages: input.recentMessages,
+        provider: provider ?? undefined,
+        logger: input.logger,
+      })
+    : { source: "commerce_analyst", reply: null, analysisPacket: null };
+  if (commerceAnswer.reply) {
+    return {
+      source: commerceAnswer.source === "llm" ? "llm" : "fallback",
+      content: commerceAnswer.reply,
+    };
+  }
+  const analysisPacket = commerceAnswer.analysisPacket ?? null;
   const fallback = {
     source: "fallback",
-    content: buildActionChatReply(input.message, input.actionContext, calculationResults),
+    content: buildActionChatReply(input.message, input.actionContext, analysisPacket),
   };
   if (!provider?.enabled || !provider.generateStructuredJson) return fallback;
 
   try {
     const result = await provider.generateStructuredJson({
       systemPrompt: buildActionChatSystemPrompt(),
-      prompt: buildActionChatPrompt({ ...input, calculationResults }),
+      prompt: buildActionChatPrompt({ ...input, analysisPacket }),
       schema: ACTION_CHAT_REPLY_SCHEMA,
       maxOutputTokens: 700,
     });
@@ -561,106 +482,12 @@ async function generateActionChatReply(input) {
   }
 }
 
-/**
- * @param {{ prisma?: any; merchantId?: string | null; shopId?: string | null; message: string; actionContext: any; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
- */
-async function buildActionChatCalculationResults(input) {
-  if (!input.prisma || !input.merchantId || !shouldPlanCommerceCalculations(input.message)) {
-    return null;
-  }
-  const requests = await planActionChatCalculationRequests(input);
-  if (!requests.length) return null;
-  const packet = await executeCommerceCalculations(input.prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    requests,
-    actionContext: input.actionContext,
-    source: "current_system",
-    logger: input.logger,
-  });
-  const okResults = packet.results.filter((result) => result.ok);
-  if (!okResults.length) {
-    input.logger?.warn?.("commerce calculation planner produced no executable results", {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      requestedCount: requests.length,
-      rejectedCount: packet.results.length,
-    });
-    return null;
-  }
-  return { ...packet, results: okResults };
-}
-
-/**
- * @param {{ prisma?: any; merchantId?: string | null; shopId?: string | null; message: string; actionContext: any; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
- */
-async function planActionChatCalculationRequests(input) {
-  const fallback = heuristicCommerceCalculationRequests({
-    message: input.message,
-    actionContext: input.actionContext,
-  });
-  const provider = input.provider;
-  if (!provider?.enabled || !provider.generateStructuredJson) return fallback;
-  try {
-    const result = await provider.generateStructuredJson({
-      systemPrompt: buildCommerceCalculationPlannerSystemPrompt(),
-      prompt: buildCommerceCalculationPlannerPrompt(input),
-      schema: COMMERCE_CALCULATION_PLAN_SCHEMA,
-      maxOutputTokens: 700,
-    });
-    const planned = parseCalculationPlan(result.json);
-    return planned.length ? planned : fallback;
-  } catch (error) {
-    input.logger?.warn?.("commerce calculation planner unavailable; using heuristic plan", {
-      provider: provider.provider,
-      model: provider.model,
-      error: error instanceof Error ? error.name : "UnknownError",
-    });
-    return fallback;
-  }
-}
-
-function buildCommerceCalculationPlannerSystemPrompt() {
-  return [
-    "You select allowlisted commerce calculations for Jefe action chat.",
-    "Return at most 3 requests from the supplied catalog. Do not request SQL, raw records, customer data, credentials or full documents.",
-    "Use filters.scope=current_move when the merchant asks about this recommendation/action.",
-    "If no calculation is needed, return an empty requests array.",
-  ].join("\n");
-}
-
-/**
- * @param {{ message: string; actionContext: any }} input
- */
-function buildCommerceCalculationPlannerPrompt(input) {
-  const scope = calculationScopeFromActionContext(input.actionContext);
-  return JSON.stringify({
-    latestMerchantMessage: safePromptText(input.message, ACTION_CHAT_LATEST_MESSAGE_MAX),
-    commerceCalculationCatalog: commerceCalculationCatalogForPrompt(),
-    currentMoveScope: scope,
-    contextSummary: compactCalculationPlanningContext(input.actionContext),
-    responseContract: {
-      requests: "Array of allowlisted CommerceCalculationRequest objects. Empty array if not needed.",
-    },
-  });
-}
-
-/** @param {unknown} raw */
-function parseCalculationPlan(raw) {
-  const value = typeof raw === "string" ? parseJson(raw) : raw;
-  const record = asRecord(value);
-  const requests = Array.isArray(record?.requests) ? record.requests : [];
-  return requests
-    .filter((/** @type {unknown} */ request) => request && typeof request === "object")
-    .slice(0, 3);
-}
-
 function buildActionChatSystemPrompt() {
   return [
     "You are Jefe, an AI eCommerce manager, inside a chat scoped to exactly one proposed action.",
-    "Answer the merchant's latest message using only the supplied plan evidence at recommendation time, current system context, calculation results and recent thread.",
+    "Answer the merchant's latest message using only the supplied plan evidence at recommendation time, current system context, commerce analysis results and recent thread.",
     "Use planEvidenceAtRecommendationTime for why Jefe made this recommendation. Use currentSystemContext for what Jefe can see right now.",
-    "Use calculationResults for quantified answers. If a value is not in calculationResults or context, do not invent it.",
+    "Use analysisPacket for quantified answers. If a value is not in analysisPacket or context, do not invent it.",
     "If recommendation-time evidence and current context differ, clearly label the difference instead of blending the two.",
     "Do not invent product names, counts, prices, dates, supplier details or performance results. If the context does not contain the requested detail, say that plainly and explain what Jefe can verify from the current context.",
     "Do not approve, decline, execute, promise an external write, or create a standing Merchant Memory rule. Scope changes and approvals happen through the visible controls.",
@@ -669,7 +496,7 @@ function buildActionChatSystemPrompt() {
 }
 
 /**
- * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; calculationResults?: any }} input
+ * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; analysisPacket?: any }} input
  */
 function buildActionChatPrompt(input) {
   const recentThread = input.recentMessages.slice(-8).map((message) => ({
@@ -681,7 +508,7 @@ function buildActionChatPrompt(input) {
     planEvidenceAtRecommendationTime:
       input.actionContext?.planEvidenceAtRecommendationTime ?? null,
     currentSystemContext: input.actionContext?.currentSystemContext ?? null,
-    calculationResults: input.calculationResults ?? null,
+    analysisPacket: input.analysisPacket ?? null,
     retrieval: input.actionContext?.retrieval ?? null,
     recentThread,
     responseContract: {
@@ -726,13 +553,13 @@ function parseActionChatReply(raw) {
 /**
  * @param {string} message
  * @param {any} actionContext
- * @param {any} [calculationResults]
+ * @param {any} [analysisPacket]
  */
-function buildActionChatReply(message, actionContext, calculationResults = null) {
+function buildActionChatReply(message, actionContext, analysisPacket = null) {
   const normalized = message.toLowerCase();
   const title = actionTitleFromContext(actionContext) || "this move";
   if (/revenue|sales|loss|lost|risk|impact|amount|dollars?|\$|£|€|worth/.test(normalized)) {
-    const lines = calculationLinesFromResults(calculationResults);
+    const lines = calculationLinesFromResults(analysisPacket);
     if (lines.length) {
       return `Here is what I can calculate from Jefe's current commerce data:\n\n${lines.map((line) => `- ${line}`).join("\n")}`;
     }
@@ -761,18 +588,6 @@ function buildActionChatReply(message, actionContext, calculationResults = null)
     return "Understood. Use \"Remind me next week\" or \"Not right now\" and I will hold this move instead of asking you to approve it.";
   }
   return `I am keeping this thread about ${title}. Ask why, change the scope, or approve/hold it below.`;
-}
-
-/** @param {any} actionContext */
-function compactCalculationPlanningContext(actionContext) {
-  return allContextBlocks(actionContext).slice(0, 12).map((block) => ({
-    kind: block?.kind,
-    source: block?.source,
-    key: block?.data?.key ?? null,
-    title: block?.data?.title ?? null,
-    summary: block?.data?.summary ?? null,
-    itemCount: Array.isArray(block?.data?.items) ? block.data.items.length : null,
-  }));
 }
 
 /** @param {any} packet */
