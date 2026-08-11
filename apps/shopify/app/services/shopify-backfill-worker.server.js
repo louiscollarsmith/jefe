@@ -302,7 +302,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
  * delta sync, finalize, memory and generated onboarding work.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
  */
 export async function processReadyBackfillJobs(prisma, options = {}) {
   const maxJobs = Math.max(1, options.maxJobs ?? MAX_READY_JOBS_PER_TICK);
@@ -317,7 +317,7 @@ export async function processReadyBackfillJobs(prisma, options = {}) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
@@ -326,12 +326,14 @@ export async function processNextBackfillJob(prisma, options = {}) {
     logger: options.logger,
     shopId: options.shopId,
   });
+  const where = {
+    status: "queued",
+    shopId: options.shopId,
+    ...(options.jobType ? { jobType: options.jobType } : {}),
+    ...(options.ignoreRunAfter ? {} : { runAfter: { lte: now } }),
+  };
   const job = await prisma.backfillJob.findFirst({
-    where: {
-      status: "queued",
-      runAfter: { lte: now },
-      shopId: options.shopId,
-    },
+    where,
     orderBy: [{ priority: "asc" }, { runAfter: "asc" }, { createdAt: "asc" }],
     include: { shop: true, merchant: true },
   });
@@ -383,7 +385,7 @@ export async function processNextBackfillJob(prisma, options = {}) {
  *
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop; merchant: import("@prisma/client").Merchant }} job
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string }} options
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string> }} options
  */
 async function runClaimedBackfillJob(prisma, job, options) {
   try {
@@ -402,6 +404,7 @@ async function runClaimedBackfillJob(prisma, job, options) {
       return { status: "cancelled", jobType: job.jobType, result };
     }
     trackJobSuccess(prisma, job);
+    await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
     return { status: "succeeded", jobType: job.jobType, result };
   } catch (error) {
     const failure = backfillFailureDetails(error);
@@ -459,8 +462,25 @@ async function runClaimedBackfillJob(prisma, job, options) {
         data: { setupStatus: "backfill_partial" },
       });
     }
+    await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
     return { status: "failed", jobType: job.jobType, error: message };
   }
+}
+
+/**
+ * Test callers can hold sibling jobs in the future while they drive one phase at
+ * a time. Live worker calls do not pass this option, so normal scheduling is
+ * unchanged.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {string} shopId
+ * @param {Date | undefined} runAfter
+ */
+async function holdQueuedBackfillJobs(prisma, shopId, runAfter) {
+  if (!(runAfter instanceof Date)) return;
+  await prisma.backfillJob.updateMany({
+    where: { shopId, status: "queued" },
+    data: { runAfter },
+  });
 }
 
 /**
@@ -509,6 +529,7 @@ async function runBackfillJob(prisma, job, options) {
     ? DEFAULT_BACKFILL_DAYS
     : FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS;
   const requiresShopifyToken =
+    job.jobType !== "backfill_finalize" &&
     job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
     job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE &&
     job.jobType !== MERCHANT_GOALS_JOB_TYPE &&

@@ -17,7 +17,7 @@
  * @typedef {Object} ActionIntent
  * @property {string} actionType  The primitive to run, keyed in ACTION_REGISTRY (e.g. "price_markdown").
  * @property {string} targetKind  What it targets, e.g. "dead_stock" — resolved to concrete records by the primitive.
- * @property {Record<string, number|string|boolean>} [params]  Magnitude/knobs the LLM suggests (e.g. { markdownPercent: 30 }). ADVISORY — the primitive floors + validates; the LLM's number is never applied directly.
+ * @property {Record<string, number|string|boolean>} [params]  Magnitude/scope knobs the LLM or merchant suggests (e.g. { markdownPercent: 30, maxProducts: 1 }). ADVISORY — the primitive floors + validates; the LLM's number is never applied directly.
  * @property {string} [rationale]  One-line why, for the merchant.
  */
 

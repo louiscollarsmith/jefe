@@ -36,6 +36,14 @@ const sampleSource = fs.readFileSync(
   new URL("../app/components/app-home/sample.ts", import.meta.url),
   "utf8",
 );
+const conversationSource = fs.readFileSync(
+  new URL("../app/lib/merchant-memory/conversation.server.js", import.meta.url),
+  "utf8",
+);
+const commerceCalculationsSource = fs.readFileSync(
+  new URL("../app/lib/merchant-memory/commerce-calculations.server.js", import.meta.url),
+  "utf8",
+);
 
 const MEMORY_INTENTS = [
   "memory.confirm",
@@ -125,15 +133,63 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
   assert.match(sectionsSource, /Tell me/);
 });
 
-test("the live DailyHome path is interactive and feeds real open questions", () => {
-  assert.match(dailyHomeSource, /interactive: true/);
-  assert.match(dailyHomeSource, /openQuestions: props\.openQuestions \?\? \[\]/);
+test("the live DailyHome is the brief surface, not the old dashboard shell", () => {
+  assert.match(dailyHomeSource, /Talk this through/);
+  assert.match(dailyHomeSource, /What I&apos;m watching/);
+  assert.match(dailyHomeSource, /Where we&apos;re heading/);
+  assert.match(dailyHomeSource, /useNavigation/);
+  assert.match(dailyHomeSource, /Thinking/);
+  assert.doesNotMatch(dailyHomeSource, /Tell us what to build/);
+  assert.doesNotMatch(dailyHomeSource, /Orders · 30d/);
+  assert.doesNotMatch(dailyHomeSource, /What I’ve worked out so far/);
 });
 
-test("AppHome13a defaults to non-interactive so the design preview stays inert", () => {
+test("approve and decline decisions are reachable only from the action chat surface", () => {
+  const beforeChat = dailyHomeSource.slice(0, dailyHomeSource.indexOf("function ActionChat"));
+  const chatSource = dailyHomeSource.slice(dailyHomeSource.indexOf("function ActionChat"));
+  assert.doesNotMatch(beforeChat, /value="action\.approve"/);
+  assert.doesNotMatch(beforeChat, /value="action\.reject"/);
+  assert.match(chatSource, /value="action\.approve"/);
+  assert.match(chatSource, /value="action\.defer"/);
+  assert.match(chatSource, /value="action\.revise_scope"/);
+  assert.match(chatSource, /value="action\.chat\.message"/);
+});
+
+test("action chat submits identifiers only and rebuilds factual context server-side", () => {
+  assert.match(appIndexSource, /sendActionChatMessage\(prisma, \{/);
+  assert.doesNotMatch(appIndexSource, /formData\.get\("actionTitle"\)/);
+  assert.doesNotMatch(appIndexSource, /formData\.get\("actionSummary"\)/);
+  assert.doesNotMatch(appIndexSource, /formData\.get\("whyThis"\)/);
+  assert.doesNotMatch(appIndexSource, /formData\.get\("whyNow"\)/);
+  assert.doesNotMatch(dailyHomeSource, /name="actionTitle"/);
+  assert.doesNotMatch(dailyHomeSource, /name="actionSummary"/);
+  assert.doesNotMatch(dailyHomeSource, /name="whyThis"/);
+  assert.doesNotMatch(dailyHomeSource, /name="whyNow"/);
+});
+
+test("action chat quantification uses the allowlisted commerce calculation executor", () => {
+  assert.match(conversationSource, /commerceCalculationCatalogForPrompt/);
+  assert.match(conversationSource, /executeCommerceCalculations/);
+  assert.match(conversationSource, /calculationResults/);
+  assert.match(commerceCalculationsSource, /COMMERCE_CALCULATION_CATALOG_VERSION/);
+  assert.match(commerceCalculationsSource, /REQUEST_KINDS/);
+  assert.match(commerceCalculationsSource, /MEASURES/);
+  assert.match(commerceCalculationsSource, /DIMENSIONS/);
+  assert.doesNotMatch(commerceCalculationsSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
+  assert.doesNotMatch(conversationSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
+});
+
+test("action chat composer clears the submitted draft after send", () => {
+  assert.match(dailyHomeSource, /const \[composerMessage, setComposerMessage\] = useState\(""\)/);
+  assert.match(dailyHomeSource, /submittedMessageRef\.current = pendingMessage/);
+  assert.match(dailyHomeSource, /setComposerMessage\(""\)/);
+  assert.match(dailyHomeSource, /value=\{composerMessage\}/);
+  assert.match(dailyHomeSource, /onChange=\{\(event\) => setComposerMessage\(event\.currentTarget\.value\)\}/);
+});
+
+test("AppHome13a still defaults to non-interactive and the preview uses the new DailyHome", () => {
   assert.match(appHome13aSource, /props\.interactive \?\? false/);
-  // The preview renders only the sample props (no interactive flag), and the sample doesn't
-  // set one — so the preview's memory controls are inert and post nothing.
+  assert.match(previewSource, /<DailyHome/);
   assert.match(previewSource, /\{\.\.\.SAMPLE_APP_HOME\}/);
   assert.ok(
     !/interactive/.test(sampleSource),

@@ -41,14 +41,31 @@ export const SAMPLE_APP_HOME: AppHome13aProps = {
   },
   recommendation: null,
   suggestedAction: {
-    headline: "Mark down 4 dead-stock variants to clear £310 of tied-up cash",
+    headline: "Secure Stock on Fast-Selling Drinks",
+    sourceRecommendation: {
+      id: "preview-rec",
+      runId: "preview-plan",
+      title: "Secure Stock on Fast-Selling Drinks",
+      summary:
+        "Review products currently facing low stock cover and initiate replenishment orders to prevent stockouts on popular specialist beverages.",
+      whyThisAction:
+        "Two selling products hold fewer than 21 days of stock cover based on trailing sell rates.",
+      whyNow:
+        "Protecting this inventory directly supports the three-month goal of securing stock on fast-selling drinks and ensures uninterrupted sales momentum.",
+      successSignal: {
+        description: "Fast-selling drinks stay available",
+        timeframe: "the next three weeks",
+        target: null,
+      },
+      primaryGoalId: "goal1",
+    },
     topItems: [
       { title: "Lavender Soak 250ml", detail: "· 9 units, no sale in 61 days" },
       { title: "Clay Mask 100ml", detail: "· 6 units, no sale in 74 days" },
     ],
     executable: true,
     actionRunId: "preview-run",
-    actionType: "price_markdown",
+    actionType: "stock_replenishment",
     mode: "approve_execute",
     markdownPercent: 25,
   },

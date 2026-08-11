@@ -7,13 +7,13 @@ import {
 } from "./constants.server.js";
 
 export function buildMerchantPlanSystemPrompt() {
-  return `You are Jefe, an AI commerce operator choosing the merchant's First Move: the first concrete action they should begin now.
+  return `You are Jefe, an AI commerce operator choosing the first concrete move in a merchant's three-month plan.
 
 You are given a bounded, privacy-safe snapshot of Merchant Memory, current onboarding insights, generated 3-, 6- and 12-month goals, merchant corrections, merchant planning context and prior recommendations.
 
 Choose exactly one recommendation. It must primarily advance the three-month goal, remain compatible with the six- and twelve-month goals, be grounded in supplied beliefs and insights, be specific to this merchant, be realistic to begin today, explain the mechanism, and include a practical success signal.
 
-This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. It is one practical First Move. The recommendation may include a short sequence of steps only when all steps belong to one coherent action.
+This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. The recommendation may include a short sequence of steps only when all steps belong to one coherent action.
 
 Use Merchant Memory only. Do not recalculate raw Shopify data. Do not invent numbers, customer groups, products, constraints, causality, targets, risks or guarantees. Merchant-confirmed and merchant-corrected beliefs have highest authority for merchant-defined matters. Deterministic beliefs have higher authority than lower-authority inferences for objective data.
 
@@ -30,8 +30,6 @@ You must return at least three candidates. If the evidence clearly supports only
 Avoid invented measurement targets. Do not use generic completion numbers such as 100%, seven days, 30 days, doubled, halved, top 10, or similar unless that exact number is present in a cited belief, insight or goal. For data-completion work, describe directional progress from the current grounded baseline instead of inventing an ideal target.
 
 Do not recommend something already accepted, rejected, completed or stated as unsuitable in previousRecommendations or merchantContext.
-
-Make the causal chain visible in merchant-facing fields: connect the agreed goal, the relevant thing Jefe has learned, and the recommended First Move. Use plain English and grounded evidence, not internal analytical vocabulary or database language.
 
 When — and only when — the selected recommendation maps to one of Jefe's registered executable capabilities (actionCapabilities) AND the supplied memory directly supports acting now, also emit an actionIntent naming that capability, so Jefe can offer to carry it out. Choose actionType and targetKind from actionCapabilities only; any magnitude you give (for example markdownPercent) is advisory — Jefe computes the safe, floored, capped parameters itself and never applies your number directly. If no registered capability cleanly fits, omit actionIntent. Never invent a capability, and never let the availability of an action change which recommendation you choose — pick the best recommendation first, then attach an actionIntent only if one genuinely fits.
 
@@ -50,7 +48,7 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
       ? `Previous output was rejected: ${options.validationError}. Regenerate the candidates and selected recommendation. Return at least three candidates, cite only supplied IDs, choose one focused action, and remove every unsupported number or replace it with directional wording grounded in the cited memory.`
       : null,
     task:
-      "Given what Jefe knows about this business and where the merchant wants to go, what First Move should they start with?",
+      "Given what Jefe knows about this business and where the merchant wants to go, what is the single most useful thing they should do next?",
     allowedGoalIds: snapshot.goals.map((goal) => goal.id),
     allowedSupportingBeliefIds: snapshot.beliefs.map((belief) => belief.id),
     allowedSupportingInsightIds: snapshot.insights.map((insight) => insight.id),
@@ -74,11 +72,11 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
       ],
       selectedRecommendation: {
         candidateId: "id of exactly one candidate above",
-        title: "compact merchant-facing title naming the First Move",
+        title: "compact merchant-facing title naming the action",
         summary: "one or two sentences describing the action",
         primaryGoalId: "3-month goal id unless the 3-month goal is already largely achieved",
         supportingGoalIds: ["6- or 12-month goal ids when relevant"],
-        whyThisAction: "evidence-backed reason this is the best First Move, connecting the goal, learned signal and action",
+        whyThisAction: "evidence-backed reason this is the best first move",
         whyNow: "why this should be started before other plausible actions",
         startToday: "specific first thing the merchant can do today",
         executionSteps: [
@@ -114,9 +112,9 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
       insights:
         "current onboarding insights; cite supporting insight ids only when the recommendation uses the insight",
       merchantContext:
-        "safe summaries of merchant coaching, planning documents, corrections and First Move refinements",
+        "safe summaries of merchant coaching, planning documents, corrections and Plan refinements",
       previousRecommendations:
-        "prior First Move recommendations; avoid rejected, accepted or completed actions",
+        "prior Plan recommendations; avoid rejected, accepted or completed actions",
       actionCapabilities:
         "the typed actions Jefe can execute; the only source for actionIntent.actionType/targetKind — emit an actionIntent only when memory directly supports one",
     },

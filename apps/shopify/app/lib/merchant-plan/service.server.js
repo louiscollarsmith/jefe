@@ -7,6 +7,7 @@ import {
   addAssistantConversationNote,
   addMerchantConversationNote,
 } from "../merchant-memory/conversation.server.js";
+import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.server.js";
 import { recordEvidence } from "../merchant-memory/service.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
@@ -126,12 +127,6 @@ export async function getMerchantPlanExperience(prisma, input) {
     snapshotHash: snapshot.snapshotHash,
     candidateCount: snapshot.candidateCount,
     hasGoals: snapshot.hasGoals,
-    goals: snapshot.snapshot.goals.map((goal) => ({
-      id: goal.id,
-      horizon: goal.horizon,
-      title: goal.title,
-      description: goal.description,
-    })),
     currentRun: serializeRun(currentRun),
     previousCompletedRun: serializeRun(previousCompletedRun),
     selectedRun: serializeRun(selectedRun),
@@ -248,9 +243,10 @@ export async function generateMerchantPlan(prisma, input) {
     });
     const recommendation = parsed.recommendation;
 
+    let persistedRecommendation = null;
     await prisma.$transaction(async (tx) => {
       await tx.merchantPlanRecommendation.deleteMany({ where: { runId: run.id } });
-      await tx.merchantPlanRecommendation.create({
+      persistedRecommendation = await tx.merchantPlanRecommendation.create({
         data: {
           runId: run.id,
           merchantId: input.merchantId,
@@ -272,6 +268,14 @@ export async function generateMerchantPlan(prisma, input) {
           caveat: recommendation.caveat,
           reviewStatus: PLAN_REVIEW_STATUS.proposed,
         },
+      });
+      await buildPlanEvidenceSnapshot(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        recommendation: persistedRecommendation,
+        sourceSnapshotHash: run.snapshotHash,
+        snapshotSource: "plan_generation",
+        logger,
       });
       await tx.merchantPlanRun.updateMany({
         where: {
@@ -318,6 +322,7 @@ export async function generateMerchantPlan(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       intent: recommendation.actionIntent,
+      sourceRecommendation: persistedRecommendation,
       logger,
     });
 
@@ -350,9 +355,9 @@ export async function generateMerchantPlan(prisma, input) {
  * when there is a real, safe opportunity. Nothing external is written — execution stays
  * behind CLEARANCE_EXECUTE_ENABLED. Best-effort: never throws into plan generation.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: any; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; intent: any; sourceRecommendation?: any; logger: Pick<Console, "info" | "warn" | "error"> }} input
  */
-async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, logger }) {
+async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceRecommendation, logger }) {
   if (!intent) return;
   try {
     const result = await proposeActionFromIntent(prisma, {
@@ -360,6 +365,7 @@ async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, logger 
       shopId,
       intent,
       writeEnabled: isClearanceExecuteEnabled(),
+      sourceRecommendation,
     });
     logger.info("Plan emitted an action-intent", {
       merchantId,
@@ -461,7 +467,7 @@ export async function processMerchantPlanMessage(prisma, input) {
         ? `merchant_plan_recommendation:${input.recommendationId}`
         : "plan_onboarding_conversation",
       evidenceType: "merchant_plan_refinement",
-      summary: `Merchant refined Jefe's First Move: ${interpretedDirection}`,
+      summary: `Merchant refined Jefe's Plan: ${interpretedDirection}`,
       metadata: {
         originalMessage: message,
         interpretedDirection,
@@ -503,7 +509,7 @@ export async function processMerchantPlanMessage(prisma, input) {
     content: buildPlanRefinementConversationMessage(interpretedDirection),
     operation: {
       operationType: "plan_refinement_context",
-      reason: "Captured merchant guidance for First Move regeneration.",
+      reason: "Captured merchant guidance for Plan regeneration.",
       recommendationId: input.recommendationId ?? null,
       merchantStatement: message,
       interpretedDirection,
@@ -521,7 +527,7 @@ function interpretPlanRefinementDirection(message) {
   const directions = [];
 
   if (/(avoid|no|don't|do not).{0,24}(email|campaign|newsletter)/.test(normalized)) {
-    directions.push("de-prioritise email-led work for this First Move");
+    directions.push("de-prioritise email-led work for this Plan");
   }
   if (/(stock|inventory|dead stock|cleanup|clearance)/.test(normalized)) {
     directions.push("make the first move more operational and stock-focused");
@@ -569,7 +575,7 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
     sourceType: "merchant_plan",
     sourceReference: `merchant_plan_recommendation:${recommendation.id}`,
     evidenceType: "merchant_plan_accepted",
-    summary: `Merchant accepted Jefe's First Move recommendation: ${recommendation.title}`,
+    summary: `Merchant accepted Jefe's first Plan recommendation: ${recommendation.title}`,
     metadata: {
       recommendationId: recommendation.id,
       runId: recommendation.runId,

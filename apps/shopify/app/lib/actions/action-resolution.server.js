@@ -77,15 +77,24 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
     const adapted = await adaptMarkdownFromMemory(prisma, { merchantId, shopId, baseMarkdownPercent: markdownPercent });
     markdownPercent = adapted.markdownPercent;
   }
+  const maxProducts = Number(intent.params?.maxProducts);
   const proposal = await buildDeadStockClearanceProposal(prisma, {
     merchantId,
     shopId,
-    options: { defaultDiscountPercent: markdownPercent },
+    options: {
+      defaultDiscountPercent: markdownPercent,
+      maxProducts: Number.isInteger(maxProducts) && maxProducts > 0 ? maxProducts : undefined,
+    },
   });
   if (proposal.status !== "proposed") return null;
   const preview = buildClearancePreview(/** @type {any} */ (proposal));
   if (preview.variantCount === 0) return null; // all refused (below-floor / missing-floor) or none
-  return { proposal, preview, markdownPercent };
+  return {
+    proposal,
+    preview,
+    markdownPercent,
+    scope: Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : null,
+  };
 }
 
 /**
@@ -129,11 +138,13 @@ export function formatMoney(amount, currency = "GBP") {
  * agrees with the variant count shown), joined back to the proposal items for units +
  * trapped capital (the execution preview drops those). Raw numbers only — currency
  * formatting happens at read time against the shop currency (getActiveSuggestedAction).
- * @param {{ windowDays?: number; items?: Array<{ variantId: string | null; title?: string | null; unitsOnHand?: number; trappedCapital?: number; projectedRecovery?: number }> }} proposal
+ * @param {{ windowDays?: number; eligibleDeadStockVariantCount?: number; items?: Array<{ variantId: string | null; title?: string | null; unitsOnHand?: number; trappedCapital?: number; projectedRecovery?: number }> }} proposal
  * @param {{ changes?: Array<{ variantId: string }>; variantCount?: number }} preview
  * @param {number} [markdownPercent]  The requested default % that produced the proposal — the knob the merchant edits.
+ * @param {any} [sourceRecommendation]
+ * @param {any} [scope]
  */
-export function buildProposalSummary(proposal, preview, markdownPercent) {
+export function buildProposalSummary(proposal, preview, markdownPercent, sourceRecommendation = null, scope = null) {
   const byVariant = new Map(
     (proposal?.items ?? []).map((item) => [item.variantId, item]),
   );
@@ -149,15 +160,50 @@ export function buildProposalSummary(proposal, preview, markdownPercent) {
   return {
     windowDays: proposal?.windowDays ?? 90,
     variantCount: preview?.variantCount ?? surviving.length,
+    eligibleVariantCount:
+      Number(proposal?.eligibleDeadStockVariantCount) ||
+      Number(preview?.variantCount) ||
+      surviving.length,
     markdownPercent: Number.isFinite(Number(markdownPercent)) ? Number(markdownPercent) : undefined,
+    scope: scope ?? null,
     totalTrappedCapital: round2(totalTrappedCapital),
     totalProjectedRecovery: round2(totalProjectedRecovery),
+    sourceRecommendation: normalizeSourceRecommendation(sourceRecommendation),
     topItems: surviving.slice(0, 3).map((item) => ({
       title: item?.title ?? item?.variantId ?? "Product",
       unitsOnHand: Number(item?.unitsOnHand) || 0,
       trappedCapital: Number(item?.trappedCapital) || 0,
     })),
   };
+}
+
+/** @param {any} recommendation */
+function normalizeSourceRecommendation(recommendation) {
+  if (!recommendation || typeof recommendation !== "object") return null;
+  return {
+    id: typeof recommendation.id === "string" ? recommendation.id : null,
+    runId: typeof recommendation.runId === "string" ? recommendation.runId : null,
+    title: String(recommendation.title ?? "").trim(),
+    summary: String(recommendation.summary ?? "").trim(),
+    whyThisAction: String(recommendation.whyThisAction ?? "").trim(),
+    whyNow: String(recommendation.whyNow ?? "").trim(),
+    successSignal:
+      recommendation.successSignal && typeof recommendation.successSignal === "object"
+        ? recommendation.successSignal
+        : null,
+    primaryGoalId: typeof recommendation.primaryGoalId === "string" ? recommendation.primaryGoalId : null,
+    supportingGoalIds: cleanStringList(recommendation.supportingGoalIds),
+    expectedBenefit: String(recommendation.expectedBenefit ?? "").trim(),
+    supportingBeliefIds: cleanStringList(recommendation.supportingBeliefIds),
+    supportingInsightIds: cleanStringList(recommendation.supportingInsightIds),
+  };
+}
+
+/** @param {unknown} value */
+function cleanStringList(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === "string" && item.trim())
+    : [];
 }
 
 /**
@@ -196,7 +242,7 @@ export function toSuggestedAction({ proposal, preview, runId, executable }) {
  * surface flips it on when execution is enabled.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean }} input
+ * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean; sourceRecommendation?: any }} input
  */
 export async function proposeActionFromIntent(prisma, input) {
   const validation = validateActionIntent(input.intent);
@@ -212,7 +258,7 @@ export async function proposeActionFromIntent(prisma, input) {
     intent,
   });
   if (!resolved) return { status: "no_opportunity" };
-  const { proposal, preview, markdownPercent } = resolved;
+  const { proposal, preview, markdownPercent, scope } = resolved;
 
   // Deterministic proposal: the numbers are facts (only costed variants, floored at
   // cost), so the sizing confidence is full. Refine per data-completeness later.
@@ -227,7 +273,13 @@ export async function proposeActionFromIntent(prisma, input) {
   const baseAutonomy = resolveAutonomyMode(merchantSetting, eligibility);
   // Persist the money summary alongside the execution preview so the Daily Home card
   // renders key numbers + top items without re-running the proposal (a read-time query).
-  const proposalSummary = buildProposalSummary(proposal, preview, markdownPercent);
+  const proposalSummary = buildProposalSummary(
+    proposal,
+    preview,
+    markdownPercent,
+    input.sourceRecommendation,
+    scope,
+  );
   // Governance: apply the merchant's autonomy POLICY on top of the resolved mode — an
   // "auto" run over a per-action-type cap ("autonomous up to £X") degrades to approve-
   // first. No-op unless the mode is auto AND a cap is set AND exceeded.
@@ -334,6 +386,7 @@ export async function getActiveSuggestedAction(prisma, input) {
     mode,
     // The proposed default % (the knob the edit control POSTs back to reviseAction).
     markdownPercent: typeof summary.markdownPercent === "number" ? summary.markdownPercent : undefined,
+    sourceRecommendation: normalizeSourceRecommendation(summary.sourceRecommendation),
   };
 }
 
@@ -363,21 +416,21 @@ function formatExecutedOutcome(outcome, currency) {
  * @param {string} status @param {number} variantCount @param {any} summary
  */
 function buildExecutedHeadline(status, variantCount, summary) {
+  const source = normalizeSourceRecommendation(summary?.sourceRecommendation);
+  if (status === "rejected" && source?.title) return source.title;
   const noun = `${variantCount} product${variantCount === 1 ? "" : "s"}`;
   if (status === "reverted") return `Reverted a clearance on ${noun}`;
+  if (status === "rejected") return `Declined a clearance on ${noun}`;
   const pct = Number.isFinite(Number(summary?.markdownPercent)) ? ` (−${Number(summary.markdownPercent)}%)` : "";
   const partial = status === "partially_applied" ? " (some skipped)" : "";
   return `Marked ${noun} down for clearance${pct}${partial}`;
 }
 
 /**
- * The "what Jefe did for you" feed — the merchant-facing history of EXECUTED actions off
- * the action_executions ledger, most recent first. Each entry is a completed action
- * (applied / partially applied / reverted) with its measured outcome once the Observe
- * step has scored it (`outcome.measured` is false until then). Money is formatted
- * server-side against the shop currency (the surface renders strings as-is), the same
- * contract as getActiveSuggestedAction. Empty until execution is live — nothing is
- * applied while the write flag is off.
+ * The action timeline feed — completed and declined actions off the action_executions
+ * ledger, most recent first. Applied entries include measured outcome once Observe has
+ * scored them; rejected entries include a small merchant-facing learning line stored
+ * in proposalSummary at decline time.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; currency?: string; limit?: number }} input
  */
@@ -387,9 +440,9 @@ export async function getExecutedActionFeed(prisma, input) {
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      status: { in: ["applied", "partially_applied", "reverted"] },
+      status: { in: ["applied", "partially_applied", "reverted", "rejected"] },
     },
-    orderBy: [{ appliedAt: "desc" }, { createdAt: "desc" }],
+    orderBy: [{ appliedAt: "desc" }, { updatedAt: "desc" }, { createdAt: "desc" }],
     take: Number.isFinite(Number(input.limit)) ? Number(input.limit) : 20,
     select: {
       runId: true,
@@ -397,6 +450,7 @@ export async function getExecutedActionFeed(prisma, input) {
       status: true,
       appliedAt: true,
       revertedAt: true,
+      updatedAt: true,
       preview: true,
       proposalSummary: true,
       outcome: true,
@@ -417,11 +471,45 @@ export async function getExecutedActionFeed(prisma, input) {
       headline: buildExecutedHeadline(row.status, variantCount, summary),
       appliedAt: row.appliedAt?.toISOString?.() ?? null,
       revertedAt: row.revertedAt?.toISOString?.() ?? null,
+      rejectedAt: row.status === "rejected" ? row.updatedAt?.toISOString?.() ?? null : null,
+      declineLearning:
+        row.status === "rejected"
+          ? String(summary?.decline?.learning ?? "Jefe will avoid repeating that move without a stronger reason.")
+          : null,
+      sourceRecommendation: normalizeSourceRecommendation(summary.sourceRecommendation),
+      baselineSignal: baselineSignalFromSummary(summary, currency),
+      currentSignal: currentSignalFromOutcome(row, summary, currency),
       outcome: measured
         ? { measured: true, ...formatExecutedOutcome(/** @type {any} */ (row.outcome), currency) }
         : { measured: false },
     };
   });
+}
+
+/**
+ * @param {any} summary
+ * @param {string} currency
+ */
+function baselineSignalFromSummary(summary, currency) {
+  const variants = Number(summary?.variantCount) || 0;
+  const trapped = formatMoney(summary?.totalTrappedCapital, currency);
+  if (variants > 0) return `${variants} product${variants === 1 ? "" : "s"} · ${trapped} tied up`;
+  return null;
+}
+
+/**
+ * @param {any} row
+ * @param {any} summary
+ * @param {string} currency
+ */
+function currentSignalFromOutcome(row, summary, currency) {
+  if (row?.outcomeStatus !== "measured" || !row?.outcome) {
+    return baselineSignalFromSummary(summary, currency);
+  }
+  const outcome = /** @type {any} */ (row.outcome);
+  const variantsSold = Number(outcome.variantsSold) || 0;
+  const recovered = formatMoney(outcome.revenueRecovered, currency);
+  return `${variantsSold} sold since the move · ${recovered} recovered`;
 }
 
 /**
@@ -554,15 +642,39 @@ export function buildActionDeclinedEvent(execution, reason) {
 export async function rejectAction(prisma, input) {
   const execution = await prisma.actionExecution.findUnique({
     where: { runId: input.actionRunId },
-    select: { id: true, runId: true, merchantId: true, shopId: true, status: true, actionType: true },
+    select: {
+      id: true,
+      runId: true,
+      merchantId: true,
+      shopId: true,
+      status: true,
+      actionType: true,
+      proposalSummary: true,
+    },
   });
   if (!execution || execution.merchantId !== input.merchantId) return { status: "not_found" };
   if (execution.status !== "proposed") {
     return { status: "not_proposable", currentStatus: execution.status };
   }
+  const { reasonCategory, reasonText } = normalizeDeclineReason({
+    reasonCategory: input.reasonCategory ?? null,
+    reasonText: input.reasonText ?? input.reason ?? null,
+  });
+  const learning = declineLearningSentence(reasonCategory, reasonText);
+  const proposalSummary = {
+    ...(execution.proposalSummary && typeof execution.proposalSummary === "object"
+      ? /** @type {any} */ (execution.proposalSummary)
+      : {}),
+    decline: {
+      reasonCategory,
+      reasonText,
+      learning,
+      recordedAt: new Date().toISOString(),
+    },
+  };
   const rejected = await prisma.actionExecution.update({
     where: { runId: input.actionRunId },
-    data: { status: "rejected" },
+    data: { status: "rejected", proposalSummary },
     select: { id: true, runId: true, status: true },
   });
   // Observe→Learn: capture the decline + split reason (best-effort; never blocks the reply).
@@ -577,13 +689,37 @@ export async function rejectAction(prisma, input) {
 }
 
 /**
+ * @param {string | null} reasonCategory
+ * @param {string | null} reasonText
+ */
+function declineLearningSentence(reasonCategory, reasonText) {
+  if (reasonCategory === "discount_free") {
+    return "You wanted this move kept discount-free, so Jefe will not repeat this clearance as-is.";
+  }
+  if (reasonCategory === "defer") {
+    return "You asked to hold this move for now, so Jefe will bring back a better-timed recommendation.";
+  }
+  if (reasonCategory === "too_aggressive") {
+    return "You said the move was too aggressive, so Jefe will be gentler next time.";
+  }
+  if (reasonCategory === "wrong_products") {
+    return "You said the products were wrong, so Jefe will re-check the target set before suggesting this again.";
+  }
+  if (reasonCategory === "bad_timing") {
+    return "You said the timing was wrong, so Jefe will wait for a stronger moment.";
+  }
+  if (reasonText) return "Jefe saved your reason and will use it when choosing the next move.";
+  return "Jefe learned this was not the right move right now.";
+}
+
+/**
  * Revise a proposed action's magnitude — the "edit this suggestion" half. Re-runs the
  * proposal at the merchant's requested markdown (still floored + capped by the
  * primitive: the merchant suggests, the safety math is never overridden), creates a
  * fresh proposed row, and supersedes the old one so only the revision is active. Writes
  * nothing external. Chat 2's surface POSTs `action.edit` here.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; actionRunId: string; params?: { markdownPercent?: number } }} input
+ * @param {{ merchantId: string; actionRunId: string; params?: { markdownPercent?: number; maxProducts?: number } }} input
  */
 export async function reviseAction(prisma, input) {
   const existing = await prisma.actionExecution.findUnique({
@@ -591,6 +727,7 @@ export async function reviseAction(prisma, input) {
     select: {
       id: true, runId: true, merchantId: true, shopId: true,
       status: true, actionType: true, actionKind: true, merchantSetting: true,
+      proposalSummary: true,
     },
   });
   if (!existing || existing.merchantId !== input.merchantId) return { status: "not_found" };
@@ -600,16 +737,22 @@ export async function reviseAction(prisma, input) {
   const targetKind =
     existing.actionKind === "dead_stock_clearance" ? "dead_stock" : existing.actionKind;
   const markdownPercent = Number(input.params?.markdownPercent);
+  const maxProducts = Number(input.params?.maxProducts);
+  const params = {
+    ...(Number.isFinite(markdownPercent) ? { markdownPercent } : {}),
+    ...(Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : {}),
+  };
   const reproposed = await proposeActionFromIntent(prisma, {
     merchantId: existing.merchantId,
     shopId: existing.shopId,
     intent: {
       actionType: existing.actionType,
       targetKind,
-      params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
+      params: Object.keys(params).length ? params : undefined,
     },
     merchantSetting: existing.merchantSetting, // preserve the merchant's dial
     writeEnabled: isClearanceExecuteEnabled(),
+    sourceRecommendation: /** @type {any} */ (existing.proposalSummary)?.sourceRecommendation ?? null,
   });
   if (reproposed.status !== "proposed") {
     // No safe revision (e.g. the opportunity is gone) — leave the original in place.

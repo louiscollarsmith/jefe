@@ -50,6 +50,21 @@ test("sizeClearanceMarkdowns skips items missing units, price or cost", () => {
   assert.equal(proposal.totalTrappedCapital, 0);
 });
 
+test("sizeClearanceMarkdowns can scope to the highest trapped-capital product", () => {
+  const proposal = sizeClearanceMarkdowns(
+    [
+      { productId: "p1", variantId: "low", title: "Low", unitsOnHand: 2, currentPrice: 100, unitCost: 20 },
+      { productId: "p2", variantId: "high", title: "High", unitsOnHand: 10, currentPrice: 100, unitCost: 30 },
+    ],
+    { maxProducts: 1 },
+  );
+
+  assert.equal(proposal.eligibleDeadStockVariantCount, 2);
+  assert.equal(proposal.deadStockVariantCount, 1);
+  assert.equal(proposal.items[0].variantId, "high");
+  assert.equal(proposal.totalTrappedCapital, 300);
+});
+
 test("buildDeadStockClearanceProposal finds only in-stock, unsold, costed variants", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for clearance proposal DB test");
