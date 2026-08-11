@@ -161,8 +161,17 @@ export async function getMerchantContextForQuestion(prisma, input) {
   const warnings = [];
   const actionRow = await loadActionExecution(prisma, input);
   const actionSourceRecommendation = sourceRecommendationFromAction(actionRow);
-  const suppliedRecommendationId = text(input.recommendationId);
-  const actionRecommendationId = text(actionSourceRecommendation?.id);
+  const suppliedRawRecommendationId = identityText(input.recommendationId);
+  const suppliedRecommendationId = uuidString(suppliedRawRecommendationId);
+  const actionRecommendationId = uuidString(identityText(actionSourceRecommendation?.id));
+  if (suppliedRawRecommendationId && !suppliedRecommendationId) {
+    warnings.push("malformed_recommendation_id_ignored");
+    log.warn("action chat ignored malformed recommendation id", {
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? actionRow?.shopId ?? null,
+      actionRunId: actionRow?.runId ?? input.actionRunId ?? null,
+    });
+  }
   let canonicalRecommendationId = suppliedRecommendationId || actionRecommendationId || null;
   if (
     actionRow &&
@@ -221,7 +230,11 @@ export async function getMerchantContextForQuestion(prisma, input) {
     ...currentBlocks,
   ]);
   const context = {
-    recommendationId: recommendation?.id ?? fallbackRecommendation?.id ?? input.recommendationId ?? null,
+    recommendationId:
+      uuidString(recommendation?.id) ||
+      uuidString(fallbackRecommendation?.id) ||
+      canonicalRecommendationId ||
+      null,
     actionRunId: scopedActionRow?.runId ?? (actionRow ? null : input.actionRunId ?? null),
     planEvidenceAtRecommendationTime: planSnapshot
       ? {
@@ -492,10 +505,11 @@ async function loadInsights(prisma, input) {
  * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null }} input
  */
 async function loadPlanRecommendation(prisma, input) {
-  if (!input.recommendationId || !prisma.merchantPlanRecommendation?.findFirst) return null;
+  const recommendationId = uuidString(input.recommendationId);
+  if (!recommendationId || !prisma.merchantPlanRecommendation?.findFirst) return null;
   return prisma.merchantPlanRecommendation.findFirst({
     where: {
-      id: input.recommendationId,
+      id: recommendationId,
       merchantId: input.merchantId,
       shopId: input.shopId ?? undefined,
     },
@@ -648,13 +662,13 @@ function recommendationMatchesActionSource(recommendation, actionSourceRecommend
 /** @param {any} recommendation */
 function normalizeRecommendation(recommendation) {
   return {
-    id: text(recommendation?.id),
-    runId: text(recommendation?.runId),
-    merchantId: text(recommendation?.merchantId),
-    shopId: text(recommendation?.shopId),
+    id: identityText(recommendation?.id),
+    runId: identityText(recommendation?.runId),
+    merchantId: identityText(recommendation?.merchantId),
+    shopId: identityText(recommendation?.shopId),
     title: safeText(recommendation?.title, 160),
     summary: safeText(recommendation?.summary, 500),
-    primaryGoalId: text(recommendation?.primaryGoalId),
+    primaryGoalId: identityText(recommendation?.primaryGoalId),
     supportingGoalIds: uniqueStrings(recommendation?.supportingGoalIds ?? []),
     whyThisAction: safeText(recommendation?.whyThisAction, 700),
     whyNow: safeText(recommendation?.whyNow, 500),
@@ -968,6 +982,12 @@ function text(value) {
   return typeof value === "string" && value.trim() ? safeText(value, 240) : "";
 }
 
+/** @param {unknown} value */
+function identityText(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
 /**
  * @param {unknown} value
  * @param {number} max
@@ -1005,6 +1025,11 @@ function uuidStrings(values) {
   return uniqueStrings(values).filter((value) =>
     /^(urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
   );
+}
+
+/** @param {unknown} value */
+function uuidString(value) {
+  return uuidStrings([value])[0] ?? "";
 }
 
 /** @param {string} key */

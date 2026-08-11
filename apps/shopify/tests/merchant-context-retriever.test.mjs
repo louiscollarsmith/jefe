@@ -8,6 +8,8 @@ import {
 } from "../app/lib/merchant-memory/context-retriever.server.js";
 
 const NOW = new Date("2026-08-11T08:30:00.000Z");
+const RECOMMENDATION_ID = "33333333-3333-4333-8333-333333333333";
+const ACTION_RECOMMENDATION_ID = "44444444-4444-4444-8444-444444444444";
 const COUNT_BELIEF_ID = "11111111-1111-4111-8111-111111111111";
 const LOW_COVER_BELIEF_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -122,7 +124,7 @@ test("question context includes recommendation-time evidence and current system 
   const context = await getMerchantContextForQuestion(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    recommendationId: "rec-1",
+    recommendationId: RECOMMENDATION_ID,
     actionRunId: "run-1",
     message: "What are the two products?",
     logger: silentLogger,
@@ -142,14 +144,14 @@ test("question context canonicalizes mismatched recommendation ids through the a
   const recommendationIds = [];
   const prisma = createContextPrisma({
     recommendation: recommendationFixture({
-      id: "rec-action",
+      id: ACTION_RECOMMENDATION_ID,
       runId: "plan-run-action",
     }),
     actionRow: actionRowFixture({
       proposalSummary: {
         variantCount: 0,
         sourceRecommendation: {
-          id: "rec-action",
+          id: ACTION_RECOMMENDATION_ID,
           runId: "plan-run-action",
           title: "Secure Stock on Fast-Selling Drinks",
           summary: "Review products currently facing low stock cover.",
@@ -162,16 +164,39 @@ test("question context canonicalizes mismatched recommendation ids through the a
   const context = await getMerchantContextForQuestion(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    recommendationId: "rec-hidden-other",
+    recommendationId: RECOMMENDATION_ID,
     actionRunId: "run-1",
     message: "What are the two products?",
     logger: silentLogger,
   });
 
-  assert.deepEqual(recommendationIds, ["rec-action"]);
-  assert.equal(context.recommendationId, "rec-action");
+  assert.deepEqual(recommendationIds, [ACTION_RECOMMENDATION_ID]);
+  assert.equal(context.recommendationId, ACTION_RECOMMENDATION_ID);
   assert.equal(context.actionRunId, "run-1");
   assert.ok(context.retrieval.warnings.includes("supplied_recommendation_id_ignored_action_source_mismatch"));
+});
+
+test("malformed recommendation ids are ignored before Prisma UUID queries", async () => {
+  const recommendationIds = [];
+  const warnings = [];
+  const prisma = createContextPrisma({
+    actionRow: null,
+    onRecommendationFind: ({ where }) => recommendationIds.push(where.id),
+  });
+
+  const context = await getMerchantContextForQuestion(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    recommendationId: "recommendation[object Object]",
+    actionRunId: null,
+    message: "What are the two products?",
+    logger: { ...silentLogger, warn: (_message, data) => warnings.push(data) },
+  });
+
+  assert.deepEqual(recommendationIds, []);
+  assert.equal(context.recommendationId, null);
+  assert.ok(context.retrieval.warnings.includes("malformed_recommendation_id_ignored"));
+  assert.equal(warnings.length, 1);
 });
 
 test("retrieved context redacts customer PII and excludes raw payload fields", async () => {
@@ -333,7 +358,7 @@ function createContextPrisma({
 
 function recommendationFixture(overrides = {}) {
   return {
-    id: "rec-1",
+    id: RECOMMENDATION_ID,
     runId: "plan-run-1",
     merchantId: "m1",
     shopId: "s1",
@@ -367,7 +392,7 @@ function actionRowFixture(overrides = {}) {
     proposalSummary: {
       variantCount: 0,
       sourceRecommendation: {
-        id: "rec-1",
+        id: RECOMMENDATION_ID,
         runId: "plan-run-1",
         title: "Secure Stock on Fast-Selling Drinks",
         summary: "Review products currently facing low stock cover.",

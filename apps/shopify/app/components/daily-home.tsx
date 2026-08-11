@@ -422,6 +422,7 @@ function ActionChat({
             "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you are ready.",
         },
       ];
+  const subtitle = informativeSubtitle(move.summary, move.title);
   return (
     <main style={pageStyle}>
       <div style={chatShellStyle}>
@@ -436,6 +437,7 @@ function ActionChat({
           <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
         </div>
         <h1 style={chatTitleStyle}>{move.title}</h1>
+        {subtitle ? <p style={chatSubtitleStyle}>{subtitle}</p> : null}
         <div style={{ ...chatDividerStyle, marginTop: 20 }} />
         <div style={messagesStyle}>
           {messages.map((message) => (
@@ -1066,6 +1068,11 @@ const chatTitleStyle: CSSProperties = {
   lineHeight: 1.28,
   margin: "14px 0 0",
   fontWeight: 500,
+};
+const chatSubtitleStyle: CSSProperties = {
+  ...summaryStyle,
+  fontSize: 15.5,
+  marginTop: 10,
 };
 const chatDividerStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
 const messagesStyle: CSSProperties = {
