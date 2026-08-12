@@ -52,7 +52,20 @@ const PORT = Number(process.env.PORT) || 4000;
 const WINDOWS = { "24": "24h", "168": "7d", "720": "30d", "2160": "90d" };
 const ISSUE_WINDOW_SQL = "1 hour";
 
+// ⛔ TEMPORARY — AUTH IS OFF. Founder's call (Matt, 2026-08-12, ~22:30) to unblock access to
+// the panel; OPS_PASSWORD is set in production but its value wasn't to hand.
+//
+// RESTORE BEFORE THE FIRST MERCHANT INSTALLS: delete this constant and the branch below.
+// That is the whole revert — nothing else changed.
+//
+// Why it matters more tomorrow than tonight: this panel is CROSS-MERCHANT by design (the
+// file header above says so, and the README says never expose it), and admin.mynamejefe.com
+// is publicly reachable. Today that exposes two internal stores; the moment a paying client
+// installs, it exposes theirs.
+const OPS_AUTH_DISABLED = true;
+
 function isAuthed(req) {
+  if (OPS_AUTH_DISABLED) return true;
   if (!OPS_PASSWORD) return false; // fail closed until configured
   const header = req.headers.authorization || "";
   if (!header.startsWith("Basic ")) return false;
