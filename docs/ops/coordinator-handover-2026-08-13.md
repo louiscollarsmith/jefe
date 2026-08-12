@@ -7,16 +7,20 @@ reading for how Matt works — that part has not changed.
 Read `CLAUDE.md` first. This file is state, risk and judgement; the working agreements are
 in there.
 
-## The three things that need Matt, before a client installs
+## The things that need Matt
 
 Nothing else on this list matters as much.
 
-1. **⛔ The ops panel has NO LOGIN.** `admin.mynamejefe.com` serves **cross-merchant** data
-   to anyone with the URL. Matt asked for the gate off (2026-08-12 ~22:30) to unblock
-   himself; I argued twice, was overruled, and did it — `8fe43bf`, plus a manual deploy.
-   **The revert is deleting `OPS_AUTH_DISABLED` and its branch in `apps/ops/server.mjs`.
-   Nothing else changed.** It needs a manual deploy (see the trap below).
-   Today that exposes two internal stores. The moment a paying client installs, it is theirs.
+1. **The ops panel has NO LOGIN — deliberately, and it is NOT a task.**
+   `admin.mynamejefe.com` serves **cross-merchant** data to anyone with the URL. Matt asked
+   for the gate off (2026-08-12 ~22:30); I argued against it twice and was overruled, and on
+   2026-08-13 he reaffirmed it: **leave it for at least 2-3 weeks.** This is an accepted
+   exposure with a revisit date (~early September), not an oversight. **Do not keep raising
+   it, and do not restore it as a tidy-up.**
+   If the decision is ever re-made: delete `OPS_AUTH_DISABLED` and its branch in
+   `apps/ops/server.mjs` — `OPS_PASSWORD` is still set in Railway, so it is a code change
+   only. It will need a manual deploy (see the traps).
+
 2. **`LISTING_COPY_EXECUTE_ENABLED` — nobody has checked it.** `listing_copy` became
    proposable in production tonight (`60aeb91`). If that flag is set, a merchant gets a live
    Approve button on a write path **never exercised in production**. If unset, the proposal
