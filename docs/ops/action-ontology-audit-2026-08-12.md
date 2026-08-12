@@ -1,0 +1,265 @@
+# Action Ontology Audit — 2026-08-12
+
+Standing record for the action-ontology lane, opened on Matt's call today: *"action
+ontology needs to increase hugely. Price markdown is just not enough. It needs to be
+so much more."*
+
+Everything below is verified against `origin/main` @ `8456e9d`. Scope→resource mappings
+verified against shopify.dev, not recalled. Nothing here has been built; this is the
+audit that precedes building, so the first three things built are the right three.
+
+---
+
+## 1. The state, in numbers
+
+| | Count | |
+|---|---|---|
+| Derived belief keys | **134** | `shopify-derivations.server.js` |
+| Beliefs that detect a *fixable situation* | **~26** | the rest are descriptive/diagnostic |
+| Beliefs that **name the records** an action could target | **3** | `dead_stock`, `low_cover_products`, `top_returned_products` |
+| Registered action types | **1** | `price_markdown` |
+| Beliefs with an action attached | **1** | `products.dead_stock.trailing_90d` |
+| Write scopes requested | **4** | `write_products`, `write_orders`, `write_customers`, `write_inventory` |
+| Write scopes any code exercises | **1** | `write_products` |
+
+The honest framing is *not* "133 beliefs are missing actions" — most are diagnostics
+(AOV, currency mix, dispersion, coverage metrics) where no verb is meaningful. It is:
+**roughly 26 beliefs see a fixable problem, and one of them can do anything about it.**
+
+## 2. Belief audit — situation-detecting beliefs with no action
+
+Split by whether the belief already names the records to act on. This distinction is the
+whole ballgame: a belief carrying `items[].productId` can drive a resolver today; a
+scalar count needs its own targeting query first.
+
+### Tier 1 — targetable (names records, ready to drive a resolver)
+
+| Belief | Carries | Action? |
+|---|---|---|
+| `products.dead_stock.trailing_90d` | `productId`, `unitsOnHand`, `trappedCapital` | ✅ `price_markdown` |
+| `inventory.low_cover_products.trailing_30d` | `productId`, `daysOfCover`, `available`, `dailyVelocity` | ❌ **none** |
+| `products.top_returned_products.trailing_180d` | `productId`, `returnedUnits`, `refundValue`, `returnRatePercent` | ❌ **none** |
+| `products.product_momentum.trailing_60d` | `topRiser`/`topFaller` only (not a full list) | ❌ **none** |
+
+### Tier 2 — detects a real defect, but scalar (count only, no target list)
+
+Actionable only if the primitive re-queries. **It can** — see §3.
+
+Stock defects · `inventory.negative_inventory_variant_count` / `_share` /
+`_unit_magnitude` · `inventory.out_of_stock_variant_count` ·
+`catalog.out_of_stock_product_count` · `inventory.at_risk_stockout_count.trailing_30d` ·
+`inventory.stale_inventory_level_share`
+
+Catalog defects · `catalog.zero_price_variant_count` / `_share` ·
+`catalog.draft_product_count` · `data.duplicate_sku_count` ·
+`data.missing_sku_variant_share` · `products.cost_coverage`
+
+Demand · `products.no_sale_active_product_count.trailing_90d` ·
+`refunds.refunded_order_rate.all_time` · `business.discount_depth.trailing_90d` ·
+`products.gross_margin.trailing_90d` · `business.margin_by_region.trailing_90d`
+
+Customers · `customers.repeat_customer_rate.all_time` ·
+`customers.top_customer_revenue_share.all_time` · `business.days_since_last_order`
+— **all scalar. There is no per-customer cohort belief at all**, which is why the
+`write_customers` candidates are the ones with a real missing link.
+
+### Tier 3 — descriptive (~108)
+
+AOV, order counts, price percentiles, currency, history span, all `data.*` coverage
+metrics. These inform recommendations. No verb applies. Not a gap.
+
+### Detected outside the belief layer
+
+`store-hygiene-scan.server.js` already finds five concrete defects — missing
+description, missing cost, missing product type, missing SKU, refund clustering — and
+deep-links the merchant into Shopify admin to fix each by hand. **It is an action
+backlog with the detection already written and the verb deliberately omitted**
+(its header says drafting copy is "a separate action-type"). Worth reading as
+candidate evidence; it is the closest thing in the repo to a merchant-validated list.
+
+## 3. The coupling is looser than assumed — actions are NOT blocked on new beliefs
+
+Worth stating plainly because it changes sequencing: **`dead-stock-clearance.server.js`
+never reads the `dead_stock` belief.** It queries `variant`, `inventoryLevel` and
+`orderLineItem` directly (lines 114/128/132) and computes its own target set.
+
+So a belief plays two roles, and only one is load-bearing:
+
+- **Trigger + narrative (needed):** the LLM sees the belief in memory, decides the
+  situation warrants acting, and emits an `actionIntent`. `prompt.server.js:34` already
+  advertises `listActionCapabilities()` generically — *add a registry entry and the LLM
+  can emit it with no prompt change.*
+- **Target resolution (not needed):** the primitive re-queries deterministically.
+
+**Consequence:** this lane is not blocked behind the memory/ontology lane. A scalar
+belief like `negative_inventory_variant_count` is enough to trigger; the primitive finds
+the variants itself. That said, a *targetable* belief makes the merchant-facing "why"
+much stronger, so Tier-1 candidates still rank higher.
+
+## 4. Scope reality — the commercial problem
+
+Granted set (`shopify.app.toml:64`, identical in staging):
+`read_products, write_products, read_orders, write_orders, read_all_orders,
+read_customers, write_customers, read_inventory, write_inventory, read_locations`
+
+| Scope | Exercised by | Status |
+|---|---|---|
+| `write_products` | `price_markdown` (live) | ✅ honest |
+| `write_inventory` | nothing | ⚠️ **unexercised** |
+| `write_customers` | nothing | ⚠️ **unexercised** |
+| `write_orders` | nothing | ⚠️ **unexercised** |
+
+Verified against shopify.dev's access-scope reference:
+
+- `read_inventory,write_inventory` → **InventoryLevel, InventoryItem**
+- `read_customers,write_customers` → **Customer, Segment, Company, CompanyLocation**
+  — *Segment is in here.* That matters; see candidate C.
+- `read_orders,write_orders` → Order
+- `read_discounts,write_discounts` → Discounts — **NOT granted**
+- `read_draft_orders,write_draft_orders` → DraftOrder — **NOT granted**
+- `read_inventory_transfers,write_inventory_transfers` → InventoryTransfer — **NOT granted**
+- `read_marketing_events,write_marketing_events` → MarketingActivity — **NOT granted**
+
+⚠️ **`write_orders` is the hard one.** Every genuinely valuable order write —
+`refundCreate`, `orderCancel`, order editing — is **irreversible**, which is a different
+risk class under the reversibility rule. The only cleanly reversible order write is
+tagging/notes, which is thin value on its own. So `write_orders` cannot be made honest
+by a *reversible* action; making it honest means Matt accepting an irreversible
+primitive, or dropping the scope. That is a founder call, flagged in §7.
+
+## 5. Candidate actions, ranked
+
+Ranked on merchant value × evidence × scope justification. ⚠️ **Evidence column is
+provisional** — chat 6's Shopify-support-group discourse has been requested and has not
+arrived; ranking will be revisited when it does.
+
+| # | Action | Scope | Trigger | Reversible | Missing links |
+|---|---|---|---|---|---|
+| **A** | `product_status_change` — archive stock that clearance didn't move | `write_products` *(already exercised)* | `dead_stock` ✅ targetable | ✅ ACTIVE↔ARCHIVED | registry entry · resolver · wire layer · outcome. **Adapter + client + tests already built** |
+| **B** | `inventory_correction` — reset negative stock to 0 | **`write_inventory`** ← closes a scope | `negative_inventory_*` (scalar; primitive re-queries) | ✅ CAS restore | belief targeting · adapter · client · registry · resolver · wire · outcome |
+| **C** | `customer_segment_maintain` — create/maintain native Shopify Segments (lapsed high-value, at-risk, first-time) | **`write_customers`** ← closes a scope | **none — no per-customer cohort belief exists** | ✅ `segmentUpdate`/delete | **a belief first** · adapter · client · registry · resolver · wire · outcome |
+| **D** | `compare_at_price_set` — strike-through pricing alongside a markdown | `write_products` | rides on `dead_stock` | ✅ | small; makes the live action actually convert |
+| **E** | `product_content_fill` — set missing product type | `write_products` | hygiene scan ✅ | ✅ | productType safe; **description is LLM-generated merchant-visible copy = different risk class** |
+| **F** | `product_tag_change` — tag clearance/bestseller/low-cover for the merchant's other tools | `write_products` | many | ✅ | low value alone, high composability |
+| **G** | `order_tag_change` | **`write_orders`** | none | ✅ | only reversible order write; thin value |
+| **H** | `discount_code_create` | **`write_discounts` — NOT GRANTED** | — | ✅ | **new scope = one-way door + live review risk** |
+| **I** | `refund_create` / `order_cancel` | `write_orders` | — | ❌ **NO** | irreversible — different risk class, founder call |
+
+**Why B over C despite C's bigger scope payoff:** `inventorySetQuantities` natively
+provides `compareQuantity`/`changeFromQuantity` (compare-and-swap) and an `@idempotent`
+key — required as of API 2026-04. Those map **1:1** onto the adapter contract the
+clearance primitive already implements (compare-and-set, idempotent per-target ledger
+writes). It is the most faithful possible second write primitive. `Segment` is the
+higher prize but needs a belief that does not exist, in a lane that is booked.
+
+**Not candidates:** reorder/purchase-order (Shopify has no PO write under the granted
+scopes — `low_cover_products` is the best-prepared belief in the repo and its natural
+verb isn't a Shopify write at all, so it belongs in the brief, not the action layer);
+`customer_marketing_consent` (consent must come from the customer, never from us);
+`inventory_item_cost_set` (Jefe doesn't know the cost — that's merchant data).
+
+## 6. ⚠️ The spine is single-action in ten places — read before registering anything
+
+A registry entry is not sufficient to add an action, and the gaps are not evenly
+harmless. In `action-resolution.server.js` unless noted:
+
+1. `:261` — `RESOLVERS` returns a price-shaped tuple; `proposeActionFromIntent`
+   destructures `markdownPercent`.
+2. `:272` — `computeClearanceAutoEligibility` called unconditionally, though
+   `computeProductStatusAutoEligibility` already sits beside it.
+3. `:308` — `caps: DEFAULT_CLEARANCE_CAPS` persisted unconditionally.
+4. `:300` — `actionKind` from a hardcoded `dead_stock` ternary.
+5. `:218` — `toSuggestedAction` hardcodes `actionType: "price_markdown"`.
+6. `:371` — `getActiveSuggestedAction` renders a **hardcoded dead-stock headline**
+   regardless of `row.actionType`. A second action type would render on the home as a
+   clearance.
+7. `:383` — `executable: isClearanceExecuteEnabled()`. **A second action type would be
+   gated on the wrong flag — one that is `true` in production.**
+8. `:754` — `reviseAction` passes `writeEnabled: isClearanceExecuteEnabled()`.
+9. `:563` — `getScopeGatedOpportunity` hardcoded to `price_markdown`.
+10. `clearance-outcome.server.js:111` — measurement filters
+    `actionType: "price_markdown"` and assumes `preview.changes[].variantId/toPrice`.
+
+### The one that matters most
+
+**`wireClearanceExecution` does not dispatch on `row.actionType` at all.** It loads the
+row, checks `preview.changes` is non-empty (a product-status preview also has
+`.changes`), gates on `isClearanceExecuteEnabled()`, builds a *clearance* client, and
+calls `applyClearance` with whatever preview the row holds.
+
+Traced what would actually happen if a foreign preview reached it:
+
+- `enforceBlastRadiusCap` reads `preview.variantCount`; `undefined > 25` is `false`, so
+  **the blast-radius cap silently passes** on any preview lacking that field.
+- `computeClearanceAutoEligibility` gives `reversible: false`, so the mode degrades to
+  `approve` — autonomous execution is blocked.
+- Execution then throws at the ledger write (`targetRef: undefined` on a non-nullable
+  column), **before** any Shopify call.
+
+So no wrong store write occurs — but it is stopped by a Prisma NOT NULL constraint and a
+falsy comparison, not by design. **The only thing actually preventing a second action
+type from entering this path is that `RESOLVERS` has no entry for it**, so
+`proposeActionFromIntent` returns `unsupported` and no row is ever created. The safety
+property lives in the resolver map, not the registry — which means *registering* an
+action type and *resolving* it must never be separated by more than one commit.
+
+**Recommendation:** the spine generalisation (actionType dispatch in the wire layer +
+a cap check that fails closed on a missing field) lands **before or with** the first
+new registration, not after. Routed to chat 10 as contract owner.
+
+## 7. Recommended first two
+
+**1 · `product_status_change` — the freebie, and the forcing function.**
+Adapter, Shopify client and both test files already exist and are unregistered — chat 10
+already flagged it "doubly inert". Zero new scope, zero new consent, reuses the generic
+ledger with no migration. Its real value isn't the feature; it is that being the second
+primitive forces every hardcode in §6 into the open and converts the spine from
+one-action to N-action for the cost of one small action. Nothing else buys that as
+cheaply. Pairs naturally with the live clearance: *mark it down; if it still hasn't
+moved in N days, archive it.*
+
+**2 · `inventory_correction` — the first honest write scope.**
+Closes `write_inventory`. Negative stock is unambiguously a defect (it blocks sales and
+is almost always a sync error, not a decision), the fix is one number, the merchant sees
+the benefit immediately, and Shopify's own mutation hands us compare-and-swap plus an
+idempotency key — the adapter contract, natively. Needs a targeting query for the
+variants (the belief is scalar), which §3 establishes is a normal primitive
+responsibility, not a memory-lane dependency.
+
+**Third, not second: `customer_segment_maintain`.** Highest scope payoff and it makes
+Jefe's segmentation usable in the merchant's existing email tool without Jefe ever
+contacting a customer or holding a plaintext address — which fits, because
+`CustomerIdentity` only stores `emailHash`/`maskedEmail`, so Jefe *cannot* build a
+recipient list even if it wanted to. It defines rules; Shopify evaluates them. Blocked
+on a per-customer cohort belief that does not exist.
+
+## 8. Founder decisions needed (one-way doors)
+
+1. **Register `product_status_change`?** Becomes a contract the roster, ledger,
+   measurement and autonomy dial all key on. No new scope. *Recommended: yes.*
+2. **Build `inventory_correction` against `write_inventory`?** No *new* scope — it
+   exercises one already requested — but it is the first time Jefe writes something
+   other than a price. *Recommended: yes.*
+3. **`write_orders`: keep it or drop it?** No reversible order write carries real value.
+   Keeping it means either accepting an irreversible primitive (refund/cancel) later, or
+   accepting that the scope stays unexercised while the listing is in review.
+   *No recommendation — this is a product-posture call.*
+4. **`write_discounts`?** Discount codes are plausibly the single most-requested
+   merchant action, and the scope is not currently requested. Adding it is a consent +
+   review change. *Deferred pending chat 6's merchant discourse.*
+
+Flags stay off. Nothing goes live without a separate explicit call.
+
+## 9. Coordination
+
+- **chat 10 (architecture II)** — owns `ACTION_REGISTRY`'s shape and the per-primitive
+  `measure`/`verdict` contract. Asked: the outcome-contract shape; whether they own the
+  resolver-interface extraction ("from two real ones" — this is the second one); whether
+  a belief is the only legitimate trigger. Also flagged §6's wire-layer finding.
+- **chat 6 (growth)** — asked for the support-group discourse (re-ranks §5) and told
+  which scopes each candidate closes, for the disclosure copy.
+- **Settings/autonomy roster** — told what a definition provides, and warned about rows
+  that are registered-but-not-live, per-row scope gating, and caps that aren't money.
+- **Memory/ontology lane** — deliberately not contacted; belief questions routed to
+  chat 10 per the brief. §3 means this lane is not blocked on them.
+- **Not touched:** `app/routes/app._index.tsx`, `app/components/daily-home.tsx`.
