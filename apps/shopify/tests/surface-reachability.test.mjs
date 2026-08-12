@@ -13,14 +13,15 @@ import fs from "node:fs";
 // would have passed throughout the outage. Assert there is a way IN.
 
 const read = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+const appShell = read("app/routes/app.tsx");
 const dailyHome = read("app/components/daily-home.tsx");
 const settings = read("app/routes/app.settings.tsx");
 
 test("the home has a way off it", () => {
-  // The gear is the home's only door out by design. If it goes, Settings AND Merchant Memory
-  // go with it, because Memory is reached through Settings.
-  assert.match(dailyHome, /aria-label="Settings"/);
-  assert.match(dailyHome, /settingsHref/);
+  // The top-right shell gear is the one way to Settings from the clean chat home. If it goes,
+  // Settings AND Merchant Memory go with it, because Memory is reached through Settings.
+  assert.match(appShell, /aria-label="Settings"/);
+  assert.match(appShell, /appSettingsHref/);
 });
 
 test("Merchant Memory is reachable from settings", () => {
@@ -31,18 +32,18 @@ test("Merchant Memory is reachable from settings", () => {
 
 test("navigation keeps the params embedded Shopify needs", () => {
   // A link that drops `host` breaks the embedded app rather than navigating it — the failure
-  // looks like a dead click, so it is worth pinning. Both helpers must carry the existing
+  // looks like a dead click, so it is worth pinning. Helpers must carry the existing
   // params forward and delete only the ones describing where you were.
-  assert.match(dailyHome, /new URLSearchParams\(search\)/);
-  assert.match(dailyHome, /for \(const key of \["view", "actionChat", "panel"\]\) params\.delete\(key\)/);
+  assert.match(appShell, /new URLSearchParams\(search\)/);
+  assert.match(appShell, /for \(const key of \["view", "actionChat", "panel"\]\) params\.delete\(key\)/);
   assert.match(settings, /new URLSearchParams\(params\)/);
   assert.match(settings, /next\.delete\("panel"\)/);
 });
 
-test("the gear is not rendered without a search string to carry", () => {
-  // The loading header has no params; a gear there would navigate away from the embedded
-  // context and lose `host`. Better no door than a door onto the street.
-  assert.match(dailyHome, /currentSearch \?\s*\(/);
+test("the settings gear is shell chrome, not chat chrome", () => {
+  assert.doesNotMatch(dailyHome, /aria-label="Settings"/);
+  assert.doesNotMatch(dailyHome, /settingsHref/);
+  assert.match(appShell, /showChrome \? \(/);
 });
 
 test("the Memory entry is not wired into the founder-ordered panel list", () => {

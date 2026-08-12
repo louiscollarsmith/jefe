@@ -186,7 +186,6 @@ export function DailyHome(props: {
           todayLabel={props.todayLabel}
           goalLine={goalLine}
           brandLogoUrl={props.brandLogoUrl}
-          currentSearch={location.search}
         />
         <StoreConversation
           conversation={props.conversation ?? null}
@@ -790,13 +789,11 @@ function Header({
   todayLabel,
   goalLine,
   brandLogoUrl,
-  currentSearch,
 }: {
   storeName: string;
   todayLabel?: string;
   goalLine?: string | null;
   brandLogoUrl?: string | null;
-  currentSearch?: string;
 }) {
   return (
     <header style={headerStyle}>
@@ -809,38 +806,8 @@ function Header({
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <DateLabel>{todayLabel ?? ""}</DateLabel>
-        {/* The home's only door out. The Memory-view footer link was removed from the home
-            deliberately (Matt) — but it was the sole navigation off this surface, so Settings
-            and Merchant Memory both became unreachable while the route kept serving them.
-            The gear is the re-homing that removal assumed: a quiet control, not a section.
-            Rendered only when we have the current search: embedded Shopify needs `host` to
-            survive the hop, and a gear that drops it is worse than no gear. The loading
-            header has no search and so has no gear — there is nothing to navigate to yet. */}
-        {currentSearch ? (
-          <Link to={settingsHref(currentSearch)} style={gearLinkStyle} aria-label="Settings">
-            <GearIcon />
-          </Link>
-        ) : null}
       </div>
     </header>
-  );
-}
-
-// Settings, keeping the embedded params Shopify needs (host, shop, embedded) and dropping
-// only the ones that describe where you are on the home.
-function settingsHref(search: string) {
-  const params = new URLSearchParams(search);
-  for (const key of ["view", "actionChat", "panel"]) params.delete(key);
-  const next = params.toString();
-  return `/app/settings${next ? `?${next}` : ""}`;
-}
-
-function GearIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
   );
 }
 
@@ -1513,16 +1480,6 @@ const merchantBubbleStyle: CSSProperties = {
   maxWidth: "76%",
   padding: "11px 16px",
   whiteSpace: "pre-wrap",
-};
-// Quiet by design — the home is a chat log, and the way out should be findable without
-// competing with what Jefe is saying.
-const gearLinkStyle: CSSProperties = {
-  alignItems: "center",
-  color: COLORS.meta,
-  display: "flex",
-  justifyContent: "center",
-  padding: 4,
-  textDecoration: "none",
 };
 // Deliberately NOT an alarm colour. Jefe not getting to a message is a hiccup in a
 // conversation, not a store problem — dressing it in red would tell the merchant something
