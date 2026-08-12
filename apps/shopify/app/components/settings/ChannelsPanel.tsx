@@ -17,7 +17,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
  * match the settings shell (the redesigned surface is not Polaris).
  */
 
-type SlackDestination = { id: string; label: string; isPrivate: boolean; isMember: boolean | null };
+export type SlackDestination = { id: string; label: string; isPrivate: boolean; isMember: boolean | null };
 
 export type SlackConnectionView = {
   status: string;

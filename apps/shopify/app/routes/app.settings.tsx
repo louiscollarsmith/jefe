@@ -5,7 +5,16 @@ import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { getLiveActionModes } from "../lib/actions/live-action-modes.server.js";
+import { getDetectedToolStack } from "../lib/integrations/tool-stack-read.server.js";
+import {
+  listChannelConnections,
+  listSlackDestinations,
+} from "../lib/channels/service.server.js";
 import { AutonomyPanel } from "../components/settings/AutonomyPanel";
+import { IntegrationsPanel } from "../components/settings/IntegrationsPanel";
+import type { DetectedToolStackView } from "../components/settings/IntegrationsPanel";
+import { ChannelsPanel } from "../components/settings/ChannelsPanel";
+import type { SlackConnectionView, SlackDestination } from "../components/settings/ChannelsPanel";
 
 // The settings surface — a SEPARATE area from the (sleek, full-width) chat home.
 // Founder ruling 2026-08-12: the home stays "just a chat log"; settings live here with a
@@ -30,7 +39,7 @@ import { AutonomyPanel } from "../components/settings/AutonomyPanel";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
-  const { merchant } = await ensureShopifyTenant(prisma, {
+  const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
@@ -39,10 +48,38 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Per-panel data is computed HERE — this surface's single loader — and passed to each
   // mounted panel as its documented prop (see the panel contract). Autonomy: the live
   // per-action modes (engine truth; an absent key ⇒ "Soon"/needs-you, never a fake dial).
-  // Integrations wiring is a fast-follow — its getDetectedToolStack return widens `status` to
-  // string vs the panel's "detected"|"none_yet" union; the channels lane is tightening it.
   const actionModes = await getLiveActionModes(prisma, { merchantId: merchant.id });
-  return { shopDomain: session.shop, actionModes };
+
+  // Integrations: detected tool-stack (surfaceable-only, inference-framed in the panel). Empty
+  // today (0 detections); no merchant claim until chat 10's signature verification.
+  const toolStack = await getDetectedToolStack(prisma, { merchantId: merchant.id });
+
+  // Channels (Slack-first): the slack connection + its available destinations. listChannel
+  // connections always returns both providers; index/find gives the slack view (connected or not).
+  const channelConnections = await listChannelConnections(prisma, {
+    merchantId: merchant.id,
+    shopId: shop.id,
+  });
+  const slackConnection =
+    channelConnections.find((c) => c.provider === "slack") ?? channelConnections[0];
+  // listSlackDestinations makes a LIVE Slack API call — only when there's a usable workspace,
+  // and never let a token/API hiccup break the settings page (fall back to an empty list).
+  const slackConnected = !["not_connected", "disconnected", "connection_failed", "connection_expired"].includes(
+    slackConnection.status,
+  );
+  let slackDestinations: Awaited<ReturnType<typeof listSlackDestinations>> = [];
+  if (slackConnected) {
+    try {
+      slackDestinations = await listSlackDestinations(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
+    } catch {
+      slackDestinations = [];
+    }
+  }
+
+  return { shopDomain: session.shop, actionModes, toolStack, slackConnection, slackDestinations };
 };
 
 // A settings destination. `ready` flips to true when its owning lane mounts its panel
@@ -50,8 +87,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 type PanelDef = { id: string; label: string; blurb: string; owner: string; ready: boolean };
 
 const PANELS: PanelDef[] = [
-  { id: "integrations", label: "Integrations", blurb: "The tools Jefe reads — connect the ones you already use.", owner: "channels session + chat 9 (detected-tools data)", ready: false },
-  { id: "channels", label: "Channels", blurb: "Where Jefe reaches you — Slack, WhatsApp, email.", owner: "channels session (Slack-first)", ready: false },
+  { id: "integrations", label: "Integrations", blurb: "The tools Jefe reads — connect the ones you already use.", owner: "channels session + chat 9 (detected-tools data)", ready: true },
+  { id: "channels", label: "Channels", blurb: "Where Jefe reaches you — Slack, WhatsApp, email.", owner: "channels session (Slack-first)", ready: true },
   { id: "settings", label: "Settings", blurb: "Account, notifications, and data.", owner: "comms lane", ready: false },
   { id: "autonomy", label: "Autonomy", blurb: "How much rope Jefe gets, per kind of action.", owner: "roster session (the autonomy dial)", ready: true },
 ];
@@ -105,10 +142,25 @@ export default function SettingsSurface() {
 // tokens); an unmounted one keeps an honest scaffold note. Wire-or-keep — the destination is
 // real, and each lane's content lands here as it's delivered. Adding a panel = one case here
 // + its loader data + flipping the PANELS `ready` flag. See the published panel contract.
-function PanelBody({ panel, data }: { panel: PanelDef; data: { actionModes?: Record<string, string> } }) {
+function PanelBody({
+  panel,
+  data,
+}: {
+  panel: PanelDef;
+  data: {
+    actionModes?: Record<string, string>;
+    toolStack: DetectedToolStackView;
+    slackConnection: SlackConnectionView;
+    slackDestinations: SlackDestination[];
+  };
+}) {
   switch (panel.id) {
     case "autonomy":
       return <AutonomyPanel actionModes={data.actionModes} />;
+    case "integrations":
+      return <IntegrationsPanel data={data.toolStack} />;
+    case "channels":
+      return <ChannelsPanel connection={data.slackConnection} destinations={data.slackDestinations} />;
     default:
       // Merchant-facing honest state for a section still being built (wire-or-keep — the
       // section stays visible, no fabricated controls, and no internal owner names leak out).
