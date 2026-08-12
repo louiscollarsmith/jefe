@@ -185,3 +185,22 @@ worker-wired; fed to memory; shown in the feed). Two gaps (architecture lane):
 - **chat 6 (growth):** reconcile privacy claims to the kept scopes.
 - **model-testing / Quiver lane:** corpus loader (separate DB isolation; scope to
   reasoning, not Shopify-IO).
+
+## Onboarding fast-sample (recent-window backfill) — routed 2026-08-12
+
+Matt's onboarding ruling: "animate the waiting, keep the asking real." Insights ("what
+stands out") must generate from a **bounded fast sample (~5k recent orders, seconds)**,
+not the full backfill, so a large merchant gets findings immediately. Split three ways
+(this fell through an archive gap once — recorded here so it can't again):
+- **Piece 1 (chat 2):** `onboarding/steps.js:72` gates Insights on `backfillComplete`;
+  needs a second concept — "enough data to say something useful."
+- **Piece 2 (architecture-II):** no recent-first sample exists (the worker orders *jobs*,
+  not *orders*). **Ruled Option 1 — a recent-window PHASE in the backfill** (Phase A: last
+  ~5k orders processedAt DESC → Insights gate on Phase A; Phase B: older history to
+  complete; date-partitioned, idempotent per order id) — one ingestion path, never stale
+  vs the backfill. NOT a separate fetch. Flows through the honesty primitive
+  (`shopify-derivations:1166-1170` historyKind / storedOrderCount / earliestStoredOrderAt)
+  so Insights state real scope, honest by construction. Downstream of the storyboard —
+  not urgent.
+- **Piece 3 (chat 2 + architecture-II):** Insights consume `historyKind` honestly, once
+  the storyboard is approved.
