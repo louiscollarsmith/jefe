@@ -365,7 +365,7 @@ test("bootstrap failure does not downgrade completed full learning", () => {
   assert.equal(shapeFullLearning(statuses, [{ jobType: "backfill_finalize", status: "succeeded" }]).state, "complete");
 });
 
-test("ready bootstrap with only a superseded recommendation is a terminal view-model fallback", async () => {
+test("bootstrap-insufficient onboarding waits while full learning is still active", async () => {
   const prisma = {
     shop: {
       findUniqueOrThrow: async () => ({
@@ -377,7 +377,7 @@ test("ready bootstrap with only a superseded recommendation is a terminal view-m
     shopBackfillStatus: {
       findUnique: async () => ({
         status: "complete",
-        metadata: { phase: "ready", onboardingEpoch: "epoch-1" },
+        metadata: { phase: "insufficient_evidence", onboardingEpoch: "epoch-1" },
         startedAt: new Date(),
       }),
       findMany: async () => [],
@@ -426,8 +426,177 @@ test("ready bootstrap with only a superseded recommendation is a terminal view-m
 
   assert.equal(experience.stage, "context");
   assert.equal(experience.recommendation, null);
+  assert.equal(experience.failure, null);
+});
+
+test("ready bootstrap with only a superseded recommendation is a terminal view-model fallback after full learning", async () => {
+  const prisma = {
+    shop: {
+      findUniqueOrThrow: async () => ({
+        onboardingCompletedAt: null,
+        onboardingMetadata: {},
+        backfillCompletedAt: new Date(),
+      }),
+    },
+    shopBackfillStatus: {
+      findUnique: async () => ({
+        status: "complete",
+        metadata: { phase: "ready", onboardingEpoch: "epoch-1" },
+        startedAt: new Date(),
+      }),
+      findMany: async () =>
+        ["products", "inventory", "orders", "customers", "refunds"].map(
+          (domain) => ({ domain, status: "complete", lastError: null }),
+        ),
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        id: "bootstrap-1",
+        status: "succeeded",
+        payloadJson: { onboardingEpoch: "epoch-1" },
+        resultJson: { phase: "ready" },
+      }),
+      findMany: async () => [{ jobType: "backfill_finalize", status: "succeeded" }],
+    },
+    merchantMemoryBelief: {
+      findFirst: async () => ({
+        value: {
+          option: "profit",
+          label: "Improve margin",
+          echo: "margin comes first",
+        },
+      }),
+      findMany: async () => [],
+    },
+    merchantPlanRecommendation: {
+      findMany: async () => [
+        {
+          id: "superseded-1",
+          reviewStatus: "superseded",
+          sourceMode: "bootstrap",
+          supportingInsightIds: [],
+          supportingBeliefIds: [],
+          run: { insightRunId: "insight-1", result: {} },
+          evidenceSnapshot: null,
+          actionExecution: null,
+        },
+      ],
+    },
+    activityEvent: { create: async ({ data }) => data },
+  };
+
+  const experience = await getFastOnboardingExperience(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "test.myshopify.com",
+  });
+
+  assert.equal(experience.stage, "context");
+  assert.equal(experience.recommendation, null);
   assert.equal(experience.failure.type, "insufficient");
   assert.match(experience.failure.message, /no longer supports/i);
+});
+
+test("first-run onboarding surfaces a full-memory recommendation when bootstrap has none", async () => {
+  const supportingBeliefIds = ["belief-1"];
+  const supportingInsightIds = ["finding-1"];
+  const prisma = {
+    shop: {
+      findUniqueOrThrow: async () => ({
+        onboardingCompletedAt: null,
+        onboardingMetadata: {},
+        backfillCompletedAt: new Date(),
+      }),
+    },
+    shopBackfillStatus: {
+      findUnique: async () => ({
+        status: "complete",
+        metadata: { phase: "insufficient_evidence", onboardingEpoch: "epoch-1" },
+        startedAt: new Date(),
+      }),
+      findMany: async () =>
+        ["products", "inventory", "orders", "customers", "refunds"].map(
+          (domain) => ({ domain, status: "complete", lastError: null }),
+        ),
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        id: "bootstrap-1",
+        status: "succeeded",
+        payloadJson: { onboardingEpoch: "epoch-1" },
+        resultJson: { phase: "insufficient_evidence" },
+      }),
+      findMany: async () => [{ jobType: "backfill_finalize", status: "succeeded" }],
+    },
+    merchantMemoryBelief: {
+      findFirst: async () => ({
+        value: {
+          option: "profit",
+          label: "Improve margin",
+          echo: "margin comes first",
+        },
+      }),
+      findMany: async () => [
+        {
+          id: supportingBeliefIds[0],
+          key: "inventory.low_cover_products.trailing_30d",
+          value: {
+            topAtRiskProduct: { title: "Pear Skin Sipon", daysOfCover: 0 },
+          },
+          evidence: [],
+        },
+      ],
+    },
+    merchantPlanRecommendation: {
+      findMany: async () => [
+        {
+          id: "recommendation-1",
+          merchantId: "merchant-1",
+          shopId: "shop-1",
+          runId: "plan-1",
+          title: "Protect Bestseller Stock Levels",
+          summary: "Protect stock levels.",
+          whyThisAction: "Two products are at risk of stocking out.",
+          startToday: "I’ll track the stock signal.",
+          expectedBenefit: "Fewer avoidable stockouts.",
+          successSignal: { description: "The products stay available while demand continues." },
+          reviewStatus: "proposed",
+          outcomeStatus: "pending",
+          reviewAt: null,
+          sourceMode: "full",
+          supportingBeliefIds,
+          supportingInsightIds,
+          run: { insightRunId: "insight-run-1", result: {} },
+          evidenceSnapshot: null,
+          actionExecution: null,
+        },
+      ],
+    },
+    merchantInsightFinding: {
+      findFirst: async () => ({
+        id: supportingInsightIds[0],
+        runId: "insight-run-1",
+        title: "Stockouts threaten 2 products in the trailing 30 days",
+        finding: "Two products have low cover.",
+        whyItMatters: "Running out would interrupt current demand.",
+        confidence: "medium",
+        caveat: null,
+      }),
+    },
+    activityEvent: { create: async ({ data }) => data },
+  };
+
+  const experience = await getFastOnboardingExperience(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "test.myshopify.com",
+  });
+
+  assert.equal(experience.stage, "insight");
+  assert.equal(experience.failure, null);
+  assert.equal(experience.recommendation.title, "Protect Bestseller Stock Levels");
+  assert.equal(experience.recommendation.sourceMode, "full");
+  assert.equal(experience.insight.headline, "Stockouts threaten 2 products in the trailing 30 days");
 });
 
 test("a middle full-domain failure is visible and retry targets only full jobs", async () => {

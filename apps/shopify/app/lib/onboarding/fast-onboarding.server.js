@@ -51,7 +51,11 @@ export async function getFastOnboardingExperience(prisma, input) {
       orderBy: { updatedAt: "desc" },
     }),
     prisma.merchantPlanRecommendation.findMany({
-      where: { merchantId: input.merchantId, shopId: input.shopId, sourceMode: "bootstrap" },
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceMode: { in: ["bootstrap", "full"] },
+      },
       orderBy: [{ createdAt: "desc" }],
       include: {
         run: { select: { insightRunId: true, result: true } },
@@ -101,11 +105,13 @@ export async function getFastOnboardingExperience(prisma, input) {
   const onboardingEpoch = bootstrapEpoch(bootstrapStatus, bootstrapJob);
   const bootstrapPhase = stringValue(jsonObject(bootstrapStatus?.metadata).phase) ??
     (bootstrapJob?.status === "queued" ? "queued" : bootstrapJob?.status === "running" ? "starting" : "not_started");
+  const fullLearning = shapeFullLearning(fullStatuses, fullJobs);
   const failure = classifyFailure(bootstrapStatus, bootstrapJob, {
     bootstrapPhase,
     contextAnswered: Boolean(context),
     hasSurfaceableRecommendation: Boolean(selected),
     inAppHandoff: Boolean(handoff),
+    fullLearningState: fullLearning.state,
   });
   let stage = "connect";
   if (handoff) stage = "app";
@@ -175,7 +181,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     recommendation,
     queueItems,
     failure,
-    fullLearning: shapeFullLearning(fullStatuses, fullJobs),
+    fullLearning,
     handoff: handoff ? { id: handoff.id, token: input.handoffToken } : null,
     devToolsEnabled: process.env.ENABLE_DEV_TOOLS === "true",
   };
@@ -435,7 +441,12 @@ async function findValidHandoff(prisma, input) {
 
 async function ownedRecommendation(prisma, input, includeExecution = false) {
   return prisma.merchantPlanRecommendation.findFirst({
-    where: { id: input.recommendationId, merchantId: input.merchantId, shopId: input.shopId, sourceMode: "bootstrap" },
+    where: {
+      id: input.recommendationId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceMode: { in: ["bootstrap", "full"] },
+    },
     include: includeExecution ? { actionExecution: true } : undefined,
   });
 }
@@ -479,6 +490,7 @@ export function shapeRecommendation(row) {
     actionRunId: row.actionExecution?.runId ?? null,
     executionStatus: row.actionExecution?.status ?? null,
     approvalLabel: executable ? "Approve — I’ll handle it" : "Track this for me",
+    sourceMode: row.sourceMode,
   };
 }
 
@@ -583,6 +595,7 @@ export function classifyFailure(status, job, experience = {}) {
     const phase =
       stringValue(experience.bootstrapPhase) ??
       stringValue(jsonObject(status?.metadata).phase);
+    if (experience.hasSurfaceableRecommendation === true) return null;
     if (phase === "generation_failed") {
       return {
         type: "retryable",
@@ -590,7 +603,14 @@ export function classifyFailure(status, job, experience = {}) {
       };
     }
     if (["insufficient_evidence", "model_disabled"].includes(phase)) {
-      return { type: "insufficient", message: "I don’t have enough reliable recent evidence for a first recommendation yet. You can enter Jefe while I keep learning." };
+      if (experience.fullLearningState === "learning") return null;
+      return {
+        type: "insufficient",
+        message:
+          phase === "model_disabled"
+            ? "I can’t generate the first recommendation while AI generation is disabled."
+            : "I’ve read the available Shopify history, but I still don’t have a first recommendation strong enough to act on.",
+      };
     }
     if (
       phase === "ready" &&
@@ -598,10 +618,11 @@ export function classifyFailure(status, job, experience = {}) {
       experience.hasSurfaceableRecommendation === false &&
       experience.inAppHandoff !== true
     ) {
+      if (experience.fullLearningState === "learning") return null;
       return {
         type: "insufficient",
         message:
-          "The completed store read no longer supports that first recommendation strongly enough. You can enter Jefe while I keep learning.",
+          "The completed store read no longer supports that first recommendation strongly enough.",
       };
     }
     return null;

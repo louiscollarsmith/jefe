@@ -50,6 +50,7 @@ type RecommendationView = {
   actionRunId: string | null;
   executionStatus: string | null;
   approvalLabel: string;
+  sourceMode: string;
 };
 type FastExperience = {
   stage: string;
@@ -229,12 +230,6 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               );
             })}
           </div>
-          {stage !== "app" ? (
-            <Form method="post">
-              <input type="hidden" name="intent" value="onboarding.skip" />
-              <Button variant="plain" submit>Skip setup — go to Jefe →</Button>
-            </Form>
-          ) : null}
         </InlineStack>
       </Box>
       </nav>
@@ -255,6 +250,7 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               insight={experience.insight}
               continueToAction={continueToAction}
               showAlternative={showAlternative}
+              allowAlternative={experience.recommendation?.sourceMode === "bootstrap"}
               alternativeMessage={visibleAlternativeMessage}
               alternativeBusy={alternativeFetcher.state !== "idle"}
             />
@@ -307,13 +303,6 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               </BlockStack>
             ) : null}
           </div>
-          {experience.devToolsEnabled ? (
-            <div className="jf-dev-states" aria-label="Developer state navigation">
-              {[...STAGES, "app"].map((item) => (
-                <Button key={item} variant="plain" onClick={() => setOptimisticStage(item)}>{item}</Button>
-              ))}
-            </div>
-          ) : null}
         </InlineStack>
       </Box>
       </footer>
@@ -405,12 +394,14 @@ function InsightScene({
   insight,
   continueToAction,
   showAlternative,
+  allowAlternative,
   alternativeMessage,
   alternativeBusy,
 }: {
   insight: InsightView | null;
   continueToAction: () => void;
   showAlternative: () => void;
+  allowAlternative: boolean;
   alternativeMessage: string | null;
   alternativeBusy: boolean;
 }) {
@@ -426,7 +417,9 @@ function InsightScene({
       {insight.caveat ? <Text as="p" tone="subdued">{insight.caveat}</Text> : null}
       <InlineStack gap="500" blockAlign="center" wrap>
         <Button variant="primary" onClick={continueToAction}>Here’s what I’d do →</Button>
-        <Button variant="plain" onClick={showAlternative} disabled={alternativeBusy}>Show me something else</Button>
+        {allowAlternative ? (
+          <Button variant="plain" onClick={showAlternative} disabled={alternativeBusy}>Show me something else</Button>
+        ) : null}
       </InlineStack>
       {alternativeMessage ? <div className="jf-secondary-note">{alternativeMessage}</div> : null}
     </div>

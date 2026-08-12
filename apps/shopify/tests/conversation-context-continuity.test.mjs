@@ -39,6 +39,7 @@ function mockPrisma({ storedContext = {}, priorMessages = [] } = {}) {
     merchantId: "m1",
     shopId: "s1",
     surface: "app",
+    title: null,
     context: storedContext,
   };
   // Stamp the fields every real row carries, so the fixtures above stay about the thread
@@ -65,7 +66,7 @@ function mockPrisma({ storedContext = {}, priorMessages = [] } = {}) {
     merchantMemoryConversation: {
       findFirst: async () => conversation,
       create: async ({ data }) => {
-        conversation = { id: "c1", context: {}, ...data };
+        conversation = { id: "c1", context: {}, title: null, ...data };
         return conversation;
       },
       update: async ({ data }) => {
