@@ -1,5 +1,6 @@
 import { useFetcher } from "react-router";
 import { useState } from "react";
+import { ACTION_MODES, displayMode } from "./autonomy-modes.js";
 
 // The Settings → Autonomy panel: the per-action autonomy roster ("how much rope Jefe
 // gets"). RESTORED after PR #75's home rewrite orphaned it (founder ruling 2026-08-12:
@@ -16,7 +17,7 @@ import { useState } from "react";
 // real needs-you prompt (reordering). No fabricated dials; no fabricated numbers (the
 // Pricing detail states the real guardrail — clearance floors at unit cost — not a margin %).
 
-type ActionMode = "approve_execute" | "autonomous";
+type ActionMode = (typeof ACTION_MODES)[number];
 
 // Tokens mirrored from the home / settings shell (daily-home.tsx · app.settings.tsx).
 const COLORS = {
@@ -29,14 +30,14 @@ const COLORS = {
 const SANS = "'Schibsted Grotesk', system-ui, -apple-system, sans-serif";
 const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace";
 
-// Two modes (founder ruling 2026-08-12 — advisory-only `recommend` dropped as a selectable
-// mode: a dial whose first option is "don't actually help" undercut autonomy-from-install).
-// Human-in-the-loop "Approve" or hands-off "Autonomous". The stored keys + the engine's mode
-// semantics are UNTOUCHED — only the picker changed (removing a mode from the engine is one-way).
-const MODE_OPTIONS: Array<{ value: ActionMode; label: string; hint: string }> = [
-  { value: "approve_execute", label: "Approve", hint: "Jefe proposes it, you approve, then Jefe acts" },
-  { value: "autonomous", label: "Autonomous", hint: "Jefe acts on its own, then tells you" },
-];
+// Merchant-facing copy per mode. The mode SET is ACTION_MODES (autonomy-modes.js) — two only,
+// locked by autonomy-modes.test.mjs, so a third dial mode can't creep back in via this file.
+// Human-in-the-loop "Approve" or hands-off "Autonomous".
+const MODE_META: Record<ActionMode, { label: string; hint: string }> = {
+  approve_execute: { label: "Approve", hint: "Jefe proposes it, you approve, then Jefe acts" },
+  autonomous: { label: "Autonomous", hint: "Jefe acts on its own, then tells you" },
+};
+const MODE_OPTIONS = ACTION_MODES.map((value) => ({ value, ...MODE_META[value] }));
 
 // Design copy only — labels / detail / order + reordering's needs-you prompt, keyed by
 // actionType (design_handoff / sample.ts). Which rows are LIVE comes from `actionModes`
@@ -48,21 +49,6 @@ const ACTION_ROSTER: Array<{ actionType: string; label: string; detail: string; 
   { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you" },
   { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", blockedReason: "Tell me who supplies you" },
 ];
-
-function isActionMode(v: string): v is ActionMode {
-  return v === "approve_execute" || v === "autonomous";
-}
-
-// The stored mode → what the picker shows. A legacy stored `recommend` (dropped as a
-// selectable mode 2026-08-12; there should be ~none — the dial only went live that day)
-// displays as the safe default `approve_execute` until the merchant next sets it. The stored
-// value + the engine's handling of `recommend` are left untouched (one-way — Matt's call).
-// Anything unrecognised ⇒ no dial (the row falls through to "Soon" / its blocked prompt).
-function displayMode(raw: string | undefined): ActionMode | null {
-  if (!raw) return null;
-  if (raw === "recommend") return "approve_execute";
-  return isActionMode(raw) ? raw : null;
-}
 
 // The per-action autonomy dial. Posts action.set_mode via a fetcher to the surviving handler
 // on the home route's action (app._index — reclaimed after PR #75, returns data not a
