@@ -34,7 +34,13 @@ const BELIEFS = [
  */
 function mockPrisma({ storedContext = {}, priorMessages = [] } = {}) {
   const created = [];
-  let conversation = { id: "c1", context: storedContext };
+  let conversation = {
+    id: "c1",
+    merchantId: "m1",
+    shopId: "s1",
+    surface: "app",
+    context: storedContext,
+  };
   // Stamp the fields every real row carries, so the fixtures above stay about the thread
   // rather than about Prisma's column list.
   const thread = priorMessages.map((message, index) => ({

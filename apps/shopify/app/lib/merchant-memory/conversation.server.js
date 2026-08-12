@@ -1656,7 +1656,7 @@ function truncateForPrompt(value, max) {
  * @param {number} max
  */
 function safePromptText(value, max) {
-  return truncateForPrompt(value, max) ?? "";
+  return truncateForPrompt(sanitizeMemoryText(String(value ?? "")), max) ?? "";
 }
 
 /** @param {unknown} role */
