@@ -155,12 +155,32 @@ const PRIMITIVES = {
   },
 };
 
-/** Every field of the binding contract. Adding one here fails an under-bound primitive loudly. */
-const REQUIRED_BINDING_FIELDS = ["resolve", "caps", "computeEligibility", "actionKindFor", "card", "readCard", "executedHeadline", "scopeNudge"];
+/**
+ * Every field of the binding contract, as STATIC property reads. Adding a field to
+ * PrimitiveBinding and forgetting it here means it stops being enforced — keep them in step.
+ *
+ * ⚠️ Deliberately not `fields.map((f) => binding[f])`: these files are `// @ts-check`, and
+ * indexing a typed object with a widened `string` key is TS7053. That exact mistake in
+ * `enforceBlastRadiusCap` put main's typecheck red and blocked every lane's preflight until
+ * another session cleaned it up (`4c3493d`). Static reads only in this file.
+ * @param {PrimitiveBinding} b
+ */
+function bindingContract(b) {
+  return {
+    resolve: b.resolve,
+    caps: b.caps,
+    computeEligibility: b.computeEligibility,
+    actionKindFor: b.actionKindFor,
+    card: b.card,
+    readCard: b.readCard,
+    executedHeadline: b.executedHeadline,
+    scopeNudge: b.scopeNudge,
+  };
+}
 
 for (const [actionType, binding] of Object.entries(PRIMITIVES)) {
-  for (const field of REQUIRED_BINDING_FIELDS) {
-    if (binding[field] == null) {
+  for (const [field, value] of Object.entries(bindingContract(binding))) {
+    if (value == null) {
       throw new Error(`Primitive binding "${actionType}" is missing "${field}" — a partial binding would silently inherit clearance's behaviour.`);
     }
   }
