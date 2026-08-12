@@ -200,7 +200,8 @@ verb isn't a Shopify write at all, so it belongs in the brief, not the action la
 ## 6. ⚠️ The spine is single-action in ten places — read before registering anything
 
 A registry entry is not sufficient to add an action, and the gaps are not evenly
-harmless. In `action-resolution.server.js` unless noted:
+harmless. **Status 2026-08-12: the three that failed OPEN are fixed and pushed; the
+seven that fail closed remain.** In `action-resolution.server.js` unless noted:
 
 1. `:261` — `RESOLVERS` returns a price-shaped tuple; `proposeActionFromIntent`
    destructures `markdownPercent`.
@@ -212,12 +213,16 @@ harmless. In `action-resolution.server.js` unless noted:
 6. `:371` — `getActiveSuggestedAction` renders a **hardcoded dead-stock headline**
    regardless of `row.actionType`. A second action type would render on the home as a
    clearance.
-7. `:383` — `executable: isClearanceExecuteEnabled()`. **A second action type would be
-   gated on the wrong flag — one that is `true` in production.**
-8. `:754` — `reviseAction` passes `writeEnabled: isClearanceExecuteEnabled()`.
+7. ✅ **FIXED** `:383` — was `executable: isClearanceExecuteEnabled()`, gating any action
+   type on a flag that is `true` in production. Now `isActionExecuteEnabled(actionType)`,
+   which resolves the type's own `executeFlag` and fails closed on unknown types.
+8. ✅ **FIXED** `:754` (`reviseAction`) and `merchant-plan/service.server.js:370`
+   (`maybeEmitPlanAction`) — same wrong-flag read, same fix.
 9. `:563` — `getScopeGatedOpportunity` hardcoded to `price_markdown`.
 10. `clearance-outcome.server.js:111` — measurement filters
     `actionType: "price_markdown"` and assumes `preview.changes[].variantId/toPrice`.
+    Partly addressed: `verdictForOutcome` is now the shared runner over per-type
+    `outcome` specs (chat 10's contract), but the *measurer* is still clearance-only.
 
 ### The one that matters most
 
@@ -242,9 +247,17 @@ type from entering this path is that `RESOLVERS` has no entry for it**, so
 property lives in the resolver map, not the registry — which means *registering* an
 action type and *resolving* it must never be separated by more than one commit.
 
-**Recommendation:** the spine generalisation (actionType dispatch in the wire layer +
-a cap check that fails closed on a missing field) lands **before or with** the first
-new registration, not after. Routed to chat 10 as contract owner.
+✅ **BOTH FIXED 2026-08-12.** `enforceBlastRadiusCap` now treats an unreadable field as a
+violation — an uncheckable cap can never read as a passed cap. `wireClearanceExecution`
+refuses any `actionType` other than `price_markdown` before recording approval or
+building a write client. The guard has moved off "`RESOLVERS` happens to have no second
+entry" and onto the write path itself. 126 tests green; diff routed to chat 10.
+
+**Still open, and all fail CLOSED** (they break a second action type rather than
+endanger it): the price-shaped resolver tuple, clearance-only eligibility and caps, the
+hardcoded `actionKind` ternary and dead-stock card headline, `getScopeGatedOpportunity`,
+and the clearance-only outcome *measurer*. These are the remaining extraction, which
+chat 10 has handed to this lane.
 
 ### Newly load-bearing: the engine computes *why* it couldn't act, then discards it
 
