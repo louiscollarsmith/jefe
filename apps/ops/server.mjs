@@ -52,16 +52,19 @@ const PORT = Number(process.env.PORT) || 4000;
 const WINDOWS = { "24": "24h", "168": "7d", "720": "30d", "2160": "90d" };
 const ISSUE_WINDOW_SQL = "1 hour";
 
-// ⛔ TEMPORARY — AUTH IS OFF. Founder's call (Matt, 2026-08-12, ~22:30) to unblock access to
-// the panel; OPS_PASSWORD is set in production but its value wasn't to hand.
+// ⛔ AUTH IS OFF — DELIBERATE, NOT AN OVERSIGHT.
 //
-// RESTORE BEFORE THE FIRST MERCHANT INSTALLS: delete this constant and the branch below.
-// That is the whole revert — nothing else changed.
+// Founder's call (Matt, 2026-08-12, reaffirmed 2026-08-13): leave it open "for at least 2-3
+// weeks". He has weighed the exposure; do not keep re-raising it, and do NOT quietly restore
+// it as a tidy-up. Revisit ~early September.
 //
-// Why it matters more tomorrow than tonight: this panel is CROSS-MERCHANT by design (the
-// file header above says so, and the README says never expose it), and admin.mynamejefe.com
-// is publicly reachable. Today that exposes two internal stores; the moment a paying client
-// installs, it exposes theirs.
+// To restore: delete this constant and the branch below. That is the whole revert. Note the
+// jefe-ops service does NOT auto-deploy — it needs `railway up --service jefe-ops` run from a
+// standalone copy of apps/ops (from the repo root, Railpack finds no package.json and fails).
+//
+// What is actually exposed, so the decision can be re-made with the facts: this panel is
+// CROSS-MERCHANT by design (see the file header) and admin.mynamejefe.com answers from the
+// open internet. OPS_PASSWORD is still set in Railway, so restoring is a code change only.
 const OPS_AUTH_DISABLED = true;
 
 function isAuthed(req) {
