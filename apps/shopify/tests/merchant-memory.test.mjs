@@ -33,7 +33,7 @@ const silentLogger = {
 };
 
 test("deterministic belief registry contains only vetted implementation tranches", () => {
-  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 139);
+  assert.equal(DETERMINISTIC_BELIEF_REGISTRY.length, 140);
   assert.deepEqual(
     new Set(DETERMINISTIC_BELIEF_REGISTRY.map((definition) => definition.tranche)),
     new Set([
@@ -113,13 +113,13 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
   const beliefs = new Map(result.derivations.map((belief) => [belief.key, belief]));
   const skipped = new Map(result.skippedOutcomes.map((outcome) => [outcome.key, outcome]));
 
-  assert.equal(result.registryDefinitionCount, 139);
-  assert.equal(result.derivationReport.attempted, 139);
+  assert.equal(result.registryDefinitionCount, 140);
+  assert.equal(result.derivationReport.attempted, 140);
   assert.equal(
     result.derivationReport.published + result.derivationReport.suppressed,
-    139,
+    140,
   );
-  assert.equal(result.derivationAttempts.length, 139);
+  assert.equal(result.derivationAttempts.length, 140);
   assert.equal(beliefs.get("catalog.has_product_variants").value.boolean, true);
   assert.equal(beliefs.get("catalog.has_product_variants").evidence.metadata.calculation, "exists(product where count(active variants for product) > 1)");
   assert.equal(beliefs.get("orders.average_order_value.all_time").value.amount, 100);

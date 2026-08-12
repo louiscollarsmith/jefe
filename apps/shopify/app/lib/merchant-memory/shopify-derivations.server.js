@@ -464,6 +464,8 @@ function deriveDefinition(context, definition) {
         return deliveryFootprint(context, definition, 90);
       case "business.purchase_consideration.trailing_90d":
         return purchaseConsideration(context, definition, 90);
+      case "business.range_composition":
+        return rangeComposition(context, definition);
       case "business.active_selling_days.trailing_30d":
       case "business.active_selling_days.trailing_90d":
         return activeSellingDays(context, definition, trailingDays(definition.key));
@@ -1173,6 +1175,81 @@ function purchaseConsideration(context, definition, days) {
     confidenceReason: "Basket size and order value against the merchant's own price range, with repeat rate.",
     summary: "Whether buying here is a considered decision or a habit.",
     sampleSize: orders.length,
+  });
+}
+
+/**
+ * What the merchant actually sells, and whose. `productType` and `vendor` were already
+ * ingested but only ever used to RANK revenue (`products.revenue_by_product_type` /
+ * `_by_vendor`) — nothing read them to say what kind of range this is. A one-category
+ * own-brand maker and a multi-brand retailer across eight categories need opposite advice
+ * about range, stock and clearance, and were indistinguishable to the ontology.
+ *
+ * Weighted by PRODUCT COUNT, not revenue: this describes what the business stocks, and
+ * revenue-weighting would let a single bestseller define the whole range. What sells is a
+ * different question, and the revenue beliefs already answer it.
+ */
+function rangeComposition(context, definition) {
+  const products = context.activeProducts;
+  if (products.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 active products are required to describe a range.", { activeProducts: products.length });
+  }
+  const typed = products.map((product) => stringValue(product.productType)?.trim()).filter(Boolean);
+  const branded = products.map((product) => stringValue(product.vendor)?.trim()).filter(Boolean);
+  const typeCoverage = typed.length / products.length;
+  const vendorCoverage = branded.length / products.length;
+
+  // Shopify leaves both optional and plenty of merchants never fill them in. A range read
+  // off a third of the catalogue would be a guess about someone's business, so it declines.
+  // Vendor alone is enough for the brand model; type alone is enough for the category read.
+  if (typeCoverage < 0.7 && vendorCoverage < 0.7) {
+    return skipped(definition, "insufficient_data", "Too few products record a type or vendor to describe the range.", {
+      typeCoverage: roundNumber(typeCoverage, 4),
+      vendorCoverage: roundNumber(vendorCoverage, 4),
+    });
+  }
+
+  const share = (values) => {
+    if (!values.length) return { top: null, topShare: null, distinct: 0 };
+    const counts = new Map();
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return { top: ranked[0][0], topShare: ranked[0][1] / values.length, distinct: ranked.length };
+  };
+  const category = typeCoverage >= 0.7 ? share(typed) : { top: null, topShare: null, distinct: 0 };
+  const brand = vendorCoverage >= 0.7 ? share(branded) : { top: null, topShare: null, distinct: 0 };
+
+  const focusedCategory = category.topShare != null ? category.topShare >= 0.5 : null;
+  // One vendor across nearly everything is the signature of a maker selling their own label;
+  // many vendors is a retailer stocking other people's. A PROXY — a merchant may simply put
+  // their shop name on every product — so both the share and the vendor count are reported
+  // for the merchant to correct against.
+  const ownBrand = brand.topShare != null ? brand.topShare >= 0.8 : null;
+
+  let shape = "mixed";
+  if (ownBrand === true && focusedCategory === true) shape = "own_brand_specialist";
+  else if (ownBrand === true && focusedCategory === false) shape = "own_brand_range";
+  else if (ownBrand === false && focusedCategory === true) shape = "multi_brand_specialist";
+  else if (ownBrand === false && focusedCategory === false) shape = "multi_brand_retailer";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      leadingCategory: category.top,
+      leadingCategoryShare: category.topShare == null ? null : roundNumber(category.topShare, 4),
+      categoryCount: category.distinct,
+      leadingBrandShare: brand.topShare == null ? null : roundNumber(brand.topShare, 4),
+      brandCount: brand.distinct,
+      brandModelIsProxy: "vendor_concentration",
+      activeProductCount: products.length,
+      typeCoverage: roundNumber(typeCoverage, 4),
+      vendorCoverage: roundNumber(vendorCoverage, 4),
+      thresholdVersion: "range-composition-v1",
+    },
+    confidence: coverageConfidence(0.8, Math.max(typeCoverage, vendorCoverage)),
+    confidenceReason: "Concentration of active products across Shopify product types and vendors.",
+    summary: "Whether the merchant sells one category or many, their own brand or other people's.",
+    sampleSize: products.length,
   });
 }
 

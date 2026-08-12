@@ -1768,6 +1768,29 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "merchantVisible": false
   },
   {
+    "key": "business.range_composition",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "current_stored_state",
+    "calculation": "concentration of active products across productType and vendor; own-brand from vendor share, focus from leading category share",
+    "minimumData": "At least 5 active products with a type or vendor on >=70% of them",
+    "confidenceRule": "0.80 scaled by the better of type/vendor coverage",
+    "legacyConfidenceRule": "0.80 scaled by the better of type/vendor coverage",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
     "key": "business.channel_mix.trailing_90d",
     "tranche": "Business shape v1",
     "category": "business",
