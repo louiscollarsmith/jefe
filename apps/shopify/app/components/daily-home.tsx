@@ -772,11 +772,22 @@ function horizonLabel(horizon: string) {
   return horizon.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
 }
 
+// SSR runs in UTC (Railway); the browser runs in the merchant's local zone. With no
+// timeZone pinned, toLocaleDateString formats a DIFFERENT calendar date on each side for
+// the 00:00–01:00 London window every day, so React discards the whole server render as a
+// hydration mismatch (#418/#425) — the bug behind the wrong "Tuesday 11 August" header.
+// Pin ONE named zone so both sides render identical text (house rule: one constant, never
+// a scattered literal). TODO(jefe, task #13): source this from the merchant's shop
+// ianaTimezone (already loaded at app._index) so a non-UK store reads its own date; safe
+// to do once the home surface settles, as it threads a prop through the header path.
+const VIEWER_TIME_ZONE = "Europe/London";
+
 function formatToday() {
   return new Date().toLocaleDateString("en-GB", {
     weekday: "long",
     day: "2-digit",
     month: "long",
+    timeZone: VIEWER_TIME_ZONE,
   });
 }
 
@@ -784,7 +795,11 @@ function formatShortDate(value: string | null | undefined) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  return date.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    timeZone: VIEWER_TIME_ZONE,
+  });
 }
 
 function searchWith(search: string, updates: Record<string, string | null>) {
