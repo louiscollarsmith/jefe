@@ -162,10 +162,6 @@ export function DailyHome(props: {
               quietLine={buildQuietLine(props.horizonWatching, props.insights)}
               currentSearch={location.search}
             />
-            {/* The one door off the chat log: everything Jefe knows about the store. */}
-            <Link to="?view=memory" style={footerLinkStyle}>
-              See everything Jefe knows →
-            </Link>
           </div>
         </div>
       </div>
@@ -1212,14 +1208,6 @@ const pillStyle: CSSProperties = {
   fontWeight: 700,
   padding: "6px 14px",
   whiteSpace: "nowrap",
-};
-const footerLinkStyle: CSSProperties = {
-  color: COLORS.navy,
-  display: "block",
-  fontSize: 14.5,
-  fontWeight: 700,
-  textAlign: "right",
-  textDecoration: "none",
 };
 const chatTopStyle: CSSProperties = {
   display: "flex",
