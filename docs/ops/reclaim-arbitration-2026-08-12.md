@@ -285,6 +285,56 @@ runtime eligibility decides per-run whether it fires.
 So new actions are NOT blocked on the memory lane for targeting — they need a trigger condition
 + their own resolver.
 
+**Spine generalisation LANDED (`2539c4c`, ratified):** `RESOLVERS` → a **primitive binding table**.
+Registry = WHAT (metadata); binding = HOW this layer runs the type. Bound per type (all were
+clearance-hardcoded): `resolve()→{preview,summary,magnitude}`, `caps` (was persisting
+`DEFAULT_CLEARANCE_CAPS` regardless — recorded limits it did not enforce), `computeEligibility`,
+`actionKindFor`, and the presenters. **Every field is required and asserted at module load — a
+partial binding throws** (ratified hard, not soft: inheriting-by-omission was the wrong-flag /
+wrong-caps bug). Three sites stopped speaking for unknown types (null suggested-action, neutral
+executed line, scope-check-before-resolve). `proposal.totalTrappedCapital`→summary (the proposal's
+money must match the products it lists; cost-floor-refused items aren't in the action). Note:
+`ActionExecution.caps` rows written before `2539c4c` record clearance caps for every run — no row
+is wrong (only clearance ran), but don't read that column as evidence of a non-clearance action's
+enforced caps.
+
+## Action outcome contract — measure, don't ask (parts 6–7; DEFINED, co-proposing to Matt)
+Matt's hard constraint: value is **actively measured against a baseline from real outcome data**,
+never a 👍/👎. With chat 5 (decline half). Tracked #20.
+- **`ActionOutcome` = discriminated union `measured | declined | reverted`.**
+  - `measured`: `verdict ∈ {good, underperformed, neutral}` computed from commerce data.
+  - `declined`: `reasonCategory` + `reasonText`, captured conversationally in action-chat (no widget).
+  - `reverted`: its own kind (`revertedAt`, `reason?`) — a revert supersedes measurement (the effect
+    didn't stand; it's feedback, not performance).
+- **One generic executor; two per-type binding functions.** `snapshotBaseline(execution)` captures
+  the **item-level** baseline at EXECUTE time (clearance: the variant's trailing sell-through the
+  moment the markdown lands — measuring after the action would measure its own footprint).
+  `observeOutcome(execution, resolvedWindow)` reads the post-action metric. `verdictForOutcome`
+  is already generic (reads the per-type `outcome` registry spec).
+- **Business-relative (hard requirement).** The registry `outcome` spec holds DEFAULT
+  window/threshold; the executor resolves them **shape-adjusted from Merchant Memory** before
+  observing (a 3-day sell-through is a win for lipstick, meaningless for a car dealer). Executor
+  stays generic — it reads *resolved* values. Decline reasons ("cars don't clear that fast") feed
+  the SAME shape model. Learning is consumed **per-merchant-shape**, not per-type-global.
+
+## Business-shape tranche — dimensional, provenance-tagged (contract held here)
+Per [[jefe-context-specificity-principle]] — "agnostic in reach, specific in judgement". The gap:
+`business.*` has no representation of the *nature* of the business. Fill it with **dimensional
+beliefs, never a vertical enum** (a Tesla dealer and a medical-device seller share "high price band
+/ considered / low frequency" with no shared label):
+- **Channel mix — FIRST-CLASS** (Matt): Shopify / in-store / POS / TikTok / Amazon, via order
+  `sourceName` (already ingested + selected). A belief, not a per-question re-derivation; and an
+  available breakdown wherever `currency` is. (Confirm the backfill persists `sourceName` for POS
+  and marketplace orders — the likely-thin bit.)
+- Retention window / repurchase interval (derivable; **governs what "good" means** for an action —
+  see the outcome contract's business-relative window; this is the same property).
+- Customer-base shape (new-vs-returning, concentration, geography); goals-connection.
+- **Provenance tag per dimension:** `derivable-from-Shopify` / `askable` /
+  `derivable-from-a-connected-integration`. The third is Matt's CAC correction — Meta/Google ads
+  make CAC/ROAS available once connected, which reframes the **integrations panel as a source of
+  belief**, not just a connector list. Tagging keeps `systemInference` precedence honest and tells
+  the memory surface which questions are worth asking; never fill a gap with a plausible guess.
+
 ## Currency contract — CORRECTED 2026-08-12: stored revenue is base-currency and summable
 ⚠️ **This replaces an earlier version of this section that enshrined a wrong premise.** The
 "multi-currency can't be totalled" framing — my stop-gap `bfc2b4c` AND the model-testing lane's
@@ -341,6 +391,22 @@ So new actions are NOT blocked on the memory lane for targeting — they need a 
 - **db-tests flake (observability lane):** connection exhaustion on shared `jefe-shopify-postgres`
   at 8+ sessions. Cap each run's Prisma `connection_limit` (demand) first, `max_connections=200` in
   `db:up` (supply) at next quiet recreate, schema-isolation held unless row-contention shows.
+
+## Fleet infra STRUCTURE — founder-mandated (Matt 2026-08-12: "build some kind of structure")
+Escalated from "record it" to "build it" after the substrate failures cost hours and took main red
+via a plausible-wrong-fix. Design held here; a dedicated plumbing lane builds the rest.
+- **Anchor SHIPPED (`c87d321`): `scripts/env-check.sh` as preflight's first step.** Distinguishes
+  "your environment is broken" from "your change is broken" — the confusion that burns the hours.
+  HARD-fails a missing/incomplete `node_modules` and a non-6.x Prisma (the P1012 trap) with the exact
+  one-line fix and "do NOT edit schema/types to satisfy this"; node-drift warns. This is the
+  highest-value single piece (it would have caught tonight's red-main-that-slipped-through).
+- **Remaining (plumbing lane, to this spec):** worktrees self-sufficient via `npm ci` not symlink
+  (Conductor-guaranteed); test-isolation (chat 8's `connection_limit` cap + schema-per-run if
+  row-contention appears); one documented push ritual with `&&` not `;` + the risk-based rebase rule.
+- **Root cause is a ways-of-working call for Matt:** 15 lanes on one tree + direct-to-main. The
+  structure must not fix the symptoms so well the question never gets asked (worktree-isolation +
+  merge-queue, or fewer concurrent lanes). Shared state (main's `node_modules`) needs an OWNER — it
+  broke for hours because it belonged to no lane; repaired `npm ci` (589 entries, prisma 6.19.3).
 
 ## Door-rule worked example — win-back campaign
 The canonical "reversible in code, irreversible in the merchant's inbox": flipping the parked
