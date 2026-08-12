@@ -1699,6 +1699,75 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.channel_mix.trailing_90d",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "share of orders per classifySalesChannel bucket (online/pos/draft) over 90 days; bucketed into a shape",
+    "minimumData": "At least 10 orders in the window with a sales channel recorded, covering >=70% of them",
+    "confidenceRule": "0.85 scaled by channel coverage",
+    "legacyConfidenceRule": "0.85 scaled by channel coverage",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
+    "key": "business.catalogue_shape",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "current_stored_state",
+    "calculation": "active product count bucketed (1 / <=20 / <=200 / >200), with variants-per-product",
+    "minimumData": "At least 1 active product",
+    "confidenceRule": "0.90 from stored counts",
+    "legacyConfidenceRule": "0.90 from stored counts",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
+    "key": "business.purchase_cadence.all_stored_history",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "median days between consecutive orders from the same customer, bucketed; one_off when almost nobody reorders",
+    "minimumData": "At least 20 customer-attributed orders",
+    "confidenceRule": "0.80 scaled by the number of observed repeat gaps",
+    "legacyConfidenceRule": "0.80 scaled by the number of observed repeat gaps",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
     "key": "business.activity_profile",
     "category": "business",
     "valueType": "enum",
@@ -5314,3 +5383,24 @@ export const DETERMINISTIC_CONFIDENCE_TEMPLATE_REGISTRY = {
     ]
   }
 };
+
+// Beliefs Jefe HOLDS and reasons with, but does not yet assert to the merchant's face.
+//
+// A belief that derives is a belief the memory view renders — `getMerchantMemoryView` lists
+// everything active — so "let it run, don't show it yet" needs to be a real gate rather than
+// an intention. Entries default to visible; only an explicit `merchantVisible: false` hides
+// one. Founder call (2026-08-12): the business-shape tranche derives against real stores and
+// is reviewed before any merchant is told what kind of business Jefe thinks they run.
+//
+// This hides a belief from the MEMORY SURFACE only. It is not a secret: the belief is stored
+// with full provenance and evidence, and Jefe still reasons from it.
+const MERCHANT_HIDDEN_BELIEF_KEYS = new Set(
+  DETERMINISTIC_BELIEF_REGISTRY.filter((entry) => entry.merchantVisible === false).map(
+    (entry) => entry.key,
+  ),
+);
+
+/** @param {string} key */
+export function isMerchantVisibleBeliefKey(key) {
+  return !MERCHANT_HIDDEN_BELIEF_KEYS.has(key);
+}

@@ -152,6 +152,7 @@ import {
   getBeliefDefinition,
   validateConversationalValue,
 } from "../lib/merchant-memory/conversational-belief-registry.server.js";
+import { isMerchantVisibleBeliefKey } from "../lib/merchant-memory/deterministic-belief-registry.server.js";
 import { loadAppHomeWhatsNew } from "../lib/notifications/whats-new.server.js";
 import {
   computeHomeDateLabel,
@@ -4574,7 +4575,13 @@ async function getMerchantMemoryView({
     includeEvidence: true,
   });
   const scoped = beliefs.filter(
-    (belief) => !belief.shopId || belief.shopId === shopId,
+    (belief) =>
+      (!belief.shopId || belief.shopId === shopId) &&
+      // Some beliefs Jefe holds and reasons with are not yet asserted to the merchant's
+      // face — currently the business-shape tranche, which is reviewed against real stores
+      // before Jefe tells anyone what kind of business it thinks they run. Everything is
+      // visible unless a registry entry explicitly opts out.
+      isMerchantVisibleBeliefKey(belief.key),
   );
   const groups = new Map<
     string,

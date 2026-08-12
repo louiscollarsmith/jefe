@@ -307,6 +307,12 @@ function deriveDefinition(context, definition) {
         return currencyCount(context, definition);
       case "business.activity_profile":
         return activityProfile(context, definition);
+      case "business.channel_mix.trailing_90d":
+        return channelMix(context, definition);
+      case "business.catalogue_shape":
+        return catalogueShape(context, definition);
+      case "business.purchase_cadence.all_stored_history":
+        return purchaseCadence(context, definition);
       case "business.active_selling_days.trailing_30d":
       case "business.active_selling_days.trailing_90d":
         return activeSellingDays(context, definition, trailingDays(definition.key));
@@ -645,6 +651,190 @@ function currencyCount(context, definition) {
   const distribution = currencyDistribution(context.pricedOrders.map((order) => order.currency));
   if (distribution.total === 0) return skipped(definition, "insufficient_data", "No priced stored orders are available.", context.sourceCounts);
   return countOutcome(context, definition, distribution.entries.length, "Distinct currencies on stored priced orders.", { confidence: 0.99, sampleSize: distribution.total });
+}
+
+// ── Business shape ────────────────────────────────────────────────────────────────────
+// The ontology could describe a lipstick DTC brand and a Tesla dealership identically —
+// store name, currency, order counts, activity — so every recommendation came out generic
+// BY CONSTRUCTION. These beliefs describe what KIND of business this is, so advice can key
+// on the shape rather than the numbers.
+//
+// Dimensional, never a vertical enum: "gardening" is POS *and* DTC *and* wholesale, and a
+// Tesla dealer shares "high price, considered, infrequent" with a medical-device seller
+// under no shared label. Advice keys on the dimension.
+//
+// All three are `systemInference` and merchant-correctable — Jefe's read of the business,
+// which the merchant outranks. Each reports the evidence behind the label, not just the
+// label, so a merchant can see WHY Jefe thinks it and correct the premise.
+
+/**
+ * How the merchant reaches customers. Reuses `classifySalesChannel` (pos/online/draft/other)
+ * rather than re-reading sourceName, so this and the channel revenue beliefs can't disagree.
+ * Counted by ORDERS, not revenue: shape is about how the business operates, and one £40k
+ * wholesale order shouldn't make a busy DTC shop look wholesale-led.
+ */
+function channelMix(context, definition) {
+  const orders = ordersInWindow(context, 90);
+  if (orders.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 orders in the last 90 days are required to read a channel mix.", { orders: orders.length });
+  }
+  const byChannel = new Map();
+  let classified = 0;
+  for (const order of orders) {
+    const channel = classifySalesChannel(order.sourceName);
+    if (channel == null) continue;
+    classified += 1;
+    byChannel.set(channel, (byChannel.get(channel) ?? 0) + 1);
+  }
+  const coverage = classified / orders.length;
+  // Older orders predate sourceName capture; a mix read off a third of the orders would be
+  // a guess wearing a label. Same coverage bar as the channel revenue beliefs.
+  if (classified < 10 || coverage < 0.7) {
+    return skipped(definition, "insufficient_data", "Too few orders record which channel they came from (a re-backfill fills this in).", { channelCoverage: roundNumber(coverage, 4), classifiedOrders: classified });
+  }
+  const share = (channel) => (byChannel.get(channel) ?? 0) / classified;
+  const online = share("online");
+  const pos = share("pos");
+  const draft = share("draft");
+
+  // `draft` is the best available read on wholesale/B2B: Shopify has no wholesale source
+  // name, and manually-created draft orders are how most merchants invoice trade customers.
+  // It is a PROXY and the value says so, so a merchant correcting it sees what to correct.
+  let shape = "mixed";
+  if (draft >= 0.4) shape = "wholesale_led";
+  else if (online >= 0.95) shape = "online_only";
+  else if (pos >= 0.6) shape = "shop_led";
+  else if (online >= 0.6 && pos >= 0.1) shape = "online_led_with_shop";
+  else if (online >= 0.6) shape = "online_led";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      onlineShare: roundNumber(online, 4),
+      inPersonShare: roundNumber(pos, 4),
+      tradeOrderShare: roundNumber(draft, 4),
+      classifiedOrders: classified,
+      channelCoverage: roundNumber(coverage, 4),
+      tradeShareIsProxy: "draft_orders",
+      window: "trailing_90d",
+      thresholdVersion: "channel-mix-v1",
+    },
+    confidence: coverageConfidence(0.85, coverage),
+    confidenceReason: "Share of orders per Shopify sales channel over the trailing 90 days.",
+    summary: "How the merchant sells: online, in person, or to trade.",
+    sampleSize: classified,
+  });
+}
+
+/**
+ * The shape of what they sell — a one-product brand and a 5,000-SKU marketplace need
+ * completely different advice at identical revenue. Counts only, so it is currency-free and
+ * comparable across every merchant.
+ */
+function catalogueShape(context, definition) {
+  const products = context.activeProducts.length;
+  if (products < 1) {
+    return skipped(definition, "insufficient_data", "At least one active product is required.", context.sourceCounts);
+  }
+  const variants = context.activeVariants.length;
+  const variantsPerProduct = products === 0 ? 0 : variants / products;
+
+  let shape = "focused";
+  if (products === 1) shape = "single_product";
+  else if (products <= 20) shape = "focused";
+  else if (products <= 200) shape = "broad";
+  else shape = "long_tail";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      activeProductCount: products,
+      activeVariantCount: variants,
+      // Separates "many products" from "few products, many sizes/colours" — a 10-product
+      // apparel brand with 8 sizes each is a different operation from 80 distinct products.
+      variantsPerProduct: roundNumber(variantsPerProduct, 2),
+      thresholdVersion: "catalogue-shape-v1",
+    },
+    confidence: 0.9,
+    confidenceReason: "Counted from active products and variants currently stored.",
+    summary: "How wide the merchant's range is.",
+    sampleSize: products,
+  });
+}
+
+/**
+ * How often a customer comes back. Distinguishes a coffee subscription from a mattress shop
+ * at the same revenue — the difference between "win them back" and "there is no back".
+ *
+ * Median, not mean: one customer ordering daily would drag a mean to nonsense.
+ */
+function purchaseCadence(context, definition) {
+  const orders = context.datedOrders.filter((order) => stringValue(order.customerExternalId));
+  if (orders.length < 20) {
+    return skipped(definition, "insufficient_data", "At least 20 orders with a customer attached are required to read repeat cadence.", { attributedOrders: orders.length });
+  }
+  /** @type {Map<string, Date[]>} */
+  const byCustomer = new Map();
+  for (const order of orders) {
+    const key = String(order.customerExternalId);
+    const times = byCustomer.get(key) ?? [];
+    times.push(orderTime(order));
+    byCustomer.set(key, times);
+  }
+  /** @type {number[]} */
+  const gapDays = [];
+  let repeatCustomers = 0;
+  for (const times of byCustomer.values()) {
+    if (times.length < 2) continue;
+    repeatCustomers += 1;
+    const sorted = times.sort((a, b) => a.getTime() - b.getTime());
+    for (let i = 1; i < sorted.length; i += 1) {
+      gapDays.push((sorted[i].getTime() - sorted[i - 1].getTime()) / 86400000);
+    }
+  }
+  const customers = byCustomer.size;
+  const repeatShare = customers === 0 ? 0 : repeatCustomers / customers;
+
+  // No repeat gaps at all is a real, useful finding — not missing data. A business nobody
+  // returns to needs different advice, and saying so is the point of this belief.
+  if (gapDays.length < 5) {
+    return derived(context, definition, {
+      value: {
+        enum: "one_off",
+        medianDaysBetweenOrders: null,
+        repeatCustomerShare: roundNumber(repeatShare, 4),
+        repeatCustomers,
+        customers,
+        thresholdVersion: "purchase-cadence-v1",
+      },
+      confidence: coverageConfidence(0.75, Math.min(customers / 50, 1)),
+      confidenceReason: "Almost no customer has ordered twice in stored history.",
+      summary: "Customers rarely order more than once.",
+      sampleSize: customers,
+    });
+  }
+
+  const median = percentile(gapDays, 0.5);
+  let cadence = "occasional";
+  if (median <= 21) cadence = "frequent";
+  else if (median <= 60) cadence = "regular";
+  else if (median <= 180) cadence = "occasional";
+  else cadence = "infrequent";
+
+  return derived(context, definition, {
+    value: {
+      enum: cadence,
+      medianDaysBetweenOrders: roundNumber(median, 1),
+      repeatCustomerShare: roundNumber(repeatShare, 4),
+      repeatCustomers,
+      customers,
+      thresholdVersion: "purchase-cadence-v1",
+    },
+    confidence: coverageConfidence(0.8, Math.min(gapDays.length / 30, 1)),
+    confidenceReason: "Median gap between consecutive orders from the same customer.",
+    summary: "How often the merchant's customers come back.",
+    sampleSize: gapDays.length,
+  });
 }
 
 function activityProfile(context, definition) {
