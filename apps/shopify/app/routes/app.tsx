@@ -1,8 +1,10 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import {
   isRouteErrorResponse,
+  Link,
   Outlet,
   useLoaderData,
+  useLocation,
   useRouteError,
 } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -61,7 +63,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export default function App() {
-  const { apiKey, standalone, openAppUrl } = useLoaderData<typeof loader>();
+  const { apiKey, standalone, openAppUrl, onboardingComplete } = useLoaderData<typeof loader>();
+  const location = useLocation();
+  // Shell chrome (settings gear + "Open the app") sits top-right, above whatever the home
+  // becomes — so the home surface itself stays clean (founder: "home stays beautiful, just
+  // the chat; settings behind a gear top-right"). Only once embedded AND onboarded, so it
+  // never competes with the onboarding animation.
+  const showChrome = !standalone && onboardingComplete;
 
   // No Polaris Frame navigation (founder call — "one nav, not two"). The 13a app home
   // carries its own in-app nav rail (Brief/Queue/Horizon/Memory/Goals/Settings) and the
@@ -74,7 +82,24 @@ export default function App() {
     <AppProvider embedded={!standalone} apiKey={apiKey}>
       <WebVitalsReporter enabled={!standalone} />
       <Frame>
-        {openAppUrl ? <OpenAppButton href={openAppUrl} /> : null}
+        {showChrome ? (
+          <div style={topRightChromeStyle}>
+            <Link to={`/app/settings${location.search}`} style={iconChromeStyle} aria-label="Settings">
+              <GearIcon />
+            </Link>
+            {openAppUrl ? (
+              <a
+                href={openAppUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={openAppButtonStyle}
+                aria-label="Open Jefe in the web app (opens in a new tab)"
+              >
+                Open the app ↗
+              </a>
+            ) : null}
+          </div>
+        ) : null}
         <Box paddingBlockEnd="1600">
           <AppUpdateBanner />
           <Outlet />
@@ -84,43 +109,53 @@ export default function App() {
   );
 }
 
-// A small fixed affordance in the embedded shell: open the same store in the standalone
-// web app (new tab). Lives in the shell, not the home, so it survives whatever the home
-// becomes — a page or a live conversation. A plain anchor so target=_blank behaves; styled
-// to the home's tokens rather than Polaris so it reads as one product across surfaces.
-function OpenAppButton({ href }: { href: string }) {
+// Shell chrome, clustered top-right above the home so the home surface stays clean (founder
+// call). The gear navigates within the embedded app to the settings surface (carrying the
+// embedded search params so `host` survives the hop); "Open the app" opens the standalone web
+// app in a new tab. Styled to the home tokens, not Polaris, so it reads as one product.
+function GearIcon() {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      style={openAppButtonStyle}
-      aria-label="Open Jefe in the web app (opens in a new tab)"
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#1f3a63"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
     >
-      Open the app ↗
-    </a>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
   );
 }
 
-const openAppButtonStyle: CSSProperties = {
+const topRightChromeStyle: CSSProperties = {
   position: "fixed",
   top: 12,
   right: 16,
   zIndex: 50,
   display: "inline-flex",
   alignItems: "center",
-  gap: 6,
-  padding: "6px 13px",
-  borderRadius: 999,
+  gap: 8,
+};
+const chromeBase: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  height: 34,
   border: "1px solid #d8d0c8",
   background: "#fffdfa",
+  borderRadius: 999,
+  boxShadow: "0 1px 2px rgba(31, 41, 51, 0.06)",
+  textDecoration: "none",
   color: "#1f3a63",
   fontFamily: "'Schibsted Grotesk', system-ui, -apple-system, sans-serif",
-  fontSize: 13,
-  fontWeight: 600,
-  textDecoration: "none",
-  boxShadow: "0 1px 2px rgba(31, 41, 51, 0.06)",
+  boxSizing: "border-box",
 };
+const iconChromeStyle: CSSProperties = { ...chromeBase, justifyContent: "center", width: 34, padding: 0 };
+const openAppButtonStyle: CSSProperties = { ...chromeBase, gap: 6, padding: "0 13px", fontSize: 13, fontWeight: 600 };
 
 export function ErrorBoundary() {
   return <EmbeddedAppErrorBoundary error={useRouteError()} />;

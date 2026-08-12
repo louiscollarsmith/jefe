@@ -17,8 +17,9 @@ refactor silently.** "I can revert my commit" is not the same as "this is revers
   navigation, which was deliberately dropped (`0acdf68`, founder's "one nav, not two").
   Do not reintroduce a global Frame nav to bring settings back.
 - The home stays a full-width conversation; settings is a **separate area**
-  (interpretation A). The entry point from the home (a small affordance, e.g. a gear by the
-  "Open the app" button) is pending the founder's call, so the surface is not linked yet.
+  (interpretation A). The entry point is a **gear top-right on the home** (in the `app.tsx`
+  shell, beside "Open the app"), founder-decided 2026-08-12 — the home itself stays clean, no
+  left buttons on it. The gear carries the embedded `?host=…` params so auth survives the hop.
 
 ## A panel is a self-contained, data-in component
 
@@ -45,6 +46,12 @@ Reference implementation — `AutonomyPanel`'s ModePicker:
 <fetcher.Form method="post" action="/app?index">
 ```
 
+**Exception — a dedicated resource route.** When app._index does not cleanly own an intent
+(e.g. the `channel.*` handlers redirect to a now-dead onboarding step), a panel may instead
+post to its own resource route (e.g. `/api/channels/slack`) **provided it redirects/returns
+to `/app/settings?panel=<id>`** so the settings loader still revalidates. The invariant is:
+hit a working handler **and** trigger a settings revalidation. `ChannelsPanel` uses this.
+
 ## Wiring (shell owner / chat 11 — the single wiring point)
 
 Per delivered panel: import it → compute its prop in the settings loader → add a `case` to
@@ -57,11 +64,13 @@ is the integration gate (the panel becomes imported for the first time).
 | ------------ | ------------------ | --------------------------------------------- | ----------------------------------------------------------------- |
 | autonomy     | `AutonomyPanel`    | `actionModes` (`getLiveActionModes`)          | **wired**                                                         |
 | settings     | `SettingsPanel`    | `emailBrief` (contact-email + notif. pref)    | delivered; needs `action="/app?index"` on its Form before wiring  |
-| integrations | `IntegrationsPanel`| `toolStack` (`getDetectedToolStack`)          | built; not yet pushed to main                                     |
-| channels     | `ChannelsPanel` (tbd) | tbd                                        | pending founder scope greenlight (multi-hour restore)             |
+| integrations | `IntegrationsPanel`| `toolStack` (`getDetectedToolStack`)          | delivered; fast-follow — `getDetectedToolStack` widens `status` to `string` vs the panel's `"detected"\|"none_yet"` union (tighten, then wire) |
+| channels     | `ChannelsPanel`    | `connection` + `destinations` (Slack)         | delivered (+ `/api/channels/slack`); pending founder scope greenlight |
 
 ## Reachability
 
-No entry point from the home yet (pending founder), so nothing here is merchant-reachable.
-Wiring panels is therefore safe/inert until the entry point lands — which is why panels can
-be wired as they arrive without waiting on the entry-point decision.
+The surface is now reachable from the home via the top-right gear. **Autonomy is live**;
+Integrations, Channels and Settings show a merchant-facing "coming soon" until wired (all four
+sub-nav items stay visible — wire-or-keep). ⚠️ Wiring **Channels** is a one-way-door step: its
+"Save channel" flow posts a confirming hello to the merchant's Slack (a live send), so it is
+founder-gated, not just another wire-up.

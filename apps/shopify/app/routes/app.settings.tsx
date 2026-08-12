@@ -22,9 +22,11 @@ import { AutonomyPanel } from "../components/settings/AutonomyPanel";
 //                 Slack-first) + fixes the Slack callback that lands on a dead step
 //   - Integrations → detected-tools + connect UI (channels session + chat 9 data)
 //   - Settings  → account/comms prefs (comms lane)
-// Until an owner lands its panel, the slot shows an honest scaffold state. Not yet linked
-// from the home (the entry point — a small settings affordance on the home — is pending
-// the founder's call, so no merchant reaches this yet).
+// Until an owner lands its panel, the slot shows an honest, merchant-facing "coming soon"
+// state (no internal owner names, no fabricated controls). Reached from the home via the
+// top-right gear (app.tsx shell) — founder ruling 2026-08-12: home stays clean/chat-only,
+// settings behind a gear. Wired panels: Autonomy (Integrations is a fast-follow, pending a
+// type-tighten on getDetectedToolStack's return; Channels/Settings show "coming soon").
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
@@ -37,6 +39,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Per-panel data is computed HERE — this surface's single loader — and passed to each
   // mounted panel as its documented prop (see the panel contract). Autonomy: the live
   // per-action modes (engine truth; an absent key ⇒ "Soon"/needs-you, never a fake dial).
+  // Integrations wiring is a fast-follow — its getDetectedToolStack return widens `status` to
+  // string vs the panel's "detected"|"none_yet" union; the channels lane is tightening it.
   const actionModes = await getLiveActionModes(prisma, { merchantId: merchant.id });
   return { shopDomain: session.shop, actionModes };
 };
@@ -57,10 +61,17 @@ export default function SettingsSurface() {
   const [params] = useSearchParams();
   const requested = params.get("panel");
   const active = PANELS.find((p) => p.id === requested) ?? PANELS[0];
+  // Back to the home, preserving the embedded params (host, etc.) minus our own ?panel.
+  const homeParams = new URLSearchParams(params);
+  homeParams.delete("panel");
+  const homeHref = `/app${homeParams.toString() ? `?${homeParams.toString()}` : ""}`;
 
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
+        <Link to={homeHref} style={backLinkStyle}>
+          ← Home
+        </Link>
         <h1 style={titleStyle}>Settings</h1>
         <div style={rowStyle}>
           <nav style={navStyle} aria-label="Settings sections">
@@ -99,10 +110,12 @@ function PanelBody({ panel, data }: { panel: PanelDef; data: { actionModes?: Rec
     case "autonomy":
       return <AutonomyPanel actionModes={data.actionModes} />;
     default:
+      // Merchant-facing honest state for a section still being built (wire-or-keep — the
+      // section stays visible, no fabricated controls, and no internal owner names leak out).
       return (
         <div style={scaffoldStyle}>
-          This section is being built by the {panel.owner}. It mounts here once ready — no
-          placeholder controls until then.
+          Coming soon — Jefe&apos;s still building this. It&apos;ll show up here when it&apos;s
+          ready.
         </div>
       );
   }
@@ -123,6 +136,7 @@ const SANS = "'Schibsted Grotesk', system-ui, -apple-system, sans-serif";
 
 const pageStyle: CSSProperties = { minHeight: "100vh", background: COLORS.page, color: COLORS.ink, fontFamily: SANS, padding: "48px 24px 96px" };
 const shellStyle: CSSProperties = { maxWidth: 900, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: 28 };
+const backLinkStyle: CSSProperties = { alignSelf: "flex-start", fontSize: 13, fontWeight: 600, color: COLORS.muted, textDecoration: "none" };
 const titleStyle: CSSProperties = { margin: 0, fontSize: 26, fontWeight: 700, color: COLORS.ink };
 const rowStyle: CSSProperties = { display: "flex", gap: 28, alignItems: "flex-start", flexWrap: "wrap" };
 const navStyle: CSSProperties = { flex: "0 0 200px", display: "flex", flexDirection: "column", gap: 2 };
