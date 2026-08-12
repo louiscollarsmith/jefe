@@ -28,7 +28,7 @@ live data, so connecting the pull should be a config change rather than a rewrit
 | `src/map.mjs` — Quiver rows → canonical records | built, 18 tests |
 | `src/safety.mjs` — write guards | built |
 | Metabase/Redshift reader | **blocked on access** |
-| Loader (canonical rows → corpus database) | not built |
+| Loader (canonical rows → corpus database) | not built — design acked by architecture 2026-08-12 |
 | Run + capture across merchants | not built |
 
 ## Schema provenance
@@ -64,9 +64,34 @@ A belief that needs any of these must not be derived from a corpus shop. An insi
 built on absent data reads exactly like one built on evidence — that is the specific
 risk this list exists to manage.
 
+## Scope — what the simulation covers
+
+Architecture ruling, 2026-08-12. The simulation runs:
+
+> loaded canonical data → derivations → beliefs → **action proposals**
+
+⛔ **Corpus shops must NOT be routed through the Shopify-API-dependent paths** — the
+backfill ingestion worker and the action-execution adapters. Both assume a Shopify
+session and offline token that a corpus shop does not have: they would throw, and a
+simulated execution is not a thing we want to be able to produce. The derivations
+themselves are platform-agnostic (they read canonical records by
+`merchantId`/`shopId`), which is why everything up to a proposal runs unchanged.
+
 ## Safety model
 
-Three independent guards, all fail-closed:
+**Primary isolation is a SEPARATE DATABASE** (architecture ruling, 2026-08-12).
+The corpus lives entirely in `QUIVER_CORPUS_DATABASE_URL`; the app's `DATABASE_URL`
+never contains corpus rows. A simulation run points Jefe's derivation code at the
+corpus database, and Ops is pointed at it per-environment as an explicit inspection
+mode.
+
+The alternative — corpus rows sharing the app database, isolated by a platform
+filter — was rejected: filter-based isolation only holds while *every*
+merchant-facing query remembers to carry the filter, and one forgotten filter puts
+simulated data into a real merchant's computation. Separate databases make the
+leakage surface zero rather than small.
+
+The remaining guards are belt-and-braces on top of that, all fail-closed:
 
 1. **`ALLOW_QUIVER_CORPUS_IMPORT=true`** must be set, and **`QUIVER_CORPUS_DATABASE_URL`**
    must name the target explicitly. This tool **never falls back to `DATABASE_URL`** —
@@ -74,9 +99,9 @@ Three independent guards, all fail-closed:
    implicit fallback would make a forgotten variable resolve to the worst target.
    Managed hosts (Neon, Railway, AWS) are refused unless explicitly acknowledged.
 2. **Corpus shops use `platform: "quiver_sim"`** and a `*.corpus.invalid` domain
-   (RFC 2606 — can never resolve). The app resolves tenants with
-   `{ platform: "shopify", shopDomain }`, so a corpus shop is unreachable from every
-   merchant-facing path. It has no Shopify session and no token, which means **the
+   (RFC 2606 — can never resolve). Secondary, not primary: it means that even inside
+   the corpus database a corpus shop is unreachable from tenant resolution, which
+   uses `{ platform: "shopify", shopDomain }`. No session and no token, so **the
    action layer physically cannot write to anyone's store from a corpus shop.**
 3. **Customer emails are hashed** with a required ≥16-char salt, matching the app's
    existing `CustomerIdentity.emailHash` posture.
