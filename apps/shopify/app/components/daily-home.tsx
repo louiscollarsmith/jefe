@@ -247,6 +247,11 @@ function StoreConversation({
         ) : null}
       </div>
       <div style={chatComposerWrapStyle}>
+        <div style={chipsStyle}>
+          <StorePrompt message="What changed this week?" />
+          <StorePrompt message="Anything I should worry about?" />
+          <StorePrompt message="How are my goals looking?" />
+        </div>
         <Form method="post" style={composerStyle}>
           <input type="hidden" name="intent" value="chat.message" />
           <input
@@ -261,7 +266,7 @@ function StoreConversation({
             disabled={isThinking}
           />
           <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-            {isThinking ? "Thinking" : "Send"}
+            Send
           </button>
         </Form>
       </div>
@@ -535,7 +540,7 @@ function ActionChat({
               disabled={isThinking}
             />
             <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-              {isThinking ? "Thinking" : "Send"}
+              Send
             </button>
           </Form>
           <div style={decisionRowStyle}>
@@ -575,6 +580,19 @@ function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
     <Form method="post">
       <input type="hidden" name="intent" value="action.chat.message" />
       <MoveHiddenFields move={move} />
+      <input type="hidden" name="message" value={message} />
+      <ChipButton>{message}</ChipButton>
+    </Form>
+  );
+}
+
+// Suggested openers under the home composer — they post the store-level chat.message
+// intent (the same path the composer uses), so an empty thread still invites a real
+// question. Grounded and generic (never a fabricated claim); Jefe answers each.
+function StorePrompt({ message }: { message: string }) {
+  return (
+    <Form method="post">
+      <input type="hidden" name="intent" value="chat.message" />
       <input type="hidden" name="message" value={message} />
       <ChipButton>{message}</ChipButton>
     </Form>

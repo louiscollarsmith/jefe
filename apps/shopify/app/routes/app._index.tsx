@@ -1537,10 +1537,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
+// Client-only: true on every fresh document load (the module is freshly evaluated),
+// set false after the stale-zoom guard below runs once. It lets AppIndex tell a FRESH
+// app entry (App Bridge restoring the last URL on re-open, or a refresh) apart from an
+// in-session navigation, so a left-behind ?actionChat can't silently re-open a move chat.
+let staleZoomGuardArmed = true;
+
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const navigate = useNavigate();
+  const location = useLocation();
   const safeActionError = getSafeActionError(actionData);
   const canContinueToInsights =
     data.appMode === "onboarding"
@@ -1570,6 +1578,22 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
+
+  // Opening Jefe always lands on the conversation. The embedded app's URL is persistent
+  // (App Bridge restores the last location on re-open), so a move zoom the merchant left
+  // would re-open on a fresh entry — which Matt hit. On the first mount of a fresh
+  // document load, drop a stale ?actionChat and land on the home; in-session zoom
+  // navigation is untouched (the guard disarms after one run, so later revalidations are
+  // no-ops). A deliberate deep-link into a move can opt back in later.
+  useEffect(() => {
+    if (!staleZoomGuardArmed) return;
+    staleZoomGuardArmed = false;
+    if (data.appMode === "daily" && data.actionChatId) {
+      navigate(appPathFromSearch(location.search, { actionChat: null }), {
+        replace: true,
+      });
+    }
+  }, [data, navigate, location.search]);
 
   const pendingDestination = getPendingOnboardingDestination(navigation);
   if (pendingDestination === "home") {
