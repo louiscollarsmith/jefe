@@ -376,7 +376,7 @@ function StoreConversation({
           </InlineStack>
         </InlineStack>
       </div>
-      {indexEntries.length > 0 ? (
+      {!isBlankThread && indexEntries.length > 0 ? (
         <ConversationIndex entries={indexEntries} />
       ) : null}
       <div style={messagesStyle}>
@@ -673,10 +673,10 @@ function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
   return (
     <nav
       className="jefe-home-index"
-      aria-label="Conversation index"
+      aria-label="Store update index"
       style={indexRailStyle}
     >
-      <span style={indexHeadingStyle}>In this conversation</span>
+      <span style={indexHeadingStyle}>Store updates</span>
       <div style={indexListStyle}>
         {entries.map((entry) => (
           <button

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **A fresh chat no longer claims store-level work happened “in this conversation.”** Proposed actions and recent store updates now stay out of the blank-chat rail and are labelled as store updates when shown, so a new conversation can be genuinely empty. Jefe also drops a dead-stock markdown action intent when the Plan recommendation is really about customer re-engagement or retention, preventing a customer-looking title from becoming a proposed clearance move. `app/components/daily-home.tsx`, `app/lib/merchant-plan/schema.server.js`, `tests/memory-surface-wiring.test.mjs`, `tests/merchant-plan.test.mjs`.
+
 - **After the first action is approved or tracked, Jefe now opens the app instead of waiting on the onboarding screen.** The action confirmation still appears briefly, but the handoff token now completes itself and loads the normal app home, so merchants do not have to notice and press the separate “Open the app” button after they have already made their first decision. `app/components/fast-value-onboarding.tsx`, `tests/fast-onboarding.test.mjs`, `tests/onboarding-flow.test.mjs`.
 
 - **The home no longer shows two Settings gears.** Settings stays in the top-right app chrome next to "Open the app", while the duplicate gear beside the home date is gone so the chat header stays clean. `app/components/daily-home.tsx`, `app/routes/app.tsx`, `tests/surface-reachability.test.mjs`.

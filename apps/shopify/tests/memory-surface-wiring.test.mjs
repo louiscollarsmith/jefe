@@ -169,8 +169,11 @@ test("a new chat is visually blank and does not mix live store updates into its 
   assert.match(dailyHomeSource, /Messages from earlier chats stay in Chats/);
   assert.match(dailyHomeSource, /function StoreUpdatesPopover/);
   assert.match(dailyHomeSource, /These are separate from the\s+current chat/);
+  assert.match(dailyHomeSource, /!isBlankThread && indexEntries\.length > 0/);
+  assert.match(dailyHomeSource, /Store update index/);
   assert.match(dailyHomeSource, /Empty chat/);
   assert.match(dailyHomeSource, /· Current/);
+  assert.doesNotMatch(dailyHomeSource, /In this conversation/);
 });
 
 test("approve and decline decisions are reachable only from the action chat surface", () => {

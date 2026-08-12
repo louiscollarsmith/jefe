@@ -238,9 +238,10 @@ function normalizeRecommendation(value, context) {
     confidence: typeof item.confidence === "string" ? item.confidence : "",
     assumption: cleanText(item.assumption, 220, true),
     caveat: cleanText(item.caveat, 220, true),
-    // Advisory + best-effort: null when absent/malformed/unknown (never fails the plan).
-    actionIntent: normalizeActionIntent(item.actionIntent),
+    // Advisory + best-effort: null when absent/malformed/unknown/mismatched (never fails the plan).
+    actionIntent: null,
   };
+  recommendation.actionIntent = normalizeActionIntent(item.actionIntent, recommendation);
   for (const field of [
     "candidateId",
     "title",
@@ -290,7 +291,7 @@ function normalizeRecommendation(value, context) {
  * The LLM's magnitude (markdownPercent) is a suggestion the primitive is free to floor.
  * @param {unknown} value
  */
-function normalizeActionIntent(value) {
+function normalizeActionIntent(value, recommendation) {
   const item = asRecord(value);
   if (!item) return null;
   const markdownPercent = Number(item.markdownPercent);
@@ -301,7 +302,38 @@ function normalizeActionIntent(value) {
     rationale: cleanText(item.rationale, 220, true) ?? undefined,
   };
   const validation = validateActionIntent(candidate);
-  return validation.ok ? validation.intent : null;
+  if (!validation.ok) return null;
+  return actionIntentMatchesRecommendation(validation.intent, recommendation)
+    ? validation.intent
+    : null;
+}
+
+function actionIntentMatchesRecommendation(intent, recommendation) {
+  if (intent.actionType !== "price_markdown" || intent.targetKind !== "dead_stock") {
+    return true;
+  }
+  const text = normalizeText([
+    recommendation.title,
+    recommendation.summary,
+    recommendation.whyThisAction,
+    recommendation.whyNow,
+    recommendation.startToday,
+    recommendation.expectedBenefit,
+    ...(recommendation.executionSteps ?? []).flatMap((step) => [
+      step.title,
+      step.description,
+    ]),
+  ].filter(Boolean).join(" "));
+
+  const mentionsClearance =
+    /\b(clearance|markdown|mark down|marked down|discount|reduce prices?|lower prices?)\b/.test(text);
+  const mentionsDeadStock =
+    /\b(dead stock|old stock|stale stock|slow moving|slow mover|unsold|hasn t sold|haven t sold|cash tied up|trapped capital)\b/.test(text);
+  const mentionsStockWithClearanceVerb =
+    /\bstock\b/.test(text) &&
+    /\b(clear|clear out|free|recover|release|move)\b/.test(text);
+
+  return mentionsClearance || mentionsDeadStock || mentionsStockWithClearanceVerb;
 }
 
 function normalizeStep(value) {
