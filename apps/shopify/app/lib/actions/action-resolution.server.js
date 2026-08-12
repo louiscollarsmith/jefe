@@ -145,6 +145,10 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent, source
  *   The value-first permission ask, in this primitive's own terms.
  */
 
+// ⚠️ The @type below MUST be its own comment block, separate from the @typedef above.
+// Putting both in one block makes the typedef reference itself (TS2456) and leaves
+// PRIMITIVES untyped — which then cascades into an implicitly-any arrow parameter and a
+// string-index error. That mistake reddened main; keep the two blocks apart.
 /** @type {Record<string, PrimitiveBinding>} */
 const PRIMITIVES = {
   price_markdown: {
