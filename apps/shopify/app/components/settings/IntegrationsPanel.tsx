@@ -25,7 +25,11 @@ type DetectedTool = {
   category: string;
   categoryLabel: string;
   confidence: number | null;
-  confidenceBand: "high" | "medium" | "low" | "unknown";
+  // Widened to string to match getDetectedToolStack's inferred return (the read's
+  // toolConfidenceBand literal widens to string in the @ts-check'd JS). The panel
+  // doesn't branch on the band, so the loose type is harmless + keeps the data-in
+  // prop assignable without forcing a @returns on the read (chat 9's file).
+  confidenceBand: string;
   surfaceable: boolean;
   detectedVia: string;
   connected: boolean;
@@ -39,7 +43,10 @@ export type DetectedToolStackView = {
   surfaceableCount: number;
   empty: boolean;
   headline: string | null;
-  status: "detected" | "none_yet";
+  // Widened to string for the same reason as confidenceBand — the read's
+  // `tools.length ? "detected" : "none_yet"` widens to string; the panel doesn't
+  // branch on it, so this keeps the loader's data-in prop assignable.
+  status: string;
 };
 
 export function IntegrationsPanel({ data }: { data: DetectedToolStackView }) {
