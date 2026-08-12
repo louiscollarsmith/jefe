@@ -67,6 +67,12 @@ const ACTION_CHAT_REPLY_SCHEMA = {
 const ACTION_CHAT_LATEST_MESSAGE_MAX = 900;
 const ACTION_CHAT_THREAD_MESSAGE_MAX = 600;
 
+// How much of the home conversation the interpreter sees. Beliefs take whatever character
+// budget is left after the fixed parts, so a longer thread costs beliefs rather than
+// overflowing the provider limit — see the budget note in buildMerchantMemoryLlmPrompt.
+const MEMORY_CHAT_THREAD_TURNS = 8;
+const MEMORY_CHAT_THREAD_MESSAGE_MAX = 600;
+
 const INITIAL_OPEN_QUESTIONS = [
   {
     category: "preferences",
@@ -827,13 +833,19 @@ export async function sendConversationMessage(prisma, input) {
       includeEvidence: true,
     }),
     getOpenQuestions(prisma, input),
-    listConversationMessages(prisma, {
+    listRecentConversationMessages(prisma, {
       conversationId: conversation.id,
       merchantId: input.merchantId,
       take: 12,
     }),
   ]);
   const context = buildConversationContext(conversation.context, recentMessages);
+  // What was said before this turn. The merchant's current message is already stored by the
+  // time we read the thread, so it comes back in `recentMessages` — drop it here rather than
+  // send the model the same sentence twice, once as history and once as the question.
+  const priorMessages = recentMessages.filter(
+    (message) => message.id !== userMessage.id,
+  );
   // Exact-targeting: when the merchant answers a SPECIFIC open question from the surface (the
   // answer composer posts its id), aim the interpreter at THAT question rather than the
   // top-priority fallback in interpretMerchantMessage. An id that is no longer open harmlessly
@@ -853,6 +865,7 @@ export async function sendConversationMessage(prisma, input) {
       beliefs,
       openQuestions,
       context,
+      recentMessages: priorMessages,
       llmProvider: input.llmProvider,
       logger: input.logger,
       usage: {
@@ -1371,7 +1384,7 @@ export function interpretMerchantMessage(input) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; recentMessages?: Array<{ role: string; content: string }>; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
  */
 export async function interpretMerchantMessageWithLlm(input) {
   const fallbackOperation = interpretMerchantMessage(input);
@@ -1730,6 +1743,34 @@ function conversationTopic(input) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ conversationId: string; merchantId: string; take?: number }} input
  */
+/**
+ * The most recent N messages, in chronological order.
+ *
+ * `listConversationMessages` orders ASC, so giving it a `take` returns the OLDEST N — right
+ * for rendering a whole thread, wrong for "what was just said". The conversation path needs
+ * the tail, which is why the action chat has always had its own reader
+ * (`listRecentActionMessages`); this is the same read for the memory path, keeping the
+ * fields `buildConversationContext` needs.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ conversationId: string; merchantId: string; take: number }} input
+ */
+async function listRecentConversationMessages(prisma, input) {
+  const rows = await prisma.merchantMemoryConversationMessage.findMany({
+    where: {
+      conversationId: input.conversationId,
+      merchantId: input.merchantId,
+    },
+    orderBy: { createdAt: "desc" },
+    take: input.take,
+  });
+  return rows.reverse().map(serializeMessage);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ conversationId: string; merchantId: string; take?: number }} input
+ */
 async function listConversationMessages(prisma, input) {
   const messages = await prisma.merchantMemoryConversationMessage.findMany({
     where: {
@@ -1805,6 +1846,10 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Merchant corrections have authority, but raw observations and merchant policies must stay separate.",
     "Do not invent evidence.",
     "Ask for clarification when a reference is ambiguous.",
+    // Without this the model treated every turn as the first one. `recentThread` is the
+    // conversation so far, oldest first, and `merchantMessage` is the turn being answered.
+    "`recentThread` is what has already been said in this conversation, oldest first; `merchantMessage` is the new turn. Resolve references like \"that\", \"it\", \"what you said before\" against it.",
+    "Never ask the merchant to repeat something they have already told you in `recentThread`.",
     "Write `reason` for yourself: it is your private justification and is never shown to the merchant.",
     "Write `merchantReply` as the words the merchant will actually read: speak to them directly as \"you\", keep it warm and plain, and never refer to \"the merchant\" or narrate your own reasoning.",
     "Set `merchantReply` whenever operationType is clarification_required or no_memory_change. For clarification_required make it a direct question that names exactly what you need (\"Which product do you mean?\"), not a note that says you need clarification.",
@@ -1930,12 +1975,25 @@ export function selectPromptBeliefs(input, budgetChars) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; recentMessages?: Array<{ role: string; content: string }> }} input
  */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
+  // The conversation so far. Without this the model saw one sentence and three belief keys,
+  // so "for what you said before, the cost-per-item in Shopify" was unanswerable — it had no
+  // "before" — and Jefe asked the merchant to re-explain what they had just explained. The
+  // action chat has always sent its thread; this is the same read for the home path.
+  // Redacted through safePromptText like every other merchant text crossing the AI boundary.
+  const recentThread = (input.recentMessages ?? [])
+    .slice(-MEMORY_CHAT_THREAD_TURNS)
+    .map((/** @type {any} */ message) => ({
+      role: safePromptRole(message.role),
+      content: safePromptText(message.content, MEMORY_CHAT_THREAD_MESSAGE_MAX),
+    }))
+    .filter((/** @type {{ role: string; content: string }} */ message) => message.content);
   const prompt = {
     merchantMessage: input.message,
+    recentThread,
     conversationContext: {
       lastDiscussedBeliefKeys: input.context?.lastDiscussedBeliefKeys ?? [],
       currentOpenQuestionId: input.context?.currentOpenQuestionId ?? null,
