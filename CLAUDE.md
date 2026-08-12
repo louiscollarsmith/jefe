@@ -20,32 +20,28 @@ The application should follow:
 
 Commerce sources -> raw events/source records -> deterministic facts/features -> evidence -> Merchant Memory claims/beliefs/questions -> merchant confirmation/correction -> updated memory -> recommendations/actions.
 
-The current first-run Shopify flow is CONNECT -> CONTEXT -> INSIGHT -> ACTION -> a one-time APP handoff, followed by Daily Home on later visits. A high-priority Merchant Memory bootstrap produces the first evidence-backed opportunity while the existing full-history backfill proceeds independently. The bootstrap derives only explicitly allowlisted, recent-window-safe beliefs and retains its evidence scope; it does not make dead-stock, seasonality, LTV, repeat-behaviour or other long-history claims. Do not describe the app as only a reset-era evidence layer.
+The current Shopify app flow is Connect -> optional Channels -> Insights -> Goals -> Plan -> Merchant Memory view. Do not describe the app as only a reset-era evidence layer.
 
-Jefe **acts on the merchant's store from install**, not advisory-for-months (see AGENTS.md -> North Star). The first executable action — **dead-stock clearance** — is **LIVE in production** (`CLEARANCE_EXECUTE_ENABLED=true`, since 2026-07-31): Jefe proposes, the merchant approves (or sets an `autonomous` dial per action type), and Jefe executes the price change through a reversible typed adapter. The path is **live, not dark** — it is inert for a given store only until that store has costed dead stock to clear and a non-`recommend` dial. Autonomy is **earned per action type** (recommend -> approve_execute -> autonomous), with the merchant always the principal; action types beyond clearance are the open frontier. The external-write guardrails stay permanent and are precisely what let autonomy grow safely: anything Jefe does to an external system goes through an approved typed adapter with idempotency, a preview, an approval gate, blast-radius caps and reversibility, with the merchant as principal. Building toward broader autonomy is in scope; loosening those guardrails is not.
+Jefe **acts on the merchant's store from install**, not advisory-for-months (see AGENTS.md -> North Star). Dead-stock clearance is **LIVE in production** (`CLEARANCE_EXECUTE_ENABLED=true`, since 2026-07-31): Jefe proposes, the merchant approves (or has set that store to `autonomous`), and Jefe executes the price change through a reversible typed adapter.
+
+### Two questions, never one (Matt, 2026-08-12 — supersedes "registered actions")
+
+⛔ **There is no registry of things Jefe is allowed to suggest.** *"No more 'registered actions' — instead any action or recommendation should be possible."* Split what `ACTION_REGISTRY` used to fuse:
+
+- **"Can Jefe propose this?" — ALWAYS YES.** Unbounded, no registry lookup, no permission check. Jefe reasons over everything it knows (139 deterministic beliefs and rising) and says whatever is true and useful, including things we have no adapter for. Clearance is *one* action, not the shape of the product — do not let its requirements (cost data, dead stock) define what Jefe can talk about.
+- **"Can Jefe do it for the merchant?" — where a safe path exists.** Otherwise Jefe **tells them exactly how to do it themselves**, with steps. `ACTION_REGISTRY` describes *execution capability*; it is not a gate on proposals.
+
+**Invariant: no dead ends.** Every recommendation either executes, asks for approval, or instructs. "I can't help with that" is never an acceptable output — neither is silence.
+
+⚠️ **What this does NOT relax.** The external-write guardrails are properties of the **write primitives**, not of named actions, and they stay permanent: anything Jefe does to an external system goes through a typed adapter with idempotency, a preview, blast-radius caps and reversibility, with the merchant as principal. These are precisely what make `autonomous` offerable at all — remove them and no merchant can safely leave the dial on. Building toward broader autonomy is in scope; loosening those guardrails is not.
+
+**Autonomy has TWO modes, not three** (Matt, 2026-08-12): **approve** (human in the loop) and **autonomous**. `recommend` is retired as a merchant-selectable mode — it survives only as a *system state* meaning "Jefe can't execute this one", which routes to the instruct path above. Eligibility is decided at **runtime** by the execution gate (no adapter / flag off / scope ungranted / not reversible / over blast-radius cap / low confidence), never as a per-type setting the merchant manages.
+
+**Missing data is an invitation, not a blocker.** Where an input would unlock better advice — cost-per-item for margin work, a connected ad account for acquisition — Jefe asks for it and says what it would unlock. It does not silently degrade, and it does not refuse to speak.
 
 ## Quality Bar
 
 A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
-
-## Changelog posts go to #jefe-slack. Never #eng-matt.
-
-⛔ **FIXED RULE (Matt, 2026-08-12). Applies to every session working in this repo.**
-Jefe's live-changelog Slack post goes to **#jefe-slack (`C0BKHSV5FHB`)** and nowhere
-else. #eng-matt is the **quiver-london** channel and Jefe is not a quiver-london
-repo — posting Jefe changes there puts them in front of the wrong readers and
-buries the Quiver log.
-
-⚠️ The house rules at `~/Claude/CLAUDE.md` name #eng-matt. **That rule is scoped to
-quiver-london repos and this file overrides it here.** If you have been posting
-Jefe entries to #eng-matt, stop — do not delete what is already there, just route
-everything from now on to #jefe-slack.
-
-Everything else about the changelog is unchanged and still applies: post when it is
-**live and verified**, not when it is pushed; 1–2 lines; the headline is the
-achievement in a merchant's terms; a `_surface · live HH:MM_` footer; a `---------`
-separator; group by achievement rather than one post per commit; never automate the
-words.
 
 ## Product Truth
 
