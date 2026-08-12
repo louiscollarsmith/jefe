@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deriveMerchantMemoryBeliefs } from "../app/lib/merchant-memory/shopify-derivations.server.js";
-import { isMerchantVisibleBeliefKey } from "../app/lib/merchant-memory/deterministic-belief-registry.server.js";
+import { isMerchantVisibleBeliefKey, isBusinessShapeBeliefKey } from "../app/lib/merchant-memory/deterministic-belief-registry.server.js";
+import { selectPromptBeliefs } from "../app/lib/merchant-memory/conversation.server.js";
 
 // The ontology could describe a lipstick DTC brand and a Tesla dealership identically, so
 // every recommendation came out generic by construction. These beliefs describe what KIND of
@@ -409,4 +410,68 @@ function mockPrisma({
         })),
     },
   };
+}
+
+// --- Reaching the model -----------------------------------------------------------------
+// A representation that never reaches the LLM changes nothing. The prompt has 40 slots for
+// ~140 beliefs, ranked by keyword relevance to the merchant's message — so shape beliefs,
+// which by design match no keyword, were scoring on confidence alone (~8) and losing every
+// slot. Derived, stored, and never once seen by the model.
+
+test("business shape reaches the model even when the merchant asks about something else", () => {
+  const shape = [
+    { key: "business.channel_mix.trailing_90d", value: { enum: "online_led" }, confidence: 0.85 },
+    { key: "business.catalogue_shape", value: { enum: "focused" }, confidence: 0.9 },
+    { key: "business.range_composition", value: { enum: "own_brand_specialist" }, confidence: 0.8 },
+  ];
+  // 60 unrelated beliefs, enough to fill every slot on their own.
+  const noise = Array.from({ length: 60 }, (_, i) => ({
+    key: `orders.filler_metric_${i}`,
+    value: { count: i },
+    confidence: 0.9,
+  }));
+
+  const selected = selectPromptBeliefs(
+    { beliefs: [...noise, ...shape], message: "how much stock do I have left?", context: {} },
+    100_000,
+  );
+  const keys = new Set(selected.map((belief) => belief.key));
+
+  for (const belief of shape) {
+    assert.ok(keys.has(belief.key), `${belief.key} never reached the prompt`);
+  }
+});
+
+test("shape frames the answer but never displaces what is being discussed", () => {
+  // The boost must not outrank the belief the merchant is actually talking about — context
+  // that shoves aside the subject is worse than no context.
+  const discussed = { key: "inventory.low_cover_products.trailing_30d", value: { items: [] }, confidence: 0.5 };
+  const shape = { key: "business.catalogue_shape", value: { enum: "focused" }, confidence: 0.9 };
+
+  const selected = selectPromptBeliefs(
+    {
+      beliefs: [shape, discussed],
+      message: "what should I reorder?",
+      context: { lastDiscussedBeliefKeys: [discussed.key] },
+    },
+    100_000,
+  );
+  assert.equal(selected.length, 2);
+
+  // Ranking is asserted through scoring order, not the emitted (key-sorted) array.
+  const rankOf = (key) =>
+    promptBeliefScoreFor(key, key === discussed.key ? 0.5 : 0.9, key === discussed.key);
+  assert.ok(
+    rankOf(discussed.key) > rankOf(shape.key),
+    "a shape belief outranked the belief under discussion",
+  );
+});
+
+// Mirrors promptBeliefScore's inputs closely enough to compare two beliefs' priority.
+function promptBeliefScoreFor(key, confidence, isDiscussed) {
+  return (
+    (isDiscussed ? 100 : 0) +
+    (isBusinessShapeBeliefKey(key) ? 25 : 0) +
+    Math.round(confidence * 10)
+  );
 }

@@ -34,6 +34,7 @@ import {
   labelForBeliefKey,
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
+import { isBusinessShapeBeliefKey } from "./deterministic-belief-registry.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import { getLlmConfig } from "../llm/config.server.js";
 
@@ -1799,6 +1800,15 @@ function promptBeliefScore(belief, messageLower, discussedKeys) {
   if (label.length > 3 && messageLower.includes(label)) score += 40;
   if (belief.status === "merchant_corrected") score += 30;
   else if (belief.status === "merchant_confirmed") score += 20;
+  // What KIND of business this is frames every answer, so it earns a standing place in the
+  // prompt rather than competing on keyword relevance. Without this the shape beliefs scored
+  // ~8 (confidence alone) against 140 competitors for 40 slots, so they were derived and then
+  // never reached the model — the representation existed and the advice stayed generic.
+  //
+  // A boost, deliberately NOT a pin: below a keyword match (+50) and far below the belief
+  // actually under discussion (+100), so shape frames the answer without ever displacing the
+  // subject of it.
+  if (isBusinessShapeBeliefKey(key)) score += 25;
   score += Math.round(Number(belief.confidence ?? 0) * 10);
   return score;
 }

@@ -5496,3 +5496,24 @@ const MERCHANT_HIDDEN_BELIEF_KEYS = new Set(
 export function isMerchantVisibleBeliefKey(key) {
   return !MERCHANT_HIDDEN_BELIEF_KEYS.has(key);
 }
+
+// The business-shape tranche: what KIND of business this is, rather than a fact about it.
+//
+// Derived from the tranche rather than a hand-kept list, so a new dimension is included the
+// day it lands instead of the day someone remembers to add it here.
+const BUSINESS_SHAPE_BELIEF_KEYS = new Set(
+  DETERMINISTIC_BELIEF_REGISTRY.filter((entry) => entry.tranche === "Business shape v1").map(
+    (entry) => entry.key,
+  ),
+);
+
+/**
+ * Shape beliefs FRAME an answer rather than being the subject of one. A merchant asking
+ * about stock needs the stock numbers — but the answer should differ depending on whether
+ * they are a one-product maker or a 5,000-SKU retailer, and that context is relevant to
+ * every question, not just to questions that happen to mention it.
+ * @param {string} key
+ */
+export function isBusinessShapeBeliefKey(key) {
+  return BUSINESS_SHAPE_BELIEF_KEYS.has(key);
+}
