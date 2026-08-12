@@ -84,7 +84,7 @@ export default function App() {
       <Frame>
         {showChrome ? (
           <div style={topRightChromeStyle}>
-            <Link to={`/app/settings${location.search}`} style={iconChromeStyle} aria-label="Settings">
+            <Link to={appSettingsHref(location.search)} style={iconChromeStyle} aria-label="Settings">
               <GearIcon />
             </Link>
             {openAppUrl ? (
@@ -113,6 +113,13 @@ export default function App() {
 // call). The gear navigates within the embedded app to the settings surface (carrying the
 // embedded search params so `host` survives the hop); "Open the app" opens the standalone web
 // app in a new tab. Styled to the home tokens, not Polaris, so it reads as one product.
+function appSettingsHref(search: string) {
+  const params = new URLSearchParams(search);
+  for (const key of ["view", "actionChat", "panel"]) params.delete(key);
+  const next = params.toString();
+  return `/app/settings${next ? `?${next}` : ""}`;
+}
+
 function GearIcon() {
   return (
     <svg
