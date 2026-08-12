@@ -16,9 +16,10 @@ const viewSource = fs.readFileSync(
   "utf8",
 );
 
-test("the composer is the single COMMIT path — Not right? prefills it, no per-belief commit intents", () => {
+test("the composer is the single commit path — no per-belief action controls", () => {
   assert.match(viewSource, /name="intent" value="memory\.message"/);
-  // Correction is conversational: NO dedicated confirm/correct/forget/answer commit intents here.
+  // Correction is conversational: NO dedicated confirm/correct/forget/answer commit intents, and
+  // no per-belief action controls — the composer is the one place anything commits.
   for (const intent of [
     "memory.confirm",
     "memory.correct",
@@ -27,22 +28,24 @@ test("the composer is the single COMMIT path — Not right? prefills it, no per-
   ]) {
     assert.ok(
       !viewSource.includes(`value="${intent}"`),
-      `${intent} must NOT be a committing button in the composer-only view`,
+      `${intent} must NOT be a committing control in the composer-only view`,
     );
   }
-  // Local interruption ("Not right?") is a PREFILL + focus of the composer, never a commit: it
-  // sets the message and touches no intent, so correction still happens by sending.
-  assert.match(viewSource, /Not right\?/);
-  assert.match(viewSource, /const correctThis = \(belief/);
-  assert.match(viewSource, /setMessage\(`About/);
 });
 
-test("the belief list is capped — top few, then a show-everything expander (not a wall)", () => {
-  // Matt: it's "quite long". Lead with what's most worth checking (confirmPriority) and collapse
-  // the rest behind one click, so the page is short by default.
-  assert.match(viewSource, /const TOP_BELIEFS = \d+/);
-  assert.match(viewSource, /showAll \? beliefs : beliefs\.slice\(0, TOP_BELIEFS\)/);
-  assert.match(viewSource, /Show everything Jefe knows/);
+test("beliefs are grouped by provenance, and the worked-out list is capped (not a wall)", () => {
+  // Matt: shorter + composed. Grouped by what the merchant TOLD Jefe vs what he WORKED OUT
+  // (provenance, not category — and future-proof for a third 'connected tools' source).
+  assert.match(viewSource, /What you&apos;ve told me/);
+  assert.match(viewSource, /What Jefe&apos;s worked out/);
+  assert.match(viewSource, /authorship === "merchant"/);
+  // The worked-out list is capped, most-worth-checking first (confirmPriority), with a show-all.
+  assert.match(viewSource, /const WORKED_OUT_CAP = \d+/);
+  assert.match(
+    viewSource,
+    /showAllWorkedOut\s*\?\s*workedOut\s*:\s*workedOut\.slice\(0, WORKED_OUT_CAP\)/,
+  );
+  assert.match(viewSource, /Show all/);
 });
 
 test("the view surfaces what a merchant needs to talk about", () => {
