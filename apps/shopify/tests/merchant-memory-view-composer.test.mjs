@@ -60,3 +60,19 @@ test("the memory-correction surface stays REACHABLE from a live route", () => {
   assert.match(dailyHome, /<GoalsSection[\s\S]{0,400}to="\?view=memory"/);
   assert.match(appIndex, /<MerchantMemoryView/); // the route renders the composer surface
 });
+
+test("the memory view renders directly, not behind a lazy + null-Suspense boundary (blank-page guard)", () => {
+  // The reachability test above proves the route REACHES the component — but "reached" is not
+  // "renders". A `lazy()` import inside `<Suspense fallback={null}>` satisfies reached while
+  // rendering NOTHING: during the chunk-load window, or when a stray App Bridge parent update
+  // trips React #421 (boundary discard), the null fallback leaves a blank page — which is exactly
+  // what shipped and what Matt hit in prod. So assert the render is a DIRECT static import, never
+  // lazy, and never wrapped in a null-fallback Suspense (mirrors DailyHome's 8d753b8 fix).
+  const appIndex = fs.readFileSync(
+    new URL("../app/routes/app._index.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(appIndex, /import \{ MerchantMemoryView \} from/); // static import
+  assert.doesNotMatch(appIndex, /MerchantMemoryView = lazy\(/); // never lazy again
+  assert.doesNotMatch(appIndex, /<Suspense fallback=\{null\}>\s*<MerchantMemoryView/);
+});

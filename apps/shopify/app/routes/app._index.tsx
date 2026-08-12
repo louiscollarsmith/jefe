@@ -5,7 +5,7 @@ import type {
   ShouldRevalidateFunctionArgs,
 } from "react-router";
 import type { FormEvent, ReactNode } from "react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Form,
   redirect,
@@ -56,14 +56,14 @@ import {
   type OnboardingChatMessage,
 } from "../components/onboarding-chat";
 
-// Code-split: the standing Merchant Memory view (appMode "memory") renders only
-// for returning users who open it — never during first-run onboarding — so it's
-// lazy too, SSR-streamed like DailyHome.
-const MerchantMemoryView = lazy(() =>
-  import("../components/merchant-memory-view").then((m) => ({
-    default: m.MerchantMemoryView,
-  })),
-);
+// Direct (NOT lazy) import — the standing Merchant Memory view (appMode "memory"). It was
+// lazy()+<Suspense fallback={null}> before, but that made its boundary hydrate asynchronously,
+// and in that window a stray App Bridge parent update trips React #421 ("update before the
+// boundary finished hydrating") — which discards the render and, with a null fallback, leaves a
+// BLANK page silently (Matt hit exactly this in prod). Same failure DailyHome was cured of in
+// 8d753b8 by going static; the ~2kB gzip on the onboarding path is a fine trade for a page that
+// always renders.
+import { MerchantMemoryView } from "../components/merchant-memory-view";
 
 import prisma from "../db.server";
 import {
@@ -1548,15 +1548,15 @@ export default function AppIndex() {
   }
 
   if (data.appMode === "memory") {
+    // Direct render (no Suspense) — see the MerchantMemoryView import note: a null Suspense
+    // fallback over a lazy boundary rendered a blank page under React #421.
     return (
-      <Suspense fallback={null}>
-        <MerchantMemoryView
-          storeName={data.storeName}
-          merchantName={data.merchantName}
-          memory={data.memory}
-          conversation={data.memoryConversation}
-        />
-      </Suspense>
+      <MerchantMemoryView
+        storeName={data.storeName}
+        merchantName={data.merchantName}
+        memory={data.memory}
+        conversation={data.memoryConversation}
+      />
     );
   }
 
