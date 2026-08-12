@@ -135,7 +135,7 @@ export function buildDetectedToolStackView(belief) {
     tools,
     byCategory: Array.from(byCategoryMap.values()),
     count: tools.length,
-    surfaceableCount: tools.filter((t) => t.surfaceable).length,
+    surfaceableCount: tools.filter((/** @type {any} */ t) => t.surfaceable).length,
     empty: tools.length === 0,
     headline: buildHeadline(tools),
     // "none_yet" covers belief-absent / detection-dark / no-matches alike — the surface shows a
