@@ -5090,6 +5090,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.recommendation_engagement.all_time",
+    "audience": "model",
     "category": "business",
     "valueType": "structured",
     "derivationVersion": "v1",
@@ -5118,6 +5119,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.clearance_effectiveness.all_time",
+    "audience": "model",
     "category": "business",
     "valueType": "structured",
     "derivationVersion": "v1",
@@ -5146,6 +5148,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.action_decline_signal.all_time",
+    "audience": "model",
     "category": "business",
     "valueType": "structured",
     "derivationVersion": "v1",

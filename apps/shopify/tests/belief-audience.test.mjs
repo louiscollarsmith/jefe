@@ -64,16 +64,42 @@ test("an unclassified belief defaults to merchant, not to hidden", () => {
 test("the audience split is the one that was measured", () => {
   const tally = { merchant: 0, internal: 0, model: 0 };
   for (const belief of registry) tally[beliefAudience(belief.key)] += 1;
-  // 19 ingestion diagnostics stay internal. `model` is now 0: the business-shape tranche was
-  // the only thing in it, and it went merchant-facing after the founder reviewed it against
-  // real stores (2026-08-12). The internal count is the one that must not drift quietly — a
-  // diagnostic leaking onto a merchant's screen is the failure this file exists to catch.
+  // 19 ingestion diagnostics stay internal — that count is the one that must not drift
+  // quietly, because a diagnostic on a merchant's screen is the failure this file exists to
+  // catch. `model` holds Jefe's own telemetry: how a merchant engages with recommendations,
+  // how clearances performed, why they declined. Jefe reasons with those to adapt its
+  // proposals; they are not facts the merchant worked out about their business.
+  //
+  // merchant/model counts move as tranches are surfaced or held back (business-shape went
+  // merchant-facing in bc7af2e), so assert the INVARIANT, not a snapshot.
   assert.equal(tally.internal, 19);
-  assert.equal(tally.model, 0);
-  assert.equal(tally.merchant, registry.length - 19);
+  assert.ok(tally.model >= 3, "Jefe's own telemetry must stay model-only");
+  assert.equal(tally.internal + tally.model + tally.merchant, registry.length);
   assert.equal(
     registry.filter((belief) => isMerchantVisibleBeliefKey(belief.key)).length,
     tally.merchant,
+  );
+});
+
+test("Jefe's own telemetry is model-only, not a fact about the business", () => {
+  // Same category of error as the ingestion diagnostics, just subtler — it survived the
+  // first audience pass because it lives under `business.*` and looks like a business fact.
+  for (const key of [
+    "business.recommendation_engagement.all_time",
+    "business.clearance_effectiveness.all_time",
+    "business.action_decline_signal.all_time",
+  ]) {
+    assert.equal(beliefAudience(key), "model", key);
+    assert.equal(isMerchantVisibleBeliefKey(key), false, `${key} must not reach a merchant`);
+  }
+});
+
+test("audience gates what Jefe SAYS, never what it can read", () => {
+  // adaptMarkdownFromMemory looks action_decline_signal up by key to ease the markdown after
+  // "too aggressive" declines. Reclassifying it must not have removed the belief itself.
+  assert.ok(
+    registry.some((b) => b.key === "business.action_decline_signal.all_time"),
+    "the belief must still exist for the code that reasons with it",
   );
 });
 
