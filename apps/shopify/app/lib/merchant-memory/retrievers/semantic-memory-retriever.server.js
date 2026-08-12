@@ -66,6 +66,11 @@ function formatValue(value) {
     if (typeof value.text === "string") return value.text;
     if (typeof value.option === "string")
       return value.option.replaceAll("_", " ");
+    if (typeof value.title === "string") {
+      return typeof value.description === "string" && value.description
+        ? `${value.title} — ${value.description}`
+        : value.title;
+    }
   }
   return JSON.stringify(value);
 }

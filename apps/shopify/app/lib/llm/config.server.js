@@ -1,14 +1,11 @@
 // @ts-check
 
+import { externalLlmCallsDisabled } from "./external-call-guard.server.js";
+
 export const DEFAULT_LLM_PROVIDER = "groq";
 export const DEFAULT_LLM_MODEL = "openai/gpt-oss-120b";
 export const DEFAULT_LLM_FALLBACK_PROVIDER = "gemini";
-// gemini-3.1-flash-lite, NOT -3.5-flash-lite: -3.5-flash-lite's free quota was
-// exhausted (CHANGELOG 2026-08-07) and LLM_MODEL was already moved off it for that
-// reason, so a fallback onto it would 429 exactly when the primary (Groq) does —
-// a dead safety net. Point the fallback at the same non-exhausted Gemini tier the
-// app already defaults LLM_MODEL to.
-export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.1-flash-lite";
+export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.5-flash-lite";
 export const DEFAULT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;
@@ -21,9 +18,10 @@ export function getLlmConfig() {
   const geminiApiKey = process.env.GEMINI_API_KEY || "";
   const groqApiKey = process.env.GROQ_API_KEY || "";
   const enabled =
-    process.env.LLM_ENABLED === "true" ||
-    (process.env.LLM_ENABLED !== "false" &&
-      Boolean(geminiApiKey || groqApiKey));
+    !externalLlmCallsDisabled() &&
+    (process.env.LLM_ENABLED === "true" ||
+      (process.env.LLM_ENABLED !== "false" &&
+        Boolean(geminiApiKey || groqApiKey)));
   return {
     enabled,
     provider: process.env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
@@ -56,6 +54,7 @@ export function getEpisodicEmbeddingConfig() {
   const apiKey = process.env.GEMINI_API_KEY || "";
   return {
     enabled:
+      !externalLlmCallsDisabled() &&
       process.env.EPISODIC_EMBEDDING_ENABLED !== "false" && Boolean(apiKey),
     apiKey,
     model:

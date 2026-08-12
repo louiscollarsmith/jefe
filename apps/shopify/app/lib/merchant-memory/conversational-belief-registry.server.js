@@ -366,6 +366,23 @@ const REGISTRY = {
     guidance:
       "Set false only from an explicit merchant rule against blanket storewide discounts.",
   },
+  "policies.margin_cost_basis": {
+    key: "policies.margin_cost_basis",
+    category: "policies",
+    label: "Margin cost basis",
+    description:
+      "The cost source Jefe must use when assessing or calculating margin.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.enum,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "policy",
+    merchantObsoletable: true,
+    allowedValues: ["shopify_cost_per_item"],
+    decisionImpact: "constraint",
+    guidance:
+      "Use shopify_cost_per_item when the merchant explicitly requires Shopify Cost per item for margin decisions.",
+  },
   "goals.generated.three_months": {
     key: "goals.generated.three_months",
     category: "goals",

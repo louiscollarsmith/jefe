@@ -183,10 +183,14 @@ const ENTITY_ALIASES = Object.freeze({
  * The LLM may plan analysis, but every read and calculation is validated and
  * executed by the app with tenant scope, row caps and redaction.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId?: string | null; shopId?: string | null; message: string; actionContext?: any; recentMessages?: Array<{ role: string; content: string }>; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; now?: Date }} input
+ * @param {{ merchantId?: string | null; shopId?: string | null; message: string; actionContext?: any; recentMessages?: Array<{ role: string; content: string }>; provider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; now?: Date; requested?: boolean }} input
  */
 export async function answerCommerceQuestion(prisma, input) {
-  if (!input.merchantId || !shouldAttemptCommerceAnalysis(input.message, input.actionContext)) {
+  if (
+    !input.merchantId ||
+    (!input.requested &&
+      !shouldAttemptCommerceAnalysis(input.message, input.actionContext))
+  ) {
     return { source: "commerce_analyst", reply: null, analysisPacket: null };
   }
 

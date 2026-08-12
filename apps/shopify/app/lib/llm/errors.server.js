@@ -24,7 +24,14 @@ export class LlmOutputValidationError extends Error {
 export class LlmProviderHttpError extends Error {
   /**
    * @param {string} message
-   * @param {{ provider?: string; status?: number | null; code?: string | number | null; retryAfter?: string | null }} [metadata]
+   * @param {{
+   *   provider?: string;
+   *   status?: number | null;
+   *   code?: string | number | null;
+   *   retryAfter?: string | null;
+   *   rateLimitRemainingTokens?: number | null;
+   *   rateLimitResetTokens?: string | null;
+   * }} [metadata]
    */
   constructor(message, metadata = {}) {
     super(message);
@@ -33,6 +40,9 @@ export class LlmProviderHttpError extends Error {
     this.status = metadata.status ?? null;
     this.code = metadata.code ?? null;
     this.retryAfter = metadata.retryAfter ?? null;
+    this.rateLimitRemainingTokens =
+      metadata.rateLimitRemainingTokens ?? null;
+    this.rateLimitResetTokens = metadata.rateLimitResetTokens ?? null;
   }
 }
 

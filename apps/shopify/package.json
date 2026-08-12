@@ -19,7 +19,7 @@
     "db:down": "docker stop jefe-shopify-postgres >/dev/null 2>&1 || true",
     "migrate": "prisma migrate deploy",
     "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
-    "test": "ENABLE_SHOPIFY_BACKFILL_LOOP=false bash -c 'for f in tests/*.test.mjs; do echo \"# $f\"; node --test \"$f\" || exit $?; done'",
+    "test": "node scripts/run-tests.mjs",
     "shopify:backfill": "node scripts/shopify-backfill.mjs",
     "analytics": "node scripts/analytics-report.mjs",
     "alert:test": "node scripts/alert-test.mjs",

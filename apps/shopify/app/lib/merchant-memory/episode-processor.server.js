@@ -192,7 +192,6 @@ async function processEpisode(prisma, episode, input) {
       } else {
         await processPassiveMemoryMessage(prisma, {
           messageId: episode.sourceMessageIds[0],
-          llmProvider: input.llmProvider,
           logger: input.logger,
         });
       }

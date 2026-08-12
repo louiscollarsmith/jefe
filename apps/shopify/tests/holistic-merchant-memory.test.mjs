@@ -18,16 +18,16 @@ import {
   containsUnresolvedDeicticReference,
 } from "../app/lib/merchant-memory/retrievers/episodic-memory-retriever.server.js";
 import {
-  deterministicCandidateProposals,
+  decideMerchantMessage,
   processPassiveMemoryMessage,
 } from "../app/lib/merchant-memory/passive-memory.server.js";
+import { getBeliefDefinition } from "../app/lib/merchant-memory/conversational-belief-registry.server.js";
+import {
+  buildGroundedFallbackReply,
+  buildMemoryDecisionReply,
+} from "../app/lib/merchant-memory/general-chat.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
-const disabledProvider = {
-  enabled: false,
-  provider: "disabled",
-  model: "disabled",
-};
 
 test("memory text is sanitised and query intent distinguishes current from explicit history", () => {
   const clean = sanitizeMemoryText(
@@ -47,20 +47,181 @@ test("memory text is sanitised and query intent distinguishes current from expli
   );
 });
 
-test("passive extraction recognises a durable policy but leaves an anecdote episodic", () => {
-  const policy = deterministicCandidateProposals(
-    "We never use blanket storewide discounts.",
-  );
+test("the LLM decides whether a merchant message is a durable instruction", async () => {
+  const requests = [];
+  const decision = await decideMerchantMessage({
+    prisma: {},
+    message: {
+      id: "message-1",
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      content:
+        "Before judging margin, always use Shopify Cost per item.",
+    },
+    semanticMemory: [],
+    llmProvider: {
+      enabled: true,
+      provider: "mock",
+      model: "mock",
+      async generateStructuredJson(request) {
+        requests.push(request);
+        return {
+          json: {
+            action: "acknowledge_memory",
+            candidates: [
+              {
+                operationType: "create",
+                key: "policies.margin_cost_basis",
+                proposedValue: { option: "shopify_cost_per_item" },
+                confidence: 0.99,
+                rationale: "Explicit operating rule.",
+                explicitChange: true,
+              },
+            ],
+          },
+        };
+      },
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].systemPrompt, /Mentioning revenue, margin, stock/);
+  assert.equal(requests[0].maxInputTokens, 8000);
+  assert.equal(decision.action, "acknowledge_memory");
+  assert.equal(decision.candidates[0].key, "policies.margin_cost_basis");
+  assert.deepEqual(decision.candidates[0].proposedValue, {
+    option: "shopify_cost_per_item",
+  });
   assert.deepEqual(
-    policy.map((candidate) => candidate.key),
-    ["policies.allow_blanket_storewide_discounts"],
+    getBeliefDefinition("policies.margin_cost_basis")?.allowedValues,
+    ["shopify_cost_per_item"],
   );
-  assert.deepEqual(policy[0].proposedValue, { boolean: false });
-  assert.deepEqual(
-    deterministicCandidateProposals(
-      "I met a supplier at a trade show yesterday.",
+});
+
+test("message decision prompt is compact and bounded before provider input guard", async () => {
+  const requests = [];
+  const semanticMemory = Array.from({ length: 20 }, (_, index) => ({
+    id: `semantic:${index}`,
+    key: `policies.test_${index}`,
+    category: "policies",
+    content: "x".repeat(2200),
+    data: { raw: "y".repeat(2500) },
+    source: {
+      type: "merchant_memory_belief",
+      beliefId: `belief-${index}`,
+      evidenceIds: Array.from({ length: 20 }, (__, evidenceIndex) =>
+        `evidence-${index}-${evidenceIndex}`,
+      ),
+    },
+    authority: "merchant_confirmed",
+    confidence: 0.9,
+    temporalStatus: "current",
+  }));
+  await decideMerchantMessage({
+    prisma: {},
+    message: {
+      id: "message-1",
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      content:
+        "Before judging margin, always use Shopify Cost per item.",
+    },
+    semanticMemory,
+    llmProvider: {
+      enabled: true,
+      provider: "mock",
+      model: "mock",
+      async generateStructuredJson(request) {
+        requests.push(request);
+        return {
+          json: {
+            action: "general_chat",
+            candidates: [],
+          },
+        };
+      },
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  assert.equal(requests.length, 1);
+  const prompt = JSON.parse(requests[0].prompt);
+  assert.equal(prompt.currentSemanticMemory.length, 8);
+  assert.ok(requests[0].prompt.length < 24_000);
+  assert.equal(requests[0].maxInputTokens, 8000);
+});
+
+test("grounded fallback prefers relevant recall and never dumps unrelated JSON", () => {
+  const reply = buildGroundedFallbackReply(
+    "What did we say about Shopify Cost per item?",
+    {
+      queryClass: "historical_recall",
+      episodicMemory: [
+        {
+          content:
+            "Before judging margin, always use Shopify Cost per item.",
+        },
+      ],
+      semanticMemory: [
+        {
+          content:
+            "12-month goal: Drive growth by increasing repeat customer revenue",
+        },
+      ],
+      actionMemory: [],
+    },
+  );
+  assert.match(reply, /earlier conversation/);
+  assert.match(reply, /Shopify Cost per item/);
+  assert.doesNotMatch(reply, /repeat customer revenue/);
+  assert.equal(
+    buildGroundedFallbackReply("go again please", {
+      queryClass: "current",
+      episodicMemory: [],
+      semanticMemory: [{ content: "12-month goal: growth" }],
+      actionMemory: [],
+    }),
+    "I couldn’t connect that request to grounded information yet. Tell me which part you want me to revisit.",
+  );
+});
+
+test("a promoted model candidate produces a truthful saved-memory acknowledgement", () => {
+  const reply = buildMemoryDecisionReply(
+    {
+      action: "acknowledge_memory",
+      candidates: [
+        {
+          status: "promoted",
+          operationType: "create",
+          key: "policies.margin_cost_basis",
+          proposedValue: { option: "shopify_cost_per_item" },
+        },
+      ],
+    },
+    "Before judging margin, always use Shopify Cost per item.",
+  );
+  assert.equal(
+    reply,
+    "Got it — I’ve saved that for future decisions: always use Shopify Cost per item when assessing margin.",
+  );
+  assert.equal(
+    buildMemoryDecisionReply(
+      {
+        action: "acknowledge_memory",
+        candidates: [
+          {
+            status: "promoted",
+            operationType: "create",
+            key: "policies.never_recommend",
+            proposedValue: {
+              text: "Do not calculate margin without Shopify Cost per item.",
+            },
+          },
+        ],
+      },
+      "Always use Shopify Cost per item.",
     ),
-    [],
+    "Got it — I’ve saved that for future decisions: never calculate margin without Shopify Cost per item.",
   );
 });
 
@@ -151,6 +312,46 @@ test("cross-chat retrieval is tenant-isolated, historical-aware, idempotent and 
       shopDomain: `memory-b-${suffix}.myshopify.com`,
     },
   });
+  const decisionProvider = {
+    enabled: true,
+    provider: "mock",
+    model: "mock-message-decision",
+    async generateStructuredJson(request) {
+      const prompt = JSON.parse(request.prompt);
+      if (/blanket storewide discounts/i.test(prompt.merchantMessage)) {
+        return {
+          json: {
+            action: "acknowledge_memory",
+            candidates: [
+              {
+                operationType: "create",
+                key: "policies.allow_blanket_storewide_discounts",
+                proposedValue: { boolean: false },
+                confidence: 0.99,
+                rationale: "Explicit discount policy.",
+                explicitChange: true,
+              },
+            ],
+          },
+        };
+      }
+      return {
+        json: {
+          action: "acknowledge_memory",
+          candidates: [
+            {
+              operationType: "create",
+              key: "policies.margin_cost_basis",
+              proposedValue: { option: "shopify_cost_per_item" },
+              confidence: 0.99,
+              rationale: "Explicit margin policy.",
+              explicitChange: true,
+            },
+          ],
+        },
+      };
+    },
+  };
   try {
     const earlier = await createMerchantConversation(prisma, {
       merchantId: firstMerchant.id,
@@ -181,6 +382,22 @@ test("cross-chat retrieval is tenant-isolated, historical-aware, idempotent and 
     });
     assert.equal(duplicate.duplicate, true);
     assert.equal(duplicate.message.id, first.message.id);
+    const firstDecision = await processPassiveMemoryMessage(prisma, {
+      messageId: first.message.id,
+      llmProvider: decisionProvider,
+    });
+    assert.equal(firstDecision.action, "acknowledge_memory");
+    assert.equal(firstDecision.candidates[0].status, "promoted");
+    const marginRule = await prisma.merchantMemoryBelief.findFirst({
+      where: {
+        merchantId: firstMerchant.id,
+        shopId: firstShop.id,
+        key: "policies.margin_cost_basis",
+      },
+    });
+    assert.deepEqual(marginRule?.value, {
+      option: "shopify_cost_per_item",
+    });
 
     const isolated = await createMerchantConversation(prisma, {
       merchantId: secondMerchant.id,
@@ -261,7 +478,7 @@ test("cross-chat retrieval is tenant-isolated, historical-aware, idempotent and 
     });
     await processPassiveMemoryMessage(prisma, {
       messageId: teaching.message.id,
-      llmProvider: disabledProvider,
+      llmProvider: decisionProvider,
     });
     const belief = await prisma.merchantMemoryBelief.findFirst({
       where: {

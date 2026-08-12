@@ -145,12 +145,13 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
 });
 
 test("the live DailyHome is the store conversation (Shape B), not the old dashboard shell", () => {
-  // Shape B: the home IS one chat log. The move and Jefe's reports back arrive as
-  // messages in the store-level conversation; the composer posts `chat.message`. The
-  // move still zooms into its own action chat ("Talk this through →").
+  // The home IS one selected chat. Derived store updates remain available separately,
+  // while the composer posts `chat.message` into the clearly identified current chat.
   assert.match(dailyHomeSource, /function StoreConversation/);
   assert.match(dailyHomeSource, /value="chat\.message"/);
   assert.match(dailyHomeSource, /Talk this through/);
+  assert.match(dailyHomeSource, /<Mono>Current chat<\/Mono>/);
+  assert.match(dailyHomeSource, /Store updates/);
   assert.match(dailyHomeSource, /useNavigation/);
   assert.match(dailyHomeSource, /Thinking/);
   // Watching, Goals, changelog and the metrics dashboard all left the home for their
@@ -160,6 +161,16 @@ test("the live DailyHome is the store conversation (Shape B), not the old dashbo
   assert.doesNotMatch(dailyHomeSource, /Tell us what to build/);
   assert.doesNotMatch(dailyHomeSource, /Orders · 30d/);
   assert.doesNotMatch(dailyHomeSource, /What I’ve worked out so far/);
+});
+
+test("a new chat is visually blank and does not mix live store updates into its transcript", () => {
+  assert.match(dailyHomeSource, /const isBlankThread = history\.length === 0/);
+  assert.match(dailyHomeSource, /Fresh chat · no messages yet/);
+  assert.match(dailyHomeSource, /Messages from earlier chats stay in Chats/);
+  assert.match(dailyHomeSource, /function StoreUpdatesPopover/);
+  assert.match(dailyHomeSource, /These are separate from the\s+current chat/);
+  assert.match(dailyHomeSource, /Empty chat/);
+  assert.match(dailyHomeSource, /· Current/);
 });
 
 test("approve and decline decisions are reachable only from the action chat surface", () => {
@@ -211,12 +222,23 @@ test("action chat quantification uses the governed commerce analyst executor", (
   assert.doesNotMatch(commerceAnalystSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
 });
 
-test("action chat composer clears the submitted draft after send", () => {
+test("chat composers clear immediately while Send keeps a disabled state", () => {
   assert.match(dailyHomeSource, /const \[composerMessage, setComposerMessage\] = useState\(""\)/);
-  assert.match(dailyHomeSource, /submittedMessageRef\.current = pendingMessage/);
-  assert.match(dailyHomeSource, /setComposerMessage\(""\)/);
+  assert.equal(
+    [...dailyHomeSource.matchAll(/const handleComposerSubmit = \(\) => setComposerMessage\(""\)/g)].length,
+    2,
+  );
+  assert.equal(
+    [...dailyHomeSource.matchAll(/onSubmit=\{handleComposerSubmit\}/g)].length,
+    2,
+  );
   assert.match(dailyHomeSource, /value=\{composerMessage\}/);
   assert.match(dailyHomeSource, /onChange=\{\(event\) => setComposerMessage\(event\.currentTarget\.value\)\}/);
+  assert.equal(
+    [...dailyHomeSource.matchAll(/style=\{sendButtonStateStyle\(isThinking\)\}/g)].length,
+    2,
+  );
+  assert.doesNotMatch(dailyHomeSource, /\{isThinking \? "Thinking" : "Send"\}/);
 });
 
 test("AppHome13a still defaults to non-interactive and the preview uses the new DailyHome", () => {

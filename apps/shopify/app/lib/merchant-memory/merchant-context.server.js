@@ -25,6 +25,7 @@ export const MERCHANT_CONTEXT_TASKS = Object.freeze([
 ]);
 
 const log = baseLogger.child({ component: "merchant-context" });
+const CONTEXT_CHARS_PER_TOKEN = 2;
 
 export class MerchantContextScopeError extends Error {
   constructor() {
@@ -37,7 +38,7 @@ export class MerchantContextScopeError extends Error {
  * The only broad Merchant Memory read contract. It composes small retrievers and
  * always returns a bounded packet with source-level provenance.
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; task: string; query?: string | null; queryMessageId?: string | null; conversationId?: string | null; recommendationId?: string | null; actionRunId?: string | null; tokenBudget?: number; now?: Date; embeddingProvider?: typeof import("./embedding.server.js").embedMerchantMemoryText }} input
+ * @param {{ merchantId: string; shopId: string; task: string; query?: string | null; queryMessageId?: string | null; conversationId?: string | null; recommendationId?: string | null; actionRunId?: string | null; tokenBudget?: number; now?: Date; historicalMode?: boolean; embeddingProvider?: typeof import("./embedding.server.js").embedMerchantMemoryText }} input
  * @returns {Promise<any>}
  */
 export async function retrieveMerchantContext(prisma, input) {
@@ -47,7 +48,10 @@ export async function retrieveMerchantContext(prisma, input) {
   }
   const config = getMerchantMemoryV2Config();
   const query = sanitizeMemoryText(input.query ?? "");
-  const historicalMode = classifyHistoricalRecall(query);
+  const historicalMode =
+    typeof input.historicalMode === "boolean"
+      ? input.historicalMode
+      : classifyHistoricalRecall(query);
   const tokenBudget = Math.min(
     Math.max(500, input.tokenBudget ?? defaultBudget(input.task, config)),
     config.maximumTokenBudget,
@@ -349,7 +353,10 @@ function boundData(data) {
 
 /** @param {any} value */
 function estimateTokens(value) {
-  return Math.max(1, Math.ceil(JSON.stringify(value).length / 4));
+  return Math.max(
+    1,
+    Math.ceil(JSON.stringify(value).length / CONTEXT_CHARS_PER_TOKEN),
+  );
 }
 
 /** @param {string} query */

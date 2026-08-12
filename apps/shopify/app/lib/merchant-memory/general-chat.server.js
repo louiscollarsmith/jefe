@@ -6,9 +6,12 @@ import { logger as baseLogger } from "../observability/logger.server.js";
 import {
   appendConversationMessage,
   createMerchantConversation,
+  enqueueCoalescingMemoryJob,
+  EPISODE_PROCESS_JOB_TYPE,
   getOrCreateMerchantConversation,
   sanitizeMemoryText,
 } from "./episodic-memory.server.js";
+import { processPassiveMemoryMessage } from "./passive-memory.server.js";
 import { retrieveMerchantContext } from "./merchant-context.server.js";
 import { getMerchantContextForQuestion } from "./context-retriever.server.js";
 import { answerCommerceQuestion } from "./commerce-analyst.server.js";
@@ -22,11 +25,13 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
   },
 };
 
+const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
+
 const log = baseLogger.child({ component: "merchant-general-chat" });
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  * @returns {Promise<any>}
  */
 export async function sendGeneralChatMessage(prisma, input) {
@@ -72,6 +77,7 @@ export async function sendGeneralChatMessage(prisma, input) {
     actionRunId: input.actionRunId,
     metadata: input.metadata,
     safeSummary: content.length > 240 ? `${content.slice(0, 237)}...` : content,
+    enqueue: false,
   });
   if (persisted.duplicate) {
     return {
@@ -82,6 +88,60 @@ export async function sendGeneralChatMessage(prisma, input) {
       assistantMessage: null,
       citedContextIds: [],
     };
+  }
+  const promptMessage = sanitizeMemoryText(content);
+  const provider =
+    input.llmProvider ??
+    createLlmProvider({
+      logger: input.logger ?? log,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "general_chat",
+      },
+    });
+  let decision = {
+    action: "general_chat",
+    candidates: /** @type {any[]} */ ([]),
+  };
+  try {
+    const processed = await (
+      input.messageDecisionProcessor ?? processPassiveMemoryMessage
+    )(prisma, {
+      messageId: persisted.message.id,
+      logger: input.logger ?? log,
+    });
+    decision = {
+      action: processed.action ?? "general_chat",
+      candidates: processed.candidates ?? [],
+    };
+  } catch (error) {
+    (input.logger ?? log).warn(
+      "Merchant message decision failed; continuing with general chat",
+      {
+        error: error instanceof Error ? error.name : "UnknownError",
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        messageId: persisted.message.id,
+      },
+    );
+  } finally {
+    try {
+      await enqueueCoalescingMemoryJob(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        jobType: EPISODE_PROCESS_JOB_TYPE,
+        priority: 35,
+      });
+    } catch (error) {
+      (input.logger ?? log).warn("Merchant episode work could not be queued", {
+        error: error instanceof Error ? error.name : "UnknownError",
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        messageId: persisted.message.id,
+      });
+    }
   }
   const actionChat = Boolean(input.actionRunId || input.recommendationId);
   const [context, actionEvidence] = await Promise.all([
@@ -95,6 +155,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       recommendationId: input.recommendationId,
       actionRunId: input.actionRunId,
       tokenBudget: 6000,
+      historicalMode: decision.action === "historical_recall",
     }),
     actionChat
       ? getMerchantContextForQuestion(prisma, {
@@ -126,38 +187,44 @@ export async function sendGeneralChatMessage(prisma, input) {
       },
     });
   }
-  const promptMessage = sanitizeMemoryText(content);
-  const provider =
-    input.llmProvider ??
-    createLlmProvider({
+  const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
+  let generated;
+  if (decision.action === "acknowledge_memory") {
+    generated = {
+      reply:
+        memoryReply ??
+        "I understood that as something you want me to remember, but I couldn’t safely save it as a durable preference. Please restate the rule and I’ll try again.",
+      citedContextIds: [],
+    };
+  } else if (decision.action === "commerce_analysis") {
+    const commerce = await answerCommerceQuestion(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      message: promptMessage,
+      actionContext: actionEvidence ?? context,
+      recentMessages: context.workingMemory.map((/** @type {any} */ item) => ({
+        role: item.role ?? "message",
+        content: item.content,
+      })),
+      provider,
       logger: input.logger ?? log,
-      usage: {
-        prisma,
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        feature: "general_chat",
-      },
+      requested: true,
     });
-  const commerce = await answerCommerceQuestion(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    message: promptMessage,
-    actionContext: actionEvidence ?? context,
-    recentMessages: context.workingMemory.map((/** @type {any} */ item) => ({
-      role: item.role ?? "message",
-      content: item.content,
-    })),
-    provider,
-    logger: input.logger ?? log,
-  });
-  const generated = commerce.reply
-    ? { reply: commerce.reply, citedContextIds: [] }
-    : await generateGroundedReply({
-        provider,
-        message: promptMessage,
-        context: promptContext,
-        logger: input.logger ?? log,
-      });
+    generated = {
+      reply: [memoryReply, commerce.reply].filter(Boolean).join("\n\n"),
+      citedContextIds: [],
+    };
+  } else {
+    const grounded = await generateGroundedReply({
+      provider,
+      message: promptMessage,
+      context: promptContext,
+      logger: input.logger ?? log,
+    });
+    generated = memoryReply
+      ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
+      : grounded;
+  }
   const assistant = await appendConversationMessage(prisma, {
     conversation,
     conversationId: conversation.id,
@@ -185,6 +252,72 @@ export async function sendGeneralChatMessage(prisma, input) {
     },
     citedContextIds: generated.citedContextIds,
   };
+}
+
+/** @param {{ action?: string; candidates?: any[] }} decision @param {string} sourceMessage */
+export function buildMemoryDecisionReply(decision, sourceMessage) {
+  const candidates = Array.isArray(decision.candidates)
+    ? decision.candidates
+    : [];
+  const promoted = candidates.filter(
+    (candidate) => candidate.status === "promoted",
+  );
+  if (promoted.length > 0) {
+    const rules = promoted
+      .map(memoryCandidateDescription)
+      .filter(Boolean)
+      .slice(0, 3);
+    const detail = rules.length
+      ? `: ${rules.join("; ")}`
+      : `: “${sourceMessage.slice(0, 220)}”`;
+    return `Got it — I’ve saved that for future decisions${detail}.`;
+  }
+  if (
+    candidates.some(
+      (candidate) =>
+        candidate.status === "rejected" && candidate.reasonCode === "no_change",
+    )
+  ) {
+    return "Got it — I already have that saved for future decisions.";
+  }
+  if (candidates.some((candidate) => candidate.status === "conflict")) {
+    return "I found that this conflicts with what I currently have saved, so I haven’t replaced it. I’ve kept it as an open question for you to resolve.";
+  }
+  return null;
+}
+
+/** @param {any} candidate */
+function memoryCandidateDescription(candidate) {
+  const value = candidate.proposedValue;
+  if (candidate.operationType === "retract") return "the earlier rule is retired";
+  if (candidate.key === "policies.allow_blanket_storewide_discounts") {
+    return value?.boolean === false
+      ? "don’t use blanket storewide discounts"
+      : "blanket storewide discounts are allowed";
+  }
+  if (candidate.key === "policies.margin_cost_basis") {
+    return value?.option === "shopify_cost_per_item"
+      ? "always use Shopify Cost per item when assessing margin"
+      : null;
+  }
+  if (candidate.key === "policies.never_recommend" && value?.text) {
+    const text = String(value.text).replace(/[.!?]+$/, "").trim();
+    const prohibition = text.match(/^(?:do not|don't|dont)\s+(.+)$/i);
+    return prohibition
+      ? `never ${lowercaseFirst(prohibition[1])}`
+      : /^avoid\s+/i.test(text)
+        ? lowercaseFirst(text)
+        : `avoid ${lowercaseFirst(text)}`;
+  }
+  if (candidate.key === "preferences.optimisation_priority" && value?.option) {
+    return `${String(value.option).replaceAll("_", " ")} is the current optimisation priority`;
+  }
+  return null;
+}
+
+/** @param {string} value */
+function lowercaseFirst(value) {
+  return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
 }
 
 /** @param {any} prisma @param {{ merchantId: string; shopId: string }} input */
@@ -264,7 +397,7 @@ async function generateGroundedReply(input) {
   const allowedIds = new Set(
     input.context.provenance.map((/** @type {any} */ item) => item.id),
   );
-  const fallback = fallbackReply(input.context);
+  const fallback = buildGroundedFallbackReply(input.message, input.context);
   if (!input.provider?.enabled || !input.provider.generateStructuredJson) {
     return { reply: fallback, citedContextIds: [] };
   }
@@ -284,6 +417,7 @@ async function generateGroundedReply(input) {
         merchantContext: input.context,
       }),
       schema: GENERAL_CHAT_REPLY_SCHEMA,
+      maxInputTokens: GENERAL_CHAT_MAX_INPUT_TOKENS,
       maxOutputTokens: 900,
     });
     const reply = String(result.json?.reply ?? "").trim();
@@ -314,20 +448,83 @@ async function generateGroundedReply(input) {
   }
 }
 
-/** @param {any} context */
-function fallbackReply(context) {
-  const item =
-    context.semanticMemory[0] ??
-    context.actionMemory[0] ??
-    context.episodicMemory[0] ??
-    null;
-  if (!item)
-    return "I don’t have enough grounded information to answer that yet. Tell me the missing detail and I’ll work from it.";
-  const prefix =
-    item.temporalStatus === "historical"
-      ? "From our earlier conversation—not as your current position—"
-      : "From what I know about your business, ";
-  return `${prefix}${String(item.content).replace(/[.!?]*$/, ".")}`;
+/** @param {string} message @param {any} context */
+export function buildGroundedFallbackReply(message, context) {
+  const historical = context.queryClass === "historical_recall";
+  const groups = historical
+    ? [context.episodicMemory, context.actionMemory, context.semanticMemory]
+    : [context.semanticMemory, context.episodicMemory, context.actionMemory];
+  const normalizedMessage = normalizeComparableText(message);
+  const items = groups
+    .flat()
+    .filter(
+      (item) => normalizeComparableText(item?.content) !== normalizedMessage,
+    );
+  const item = mostRelevantItem(message, items);
+  if (!item) {
+    return historical
+      ? "I couldn’t find a relevant earlier conversation to answer that reliably. Try naming the topic or recommendation you mean."
+      : "I couldn’t connect that request to grounded information yet. Tell me which part you want me to revisit.";
+  }
+  const content = String(item.content).replace(/[.!?]*$/, ".");
+  if (historical || item.temporalStatus === "historical") {
+    return `From our earlier conversation: ${content}`;
+  }
+  return `From what I know about your business, ${content}`;
+}
+
+/** @param {string} query @param {any[]} items */
+function mostRelevantItem(query, items) {
+  const queryTerms = meaningfulTerms(query);
+  if (queryTerms.size === 0) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const item of items) {
+    const contentTerms = meaningfulTerms(item?.content ?? "");
+    const overlap = [...queryTerms].filter((term) => contentTerms.has(term)).length;
+    const score = overlap / queryTerms.size;
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+/** @param {string} value */
+function meaningfulTerms(value) {
+  const stop = new Set([
+    "about",
+    "again",
+    "before",
+    "could",
+    "from",
+    "have",
+    "please",
+    "said",
+    "that",
+    "this",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+  ]);
+  return new Set(
+    String(value ?? "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter((term) => term.length > 2 && !stop.has(term)) ?? [],
+  );
+}
+
+/** @param {unknown} value */
+function normalizeComparableText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 /** @param {string} reply @param {any} context */

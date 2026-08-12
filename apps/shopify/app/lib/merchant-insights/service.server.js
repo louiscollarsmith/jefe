@@ -57,6 +57,24 @@ export async function ensureMerchantInsightsQueued(prisma, input) {
   if (prepared.status !== "ready") return prepared;
   const run = prepared.run;
 
+  if (!input.resetAttempts && run.status === INSIGHT_RUN_STATUS.queued) {
+    const existingJob = await prisma.backfillJob.findUnique({
+      where: {
+        shopId_jobType: {
+          shopId: input.shopId,
+          jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+        },
+      },
+      select: { status: true },
+    });
+    if (
+      existingJob?.status === "queued" ||
+      existingJob?.status === "running"
+    ) {
+      return { status: "reused", run, snapshot: prepared.snapshot };
+    }
+  }
+
   if (
     run.status === INSIGHT_RUN_STATUS.completed ||
     run.status === INSIGHT_RUN_STATUS.running ||

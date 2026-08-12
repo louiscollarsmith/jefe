@@ -17,14 +17,21 @@ import {
   getConversationalBeliefRegistry,
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
-import { retrieveMerchantContext } from "./merchant-context.server.js";
+import { retrieveSemanticMemory } from "./retrievers/semantic-memory-retriever.server.js";
 import {
   retractBeliefForMerchant,
   upsertMerchantSuppliedBelief,
 } from "./service.server.js";
 
-export const PASSIVE_MEMORY_EXTRACTOR_VERSION = "passive-memory-v1";
-export const PASSIVE_MEMORY_SCHEMA_VERSION = "candidate-v1";
+export const PASSIVE_MEMORY_EXTRACTOR_VERSION = "passive-memory-v2";
+export const PASSIVE_MEMORY_SCHEMA_VERSION = "message-decision-v2";
+
+export const MERCHANT_MESSAGE_ACTIONS = Object.freeze([
+  "acknowledge_memory",
+  "commerce_analysis",
+  "historical_recall",
+  "general_chat",
+]);
 
 const log = baseLogger.child({ component: "passive-merchant-memory" });
 const ALLOWED_OPERATIONS = new Set([
@@ -46,11 +53,20 @@ const ALLOWED_SCOPE_KEYS = new Set([
   "sku",
   "timePeriod",
 ]);
+const MESSAGE_DECISION_MAX_INPUT_TOKENS = 8000;
+const MESSAGE_DECISION_MEMORY_LIMIT = 8;
+const MESSAGE_DECISION_TEXT_LIMIT = 360;
+const MESSAGE_DECISION_DATA_LIMIT = 320;
+const MESSAGE_DECISION_GUIDANCE_LIMIT = 160;
 
-const CANDIDATE_SCHEMA = {
+const MESSAGE_DECISION_SCHEMA = {
   type: Type.OBJECT,
-  required: ["candidates"],
+  required: ["action", "candidates"],
   properties: {
+    action: {
+      type: Type.STRING,
+      enum: MERCHANT_MESSAGE_ACTIONS,
+    },
     candidates: {
       type: Type.ARRAY,
       items: {
@@ -76,7 +92,20 @@ const CANDIDATE_SCHEMA = {
             ],
           },
           key: { type: Type.STRING, nullable: true },
-          proposedValue: { type: Type.OBJECT, nullable: true },
+          proposedValue: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              text: { type: Type.STRING, nullable: true },
+              number: { type: Type.NUMBER, nullable: true },
+              boolean: { type: Type.BOOLEAN, nullable: true },
+              option: { type: Type.STRING, nullable: true },
+              currency: { type: Type.STRING, nullable: true },
+              amount: { type: Type.NUMBER, nullable: true },
+              percentage: { type: Type.NUMBER, nullable: true },
+              timestamp: { type: Type.STRING, nullable: true },
+            },
+          },
           confidence: { type: Type.NUMBER },
           rationale: { type: Type.STRING },
           explicitChange: { type: Type.BOOLEAN },
@@ -93,7 +122,7 @@ const CANDIDATE_SCHEMA = {
  * Extract and deterministically adjudicate durable memory candidates for one
  * merchant-authored source message. Safe to retry.
  * @param {any} prisma
- * @param {{ messageId: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ messageId: string; semanticMemory?: any[]; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function processPassiveMemoryMessage(prisma, input) {
   const message = await prisma.merchantMemoryConversationMessage.findUnique({
@@ -110,7 +139,12 @@ export async function processPassiveMemoryMessage(prisma, input) {
     return { processed: false, reason: "ineligible_source" };
   }
   if (message.processingStatus === "complete") {
-    return { processed: false, reason: "already_processed" };
+    return {
+      processed: false,
+      reason: "already_processed",
+      action: "general_chat",
+      candidates: [],
+    };
   }
   const config = getMerchantMemoryV2Config();
   if (!config.passiveMemoryEnabled) {
@@ -120,22 +154,21 @@ export async function processPassiveMemoryMessage(prisma, input) {
     });
     return { processed: false, reason: "passive_memory_disabled" };
   }
-  const context = await retrieveMerchantContext(prisma, {
-    merchantId: message.merchantId,
-    shopId: message.shopId,
-    task: "memory_candidate_extraction",
-    query: message.content,
-    queryMessageId: message.id,
-    conversationId: message.conversationId,
-    tokenBudget: 4000,
-  });
-  const proposals = await extractCandidateProposals({
+  const semanticMemory =
+    input.semanticMemory ??
+    (await retrieveSemanticMemory(prisma, {
+      merchantId: message.merchantId,
+      shopId: message.shopId,
+      take: 16,
+    }));
+  const decision = await decideMerchantMessage({
     prisma,
     message,
-    semanticMemory: context.semanticMemory,
+    semanticMemory,
     llmProvider: input.llmProvider,
     logger: input.logger ?? log,
   });
+  const proposals = decision.candidates;
   const candidates =
     proposals.length > 0
       ? proposals
@@ -166,27 +199,46 @@ export async function processPassiveMemoryMessage(prisma, input) {
   }
   await prisma.merchantMemoryConversationMessage.update({
     where: { id: message.id },
-    data: { processingStatus: "complete" },
+    data: {
+      processingStatus: "complete",
+      metadata: {
+        ...(message.metadata && typeof message.metadata === "object"
+          ? message.metadata
+          : {}),
+        messageDecision: {
+          action: decision.action,
+          reason: decision.reason,
+          candidateCount: results.length,
+          candidateStatuses: results.map(
+            (/** @type {any} */ candidate) => candidate.status,
+          ),
+          reasonCodes: results
+            .map((/** @type {any} */ candidate) => candidate.reasonCode)
+            .filter(Boolean),
+          version: PASSIVE_MEMORY_SCHEMA_VERSION,
+        },
+      },
+    },
   });
-  return { processed: true, candidates: results };
+  return {
+    processed: true,
+    action: decision.action,
+    candidates: results,
+  };
 }
 
 /** @param {{ prisma: any; message: any; semanticMemory: any[]; llmProvider?: any; logger: any }} input */
-async function extractCandidateProposals(input) {
-  const deterministic = deterministicCandidateProposals(input.message.content);
+export async function decideMerchantMessage(input) {
   const provider =
     input.llmProvider ??
-    createLlmProvider({
-      logger: input.logger,
-      usage: {
-        prisma: input.prisma,
-        merchantId: input.message.merchantId,
-        shopId: input.message.shopId,
-        feature: "passive_memory_candidate",
-      },
-    });
-  if (!provider?.enabled || !provider.generateStructuredJson)
-    return deterministic;
+    createMerchantMessageDecisionProvider(input);
+  if (!provider?.enabled || !provider.generateStructuredJson) {
+    return {
+      action: "general_chat",
+      candidates: [],
+      reason: "provider_unavailable",
+    };
+  }
   const writableRegistry = Object.values(getConversationalBeliefRegistry())
     .filter(
       (definition) =>
@@ -203,32 +255,47 @@ async function extractCandidateProposals(input) {
       correctable: definition.merchantCorrectable,
       retractable: definition.merchantObsoletable,
       decisionImpact: definition.decisionImpact ?? definition.kind,
-      guidance: definition.guidance,
+      guidance: truncateDecisionText(
+        definition.guidance,
+        MESSAGE_DECISION_GUIDANCE_LIMIT,
+      ),
     }));
   try {
     const result = await provider.generateStructuredJson({
       systemPrompt: [
-        "Extract only explicit merchant-authored durable business facts, goals, constraints, policies, or corrections.",
+        "Decide what Jefe should do with this merchant-authored message before any specialist tool runs.",
+        "Choose commerce_analysis only when the merchant is actually asking for current or quantitative commerce analysis. Mentioning revenue, margin, stock, orders, or another commerce topic inside an instruction is not an analysis request.",
+        "Choose acknowledge_memory when the merchant explicitly states a durable business fact, goal, constraint, policy, preference, correction, or retraction that fits the writable registry.",
+        "Choose historical_recall when the merchant asks what was said, discussed, decided, or recommended previously.",
+        "Choose general_chat for everything else.",
         "Ordinary anecdotes and assistant statements are not durable memory.",
-        "Use only a supplied registry key. If nothing fits, return unmapped or noop; never invent a key.",
+        "Use only a supplied registry key. Choose the most specific matching key. If nothing fits, return unmapped or noop; never invent a key.",
         "A correction or reactivation must be explicit in the merchant's current words.",
+        "Wrap candidate values by registry type: string as {text}, boolean as {boolean}, enum as {option}, number as {number}, percentage as {percentage}, currency_code as {currency}, and timestamp as {timestamp}.",
+        "For a strong rule about recommendations that has no narrower registered key, use policies.never_recommend with a concise {text} description of what Jefe must avoid.",
         "Do not include customer personal data. Do not claim anything was persisted.",
       ].join("\n"),
       prompt: JSON.stringify({
         merchantMessage: sanitizeMemoryText(input.message.content),
-        currentSemanticMemory: input.semanticMemory,
+        currentSemanticMemory: compactDecisionSemanticMemory(
+          input.semanticMemory,
+        ),
         writableRegistry,
       }),
-      schema: CANDIDATE_SCHEMA,
+      schema: MESSAGE_DECISION_SCHEMA,
+      maxInputTokens: MESSAGE_DECISION_MAX_INPUT_TOKENS,
       maxOutputTokens: 1200,
     });
     const candidates = Array.isArray(result.json?.candidates)
       ? result.json.candidates
       : [];
-    return mergeDeterministicCandidates(candidates, deterministic);
+    const action = MERCHANT_MESSAGE_ACTIONS.includes(result.json?.action)
+      ? result.json.action
+      : "general_chat";
+    return { action, candidates, reason: "model_decision" };
   } catch (error) {
     input.logger.warn(
-      "Passive memory extraction unavailable; using deterministic candidates",
+      "Merchant message decision unavailable; using general chat",
       {
         error: error instanceof Error ? error.name : "UnknownError",
         merchantId: input.message.merchantId,
@@ -236,61 +303,63 @@ async function extractCandidateProposals(input) {
         messageId: input.message.id,
       },
     );
-    return deterministic;
+    return {
+      action: "general_chat",
+      candidates: [],
+      reason: "provider_unavailable",
+    };
   }
 }
 
-/** @param {string} content */
-export function deterministicCandidateProposals(content) {
-  const normal = content.toLowerCase().replace(/[’]/g, "'");
-  const proposals = [];
-  if (
-    /\bnever\b.*\bblanket\b.*\b(storewide|store-wide|whole store)\b.*\bdiscount/.test(
-      normal,
-    ) ||
-    /\b(?:do not|don't|dont)\b.*\bblanket\b.*\bdiscount/.test(normal)
-  ) {
-    proposals.push({
-      operationType: "create",
-      key: "policies.allow_blanket_storewide_discounts",
-      proposedValue: { boolean: false },
-      confidence: 0.99,
-      rationale: "Merchant explicitly prohibited blanket storewide discounts.",
-      explicitChange: true,
-    });
-  }
-  const priority =
-    /\b(profitability|profit)\b.*\b(more important|priority|priorit)/.test(
-      normal,
-    )
-      ? "profit"
-      : /\bgrowth\b.*\b(priority|priorit|more important)/.test(normal)
-        ? "growth"
-        : null;
-  if (priority) {
-    proposals.push({
-      operationType: /\b(actually|now|changed|instead)\b/.test(normal)
-        ? "correct"
-        : "create",
-      key: "preferences.optimisation_priority",
-      proposedValue: { option: priority },
-      confidence: 0.96,
-      rationale:
-        "Merchant explicitly stated the current optimisation priority.",
-      explicitChange: /\b(actually|now|changed|instead)\b/.test(normal),
-    });
-  }
-  return proposals;
+/** @param {any[]} items */
+function compactDecisionSemanticMemory(items) {
+  return (items ?? [])
+    .slice(0, MESSAGE_DECISION_MEMORY_LIMIT)
+    .map((item) => ({
+      id: item.id,
+      key: item.key ?? item.data?.key ?? null,
+      category: item.category ?? item.data?.category ?? null,
+      content: truncateDecisionText(item.content, MESSAGE_DECISION_TEXT_LIMIT),
+      authority: item.authority ?? null,
+      confidence: item.confidence ?? null,
+      temporalStatus: item.temporalStatus ?? "current",
+      scope: item.scope ?? null,
+      data: truncateDecisionJson(item.data, MESSAGE_DECISION_DATA_LIMIT),
+      source: item.source
+        ? {
+            type: item.source.type ?? null,
+            beliefId: item.source.beliefId ?? null,
+          }
+        : null,
+    }));
 }
 
-/** @param {any[]} model @param {any[]} deterministic */
-function mergeDeterministicCandidates(model, deterministic) {
-  const byIdentity = new Map();
-  for (const candidate of [...deterministic, ...model]) {
-    const identity = `${candidate?.operationType}:${candidate?.key ?? "none"}`;
-    if (!byIdentity.has(identity)) byIdentity.set(identity, candidate);
-  }
-  return [...byIdentity.values()];
+/** @param {unknown} value @param {number} limit */
+function truncateDecisionJson(value, limit) {
+  if (!value || typeof value !== "object") return value ?? null;
+  const text = JSON.stringify(value);
+  if (text.length <= limit) return value;
+  return { summary: truncateDecisionText(text, limit) };
+}
+
+/** @param {unknown} value @param {number} limit */
+function truncateDecisionText(value, limit) {
+  const text = String(value ?? "");
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+/** @param {{ prisma: any; message: any; logger: any }} input */
+function createMerchantMessageDecisionProvider(input) {
+  return createLlmProvider({
+    logger: input.logger,
+    usage: {
+      prisma: input.prisma,
+      merchantId: input.message.merchantId,
+      shopId: input.message.shopId,
+      feature: "merchant_message_decision",
+    },
+  });
 }
 
 /** @param {any} prisma @param {{ message: any; proposal: any }} input */

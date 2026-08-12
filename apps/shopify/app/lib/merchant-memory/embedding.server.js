@@ -2,6 +2,7 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { getEpisodicEmbeddingConfig } from "../llm/config.server.js";
+import { assertExternalLlmCallAllowed } from "../llm/external-call-guard.server.js";
 import { recordLlmUsage } from "../llm/usage-recorder.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import {
@@ -18,14 +19,15 @@ const log = baseLogger.child({ component: "merchant-memory-embedding" });
 export async function embedMerchantMemoryText(text, input = {}) {
   const config = input.config ?? getEpisodicEmbeddingConfig();
   if (!config.enabled || !text.trim()) return null;
-  const client =
-    input.client ??
-    new GoogleGenAI({
-      apiKey: config.apiKey,
-      httpOptions: { timeout: config.timeoutMs, retryOptions: { attempts: 1 } },
-    });
   const startedAt = Date.now();
   try {
+    assertExternalLlmCallAllowed({ hasInjectedTransport: Boolean(input.client) });
+    const client =
+      input.client ??
+      new GoogleGenAI({
+        apiKey: config.apiKey,
+        httpOptions: { timeout: config.timeoutMs, retryOptions: { attempts: 1 } },
+      });
     const response = await client.models.embedContent({
       model: config.model,
       contents: text,
@@ -88,6 +90,9 @@ export async function embedMerchantMemoryText(text, input = {}) {
 /** @param {unknown} error */
 function safeEmbeddingErrorCode(error) {
   const message = error instanceof Error ? error.message : String(error);
+  if (/external llm calls are disabled during tests/i.test(message)) {
+    return "external_calls_disabled";
+  }
   if (/dimension/i.test(message)) return "dimension_mismatch";
   if (/timeout|abort/i.test(message)) return "timeout";
   const status = Number(/** @type {any} */ (error)?.status ?? 0);

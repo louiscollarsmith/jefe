@@ -5,7 +5,7 @@ import {
   useNavigate,
   useNavigation,
 } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   ActionList,
@@ -161,10 +161,9 @@ export function DailyHome(props: {
     );
   }
 
-  // Shape B: the home IS the store-level conversation. The next move, and Jefe's
-  // reports back on moves already made, arrive as messages in that one thread — not
-  // as a dashboard of cards. Everything else (Watching, Goals, autonomy, changelog)
-  // has moved off the home to its own surface; nothing gets added back here.
+  // The home is the store-level conversation. Only canonical conversation messages
+  // appear in its transcript; live store signals, action outcomes and the proposed
+  // move stay reachable through Store updates without masquerading as chat history.
   const outcomes = actions.filter(
     (action) => action.actionRunId !== primaryMove.actionRunId,
   );
@@ -188,6 +187,7 @@ export function DailyHome(props: {
           headsUps={props.horizonHeadsUps ?? []}
           quietLine={buildQuietLine(props.horizonWatching, props.insights)}
           currentSearch={location.search}
+          storeTimeZone={props.storeTimeZone}
         />
         {/* The one door off the chat log: everything Jefe knows about the store. */}
         <Link to="?view=memory" style={footerLinkStyle}>
@@ -198,13 +198,10 @@ export function DailyHome(props: {
   );
 }
 
-// The store-level conversation — Shape B's home. One thread: the real back-and-forth
-// (getDailyChatThread), Jefe reporting back on moves already made (outcomes as
-// messages), and the current move as the freshest message with a zoom into its own
-// action chat. The composer posts `chat.message` (the store thread); the per-move
-// zoom (ActionChat) posts `action.chat.message`. View decides the intent — no thread
-// picker. On a genuinely quiet day the thread is a single grounded line, never empty
-// and never fabricated.
+// The store-level conversation. The transcript is only the selected conversation's
+// real messages, so a newly created chat is visibly and genuinely blank. Derived
+// signals and proposed work live in the separate Store updates popover. The composer
+// posts `chat.message`; the per-move zoom posts `action.chat.message`.
 function StoreConversation({
   conversation,
   move,
@@ -212,6 +209,7 @@ function StoreConversation({
   headsUps,
   quietLine,
   currentSearch,
+  storeTimeZone,
 }: {
   conversation: ChatThread | null;
   move: PrimaryMove;
@@ -219,6 +217,7 @@ function StoreConversation({
   headsUps: HeadsUp[];
   quietLine: string;
   currentSearch: string;
+  storeTimeZone?: string | null;
 }) {
   const navigation = useNavigation();
   const navigate = useNavigate();
@@ -231,57 +230,77 @@ function StoreConversation({
       : "";
   const [composerMessage, setComposerMessage] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
-  const submittedMessageRef = useRef("");
-  useEffect(() => {
-    if (isThinking && pendingMessage)
-      submittedMessageRef.current = pendingMessage;
-  }, [isThinking, pendingMessage]);
-  useEffect(() => {
-    if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current)
-        setComposerMessage("");
-      submittedMessageRef.current = "";
-    }
-  }, [isThinking, composerMessage]);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const handleComposerSubmit = () => setComposerMessage("");
 
   const history = conversation?.messages ?? [];
-  const hasMove = move.state !== "empty";
+  const activeConversation = conversation?.conversation ?? null;
+  const isBlankThread = history.length === 0;
   // Budget: at most 2 proactive heads-ups — the chat is a conversation, not a
   // notification feed. These are Horizon's top-ranked standing conditions; dedup is
   // inherent because they're re-derived from state each load, never stored.
   const shownHeadsUps = headsUps.slice(0, 2);
-  // The grounded fallback line shows ONLY when there is genuinely nothing real to say —
-  // no move, no reports, no history, no heads-up. Silence-with-a-real-line, never filler.
-  const showQuietLine =
-    !hasMove &&
-    outcomes.length === 0 &&
-    history.length === 0 &&
-    shownHeadsUps.length === 0;
+  const displayedTitle = conversationTitle(activeConversation);
+  const messageLabel = isBlankThread
+    ? "Fresh chat · no messages yet"
+    : `${history.length} message${history.length === 1 ? "" : "s"}`;
 
   return (
     <section style={conversationStyle}>
       <div style={threadControlsStyle}>
         <InlineStack
           align="space-between"
-          blockAlign="center"
+          blockAlign="start"
           gap="300"
-          wrap={false}
+          wrap
         >
-          <div style={{ minWidth: 0 }}>
+          <div style={threadIdentityStyle}>
+            <Mono>Current chat</Mono>
             <Text as="h2" variant="headingSm" truncate>
-              {conversation?.conversation?.title ?? "New conversation"}
+              {displayedTitle}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {messageLabel}
             </Text>
           </div>
           <InlineStack gap="200" wrap={false}>
+            <Popover
+              active={updatesOpen}
+              onClose={() => setUpdatesOpen(false)}
+              activator={
+                <Button
+                  disclosure
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    setUpdatesOpen((open) => !open);
+                  }}
+                >
+                  Store updates
+                </Button>
+              }
+              preferredAlignment="right"
+            >
+              <StoreUpdatesPopover
+                move={move}
+                outcomes={outcomes}
+                headsUps={shownHeadsUps}
+                quietLine={quietLine}
+                currentSearch={currentSearch}
+                onNavigate={() => setUpdatesOpen(false)}
+              />
+            </Popover>
             <Popover
               active={historyOpen}
               onClose={() => setHistoryOpen(false)}
               activator={
                 <Button
                   disclosure
-                  onClick={() => setHistoryOpen((open) => !open)}
+                  onClick={() => {
+                    setUpdatesOpen(false);
+                    setHistoryOpen((open) => !open);
+                  }}
                 >
-                  History
+                  Chats
                 </Button>
               }
               preferredAlignment="right"
@@ -291,9 +310,15 @@ function StoreConversation({
                 items={
                   (conversation?.conversations.length ?? 0) > 0
                     ? (conversation?.conversations ?? []).map((item) => ({
-                        content: item.title,
-                        active: item.id === conversation?.conversation?.id,
-                        helpText: formatConversationDate(item.lastMessageAt),
+                        content: conversationHistoryTitle(
+                          item,
+                          activeConversation?.id ?? null,
+                        ),
+                        active: item.id === activeConversation?.id,
+                        helpText: formatConversationDate(
+                          item.lastMessageAt,
+                          storeTimeZone,
+                        ),
                         onAction: () => {
                           setHistoryOpen(false);
                           navigate(
@@ -309,7 +334,13 @@ function StoreConversation({
             </Popover>
             <Form method="post">
               <input type="hidden" name="intent" value="chat.new" />
-              <Button submit disabled={navigation.state !== "idle"}>
+              <Button
+                submit
+                disabled={
+                  navigation.state !== "idle" ||
+                  Boolean(activeConversation && isBlankThread)
+                }
+              >
                 New chat
               </Button>
             </Form>
@@ -317,27 +348,12 @@ function StoreConversation({
         </InlineStack>
       </div>
       <div style={messagesStyle}>
+        {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
         {history.map((message) => (
           <MessageRow key={message.id} from={message.role}>
             {message.content}
           </MessageRow>
         ))}
-        {outcomes.map((action) => (
-          <MessageRow key={action.actionRunId} from="assistant">
-            {outcomeMessageText(action)}
-          </MessageRow>
-        ))}
-        {shownHeadsUps.map((headsUp) => (
-          <MessageRow key={headsUp.id} from="assistant">
-            {headsUp.text}
-          </MessageRow>
-        ))}
-        {hasMove ? (
-          <MoveMessage move={move} currentSearch={currentSearch} />
-        ) : null}
-        {showQuietLine ? (
-          <MessageRow from="assistant">{quietLine}</MessageRow>
-        ) : null}
         {pendingMessage ? (
           <MessageRow from="merchant">{pendingMessage}</MessageRow>
         ) : null}
@@ -349,7 +365,11 @@ function StoreConversation({
         ) : null}
       </div>
       <div style={chatComposerWrapStyle}>
-        <Form method="post" style={composerStyle}>
+        <Form
+          method="post"
+          style={composerStyle}
+          onSubmit={handleComposerSubmit}
+        >
           <input type="hidden" name="intent" value="chat.message" />
           <input
             type="hidden"
@@ -367,8 +387,12 @@ function StoreConversation({
             style={composerInputStyle}
             disabled={isThinking}
           />
-          <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-            {isThinking ? "Thinking" : "Send"}
+          <button
+            type="submit"
+            style={sendButtonStateStyle(isThinking)}
+            disabled={isThinking}
+          >
+            Send
           </button>
         </Form>
       </div>
@@ -376,14 +400,128 @@ function StoreConversation({
   );
 }
 
-function formatConversationDate(value: string) {
+function conversationTitle(conversation: ChatConversation | null) {
+  if (!conversation || conversation.title === "New conversation")
+    return "New chat";
+  return conversation.title;
+}
+
+function conversationHistoryTitle(
+  conversation: ChatConversation,
+  activeId: string | null,
+) {
+  const title =
+    conversation.title === "New conversation"
+      ? "Empty chat"
+      : conversation.title;
+  return conversation.id === activeId ? `${title} · Current` : title;
+}
+
+function formatConversationDate(value: string, timeZone?: string | null) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? ""
     : new Intl.DateTimeFormat("en-GB", {
         day: "numeric",
         month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: timeZone ?? "Europe/London",
       }).format(date);
+}
+
+function EmptyChat() {
+  return (
+    <div style={emptyChatStyle}>
+      <span style={emptyChatMarkStyle}>J</span>
+      <Text as="h3" variant="headingMd">
+        Start a new conversation
+      </Text>
+      <Text as="p" variant="bodyMd" tone="subdued">
+        This chat is empty. Messages from earlier chats stay in Chats; Jefe can
+        still use what it knows about your store when you ask.
+      </Text>
+    </div>
+  );
+}
+
+function StoreUpdatesPopover({
+  move,
+  outcomes,
+  headsUps,
+  quietLine,
+  currentSearch,
+  onNavigate,
+}: {
+  move: PrimaryMove;
+  outcomes: ExecutedAction[];
+  headsUps: HeadsUp[];
+  quietLine: string;
+  currentSearch: string;
+  onNavigate: () => void;
+}) {
+  const recentOutcomes = outcomes.slice(0, 2);
+  const hasUpdates =
+    move.state !== "empty" || headsUps.length > 0 || recentOutcomes.length > 0;
+  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
+  const moveSubtitle = informativeSubtitle(move.summary, move.title);
+
+  return (
+    <div style={updatesPopoverStyle}>
+      <div style={updatesPopoverHeaderStyle}>
+        <Text as="h3" variant="headingSm">
+          Store updates
+        </Text>
+        <Text as="p" variant="bodySm" tone="subdued">
+          Live store signals and proposed work. These are separate from the
+          current chat.
+        </Text>
+      </div>
+      {headsUps.map((headsUp) => (
+        <div key={headsUp.id} style={updateItemStyle}>
+          <Mono>Worth knowing</Mono>
+          <Text as="p" variant="bodySm">
+            {headsUp.text}
+          </Text>
+        </div>
+      ))}
+      {recentOutcomes.map((action) => (
+        <div key={action.actionRunId} style={updateItemStyle}>
+          <Mono>Recent action</Mono>
+          <Text as="p" variant="bodySm">
+            {outcomeMessageText(action)}
+          </Text>
+        </div>
+      ))}
+      {move.state !== "empty" ? (
+        <div style={updateItemStyle}>
+          <Mono>{move.state === "in_progress" ? "In progress" : "Next move"}</Mono>
+          <Text as="h4" variant="headingSm">
+            {move.title}
+          </Text>
+          {moveSubtitle ? (
+            <Text as="p" variant="bodySm" tone="subdued">
+              {moveSubtitle}
+            </Text>
+          ) : null}
+          <Link
+            to={searchWith(currentSearch, { actionChat: chatTarget })}
+            style={updateActionLinkStyle}
+            onClick={onNavigate}
+          >
+            Talk this through →
+          </Link>
+        </div>
+      ) : null}
+      {!hasUpdates ? (
+        <div style={updateItemStyle}>
+          <Text as="p" variant="bodySm">
+            {quietLine}
+          </Text>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function MessageRow({ from, children }: { from: string; children: ReactNode }) {
@@ -403,47 +541,8 @@ function MessageRow({ from, children }: { from: string; children: ReactNode }) {
   );
 }
 
-// The move as a message in the thread: enough to recognise it, with a zoom into its
-// own action chat ("Talk this through →" sets ?actionChat=<id>) where the merchant
-// approves, declines or revises it. The decision never happens on the home feed.
-function MoveMessage({
-  move,
-  currentSearch,
-}: {
-  move: PrimaryMove;
-  currentSearch: string;
-}) {
-  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
-  const subtitle = informativeSubtitle(move.summary, move.title);
-  return (
-    <div style={{ ...messageRowStyle, justifyContent: "flex-start" }}>
-      <span style={smallMarkStyle}>J</span>
-      <div style={moveMessageStyle}>
-        <div style={cardTopStyle}>
-          <Mono>
-            {move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}
-          </Mono>
-          <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
-        </div>
-        <strong style={moveMessageTitleStyle}>{move.title}</strong>
-        {subtitle ? <p style={moveMessageSummaryStyle}>{subtitle}</p> : null}
-        {/* Approve / decline / revise live in the move's own chat (the zoom level), never on
-            the home feed — an executable commitment happens in the focused surface. */}
-        <div style={moveMessageActionsStyle}>
-          <Link
-            to={searchWith(currentSearch, { actionChat: chatTarget })}
-            style={primaryButtonStyle}
-          >
-            Talk this through →
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Jefe reporting back on a move already made — honest copy from the same fields the
-// old Action history / Also-in-progress cards used, now rendered as a thread message.
+// old Action history / Also-in-progress cards used, now rendered in Store updates.
 function outcomeMessageText(action: ExecutedAction): string {
   const name = action.sourceRecommendation?.title || action.headline;
   if (action.status === "rejected") {
@@ -598,18 +697,7 @@ function ActionChat({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const submittedMessageRef = useRef("");
-  useEffect(() => {
-    if (isThinking && pendingMessage)
-      submittedMessageRef.current = pendingMessage;
-  }, [isThinking, pendingMessage]);
-  useEffect(() => {
-    if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current)
-        setComposerMessage("");
-      submittedMessageRef.current = "";
-    }
-  }, [isThinking, composerMessage]);
+  const handleComposerSubmit = () => setComposerMessage("");
   const messages = thread.messages.length
     ? thread.messages
     : [
@@ -718,7 +806,11 @@ function ActionChat({
               </Form>
             ) : null}
           </div>
-          <Form method="post" style={composerStyle}>
+          <Form
+            method="post"
+            style={composerStyle}
+            onSubmit={handleComposerSubmit}
+          >
             <input type="hidden" name="intent" value="action.chat.message" />
             <MoveHiddenFields move={move} />
             <input
@@ -734,8 +826,12 @@ function ActionChat({
               style={composerInputStyle}
               disabled={isThinking}
             />
-            <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-              {isThinking ? "Thinking" : "Send"}
+            <button
+              type="submit"
+              style={sendButtonStateStyle(isThinking)}
+              disabled={isThinking}
+            >
+              Send
             </button>
           </Form>
           <div style={decisionRowStyle}>
@@ -1129,30 +1225,12 @@ const cardStyle: CSSProperties = {
   gap: 22,
   padding: "clamp(24px, 3.5vw, 40px)",
 };
-const cardTopStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 20,
-};
 const summaryStyle: CSSProperties = {
   color: COLORS.body,
   fontSize: 16,
   lineHeight: 1.55,
   margin: 0,
   maxWidth: 760,
-};
-const primaryButtonStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  alignSelf: "flex-start",
-  background: COLORS.navy,
-  color: "#fff",
-  borderRadius: 8,
-  padding: "12px 22px",
-  fontSize: 14,
-  fontWeight: 700,
-  textDecoration: "none",
 };
 const pillStyle: CSSProperties = {
   alignItems: "center",
@@ -1204,7 +1282,8 @@ const messagesStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 14,
-  padding: "24px 0",
+  minHeight: 320,
+  padding: "28px 0",
 };
 const messageRowStyle: CSSProperties = {
   display: "flex",
@@ -1244,38 +1323,63 @@ const conversationStyle: CSSProperties = {
 };
 
 const threadControlsStyle: CSSProperties = {
+  background: "rgba(255, 253, 250, 0.72)",
   borderBottom: `1px solid ${COLORS.hairline}`,
-  padding: "14px 16px",
+  borderTop: `1px solid ${COLORS.hairline}`,
+  padding: "18px 16px",
 };
-const moveMessageStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 16,
-  boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
+const threadIdentityStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 12,
-  maxWidth: "86%",
-  padding: "18px 20px",
+  gap: 4,
+  minWidth: 180,
 };
-const moveMessageTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 17,
-  fontWeight: 700,
-  lineHeight: 1.3,
-};
-const moveMessageSummaryStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 14.5,
-  lineHeight: 1.55,
-  margin: 0,
-};
-const moveMessageActionsStyle: CSSProperties = {
+const emptyChatStyle: CSSProperties = {
   alignItems: "center",
+  alignSelf: "center",
   display: "flex",
-  flexWrap: "wrap",
-  gap: 14,
-  marginTop: 4,
+  flexDirection: "column",
+  gap: 10,
+  justifyContent: "center",
+  margin: "auto 0",
+  maxWidth: 430,
+  padding: "36px 24px",
+  textAlign: "center",
+};
+const emptyChatMarkStyle: CSSProperties = {
+  ...markStyle,
+  height: 38,
+  marginBottom: 4,
+  width: 38,
+};
+const updatesPopoverStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  maxHeight: 480,
+  maxWidth: 380,
+  minWidth: 320,
+  overflowY: "auto",
+  padding: 16,
+};
+const updatesPopoverHeaderStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+  padding: "2px 4px 14px",
+};
+const updateItemStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: 7,
+  padding: "14px 4px",
+};
+const updateActionLinkStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontSize: 13.5,
+  fontWeight: 700,
+  marginTop: 3,
+  textDecoration: "none",
 };
 const chipsStyle: CSSProperties = {
   display: "flex",
@@ -1326,6 +1430,14 @@ const sendButtonStyle: CSSProperties = {
   fontWeight: 700,
   padding: "10px 18px",
 };
+
+function sendButtonStateStyle(disabled: boolean): CSSProperties {
+  return {
+    ...sendButtonStyle,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+  };
+}
 const decisionRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
