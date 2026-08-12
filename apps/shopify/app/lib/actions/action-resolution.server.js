@@ -232,6 +232,38 @@ export function toSuggestedAction({ proposal, preview, runId, executable }) {
 }
 
 /**
+ * Merge the structural eligibility with the mode-resolution outcome into the record the row
+ * persists — the payload of Jefe's "here's what I couldn't do, and what you'd need to change"
+ * raise.
+ *
+ * ⚠️ Before this, two of the three signals were computed and thrown away: `resolveAutonomyMode`
+ * returns a `reason` and `applyAutonomyPolicy` a `reason` + `policyViolations`, and
+ * `proposeActionFromIntent` handed both to `maybeEmitPlanAction`, which logs only `status` and
+ * `runId`. Only `eligibility.reasons` survived. That was harmless while a settings dial carried
+ * the story; under Matt's runtime-eligibility ruling (2026-08-12) — merchant sets autonomous,
+ * Jefe does what it safely can and RAISES what it can't, with actionable steps — these ARE the
+ * raise's content, so they have to outlive the function that computes them.
+ *
+ * Additive: the structural keys keep their existing shape and position, so every existing reader
+ * of `eligibility` is unaffected. Goes in the existing `eligibility` Json column — no migration.
+ * @param {{ autoEligible: boolean, reversible: boolean, withinCap: boolean, confident: boolean, reasons: string[] }} eligibility
+ * @param {{ mode: string, reason: string, policyViolations?: string[] }} autonomy
+ */
+export function buildEligibilityRecord(eligibility, autonomy) {
+  return {
+    ...eligibility,
+    // Why the run landed in the mode it did — "merchant_autonomous_and_eligible",
+    // "autonomous_not_eligible_degraded", "exceeds_autonomy_policy", …
+    modeReason: autonomy?.reason ?? null,
+    // Which merchant-set autonomy cap blocked an otherwise-eligible auto run, if any.
+    policyViolations: Array.isArray(autonomy?.policyViolations) ? autonomy.policyViolations : [],
+    // True when the merchant asked for autonomous and Jefe could not honour it — the single
+    // flag a raise can key on without re-deriving the reason strings.
+    degradedFromAutonomous: autonomy?.reason === "autonomous_not_eligible_degraded" || autonomy?.reason === "exceeds_autonomy_policy",
+  };
+}
+
+/**
  * Propose an action from an LLM action-intent. Validates, resolves to a deterministic
  * preview, computes structural eligibility + the autonomy mode (merchant dial ×
  * structural gate), creates the `proposed` ActionExecution row (so the card gets a
@@ -301,7 +333,7 @@ export async function proposeActionFromIntent(prisma, input) {
       status: "proposed",
       merchantSetting,
       resolvedMode: autonomy.mode,
-      eligibility: /** @type {any} */ (eligibility),
+      eligibility: /** @type {any} */ (buildEligibilityRecord(eligibility, autonomy)),
       confidence,
       preview: /** @type {any} */ (preview),
       proposalSummary: /** @type {any} */ (proposalSummary),

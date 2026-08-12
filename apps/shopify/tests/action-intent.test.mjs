@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ACTION_REGISTRY,
+  APPLICABILITY_DIMENSIONS,
   getActionDefinition,
   getRequiredScopes,
   listActionCapabilities,
   validateActionIntent,
+  verdictForOutcome,
 } from "../app/lib/actions/action-intent.server.js";
 
 test("getRequiredScopes returns the write scopes an action needs, [] for unknown", () => {
@@ -55,4 +57,74 @@ test("validateActionIntent rejects malformed / unknown / unsupported intents", (
     validateActionIntent({ actionType: "price_markdown", targetKind: "all_products" }).reason,
     "unsupported_target:all_products",
   );
+});
+
+// ── applicability (part 8) ───────────────────────────────────────────────────────
+// Matt 2026-08-12: which businesses an action suits is a standing property of the
+// action, and it must be DIMENSIONAL — a clearance markdown is sensible for lipstick
+// and absurd for a car dealer, but "car dealer" is not a dimension.
+
+test("every applicability dimension an action names exists in the shared vocabulary", () => {
+  for (const [actionType, def] of Object.entries(ACTION_REGISTRY)) {
+    if (!def.applicability) continue;
+    for (const key of [...def.applicability.suits, ...def.applicability.unsuitedWhen]) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(APPLICABILITY_DIMENSIONS, key),
+        `${actionType} names unknown applicability dimension "${key}"`,
+      );
+    }
+  }
+});
+
+test("applicability dimensions are observable — each cites the belief that evidences it", () => {
+  for (const [key, dim] of Object.entries(APPLICABILITY_DIMENSIONS)) {
+    assert.match(dim.evidence, /^[a-z_]+\.[a-z_0-9.]+$/, `${key} must cite a belief key`);
+    assert.ok(dim.means.length > 20, `${key} must say what it means in plain terms`);
+  }
+});
+
+test("an action never both suits and is unsuited by the same dimension", () => {
+  for (const [actionType, def] of Object.entries(ACTION_REGISTRY)) {
+    if (!def.applicability) continue;
+    const overlap = def.applicability.suits.filter((s) => def.applicability.unsuitedWhen.includes(s));
+    assert.deepEqual(overlap, [], `${actionType} contradicts itself on ${overlap.join(",")}`);
+  }
+});
+
+// ── outcome verdict (the shared runner over per-type success criteria) ───────────
+
+test("verdictForOutcome scores a measured outcome against the action's own criteria", () => {
+  // price_markdown keys on effectivenessRatePercent: >=40 good, <=0 underperformed.
+  assert.equal(verdictForOutcome("price_markdown", { effectivenessRatePercent: 75 }).verdict, "good");
+  assert.equal(verdictForOutcome("price_markdown", { effectivenessRatePercent: 40 }).verdict, "good", "boundary is inclusive");
+  assert.equal(verdictForOutcome("price_markdown", { effectivenessRatePercent: 20 }).verdict, "neutral");
+  assert.equal(verdictForOutcome("price_markdown", { effectivenessRatePercent: 0 }).verdict, "underperformed", "nothing moved");
+});
+
+test("verdictForOutcome carries the metric, value and baseline the raise needs to explain itself", () => {
+  const scored = verdictForOutcome("price_markdown", { effectivenessRatePercent: 55 });
+  assert.equal(scored.metric, "effectivenessRatePercent");
+  assert.equal(scored.value, 55);
+  assert.equal(scored.baseline, 0, "dead stock sold nothing, so anything beats the baseline");
+});
+
+test("verdictForOutcome returns 'unknown', never a failure, when it cannot score", () => {
+  // An unscored action must never read as a BAD action.
+  assert.equal(verdictForOutcome("price_markdown", null).verdict, "unknown");
+  assert.equal(verdictForOutcome("price_markdown", {}).verdict, "unknown", "metric absent");
+  assert.equal(verdictForOutcome("price_markdown", { effectivenessRatePercent: "abc" }).verdict, "unknown");
+  assert.equal(verdictForOutcome("not_a_registered_action", { effectivenessRatePercent: 90 }).verdict, "unknown");
+});
+
+test("every registered action declares what success means for it", () => {
+  // A registered action with no outcome spec can never be learned from — the
+  // Observe→Learn loop would silently skip it.
+  for (const [actionType, def] of Object.entries(ACTION_REGISTRY)) {
+    assert.ok(def.outcome, `${actionType} has no outcome spec`);
+    assert.ok(def.outcome.windowDays > 0, `${actionType} needs a measurement window`);
+    assert.ok(
+      def.outcome.verdict.goodAtOrAbove > def.outcome.verdict.underperformedAtOrBelow,
+      `${actionType} verdict thresholds are inverted`,
+    );
+  }
 });

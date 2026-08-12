@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildActionDeclinedEvent,
+  buildEligibilityRecord,
   buildProposalSummary,
   formatMoney,
   getActiveSuggestedAction,
@@ -575,4 +576,50 @@ test("reviseAction refuses a non-proposed run or the wrong merchant (no re-propo
     (await reviseAction(wrong, { merchantId: "intruder", actionRunId: "r1", params: { markdownPercent: 40 } })).status,
     "not_found",
   );
+});
+
+// ── the raise payload (Matt's runtime-eligibility ruling, 2026-08-12) ─────────────
+// A merchant on `autonomous` gets Jefe doing what it safely can and RAISING what it
+// can't, with actionable steps. Before this, two of the three "why not" signals were
+// computed and discarded — resolveAutonomyMode().reason and .policyViolations both
+// evaporated in maybeEmitPlanAction, which logs only status + runId.
+
+const STRUCTURAL = { autoEligible: false, reversible: true, withinCap: false, confident: true, reasons: ["over_blast_radius_cap"] };
+
+test("buildEligibilityRecord keeps the structural signals byte-identical (existing readers unaffected)", () => {
+  const record = buildEligibilityRecord(STRUCTURAL, { mode: "approve", reason: "merchant_approve_execute" });
+  for (const [key, value] of Object.entries(STRUCTURAL)) {
+    assert.deepEqual(record[key], value, `${key} must survive untouched`);
+  }
+});
+
+test("buildEligibilityRecord persists WHY the mode resolved as it did", () => {
+  const record = buildEligibilityRecord(STRUCTURAL, { mode: "approve", reason: "autonomous_not_eligible_degraded" });
+  assert.equal(record.modeReason, "autonomous_not_eligible_degraded");
+  assert.equal(record.degradedFromAutonomous, true, "the merchant asked for auto and did not get it");
+});
+
+test("buildEligibilityRecord carries the merchant's own cap violations, not just the structural ones", () => {
+  const record = buildEligibilityRecord(
+    { ...STRUCTURAL, autoEligible: true, withinCap: true, reasons: [] },
+    { mode: "approve", reason: "exceeds_autonomy_policy", policyViolations: ["over_auto_max_trapped_capital"] },
+  );
+  assert.deepEqual(record.policyViolations, ["over_auto_max_trapped_capital"]);
+  assert.equal(record.degradedFromAutonomous, true, "a policy cap is still a broken autonomous promise");
+});
+
+test("buildEligibilityRecord does not cry degradation when autonomy was honoured", () => {
+  const record = buildEligibilityRecord(
+    { ...STRUCTURAL, autoEligible: true, withinCap: true, reasons: [] },
+    { mode: "auto", reason: "merchant_autonomous_and_eligible" },
+  );
+  assert.equal(record.degradedFromAutonomous, false);
+  assert.deepEqual(record.policyViolations, []);
+});
+
+test("buildEligibilityRecord tolerates a missing or malformed autonomy result without throwing", () => {
+  const record = buildEligibilityRecord(STRUCTURAL, /** @type {any} */ ({}));
+  assert.equal(record.modeReason, null);
+  assert.deepEqual(record.policyViolations, [], "never undefined — the column is read directly");
+  assert.equal(record.degradedFromAutonomous, false);
 });
