@@ -30,8 +30,13 @@ echo "▶ lint";            npm run lint
 if [ -n "${DATABASE_URL:-}" ]; then
   echo "▶ db-tests           DATABASE_URL set → DB-gated tests will run"
 elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^jefe-shopify-postgres$'; then
-  export DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
-  echo "▶ db-tests           local Postgres (jefe-shopify-postgres) detected → DB-gated tests will run"
+  # connection_limit caps each run's Prisma pool. The default is ~17 per client, so
+  # ~8 concurrent test files ≈ 136 connections — enough for a SINGLE run to exhaust
+  # the shared container's ~100 ceiling under fleet load (the flake chat 10 hit).
+  # The DB tests aren't pool-hungry, so cap low and N concurrent runs stay under the
+  # ceiling. Pairs with `-c max_connections=200` in `npm run db:up` (next recreate).
+  export DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public&connection_limit=5"
+  echo "▶ db-tests           local Postgres (jefe-shopify-postgres) detected → DB-gated tests will run (pool capped)"
   npx prisma migrate deploy >/dev/null 2>&1 || echo "  ⚠️  prisma migrate deploy on the local DB failed — schema may be stale"
 else
   echo ""
