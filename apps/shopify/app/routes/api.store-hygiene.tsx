@@ -9,12 +9,16 @@ import { logger } from "../lib/observability/logger.server";
 
 const log = logger.child({ component: "store-hygiene" });
 
-// Deferred store-hygiene findings for the Daily Home Brief. `DailyHome` loads this via
-// `useFetcher` AFTER first paint, so the scan's ~5 bounded reads stay OFF the LCP-critical
-// `app._index` loader (chat 10's critical-vs-deferred split — heavier / below-the-fold reads
-// stream in). Read-only + best-effort: any failure (incl. an auth hiccup on a background
-// fetch) returns no findings rather than a redirect/5xx — the Brief's honest "nothing's on
-// fire" stands, and the primary page load is never disrupted by this enhancement.
+// Store-hygiene findings endpoint — a read-only, best-effort scan (refund clusters, missing
+// cost / product-type / SKU / description) returning `{ findings }`, each with a deep-link to the
+// fix in Shopify admin. Never returns a redirect/5xx: any failure (incl. an auth hiccup on a
+// background fetch) yields no findings instead.
+//
+// ⚠️ NO CALLER as of 2026-08-12. The original reader — a post-first-paint `useFetcher` in the
+// (now-retired) 13a `DailyHome` — was dropped when the home was rewritten (PR #75), and the home
+// is being rebuilt as a chat log, so findings are not going back onto it. The endpoint, the scan
+// service and its tests all still work; placement is pending — proposed as a `/app/settings`
+// tidy-up panel. Wire a caller there before relying on this.
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
     const { session } = await authenticateAppRequest(request);
