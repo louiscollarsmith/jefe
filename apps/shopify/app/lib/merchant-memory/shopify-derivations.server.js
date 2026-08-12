@@ -977,22 +977,30 @@ function purchaseCadence(context, definition) {
     });
   }
 
-  // Cut-offs checked against 203 real merchants (Quiver warehouse, 2 years of repeat gaps,
-  // ≥20 gaps each): median repeat gap runs 4–166 days. The first guess put `infrequent` at
-  // >180d, which NOTHING reached — a dead bucket that looked like a working dimension.
-  // >120d populates it from the real tail.
+  // Named for the RHYTHM, and cut where merchants actually differ.
   //
-  // ⚠️ Tuned on London delivery clients, which skew to food/drink/fashion and so probably
-  // repeat faster than ecommerce at large. Re-check against Jefe's own merchants before
-  // treating these as settled. A genuinely slow business (furniture, mattresses) usually has
-  // too few repeat gaps to reach the minimum at all and lands in `one_off` above, which is
-  // the right answer for it.
+  // Checked against 203 real merchants (Quiver warehouse, 2 years of repeat gaps): median
+  // repeat gap runs 4–166 days, but the mass sits between p20=27 and p80=69. The first cuts
+  // (21/60/120) put ~60% of merchants in one bucket and left the slowest one empty — a
+  // four-way split that in practice said the same thing about almost everyone. A dimension
+  // that gives nearly every merchant the same answer is worse than no dimension: it reads
+  // as understanding.
+  //
+  // ⛔ The boundaries are ABSOLUTE human rhythms (fortnight / month / quarter), NOT quantiles
+  // of this population. Quantiles would make "monthly" mean "monthly compared with other
+  // London delivery clients", which is a benchmark claim Jefe has no basis for — the
+  // benchmark-prior module ships with no data. These happen to land where the data varies;
+  // they do not derive their meaning from it.
+  //
+  // ⚠️ Still tuned against a DTC/food/fashion-skewed book that repeats faster than ecommerce
+  // at large. A genuinely slow business (furniture, mattresses) usually has too few repeat
+  // gaps to reach the minimum at all and lands in `one_off` above — the right answer for it.
   const median = percentile(gapDays, 0.5);
-  let cadence = "occasional";
-  if (median <= 21) cadence = "frequent";
-  else if (median <= 60) cadence = "regular";
-  else if (median <= 120) cadence = "occasional";
-  else cadence = "infrequent";
+  let cadence = "every_few_months";
+  if (median <= 14) cadence = "fortnightly_or_faster";
+  else if (median <= 35) cadence = "monthly";
+  else if (median <= 75) cadence = "every_few_months";
+  else cadence = "seasonal";
 
   return derived(context, definition, {
     value: {

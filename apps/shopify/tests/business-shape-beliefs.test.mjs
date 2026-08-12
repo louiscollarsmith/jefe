@@ -41,7 +41,7 @@ test("two different businesses get different shapes from the same ontology", asy
   assert.equal(coffee[CHANNEL], "online_only");
   assert.notEqual(furniture[CHANNEL], "online_only");
 
-  assert.equal(coffee[CADENCE], "frequent");
+  assert.equal(coffee[CADENCE], "fortnightly_or_faster");
   assert.equal(furniture[CADENCE], "one_off");
 });
 
@@ -342,9 +342,13 @@ function mockPrisma({
   const orders = Array.from({ length: count }, (_, i) => {
     const customerIndex = repeatEveryDays == null ? i : i % customerCount;
     const repeatRound = repeatEveryDays == null ? 0 : Math.floor(i / customerCount);
+    // Walk BACK one interval per repeat round, without clamping. The clamped version
+    // (`Math.max(1, 79 - …)`) squashed every round past the third onto day 1, so a fixture
+    // asking for a 28-day rhythm actually produced 1-day gaps and the cadence assertions
+    // were reading a rhythm nobody had set up.
     const daysAgo = repeatEveryDays == null
       ? 1 + (i % 79)
-      : Math.max(1, 79 - repeatRound * repeatEveryDays - (customerIndex % 3));
+      : 5 + repeatRound * repeatEveryDays + (customerIndex % 3);
     const at = new Date(now - daysAgo * 86400000);
     return {
       id: `order-${i + 1}`,
@@ -510,4 +514,25 @@ test("a headless storefront still counts as the merchant's own site", async () =
 test("Shopify's B2B channel reads as wholesale, like draft orders do", async () => {
   const outcomes = await derive({ ...baseSpec(), sourceNames: ["b2b", "b2b", "web"] });
   assert.equal(outcomes.find((o) => o.key === CHANNEL)?.value?.enum, "wholesale_led");
+});
+
+test("cadence separates businesses with genuinely different rhythms", async () => {
+  // The first cut-offs (21/60/120) put ~60% of 203 real merchants in one bucket and left the
+  // slowest empty — a four-way split that said the same thing about almost everyone. Real
+  // medians cluster between 27 and 69 days, so the boundaries have to fall INSIDE that range
+  // to tell a coffee refill from a jeweller. A dimension that answers the same for everyone
+  // is worse than none: it reads as understanding.
+  const rhythms = [
+    { days: 10, expect: "fortnightly_or_faster" },
+    { days: 28, expect: "monthly" },
+    { days: 55, expect: "every_few_months" },
+    { days: 110, expect: "seasonal" },
+  ];
+  const seen = new Set();
+  for (const { days, expect } of rhythms) {
+    const shape = await shapeOf({ ...baseSpec(), repeatEveryDays: days, customerCount: 12, orderCount: 96 });
+    assert.equal(shape[CADENCE], expect, `${days}d should read as ${expect}, got ${shape[CADENCE]}`);
+    seen.add(shape[CADENCE]);
+  }
+  assert.equal(seen.size, 4, "four distinct rhythms collapsed into fewer labels");
 });
