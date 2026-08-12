@@ -10,6 +10,7 @@ import { createGeminiProvider } from "./providers/gemini.server.js";
 import { createGroqProvider } from "./providers/groq.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
+import { recordLlmFallback } from "../observability/llm-provider-health.server.js";
 
 /**
  * @typedef {{ prisma: any; merchantId?: string | null; shopId?: string | null; feature: string; runType?: string | null; runId?: string | null }} LlmUsageContext
@@ -138,6 +139,14 @@ export function withFallbackProvider(primary, fallback, logger) {
         statusCode:
           /** @type {{ status?: unknown }} */ (error ?? {}).status ?? null,
       });
+      // Durable signal: a warn alone made sustained fallback operation invisible
+      // outside a log grep. This feeds the rolling window on /health.
+      recordLlmFallback({
+        fromProvider: primary.provider,
+        fromModel: primary.model,
+        toProvider: fallback.provider,
+        toModel: fallback.model,
+      });
       const result = await fallbackMethod.call(fallback, request);
       return {
         ...result,
@@ -170,6 +179,11 @@ export function isLlmFallbackError(error) {
     /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).status ??
       /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).code,
   );
+  // 401/403: an expired or invalid primary API key — the most likely real Groq
+  // outage mode — should degrade to the other provider, not hard-fail with it
+  // sitting idle. 404: a retired/renamed primary model. 429/498: rate-limit /
+  // capacity. 5xx: provider server error.
+  if (status === 401 || status === 403 || status === 404) return true;
   if (status === 429 || status === 498) return true;
   if (status >= 500 && status <= 599) return true;
   const message = error instanceof Error ? error.message : String(error);
@@ -186,7 +200,7 @@ export function isLlmFallbackError(error) {
  * @param {LlmUsageContext} ctx
  * @returns {LlmProvider}
  */
-function withUsageRecording(provider, ctx) {
+export function withUsageRecording(provider, ctx) {
   if (!ctx || !ctx.prisma) return provider;
   /**
    * @param {(request: any) => Promise<any>} method

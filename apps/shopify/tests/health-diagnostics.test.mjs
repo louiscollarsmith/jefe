@@ -62,6 +62,26 @@ test("buildDependencyHealth reflects env flags, no network calls", () => {
   assert.equal(off.llm.provider, "groq");
 });
 
+test("buildDependencyHealth surfaces which provider keys are present (silent-substitution guard)", () => {
+  // Groq selected + only a Gemini key present: the provider layer silently serves
+  // Gemini for 100% of traffic while `provider` still reads "groq". The key-presence
+  // fields make that visible so /health can't advertise a provider that isn't serving.
+  const substituting = buildDependencyHealth({
+    LLM_PROVIDER: "groq",
+    GEMINI_API_KEY: "g",
+  });
+  assert.equal(substituting.llm.provider, "groq");
+  assert.equal(substituting.llm.groqConfigured, false);
+  assert.equal(substituting.llm.geminiConfigured, true);
+  assert.equal(substituting.llm.providerKeyPresent, false); // groq claimed, no groq key
+  assert.equal(substituting.llm.enabled, true); // enabled:true + providerKeyPresent:false = substitution
+
+  // Groq selected + Groq key present: actually serving what it claims.
+  const healthy = buildDependencyHealth({ LLM_PROVIDER: "groq", GROQ_API_KEY: "k" });
+  assert.equal(healthy.llm.groqConfigured, true);
+  assert.equal(healthy.llm.providerKeyPresent, true);
+});
+
 test("buildDependencyHealth: llm enabled via API keys, explicit false wins", () => {
   assert.equal(buildDependencyHealth({ GROQ_API_KEY: "k" }).llm.enabled, true);
   assert.equal(buildDependencyHealth({ GEMINI_API_KEY: "k" }).llm.enabled, true);

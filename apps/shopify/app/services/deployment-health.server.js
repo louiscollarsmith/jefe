@@ -148,21 +148,37 @@ export function buildWorkerHealth(lastTickAt, opts = {}) {
  * Non-gating: informational, never fails the check.
  *
  * @param {Record<string, string | undefined>} [env]
- * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string } }}
+ * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string; groqConfigured: boolean; geminiConfigured: boolean; providerKeyPresent: boolean } }}
  */
 export function buildDependencyHealth(env = process.env) {
+  const provider = env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER;
+  const groqConfigured = Boolean(env.GROQ_API_KEY);
+  const geminiConfigured = Boolean(env.GEMINI_API_KEY);
   return {
     email: { configured: env.ENABLE_EMAIL === "true" },
     slack: { configured: Boolean(env.ALERT_WEBHOOK_URL) },
     llm: {
       enabled:
         env.LLM_ENABLED === "true" ||
-        (env.LLM_ENABLED !== "false" &&
-          Boolean(env.GEMINI_API_KEY || env.GROQ_API_KEY)),
-      provider: env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
+        (env.LLM_ENABLED !== "false" && (geminiConfigured || groqConfigured)),
+      provider,
       model: env.LLM_MODEL || DEFAULT_LLM_MODEL,
       fallbackProvider: env.LLM_FALLBACK_PROVIDER || DEFAULT_LLM_FALLBACK_PROVIDER,
       fallbackModel: env.LLM_FALLBACK_MODEL || DEFAULT_LLM_FALLBACK_MODEL,
+      // Reality vs intent: `provider` above is what we INTEND to use, but the
+      // provider layer silently substitutes the fallback if the selected
+      // provider's key is missing. Surfacing which keys are actually present (and
+      // whether the selected provider's key is one of them) makes that silent
+      // substitution visible instead of /health reporting a provider that isn't
+      // serving. `providerKeyPresent: false` with `enabled: true` = substitution.
+      groqConfigured,
+      geminiConfigured,
+      providerKeyPresent:
+        provider === "groq"
+          ? groqConfigured
+          : provider === "gemini"
+            ? geminiConfigured
+            : false,
     },
   };
 }

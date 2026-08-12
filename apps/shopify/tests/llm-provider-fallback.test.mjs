@@ -4,7 +4,12 @@ import {
   createLlmProvider,
   isLlmFallbackError,
   withFallbackProvider,
+  withUsageRecording,
 } from "../app/lib/llm/provider.server.js";
+import {
+  getLlmProviderHealth,
+  __resetLlmProviderHealth,
+} from "../app/lib/observability/llm-provider-health.server.js";
 import {
   createGroqProvider,
   toGroqJsonSchema,
@@ -181,11 +186,72 @@ test("withFallbackProvider does not hide structured-output validation errors", a
   );
 });
 
-test("isLlmFallbackError recognises capacity failures only", () => {
-  const capacity = new Error("capacity exceeded");
-  capacity.status = 498;
-  assert.equal(isLlmFallbackError(capacity), true);
+test("isLlmFallbackError: auth/retired/rate-limit/5xx degrade to fallback; deterministic errors do not", () => {
+  const withStatus = (s) =>
+    Object.assign(new Error(`request failed with HTTP ${s}.`), { status: s });
+  // 401/403 (bad/expired key — the most likely real Groq outage), 404 (retired
+  // model), 429/498 (rate-limit/capacity), 5xx (server) all fall back.
+  for (const s of [401, 403, 404, 429, 498, 500, 503]) {
+    assert.equal(
+      isLlmFallbackError(withStatus(s)),
+      true,
+      `status ${s} should fall back`,
+    );
+  }
+  // Deterministic client-side failures do NOT fall back (a different provider
+  // won't fix bad output or an oversized prompt).
   assert.equal(isLlmFallbackError(new LlmOutputValidationError()), false);
+  assert.equal(isLlmFallbackError(withStatus(400)), false);
+  // A network-ish failure with no status still falls back (message match).
+  assert.equal(isLlmFallbackError(new Error("fetch failed")), true);
+});
+
+test("fallback bills as the fallback provider and records a durable fallback signal", async () => {
+  __resetLlmProviderHealth();
+  /** @type {any[]} */
+  const rows = [];
+  const prisma = {
+    llmUsageEvent: { create: async ({ data }) => rows.push(data) },
+  };
+  const primary = fakeProvider("groq", "openai/gpt-oss-120b", async () => {
+    // A 401 (bad/expired Groq key) — previously bypassed the fallback entirely;
+    // now it degrades to Gemini instead of hard-failing with Gemini idle.
+    throw Object.assign(new Error("Groq request failed with HTTP 401."), {
+      status: 401,
+    });
+  });
+  const fallback = fakeProvider("gemini", "gemini-3.1-flash-lite", async () => ({
+    provider: "gemini",
+    model: "gemini-3.1-flash-lite",
+    json: { reply: "from fallback" },
+    usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    attempts: 1,
+    durationMs: 5,
+  }));
+
+  const composed = withUsageRecording(
+    withFallbackProvider(primary, fallback, logger),
+    { prisma, feature: "test", runType: "test", runId: "r1" },
+  );
+  const result = await composed.generateStructuredJson({});
+
+  assert.equal(result.provider, "gemini");
+  assert.deepEqual(result.fallback, {
+    fromProvider: "groq",
+    fromModel: "openai/gpt-oss-120b",
+  });
+
+  // The ledger row attributes the ANSWERING (fallback) provider + model — so a
+  // Groq-outage day bills at the Gemini rate, not undercounted as Groq. (record
+  // is fire-and-forget, so let the microtask flush.)
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].provider, "gemini");
+  assert.equal(rows[0].model, "gemini-3.1-flash-lite");
+  assert.equal(rows[0].status, "ok");
+
+  // And the transition is now a durable /health signal, not just a log line.
+  assert.equal(getLlmProviderHealth().fallbacksInWindow, 1);
 });
 
 test("toGroqJsonSchema converts Gemini-style nullable types", () => {

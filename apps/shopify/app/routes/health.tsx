@@ -10,6 +10,7 @@ import { logger } from "../lib/observability/logger.server";
 import { getLatencyPercentiles } from "../lib/observability/perf.server";
 import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
 import { getWebhookHealth } from "../lib/observability/webhook-health.server";
+import { getLlmProviderHealth } from "../lib/observability/llm-provider-health.server";
 import { getInboundEmailHealth } from "../lib/email/inbound/health.server.js";
 
 export const loader = async () => {
@@ -24,6 +25,7 @@ export const loader = async () => {
       }),
       webhooks: getWebhookHealth(),
       inboundEmail: getInboundEmailHealth(),
+      llmFallback: getLlmProviderHealth(),
       ...buildDependencyHealth(process.env),
     },
     latency: getLatencyPercentiles(),
