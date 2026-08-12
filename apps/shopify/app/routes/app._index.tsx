@@ -154,6 +154,11 @@ import {
 } from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { loadAppHomeWhatsNew } from "../lib/notifications/whats-new.server.js";
 import {
+  computeHomeDateLabel,
+  currentServerInstant,
+  storeTimeZoneFromPayload,
+} from "../lib/home/home-dates.js";
+import {
   formatBriefSendTime,
   getNotificationPreference,
   setNotificationPreference,
@@ -1227,6 +1232,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             sending: false,
           }
         : null;
+      // Hydration-safe date: compute the header label ONCE, server-side, pinned to
+      // the store's timezone — never a render-time clock read (which differs SSR vs
+      // browser and mismatched the "Tuesday 11 August" header). The instant comes
+      // from currentServerInstant() so this module stays clock-read-free (hydration
+      // lint) and the label helper stays pure. Store tz = the service zone for this
+      // merchant; falls back to the default when unknown.
+      const homeTimeZone = storeTimeZoneFromPayload(
+        (shop as { rawPayload?: unknown }).rawPayload,
+      );
+      const todayLabel = computeHomeDateLabel({
+        now: currentServerInstant(),
+        timeZone: homeTimeZone,
+      });
       return {
         appMode: "daily" as const,
         shop: session.shop,
@@ -1257,6 +1275,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })),
         horizonNear: horizon.near,
         horizonWatching: horizon.watching,
+        todayLabel,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1546,6 +1565,7 @@ export default function AppIndex() {
         openQuestions={data.openQuestions}
         horizonNear={data.horizonNear}
         horizonWatching={data.horizonWatching}
+        todayLabel={data.todayLabel}
       />
     );
   }

@@ -92,6 +92,7 @@ export function DailyHome(props: {
   openQuestions?: MemoryQuestion[];
   horizonNear: HorizonItem[];
   horizonWatching: HorizonWatch[];
+  todayLabel?: string; // loader-computed, store-tz-pinned; replaces render-time new Date()
 }) {
   const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
@@ -110,6 +111,7 @@ export function DailyHome(props: {
         move={primaryMove}
         thread={props.actionChatThread ?? { topic: null, messages: [] }}
         backTo={searchWith(location.search, { actionChat: null })}
+        todayLabel={props.todayLabel}
       />
     );
   }
@@ -132,7 +134,7 @@ export function DailyHome(props: {
   return (
     <main style={pageStyle}>
       <div style={shellStyle}>
-        <Header storeName={props.storeName} />
+        <Header storeName={props.storeName} todayLabel={props.todayLabel} />
         <h1 style={headlineStyle}>
           {primaryMove.state === "in_progress" ? (
             <>
@@ -180,14 +182,14 @@ export function DailyHomeLoading({ storeName }: { storeName: string }) {
   );
 }
 
-function Header({ storeName }: { storeName: string }) {
+function Header({ storeName, todayLabel }: { storeName: string; todayLabel?: string }) {
   return (
     <header style={headerStyle}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={markStyle}>J</span>
         <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
       </div>
-      <DateLabel>{formatToday()}</DateLabel>
+      <DateLabel>{todayLabel ?? ""}</DateLabel>
     </header>
   );
 }
@@ -391,10 +393,12 @@ function ActionChat({
   move,
   thread,
   backTo,
+  todayLabel,
 }: {
   move: PrimaryMove;
   thread: ActionChatThread;
   backTo: string;
+  todayLabel?: string;
 }) {
   const navigation = useNavigation();
   const pendingIntent = navigation.formData?.get("intent");
@@ -433,7 +437,7 @@ function ActionChat({
           <Link to={backTo} style={backLinkStyle}>
             ← Back
           </Link>
-          <DateLabel>{formatToday()}</DateLabel>
+          <DateLabel>{todayLabel ?? ""}</DateLabel>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 20 }}>
           <Mono>ABOUT THIS MOVE</Mono>
@@ -779,24 +783,14 @@ function horizonLabel(horizon: string) {
   return horizon.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
 }
 
-// SSR runs in UTC (Railway); the browser runs in the merchant's local zone. With no
-// timeZone pinned, toLocaleDateString formats a DIFFERENT calendar date on each side for
-// the 00:00–01:00 London window every day, so React discards the whole server render as a
-// hydration mismatch (#418/#425) — the bug behind the wrong "Tuesday 11 August" header.
-// Pin ONE named zone so both sides render identical text (house rule: one constant, never
-// a scattered literal). TODO(jefe, task #13): source this from the merchant's shop
-// ianaTimezone (already loaded at app._index) so a non-UK store reads its own date; safe
-// to do once the home surface settles, as it threads a prop through the header path.
+// The current-day header label is computed ONCE in the loader (computeHomeDateLabel,
+// app._index), pinned to the store's timezone, and passed as the `todayLabel` prop —
+// never render-time `new Date()`, which evaluated to a different instant on server vs
+// browser and mismatched the "Tuesday 11 August" header (React #418/#425/#423).
+// Fixed-instant dates below stay hydration-safe by pinning an explicit zone; sourcing
+// that zone from the merchant's store (rather than the London default) rides the Shape B
+// header restructure.
 const VIEWER_TIME_ZONE = "Europe/London";
-
-function formatToday() {
-  return new Date().toLocaleDateString("en-GB", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    timeZone: VIEWER_TIME_ZONE,
-  });
-}
 
 function formatShortDate(value: string | null | undefined) {
   if (!value) return "";
