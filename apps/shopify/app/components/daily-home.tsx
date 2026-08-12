@@ -42,6 +42,11 @@ const FONT = {
 };
 
 type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
+// A proactive heads-up Jefe posts into the thread from a standing condition (a run-out
+// approaching, refunds trending). Re-rendered from current state each load — not stored —
+// so it stays honest and can't go stale. Kept deliberately small (see the cap in
+// StoreConversation): the chat is not a notification feed.
+type HeadsUp = { id: string; kind: string; text: string };
 type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
 type EmailBrief = {
   address: string;
@@ -70,7 +75,6 @@ type PrimaryMove = {
   approvedAt: string | null;
   baselineSignal: string | null;
   currentSignal: string | null;
-  checklist: Array<{ label: string; done: boolean }>;
 };
 
 export function DailyHome(props: {
@@ -95,6 +99,7 @@ export function DailyHome(props: {
   horizonWatching: HorizonWatch[];
   todayLabel?: string; // loader-computed, store-tz-pinned; replaces render-time new Date()
   storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
+  horizonHeadsUps?: HeadsUp[]; // proactive run-out / refund heads-ups, rendered as messages
 }) {
   const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
@@ -126,15 +131,23 @@ export function DailyHome(props: {
   const outcomes = actions.filter(
     (action) => action.actionRunId !== primaryMove.actionRunId,
   );
+  // The frame for every recommendation: one quiet line, not a section (the reviewer's
+  // single keep-from-the-strip). Null when Jefe has no goal yet — never fabricated.
+  const goalLine = firstGoalLine(props.goals);
 
   return (
     <main style={pageStyle}>
       <div style={shellStyle}>
-        <Header storeName={props.storeName} todayLabel={props.todayLabel} />
+        <Header
+          storeName={props.storeName}
+          todayLabel={props.todayLabel}
+          goalLine={goalLine}
+        />
         <StoreConversation
           conversation={props.conversation ?? null}
           move={primaryMove}
           outcomes={outcomes}
+          headsUps={props.horizonHeadsUps ?? []}
           quietLine={buildQuietLine(props.horizonWatching, props.insights)}
           currentSearch={location.search}
         />
@@ -158,12 +171,14 @@ function StoreConversation({
   conversation,
   move,
   outcomes,
+  headsUps,
   quietLine,
   currentSearch,
 }: {
   conversation: ChatThread | null;
   move: PrimaryMove;
   outcomes: ExecutedAction[];
+  headsUps: HeadsUp[];
   quietLine: string;
   currentSearch: string;
 }) {
@@ -189,8 +204,17 @@ function StoreConversation({
 
   const history = conversation?.messages ?? [];
   const hasMove = move.state !== "empty";
-  // A grounded standing line only when there is genuinely nothing else to show.
-  const showQuietLine = !hasMove && outcomes.length === 0 && history.length === 0;
+  // Budget: at most 2 proactive heads-ups — the chat is a conversation, not a
+  // notification feed. These are Horizon's top-ranked standing conditions; dedup is
+  // inherent because they're re-derived from state each load, never stored.
+  const shownHeadsUps = headsUps.slice(0, 2);
+  // The grounded fallback line shows ONLY when there is genuinely nothing real to say —
+  // no move, no reports, no history, no heads-up. Silence-with-a-real-line, never filler.
+  const showQuietLine =
+    !hasMove &&
+    outcomes.length === 0 &&
+    history.length === 0 &&
+    shownHeadsUps.length === 0;
 
   return (
     <section style={conversationStyle}>
@@ -203,6 +227,11 @@ function StoreConversation({
         {outcomes.map((action) => (
           <MessageRow key={action.actionRunId} from="assistant">
             {outcomeMessageText(action)}
+          </MessageRow>
+        ))}
+        {shownHeadsUps.map((headsUp) => (
+          <MessageRow key={headsUp.id} from="assistant">
+            {headsUp.text}
           </MessageRow>
         ))}
         {hasMove ? <MoveMessage move={move} currentSearch={currentSearch} /> : null}
@@ -308,6 +337,13 @@ function buildQuietLine(horizonWatching: HorizonWatch[], insights: Insight[]): s
   return "Nothing needs a decision from you right now — I'll surface your next move here the moment I have one.";
 }
 
+// One quiet header line naming the goal Jefe is working towards — the frame for every
+// recommendation. Null (renders nothing) when there's no goal yet; never fabricated.
+function firstGoalLine(goals: Goal[] | undefined): string | null {
+  const goal = (goals || []).find((item) => item.title && item.title.trim());
+  return goal ? goal.title.trim() : null;
+}
+
 export function DailyHomeLoading({ storeName }: { storeName: string }) {
   return (
     <main style={pageStyle}>
@@ -328,12 +364,23 @@ export function DailyHomeLoading({ storeName }: { storeName: string }) {
   );
 }
 
-function Header({ storeName, todayLabel }: { storeName: string; todayLabel?: string }) {
+function Header({
+  storeName,
+  todayLabel,
+  goalLine,
+}: {
+  storeName: string;
+  todayLabel?: string;
+  goalLine?: string | null;
+}) {
   return (
     <header style={headerStyle}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={markStyle}>J</span>
-        <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={markStyle}>J</span>
+          <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
+        </div>
+        {goalLine ? <span style={goalLineStyle}>Working towards {goalLine}</span> : null}
       </div>
       <DateLabel>{todayLabel ?? ""}</DateLabel>
     </header>
@@ -592,7 +639,6 @@ function buildPrimaryMove(input: {
       approvedAt: null,
       baselineSignal: null,
       currentSignal: null,
-      checklist: [],
     };
   }
 
@@ -617,11 +663,6 @@ function buildPrimaryMove(input: {
       approvedAt: inProgress.appliedAt,
       baselineSignal: inProgress.baselineSignal ?? null,
       currentSignal: inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
-      checklist: [
-        { label: "variants selected", done: true },
-        { label: "markdown applied", done: true },
-        { label: "sell-through observed", done: inProgress.outcome.measured },
-      ],
     };
   }
 
@@ -642,7 +683,6 @@ function buildPrimaryMove(input: {
     approvedAt: null,
     baselineSignal: baselineFromSuggested(input.suggestedAction),
     currentSignal: baselineFromSuggested(input.suggestedAction),
-    checklist: [],
   };
 }
 
@@ -769,6 +809,12 @@ const dateStyle: CSSProperties = {
   fontWeight: 500,
   letterSpacing: 0,
   whiteSpace: "nowrap",
+};
+const goalLineStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 12.5,
+  fontWeight: 600,
+  letterSpacing: "0.01em",
 };
 const headlineStyle: CSSProperties = {
   fontFamily: FONT.serif,

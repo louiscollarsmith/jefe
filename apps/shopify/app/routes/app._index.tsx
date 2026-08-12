@@ -130,7 +130,7 @@ import {
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
-import { getLatestHorizon } from "../lib/merchant-memory/horizon.server.js";
+import { getLatestHorizon, getHorizonHeadsUps } from "../lib/merchant-memory/horizon.server.js";
 import {
   beliefConfirmPriority,
   confirmBelief,
@@ -1160,6 +1160,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         // computed read-only from persisted facts (never fabricated), seasonal timeline
         // merged in. Non-throwing → degrades to seasonal-only, so it can't 5xx the loader.
         getLatestHorizon(prisma, { merchantId: merchant.id, shopId: shop.id });
+      const horizonHeadsUpsPromise =
+        // Proactive run-out / refund heads-ups shaped as chat messages for the Shape B
+        // thread. Read-only, returns [] on any error (never throws into the loader);
+        // rendered from current state each load, not stored (a standing condition).
+        getHorizonHeadsUps(prisma, { merchantId: merchant.id, shopId: shop.id });
       const suggestedActionPromise = metricsPromise.then((metrics) =>
         // Jefe's first visible action: the latest proposed action as a render-ready card,
         // money formatted in the shop currency. Read-only (a single indexed row) and
@@ -1212,6 +1217,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         channelConnections,
         openQuestions,
         horizon,
+        horizonHeadsUps,
         suggestedAction,
         executedActions,
         conversation,
@@ -1227,6 +1233,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         channelConnectionsPromise,
         openQuestionsPromise,
         horizonPromise,
+        horizonHeadsUpsPromise,
         suggestedActionPromise,
         executedActionsPromise,
         conversationPromise,
@@ -1312,6 +1319,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         })),
         horizonNear: horizon.near,
         horizonWatching: horizon.watching,
+        horizonHeadsUps,
         todayLabel,
         storeTimeZone: homeTimeZone,
       };
@@ -1577,6 +1585,7 @@ export default function AppIndex() {
         horizonWatching={data.horizonWatching}
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}
+        horizonHeadsUps={data.horizonHeadsUps}
       />
     );
   }
