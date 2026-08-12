@@ -1422,13 +1422,6 @@
   font-family: "Helvetica Neue", Helvetica, "Segoe UI", sans-serif;
 }
 
-.jf-onboarding > header {
-  position: relative;
-  z-index: 2;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.jf-onboarding > header > .Polaris-Box { padding: 16px 26px; }
 .jf-onboarding > nav > .Polaris-Box { padding: 26px 40px 0; }
 .jf-onboarding > section > .Polaris-Box { padding: 0 40px 64px; }
 .jf-onboarding > footer > .Polaris-Box { padding: 0 40px 34px; }
@@ -1494,14 +1487,6 @@
   line-height: 1;
 }
 
-.jf-mark.is-compact {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  font-size: 17px;
-  box-shadow: none;
-}
-
 .jf-mark i {
   position: absolute;
   right: 7px;
@@ -1510,24 +1495,6 @@
   height: 6px;
   border-radius: 50%;
   background: #e9808c;
-}
-
-.jf-mark.is-compact i {
-  right: 3px;
-  bottom: 3px;
-  width: 3px;
-  height: 3px;
-}
-
-.jf-wordmark {
-  color: var(--jf-text);
-  font: italic 19px/1 "Instrument Serif", Georgia, serif;
-}
-
-.jf-app-menu {
-  color: #5a6478;
-  font-size: 13px;
-  letter-spacing: 0.18em;
 }
 
 .jf-stepper {
@@ -1932,7 +1899,6 @@
 
 @media (max-width: 720px) {
   .jf-onboarding { overflow-y: auto; }
-  .jf-onboarding > header > .Polaris-Box { padding-inline: 20px; }
   .jf-onboarding > nav > .Polaris-Box,
   .jf-onboarding > section > .Polaris-Box,
   .jf-onboarding > footer > .Polaris-Box { padding-inline: 20px; }

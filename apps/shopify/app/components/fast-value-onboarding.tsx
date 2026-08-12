@@ -213,18 +213,6 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
       <div className="jf-bg-top" aria-hidden="true" />
       <div className="jf-bg-corner" aria-hidden="true" />
 
-      <header>
-      <Box paddingBlockStart="400" paddingBlockEnd="400" paddingInlineStart="600" paddingInlineEnd="600">
-        <InlineStack align="space-between" blockAlign="center">
-          <InlineStack gap="200" blockAlign="center">
-            <JefeMark compact />
-            <span className="jf-wordmark">jefe</span>
-          </InlineStack>
-          <span className="jf-app-menu" aria-label="More options">• • •</span>
-        </InlineStack>
-      </Box>
-      </header>
-
       <nav>
       <Box paddingBlockStart="600" paddingInlineStart="800" paddingInlineEnd="800">
         <InlineStack align="space-between" blockAlign="center" gap="400" wrap>
@@ -333,8 +321,8 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
   );
 }
 
-function JefeMark({ compact = false }: { compact?: boolean }) {
-  return <span className={`jf-mark ${compact ? "is-compact" : ""}`} aria-hidden="true"><span>J</span><i /></span>;
+function JefeMark() {
+  return <span className="jf-mark" aria-hidden="true"><span>J</span><i /></span>;
 }
 
 function ConnectScene({ storeName, phase }: { storeName: string; phase: string }) {
