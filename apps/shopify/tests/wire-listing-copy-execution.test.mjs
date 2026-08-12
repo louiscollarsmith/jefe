@@ -132,3 +132,16 @@ test("a rejected run is not executable", async () => {
   assert.equal(result.ok, false);
   assert.match(result.reason, /not_executable:rejected/);
 });
+
+test("listing_copy is a resolvable primitive, so the generic propose path can reach it", async () => {
+  // Registering in ACTION_REGISTRY is not enough — `proposeActionFromIntent` dispatches on the
+  // PRIMITIVE BINDING table, and a type with no binding returns "no_resolver" and can never be
+  // proposed. That gap is exactly why the live Settings dial did nothing.
+  const { listResolvableActionTypes } = await import("../app/lib/actions/action-resolution.server.js");
+  assert.ok(
+    listResolvableActionTypes().includes("listing_copy"),
+    "listing_copy has no primitive binding — the dial would be inert",
+  );
+  // Importing that module also runs the binding-completeness guard, which throws on a partial
+  // binding rather than letting it silently inherit clearance's behaviour.
+});

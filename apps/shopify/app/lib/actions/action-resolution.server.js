@@ -16,6 +16,12 @@ import { randomUUID } from "node:crypto";
 import { getActionDefinition, getRequiredScopes, isActionExecuteEnabled, validateActionIntent } from "./action-intent.server.js";
 import { applyAutonomyPolicy, getActionMode, getActionPolicy } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
+import { proposeProductTypes } from "./listing-copy-proposal.server.js";
+import {
+  DEFAULT_LISTING_COPY_CAPS,
+  buildListingCopyPreview,
+  computeListingCopyAutoEligibility,
+} from "./listing-copy-adapter.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
@@ -145,12 +151,135 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent, source
  *   The value-first permission ask, in this primitive's own terms.
  */
 
+/**
+ * Find sellable products with no product type and propose one for each, using the merchant's
+ * OWN vocabulary. Returns null (→ "no_opportunity") when there is nothing to fill or nothing
+ * confident to say — proposing a guess is the failure this whole path is built to avoid.
+ * @param {any} prisma
+ * @param {{ merchantId: string, shopId: string, intent?: any }} input
+ */
+async function resolveListingCopy(prisma, { merchantId, shopId, intent }) {
+  // Defensive like the memory readers: a caller without the product model (or a narrow test
+  // double) gets "no opportunity", never a throw. This resolver runs inside
+  // getScopeGatedOpportunity's loop over every proposable type, so throwing here would take
+  // down the nudge for actions that have nothing to do with it.
+  if (!prisma?.product?.findMany) return null;
+  const rows = await prisma.product.findMany({
+    where: { merchantId, shopId },
+    select: { externalId: true, title: true, vendor: true, productType: true, status: true },
+  });
+  const { proposals, unresolved, vocabulary } = proposeProductTypes({
+    // externalId is the Shopify GID — the id the write client needs. Our internal uuid would
+    // be meaningless to Shopify.
+    products: rows.map((/** @type {any} */ row) => ({
+      productId: row.externalId,
+      title: row.title,
+      vendor: row.vendor,
+      productType: row.productType,
+      status: row.status,
+    })),
+  });
+  if (!proposals.length) return null;
+
+  const requestedMax = Number(intent?.params?.maxProducts);
+  const capped = Number.isFinite(requestedMax) && requestedMax > 0
+    ? proposals.slice(0, Math.min(requestedMax, DEFAULT_LISTING_COPY_CAPS.maxProducts))
+    : proposals.slice(0, DEFAULT_LISTING_COPY_CAPS.maxProducts);
+
+  const preview = buildListingCopyPreview({
+    items: capped.map((proposal) => ({
+      productId: proposal.productId,
+      title: proposal.title,
+      currentType: "",
+      proposedType: proposal.proposedType,
+    })),
+  });
+  if (preview.productCount < 1) return null;
+
+  return {
+    preview,
+    summary: {
+      productCount: preview.productCount,
+      // What Jefe could NOT work out — carried so the surface can ask rather than dead-end.
+      unresolvedCount: unresolved.length,
+      vocabulary: vocabulary.slice(0, 12),
+      // The per-product "because", so the merchant can check each one.
+      reasons: capped.map((proposal) => ({
+        productId: proposal.productId,
+        title: proposal.title,
+        proposedType: proposal.proposedType,
+        because: proposal.because,
+      })),
+    },
+    // Magnitude is a keyed record, not a bare number — the binding contract's shape.
+    magnitude: { productCount: preview.productCount },
+  };
+}
+
+/** @param {{ summary: any, preview: any, runId: string, executable: boolean }} input */
+function listingCopyProposeCard({ summary, preview, runId, executable }) {
+  const n = preview.productCount;
+  return {
+    actionRunId: runId,
+    actionType: "listing_copy",
+    headline: `${n} product${n === 1 ? " has" : "s have"} no category — Jefe can file ${n === 1 ? "it" : "them"} the way you file everything else.`,
+    keyNumbers: [{ label: "Products", value: n }],
+    topItems: (summary.reasons ?? []).slice(0, 5).map((/** @type {any} */ r) => ({
+      title: r.title ?? r.productId,
+      detail: `${r.proposedType} — ${r.because}`,
+    })),
+    executable,
+  };
+}
+
+/** @param {{ summary: any; preview: any; currency: string }} input */
+function listingCopyReadCard({ summary, preview }) {
+  const n = Number(summary?.productCount ?? preview?.productCount ?? 0);
+  if (!(n > 0)) return null;
+  return {
+    headline: `${n} product${n === 1 ? " has" : "s have"} no category — Jefe can file ${n === 1 ? "it" : "them"} the way you file everything else.`,
+    keyNumbers: [{ label: "Products", value: n }],
+    topItems: (summary?.reasons ?? []).slice(0, 5).map((/** @type {any} */ r) => ({
+      title: r.title ?? r.productId,
+      detail: `${r.proposedType} — ${r.because}`,
+    })),
+  };
+}
+
+/** @param {string} status @param {number} count */
+function listingCopyExecutedHeadline(status, count) {
+  const noun = `${count} product${count === 1 ? "" : "s"}`;
+  if (status === "reverted") return `Put back the categories on ${noun}`;
+  if (status === "rejected") return `Left ${noun} uncategorised`;
+  return `Categorised ${noun}`;
+}
+
+/** @param {{ summary: any, currency: string, missingScopes: string[] }} input */
+function listingCopyScopeNudge({ summary }) {
+  const n = Number(summary?.productCount) || 0;
+  if (n < 1) return null;
+  return {
+    productCount: n,
+    headline: `Jefe can file ${n} uncategorised product${n === 1 ? "" : "s"} the way you file the rest — grant "Edit products" access to let it act.`,
+  };
+}
+
 // ⚠️ The @type below MUST be its own comment block, separate from the @typedef above.
 // Putting both in one block makes the typedef reference itself (TS2456) and leaves
 // PRIMITIVES untyped — which then cascades into an implicitly-any arrow parameter and a
 // string-index error. That mistake reddened main; keep the two blocks apart.
 /** @type {Record<string, PrimitiveBinding>} */
 const PRIMITIVES = {
+  listing_copy: {
+    resolve: resolveListingCopy,
+    caps: DEFAULT_LISTING_COPY_CAPS,
+    computeEligibility: computeListingCopyAutoEligibility,
+    actionKindFor: (targetKind) => (targetKind === "missing_product_type" ? "set_product_type" : targetKind),
+    card: listingCopyProposeCard,
+    readCard: listingCopyReadCard,
+    executedHeadline: listingCopyExecutedHeadline,
+    scopeNudge: listingCopyScopeNudge,
+  },
   price_markdown: {
     resolve: resolvePriceMarkdown,
     caps: DEFAULT_CLEARANCE_CAPS,

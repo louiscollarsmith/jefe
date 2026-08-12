@@ -32,7 +32,7 @@ export function isListingCopyExecuteEnabled() {
   return process.env.LISTING_COPY_EXECUTE_ENABLED === "true";
 }
 
-/** Shopify stores an unset product type as "", and whitespace is just as unset. */
+/** Shopify stores an unset product type as "", and whitespace is just as unset. @param {unknown} value */
 function isBlankType(value) {
   return typeof value !== "string" || value.trim() === "";
 }
@@ -95,7 +95,7 @@ export function buildListingCopyPreview(proposal, caps = DEFAULT_LISTING_COPY_CA
   };
 }
 
-/** Blocks (never trims) an over-cap run. */
+/** Blocks (never trims) an over-cap run. @param {any} preview @param {typeof DEFAULT_LISTING_COPY_CAPS} [caps] */
 export function enforceBlastRadiusCap(preview, caps = DEFAULT_LISTING_COPY_CAPS) {
   const violations = [];
   if (preview.productCount > caps.maxProducts) {
@@ -104,7 +104,8 @@ export function enforceBlastRadiusCap(preview, caps = DEFAULT_LISTING_COPY_CAPS)
   return { withinCap: violations.length === 0, violations };
 }
 
-/** reversible ∧ within-cap ∧ confident — computed here, never trusted from upstream. */
+/** reversible ∧ within-cap ∧ confident — computed here, never trusted from upstream.
+ * @param {any} preview @param {unknown} confidence @param {typeof DEFAULT_LISTING_COPY_CAPS} [caps] */
 export function computeListingCopyAutoEligibility(preview, confidence, caps = DEFAULT_LISTING_COPY_CAPS) {
   const reversible =
     preview.productCount > 0 && preview.reversibilityPlan.length === preview.productCount;
@@ -123,7 +124,8 @@ export function computeListingCopyAutoEligibility(preview, confidence, caps = DE
   };
 }
 
-/** Best-effort restore of already-applied changes (the auto-revert-on-partial-failure path). */
+/** Best-effort restore of already-applied changes (the auto-revert-on-partial-failure path).
+ * @param {any} shopifyClient @param {any[]} plan */
 async function restoreApplied(shopifyClient, plan) {
   const restored = [];
   const failed = [];

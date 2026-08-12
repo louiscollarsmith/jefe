@@ -30,7 +30,7 @@ function blank(value) {
   return typeof value !== "string" || value.trim() === "";
 }
 
-/** @param {string} title */
+/** @param {string | null | undefined} title */
 function tokens(title) {
   return String(title ?? "")
     .toLowerCase()
@@ -38,7 +38,8 @@ function tokens(title) {
     .filter((t) => t.length >= MIN_TOKEN_LENGTH && !STOPWORDS.has(t) && !/^\d+$/.test(t));
 }
 
-/** Most frequent entry, with its share. Ties break alphabetically so a rerun proposes the same thing. */
+/** Most frequent entry, with its share. Ties break alphabetically so a rerun proposes the same thing.
+ * @param {Map<string, number>} counts */
 function dominant(counts) {
   const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   if (!entries.length) return null;
@@ -83,7 +84,9 @@ export function proposeProductTypes(input) {
     }
   }
 
+  /** @type {Array<{ productId: string, title: string | null, currentType: string, proposedType: string, confidence: number, basis: string, because: string }>} */
   const proposals = [];
+  /** @type {Array<{ productId: string, title: string | null, reason: string }>} */
   const unresolved = [];
 
   // Nothing typed at all means there is no vocabulary to be consistent WITH. Inventing one
