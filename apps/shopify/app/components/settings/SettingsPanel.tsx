@@ -104,7 +104,10 @@ function EmailBriefRow({ brief }: { brief: EmailBrief }) {
       {note ? <span style={noteStyle}>{note}</span> : null}
 
       {editing ? (
-        <Form method="post" style={formStyle}>
+        // action="/app?index" so the notification.set handler on the app._index route
+        // receives the post even when this panel is mounted on the separate /app/settings
+        // route (the published settings-panel form-action rule; mirrors AutonomyPanel).
+        <Form method="post" action="/app?index" style={formStyle}>
           <input type="hidden" name="intent" value="notification.set" />
           <input type="hidden" name="category" value="morning_brief" />
           <input type="hidden" name="frequency" value={brief.frequency || "daily"} />
