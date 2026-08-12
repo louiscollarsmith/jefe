@@ -244,6 +244,92 @@ function formatCostCoverage(value) {
   return `I have cost prices for about ${p}% of what you sell, so I can't judge margin reliably yet. Fill in the rest (${where}) and I can tell you which of your bestsellers actually make money.`;
 }
 
+/**
+ * products.bestseller_by_revenue.trailing_90d → the product carrying the store.
+ * Value: { title, revenue, revenueSharePercent, currency, sellingProductCount }.
+ * @param {any} value
+ */
+function formatBestseller(value) {
+  const title = value?.title;
+  if (typeof title !== "string" || !title) return null;
+  let s = `${title} is your biggest earner`;
+  const money90 = money(value?.currency, value?.revenue);
+  if (money90 && Number(value?.revenue) > 0) s += ` — ${money90} in the last 90 days`;
+  const share = pct(value?.revenueSharePercent);
+  if (share && Number(value?.revenueSharePercent) > 0) s += `, ${share}% of everything you sold`;
+  return `${s}.`;
+}
+
+/**
+ * customers.top_customer_revenue_share.all_time → how concentrated the customer base is.
+ * Value (shareOutcome): { percentage, topCustomerCount, ... }.
+ *
+ * Stated as exposure, not as a problem: a few loyal big accounts is a fine business, and
+ * whether it is a risk depends on things Jefe cannot see. It says the number and what it
+ * would mean if they left, which is the part a merchant can act on.
+ * @param {any} value
+ */
+function formatTopCustomerShare(value) {
+  const p = pct(value?.percentage);
+  if (!p || !(Number(value?.percentage) > 0)) return null;
+  const n = Number(value?.topCustomerCount);
+  const who = Number.isFinite(n) && n > 0 ? `Your top ${n === 1 ? "customer" : `${n} customers`}` : "Your biggest customers";
+  return `${who} account for ${p}% of everything customers have spent with you.`;
+}
+
+/**
+ * inventory.retail_value_of_available_stock → money sitting on the shelf.
+ * Value: { amount, currency, pricedStockedVariantCount }.
+ * @param {any} value
+ */
+function formatStockValue(value) {
+  const amount = money(value?.currency, value?.amount);
+  if (!amount || !(Number(value?.amount) > 0)) return null;
+  return `You're holding ${amount} of stock at what you'd sell it for.`;
+}
+
+/**
+ * catalog.out_of_stock_product_count → what a shopper can't buy right now.
+ * Value (countOutcome): { count }.
+ * @param {any} value
+ */
+function formatOutOfStockProducts(value) {
+  const count = Number(value?.count);
+  if (!Number.isFinite(count) || count < 1) return null;
+  const verb = count === 1 ? "is" : "are";
+  return `${plural(count, "live product")} ${verb} out of stock — nobody can buy ${count === 1 ? "it" : "them"} today.`;
+}
+
+/**
+ * business.days_since_last_order → the quiet signal.
+ * Value: { count }.
+ *
+ * Says nothing at all when orders are recent: "it has been 0 days since your last order" is
+ * noise. Only speaks once a gap is worth noticing.
+ * @param {any} value
+ */
+function formatDaysSinceLastOrder(value) {
+  const days = Number(value?.count);
+  if (!Number.isFinite(days) || days < 3) return null;
+  return `Nothing's sold for ${plural(Math.round(days), "day")}.`;
+}
+
+/**
+ * products.no_sale_active_product_count.trailing_90d → the quiet half of the catalogue.
+ * Value (countOutcome): { count }.
+ *
+ * Distinct from dead stock, which is this AND holding stock AND costed. This is the wider,
+ * softer signal — a product can be new, seasonal, or simply unloved, and Jefe cannot tell
+ * which from here, so it does not guess.
+ * @param {any} value
+ */
+function formatNoSaleProducts(value) {
+  const count = Number(value?.count);
+  if (!Number.isFinite(count) || count < 1) return null;
+  const verb = count === 1 ? "hasn't" : "haven't";
+  return `${plural(count, "live product")} ${verb} sold anything in 90 days.`;
+}
+
 /** @type {Record<string, (value: any) => string | null>} */
 const FORMATTERS = {
   "products.dead_stock.trailing_90d": formatDeadStock,
@@ -260,6 +346,14 @@ const FORMATTERS = {
   "customers.repeat_customer_rate.all_time": formatRepeatCustomerRate,
   "business.peak_sales_month.all_time": formatPeakSalesMonth,
   "products.cost_coverage": formatCostCoverage,
+  // Second tranche — the things a merchant would look at first on a surface they have just
+  // opened: what sells, what doesn't, what's out, what's tied up, and who they depend on.
+  "products.bestseller_by_revenue.trailing_90d": formatBestseller,
+  "customers.top_customer_revenue_share.all_time": formatTopCustomerShare,
+  "inventory.retail_value_of_available_stock": formatStockValue,
+  "catalog.out_of_stock_product_count": formatOutOfStockProducts,
+  "business.days_since_last_order": formatDaysSinceLastOrder,
+  "products.no_sale_active_product_count.trailing_90d": formatNoSaleProducts,
 };
 
 /** Belief keys that have a statement formatter (for coverage checks / roadmap). */

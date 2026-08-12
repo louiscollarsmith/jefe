@@ -134,3 +134,68 @@ test("no statement ends up with a stray zero, NaN or undefined in it", () => {
     assert.match(s, /\.$/, `${key} should end in a full stop: ${s}`);
   }
 });
+
+// --- second tranche: what a merchant looks at first on a surface they've just opened ---
+
+test("the bestseller is named, with what it earned and its share", () => {
+  const s = say("products.bestseller_by_revenue.trailing_90d", {
+    title: "Overnight Repair Serum",
+    revenue: 18400,
+    revenueSharePercent: 31,
+    currency: "GBP",
+  });
+  assert.match(s, /Overnight Repair Serum/);
+  assert.match(s, /£18,400/);
+  assert.match(s, /31%/);
+});
+
+test("customer concentration is stated as exposure, not scolded", () => {
+  const s = say("customers.top_customer_revenue_share.all_time", {
+    percentage: 44,
+    topCustomerCount: 5,
+  });
+  assert.match(s, /44%/);
+  assert.match(s, /top 5 customers/);
+  // A few big loyal accounts is a fine business; whether it's a risk depends on things Jefe
+  // cannot see from here.
+  assert.doesNotMatch(s, /risk|danger|worry|problem|concerning/i);
+});
+
+test("a single top customer reads as singular", () => {
+  const s = say("customers.top_customer_revenue_share.all_time", {
+    percentage: 30,
+    topCustomerCount: 1,
+  });
+  assert.match(s, /top customer\b/);
+  assert.doesNotMatch(s, /1 customers/);
+});
+
+test("stock value is money, in the shop's own currency", () => {
+  const s = say("inventory.retail_value_of_available_stock", { amount: 96000, currency: "GBP" });
+  assert.match(s, /£96,000/);
+});
+
+test("out-of-stock products say what it costs the merchant", () => {
+  const one = say("catalog.out_of_stock_product_count", { count: 1 });
+  assert.match(one, /1 live product is/);
+  assert.match(one, /buy it today/);
+  const many = say("catalog.out_of_stock_product_count", { count: 7 });
+  assert.match(many, /7 live products are/);
+  assert.match(many, /buy them today/);
+});
+
+test("a quiet spell only speaks once it is worth noticing", () => {
+  // "0 days since your last order" is noise, not insight.
+  assert.equal(say("business.days_since_last_order", { count: 0 }), null);
+  assert.equal(say("business.days_since_last_order", { count: 2 }), null);
+  const s = say("business.days_since_last_order", { count: 11 });
+  assert.match(s, /11 days/);
+});
+
+test("products with no sales are not called dead stock", () => {
+  // Dead stock is this AND holding stock AND costed. A product here may be new or seasonal,
+  // and Jefe cannot tell which — so it states the fact and does not diagnose.
+  const s = say("products.no_sale_active_product_count.trailing_90d", { count: 23 });
+  assert.match(s, /23 live products haven't sold/);
+  assert.doesNotMatch(s, /dead|dying|waste|clear/i);
+});
