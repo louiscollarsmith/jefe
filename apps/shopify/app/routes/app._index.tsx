@@ -526,10 +526,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           destinationId: String(formData.get("destinationId") ?? ""),
         });
         return redirect(
-          appPathFromSearch(new URL(request.url).search, {
-            step: "channels",
-            channelProvider: "slack",
-            channelMode: null,
+          settingsChannelsPath(new URL(request.url).search, {
             channelNotice: "slack_test_sent",
           }),
         );
@@ -554,10 +551,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           destinationId: String(formData.get("destinationId") ?? ""),
         });
         return redirect(
-          appPathFromSearch(new URL(request.url).search, {
-            step: "channels",
-            channelProvider: null,
-            channelMode: null,
+          settingsChannelsPath(new URL(request.url).search, {
             channelNotice: null,
           }),
         );
@@ -572,10 +566,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           consentAccepted: formDataHasTruthyValue(formData, "consentAccepted"),
         });
         return redirect(
-          appPathFromSearch(new URL(request.url).search, {
-            step: "channels",
-            channelProvider: "whatsapp",
-            channelMode: null,
+          settingsChannelsPath(new URL(request.url).search, {
             channelNotice: "whatsapp_code_sent",
           }),
         );
@@ -588,10 +579,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           code: String(formData.get("verificationCode") ?? ""),
         });
         return redirect(
-          appPathFromSearch(new URL(request.url).search, {
-            step: "channels",
-            channelProvider: null,
-            channelMode: null,
+          settingsChannelsPath(new URL(request.url).search, {
             channelNotice: "whatsapp_ready",
           }),
         );
@@ -1356,31 +1344,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         code: url.searchParams.get("code"),
         error: url.searchParams.get("error"),
       });
+      // Land on the settings Channels panel (channels left onboarding). The success notice
+      // rides along; shop/host/embedded are preserved for App Bridge.
       return redirect(
-        appPathFromSearch(url.search, {
-          code: null,
-          error: null,
-          state: null,
-          step: "channels",
-          // Connect defaults to the installing user's DM (connect-DM), so a
-          // successful connect must NOT auto-open the channel picker — channel
-          // choice stays optional/later. Leaving channelProvider unset keeps the
-          // "connected" notice without popping the "Choose a Slack channel" modal.
-          channelProvider: null,
-          channelNotice: "slack_connected",
-        }),
+        settingsChannelsPath(url.search, { channelNotice: "slack_connected" }),
       );
     } catch (error) {
       const safeError = channelActionError(error);
       return redirect(
-        appPathFromSearch(url.search, {
-          code: null,
-          error: null,
-          state: null,
-          step: "channels",
-          channelProvider: "slack",
-          channelNotice: safeError.code,
-        }),
+        settingsChannelsPath(url.search, { channelNotice: safeError.code }),
       );
     }
   }
@@ -5433,6 +5405,31 @@ function appPathFromSearch(
   }
   const nextSearch = params.toString();
   return nextSearch ? `/app?${nextSearch}` : "/app";
+}
+
+// Channels moved out of onboarding — the "channels" step was removed from ONBOARDING_STEPS in
+// PR #68, so a redirect to `step: "channels"` no longer resolves and drops the merchant back on
+// Connect (the Slack-connect defect). Channels now live in the settings Channels panel
+// (`/app/settings?panel=channels`, chat 11's shell). Build a redirect THERE that resolves and can
+// render the channelNotice, preserving the App Bridge params (shop/host/embedded). Mirrors
+// channels.slack.callback.tsx (the popup callback the channels session already repointed).
+function settingsChannelsPath(
+  search: string,
+  updates: Record<string, string | null | undefined> = {},
+) {
+  const params = new URLSearchParams(search);
+  // Drop the OAuth/onboarding-only params so we land clean on the panel.
+  for (const dead of ["code", "error", "state", "step", "channelProvider", "channelMode"]) {
+    params.delete(dead);
+  }
+  params.set("panel", "channels");
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue;
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const nextSearch = params.toString();
+  return nextSearch ? `/app/settings?${nextSearch}` : "/app/settings";
 }
 
 function getPendingOnboardingDestination(
