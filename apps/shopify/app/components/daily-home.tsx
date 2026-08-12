@@ -484,7 +484,7 @@ function ActionChat({
                 <input type="hidden" name="intent" value="action.defer" />
                 <input type="hidden" name="actionRunId" value={move.actionRunId} />
                 <input type="hidden" name="reason" value="defer" />
-                <ChipButton>Remind me next week</ChipButton>
+                <ChipButton>Maybe later</ChipButton>
               </Form>
             ) : null}
           </div>
