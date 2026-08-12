@@ -106,6 +106,27 @@ async function relinkOrphanedShop(prisma, shop, shopDomain) {
   return { ...relinked, merchant };
 }
 
+/** How long after the last welcome a reinstall counts as a genuine return (not
+ * evaluation thrash) and should be re-onboarded. */
+const WELCOME_REONBOARD_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a reactivating (reinstalling) shop should have its once-forever welcome
+ * claim cleared so afterAuth re-sends the Day-0 welcome. True only when the last
+ * welcome is old enough that this is a real return — an uninstall+reinstall within
+ * the window must NOT re-welcome, or someone evaluating the app gets a welcome on
+ * every reinstall. Pure; exported for test.
+ * @param {Date | string | null} welcomeEmailSentAt
+ * @param {Date} now
+ * @returns {boolean}
+ */
+export function shouldReWelcomeOnReactivation(welcomeEmailSentAt, now) {
+  if (welcomeEmailSentAt == null) return false;
+  return (
+    now.getTime() - new Date(welcomeEmailSentAt).getTime() > WELCOME_REONBOARD_AFTER_MS
+  );
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {NonNullable<Awaited<ReturnType<typeof findShopifyShop>>>} existingShop
@@ -120,6 +141,10 @@ async function activateExistingShopifyTenant(prisma, existingShop, input) {
   const merchant =
     existingShop.merchant ??
     (await relinkOrphanedShop(prisma, existingShop, input.shopDomain)).merchant;
+  const reWelcome = shouldReWelcomeOnReactivation(
+    existingShop.welcomeEmailSentAt,
+    new Date(),
+  );
   const shop =
     existingShop.status === "uninstalled" ||
     existingShop.setupStatus === "uninstalled"
@@ -127,8 +152,15 @@ async function activateExistingShopifyTenant(prisma, existingShop, input) {
           where: { id: existingShop.id },
           // Reactivating a reinstalled shop clears the uninstall stamp too — else a
           // stale Shop.uninstalledAt lingers on an active shop (it's only re-set on
-          // the next uninstall) and mislabels a live shop as churned.
-          data: { status: "active", setupStatus: "installed", uninstalledAt: null },
+          // the next uninstall) and mislabels a live shop as churned. And when the
+          // last welcome is old (>30d), clear the welcome claim so a genuinely
+          // returned merchant is re-onboarded (afterAuth re-sends the welcome).
+          data: {
+            status: "active",
+            setupStatus: "installed",
+            uninstalledAt: null,
+            ...(reWelcome ? { welcomeEmailSentAt: null } : {}),
+          },
         })
       : existingShop;
 
