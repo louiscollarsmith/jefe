@@ -3,8 +3,8 @@ import { useState } from "react";
 
 // The Settings → Autonomy panel: the per-action autonomy roster ("how much rope Jefe
 // gets"). RESTORED after PR #75's home rewrite orphaned it (founder ruling 2026-08-12:
-// bring back the recommend / approve / autonomous dial — it's the merchant's only way to
-// opt into autonomy-from-install). Re-homed from the shelved `app-home/sections.tsx` into
+// bring back the approve / autonomous dial — it's the merchant's only way to opt into
+// autonomy-from-install). Re-homed from the shelved `app-home/sections.tsx` into
 // the /app/settings surface (chat 11's shell), restyled to the home tokens. Mounts in the
 // settings slot, which already renders the "Autonomy" title + blurb — so this is just the
 // roster content beneath it.
@@ -16,7 +16,7 @@ import { useState } from "react";
 // real needs-you prompt (reordering). No fabricated dials; no fabricated numbers (the
 // Pricing detail states the real guardrail — clearance floors at unit cost — not a margin %).
 
-type ActionMode = "recommend" | "approve_execute" | "autonomous";
+type ActionMode = "approve_execute" | "autonomous";
 
 // Tokens mirrored from the home / settings shell (daily-home.tsx · app.settings.tsx).
 const COLORS = {
@@ -29,10 +29,13 @@ const COLORS = {
 const SANS = "'Schibsted Grotesk', system-ui, -apple-system, sans-serif";
 const MONO = "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace";
 
+// Two modes (founder ruling 2026-08-12 — advisory-only `recommend` dropped as a selectable
+// mode: a dial whose first option is "don't actually help" undercut autonomy-from-install).
+// Human-in-the-loop "Approve" or hands-off "Autonomous". The stored keys + the engine's mode
+// semantics are UNTOUCHED — only the picker changed (removing a mode from the engine is one-way).
 const MODE_OPTIONS: Array<{ value: ActionMode; label: string; hint: string }> = [
-  { value: "recommend", label: "Recommend", hint: "Jefe suggests, you do it" },
-  { value: "approve_execute", label: "Approve", hint: "Jefe does it once you approve" },
-  { value: "autonomous", label: "Auto", hint: "Jefe does it, then tells you" },
+  { value: "approve_execute", label: "Approve", hint: "Jefe proposes it, you approve, then Jefe acts" },
+  { value: "autonomous", label: "Autonomous", hint: "Jefe acts on its own, then tells you" },
 ];
 
 // Design copy only — labels / detail / order + reordering's needs-you prompt, keyed by
@@ -47,7 +50,18 @@ const ACTION_ROSTER: Array<{ actionType: string; label: string; detail: string; 
 ];
 
 function isActionMode(v: string): v is ActionMode {
-  return v === "recommend" || v === "approve_execute" || v === "autonomous";
+  return v === "approve_execute" || v === "autonomous";
+}
+
+// The stored mode → what the picker shows. A legacy stored `recommend` (dropped as a
+// selectable mode 2026-08-12; there should be ~none — the dial only went live that day)
+// displays as the safe default `approve_execute` until the merchant next sets it. The stored
+// value + the engine's handling of `recommend` are left untouched (one-way — Matt's call).
+// Anything unrecognised ⇒ no dial (the row falls through to "Soon" / its blocked prompt).
+function displayMode(raw: string | undefined): ActionMode | null {
+  if (!raw) return null;
+  if (raw === "recommend") return "approve_execute";
+  return isActionMode(raw) ? raw : null;
 }
 
 // The per-action autonomy dial. Posts action.set_mode via a fetcher to the surviving handler
@@ -100,7 +114,7 @@ export function AutonomyPanel({ actionModes }: { actionModes?: Record<string, st
     <div style={{ display: "flex", flexDirection: "column", marginTop: 6 }}>
       {ACTION_ROSTER.map((row, i) => {
         const raw = modes[row.actionType];
-        const liveMode: ActionMode | null = raw && isActionMode(raw) ? raw : null;
+        const liveMode = displayMode(raw);
         const last = i === ACTION_ROSTER.length - 1;
         return (
           <div
