@@ -15,16 +15,17 @@ Jefe is not an analytics dashboard or a generic chatbot, and **an LLM never writ
 The active Shopify app flow is:
 
 1. Connect Shopify.
-2. Build Shopify evidence and first Merchant Memory in the background.
-3. Optionally connect a channel. Slack is active; WhatsApp is visible as coming soon.
-4. Review initial Insights generated from Merchant Memory.
-5. Review and refine generated Goals.
-6. Review and accept one generated Plan.
-7. Open the Merchant Memory view: "What Jefe knows about your business."
+2. Start two independent durable jobs: a small, high-priority Merchant Memory bootstrap and the existing full-history backfill.
+3. Answer one Context question while the bootstrap evaluates evidence-backed opportunities.
+4. Review one grounded Insight, then approve or track its Recommendation.
+5. Enter a one-time APP handoff showing only the real work Jefe is tracking. Later visits open Daily Home normally while the full backfill keeps learning in the background.
+
+The visible first-run sequence is `CONNECT -> CONTEXT -> INSIGHT -> ACTION -> APP`. The bootstrap reads a bounded recent order window, persists referenced catalogue and inventory records first, and derives only bootstrap-safe beliefs. It may do one bounded second pass if an eligible evidence contract needs more support. It never marks a full-backfill domain complete. Initial recommendations are normally tracked for review because the only currently executable adapter is dead-stock clearance, while bootstrap deliberately does not infer dead stock.
 
 Important current boundaries:
 
 - LLMs interpret bounded evidence and produce structured outputs. Application code validates and persists the result.
+- Bootstrap generation receives one eligible evidence contract and its cited Merchant Memory beliefs. Unsupported contracts never reach the LLM, citations and numbers remain allowlisted, and every bootstrap result retains its observed window, completeness and caveat.
 - Merchant corrections and confirmations outrank model inference.
 - The app must not let an LLM directly mutate Shopify, Slack, WhatsApp or any other external system.
 - The typed **action/execution layer** is built for the first action (dead-stock clearance / `price_markdown`) — a proposed-row ledger (`action_executions`), the `wireClearanceExecution` approve→execute orchestrator, and the `applyClearance` typed adapter — and it is **LIVE in production** (`CLEARANCE_EXECUTE_ENABLED=true` since 2026-07-31; unsetting it reverts to the dark path — records approval, writes nothing). It is inert for a given store only until that store has costed dead stock + a non-`recommend` dial. The LLM never writes directly; only the deterministic typed adapter does, under the merchant's per-action mode (recommend / approve_execute / autonomous). OAuth scopes were trimmed to the 7 a live V1 uses (all reads + `write_products`); other `write_*` are re-added per-action as each ships. See `context/11_actions_and_autonomy.md` + `docs/ops/clearance-go-live.md`.

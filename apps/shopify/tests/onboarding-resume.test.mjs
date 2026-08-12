@@ -11,22 +11,23 @@ import {
 test("ONBOARDING_STEPS is the canonical order", () => {
   assert.deepEqual(
     [...ONBOARDING_STEPS],
-    ["connect", "insights", "goals", "plan"],
+    ["connect", "context", "insight", "action", "app"],
   );
 });
 
 test("onboardingStepIndex orders steps; -1 for unknown/missing", () => {
   assert.equal(onboardingStepIndex("connect"), 0);
-  assert.equal(onboardingStepIndex("plan"), 3);
-  assert.ok(onboardingStepIndex("goals") > onboardingStepIndex("insights"));
+  assert.equal(onboardingStepIndex("app"), 4);
+  assert.ok(onboardingStepIndex("action") > onboardingStepIndex("insight"));
   assert.equal(onboardingStepIndex("channels"), -1);
   assert.equal(onboardingStepIndex("nope"), -1);
   assert.equal(onboardingStepIndex(null), -1);
 });
 
 test("readFurthestStep validates and defaults to connect", () => {
-  assert.equal(readFurthestStep({ furthestStep: "goals" }), "goals");
-  assert.equal(readFurthestStep({ furthestStep: "plan" }), "plan");
+  assert.equal(readFurthestStep({ furthestStep: "insight" }), "insight");
+  assert.equal(readFurthestStep({ furthestStep: "app" }), "app");
+  assert.equal(readFurthestStep({ furthestStep: "plan" }), "context");
   // Malformed / missing / non-object → the safe default (never a wrong advance).
   assert.equal(readFurthestStep({ furthestStep: "nonsense" }), "connect");
   assert.equal(readFurthestStep({ furthestStep: 3 }), "connect");
@@ -48,11 +49,8 @@ test("resolveOnboardingStep: channels is no longer an onboarding step", () => {
   assert.equal(readFurthestStep({ furthestStep: "channels" }), "connect");
 });
 
-test("resolveOnboardingStep: an explicit content-step request is honored even before data is ready", () => {
-  // Regression guard for the forward-nav dead-end: "Continue to Insights" (etc.)
-  // mid-generation must NOT bounce to Connect — the requested step is returned so
-  // its own "still building…" waiting scene renders.
-  for (const step of ["insights", "goals", "plan"]) {
+test("resolveOnboardingStep honors explicit fast-flow scenes", () => {
+  for (const step of ["context", "insight", "action", "app"]) {
     assert.equal(
       resolveOnboardingStep({
         requestedStep: step,
@@ -60,7 +58,7 @@ test("resolveOnboardingStep: an explicit content-step request is honored even be
         backfillComplete: false,
       }),
       step,
-      `${step} requested while not ready → ${step} (waiting scene, not connect)`,
+      `${step} requested while not ready → ${step}`,
     );
     assert.equal(
       resolveOnboardingStep({
@@ -82,7 +80,7 @@ test("resolveOnboardingStep: the no-explicit-step (resume) path still gates on r
       requestedStep: null,
       memoryReady: false,
       backfillComplete: false,
-      furthestStep: "goals",
+      furthestStep: "action",
     }),
     "connect",
   );
@@ -91,9 +89,9 @@ test("resolveOnboardingStep: the no-explicit-step (resume) path still gates on r
       requestedStep: null,
       memoryReady: true,
       backfillComplete: true,
-      furthestStep: "goals",
+      furthestStep: "action",
     }),
-    "goals",
+    "action",
   );
 });
 
@@ -105,18 +103,18 @@ test("resolveOnboardingStep: no explicit step resumes at the furthest reached", 
       requestedStep: null,
       memoryReady: true,
       backfillComplete: true,
-      furthestStep: "insights",
+      furthestStep: "insight",
     }),
-    "insights",
+    "insight",
   );
   assert.equal(
     resolveOnboardingStep({
       requestedStep: null,
       memoryReady: true,
       backfillComplete: true,
-      furthestStep: "goals",
+      furthestStep: "action",
     }),
-    "goals",
+    "action",
   );
   // Never advanced → connect.
   assert.equal(
@@ -134,7 +132,7 @@ test("resolveOnboardingStep: no explicit step resumes at the furthest reached", 
       requestedStep: null,
       memoryReady: false,
       backfillComplete: false,
-      furthestStep: "goals",
+      furthestStep: "action",
     }),
     "connect",
   );

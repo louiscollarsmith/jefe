@@ -30,6 +30,7 @@ const log = baseLogger.child({ component: "activity-log" });
  * @property {string} [shopId]
  * @property {string} [shopDomain]
  * @property {Record<string, unknown>} [properties] Small, PII-free extra context.
+ * @property {string} [dedupeKey] Stable key for one-time milestones.
  */
 
 /**
@@ -53,12 +54,50 @@ export async function track(prisma, event) {
         properties: event.properties
           ? /** @type {any} */ (redact(event.properties))
           : {},
+        dedupeKey: event.dedupeKey ?? null,
       },
     });
     return true;
   } catch (error) {
     // Swallow — recording an event must never break the thing it describes.
     log.warn("Failed to record activity event", { err: error, type: event.type });
+    return false;
+  }
+}
+
+/**
+ * Record a milestone once. Unlike `track`, duplicate-key conflicts count as a
+ * successful no-op; all other failures retain the activity log's best-effort,
+ * non-throwing contract.
+ * @param {{ activityEvent: { create: (args: any) => Promise<unknown> } }} prisma
+ * @param {ActivityEventInput & { dedupeKey: string }} event
+ */
+export async function trackOnce(prisma, event) {
+  if (!event?.type || !event.dedupeKey) return false;
+  try {
+    await prisma.activityEvent.create({
+      data: {
+        type: event.type,
+        topic: event.topic ?? null,
+        summary: event.summary ?? null,
+        merchantId: event.merchantId ?? null,
+        shopId: event.shopId ?? null,
+        shopDomain: event.shopDomain ?? null,
+        dedupeKey: event.dedupeKey,
+        properties: event.properties
+          ? /** @type {any} */ (redact(event.properties))
+          : {},
+      },
+    });
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+      return true;
+    }
+    log.warn("Failed to record one-time activity event", {
+      err: error,
+      type: event.type,
+    });
     return false;
   }
 }

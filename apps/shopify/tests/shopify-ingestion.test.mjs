@@ -488,6 +488,18 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
       select: { id: true },
     });
+    const initialJobs = await prisma.backfillJob.findMany({
+      where: {
+        shopId: queuedShop.id,
+        jobType: { in: ["merchant_memory_bootstrap", "shop_backfill_start"] },
+      },
+      orderBy: { priority: "asc" },
+      select: { jobType: true, status: true, priority: true },
+    });
+    assert.deepEqual(initialJobs, [
+      { jobType: "merchant_memory_bootstrap", status: "queued", priority: 5 },
+      { jobType: "shop_backfill_start", status: "queued", priority: 10 },
+    ]);
 
     const processedJobs = [];
     for (const jobType of [

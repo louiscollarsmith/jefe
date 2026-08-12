@@ -426,7 +426,7 @@ export function buildEligibilityRecord(eligibility, autonomy) {
  * surface flips it on when execution is enabled.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean; sourceRecommendation?: any }} input
+ * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean; sourceRecommendation?: any; sourceRecommendationId?: string | null }} input
  */
 export async function proposeActionFromIntent(prisma, input) {
   const validation = validateActionIntent(input.intent);
@@ -437,6 +437,15 @@ export async function proposeActionFromIntent(prisma, input) {
   // caps, eligibility calculator and presenters this function used to hardcode to clearance.
   const primitive = getPrimitive(intent.actionType);
   if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
+
+  if (input.sourceRecommendationId) {
+    const existing = await prisma.actionExecution.findUnique({
+      where: { sourceRecommendationId: input.sourceRecommendationId },
+    });
+    if (existing && existing.merchantId === input.merchantId && existing.shopId === input.shopId) {
+      return existingProposal(primitive, existing, input.writeEnabled === true);
+    }
+  }
 
   const resolved = await primitive.resolve(prisma, {
     merchantId: input.merchantId,
@@ -466,11 +475,14 @@ export async function proposeActionFromIntent(prisma, input) {
   const autonomy = applyAutonomyPolicy(baseAutonomy, policy, magnitude);
 
   const runId = randomUUID();
-  const execution = await prisma.actionExecution.create({
-    data: {
+  let execution;
+  try {
+    execution = await prisma.actionExecution.create({
+      data: {
       runId,
       merchantId: input.merchantId,
       shopId: input.shopId,
+      sourceRecommendationId: input.sourceRecommendationId ?? null,
       actionType: intent.actionType,
       actionKind: primitive.actionKindFor(intent.targetKind),
       status: "proposed",
@@ -483,9 +495,20 @@ export async function proposeActionFromIntent(prisma, input) {
       // This primitive's OWN caps — persisting DEFAULT_CLEARANCE_CAPS regardless meant the
       // ledger recorded limits that were never the ones actually enforced.
       caps: /** @type {any} */ (primitive.caps),
-    },
-    select: { id: true, runId: true, resolvedMode: true },
-  });
+      },
+      select: { id: true, runId: true, resolvedMode: true },
+    });
+  } catch (error) {
+    if (input.sourceRecommendationId && isUniqueConflict(error)) {
+      const raced = await prisma.actionExecution.findUnique({
+        where: { sourceRecommendationId: input.sourceRecommendationId },
+      });
+      if (raced && raced.merchantId === input.merchantId && raced.shopId === input.shopId) {
+        return existingProposal(primitive, raced, input.writeEnabled === true);
+      }
+    }
+    throw error;
+  }
 
   return {
     status: "proposed",
@@ -499,6 +522,39 @@ export async function proposeActionFromIntent(prisma, input) {
       executable: input.writeEnabled === true && autonomy.mode !== "recommend",
     }),
   };
+}
+
+/** @param {any} primitive @param {any} execution @param {boolean} writeEnabled */
+function existingProposal(primitive, execution, writeEnabled) {
+  const preview = execution.preview ?? {};
+  const summary = execution.proposalSummary ?? {};
+  const canExecute = ["proposed", "approved"].includes(execution.status);
+  return {
+    status: execution.status,
+    reused: true,
+    execution: {
+      id: execution.id,
+      runId: execution.runId,
+      resolvedMode: execution.resolvedMode,
+    },
+    autonomy: {
+      mode: execution.resolvedMode,
+      reason: "existing_recommendation_execution",
+    },
+    suggestedAction: canExecute
+      ? primitive.card({
+          summary,
+          preview,
+          runId: execution.runId,
+          executable: writeEnabled && execution.resolvedMode !== "recommend",
+        })
+      : null,
+  };
+}
+
+/** @param {unknown} error */
+function isUniqueConflict(error) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002");
 }
 
 /**
@@ -954,7 +1010,7 @@ export async function reviseAction(prisma, input) {
   });
   if (reproposed.status !== "proposed") {
     // No safe revision (e.g. the opportunity is gone) — leave the original in place.
-    return { status: reproposed.status, reason: reproposed.reason };
+    return { status: reproposed.status, reason: "reason" in reproposed ? reproposed.reason : undefined };
   }
   // Supersede the original so only the revision is active (getActiveSuggestedAction
   // reads the latest `proposed`, and the execution path only runs proposed/approved —

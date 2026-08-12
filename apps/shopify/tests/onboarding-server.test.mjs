@@ -49,25 +49,25 @@ test("recordFurthestOnboardingStep: advance / monotonic / unknown / preserve", a
       scopes: ["read_products"],
     });
 
-    // Advance: connect -> insights.
+    // Advance: connect -> context.
     await setMetadata(prisma, shop.id, { furthestStep: "connect", keep: "me" });
     await recordFurthestOnboardingStep(prisma, {
       shopId: shop.id,
-      step: "insights",
+      step: "context",
     });
     let meta = (await readMetadata(prisma, shop.id)).onboardingMetadata;
-    assert.equal(readFurthestStep(meta), "insights", "advances to a later step");
+    assert.equal(readFurthestStep(meta), "context", "advances to a later step");
     assert.equal(meta.keep, "me", "reads fresh + preserves other metadata keys");
 
-    // Advance further: insights -> plan.
-    await recordFurthestOnboardingStep(prisma, { shopId: shop.id, step: "plan" });
+    // Advance further: context -> action.
+    await recordFurthestOnboardingStep(prisma, { shopId: shop.id, step: "action" });
     meta = (await readMetadata(prisma, shop.id)).onboardingMetadata;
-    assert.equal(readFurthestStep(meta), "plan");
+    assert.equal(readFurthestStep(meta), "action");
 
-    // Monotonic: a backward step is ignored (plan stays plan, not goals).
-    await recordFurthestOnboardingStep(prisma, { shopId: shop.id, step: "goals" });
+    // Monotonic: a backward step is ignored.
+    await recordFurthestOnboardingStep(prisma, { shopId: shop.id, step: "insight" });
     meta = (await readMetadata(prisma, shop.id)).onboardingMetadata;
-    assert.equal(readFurthestStep(meta), "plan", "never regresses the furthest step");
+    assert.equal(readFurthestStep(meta), "action", "never regresses the furthest step");
 
     // Unknown step: no-op, no bad value written.
     await recordFurthestOnboardingStep(prisma, {
@@ -75,7 +75,7 @@ test("recordFurthestOnboardingStep: advance / monotonic / unknown / preserve", a
       step: "not-a-step",
     });
     meta = (await readMetadata(prisma, shop.id)).onboardingMetadata;
-    assert.equal(readFurthestStep(meta), "plan", "ignores an unknown step");
+    assert.equal(readFurthestStep(meta), "action", "ignores an unknown step");
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });
     await prisma.$disconnect();
@@ -91,7 +91,7 @@ test("recordFurthestOnboardingStep: no-op on a missing shop (never throws)", asy
   try {
     const result = await recordFurthestOnboardingStep(prisma, {
       shopId: "00000000-0000-0000-0000-000000000000",
-      step: "plan",
+      step: "app",
     });
     assert.equal(result, null);
   } finally {
@@ -156,9 +156,9 @@ test("completePlanOnboarding stamps completion and preserves furthest step", asy
     assert.ok(onboardingCompletedAt instanceof Date, "completion timestamp set");
     assert.equal(onboardingMetadata.completedStep, "plan");
     assert.equal(
-      readFurthestStep(onboardingMetadata),
+      onboardingMetadata.furthestStep,
       "plan",
-      "existing metadata (furthestStep) preserved through completion",
+      "legacy metadata stays preserved through completion",
     );
   } finally {
     await prisma.merchant.deleteMany({ where: { name: shopDomain } });

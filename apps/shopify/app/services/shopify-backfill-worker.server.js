@@ -12,12 +12,17 @@ import {
 } from "../lib/shopify/queries.server.js";
 import {
   DEFAULT_BACKFILL_DAYS,
+  BOOTSTRAP_BACKFILL_DOMAIN,
+  BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
   enqueueBackfillJob,
+  ensureRecommendationReviewQueued,
   FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS,
   hasReadAllOrders,
   INITIAL_COMMERCE_BACKFILL_DOMAINS,
   splitScopes,
   upsertBackfillStatus,
+  MERCHANT_BOOTSTRAP_JOB_TYPE,
+  RECOMMENDATION_REVIEW_JOB_TYPE,
 } from "./shopify-backfill-status.server.js";
 import {
   MEMORY_BACKFILL_DOMAIN,
@@ -46,7 +51,10 @@ import {
   newCorrelationId,
   runWithContext,
 } from "../lib/observability/context.server.js";
-import { track } from "./analytics/event-log.server.js";
+import { track, trackOnce } from "./analytics/event-log.server.js";
+import { generateBootstrapAlternative, runMerchantMemoryBootstrap } from "../lib/onboarding/bootstrap.server.js";
+import { reviewDueRecommendations } from "../lib/onboarding/recommendation-review.server.js";
+import { reconcileBootstrapRecommendationsAfterFullRefresh } from "../lib/onboarding/reconciliation.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
@@ -120,11 +128,12 @@ function trackJobFailure(prisma, job, message) {
 }
 
 let loopStarted = false;
-let loopRunning = false;
+let generalLoopRunning = false;
+let bootstrapLoopRunning = false;
 /** Consecutive failed ticks — a single failure WARNs, a sustained streak pages. */
 let loopFailureStreak = 0;
-/** @type {PrismaClient | null} */
-let loopPrisma = null;
+/** @type {PrismaClient[]} */
+let loopPrisma = [];
 /** UTC day (YYYY-MM-DD) the daily activity digest was last posted. */
 let lastDigestDay = /** @type {string | null} */ (null);
 const DIGEST_HOUR_UTC = 8;
@@ -221,11 +230,18 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   const logger = options.logger ?? baseLogger.child({ component: "backfill-worker" });
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
   const workerPrisma = createWorkerPrismaClient() ?? prisma;
-  loopPrisma = workerPrisma;
+  const bootstrapPrisma = createWorkerPrismaClient() ?? prisma;
+  loopPrisma = [...new Set([workerPrisma, bootstrapPrisma])];
   // Warm the Prisma engine during the initial delay so the first tick doesn't
   // race a still-connecting engine after a deploy ("Engine is not yet connected").
   if (typeof workerPrisma.$connect === "function") {
     void workerPrisma.$connect().catch(() => {});
+  }
+  if (
+    bootstrapPrisma !== workerPrisma &&
+    typeof bootstrapPrisma.$connect === "function"
+  ) {
+    void bootstrapPrisma.$connect().catch(() => {});
   }
   const initialDelayMs =
     options.initialDelayMs ??
@@ -233,12 +249,18 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       process.env.SHOPIFY_BACKFILL_INITIAL_DELAY_MS,
       INITIAL_LOOP_DELAY_MS,
     );
-  const tick = async () => {
-    if (loopRunning) return;
-    loopRunning = true;
+  const generalTick = async () => {
+    if (generalLoopRunning) return;
+    generalLoopRunning = true;
     recordWorkerTick();
     try {
-      await processReadyBackfillJobs(workerPrisma, { logger });
+      await processReadyBackfillJobs(workerPrisma, {
+        logger,
+        excludeJobTypes: [
+          MERCHANT_BOOTSTRAP_JOB_TYPE,
+          BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
+        ],
+      });
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
@@ -282,15 +304,37 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
         });
       }
     } finally {
-      loopRunning = false;
+      generalLoopRunning = false;
+    }
+  };
+
+  const bootstrapTick = async () => {
+    if (bootstrapLoopRunning) return;
+    bootstrapLoopRunning = true;
+    try {
+      await processReadyBackfillJobs(bootstrapPrisma, {
+        logger,
+        jobTypes: [
+          MERCHANT_BOOTSTRAP_JOB_TYPE,
+          BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
+        ],
+      });
+    } catch (error) {
+      logger.warn("Bootstrap worker lane tick failed; will retry next tick", {
+        err: error,
+      });
+    } finally {
+      bootstrapLoopRunning = false;
     }
   };
 
   setTimeout(() => {
-    void tick();
+    void generalTick();
+    void bootstrapTick();
   }, initialDelayMs).unref?.();
   setInterval(() => {
-    void tick();
+    void generalTick();
+    void bootstrapTick();
   }, intervalMs).unref?.();
   registerWorkerPrismaShutdown();
 }
@@ -302,7 +346,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
  * delta sync, finalize, memory and generated onboarding work.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; jobTypes?: string[]; excludeJobTypes?: string[]; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
  */
 export async function processReadyBackfillJobs(prisma, options = {}) {
   const maxJobs = Math.max(1, options.maxJobs ?? MAX_READY_JOBS_PER_TICK);
@@ -317,7 +361,7 @@ export async function processReadyBackfillJobs(prisma, options = {}) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
+ * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; jobTypes?: string[]; excludeJobTypes?: string[]; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string> }} [options]
  */
 export async function processNextBackfillJob(prisma, options = {}) {
   const now = new Date();
@@ -329,7 +373,13 @@ export async function processNextBackfillJob(prisma, options = {}) {
   const where = {
     status: "queued",
     shopId: options.shopId,
-    ...(options.jobType ? { jobType: options.jobType } : {}),
+    ...(options.jobType
+      ? { jobType: options.jobType }
+      : options.jobTypes?.length
+        ? { jobType: { in: options.jobTypes } }
+        : options.excludeJobTypes?.length
+          ? { jobType: { notIn: options.excludeJobTypes } }
+          : {}),
     ...(options.ignoreRunAfter ? {} : { runAfter: { lte: now } }),
   };
   const job = await prisma.backfillJob.findFirst({
@@ -403,6 +453,33 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (completed.count !== 1) {
       return { status: "cancelled", jobType: job.jobType, result };
     }
+    if (job.jobType === RECOMMENDATION_REVIEW_JOB_TYPE) {
+      const current = await prisma.backfillJob.findUnique({
+        where: { id: job.id },
+        select: { payloadJson: true },
+      });
+      const currentPayload = jsonObject(current?.payloadJson);
+      const resultRunAfter = stringValue(
+        /** @type {any} */ (result)?.nextRunAfter,
+      );
+      const requestedRunAfter =
+        currentPayload.rescanRequested === true
+          ? stringValue(currentPayload.requestedRunAfter) ??
+            new Date().toISOString()
+          : null;
+      const nextRunAfter = earliestIsoDate(
+        resultRunAfter,
+        requestedRunAfter,
+      );
+      if (nextRunAfter) {
+        await ensureRecommendationReviewQueued(prisma, {
+          merchantId: job.merchantId,
+          shopId: job.shopId,
+          runAfter: nextRunAfter,
+          payload: { reason: "next_tracked_recommendation_review" },
+        });
+      }
+    }
     trackJobSuccess(prisma, job);
     await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
     return { status: "succeeded", jobType: job.jobType, result };
@@ -427,7 +504,12 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (failedPermanently) {
       trackJobFailure(prisma, job, message);
     }
-    if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
+    if (job.jobType === MERCHANT_BOOTSTRAP_JOB_TYPE) {
+      await markBootstrapFailed(prisma, job, failure, failedPermanently);
+    } else if (job.jobType === RECOMMENDATION_REVIEW_JOB_TYPE || job.jobType === BOOTSTRAP_ALTERNATIVE_JOB_TYPE) {
+      // A tracked review is independent of store ingestion readiness. The job's
+      // own durable error state is the health signal; never downgrade setup.
+    } else if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
       await markMemoryFailed(prisma, job, failure);
     } else if (job.jobType === MERCHANT_INSIGHTS_JOB_TYPE) {
       await markMerchantInsightsJobFailed(prisma, {
@@ -533,7 +615,9 @@ async function runBackfillJob(prisma, job, options) {
     job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
     job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE &&
     job.jobType !== MERCHANT_GOALS_JOB_TYPE &&
-    job.jobType !== MERCHANT_PLAN_JOB_TYPE;
+    job.jobType !== MERCHANT_PLAN_JOB_TYPE &&
+    job.jobType !== BOOTSTRAP_ALTERNATIVE_JOB_TYPE &&
+    job.jobType !== RECOMMENDATION_REVIEW_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
@@ -554,9 +638,29 @@ async function runBackfillJob(prisma, job, options) {
     orderHistoryDays,
     startedAt:
       parseDate(payload.backfillStartedAt) ?? job.shop.backfillStartedAt,
+    fullBackfillEpoch: stringValue(payload.fullBackfillEpoch),
   };
 
   switch (job.jobType) {
+    case MERCHANT_BOOTSTRAP_JOB_TYPE:
+      return runMerchantMemoryBootstrap(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        shopDomain: context.shopDomain,
+        sessionId: context.sessionId,
+        onboardingEpoch: stringValue(payload.onboardingEpoch),
+        accessToken: requireAccessToken(context),
+        fetchImpl: context.fetchImpl,
+        logger: context.logger,
+      });
+    case BOOTSTRAP_ALTERNATIVE_JOB_TYPE:
+      return generateBootstrapAlternative(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        shopDomain: context.shopDomain,
+        contractKey: stringValue(payload.contractKey),
+        logger: context.logger,
+      });
     case "shop_backfill_start":
       return handleBackfillStart(prisma, context);
     case "products_backfill":
@@ -601,9 +705,48 @@ async function runBackfillJob(prisma, job, options) {
         runId: stringValue(payload.runId),
         logger: context.logger,
       });
+    case RECOMMENDATION_REVIEW_JOB_TYPE:
+      return reviewDueRecommendations(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        logger: context.logger,
+      });
     default:
       return {};
   }
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {import("@prisma/client").BackfillJob} job
+ * @param {{ message: string; metadata?: unknown }} failure
+ * @param {boolean} failedPermanently
+ */
+async function markBootstrapFailed(prisma, job, failure, failedPermanently) {
+  const previous = await prisma.shopBackfillStatus.findUnique({
+    where: { shopId_domain: { shopId: job.shopId, domain: BOOTSTRAP_BACKFILL_DOMAIN } },
+    select: { metadata: true },
+  });
+  await upsertBackfillStatus(prisma, {
+    merchantId: job.merchantId,
+    shopId: job.shopId,
+    domain: BOOTSTRAP_BACKFILL_DOMAIN,
+    status: failedPermanently ? "failed" : "queued",
+    completedAt: failedPermanently ? new Date() : undefined,
+    lastError: failure.message.slice(0, 1000),
+    metadata: {
+      ...jsonObject(previous?.metadata),
+      phase: failedPermanently ? "failed" : "retrying",
+      safeErrorCode: safeBootstrapFailureCode(failure.message),
+    },
+  });
+}
+
+/** @param {string} message */
+function safeBootstrapFailureCode(message) {
+  if (/access|permission|scope|unauth|403/i.test(message)) return "shopify_access";
+  if (/timeout|timed out/i.test(message)) return "temporary_timeout";
+  return "bootstrap_failed";
 }
 
 /**
@@ -629,6 +772,7 @@ async function handleBackfillStart(prisma, context) {
     scopes: context.scopes,
     availableOrderHistoryDays: context.orderHistoryDays,
     backfillStartedAt: (context.startedAt ?? new Date()).toISOString(),
+    fullBackfillEpoch: context.fullBackfillEpoch,
   };
 
   await applyBackfillCountEstimates(prisma, context);
@@ -791,6 +935,7 @@ async function enqueueFinalizeIfEvidenceReady(prisma, context) {
     sessionId: context.sessionId,
     scopes: context.scopes,
     backfillStartedAt: (context.startedAt ?? new Date()).toISOString(),
+    fullBackfillEpoch: context.fullBackfillEpoch,
   };
 
   await Promise.all([
@@ -817,7 +962,11 @@ async function handleFinalize(prisma, context) {
   const statuses = await prisma.shopBackfillStatus.findMany({
     where: { shopId: context.shopId },
   });
-  const failed = statuses.filter((status) => status.status === "failed");
+  const failed = statuses.filter(
+    (status) =>
+      INITIAL_COMMERCE_BACKFILL_DOMAINS.includes(status.domain) &&
+      status.status === "failed",
+  );
   const requiredComplete = [
     "products",
     "orders",
@@ -844,13 +993,27 @@ async function handleFinalize(prisma, context) {
   });
 
   if (requiredComplete) {
-    await enqueueMerchantMemoryRefresh(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      shopDomain: context.shopDomain,
-      categories: [],
-      reason: "shopify_backfill_completed",
-    });
+    await Promise.all([
+      enqueueMerchantMemoryRefresh(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        shopDomain: context.shopDomain,
+        categories: [],
+        reason: "shopify_backfill_completed",
+      }),
+      trackOnce(prisma, {
+        type: "full_backfill_completed",
+        topic: "onboarding",
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        shopDomain: context.shopDomain,
+        dedupeKey: `full_backfill_completed:${context.shopId}:${context.fullBackfillEpoch ?? "legacy"}`,
+        summary: `Background store learning completed for ${context.shopDomain}`,
+        properties: {
+          fullBackfillEpoch: context.fullBackfillEpoch,
+        },
+      }),
+    ]);
   }
 
   return {
@@ -890,6 +1053,14 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
     refreshType: categories.length > 0 ? "selective_refresh" : "full_rebuild",
     logger: context.logger,
   });
+
+  if (categories.length === 0) {
+    await reconcileBootstrapRecommendationsAfterFullRefresh(prisma, {
+      merchantId: context.merchantId,
+      shopId: context.shopId,
+      logger: context.logger,
+    });
+  }
 
   await upsertBackfillStatus(prisma, {
     merchantId: context.merchantId,
@@ -1217,6 +1388,13 @@ function parseDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** @param {string | null} left @param {string | null} right */
+function earliestIsoDate(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  return new Date(left) <= new Date(right) ? left : right;
+}
+
 /** @param {unknown} value @param {number} fallback */
 function positiveInteger(value, fallback) {
   const number = Number(value);
@@ -1241,8 +1419,10 @@ function createWorkerPrismaClient() {
 function registerWorkerPrismaShutdown() {
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.once(signal, () => {
-      if (loopPrisma && typeof loopPrisma.$disconnect === "function") {
-        void loopPrisma.$disconnect();
+      for (const prisma of loopPrisma) {
+        if (typeof prisma.$disconnect === "function") {
+          void prisma.$disconnect();
+        }
       }
     });
   }
@@ -1260,5 +1440,6 @@ function registerWorkerPrismaShutdown() {
  *   scopes: string[];
  *   orderHistoryDays: number;
  *   startedAt: Date | null;
+ *   fullBackfillEpoch: string | null;
  * }} BackfillContext
  */

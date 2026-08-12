@@ -5,6 +5,7 @@ import {
   AUTHORITATIVE_BELIEF_STATUSES,
   BELIEF_PRECEDENCE,
   BELIEF_STATUS,
+  BOOTSTRAP_SAFE_BELIEF_KEYS,
   DERIVATION_LOOKUP_STATUSES,
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
@@ -63,9 +64,57 @@ export async function getBelief(prisma, input) {
  * @param {DerivedBeliefInput} input
  */
 export async function upsertDerivedBelief(prisma, input) {
+  if (isBootstrapSafeBelief(input.key)) {
+    return withBootstrapBeliefPublicationLock(prisma, input, (tx) =>
+      upsertDerivedBeliefLocked(tx, input),
+    );
+  }
+  return upsertDerivedBeliefLocked(prisma, input);
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {(tx: any) => Promise<any>} callback
+ */
+async function withBootstrapBeliefPublicationLock(prisma, input, callback) {
+  if (typeof prisma.$transaction !== "function") return callback(prisma);
+  return prisma.$transaction(async (/** @type {any} */ tx) => {
+    if (typeof tx.$queryRawUnsafe === "function") {
+      const lockKey = [
+        input.merchantId,
+        input.shopId ?? "merchant",
+        "bootstrap_safe_beliefs",
+      ].join(":");
+      await tx.$queryRawUnsafe(
+        "SELECT 1::integer AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
+        lockKey,
+      );
+    }
+    return callback(tx);
+  });
+}
+
+/** @param {string} key */
+function isBootstrapSafeBelief(key) {
+  return BOOTSTRAP_SAFE_BELIEF_KEYS.includes(key);
+}
+
+/**
+ * The caller holds the transaction-scoped publication lock when Prisma supports
+ * transactions. This prevents bootstrap and full-memory lanes from both seeing
+ * no active row and publishing duplicate inferred beliefs.
+ * @param {any} prisma
+ * @param {DerivedBeliefInput} input
+ */
+async function upsertDerivedBeliefLocked(prisma, input) {
   const now = input.evaluatedAt ?? new Date();
   const nextDerivationVersion =
     input.derivationVersion ?? MEMORY_DERIVATION_VERSION;
+  const incomingDerivationSourceMode =
+    input.evidence?.metadata?.sourceMode === "bootstrap"
+      ? "bootstrap"
+      : "full";
   // DERIVATION_LOOKUP_STATUSES, not ACTIVE: a merchant-retracted belief is deliberately
   // invisible to readers, but this lookup must still find it. With an ACTIVE-only filter it
   // came back null, fell through to the create branch below, and re-derivation silently
@@ -90,6 +139,30 @@ export async function upsertDerivedBelief(prisma, input) {
       previousValue: existing.value,
       newValue: existing.value,
       changeReason: "derived_recalculation_skipped_authoritative_belief",
+      changedBy: "system",
+      metadata: {
+        proposedValue: input.value,
+        proposedConfidence: input.confidence,
+      },
+    });
+    return { belief: existing, changed: false, skipped: true };
+  }
+
+  if (
+    existing?.status === BELIEF_STATUS.inferred &&
+    incomingDerivationSourceMode === "bootstrap" &&
+    existing.derivationSourceMode !== "bootstrap"
+  ) {
+    await recordHistory(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? existing.shopId,
+      beliefId: existing.id,
+      key: input.key,
+      previousStatus: existing.status,
+      newStatus: existing.status,
+      previousValue: existing.value,
+      newValue: existing.value,
+      changeReason: "bootstrap_recalculation_skipped_stronger_full_inference",
       changedBy: "system",
       metadata: {
         proposedValue: input.value,
@@ -125,6 +198,7 @@ export async function upsertDerivedBelief(prisma, input) {
           confidenceReason: input.confidenceReason,
           precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
           derivationVersion: nextDerivationVersion,
+          derivationSourceMode: incomingDerivationSourceMode,
           firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
           lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
           lastEvaluatedAt: now,
@@ -196,6 +270,7 @@ export async function upsertDerivedBelief(prisma, input) {
           confidenceReason: input.confidenceReason,
           precedence: input.precedence ?? BELIEF_PRECEDENCE.systemInference,
           derivationVersion: nextDerivationVersion,
+          derivationSourceMode: incomingDerivationSourceMode,
           firstObservedAt: input.firstObservedAt ?? input.observedAt ?? now,
           lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
           lastEvaluatedAt: now,
@@ -226,9 +301,7 @@ export async function upsertDerivedBelief(prisma, input) {
 
   const valueChanged = !jsonEqual(existing.value, input.value);
   return runInTransaction(prisma, async (tx) => {
-    const belief = await tx.merchantMemoryBelief.update({
-      where: { id: existing.id },
-      data: {
+    const data = {
         shopId: input.shopId ?? existing.shopId,
         category: input.category,
         value: input.value,
@@ -238,12 +311,41 @@ export async function upsertDerivedBelief(prisma, input) {
         confidenceReason: input.confidenceReason,
         precedence: input.precedence ?? existing.precedence,
         derivationVersion: nextDerivationVersion,
+        derivationSourceMode: incomingDerivationSourceMode,
         firstObservedAt:
           existing.firstObservedAt ?? input.firstObservedAt ?? input.observedAt,
         lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
         lastEvaluatedAt: now,
-      },
-    });
+      };
+    let belief;
+    if (incomingDerivationSourceMode === "bootstrap") {
+      const updated = await tx.merchantMemoryBelief.updateMany({
+        where: {
+          id: existing.id,
+          status: BELIEF_STATUS.inferred,
+          derivationSourceMode: "bootstrap",
+        },
+        data,
+      });
+      if (updated.count !== 1) {
+        const stronger = await tx.merchantMemoryBelief.findUnique({
+          where: { id: existing.id },
+        });
+        return {
+          belief: stronger ?? existing,
+          changed: false,
+          skipped: true,
+        };
+      }
+      belief = await tx.merchantMemoryBelief.findUniqueOrThrow({
+        where: { id: existing.id },
+      });
+    } else {
+      belief = await tx.merchantMemoryBelief.update({
+        where: { id: existing.id },
+        data,
+      });
+    }
     await recordHistory(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId ?? belief.shopId,
@@ -776,7 +878,7 @@ export async function revertLatestMerchantSuppliedChange(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; beliefKeys?: string[]; evidenceScope?: any; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function rebuildMerchantMemory(prisma, input) {
   return refreshBeliefs(prisma, {
@@ -787,7 +889,7 @@ export async function rebuildMerchantMemory(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; beliefKeys?: string[]; evidenceScope?: any; refreshType?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function refreshBeliefs(prisma, input) {
   const logger = input.logger ?? console;
@@ -807,6 +909,7 @@ export async function refreshBeliefs(prisma, input) {
     merchantId: input.merchantId,
     shopId: input.shopId ?? null,
     categories: input.categories ?? [],
+    beliefKeys: input.beliefKeys ?? [],
     runId: run.id,
   });
 
@@ -829,8 +932,34 @@ export async function refreshBeliefs(prisma, input) {
       : derivationResult.derivationReport;
     let createdOrUpdated = 0;
     let skipped = skippedOutcomes.length;
-    for (const derivation of derivations) {
-      const result = await upsertDerivedBelief(prisma, derivation);
+    const standardDerivations = derivations.filter(
+      (derivation) => !isBootstrapSafeBelief(derivation.key),
+    );
+    const bootstrapSafeDerivations = derivations.filter((derivation) =>
+      isBootstrapSafeBelief(derivation.key),
+    );
+    const results = [];
+    for (const derivation of standardDerivations) {
+      results.push(await upsertDerivedBeliefLocked(prisma, derivation));
+    }
+    if (bootstrapSafeDerivations.length > 0) {
+      results.push(
+        ...(await withBootstrapBeliefPublicationLock(
+          prisma,
+          bootstrapSafeDerivations[0],
+          async (tx) => {
+            const lockedResults = [];
+            for (const derivation of bootstrapSafeDerivations) {
+              lockedResults.push(
+                await upsertDerivedBeliefLocked(tx, derivation),
+              );
+            }
+            return lockedResults;
+          },
+        )),
+      );
+    }
+    for (const result of results) {
       if (result.skipped) skipped += 1;
       else createdOrUpdated += 1;
     }
@@ -872,6 +1001,7 @@ export async function refreshBeliefs(prisma, input) {
       registryDefinitionCount: Array.isArray(derivationResult)
         ? derivations.length
         : derivationResult.registryDefinitionCount,
+      evidenceScope: input.evidenceScope ?? null,
       durationMs,
       storeUnderstanding,
     };

@@ -254,3 +254,84 @@ export const ORDERS_QUERY = `#graphql
     }
   }
 `;
+
+// Bootstrap deliberately reads a bounded, most-recent slice. `pageInfo` is
+// part of the evidence contract: concentration/discount claims are eligible
+// only when the requested window is complete, while a low-cover upper bound may
+// be useful from a truncated slice.
+export const BOOTSTRAP_RECENT_ORDERS_QUERY = `#graphql
+  query JefeBootstrapRecentOrders($first: Int!, $after: String, $query: String!) {
+    orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT, reverse: true) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id name createdAt processedAt updatedAt cancelledAt closedAt
+          displayFinancialStatus displayFulfillmentStatus currencyCode tags sourceName
+          currentSubtotalPriceSet { shopMoney { amount currencyCode } }
+          currentTotalPriceSet { shopMoney { amount currencyCode } }
+          currentTotalDiscountsSet { shopMoney { amount currencyCode } }
+          currentTotalTaxSet { shopMoney { amount currencyCode } }
+          totalShippingPriceSet { shopMoney { amount currencyCode } }
+          lineItems(first: 100) {
+            pageInfo { hasNextPage }
+            edges { node {
+              id sku title variantTitle quantity
+              originalUnitPriceSet { shopMoney { amount currencyCode } }
+              discountedTotalSet { shopMoney { amount currencyCode } }
+              discountAllocations { allocatedAmountSet { shopMoney { amount currencyCode } } }
+              product { id }
+              variant { id }
+            } }
+          }
+        }
+      }
+    }
+  }
+`;
+
+export const BOOTSTRAP_CATALOG_NODES_QUERY = `#graphql
+  query JefeBootstrapCatalogNodes($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      __typename
+      ... on Product {
+        id title handle status vendor productType descriptionHtml createdAt updatedAt
+        seo { title description }
+        variants(first: 250) {
+          pageInfo { hasNextPage }
+          edges { node {
+            id sku title price createdAt updatedAt
+            product { id }
+            inventoryItem {
+              id
+              unitCost { amount }
+              inventoryLevels(first: 250) {
+                pageInfo { hasNextPage }
+                edges { node {
+                  id updatedAt
+                  quantities(names: ["available", "committed", "incoming"]) { name quantity }
+                  location { id name }
+                } }
+              }
+            }
+          } }
+        }
+      }
+      ... on ProductVariant {
+        id sku title price createdAt updatedAt
+        product { id }
+        inventoryItem {
+          id
+          unitCost { amount }
+          inventoryLevels(first: 250) {
+            pageInfo { hasNextPage }
+            edges { node {
+              id updatedAt
+              quantities(names: ["available", "committed", "incoming"]) { name quantity }
+              location { id name }
+            } }
+          }
+        }
+      }
+    }
+  }
+`;
