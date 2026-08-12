@@ -4,6 +4,8 @@ import { Link, useLoaderData, useSearchParams } from "react-router";
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { getLiveActionModes } from "../lib/actions/live-action-modes.server.js";
+import { AutonomyPanel } from "../components/settings/AutonomyPanel";
 
 // The settings surface — a SEPARATE area from the (sleek, full-width) chat home.
 // Founder ruling 2026-08-12: the home stays "just a chat log"; settings live here with a
@@ -26,13 +28,17 @@ import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
-  await ensureShopifyTenant(prisma, {
+  const { merchant } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "settings_shell" },
   });
-  return { shopDomain: session.shop };
+  // Per-panel data is computed HERE — this surface's single loader — and passed to each
+  // mounted panel as its documented prop (see the panel contract). Autonomy: the live
+  // per-action modes (engine truth; an absent key ⇒ "Soon"/needs-you, never a fake dial).
+  const actionModes = await getLiveActionModes(prisma, { merchantId: merchant.id });
+  return { shopDomain: session.shop, actionModes };
 };
 
 // A settings destination. `ready` flips to true when its owning lane mounts its panel
@@ -43,11 +49,11 @@ const PANELS: PanelDef[] = [
   { id: "integrations", label: "Integrations", blurb: "The tools Jefe reads — connect the ones you already use.", owner: "channels session + chat 9 (detected-tools data)", ready: false },
   { id: "channels", label: "Channels", blurb: "Where Jefe reaches you — Slack, WhatsApp, email.", owner: "channels session (Slack-first)", ready: false },
   { id: "settings", label: "Settings", blurb: "Account, notifications, and data.", owner: "comms lane", ready: false },
-  { id: "autonomy", label: "Autonomy", blurb: "How much rope Jefe gets, per kind of action.", owner: "roster session (the autonomy dial)", ready: false },
+  { id: "autonomy", label: "Autonomy", blurb: "How much rope Jefe gets, per kind of action.", owner: "roster session (the autonomy dial)", ready: true },
 ];
 
 export default function SettingsSurface() {
-  useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
   const [params] = useSearchParams();
   const requested = params.get("panel");
   const active = PANELS.find((p) => p.id === requested) ?? PANELS[0];
@@ -76,17 +82,30 @@ export default function SettingsSurface() {
           <section style={panelStyle} aria-live="polite">
             <h2 style={panelTitleStyle}>{active.label}</h2>
             <p style={blurbStyle}>{active.blurb}</p>
-            {active.ready ? null : (
-              <div style={scaffoldStyle}>
-                This section is being built by the {active.owner}. It mounts here once ready —
-                no placeholder controls until then.
-              </div>
-            )}
+            <PanelBody panel={active} data={data} />
           </section>
         </div>
       </div>
     </div>
   );
+}
+
+// The slot body: a mounted panel renders its own component (data-in, styled to the home
+// tokens); an unmounted one keeps an honest scaffold note. Wire-or-keep — the destination is
+// real, and each lane's content lands here as it's delivered. Adding a panel = one case here
+// + its loader data + flipping the PANELS `ready` flag. See the published panel contract.
+function PanelBody({ panel, data }: { panel: PanelDef; data: { actionModes?: Record<string, string> } }) {
+  switch (panel.id) {
+    case "autonomy":
+      return <AutonomyPanel actionModes={data.actionModes} />;
+    default:
+      return (
+        <div style={scaffoldStyle}>
+          This section is being built by the {panel.owner}. It mounts here once ready — no
+          placeholder controls until then.
+        </div>
+      );
+  }
 }
 
 // ── tokens mirrored from the home (daily-home.tsx) for visual consistency ──────────
