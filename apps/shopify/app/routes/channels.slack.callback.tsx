@@ -125,14 +125,16 @@ function appPathWithChannelNotice(
   updates: Record<string, string | null>,
 ) {
   const url = new URL(path, "https://jefe.local");
+  // Slack lives in the settings Channels panel now, not the (removed) onboarding "channels" step.
+  // Land there. Query params from the return path (shop/host/embedded) are preserved so App Bridge
+  // survives the popup-opener navigation; the stale onboarding params are dropped.
+  url.pathname = "/app/settings";
   url.searchParams.delete("code");
   url.searchParams.delete("error");
   url.searchParams.delete("state");
-  url.searchParams.set("step", "channels");
-  // Intentionally do NOT set channelProvider here: connecting the Slack
-  // workspace is the finish line for onboarding. We land back on the channels
-  // step showing "connected" without force-opening the channel picker — choosing
-  // where Jefe posts is deferred to later (settings), not required to continue.
+  url.searchParams.delete("step");
+  url.searchParams.delete("channelProvider");
+  url.searchParams.set("panel", "channels");
   for (const [key, value] of Object.entries(updates)) {
     if (value === null) url.searchParams.delete(key);
     else url.searchParams.set(key, value);
