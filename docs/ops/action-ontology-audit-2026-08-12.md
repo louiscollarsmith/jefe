@@ -120,6 +120,30 @@ Verified against shopify.dev's access-scope reference:
 - `read_inventory_transfers,write_inventory_transfers` → InventoryTransfer — **NOT granted**
 - `read_marketing_events,write_marketing_events` → MarketingActivity — **NOT granted**
 
+### Published copy is a live constraint on this lane (chat 6, 2026-08-12)
+
+Chat 6's scope-disclosure pass is **already live** and discloses permissions without
+claiming capabilities, so it imposes **no ceiling on what can be built** — with one
+exception, and one soft commitment:
+
+- ⛔ **"He never emails your customers" is a live public trust promise** (/early-access
+  + front-door). Any action that emails a customer breaks it and must be reconciled with
+  Matt *before* it ships. **No candidate in §5 does** — and `customer_segment_maintain`
+  is specifically shaped so it can't: Jefe defines rules, Shopify evaluates them.
+  *Verified the promise is true today:* the win-back sender resolves its recipient from
+  the Shopify `Session` `associated_user` — the **merchant** who uninstalled — and no
+  path in `app/lib/email/` reads `CustomerIdentity`.
+- **Soft forward-commitment:** the privacy copy now publicly frames the three
+  unexercised write scopes as *"features we're rolling out and aren't exercised until
+  that feature is live."* That is honest today, and it is a clock. Each shipped action
+  lets chat 6 move its scope from *"rolling out"* → *"we do X"*; each one that never
+  ships leaves a public promise ageing.
+
+The loop: register an action + name the scope it closes → chat 6 drafts the disclosure
+update → Matt approves the publish (one-way door). **This table is the tracking
+artifact** — `write_inventory`, `write_customers` and `write_orders` each want one
+shipped action to flip to honest.
+
 ⚠️ **`write_orders` is the hard one.** Every genuinely valuable order write —
 `refundCreate`, `orderCancel`, order editing — is **irreversible**, which is a different
 risk class under the reversibility rule. The only cleanly reversible order write is
@@ -129,9 +153,12 @@ primitive, or dropping the scope. That is a founder call, flagged in §7.
 
 ## 5. Candidate actions, ranked
 
-Ranked on merchant value × evidence × scope justification. ⚠️ **Evidence column is
-provisional** — chat 6's Shopify-support-group discourse has been requested and has not
-arrived; ranking will be revisited when it does.
+Ranked on merchant value × evidence × scope justification. ⚠️ **Ranked without merchant
+discourse.** Chat 6 confirmed (2026-08-12) they don't hold it — **Matt is the source**
+(he's in the support group) and hasn't passed it on. Chat 6 will forward it verbatim
+when it lands, merchant phrasing raw rather than summarised, and flag whatever maps to
+`write_orders`/`write_customers`/`write_inventory`. **This ranking is revisited then**;
+candidate B is the position most likely to move.
 
 | # | Action | Scope | Trigger | Reversible | Missing links |
 |---|---|---|---|---|---|
@@ -152,7 +179,8 @@ clearance primitive already implements (compare-and-set, idempotent per-target l
 writes). It is the most faithful possible second write primitive. `Segment` is the
 higher prize but needs a belief that does not exist, in a lane that is booked.
 
-**Not candidates:** reorder/purchase-order (Shopify has no PO write under the granted
+**Not candidates:** any action that emails a customer — chat 6 has published *"He never
+emails your customers"* as a live trust promise (§4); reorder/purchase-order (Shopify has no PO write under the granted
 scopes — `low_cover_products` is the best-prepared belief in the repo and its natural
 verb isn't a Shopify write at all, so it belongs in the brief, not the action layer);
 `customer_marketing_consent` (consent must come from the customer, never from us);
@@ -256,8 +284,11 @@ Flags stay off. Nothing goes live without a separate explicit call.
   `measure`/`verdict` contract. Asked: the outcome-contract shape; whether they own the
   resolver-interface extraction ("from two real ones" — this is the second one); whether
   a belief is the only legitimate trigger. Also flagged §6's wire-layer finding.
-- **chat 6 (growth)** — asked for the support-group discourse (re-ranks §5) and told
-  which scopes each candidate closes, for the disclosure copy.
+- **chat 6 (growth)** — replied 2026-08-12. Doesn't hold the discourse (Matt does);
+  will forward verbatim. Disclosure is live and imposes no capability ceiling, but
+  carries one hard promise and one soft commitment — both recorded in §4. Standing loop:
+  each registration names the scope it closes, chat 6 drafts the copy, Matt approves the
+  publish.
 - **Settings/autonomy roster** — told what a definition provides, and warned about rows
   that are registered-but-not-live, per-row scope gating, and caps that aren't money.
 - **Memory/ontology lane** — deliberately not contacted; belief questions routed to
