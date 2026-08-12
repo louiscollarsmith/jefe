@@ -100,6 +100,15 @@ const PANELS: PanelDef[] = [
   { id: "settings", label: "Notifications", blurb: "Your morning brief — where it goes, when, and how often.", owner: "comms lane (email/notification prefs)", ready: false },
 ];
 
+// The Merchant Memory view lives on the home route behind ?view=memory. Keep the embedded
+// params (host, shop, embedded) and drop only our own ?panel.
+function memoryHref(params: URLSearchParams) {
+  const next = new URLSearchParams(params);
+  next.delete("panel");
+  next.set("view", "memory");
+  return `/app?${next.toString()}`;
+}
+
 export default function SettingsSurface() {
   const data = useLoaderData<typeof loader>();
   const [params] = useSearchParams();
@@ -135,6 +144,14 @@ export default function SettingsSurface() {
                 </Link>
               );
             })}
+            {/* Merchant Memory is NOT a settings panel and deliberately not in PANELS — that
+                array is founder-ordered and is the nav contract. It sits here because the
+                home's link to it was removed (Matt: the chat-log home shouldn't carry it) and
+                the gear became the way in. Without this the surface still renders and is
+                still routed, and no merchant can open it. */}
+            <Link to={memoryHref(params)} style={navItemStyle}>
+              Everything Jefe knows
+            </Link>
           </nav>
 
           <section style={panelStyle} aria-live="polite">
