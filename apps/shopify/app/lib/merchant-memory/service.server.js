@@ -5,6 +5,7 @@ import {
   AUTHORITATIVE_BELIEF_STATUSES,
   BELIEF_PRECEDENCE,
   BELIEF_STATUS,
+  DERIVATION_LOOKUP_STATUSES,
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
 import { getBeliefDefinition } from "./conversational-belief-registry.server.js";
@@ -65,11 +66,15 @@ export async function upsertDerivedBelief(prisma, input) {
   const now = input.evaluatedAt ?? new Date();
   const nextDerivationVersion =
     input.derivationVersion ?? MEMORY_DERIVATION_VERSION;
+  // DERIVATION_LOOKUP_STATUSES, not ACTIVE: a merchant-retracted belief is deliberately
+  // invisible to readers, but this lookup must still find it. With an ACTIVE-only filter it
+  // came back null, fell through to the create branch below, and re-derivation silently
+  // resurrected a belief the merchant had told Jefe to forget.
   const existing = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
       key: input.key,
-      status: { in: ACTIVE_BELIEF_STATUSES },
+      status: { in: DERIVATION_LOOKUP_STATUSES },
     },
     orderBy: { updatedAt: "desc" },
   });
@@ -305,14 +310,39 @@ export async function recordEvidence(prisma, input) {
   });
 }
 
+// History `changeReason` for a merchant retraction. Named because two places must agree on
+// it: the write in `retractBeliefForMerchant` and the undo allowlist below. They drifted
+// once already — `markBeliefObsolete` wrote `changedBy: "system"` with a reason the undo
+// filter did not list, so a "forget" could never be undone even though the history row
+// carried everything needed to reverse it.
+export const MERCHANT_RETRACTION_CHANGE_REASON = "merchant_retracted_belief";
+
+// Merchant-authored changes that "undo the last thing" can reverse.
+const REVERTIBLE_MERCHANT_CHANGE_REASONS = [
+  "merchant_conversation_belief_created",
+  "merchant_conversation_belief_updated",
+  "merchant_corrected_belief",
+  "merchant_confirmed_belief",
+  MERCHANT_RETRACTION_CHANGE_REASON,
+];
+
 /**
+ * System-side retirement of a belief Jefe no longer supports. Sets `obsolete`, which is
+ * NOT authoritative — a later derivation may legitimately re-create the belief.
+ *
+ * ⚠️ NOT the merchant "forget" path — use `retractBeliefForMerchant` for that. A merchant
+ * saying "forget that" outranks inference and must survive re-derivation; this does not.
+ *
+ * `shopId` is optional but STRONGLY preferred: without it, a merchant with more than one
+ * shop can have the wrong shop's belief retired, since keys repeat across shops.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; key: string; reason?: string }} input
+ * @param {{ merchantId: string; shopId?: string | null; key: string; reason?: string }} input
  */
 export async function markBeliefObsolete(prisma, input) {
   const belief = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
+      ...beliefShopWhere(input.shopId),
       key: input.key,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
@@ -334,6 +364,79 @@ export async function markBeliefObsolete(prisma, input) {
     newValue: updated.value,
     changeReason: input.reason ?? "belief_marked_obsolete",
     changedBy: "system",
+  });
+  return updated;
+}
+
+/**
+ * Row scope for a belief lookup. `MerchantMemoryBelief.shopId` is nullable — merchant-wide
+ * beliefs are real rows — so a shop-scoped lookup means "this shop's ∪ the merchant-wide
+ * ones". Omitting shopId keeps the historic merchant-wide behaviour rather than silently
+ * changing what existing callers match.
+ * @param {string | null | undefined} shopId
+ */
+function beliefShopWhere(shopId) {
+  const scoped = typeof shopId === "string" ? shopId.trim() : "";
+  return scoped ? { OR: [{ shopId: scoped }, { shopId: null }] } : {};
+}
+
+/**
+ * The merchant told Jefe to FORGET a belief.
+ *
+ * This is a merchant ruling, not a system retirement, so unlike `markBeliefObsolete` it:
+ *  - sets `merchant_retracted`, which is AUTHORITATIVE — re-derivation skips it instead of
+ *    creating a fresh `inferred` row, so the retraction actually sticks;
+ *  - records history as merchant-authored with a reason the undo path recognises, so
+ *    "actually, put that back" works. A destructive act the merchant cannot reverse is not
+ *    one we should offer.
+ *
+ * Returns null when there is no matching active belief, so a double-send is harmless.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; key: string; retractedBy?: string; reason?: string; metadata?: any }} input
+ */
+export async function retractBeliefForMerchant(prisma, input) {
+  const belief = await prisma.merchantMemoryBelief.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      ...beliefShopWhere(input.shopId),
+      key: input.key,
+      status: { in: ACTIVE_BELIEF_STATUSES },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!belief) return null;
+
+  const retractedAt = new Date();
+  // Snapshot what we're about to overwrite BEFORE the write. The undo path reads these back
+  // to restore the belief, so they must be the pre-retraction values — never re-read them off
+  // `belief` after the update and trust that the client handed back an untouched copy.
+  const previousStatus = belief.status;
+  const previousValue = belief.value;
+  const updated = await prisma.merchantMemoryBelief.update({
+    where: { id: belief.id },
+    data: {
+      status: BELIEF_STATUS.merchantRetracted,
+      // Status, NOT precedence, is what makes this stick: the re-derivation guard tests
+      // AUTHORITATIVE_BELIEF_STATUSES.includes(status) and never looks at precedence. Raising
+      // precedence here would buy nothing and would survive an undo — `revertLatest…` restores
+      // status and value but leaves precedence alone, so the belief would come back `inferred`
+      // yet ranked as a merchant correction.
+      supersededAt: retractedAt,
+      lastEvaluatedAt: retractedAt,
+    },
+  });
+  await recordHistory(prisma, {
+    merchantId: belief.merchantId,
+    shopId: belief.shopId,
+    beliefId: belief.id,
+    key: belief.key,
+    previousStatus,
+    newStatus: updated.status,
+    previousValue,
+    newValue: updated.value,
+    changeReason: MERCHANT_RETRACTION_CHANGE_REASON,
+    changedBy: input.retractedBy ?? "merchant_conversation",
+    metadata: input.metadata ?? {},
   });
   return updated;
 }
@@ -617,14 +720,7 @@ export async function revertLatestMerchantSuppliedChange(prisma, input) {
     where: {
       merchantId: input.merchantId,
       changedBy: { startsWith: changedByPrefix },
-      changeReason: {
-        in: [
-          "merchant_conversation_belief_created",
-          "merchant_conversation_belief_updated",
-          "merchant_corrected_belief",
-          "merchant_confirmed_belief",
-        ],
-      },
+      changeReason: { in: REVERTIBLE_MERCHANT_CHANGE_REASONS },
     },
     orderBy: { createdAt: "desc" },
   });

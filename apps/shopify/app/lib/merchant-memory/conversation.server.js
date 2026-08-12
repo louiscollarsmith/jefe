@@ -22,6 +22,7 @@ import {
   confirmBelief,
   correctBelief,
   getBeliefsForMerchant,
+  retractBeliefForMerchant,
   revertLatestMerchantSuppliedChange,
   upsertMerchantSuppliedBelief,
 } from "./service.server.js";
@@ -903,7 +904,7 @@ export async function sendConversationMessage(prisma, input) {
   if (operation.requiresConfirmation) {
     await createAssistantMessage(prisma, {
       conversation,
-      content: buildProposedChangeResponse(operation),
+      content: buildProposedChangeResponse(operation, beliefs),
       operation,
       operationStatus: OPERATION_STATUS.proposed,
       relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
@@ -1174,6 +1175,42 @@ export function interpretMerchantMessage(input) {
     };
   }
 
+  // "Forget that." Sits beside isConfirmation — both act on an EXISTING belief — but with
+  // the opposite risk profile, so the targeting rule is inverted. Confirm can afford a fuzzy
+  // target: confirming the wrong belief is recoverable and visible. Obsolete cannot: it
+  // retires a fact the merchant may never notice is gone. So this branch resolves a target
+  // only when it is certain, and asks otherwise. Never guess what to forget.
+  if (isObsoleteRequest(normalized)) {
+    const candidate = target ?? input.beliefs.find(
+      (item) => item.key === input.context?.lastDiscussedBeliefKeys?.[0],
+    );
+    // `findTargetBelief` returns a bare `{ key }` when a keyword matched but the merchant
+    // holds no such belief — a phantom. Requiring `id` keeps a phantom from becoming a
+    // "forgotten" belief that never existed.
+    const resolved = candidate?.id ? candidate : null;
+    const onlyOneThingDiscussed =
+      (input.context?.lastDiscussedBeliefKeys ?? []).length === 1;
+    if (!resolved || !(onlyOneThingDiscussed || hasExplicitBeliefReference(normalized))) {
+      return clarification(
+        "Which understanding should I forget? Name it and I'll drop it.",
+        message,
+        input.context,
+      );
+    }
+    return {
+      operationType: OPERATION_TYPES.obsoleteBelief,
+      targetBeliefKey: resolved.key,
+      targetBeliefId: resolved.id,
+      category: resolved.category,
+      reason: "Merchant asked Jefe to forget this understanding.",
+      merchantStatement: message,
+      confidence: 0.85,
+      // ALWAYS. Destructive and easy to mis-target, so the merchant sees exactly what is
+      // about to go before it goes — never auto-committed, however confident the read.
+      requiresConfirmation: true,
+    };
+  }
+
   if (isConfirmation(normalized)) {
     const discussedBeliefKeys = input.context?.lastDiscussedBeliefKeys ?? [];
     if (
@@ -1318,6 +1355,21 @@ export async function validateStructuredOperation(prisma, input) {
     return invalid("I should keep that observed Shopify fact separate from merchant interpretation.");
   }
 
+  // Forget must name something Jefe actually holds AND something the merchant is allowed to
+  // retract. Observed Shopify facts are not obsoletable: the fact is still true in the store,
+  // so forgetting it would only make Jefe blind to it until the next sync re-derived it.
+  // Correcting is the right move there, which is what this steers them to.
+  if (input.operation.operationType === OPERATION_TYPES.obsoleteBelief) {
+    if (!existing) {
+      return invalid("I don’t have that in memory, so there’s nothing for me to forget.");
+    }
+    if (!definition.merchantObsoletable) {
+      return invalid(
+        "That one comes straight from your Shopify data, so I can’t forget it — but tell me what’s wrong with it and I’ll correct it.",
+      );
+    }
+  }
+
   if (
     (input.operation.operationType === OPERATION_TYPES.createMerchantBelief ||
       input.operation.operationType === OPERATION_TYPES.answerOpenQuestion) &&
@@ -1326,8 +1378,12 @@ export async function validateStructuredOperation(prisma, input) {
     return invalid("I can’t learn that directly from this conversation yet.");
   }
 
+  // Value-bearing operations only. Confirm and obsolete both act on a belief WITHOUT
+  // proposing a new value — running them through value validation would reject them for
+  // failing to supply something they are not meant to carry.
   if (
-    input.operation.operationType !== OPERATION_TYPES.confirmBelief
+    input.operation.operationType !== OPERATION_TYPES.confirmBelief &&
+    input.operation.operationType !== OPERATION_TYPES.obsoleteBelief
   ) {
     const value = /** @type {any} */ (validateConversationalValue(
       input.operation.proposedValue,
@@ -1381,6 +1437,20 @@ async function commitStructuredOperation(prisma, input) {
       metadata,
     });
     return { beliefId: belief.id, belief };
+  }
+
+  if (operation.operationType === OPERATION_TYPES.obsoleteBelief) {
+    // Shop-scoped: belief keys repeat across a merchant's shops, and this is a write.
+    const belief = await retractBeliefForMerchant(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      key: operation.targetBeliefKey,
+      retractedBy: "merchant_conversation",
+      metadata,
+    });
+    // null = nothing active under that key (already forgotten, or a double-send). Harmless,
+    // and the caller reports it as done rather than surfacing an error for a no-op.
+    return { beliefId: belief?.id ?? null, belief };
   }
 
   if (
@@ -1634,6 +1704,12 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Merchant corrections have authority, but raw observations and merchant policies must stay separate.",
     "Do not invent evidence.",
     "Ask for clarification when a reference is ambiguous.",
+    // The model can now emit a DESTRUCTIVE op, so it gets an explicit rule rather than
+    // inferring the risk. Server-side validation enforces all of this regardless — this only
+    // stops the model proposing retractions the merchant then has to decline.
+    "Use obsolete_belief only when the merchant clearly asks you to forget or drop something they can name. It takes a target belief key and no value.",
+    "Never choose obsolete_belief to fix a wrong value — that is correct_belief. Forgetting removes the understanding entirely.",
+    "If you cannot tell which belief a forget request refers to, return clarification_required instead. Never guess the target of a forget.",
     "Do not create customer-level personal beliefs or store customer PII.",
     "Use only the supplied supported belief keys.",
   ].join("\n");
@@ -1927,8 +2003,19 @@ function buildNoChangeResponse(operation, beliefs, openQuestions) {
 /**
  * @param {any} operation
  */
-function buildProposedChangeResponse(operation) {
-  return `I think this should update Jefe’s understanding:\n\n${labelForBeliefKey(operation.targetBeliefKey)}\n${formatBeliefValue(operation.proposedValue)}\n\nSource: told to Jefe by you.`;
+function buildProposedChangeResponse(operation, /** @type {any[]} */ beliefs = []) {
+  const label = labelForBeliefKey(operation.targetBeliefKey);
+  if (operation.operationType === OPERATION_TYPES.obsoleteBelief) {
+    // Show what is about to GO, with its current value. This is the merchant's one chance to
+    // catch a mis-targeted forget, and they can only catch it if they can see which fact it
+    // is — a bare "forget this?" gives them nothing to check against.
+    const current = (beliefs ?? []).find(
+      (belief) => belief.key === operation.targetBeliefKey,
+    );
+    const detail = current ? `\n${formatBeliefValue(current.value)}` : "";
+    return `Just to check — you want me to forget this?\n\n${label}${detail}\n\nSay yes and I’ll drop it. This only changes what I remember; nothing changes in your store.`;
+  }
+  return `I think this should update Jefe’s understanding:\n\n${label}\n${formatBeliefValue(operation.proposedValue)}\n\nSource: told to Jefe by you.`;
 }
 
 /**
@@ -1940,6 +2027,16 @@ function buildCommittedChangeResponse(operation, commit) {
   const value = commit.belief?.value ?? operation.proposedValue;
   if (operation.operationType === OPERATION_TYPES.confirmBelief) {
     return `Understood. I’ll treat ${label} as something you’ve told me is right.`;
+  }
+  if (operation.operationType === OPERATION_TYPES.obsoleteBelief) {
+    // A no-op (nothing active under that key) reads as already-done rather than as an error —
+    // the merchant asked for it to be gone and it is gone.
+    if (!commit.belief) {
+      return `That’s not something I’m holding onto any more, so there’s nothing to forget.`;
+    }
+    // Name the undo. A destructive change the merchant can't see a way back from is one
+    // they'll hesitate to make.
+    return `Done — I’ve forgotten ${label}, and I won’t work it out again from your store data. Say “undo that” if you want it back.`;
   }
   return `Understood. I’ll remember this:\n\n${label}\n${formatBeliefValue(value)}`;
 }
@@ -2333,6 +2430,26 @@ function isExplanationRequest(value) {
  */
 function isConfirmation(value) {
   return /\b(yes|correct|right|accurate|looks good|that is correct|that's correct)\b/.test(value);
+}
+
+// Deliberately NARROW. This is the one detector whose false positives destroy something, so
+// it is tuned for precision over recall: an unmatched "forget" phrasing costs the merchant a
+// second attempt, while a wrong match costs them a fact they may never notice is gone. Widen
+// it only from real transcripts (the correction-controls session is collecting fall-throughs).
+const OBSOLETE_INTENT =
+  /\b(forget|disregard|discard)\b|\b(drop|remove|delete) (that|this|it)\b|\bstop (tracking|remembering)\b|\bno longer (true|relevant|applies|the case)\b|\bnot (true|relevant) (any ?more|anymore)\b/;
+
+// "Don't forget we ship on Fridays" is a merchant TEACHING Jefe something — the exact
+// opposite instruction, and it contains the trigger word. "I forget what the margin is" is a
+// merchant admitting they don't know, not asking Jefe to drop anything.
+const OBSOLETE_NEGATION = /\b(do not|don't|dont|never) forget\b|\bi (forget|forgot)\b/;
+
+/**
+ * @param {string} value
+ */
+function isObsoleteRequest(value) {
+  if (OBSOLETE_NEGATION.test(value)) return false;
+  return OBSOLETE_INTENT.test(value);
 }
 
 /**

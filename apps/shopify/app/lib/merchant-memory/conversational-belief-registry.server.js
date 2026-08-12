@@ -36,6 +36,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Map direct corrections to the merchant's store name here.",
   },
   "business.primary_currency": {
@@ -48,6 +49,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Use ISO 4217 currency codes such as GBP, EUR or USD.",
   },
   "business.description": {
@@ -60,6 +62,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "merchant_statement",
+    merchantObsoletable: true,
     guidance:
       "Use the merchant's own business-level description. Do not include customer PII.",
   },
@@ -74,6 +77,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "merchant_statement",
+    merchantObsoletable: true,
     guidance: "Map explicit positioning such as premium, value-focused or specialist.",
   },
   "catalog.active_product_count": {
@@ -86,6 +90,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Do not overwrite raw catalogue counts with merchant interpretation.",
   },
   "catalog.total_product_count": {
@@ -98,6 +103,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Do not overwrite raw catalogue counts with merchant interpretation.",
   },
   "catalog.out_of_stock_product_count": {
@@ -110,6 +116,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance:
       "If the merchant says preorder items are available, create a policy rather than changing the observed count.",
   },
@@ -123,6 +130,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Allow corrections only when the merchant clearly scopes the count.",
   },
   "orders.average_order_value.all_time": {
@@ -135,6 +143,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance: "Preserve the amount and currency structure.",
   },
   "customers.repeat_customer_rate.all_time": {
@@ -147,6 +156,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "inference",
+    merchantObsoletable: true,
     guidance:
       "If the merchant disputes the meaning of repeat customer, store the policy separately unless a numeric replacement is supplied.",
   },
@@ -160,6 +170,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: true,
     kind: "observation",
+    merchantObsoletable: false,
     guidance:
       "Keep raw inventory counts separate from policies such as preorder availability.",
   },
@@ -173,6 +184,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "preference",
+    merchantObsoletable: true,
     guidance: "Examples include online store, wholesale, retail or marketplace.",
   },
   "business.business_model": {
@@ -185,6 +197,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "inference",
+    merchantObsoletable: true,
     guidance: "Keep the value short and merchant-authored.",
   },
   "customers.primary_customer_type": {
@@ -197,6 +210,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "inference",
+    merchantObsoletable: true,
     guidance: "Do not store customer PII. Use aggregate customer descriptions only.",
   },
   "customers.primary_purchase_reason": {
@@ -209,6 +223,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "inference",
+    merchantObsoletable: true,
     guidance: "Use aggregate buying reasons such as gifting, replenishment or quality.",
   },
   "marketing.primary_acquisition_channel": {
@@ -221,6 +236,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "merchant_statement",
+    merchantObsoletable: true,
     guidance: "Examples include Instagram, paid search, SEO, wholesale referrals or email.",
   },
   "operations.fulfilment_model": {
@@ -233,6 +249,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "policy",
+    merchantObsoletable: true,
     guidance: "Examples include one warehouse, dropshipped or mixed fulfilment.",
   },
   "operations.biggest_operational_pain": {
@@ -245,6 +262,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "constraint",
+    merchantObsoletable: true,
     guidance: "Use the merchant's stated pain point without inventing a solution.",
   },
   "preferences.optimisation_priority": {
@@ -258,6 +276,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "preference",
+    merchantObsoletable: true,
     guidance: "Map profit, growth, cash flow, retention or revenue priorities.",
   },
   "policies.low_stock_threshold": {
@@ -270,6 +289,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "policy",
+    merchantObsoletable: true,
     min: 0,
     max: 100000,
     guidance: "Use whole units.",
@@ -284,6 +304,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "policy",
+    merchantObsoletable: true,
     guidance:
       "Use when merchant says zero inventory is not truly unavailable because preorder is allowed.",
   },
@@ -297,6 +318,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "policy",
+    merchantObsoletable: true,
     guidance: "Keep the merchant's product group description, not customer PII.",
   },
   "policies.never_recommend": {
@@ -309,6 +331,7 @@ const REGISTRY = {
     merchantCorrectable: true,
     confirmable: true,
     kind: "policy",
+    merchantObsoletable: true,
     guidance: "Use only explicit merchant restrictions or strong preferences.",
   },
   "goals.generated.three_months": {
@@ -321,6 +344,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: false,
     kind: "goal",
+    merchantObsoletable: false,
     guidance:
       "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
   },
@@ -334,6 +358,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: false,
     kind: "goal",
+    merchantObsoletable: false,
     guidance:
       "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
   },
@@ -347,6 +372,7 @@ const REGISTRY = {
     merchantCorrectable: false,
     confirmable: false,
     kind: "goal",
+    merchantObsoletable: false,
     guidance:
       "Generated from Merchant Memory and merchant coaching; do not create directly from merchant form input.",
   },
@@ -618,6 +644,7 @@ function humanize(value) {
  *   merchantCreatable: boolean;
  *   merchantCorrectable: boolean;
  *   confirmable: boolean;
+ *   merchantObsoletable: boolean;
  *   kind: "observation" | "inference" | "policy" | "preference" | "goal" | "merchant_statement" | "constraint";
  *   min?: number;
  *   max?: number;

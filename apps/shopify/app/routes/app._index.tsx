@@ -136,7 +136,7 @@ import {
   confirmBelief,
   correctBelief,
   getBeliefsForMerchant,
-  markBeliefObsolete,
+  retractBeliefForMerchant,
 } from "../lib/merchant-memory/service.server.js";
 import {
   CONVERSATION_TOPICS,
@@ -889,17 +889,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return { ok: true };
       }
 
-      // memory.forget — "Forget": mark the belief obsolete (kept in history, dropped from
-      // the active surface). markBeliefObsolete is a no-op that returns null if it's already
-      // gone, so a double-click is safe.
+      // memory.forget — "Forget": retract the belief (kept in history, dropped from the
+      // active surface). retractBeliefForMerchant is a no-op that returns null if it's
+      // already gone, so a double-click is safe.
+      //
+      // retractBeliefForMerchant, NOT markBeliefObsolete: a merchant forget is authoritative
+      // and must survive re-derivation. markBeliefObsolete sets a status the derivation can't
+      // see, so the belief came back on the next full rebuild.
       if (intent === "memory.forget") {
         const beliefId = String(formData.get("beliefId") ?? "");
         const key = await resolveBeliefKeyById({ merchantId: merchant.id, beliefId });
         if (!key) return { ok: false, error: "That memory could not be found.", intent };
-        const result = await markBeliefObsolete(prisma, {
+        const result = await retractBeliefForMerchant(prisma, {
           merchantId: merchant.id,
+          shopId: shop.id,
           key,
-          reason: "merchant_forgot_via_memory_surface",
+          retractedBy: "merchant_memory_surface",
         });
         memoryLog.info("merchant forgot belief", {
           merchantId: merchant.id,

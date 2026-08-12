@@ -11,6 +11,7 @@ import {
   AUTHORITATIVE_BELIEF_STATUSES,
   BELIEF_PRECEDENCE,
   BELIEF_STATUS,
+  DERIVATION_LOOKUP_STATUSES,
 } from "./constants.server.js";
 import {
   STORE_UNDERSTANDING_DERIVATION_VERSION,
@@ -519,11 +520,15 @@ function validateCandidateBeliefs(input) {
  * @param {{ merchantId: string; shopId?: string | null; runId: string; inputSummaryHash: string; provider: import("../llm/provider.server.js").LlmProvider; candidate: any }} input
  */
 async function upsertStoreUnderstandingBelief(prisma, input) {
+  // DERIVATION_LOOKUP_STATUSES, not ACTIVE — same reason as upsertDerivedBelief: a
+  // merchant-retracted belief must be FOUND here so the authoritative guard below skips it.
+  // An ACTIVE-only lookup misses it and the store-understanding pass re-creates a belief the
+  // merchant forgot. Two write paths, so the resurrection bug had to be closed in both.
   const existing = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
       key: input.candidate.beliefKey,
-      status: { in: ACTIVE_BELIEF_STATUSES },
+      status: { in: DERIVATION_LOOKUP_STATUSES },
     },
     orderBy: { updatedAt: "desc" },
   });

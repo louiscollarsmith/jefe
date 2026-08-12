@@ -151,6 +151,10 @@ function requiresTarget(type) {
   return [
     OPERATION_TYPES.confirmBelief,
     OPERATION_TYPES.correctBelief,
+    // Obsolete takes a target but NO value — it names what to forget, not what to change it
+    // to. Absent from requiresValue below for that reason, and rejected outright here without
+    // a target key: a destructive op with no stated subject must never reach validation.
+    OPERATION_TYPES.obsoleteBelief,
     OPERATION_TYPES.createMerchantBelief,
     OPERATION_TYPES.answerOpenQuestion,
     OPERATION_TYPES.requestExplanation,
