@@ -101,7 +101,7 @@ import {
   retryFastOnboarding,
   skipFastOnboarding,
 } from "../lib/onboarding/fast-onboarding.server.js";
-import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
+import { executeApprovedAction } from "../lib/actions/execute-approved-action.server";
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import {
   getActiveSuggestedAction,
@@ -329,11 +329,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!approval.ok) return approval;
     let handoff: FastOnboardingActionResult = approval;
     if (approval.mode === "execute" && approval.actionRunId && approval.recommendationId) {
-      const executionResult = await wireClearanceExecution(
+      const executionResult = await executeApprovedAction(
         prisma,
         session,
         { merchantId: merchant.id, actionRunId: approval.actionRunId, mode: "approve" },
-        { loadOfflineToken: (_prisma, domain) => loadFreshOfflineToken(domain) },
+        { loadOfflineToken: (_prisma: unknown, domain: string) => loadFreshOfflineToken(domain) },
       );
       if (!executionResult.ok || (!executionResult.executed && executionResult.reason !== "already_applied")) {
         return {
@@ -415,7 +415,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const actionLog = baseLogger.child({ component: "action" });
   if (intent === "action.approve") {
     const actionRunId = String(formData.get("actionRunId") ?? "");
-    const result = await wireClearanceExecution(
+    const result = await executeApprovedAction(
       prisma,
       session,
       {
@@ -426,7 +426,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // Refresh the offline token right before the write. authenticate.admin only
       // re-exchanges it when it's already within ~5 min of expiry, so a token with
       // a little life left would otherwise be used as-is and could 403 mid-write.
-      { loadOfflineToken: (_prisma, shop) => loadFreshOfflineToken(shop) },
+      { loadOfflineToken: (_prisma: unknown, shop: string) => loadFreshOfflineToken(shop) },
     );
     // `executed` distinguishes a real store write (flag on) from the dark record
     // (flag off). No customer data — merchant + run identifiers only.

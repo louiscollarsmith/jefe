@@ -107,12 +107,15 @@ test("every shape belief reports the evidence behind its label, not just the lab
   }
 });
 
-test("business-shape beliefs derive but are not yet shown to merchants", async () => {
+test("business-shape beliefs are shown to merchants, and the hide-gate still defaults to visible", async () => {
   // Founder call: these run against real stores and get reviewed before any merchant is told
   // what kind of business Jefe thinks they run. The memory view renders every active belief,
   // so this has to be a real gate rather than an intention.
+  // Founder review done (2026-08-12): the shapes were checked against 14 real merchants and
+  // are now SHOWN. The gate itself stays — it is the mechanism for the next belief that needs
+  // holding back, and it must keep defaulting to visible so nothing is hidden by accident.
   for (const key of [CHANNEL, CATALOGUE, CADENCE]) {
-    assert.equal(isMerchantVisibleBeliefKey(key), false, `${key} would render today`);
+    assert.equal(isMerchantVisibleBeliefKey(key), true, `${key} is hidden from merchants`);
   }
   // ...and the gate must not have swallowed anything else.
   assert.equal(isMerchantVisibleBeliefKey("business.store_name"), true);

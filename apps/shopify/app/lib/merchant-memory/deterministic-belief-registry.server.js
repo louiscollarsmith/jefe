@@ -1719,7 +1719,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.order_value_bands.trailing_90d",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1739,11 +1739,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.delivery_footprint.trailing_90d",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1763,11 +1763,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.purchase_consideration.trailing_90d",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1787,11 +1787,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.range_composition",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1811,11 +1811,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.channel_mix.trailing_90d",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1835,11 +1835,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.catalogue_shape",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1859,11 +1859,11 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.purchase_cadence.all_stored_history",
-    "audience": "model",
+    "audience": "merchant",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1883,7 +1883,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "dataQualityFlags": [
       "incomplete_source_coverage"
     ],
-    "merchantVisible": false
+    "merchantVisible": true
   },
   {
     "key": "business.activity_profile",

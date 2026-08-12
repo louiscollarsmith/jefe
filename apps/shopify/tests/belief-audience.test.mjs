@@ -41,9 +41,13 @@ test("ingestion diagnostics are internal, and the gate refuses them", () => {
   }
 });
 
-test("the business-shape tranche is model-only, not merchant-facing", () => {
+test("a held-back belief is consistently model-audience and hidden", () => {
+  // The business-shape tranche USED to be the thing held back here. Founder review is done
+  // (2026-08-12: the seven shapes were checked against 14 real merchants) and they are now
+  // merchant-facing, so nothing is held back today — and that is allowed. What must never
+  // drift is the CONSISTENCY: anything flagged not-visible has to resolve to the model
+  // audience and actually be hidden, so the two ways of saying it can't disagree.
   const heldBack = registry.filter((belief) => belief.merchantVisible === false);
-  assert.ok(heldBack.length > 0);
   for (const belief of heldBack) {
     assert.equal(beliefAudience(belief.key), "model", belief.key);
     assert.equal(isMerchantVisibleBeliefKey(belief.key), false);
@@ -60,9 +64,13 @@ test("an unclassified belief defaults to merchant, not to hidden", () => {
 test("the audience split is the one that was measured", () => {
   const tally = { merchant: 0, internal: 0, model: 0 };
   for (const belief of registry) tally[beliefAudience(belief.key)] += 1;
+  // 19 ingestion diagnostics stay internal. `model` is now 0: the business-shape tranche was
+  // the only thing in it, and it went merchant-facing after the founder reviewed it against
+  // real stores (2026-08-12). The internal count is the one that must not drift quietly — a
+  // diagnostic leaking onto a merchant's screen is the failure this file exists to catch.
   assert.equal(tally.internal, 19);
-  assert.equal(tally.model, 7);
-  assert.equal(tally.merchant, registry.length - 26);
+  assert.equal(tally.model, 0);
+  assert.equal(tally.merchant, registry.length - 19);
   assert.equal(
     registry.filter((belief) => isMerchantVisibleBeliefKey(belief.key)).length,
     tally.merchant,
