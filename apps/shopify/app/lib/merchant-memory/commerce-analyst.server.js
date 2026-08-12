@@ -1272,6 +1272,14 @@ function replenishmentReply(result) {
 function calculationLines(packet) {
   const lines = [];
   for (const result of Array.isArray(packet?.results) ? packet.results.slice(0, 3) : []) {
+    // Money with no single currency is not money in any currency — never render a bare
+    // cross-currency number; surface the belief layer's refusal instead.
+    if (result.dataQuality?.moneyUnavailable) {
+      lines.push(
+        `${labelForResult(result)}: unavailable — this store trades in multiple currencies, so I can't total money without conversion.`,
+      );
+      continue;
+    }
     const value = result.totals?.atRiskRevenue ?? result.totals?.value;
     const currency = result.currency ? `${result.currency} ` : "";
     if (Number.isFinite(Number(value))) {

@@ -132,7 +132,16 @@ test("mixed currency and invalid planner shapes return caveats or rejected resul
 
   assert.equal(packet.results[0].ok, true);
   assert.equal(packet.results[0].currency, null);
-  assert.match(packet.results[0].caveats.join(" "), /single currency|money values/i);
+  // Honesty: a money measure with no single currency is refused (matches the belief
+  // layer), never summed across currencies into a bare number.
+  assert.equal(
+    packet.results[0].dataQuality.moneyUnavailable,
+    "multi_currency_no_conversion",
+  );
+  assert.match(
+    packet.results[0].caveats.join(" "),
+    /multiple currencies|without conversion/i,
+  );
   assert.equal(packet.results[1].ok, false);
   assert.match(packet.results[1].error, /Unsupported calculation kind/);
 });

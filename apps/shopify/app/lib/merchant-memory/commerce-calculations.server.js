@@ -1057,6 +1057,22 @@ function withShares(rows) {
 }
 
 /**
+ * Null every money-valued total (keeping *count fields) so no cross-currency figure is
+ * emitted or rendered anywhere downstream. Used when a MONEY measure has no single
+ * currency — the measure is money, so every non-count numeric total is money.
+ * @param {AnyRecord | undefined} totals
+ * @returns {AnyRecord}
+ */
+function stripMoneyTotals(totals) {
+  /** @type {AnyRecord} */
+  const out = {};
+  for (const [key, value] of Object.entries(totals ?? {})) {
+    out[key] = /count$/i.test(key) ? value : null;
+  }
+  return out;
+}
+
+/**
  * @param {AnyRecord} request
  * @param {{ rows: AnyRecord[]; totals?: AnyRecord; formula: string; sourceTables: string[]; currency?: string | null; dataQuality?: AnyRecord; caveats?: string[]; source: string }} input
  * @returns {CommerceCalculationResult}
@@ -1064,8 +1080,20 @@ function withShares(rows) {
 function finalizeResult(request, input) {
   const currency = input.currency ?? currencyFromRows(input.rows);
   const caveats = [...(input.caveats ?? [])];
+  /** @type {AnyRecord} */
+  let totals = input.totals ?? totalsFromRows(request, input.rows);
+  /** @type {AnyRecord} */
+  let dataQuality = { rowCount: input.rows.length, ...(input.dataQuality ?? {}) };
+  // Honesty: a MONEY measure with no single currency cannot be totalled — summing
+  // GBP+EUR+AED is not money in any currency. Match the belief layer's refusal
+  // (blocked_by_data_quality) rather than emit a bare cross-currency number: strip the
+  // money total, flag it, and firm the caveat. Non-money measures are unaffected.
   if (MONEY_MEASURES.has(request.measure) && currency === null) {
-    caveats.push("No single currency was available, so money values may be unavailable or caveated.");
+    caveats.push(
+      "This store trades in multiple currencies, so I can't give a single money total without conversion.",
+    );
+    dataQuality = { ...dataQuality, moneyUnavailable: "multi_currency_no_conversion" };
+    totals = stripMoneyTotals(totals);
   }
   return {
     id: request.id,
@@ -1076,13 +1104,10 @@ function finalizeResult(request, input) {
     filters: publicFilters(request.filters),
     window: publicWindow(request.window),
     rows: sanitizeRows(input.rows),
-    totals: sanitizeRecord(input.totals ?? totalsFromRows(request, input.rows)),
+    totals: sanitizeRecord(totals),
     formula: input.formula,
     sourceTables: input.sourceTables,
-    dataQuality: sanitizeRecord({
-      rowCount: input.rows.length,
-      ...(input.dataQuality ?? {}),
-    }),
+    dataQuality: sanitizeRecord(dataQuality),
     caveats,
     currency,
     source: input.source,
