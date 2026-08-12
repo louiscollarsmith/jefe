@@ -245,20 +245,86 @@ production analogue of a 20-currency store.
 
 ---
 
-## 6. Unfinished
+## 6. The harness works — and what it found
 
-| Work | State |
+A real merchant runs end to end. **The Fresh Fish Shop** (Quiver 967, 120 real
+orders, 47 days) loads into the corpus database and Jefe derives **85 beliefs**:
+AOV £74.84, 4.53 items/order, £240.77 revenue per active day, 115 known customers,
+3.48% repeat rate, 100% line-item→product linkage. It skips 48 more with specific
+honest reasons ("About 12 months of order history are required to judge
+seasonality").
+
+Reproduce:
+```bash
+docker exec jefe-shopify-postgres psql -U jefe -d postgres -c "CREATE DATABASE jefe_corpus"
+cd apps/shopify && DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_corpus?schema=public" npx prisma migrate deploy
+# then pull a merchant via Metabase → TSV → loadCorpusMerchant → deriveMerchantMemoryBeliefs
+```
+
+**Three corpus gaps it exposed (all fixed, 72 → 85 beliefs):** products with no
+status made Jefe conclude **zero active products** (killing five beliefs); no
+`CustomerIdentity` rows made `known_customer_count` zero and repeat-purchase
+analysis dead; the shop claimed `historicalOrderAccess: "full"` for a 47-day slice.
+
+### ⛔ LIVE BUG it found — not a corpus artefact, affects real merchants
+
+**Window-share beliefs divide by the full window regardless of available history.**
+
+```js
+function zeroSalesDayShare(context, definition, days) {
+  const activeDays = activeDaySet(context, ordersInWindow(context, days)).size;
+  return shareOutcome(context, definition, days - activeDays, days, ...);
+}
+```
+
+`availableOrderHistoryDays` **appears nowhere in `shopify-derivations.server.js`**
+(grepped: zero hits) despite existing on `Shop` for exactly this. Measured: a store
+with **47 days** of history reports `zero_sales_day_share.trailing_90d` = **54.44%**
+(numerator 49, denominator 90). ~43 of those "no sales" days simply predate the
+data. Setting `availableOrderHistoryDays` changes nothing because nothing reads it.
+
+Who it hits: **every newly-connected merchant** for their first three months (day 1
+= 100% zero-sales days), and ⚠️ **Shopify Basic exposes only 60 days of order
+history**, so those merchants are *permanently* mislabelled at ~33%. It surfaces on
+the first screen a merchant ever sees. Same flaw drives `activity_profile`
+("intermittent") and weekly consistency.
+
+Fix: clamp the denominator to `min(days, availableOrderHistoryDays)`, or skip the
+belief when history is shorter than the window (matching how the layer already
+handles insufficient data). Belief registry = architecture's call. Flagged to
+chat 2 (onboarding), who were about to write copy on it.
+
+**This is also the answer to onboarding's sample-safety question, and it is worse
+than "a sample misses long-tail findings": a short window MANUFACTURES FALSE ONES.**
+
+## 7. Unfinished
+
+## 8. Process lessons worth keeping
+
+- **Read the hook's output before assuming main is busy.** I attributed three push
+  failures to ref-lock contention; it was a lint error in my own code, hidden by a
+  `>/dev/null` in my retry loop. The gate was right all three times.
+- **To tell "my branch is broken" from "main is broken", check out main's own copy
+  of the failing file in isolation and re-run.** That turned "my push is failing"
+  into "main is red", which is a different problem with a different owner.
+- **Mutation-test guards.** Both a security guard and a data-quality check in this
+  lane passed their tests while being provably dead. Delete the assertion; if the
+  suite stays green, the test was theatre.
+- **`npm ci` in your own worktree.** Do not symlink `node_modules` to the main
+  checkout — another session can empty it mid-run, `npx` then pulls Prisma 7, and
+  you get schema "errors" that are really a missing install. ⛔ Do not "fix" the
+  schema to satisfy them.| Work | State |
 | --- | --- |
-| Fix the mapper's currency semantics (§4) | **Do this first** |
-| Pull the two corpus merchants and run the loader | Not started. Fresh Fish Shop (967) is still a good single-currency pick |
-| Re-measure the 222 merchants against corrected behaviour | Not started. ⚠️ A labelled **base-currency total** is the pass now — not a refusal, and not a per-currency split |
-| **Full-vs-5k-sample belief diff** for chat 2 (onboarding) | Not started, and **chat 2 is blocked on it**. They had recorded sample-first as "validated" on my volume data; I corrected that to "necessary approach, per-finding sample-safety UNTESTED". Long-tail findings (slow-movers by units) are the ones a sample plausibly misses |
-| Extract shared `currencyDistribution` | Chat 10 gated it: the shared module must be the **same source** feeding `business.primary_currency` **and** the analyst, or it is the same divergence bug in a new coat. Now a tidy-up, not urgent |
-| First-Insights sets for chat 2 | Owed, both branches |
+| Corpus currency semantics | **Done** — one currency per shop, coverage reported |
+| Load + derive a real merchant | **Done** — 85 beliefs from 120 real orders |
+| Window-share bug (above) | **Raised, not fixed** — architecture owns the belief registry |
+| Insights / goals / plan on the corpus merchant | Not run — needs an LLM key; beliefs are the input and they work |
+| **Full-vs-sample belief diff** for chat 2 | Partly answered (see §6) — the quantified diff is still owed |
+| Re-measure the 222 merchants | Not started; a labelled base-currency total is the pass |
+| Extract shared `currencyDistribution` | Chat 10 gated: one source must feed BOTH `business.primary_currency` and the analyst |
+| Second corpus merchant | House of Spells retired (§4). Pick a fresh one |
 
----
-
-## 7. Process lessons worth keeping
+## 8. Process lessons worth keeping
 
 - **Read the hook's output before assuming main is busy.** I attributed three push
   failures to ref-lock contention; it was a lint error in my own code, hidden by a
