@@ -42,10 +42,12 @@ import {
 } from "../lib/merchant-goals/service.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import {
+  ensureMerchantPlanQueued,
   generateMerchantPlan,
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
+import { maybeEnqueueProactivePlan } from "../lib/merchant-plan/proactive-recommendations.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
 import {
   newCorrelationId,
@@ -217,6 +219,67 @@ async function maybeMeasureClearanceOutcomes(prisma, logger) {
   }
 }
 
+let lastProactiveSweepAt = 0;
+const PROACTIVE_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly — spreads the day's ≤5 and catches belief-changes as they land
+const PROACTIVE_SWEEP_MAX_SHOPS = 500; // v1 fleet-size guard per sweep; logged if hit
+
+/**
+ * DARK unless ENABLE_PROACTIVE_RECOMMENDATIONS=true. Hourly, ask the plan pipeline to refresh
+ * each active merchant's recommendation. Generation is deduped by belief snapshot (it only
+ * truly regenerates when the merchant's situation changed) and capped at 5 fresh proactive runs
+ * per merchant per day — a ceiling, not a target, so a quiet merchant gets nothing. Per-merchant
+ * failures never break the sweep; a sweep failure never breaks the loop.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ logger: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function maybeGenerateProactiveRecommendations(prisma, { logger }) {
+  if (process.env.ENABLE_PROACTIVE_RECOMMENDATIONS !== "true") return;
+  const nowMs = Date.now();
+  if (nowMs - lastProactiveSweepAt < PROACTIVE_SWEEP_INTERVAL_MS) return;
+  lastProactiveSweepAt = nowMs;
+  try {
+    const shops = await prisma.shop.findMany({
+      where: { uninstalledAt: null },
+      select: { id: true, merchantId: true },
+      take: PROACTIVE_SWEEP_MAX_SHOPS,
+    });
+    if (shops.length === PROACTIVE_SWEEP_MAX_SHOPS) {
+      logger.warn(
+        "Proactive sweep hit the per-sweep shop cap; some merchants skipped this pass",
+        { cap: PROACTIVE_SWEEP_MAX_SHOPS },
+      );
+    }
+    const now = new Date();
+    let enqueued = 0;
+    for (const shop of shops) {
+      try {
+        const result = await maybeEnqueueProactivePlan(prisma, {
+          merchantId: shop.merchantId,
+          shopId: shop.id,
+          now,
+          ensureQueued: ensureMerchantPlanQueued,
+        });
+        if (result.enqueued) enqueued += 1;
+      } catch (error) {
+        logger.warn("Proactive plan enqueue failed for one merchant; sweep continues", {
+          shopId: shop.id,
+          err: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (enqueued > 0) {
+      logger.info("Proactive recommendations enqueued", {
+        merchants: shops.length,
+        enqueued,
+      });
+    }
+  } catch (error) {
+    logger.warn("Proactive recommendation sweep failed; loop continues", {
+      err: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ intervalMs?: number; initialDelayMs?: number; logger?: Pick<Console, "info" | "warn" | "error"> }} [options]
@@ -267,6 +330,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await maybeMeasureClearanceOutcomes(workerPrisma, logger);
       await maybeSendWinBackCampaign(workerPrisma, { logger });
       await maybeSendMorningBriefs(workerPrisma, { logger }); // DARK unless ENABLE_MORNING_BRIEF && ENABLE_EMAIL
+      await maybeGenerateProactiveRecommendations(workerPrisma, { logger }); // DARK unless ENABLE_PROACTIVE_RECOMMENDATIONS
       maybeAlertWebhookHealth({ logger }); // sync, in-memory — alerts on sustained webhook degradation
       maybeAlertInboundEmailHealth({ logger }); // same, for the inbound-email path
       loopFailureStreak = 0; // a fully-successful tick clears the streak

@@ -94,7 +94,7 @@ export async function decideProactiveGeneration(
  */
 export function startOfMerchantDay(now, timeZone) {
   const tz = typeof timeZone === "string" && timeZone ? timeZone : "UTC";
-  const format = (zone) =>
+  const format = (/** @type {string} */ zone) =>
     new Intl.DateTimeFormat("en-CA", {
       timeZone: zone,
       year: "numeric",
