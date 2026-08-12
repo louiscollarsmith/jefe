@@ -967,11 +967,21 @@ function purchaseCadence(context, definition) {
     });
   }
 
+  // Cut-offs checked against 203 real merchants (Quiver warehouse, 2 years of repeat gaps,
+  // ≥20 gaps each): median repeat gap runs 4–166 days. The first guess put `infrequent` at
+  // >180d, which NOTHING reached — a dead bucket that looked like a working dimension.
+  // >120d populates it from the real tail.
+  //
+  // ⚠️ Tuned on London delivery clients, which skew to food/drink/fashion and so probably
+  // repeat faster than ecommerce at large. Re-check against Jefe's own merchants before
+  // treating these as settled. A genuinely slow business (furniture, mattresses) usually has
+  // too few repeat gaps to reach the minimum at all and lands in `one_off` above, which is
+  // the right answer for it.
   const median = percentile(gapDays, 0.5);
   let cadence = "occasional";
   if (median <= 21) cadence = "frequent";
   else if (median <= 60) cadence = "regular";
-  else if (median <= 180) cadence = "occasional";
+  else if (median <= 120) cadence = "occasional";
   else cadence = "infrequent";
 
   return derived(context, definition, {

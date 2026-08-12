@@ -1843,7 +1843,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "valueType": "enum",
     "derivationVersion": "v1",
     "window": "all_stored_history",
-    "calculation": "median days between consecutive orders from the same customer, bucketed; one_off when almost nobody reorders",
+    "calculation": "median days between consecutive orders from the same customer, bucketed at 21/60/120 days (cut-offs checked against 203 real merchants); one_off when almost nobody reorders",
     "minimumData": "At least 20 customer-attributed orders",
     "confidenceRule": "0.80 scaled by the number of observed repeat gaps",
     "legacyConfidenceRule": "0.80 scaled by the number of observed repeat gaps",
