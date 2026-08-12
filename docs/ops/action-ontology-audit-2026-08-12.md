@@ -145,11 +145,22 @@ artifact** — `write_inventory`, `write_customers` and `write_orders` each want
 shipped action to flip to honest.
 
 ⚠️ **`write_orders` is the hard one.** Every genuinely valuable order write —
-`refundCreate`, `orderCancel`, order editing — is **irreversible**, which is a different
-risk class under the reversibility rule. The only cleanly reversible order write is
-tagging/notes, which is thin value on its own. So `write_orders` cannot be made honest
-by a *reversible* action; making it honest means Matt accepting an irreversible
-primitive, or dropping the scope. That is a founder call, flagged in §7.
+`refundCreate`, `orderCancel`, `orderMarkAsPaid`, order editing — is **irreversible**,
+a different risk class under the reversibility rule.
+
+Checked specifically for a reversible order write worth building, because dropping a
+scope is hard to undo. There are exactly two, and neither rescues it:
+
+- **`orderUpdate` tags/note** — reversible, trivially safe, thin value on its own.
+- **`orderClose` / `orderOpen`** — a genuinely reversible pair, the structural twin of
+  `product_status_change`. But Shopify **already auto-closes** orders once every line
+  item is fulfilled or cancelled and all transactions complete, so the only orders left
+  to close are ones that are *not* actually finished — and auto-closing those hides work
+  the merchant still owes. Reversible, and still the wrong thing to automate.
+
+So `write_orders` cannot be made honest by a *reversible* action. Making it honest means
+accepting an irreversible primitive; the alternative is dropping the scope. Founder call
+(§8, decision 3).
 
 ## 5. Candidate actions, ranked
 
@@ -268,10 +279,19 @@ on a per-customer cohort belief that does not exist.
 2. **Build `inventory_correction` against `write_inventory`?** No *new* scope — it
    exercises one already requested — but it is the first time Jefe writes something
    other than a price. *Recommended: yes.*
-3. **`write_orders`: keep it or drop it?** No reversible order write carries real value.
-   Keeping it means either accepting an irreversible primitive (refund/cancel) later, or
-   accepting that the scope stays unexercised while the listing is in review.
-   *No recommendation — this is a product-posture call.*
+3. **`write_orders`: keep it or drop it?** ⭐ **The live one — two lanes now converge.**
+   No reversible order write carries real value (§4, checked exhaustively). Keeping it
+   means either accepting an irreversible primitive later, or leaving the scope
+   unexercised while the listing is in review *and* while the privacy copy publicly
+   calls it a feature being rolled out.
+   **Chat 6 recommends dropping it** unless there is a must-have order-write feature
+   Matt intends to build with an irreversible primitive — it is the top unexercised
+   review-risk scope and the one their copy is most exposed on.
+   **This lane concurs, in that conditional form.** Nothing in §5 needs it: candidates G
+   (`order_tag_change`) and I (`refund_create`/`order_cancel`) are the only two, and both
+   fall away — G on value, I on reversibility. Dropping `write_orders` costs the
+   candidate list nothing. The decision is therefore *"does Matt want an irreversible
+   order primitive on the roadmap?"* — if no, the scope has no purpose.
 4. **`write_discounts`?** Discount codes are plausibly the single most-requested
    merchant action, and the scope is not currently requested. Adding it is a consent +
    review change. *Deferred pending chat 6's merchant discourse.*
