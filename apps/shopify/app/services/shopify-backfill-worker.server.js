@@ -457,6 +457,11 @@ export async function processReadyBackfillJobs(prisma, options = {}) {
     const result = await processNextBackfillJob(prisma, options);
     if (!result) break;
     results.push(result);
+    // Alive, and provably so: a finished job is real progress. Without this the only
+    // heartbeat is at the top of the tick, so draining a merchant's backfill for longer than
+    // the 90s stale window makes a working loop report as wedged — and a first onboarding is
+    // the heaviest drain there is.
+    recordWorkerTick();
   }
   return results;
 }
