@@ -172,6 +172,96 @@ export function computeHorizon({ now, lowCoverItems, recentRefundCount }) {
   return { near: nearRaw.map((r) => r.item), watching };
 }
 
+/** @typedef {{ id: string; kind: "stockout" | "refund"; text: string }} HorizonHeadsUp */
+
+/**
+ * Read-only: the near-term Horizon signals worded as short, proactive chat
+ * heads-ups — for surfacing IN the conversation (Shape B), not a home section
+ * (founder call, 2026-08-12). Resilient: returns [] on any read error, never
+ * throws into the caller's loader. The chat surface owns HOW/WHEN a heads-up is
+ * injected; this owns only WHAT it says.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; now?: Date }} input
+ * @returns {Promise<HorizonHeadsUp[]>}
+ */
+export async function getHorizonHeadsUps(
+  prisma,
+  { merchantId, shopId, now = new Date() },
+) {
+  const refundSince = addDays(now, -REFUND_WINDOW_DAYS);
+  try {
+    const [lowCoverBelief, recentRefundCount] = await Promise.all([
+      getBelief(prisma, { merchantId, key: LOW_COVER_KEY }),
+      prisma.refund.count({
+        where: { merchantId, shopId, processedAt: { gte: refundSince } },
+      }),
+    ]);
+    return buildHorizonHeadsUps({
+      now,
+      lowCoverItems: extractLowCoverItems(lowCoverBelief ? lowCoverBelief.value : null),
+      recentRefundCount: Number.isFinite(recentRefundCount) ? recentRefundCount : 0,
+    });
+  } catch (error) {
+    log.warn("horizon_headsups_read_failed", {
+      merchantId,
+      beliefKey: LOW_COVER_KEY,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+/**
+ * Pure: turn the real near-term signals into short, honest chat heads-ups.
+ * Voice is "noticing, not alerting" (chat 11) — plain, dated, no urgency
+ * theatre, and honest about what Jefe can't do yet (it never offers a button it
+ * can't back — reordering isn't a live action). Ordered most-actionable first
+ * (a run-out before a refund trend). Never fabricates: a heads-up only appears
+ * when the underlying number supports it.
+ *
+ * @param {{ now: Date; lowCoverItems: LowCoverItem[]; recentRefundCount: number }} input
+ * @returns {HorizonHeadsUp[]}
+ */
+export function buildHorizonHeadsUps({ now, lowCoverItems, recentRefundCount }) {
+  /** @type {HorizonHeadsUp[]} */
+  const headsUps = [];
+
+  // Soonest genuine run-out inside the two-week window — straight from the
+  // velocity-backed low-cover items, so never a seasonal date.
+  const soonestRunOut = [...lowCoverItems]
+    .sort((a, b) => a.daysOfCover - b.daysOfCover)
+    .find((it) => it.daysOfCover <= HORIZON_NEAR_DAYS);
+  if (soonestRunOut) {
+    const runOut = addDays(now, clampDays(soonestRunOut.daysOfCover));
+    const left =
+      soonestRunOut.available > 0
+        ? `about ${Math.round(soonestRunOut.available)} left`
+        : "almost none left";
+    headsUps.push({
+      id: `headsup-stockout-${soonestRunOut.productId}`,
+      kind: "stockout",
+      text: `Heads up — at how fast ${soonestRunOut.title} is selling, it looks like you'll run out around ${dayLabel(runOut)} (${left}). I can't reorder for you yet, but tell me your supplier's lead time and I'll work out when you'd need to order.`,
+    });
+  }
+
+  // Refund trend — only when there's a real recent pattern to project from.
+  if (recentRefundCount >= MIN_REFUNDS_TO_PROJECT) {
+    const projected = Math.max(
+      1,
+      Math.round((recentRefundCount * HORIZON_NEAR_DAYS) / REFUND_WINDOW_DAYS),
+    );
+    const by = addDays(now, HORIZON_NEAR_DAYS);
+    headsUps.push({
+      id: "headsup-refund-projection",
+      kind: "refund",
+      text: `Heads up — you've had ${recentRefundCount} refunds in the last 30 days. If that keeps up, that's about ${projected} more by ${dayLabel(by)}. Want me to look into what's driving them?`,
+    });
+  }
+
+  return headsUps;
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /**

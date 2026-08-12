@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildHorizonHeadsUps,
   buildSeasonalHorizon,
   computeHorizon,
+  getHorizonHeadsUps,
   getLatestHorizon,
 } from "../app/lib/merchant-memory/horizon.server.js";
 
@@ -220,4 +222,76 @@ test("a read failure degrades to the seasonal timeline only — no guessed numbe
   assert.deepEqual([...near.map((n) => n.id)].sort(), [...SEASONAL_IDS].sort());
   assert.equal(watching.length, 0);
   assert.ok(!near.some((n) => n.id === "refund-projection"), "must not project refunds after a failed read");
+});
+
+// ── heads-ups (proactive chat messages) ───────────────────────────────────────
+
+test("buildHorizonHeadsUps: a near run-out becomes an honest, dated stockout heads-up", () => {
+  const ups = buildHorizonHeadsUps({ now: NOW, lowCoverItems: [lowCoverItem({})], recentRefundCount: 0 });
+  const stockout = ups.find((u) => u.kind === "stockout");
+  assert.ok(stockout, "expected a stockout heads-up");
+  assert.equal(stockout.id, "headsup-stockout-p1");
+  assert.match(stockout.text, /Rosehip Serum/);
+  assert.match(stockout.text, new RegExp(label(addDays(NOW, 4)))); // dated run-out (4 Aug)
+  assert.match(stockout.text, /about 5 left/);
+  assert.match(stockout.text, /can't reorder for you yet/); // honest about the gap
+});
+
+test("buildHorizonHeadsUps: soonest run-out wins, seasonal never leaks in", () => {
+  const ups = buildHorizonHeadsUps({
+    now: NOW,
+    lowCoverItems: [
+      lowCoverItem({ productId: "slow", title: "Clay Mask", daysOfCover: 10 }),
+      lowCoverItem({ productId: "fast", title: "Rosehip Serum", daysOfCover: 3 }),
+    ],
+    recentRefundCount: 0,
+  });
+  const stockouts = ups.filter((u) => u.kind === "stockout");
+  assert.equal(stockouts.length, 1, "one run-out heads-up — the soonest");
+  assert.equal(stockouts[0].id, "headsup-stockout-fast");
+  assert.ok(!ups.some((u) => /Black Friday|Christmas|back-to-school/i.test(u.text)));
+});
+
+test("buildHorizonHeadsUps: a real refund pattern projects; stockout leads", () => {
+  const ups = buildHorizonHeadsUps({ now: NOW, lowCoverItems: [lowCoverItem({})], recentRefundCount: 6 });
+  assert.equal(ups[0].kind, "stockout", "most-actionable first");
+  const refund = ups.find((u) => u.kind === "refund");
+  assert.ok(refund);
+  assert.equal(refund.id, "headsup-refund-projection");
+  assert.match(refund.text, /6 refunds in the last 30 days/);
+  assert.match(refund.text, /about 3 more/); // round(6 * 14 / 30) = 3
+  assert.match(refund.text, new RegExp(label(addDays(NOW, 14))));
+});
+
+test("buildHorizonHeadsUps: never fabricates — far stock, thin refunds, empty store stay quiet", () => {
+  const later = buildHorizonHeadsUps({ now: NOW, lowCoverItems: [lowCoverItem({ daysOfCover: 20 })], recentRefundCount: 0 });
+  assert.ok(!later.some((u) => u.kind === "stockout"), "beyond two weeks → no run-out heads-up");
+  const oneRefund = buildHorizonHeadsUps({ now: NOW, lowCoverItems: [], recentRefundCount: 1 });
+  assert.ok(!oneRefund.some((u) => u.kind === "refund"), "a single refund is too thin to project");
+  assert.deepEqual(buildHorizonHeadsUps({ now: NOW, lowCoverItems: [], recentRefundCount: 0 }), []);
+});
+
+test("getHorizonHeadsUps reads scoped signals and returns [] on a read failure", async () => {
+  const calls = {};
+  const prisma = {
+    merchantMemoryBelief: {
+      async findFirst(args) {
+        calls.beliefWhere = args.where;
+        return beliefRow({ items: [{ productId: "p1", title: "Rosehip Serum", available: 5, dailyVelocity: 1.2, daysOfCover: 4 }] });
+      },
+    },
+    refund: { async count(args) { calls.refundWhere = args.where; return 6; } },
+  };
+  const ups = await getHorizonHeadsUps(prisma, { merchantId: "m1", shopId: "s1", now: NOW });
+  assert.equal(calls.beliefWhere.merchantId, "m1");
+  assert.equal(calls.refundWhere.shopId, "s1");
+  assert.ok(ups.some((u) => u.kind === "stockout"));
+  assert.ok(ups.some((u) => u.kind === "refund"));
+
+  const brokenPrisma = {
+    merchantMemoryBelief: { async findFirst() { throw new Error("db down"); } },
+    refund: { async count() { return 6; } },
+  };
+  const safe = await getHorizonHeadsUps(brokenPrisma, { merchantId: "m1", shopId: "s1", now: NOW });
+  assert.deepEqual(safe, [], "resilient — never throws into the loader, returns []");
 });
