@@ -62,6 +62,32 @@ asking; one-way doors (stored data, merchant-visible one-shots, live flag flips,
 scopes, auth) stop and ask **with a recommendation attached**. Asking is cheap;
 asking about a two-way door is the thing that stalls the fleet.
 
+## Changelog posts go to #jefe-slack. Never #eng-matt.
+
+⛔ **FIXED RULE (Matt, 2026-08-12).** Jefe's live-changelog Slack post goes to
+**#jefe-slack (`C0BKHSV5FHB`)** and nowhere else. #eng-matt is the
+**quiver-london** channel and Jefe is not a quiver-london repo — posting Jefe
+changes there reaches the wrong readers and buries the Quiver log.
+
+⚠️ The house rules at `~/Claude/CLAUDE.md` name #eng-matt. **That rule is scoped
+to quiver-london repos and this file overrides it here.** Don't delete anything
+already posted there; just route everything from now on to #jefe-slack.
+
+⛔ **Always reference the commit** (Matt, 2026-08-12). Put the short SHA in the
+footer so an entry can be traced back to the change that caused it — a changelog
+you cannot tie to a diff is a story, not a record. Group-by-achievement still
+applies: if it took four commits, reference the one that made it live.
+
+```
+_app home · live 15:20 · 96b382f_
+---------
+```
+
+Everything else is unchanged: post when it is **live and verified**, not when it
+is pushed; 1–2 lines; the headline is the achievement in a merchant's terms;
+footer then a `---------` separator; group by achievement rather than one post
+per commit; never automate the words.
+
 ## Quality Bar
 
 A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
