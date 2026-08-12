@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import path from "node:path";
 
 // Merchant Memory is the product's core object, and for a stretch of 2026-08-12 no merchant
 // could open it. The home's "See everything Jefe knows" footer link was removed on purpose
@@ -13,7 +12,7 @@ import path from "node:path";
 // Route handling is NOT reachability, so asserting the loader still reads `?view=memory`
 // would have passed throughout the outage. Assert there is a way IN.
 
-const read = (p) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
+const read = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const dailyHome = read("app/components/daily-home.tsx");
 const settings = read("app/routes/app.settings.tsx");
 

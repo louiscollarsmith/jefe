@@ -1016,6 +1016,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.currency_consistency",
+    "audience": "internal",
     "category": "data",
     "valueType": "structured",
     "derivationVersion": "v1",
@@ -1050,6 +1051,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.customer_identity_order_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1083,6 +1085,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.duplicate_sku_count",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1115,6 +1118,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.inventory_freshness_hours_p90",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1147,6 +1151,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.inventory_variant_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1180,6 +1185,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.line_item_product_link_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1213,6 +1219,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.line_item_variant_link_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1246,6 +1253,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.missing_sku_variant_share",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1278,6 +1286,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.nonpositive_order_value_count",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1310,6 +1319,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.nonpositive_variant_price_count",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1342,6 +1352,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.order_history_completeness",
+    "audience": "internal",
     "category": "data",
     "valueType": "structured",
     "derivationVersion": "v1",
@@ -1376,6 +1387,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.order_history_span_days",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1408,6 +1420,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.order_timestamp_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1440,6 +1453,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.orphan_inventory_level_count",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1473,6 +1487,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.orphan_line_item_count",
+    "audience": "internal",
     "category": "data",
     "valueType": "number",
     "derivationVersion": "v1",
@@ -1506,6 +1521,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.priced_order_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1538,6 +1554,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.priced_variant_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1570,6 +1587,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.refund_line_item_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1603,6 +1621,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "data.refund_transaction_amount_coverage",
+    "audience": "internal",
     "category": "data",
     "valueType": "percentage",
     "derivationVersion": "v1",
@@ -1700,6 +1719,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.order_value_bands.trailing_90d",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1723,6 +1743,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.delivery_footprint.trailing_90d",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1746,6 +1767,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.purchase_consideration.trailing_90d",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1769,6 +1791,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.range_composition",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1792,6 +1815,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.channel_mix.trailing_90d",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1815,6 +1839,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.catalogue_shape",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -1838,6 +1863,7 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
   },
   {
     "key": "business.purchase_cadence.all_stored_history",
+    "audience": "model",
     "tranche": "Business shape v1",
     "category": "business",
     "valueType": "enum",
@@ -5486,15 +5512,52 @@ export const DETERMINISTIC_CONFIDENCE_TEMPLATE_REGISTRY = {
 //
 // This hides a belief from the MEMORY SURFACE only. It is not a secret: the belief is stored
 // with full provenance and evidence, and Jefe still reasons from it.
-const MERCHANT_HIDDEN_BELIEF_KEYS = new Set(
-  DETERMINISTIC_BELIEF_REGISTRY.filter((entry) => entry.merchantVisible === false).map(
-    (entry) => entry.key,
-  ),
+// Who a belief is FOR. Declared per entry rather than inferred, because inferring it is what
+// went wrong: `isMerchantVisibleBeliefKey` excluded only `merchantVisible === false`, so all
+// 19 ingestion diagnostics passed a function whose name promises they would not, and they
+// stayed off the merchant's screen purely because the memory view ALSO filtered on
+// `category !== "data"`. Two rules, disagreeing, with the truth in neither.
+//
+//   merchant — Jefe may assert this to the merchant's face.
+//   internal — our own ingestion diagnostics (orphan line items, link/timestamp coverage).
+//              Never merchant-facing, and not something Jefe should reason about the
+//              business with either.
+//   model    — Jefe reasons with it but does not yet say it. Currently the business-shape
+//              tranche, held back until it has been checked against real stores.
+//
+// Absent means `merchant`: the registry is overwhelmingly merchant-facing, so the default is
+// the common case and only the exceptions are declared. That also makes a NEW belief
+// merchant-facing by default, which is the honest failure direction here — a belief nobody
+// classified shows up in the memory view where someone will notice it, rather than silently
+// disappearing from a surface it should have been on.
+export const BELIEF_AUDIENCES = Object.freeze(["merchant", "internal", "model"]);
+
+const BELIEF_AUDIENCE_BY_KEY = new Map(
+  DETERMINISTIC_BELIEF_REGISTRY.map((entry) => [
+    entry.key,
+    BELIEF_AUDIENCES.includes(/** @type {any} */ (entry.audience))
+      ? /** @type {any} */ (entry.audience)
+      : entry.merchantVisible === false
+        ? "model"
+        : "merchant",
+  ]),
 );
 
-/** @param {string} key */
+/**
+ * @param {string} key
+ * @returns {"merchant" | "internal" | "model"}
+ */
+export function beliefAudience(key) {
+  return BELIEF_AUDIENCE_BY_KEY.get(key) ?? "merchant";
+}
+
+/**
+ * The single gate for "may Jefe say this to the merchant". Now one rule rather than a
+ * function plus a category filter that disagreed with it.
+ * @param {string} key
+ */
 export function isMerchantVisibleBeliefKey(key) {
-  return !MERCHANT_HIDDEN_BELIEF_KEYS.has(key);
+  return beliefAudience(key) === "merchant";
 }
 
 // The business-shape tranche: what KIND of business this is, rather than a fact about it.

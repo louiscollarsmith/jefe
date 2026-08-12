@@ -109,11 +109,13 @@ export function MerchantMemoryView({
 
   // Grouped by PROVENANCE (what the merchant told Jefe vs what he worked out), each ordered
   // most-worth-checking first (confirmPriority = impact × uncertainty).
-  // `data` beliefs are OUR ingestion diagnostics — orphan line items, link coverage,
-  // timestamp coverage. Not facts about the merchant's business; they must never render
-  // here. Chat 10 is adding a first-class audience field; category is the honest proxy.
+  // Our ingestion diagnostics (orphan line items, link and timestamp coverage) are not facts
+  // about the merchant's business and must never render here. That used to be enforced by a
+  // `category !== "data"` filter on this line, as a stopgap while a real audience field was
+  // built. It exists now, so the loader's single gate (`isMerchantVisibleBeliefKey`, keyed on
+  // `audience === "merchant"`) is the only rule — a second one here could only ever drift
+  // from it, and while they disagreed the truth was in neither.
   const all = memory.groups
-    .filter((group) => group.category !== "data")
     .flatMap((group) => group.beliefs)
     .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0));
   const toldByMerchant = all.filter((belief) => belief.authorship === "merchant");
