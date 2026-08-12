@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **A fresh chat no longer claims store-level work happened “in this conversation.”** Proposed actions and recent store updates now stay out of the blank-chat rail and are labelled as store updates when shown, so a new conversation can be genuinely empty. Jefe also drops a dead-stock markdown action intent when the Plan recommendation is really about customer re-engagement or retention, preventing a customer-looking title from becoming a proposed clearance move. `app/components/daily-home.tsx`, `app/lib/merchant-plan/schema.server.js`, `tests/memory-surface-wiring.test.mjs`, `tests/merchant-plan.test.mjs`.
+
 - **After the first action is approved or tracked, Jefe now opens the app instead of waiting on the onboarding screen.** The action confirmation still appears briefly, but the handoff token now completes itself and loads the normal app home, so merchants do not have to notice and press the separate “Open the app” button after they have already made their first decision. `app/components/fast-value-onboarding.tsx`, `tests/fast-onboarding.test.mjs`, `tests/onboarding-flow.test.mjs`.
 
 - **A quick reinstall can no longer crash the app before onboarding loads.** If a shop was uninstalled and immediately reinstalled while Jefe was healing tenant records, the retry path could find the old shop row but skip the same merchant-relinking guard used by normal requests. The next connector write then pointed at a missing merchant and `/app.data` returned a server error instead of letting the merchant back into Jefe. Reinstall recovery now relinks the shop before refreshing the Shopify connector account on both paths, with a regression test for the race. `app/lib/ingestion/shopify/tenant.server.js`, `tests/tenant-resilience.test.mjs`.

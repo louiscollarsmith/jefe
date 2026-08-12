@@ -1,3 +1,4 @@
+/* global process */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
@@ -299,12 +300,40 @@ test("Plan structured validation rejects unsupported IDs, generic plans and miss
 
 test("Plan validation attaches a registry-valid actionIntent, drops unknown, tolerates none", () => {
   const base = planOutputFixture();
-  // Registry-valid intent → normalized onto the recommendation (magnitude → params).
+  const clearanceRecommendation = {
+    ...base.selectedRecommendation,
+    title: "Clear old stock with a floored markdown",
+    summary:
+      "Mark down unsold stock so cash tied up in stale inventory can be recovered without selling below cost.",
+    whyThisAction:
+      "The supplied memory points to old stock with cash tied up, so a floored clearance is the cleanest next move.",
+    whyNow:
+      "The stock is already unsold, and a small markdown gives a quick read on whether demand returns.",
+    startToday:
+      "Review the old-stock products Jefe found and approve the capped markdown preview.",
+    executionSteps: [
+      {
+        title: "Review old stock",
+        description: "Check the products with cash tied up before approving the markdown.",
+      },
+      {
+        title: "Approve the markdown",
+        description: "Use the floored clearance preview so prices do not drop below cost.",
+      },
+    ],
+    successSignal: {
+      description: "Look for old stock moving after the markdown.",
+      timeframe: "within two weeks",
+    },
+    expectedBenefit:
+      "A clearance can free trapped capital while keeping a cost floor on every product.",
+  };
+  // Registry-valid and semantically matched intent → normalized onto the recommendation.
   const withIntent = parseAndValidateMerchantPlanOutput(
     {
       ...base,
       selectedRecommendation: {
-        ...base.selectedRecommendation,
+        ...clearanceRecommendation,
         actionIntent: {
           actionType: "price_markdown",
           targetKind: "dead_stock",
@@ -319,6 +348,26 @@ test("Plan validation attaches a registry-valid actionIntent, drops unknown, tol
   assert.equal(withIntent.recommendation.actionIntent.actionType, "price_markdown");
   assert.equal(withIntent.recommendation.actionIntent.targetKind, "dead_stock");
   assert.deepEqual(withIntent.recommendation.actionIntent.params, { markdownPercent: 30 });
+
+  // Valid capability but mismatched customer-retention copy → dropped to null; no
+  // customer-looking recommendation should create a dead-stock markdown proposal.
+  const mismatched = parseAndValidateMerchantPlanOutput(
+    {
+      ...base,
+      selectedRecommendation: {
+        ...base.selectedRecommendation,
+        actionIntent: {
+          actionType: "price_markdown",
+          targetKind: "dead_stock",
+          markdownPercent: 30,
+          rationale: "Free the trapped cash",
+        },
+      },
+    },
+    validationContext(),
+  );
+  assert.equal(mismatched.ok, true);
+  assert.equal(mismatched.recommendation.actionIntent, null);
 
   // Unknown capability → dropped to null; the plan itself still validates (advisory).
   const bogus = parseAndValidateMerchantPlanOutput(
@@ -554,13 +603,11 @@ test("Plan generation emits the plan-rec actionIntent → a proposed clearance r
       shopId: shop.id,
       runId: queued.run.id,
       llmProvider: createMockLlmProvider({
-        operation: planOutputFixture({
+        operation: clearancePlanOutputFixture({
           beliefId: snapshot.beliefs[0].id,
           insightId: snapshot.insights[0].id,
           goalId: snapshot.goals[0].id,
           supportingGoalId: snapshot.goals[1].id,
-          // Jefe (the LLM) decides to recommend clearance from memory — the emit.
-          actionIntent: { actionType: "price_markdown", targetKind: "dead_stock", markdownPercent: 30 },
         }),
       }),
       logger: silentLogger,
@@ -730,6 +777,54 @@ function planOutputFixture({
       supportingBeliefIds: [beliefId],
       supportingInsightIds: [insightId],
       confidence: "reasonable",
+    },
+  };
+}
+
+function clearancePlanOutputFixture(options = {}) {
+  const output = planOutputFixture({
+    ...options,
+    actionIntent: {
+      actionType: "price_markdown",
+      targetKind: "dead_stock",
+      markdownPercent: 30,
+    },
+  });
+  return {
+    ...output,
+    candidates: [
+      candidateFixture("candidate_1", "Clear old stock with a floored markdown", options.beliefId ?? "belief-1", options.insightId ?? "insight-1"),
+      candidateFixture("candidate_2", "Review the top sellers page", options.beliefId ?? "belief-1", options.insightId ?? "insight-1"),
+      candidateFixture("candidate_3", "Check stock for proven products", options.beliefId ?? "belief-1", options.insightId ?? "insight-1"),
+    ],
+    selectedRecommendation: {
+      ...output.selectedRecommendation,
+      candidateId: "candidate_1",
+      title: "Clear old stock with a floored markdown",
+      summary:
+        "Mark down unsold stock so cash tied up in stale inventory can be recovered without selling below cost.",
+      whyThisAction:
+        "The supplied memory points to old stock with cash tied up, so a floored clearance is the cleanest next move.",
+      whyNow:
+        "The stock is already unsold, and a small markdown gives a quick read on whether demand returns.",
+      startToday:
+        "Review the old-stock products Jefe found and approve the capped markdown preview.",
+      executionSteps: [
+        {
+          title: "Review old stock",
+          description: "Check the products with cash tied up before approving the markdown.",
+        },
+        {
+          title: "Approve the markdown",
+          description: "Use the floored clearance preview so prices do not drop below cost.",
+        },
+      ],
+      successSignal: {
+        description: "Look for old stock moving after the markdown.",
+        timeframe: "within two weeks",
+      },
+      expectedBenefit:
+        "A clearance can free trapped capital while keeping a cost floor on every product.",
     },
   };
 }
