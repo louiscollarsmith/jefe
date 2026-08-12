@@ -168,6 +168,10 @@ import {
   ensureShopContactEmail,
   getShopContactEmail,
 } from "../lib/notifications/contact-email.server.js";
+import {
+  ensureShopBrandLogo,
+  brandLogoFromPayload,
+} from "../lib/shop/brand-logo.server.js";
 import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import {
@@ -1199,6 +1203,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopDomain: session.shop,
         accessToken: session.accessToken,
       }).catch(() => {});
+      // Same best-effort pattern for the merchant's brand logo (shop.brand): fire-and-
+      // forget so its first-load-only Admin GraphQL call stays off the LCP path, cached
+      // into rawPayload; the header shows it from the next load, monogram until then.
+      void ensureShopBrandLogo(prisma, {
+        shopId: shop.id,
+        shopDomain: session.shop,
+        accessToken: session.accessToken,
+      }).catch(() => {});
+      const brandLogoUrl = brandLogoFromPayload(
+        (shop as { rawPayload?: unknown }).rawPayload,
+      );
       const conversationPromise = getDailyChatThread(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
@@ -1323,6 +1338,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         horizonHeadsUps,
         todayLabel,
         storeTimeZone: homeTimeZone,
+        brandLogoUrl,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1587,6 +1603,7 @@ export default function AppIndex() {
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}
         horizonHeadsUps={data.horizonHeadsUps}
+        brandLogoUrl={data.brandLogoUrl}
       />
     );
   }

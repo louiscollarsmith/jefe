@@ -100,6 +100,7 @@ export function DailyHome(props: {
   todayLabel?: string; // loader-computed, store-tz-pinned; replaces render-time new Date()
   storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
   horizonHeadsUps?: HeadsUp[]; // proactive run-out / refund heads-ups, rendered as messages
+  brandLogoUrl?: string | null; // merchant's brand logo for the header; monogram fallback
 }) {
   const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
@@ -142,6 +143,7 @@ export function DailyHome(props: {
           storeName={props.storeName}
           todayLabel={props.todayLabel}
           goalLine={goalLine}
+          brandLogoUrl={props.brandLogoUrl}
         />
         <StoreConversation
           conversation={props.conversation ?? null}
@@ -368,22 +370,47 @@ function Header({
   storeName,
   todayLabel,
   goalLine,
+  brandLogoUrl,
 }: {
   storeName: string;
   todayLabel?: string;
   goalLine?: string | null;
+  brandLogoUrl?: string | null;
 }) {
   return (
     <header style={headerStyle}>
       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={markStyle}>J</span>
+          <StoreMark storeName={storeName} logoUrl={brandLogoUrl} />
           <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
         </div>
         {goalLine ? <span style={goalLineStyle}>Working towards {goalLine}</span> : null}
       </div>
       <DateLabel>{todayLabel ?? ""}</DateLabel>
     </header>
+  );
+}
+
+// The header mark wears the MERCHANT's brand: the real brand logo when the store has one
+// (from shop.brand, cached in rawPayload), otherwise the store's initial in the navy
+// square — an honest monogram, never a fake photo (mirrors the ImageSlot rule).
+function StoreMark({ storeName, logoUrl }: { storeName: string; logoUrl?: string | null }) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt={storeName ? `${storeName} logo` : "Store logo"}
+        width={32}
+        height={32}
+        style={logoMarkStyle}
+      />
+    );
+  }
+  const initial = (storeName || "").trim().charAt(0).toUpperCase() || "J";
+  return (
+    <span style={markStyle} aria-hidden="true">
+      {initial}
+    </span>
   );
 }
 
@@ -794,6 +821,16 @@ const markStyle: CSSProperties = {
   fontWeight: 800,
 };
 const smallMarkStyle: CSSProperties = { ...markStyle, width: 22, height: 22, borderRadius: 6, fontSize: 12, flex: "none" };
+const logoMarkStyle: CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: 8,
+  objectFit: "contain",
+  background: "#fff",
+  border: `1px solid ${COLORS.border}`,
+  display: "block",
+  flex: "none",
+};
 const monoStyle: CSSProperties = {
   color: COLORS.meta,
   fontFamily: FONT.mono,
