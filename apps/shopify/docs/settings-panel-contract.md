@@ -11,8 +11,12 @@ refactor silently.** "I can revert my commit" is not the same as "this is revers
 
 ## Shape & nav direction
 
-- One route, `/app/settings`, with an internal vertical **sub-nav**
-  [Integrations · Channels · Settings · Autonomy], switched by `?panel=<id>`.
+- One route, `/app/settings`, with an internal vertical **sub-nav**, switched by `?panel=<id>`.
+  **Order is founder-specified and fixed: Autonomy · Integrations · Channels · Notifications** —
+  Autonomy first (the most important control; don't let it drift as panels fill in). The `PANELS`
+  array is the single ordering source; when wiring a panel, flip its `ready` and add its
+  `PanelBody` case, never reorder. Slugs are stable (`autonomy`/`integrations`/`channels`/
+  `settings`); the `settings` slug carries the label **"Notifications"** (label ≠ slug).
 - This sub-nav is **scoped to settings only** — it is NOT the global Polaris `Frame`
   navigation, which was deliberately dropped (`0acdf68`, founder's "one nav, not two").
   Do not reintroduce a global Frame nav to bring settings back.
@@ -63,14 +67,14 @@ is the integration gate (the panel becomes imported for the first time).
 | panel        | component          | loader prop (source)                          | status                                                            |
 | ------------ | ------------------ | --------------------------------------------- | ----------------------------------------------------------------- |
 | autonomy     | `AutonomyPanel`    | `actionModes` (`getLiveActionModes`)          | **wired**                                                         |
-| settings     | `SettingsPanel`    | `emailBrief` (contact-email + notif. pref)    | delivered; needs `action="/app?index"` on its Form before wiring  |
-| integrations | `IntegrationsPanel`| `toolStack` (`getDetectedToolStack`)          | delivered; fast-follow — `getDetectedToolStack` widens `status` to `string` vs the panel's `"detected"\|"none_yet"` union (tighten, then wire) |
-| channels     | `ChannelsPanel`    | `connection` + `destinations` (Slack)         | delivered (+ `/api/channels/slack`); pending founder scope greenlight |
+| integrations | `IntegrationsPanel`| `toolStack` (`getDetectedToolStack`)          | **wired** (empty "still learning" state — 0 detections today)     |
+| channels     | `ChannelsPanel`    | `connection` + `destinations` (Slack)         | **wired** (+ `/api/channels/slack`; `?channelNotice=` surfaced)   |
+| settings     | `SettingsPanel`    | `emailBrief` (contact-email + notif. pref)    | delivered as **"Notifications"**; needs `action="/app?index"` on its Form before wiring |
 
 ## Reachability
 
-The surface is now reachable from the home via the top-right gear. **Autonomy is live**;
-Integrations, Channels and Settings show a merchant-facing "coming soon" until wired (all four
-sub-nav items stay visible — wire-or-keep). ⚠️ Wiring **Channels** is a one-way-door step: its
-"Save channel" flow posts a confirming hello to the merchant's Slack (a live send), so it is
-founder-gated, not just another wire-up.
+The surface is reachable from the home via the top-right gear. **Autonomy, Integrations and
+Channels are live**; **Notifications** shows a merchant-facing "coming soon" until the email-prefs
+panel wires in (all four sub-nav items stay visible — wire-or-keep). ⚠️ The Slack "Save channel"
+flow does a **live send** to the merchant's Slack once connected — that path is founder-greenlit
+(Matt, "go live for sure"), and the channels lane runs a real connect e2e before merchants use it.

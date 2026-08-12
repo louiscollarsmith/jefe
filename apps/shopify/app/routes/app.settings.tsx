@@ -18,7 +18,7 @@ import type { SlackConnectionView, SlackDestination } from "../components/settin
 
 // The settings surface — a SEPARATE area from the (sleek, full-width) chat home.
 // Founder ruling 2026-08-12: the home stays "just a chat log"; settings live here with a
-// left-hand vertical sub-nav (Integrations · Channels · Settings · Autonomy). This is a
+// left-hand vertical sub-nav (Autonomy · Integrations · Channels · Notifications). This is a
 // settings-scoped sub-nav, NOT the global Polaris Frame nav that was dropped in 0acdf68 —
 // the home is untouched. It renders inside the app._index shell (app.tsx provides the
 // App Bridge Frame), so no AppProvider here.
@@ -34,8 +34,8 @@ import type { SlackConnectionView, SlackDestination } from "../components/settin
 // Until an owner lands its panel, the slot shows an honest, merchant-facing "coming soon"
 // state (no internal owner names, no fabricated controls). Reached from the home via the
 // top-right gear (app.tsx shell) — founder ruling 2026-08-12: home stays clean/chat-only,
-// settings behind a gear. Wired panels: Autonomy (Integrations is a fast-follow, pending a
-// type-tighten on getDetectedToolStack's return; Channels/Settings show "coming soon").
+// settings behind a gear. Wired panels: Autonomy, Integrations, Channels (Slack-first).
+// Notifications (email prefs — the composer's SettingsPanel) shows "coming soon" until wired.
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
@@ -86,11 +86,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // component here (swap the scaffold note for <TheirPanel data={...} />).
 type PanelDef = { id: string; label: string; blurb: string; owner: string; ready: boolean };
 
+// ORDER IS FOUNDER-SPECIFIED (Matt, 2026-08-12): Autonomy first (the most important control —
+// don't let it drift down as panels fill in), then Integrations, Channels, Notifications last.
+// This array IS the nav order + the contract's ordering source, so it holds regardless of which
+// panels are `ready`. When wiring a panel, only flip its `ready` + add its PanelBody case —
+// never reorder. `id` is the stable slug (used by ?panel=… and the Slack callback's
+// /app/settings?panel=channels redirect); `label` may differ — "Notifications" keeps the
+// `settings` slug (same principle as approve_execute keeping its stored value while relabelled).
 const PANELS: PanelDef[] = [
+  { id: "autonomy", label: "Autonomy", blurb: "How much rope Jefe gets, per kind of action.", owner: "roster session (the autonomy dial)", ready: true },
   { id: "integrations", label: "Integrations", blurb: "The tools Jefe reads — connect the ones you already use.", owner: "channels session + chat 9 (detected-tools data)", ready: true },
   { id: "channels", label: "Channels", blurb: "Where Jefe reaches you — Slack, WhatsApp, email.", owner: "channels session (Slack-first)", ready: true },
-  { id: "settings", label: "Settings", blurb: "Account, notifications, and data.", owner: "comms lane", ready: false },
-  { id: "autonomy", label: "Autonomy", blurb: "How much rope Jefe gets, per kind of action.", owner: "roster session (the autonomy dial)", ready: true },
+  { id: "settings", label: "Notifications", blurb: "Your morning brief — where it goes, when, and how often.", owner: "comms lane (email/notification prefs)", ready: false },
 ];
 
 export default function SettingsSurface() {
@@ -98,6 +105,9 @@ export default function SettingsSurface() {
   const [params] = useSearchParams();
   const requested = params.get("panel");
   const active = PANELS.find((p) => p.id === requested) ?? PANELS[0];
+  // Slack OAuth/save/disconnect round-trips land back here with ?channelNotice=… — surface it
+  // (it was orphaned: the callbacks passed it, nothing rendered it). Only on the Channels panel.
+  const channelNotice = params.get("channelNotice");
   // Back to the home, preserving the embedded params (host, etc.) minus our own ?panel.
   const homeParams = new URLSearchParams(params);
   homeParams.delete("panel");
@@ -130,6 +140,7 @@ export default function SettingsSurface() {
           <section style={panelStyle} aria-live="polite">
             <h2 style={panelTitleStyle}>{active.label}</h2>
             <p style={blurbStyle}>{active.blurb}</p>
+            {active.id === "channels" && channelNotice ? <NoticeBanner code={channelNotice} /> : null}
             <PanelBody panel={active} data={data} />
           </section>
         </div>
@@ -173,6 +184,26 @@ function PanelBody({
   }
 }
 
+// Slack round-trip confirmations (the ?channelNotice= codes the callbacks + /api/channels/slack
+// redirect with). Known codes get plain merchant copy; anything else (an error code) falls back
+// to a generic retry line — never a raw code shown to a merchant.
+const CHANNEL_NOTICES: Record<string, { tone: "ok" | "warn"; text: string }> = {
+  slack_connected: { tone: "ok", text: "Slack connected. Choose a channel below and save." },
+  slack_saved: { tone: "ok", text: "Saved — Jefe will post to that Slack channel." },
+  slack_disconnected: { tone: "warn", text: "Slack disconnected." },
+  slack_destination_required: { tone: "warn", text: "Almost there — choose a Slack channel to finish." },
+};
+
+function NoticeBanner({ code }: { code: string }) {
+  const notice =
+    CHANNEL_NOTICES[code] ?? { tone: "warn" as const, text: "We couldn't finish connecting Slack. Please try again." };
+  return (
+    <div role="status" style={notice.tone === "ok" ? noticeOkStyle : noticeWarnStyle}>
+      {notice.text}
+    </div>
+  );
+}
+
 // ── tokens mirrored from the home (daily-home.tsx) for visual consistency ──────────
 const COLORS = {
   page: "#fbfaf7",
@@ -198,3 +229,5 @@ const panelStyle: CSSProperties = { flex: "1 1 420px", minWidth: 0, background: 
 const panelTitleStyle: CSSProperties = { margin: 0, fontSize: 17, fontWeight: 700, color: COLORS.ink };
 const blurbStyle: CSSProperties = { margin: 0, fontSize: 13.5, lineHeight: 1.5, color: COLORS.muted };
 const scaffoldStyle: CSSProperties = { marginTop: 6, padding: "14px 16px", border: `1px dashed ${COLORS.border}`, borderRadius: 10, fontSize: 13, lineHeight: 1.5, color: COLORS.muted, background: COLORS.page };
+const noticeOkStyle: CSSProperties = { padding: "10px 14px", borderRadius: 10, fontSize: 13, fontWeight: 600, color: "#26723d", background: "#eef8f0", border: "1px solid #7fc08d" };
+const noticeWarnStyle: CSSProperties = { padding: "10px 14px", borderRadius: 10, fontSize: 13, fontWeight: 600, color: "#8c4030", background: "#fbf1ec", border: "1px solid #e0b7a6" };
