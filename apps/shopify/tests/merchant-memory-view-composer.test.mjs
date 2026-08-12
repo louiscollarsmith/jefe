@@ -52,12 +52,14 @@ test("the memory-correction surface stays REACHABLE from a live route", () => {
     new URL("../app/routes/app._index.tsx", import.meta.url),
     "utf8",
   );
-  // The link must live in the ALWAYS-rendered composition (a sibling of GoalsSection in the
-  // main return), NOT inside a section that returns null when empty. The first landing put it
-  // inside WatchingSection (`if (!items.length) return null`), so on an all-clear/quiet store
-  // the door vanished and the whole surface was unreachable — while a bare `/view=memory/`
-  // string match still passed. Assert the link sits next to GoalsSection so it can't regress.
-  assert.match(dailyHome, /<GoalsSection[\s\S]{0,400}to="\?view=memory"/);
+  // The link must live in the ALWAYS-rendered composition (a sibling of StoreConversation in
+  // the Shape B home return), NOT inside a section that returns null when empty. The first
+  // landing put it inside WatchingSection (`if (!items.length) return null`), so on an
+  // all-clear/quiet store the door vanished and the whole surface was unreachable — while a
+  // bare `/view=memory/` string match still passed. StoreConversation always renders (it
+  // falls back to a grounded quiet-day line), so asserting the link sits just after it keeps
+  // the door reachable on a quiet store and guards against that regression.
+  assert.match(dailyHome, /<StoreConversation[\s\S]{0,600}to="\?view=memory"/);
   assert.match(appIndex, /<MerchantMemoryView/); // the route renders the composer surface
 });
 

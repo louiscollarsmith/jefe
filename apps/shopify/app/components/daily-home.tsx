@@ -2,6 +2,7 @@ import { Form, Link, useLocation, useNavigation } from "react-router";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
+import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
   ActionChatThread,
   ExecutedAction,
@@ -93,6 +94,7 @@ export function DailyHome(props: {
   horizonNear: HorizonItem[];
   horizonWatching: HorizonWatch[];
   todayLabel?: string; // loader-computed, store-tz-pinned; replaces render-time new Date()
+  storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
 }) {
   const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
@@ -102,6 +104,7 @@ export function DailyHome(props: {
     suggestedAction,
     actions,
     goals: props.goals,
+    storeTimeZone: props.storeTimeZone,
   });
   const chatOpen = Boolean(props.actionChatId);
 
@@ -116,50 +119,193 @@ export function DailyHome(props: {
     );
   }
 
-  const alsoInProgress = actions.filter(
-    (action) =>
-      (action.status === "applied" || action.status === "partially_applied") &&
-      action.outcome.measured === false &&
-      action.actionRunId !== primaryMove.actionRunId,
+  // Shape B: the home IS the store-level conversation. The next move, and Jefe's
+  // reports back on moves already made, arrive as messages in that one thread — not
+  // as a dashboard of cards. Everything else (Watching, Goals, autonomy, changelog)
+  // has moved off the home to its own surface; nothing gets added back here.
+  const outcomes = actions.filter(
+    (action) => action.actionRunId !== primaryMove.actionRunId,
   );
-  const history = actions.filter(
-    (action) =>
-      action.status === "rejected" ||
-      action.status === "reverted" ||
-      ((action.status === "applied" || action.status === "partially_applied") &&
-        action.outcome.measured === true),
-  );
-  const watching = buildWatching(props.insights, props.horizonWatching);
 
   return (
     <main style={pageStyle}>
       <div style={shellStyle}>
         <Header storeName={props.storeName} todayLabel={props.todayLabel} />
-        <h1 style={headlineStyle}>
-          {primaryMove.state === "in_progress" ? (
-            <>
-              Here&apos;s what we&apos;re working <em style={headlineEmStyle}>on.</em>
-            </>
-          ) : (
-            <>
-              Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
-            </>
-          )}
-        </h1>
-        <PrimaryMoveCard move={primaryMove} currentSearch={location.search} />
-        <AlsoInProgress actions={alsoInProgress} />
-        <ActionHistory actions={history} />
-        <WatchingSection items={watching} />
-        <GoalsSection goals={props.goals} />
-        {/* The door to Merchant Memory — persistent, so it's reachable even when the home is
-            all-clear (it previously lived inside WatchingSection, which is hidden when there's
-            nothing to watch, making the memory surface unreachable on a quiet store). */}
+        <StoreConversation
+          conversation={props.conversation ?? null}
+          move={primaryMove}
+          outcomes={outcomes}
+          quietLine={buildQuietLine(props.horizonWatching, props.insights)}
+          currentSearch={location.search}
+        />
+        {/* The one door off the chat log: everything Jefe knows about the store. */}
         <Link to="?view=memory" style={footerLinkStyle}>
           See everything Jefe knows →
         </Link>
       </div>
     </main>
   );
+}
+
+// The store-level conversation — Shape B's home. One thread: the real back-and-forth
+// (getDailyChatThread), Jefe reporting back on moves already made (outcomes as
+// messages), and the current move as the freshest message with a zoom into its own
+// action chat. The composer posts `chat.message` (the store thread); the per-move
+// zoom (ActionChat) posts `action.chat.message`. View decides the intent — no thread
+// picker. On a genuinely quiet day the thread is a single grounded line, never empty
+// and never fabricated.
+function StoreConversation({
+  conversation,
+  move,
+  outcomes,
+  quietLine,
+  currentSearch,
+}: {
+  conversation: ChatThread | null;
+  move: PrimaryMove;
+  outcomes: ExecutedAction[];
+  quietLine: string;
+  currentSearch: string;
+}) {
+  const navigation = useNavigation();
+  const pendingIntent = navigation.formData?.get("intent");
+  const isThinking =
+    navigation.state !== "idle" && pendingIntent === "chat.message";
+  const pendingMessage =
+    isThinking && typeof navigation.formData?.get("message") === "string"
+      ? String(navigation.formData.get("message")).trim()
+      : "";
+  const [composerMessage, setComposerMessage] = useState("");
+  const submittedMessageRef = useRef("");
+  useEffect(() => {
+    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
+  }, [isThinking, pendingMessage]);
+  useEffect(() => {
+    if (!isThinking && submittedMessageRef.current) {
+      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
+      submittedMessageRef.current = "";
+    }
+  }, [isThinking, composerMessage]);
+
+  const history = conversation?.messages ?? [];
+  const hasMove = move.state !== "empty";
+  // A grounded standing line only when there is genuinely nothing else to show.
+  const showQuietLine = !hasMove && outcomes.length === 0 && history.length === 0;
+
+  return (
+    <section style={conversationStyle}>
+      <div style={messagesStyle}>
+        {history.map((message) => (
+          <MessageRow key={message.id} from={message.role}>
+            {message.content}
+          </MessageRow>
+        ))}
+        {outcomes.map((action) => (
+          <MessageRow key={action.actionRunId} from="assistant">
+            {outcomeMessageText(action)}
+          </MessageRow>
+        ))}
+        {hasMove ? <MoveMessage move={move} currentSearch={currentSearch} /> : null}
+        {showQuietLine ? <MessageRow from="assistant">{quietLine}</MessageRow> : null}
+        {pendingMessage ? <MessageRow from="merchant">{pendingMessage}</MessageRow> : null}
+        {isThinking ? (
+          <div style={messageRowStyle} aria-live="polite">
+            <span style={smallMarkStyle}>J</span>
+            <div style={thinkingStyle}>Thinking</div>
+          </div>
+        ) : null}
+      </div>
+      <div style={chatComposerWrapStyle}>
+        <Form method="post" style={composerStyle}>
+          <input type="hidden" name="intent" value="chat.message" />
+          <input
+            name="message"
+            required
+            autoComplete="off"
+            aria-label="Message Jefe"
+            placeholder="Ask Jefe anything, or tell me what changed…"
+            value={composerMessage}
+            onChange={(event) => setComposerMessage(event.currentTarget.value)}
+            style={composerInputStyle}
+            disabled={isThinking}
+          />
+          <button type="submit" style={sendButtonStyle} disabled={isThinking}>
+            {isThinking ? "Thinking" : "Send"}
+          </button>
+        </Form>
+      </div>
+    </section>
+  );
+}
+
+function MessageRow({ from, children }: { from: string; children: ReactNode }) {
+  const isMerchant = from === "merchant" || from === "user";
+  return (
+    <div style={{ ...messageRowStyle, justifyContent: isMerchant ? "flex-end" : "flex-start" }}>
+      {!isMerchant ? <span style={smallMarkStyle}>J</span> : null}
+      <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>{children}</div>
+    </div>
+  );
+}
+
+// The move as a message in the thread: enough to recognise it, with a zoom into its
+// own action chat ("Talk this through →" sets ?actionChat=<id>) where the merchant
+// approves, declines or revises it. The decision never happens on the home feed.
+function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch: string }) {
+  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
+  const subtitle = informativeSubtitle(move.summary, move.title);
+  return (
+    <div style={{ ...messageRowStyle, justifyContent: "flex-start" }}>
+      <span style={smallMarkStyle}>J</span>
+      <div style={moveMessageStyle}>
+        <div style={cardTopStyle}>
+          <Mono>{move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}</Mono>
+          <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
+        </div>
+        <strong style={moveMessageTitleStyle}>{move.title}</strong>
+        {subtitle ? <p style={moveMessageSummaryStyle}>{subtitle}</p> : null}
+        {/* Approve / decline / revise live in the move's own chat (the zoom level), never on
+            the home feed — an executable commitment happens in the focused surface. */}
+        <div style={moveMessageActionsStyle}>
+          <Link to={searchWith(currentSearch, { actionChat: chatTarget })} style={primaryButtonStyle}>
+            Talk this through →
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Jefe reporting back on a move already made — honest copy from the same fields the
+// old Action history / Also-in-progress cards used, now rendered as a thread message.
+function outcomeMessageText(action: ExecutedAction): string {
+  const name = action.sourceRecommendation?.title || action.headline;
+  if (action.status === "rejected") {
+    return action.declineLearning ?? `You passed on “${name}” — I've noted it wasn't right for now.`;
+  }
+  if (action.status === "reverted") {
+    return `I reverted “${name}”.`;
+  }
+  if (action.outcome.measured) {
+    return action.outcome.summary ?? `“${name}” is done.`;
+  }
+  return `“${name}” is applied — I'm tracking how it lands and will report back here.`;
+}
+
+// The quiet-day line: grounded in a real thing Jefe is watching (or last noticed),
+// never fabricated. Falls back to an honest generic when there's nothing to surface.
+function buildQuietLine(horizonWatching: HorizonWatch[], insights: Insight[]): string {
+  const watch = (horizonWatching || []).find((item) => item.title);
+  if (watch) {
+    return watch.reason
+      ? `Nothing needs a decision from you right now. I'm keeping an eye on ${watch.title} — ${watch.reason}`
+      : `Nothing needs a decision from you right now. I'm keeping an eye on ${watch.title}.`;
+  }
+  const insight = (insights || []).find((item) => item.title);
+  if (insight) {
+    return `Nothing needs a decision from you right now. The most recent thing I noticed: ${insight.title}.`;
+  }
+  return "Nothing needs a decision from you right now — I'll surface your next move here the moment I have one.";
 }
 
 export function DailyHomeLoading({ storeName }: { storeName: string }) {
@@ -191,201 +337,6 @@ function Header({ storeName, todayLabel }: { storeName: string; todayLabel?: str
       </div>
       <DateLabel>{todayLabel ?? ""}</DateLabel>
     </header>
-  );
-}
-
-function PrimaryMoveCard({ move, currentSearch }: { move: PrimaryMove; currentSearch: string }) {
-  if (move.state === "empty") {
-    return (
-      <section style={cardStyle}>
-        <Mono>ALL CLEAR</Mono>
-        <h2 style={cardTitleStyle}>Nothing&apos;s on fire — you&apos;re all clear.</h2>
-      </section>
-    );
-  }
-
-  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
-  const subtitle = informativeSubtitle(move.summary, move.title);
-  return (
-    <section style={cardStyle}>
-      <div style={cardTopStyle}>
-        <Mono>{move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}</Mono>
-        <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
-      </div>
-      <h2 style={cardTitleStyle}>{move.title}</h2>
-      {move.state === "proposed" ? (
-        <>
-          {subtitle ? <p style={summaryStyle}>{subtitle}</p> : null}
-          <Link
-            to={searchWith(currentSearch, { actionChat: chatTarget })}
-            style={primaryButtonStyle}
-          >
-            Talk this through →
-          </Link>
-          <WhyThis move={move} />
-        </>
-      ) : (
-        <>
-          <div style={moveDetailBlockStyle}>
-            <Mono>PROGRESS</Mono>
-            <div style={checklistStyle}>
-              {move.checklist.map((item) => (
-                <span key={item.label} style={checkItemStyle}>
-                  <span aria-hidden="true" style={{ color: item.done ? COLORS.green : COLORS.meta }}>
-                    {item.done ? "✓" : "○"}
-                  </span>
-                  {item.label}
-                </span>
-              ))}
-            </div>
-          </div>
-          {move.successSignal ? (
-            <div style={moveDetailBlockStyle}>
-              <Mono>WHAT SUCCESS LOOKS LIKE</Mono>
-              <p style={summaryStyle}>{move.successSignal}</p>
-            </div>
-          ) : null}
-          {move.baselineSignal || move.currentSignal ? (
-            <div style={signalStyle}>
-              <span>{move.baselineSignal ?? "Starting point"}</span>
-              <span aria-hidden="true">→</span>
-              <strong>{move.currentSignal ?? move.baselineSignal}</strong>
-            </div>
-          ) : null}
-        </>
-      )}
-    </section>
-  );
-}
-
-function WhyThis({ move }: { move: PrimaryMove }) {
-  return (
-    <div style={whyStyle}>
-      <Mono>WHY THIS</Mono>
-      <div style={whyGridStyle}>
-        <WhyCell label="3-MONTH GOAL" value={move.successSignal ?? "Move the business goal forward"} />
-        <span style={whyArrowStyle}>→</span>
-        <WhyCell label="WHAT I'VE LEARNED" value={compactWhyThis(move.whyThisAction || move.whyNow)} />
-        <span style={whyArrowStyle}>→</span>
-        <WhyCell label="RECOMMENDED MOVE" value={move.title} accent />
-      </div>
-    </div>
-  );
-}
-
-function WhyCell({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div style={{ minWidth: 0 }}>
-      <Mono>{label}</Mono>
-      <div
-        title={value}
-        style={{
-          ...whyValueStyle,
-          color: accent ? COLORS.navy : COLORS.ink,
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function AlsoInProgress({ actions }: { actions: ExecutedAction[] }) {
-  if (!actions.length) return null;
-  return (
-    <section style={sectionStyle}>
-      <h2 style={sectionTitleStyle}>Also in progress</h2>
-      {actions.slice(0, 3).map((action) => (
-        <div key={action.actionRunId} style={compactCardStyle}>
-          <div style={rowTopStyle}>
-            <strong>{action.sourceRecommendation?.title || action.headline}</strong>
-            <StatusPill tone="green">Approved {formatShortDate(action.appliedAt)}</StatusPill>
-          </div>
-          <div style={miniChecklistStyle}>
-            <span>✓ variants selected</span>
-            <span>✓ markdown applied</span>
-            <span>○ sell-through observed</span>
-          </div>
-          {action.baselineSignal || action.currentSignal ? (
-            <div style={signalCompactStyle}>
-              {action.baselineSignal} <span>→</span> <strong>{action.currentSignal ?? action.baselineSignal}</strong>
-            </div>
-          ) : null}
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function ActionHistory({ actions }: { actions: ExecutedAction[] }) {
-  if (!actions.length) return null;
-  return (
-    <section style={sectionStyle}>
-      <h2 style={sectionTitleStyle}>Action history</h2>
-      <div>
-        {actions.slice(0, 6).map((action) => {
-          const declined = action.status === "rejected";
-          return (
-            <div key={action.actionRunId} style={historyRowStyle}>
-              <div>
-                <strong>{action.sourceRecommendation?.title || action.headline}</strong>
-                <p style={historyCopyStyle}>
-                  {declined
-                    ? action.declineLearning ?? "Jefe learned this was not the right move right now."
-                    : action.outcome.measured
-                      ? action.outcome.summary ?? "Done."
-                      : "Jefe is tracking the result."}
-                </p>
-              </div>
-              <div style={historyMetaStyle}>
-                <Mono>{formatShortDate(declined ? action.rejectedAt ?? null : action.appliedAt ?? action.revertedAt)}</Mono>
-                <strong style={{ color: declined ? COLORS.meta : COLORS.green }}>
-                  {declined ? "declined" : "done"}
-                </strong>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function WatchingSection({ items }: { items: Array<{ id: string; title: string; body: string }> }) {
-  if (!items.length) return null;
-  return (
-    <section style={sectionStyle}>
-      <h2 style={sectionTitleStyle}>What I&apos;m watching</h2>
-      {items.map((item) => (
-        <div key={item.id} style={watchRowStyle}>
-          <div>
-            <strong>{item.title}</strong>
-            <p style={historyCopyStyle}>{item.body}</p>
-          </div>
-          <span style={{ color: COLORS.border }}>→</span>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function GoalsSection({ goals }: { goals: Goal[] }) {
-  if (!goals.length) return null;
-  return (
-    <section id="goals" style={sectionStyle}>
-      <h2 style={sectionTitleStyle}>Where we&apos;re heading</h2>
-      <div style={goalsGridStyle}>
-        {goals.slice(0, 3).map((goal) => (
-          <div key={goal.id}>
-            <Mono>{horizonLabel(goal.horizon)}</Mono>
-            <strong style={{ display: "block", marginTop: 8 }}>{goal.title}</strong>
-          </div>
-        ))}
-      </div>
-      <a href="#goals" style={footerLinkStyle}>
-        View goals →
-      </a>
-    </section>
   );
 }
 
@@ -612,6 +563,7 @@ function buildPrimaryMove(input: {
   suggestedAction: SuggestedAction | null;
   actions: ExecutedAction[];
   goals: Goal[];
+  storeTimeZone?: string | null;
 }): PrimaryMove {
   const inProgress = input.actions.find(
     (action) =>
@@ -660,7 +612,7 @@ function buildPrimaryMove(input: {
       actionType: inProgress.actionType,
       executable: false,
       state: "in_progress",
-      statusLabel: `Approved ${formatShortDate(inProgress.appliedAt)}`,
+      statusLabel: `Approved ${formatShortDate(inProgress.appliedAt, input.storeTimeZone)}`,
       statusTone: "green",
       approvedAt: inProgress.appliedAt,
       baselineSignal: inProgress.baselineSignal ?? null,
@@ -729,22 +681,6 @@ function successSignalText(signal: SuccessSignalLike) {
   return [description, target, timeframe].filter(Boolean).join(" · ") || null;
 }
 
-function compactWhyThis(value: string) {
-  const firstSentence = value
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+/)[0]
-    ?.trim();
-  let compact = firstSentence || value.trim();
-  compact = compact
-    .replace(/\bbased on trailing sell rates\b\.?/i, "")
-    .replace(/\bhold fewer than 21 days of stock cover\b/i, "have fewer than 21 days of stock")
-    .replace(/\bTwo\b/g, "2")
-    .replace(/\btwo\b/g, "2")
-    .replace(/\s+/g, " ")
-    .trim();
-  return compact;
-}
-
 function informativeSubtitle(summary: string, title: string) {
   const cleanSummary = summary.replace(/\s+/g, " ").trim();
   const cleanTitle = title.replace(/\s+/g, " ").trim();
@@ -758,49 +694,13 @@ function goalTitle(goalId: string | null, goals: Goal[]) {
   return goals.find((goal) => goal.id === goalId)?.title ?? null;
 }
 
-function buildWatching(insights: Insight[], horizonWatching: HorizonWatch[]) {
-  const fromInsights = (insights || []).map((insight) => ({
-    id: `insight-${insight.id}`,
-    title: insight.title,
-    body: insight.finding,
-  }));
-  const fromHorizon = (horizonWatching || []).map((item) => ({
-    id: `horizon-${item.id}`,
-    title: item.title,
-    body: item.reason,
-  }));
-  // Reserve at least one slot for Horizon when it has items, so a store with ≥3
-  // insights can't silently starve it — both are "watching, not acting" signals and
-  // neither should win purely by concatenation order.
-  const reservedForHorizon = Math.min(fromHorizon.length, 1);
-  return [...fromInsights.slice(0, 3 - reservedForHorizon), ...fromHorizon].slice(0, 3);
-}
-
-function horizonLabel(horizon: string) {
-  if (horizon === "threeMonths") return "3 MONTHS";
-  if (horizon === "sixMonths") return "6 MONTHS";
-  if (horizon === "twelveMonths") return "12 MONTHS";
-  return horizon.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
-}
-
-// The current-day header label is computed ONCE in the loader (computeHomeDateLabel,
-// app._index), pinned to the store's timezone, and passed as the `todayLabel` prop —
-// never render-time `new Date()`, which evaluated to a different instant on server vs
-// browser and mismatched the "Tuesday 11 August" header (React #418/#425/#423).
-// Fixed-instant dates below stay hydration-safe by pinning an explicit zone; sourcing
-// that zone from the merchant's store (rather than the London default) rides the Shape B
-// header restructure.
-const VIEWER_TIME_ZONE = "Europe/London";
-
-function formatShortDate(value: string | null | undefined) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    timeZone: VIEWER_TIME_ZONE,
-  });
+// A short "12 Aug" label for a fixed instant, pinned to the STORE's timezone (the
+// service zone for a per-merchant app), falling back to London when it isn't known —
+// never the viewer's browser zone. Fixed instant + pinned zone ⇒ hydration-safe.
+// The current-day header label is separate: computed once in the loader
+// (computeHomeDateLabel) and passed as `todayLabel`, never read from the clock here.
+function formatShortDate(value: string | null | undefined, timeZone?: string | null) {
+  return formatDateInZone({ iso: value ?? null, timeZone: timeZone ?? undefined });
 }
 
 function searchWith(search: string, updates: Record<string, string | null>) {
@@ -895,14 +795,6 @@ const cardTopStyle: CSSProperties = {
   justifyContent: "space-between",
   gap: 20,
 };
-const cardTitleStyle: CSSProperties = {
-  fontFamily: FONT.serif,
-  fontSize: 27,
-  lineHeight: 1.28,
-  margin: 0,
-  fontWeight: 500,
-  letterSpacing: 0,
-};
 const summaryStyle: CSSProperties = {
   color: COLORS.body,
   fontSize: 16,
@@ -922,32 +814,6 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 700,
   textDecoration: "none",
 };
-const whyStyle: CSSProperties = {
-  borderTop: `1px solid ${COLORS.hairline}`,
-  paddingTop: 22,
-};
-const whyGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0, 1fr) 18px minmax(0, 1fr) 18px minmax(0, 1fr)",
-  columnGap: 12,
-  alignItems: "start",
-  marginTop: 14,
-};
-const whyArrowStyle: CSSProperties = {
-  alignSelf: "start",
-  color: COLORS.border,
-  fontSize: 18,
-  lineHeight: 1,
-  paddingTop: 26,
-  textAlign: "center",
-};
-const whyValueStyle: CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  lineHeight: 1.35,
-  marginTop: 6,
-  overflowWrap: "break-word",
-};
 const pillStyle: CSSProperties = {
   alignItems: "center",
   border: "1px solid",
@@ -959,100 +825,6 @@ const pillStyle: CSSProperties = {
   padding: "6px 14px",
   whiteSpace: "nowrap",
 };
-const moveDetailBlockStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 14,
-};
-const checklistStyle: CSSProperties = {
-  display: "flex",
-  gap: 18,
-  flexWrap: "wrap",
-  color: COLORS.body,
-};
-const checkItemStyle: CSSProperties = {
-  alignItems: "center",
-  display: "inline-flex",
-  gap: 7,
-  fontSize: 14.5,
-};
-const signalStyle: CSSProperties = {
-  display: "flex",
-  gap: 12,
-  flexWrap: "wrap",
-  color: COLORS.meta,
-  fontSize: 14.5,
-};
-const sectionStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 14,
-};
-const sectionTitleStyle: CSSProperties = {
-  fontFamily: FONT.serif,
-  fontSize: 19,
-  lineHeight: 1.15,
-  fontWeight: 500,
-  margin: 0,
-};
-const compactCardStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 12,
-  fontSize: 14.5,
-  padding: "18px 20px",
-};
-const rowTopStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 20,
-  alignItems: "center",
-  fontSize: 14.5,
-};
-const miniChecklistStyle: CSSProperties = {
-  display: "flex",
-  gap: 18,
-  flexWrap: "wrap",
-  color: COLORS.body,
-  fontSize: 14.5,
-  marginTop: 14,
-};
-const signalCompactStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 14.5,
-  marginTop: 12,
-};
-const historyRowStyle: CSSProperties = {
-  alignItems: "flex-start",
-  borderBottom: `1px solid ${COLORS.hairline}`,
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 24,
-  fontSize: 14.5,
-  padding: "17px 0 18px",
-};
-const historyCopyStyle: CSSProperties = {
-  color: COLORS.muted,
-  fontSize: 14.5,
-  lineHeight: 1.4,
-  margin: "4px 0 0",
-};
-const historyMetaStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flex: "none",
-  gap: 12,
-  fontSize: 12,
-};
-const watchRowStyle: CSSProperties = {
-  alignItems: "center",
-  borderBottom: `1px solid ${COLORS.hairline}`,
-  display: "flex",
-  justifyContent: "space-between",
-  gap: 20,
-  fontSize: 14.5,
-  padding: "16px 0 17px",
-};
 const footerLinkStyle: CSSProperties = {
   color: COLORS.navy,
   display: "block",
@@ -1060,12 +832,6 @@ const footerLinkStyle: CSSProperties = {
   fontWeight: 700,
   textAlign: "right",
   textDecoration: "none",
-};
-const goalsGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-  gap: 32,
-  fontSize: 14.5,
 };
 const chatTopStyle: CSSProperties = {
   display: "flex",
@@ -1129,6 +895,40 @@ const thinkingStyle: CSSProperties = {
 const chatComposerWrapStyle: CSSProperties = {
   flex: "none",
   paddingTop: 16,
+};
+const conversationStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+};
+const moveMessageStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 16,
+  boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+  maxWidth: "86%",
+  padding: "18px 20px",
+};
+const moveMessageTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 17,
+  fontWeight: 700,
+  lineHeight: 1.3,
+};
+const moveMessageSummaryStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 14.5,
+  lineHeight: 1.55,
+  margin: 0,
+};
+const moveMessageActionsStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 14,
+  marginTop: 4,
 };
 const chipsStyle: CSSProperties = {
   display: "flex",

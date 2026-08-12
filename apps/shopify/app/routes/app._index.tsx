@@ -1269,6 +1269,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         horizonNear: horizon.near,
         horizonWatching: horizon.watching,
         todayLabel,
+        storeTimeZone: homeTimeZone,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -1543,6 +1544,7 @@ export default function AppIndex() {
         horizonNear={data.horizonNear}
         horizonWatching={data.horizonWatching}
         todayLabel={data.todayLabel}
+        storeTimeZone={data.storeTimeZone}
       />
     );
   }

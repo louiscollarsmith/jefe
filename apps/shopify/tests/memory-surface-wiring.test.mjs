@@ -137,12 +137,19 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
   assert.match(sectionsSource, /Tell me/);
 });
 
-test("the live DailyHome is the brief surface, not the old dashboard shell", () => {
+test("the live DailyHome is the store conversation (Shape B), not the old dashboard shell", () => {
+  // Shape B: the home IS one chat log. The move and Jefe's reports back arrive as
+  // messages in the store-level conversation; the composer posts `chat.message`. The
+  // move still zooms into its own action chat ("Talk this through →").
+  assert.match(dailyHomeSource, /function StoreConversation/);
+  assert.match(dailyHomeSource, /value="chat\.message"/);
   assert.match(dailyHomeSource, /Talk this through/);
-  assert.match(dailyHomeSource, /What I&apos;m watching/);
-  assert.match(dailyHomeSource, /Where we&apos;re heading/);
   assert.match(dailyHomeSource, /useNavigation/);
   assert.match(dailyHomeSource, /Thinking/);
+  // Watching, Goals, changelog and the metrics dashboard all left the home for their
+  // own surfaces; nothing gets added back to the chat log.
+  assert.doesNotMatch(dailyHomeSource, /What I&apos;m watching/);
+  assert.doesNotMatch(dailyHomeSource, /Where we&apos;re heading/);
   assert.doesNotMatch(dailyHomeSource, /Tell us what to build/);
   assert.doesNotMatch(dailyHomeSource, /Orders · 30d/);
   assert.doesNotMatch(dailyHomeSource, /What I’ve worked out so far/);
