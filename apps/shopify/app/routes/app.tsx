@@ -17,8 +17,10 @@ import {
   Text,
 } from "@shopify/polaris";
 
+import type { CSSProperties } from "react";
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
+import { standaloneAppHost } from "../lib/auth/auth-mode.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { WebVitalsReporter } from "../components/web-vitals-reporter";
 import { AppUpdateBanner } from "../components/app-update-banner";
@@ -35,16 +37,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     rawPayload: { source: "app_shell" },
   });
 
+  const onboardingComplete = Boolean(shop.onboardingCompletedAt);
+  // "Open the app" → the standalone web-app surface (app.mynamejefe.com). The link goes
+  // through /standalone/auth, which verifies the active install and mints a standalone
+  // (out-of-iframe) session. Host comes from config (STANDALONE_APP_HOST, via
+  // standaloneAppHost) — never hardcoded. Offered only when embedded AND onboarded: it's a
+  // steady-state "open the full web app" affordance, not a mid-onboarding exit. Null on the
+  // standalone surface itself (no link to where you already are). The onboarding gate is
+  // the conservative default (coordinated with chat 2) and is trivial to loosen to
+  // "whenever embedded" if we'd rather always show it.
+  const openAppUrl =
+    !standalone && onboardingComplete
+      ? `https://${standaloneAppHost()}/standalone/auth?shop=${encodeURIComponent(session.shop)}`
+      : null;
+
   return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
     showDevTools: process.env.ENABLE_DEV_TOOLS !== "false",
-    onboardingComplete: Boolean(shop.onboardingCompletedAt),
+    onboardingComplete,
     standalone: Boolean(standalone),
+    openAppUrl,
   };
 };
 
 export default function App() {
-  const { apiKey, standalone } = useLoaderData<typeof loader>();
+  const { apiKey, standalone, openAppUrl } = useLoaderData<typeof loader>();
 
   // No Polaris Frame navigation (founder call — "one nav, not two"). The 13a app home
   // carries its own in-app nav rail (Brief/Queue/Horizon/Memory/Goals/Settings) and the
@@ -57,6 +74,7 @@ export default function App() {
     <AppProvider embedded={!standalone} apiKey={apiKey}>
       <WebVitalsReporter enabled={!standalone} />
       <Frame>
+        {openAppUrl ? <OpenAppButton href={openAppUrl} /> : null}
         <Box paddingBlockEnd="1600">
           <AppUpdateBanner />
           <Outlet />
@@ -65,6 +83,44 @@ export default function App() {
     </AppProvider>
   );
 }
+
+// A small fixed affordance in the embedded shell: open the same store in the standalone
+// web app (new tab). Lives in the shell, not the home, so it survives whatever the home
+// becomes — a page or a live conversation. A plain anchor so target=_blank behaves; styled
+// to the home's tokens rather than Polaris so it reads as one product across surfaces.
+function OpenAppButton({ href }: { href: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={openAppButtonStyle}
+      aria-label="Open Jefe in the web app (opens in a new tab)"
+    >
+      Open the app ↗
+    </a>
+  );
+}
+
+const openAppButtonStyle: CSSProperties = {
+  position: "fixed",
+  top: 12,
+  right: 16,
+  zIndex: 50,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "6px 13px",
+  borderRadius: 999,
+  border: "1px solid #d8d0c8",
+  background: "#fffdfa",
+  color: "#1f3a63",
+  fontFamily: "'Schibsted Grotesk', system-ui, -apple-system, sans-serif",
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+  boxShadow: "0 1px 2px rgba(31, 41, 51, 0.06)",
+};
 
 export function ErrorBoundary() {
   return <EmbeddedAppErrorBoundary error={useRouteError()} />;
