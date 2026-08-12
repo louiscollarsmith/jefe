@@ -57,6 +57,27 @@ permission between items.**
   thing in your lane and do it**, then say what you chose and why.
 - Landing a commit is not a reason to stop. Rebase, take the next item, continue.
 
+### Keep yourself going — don't wait to be nudged
+
+⛔ **A turn ending is not the work ending.** When you finish a turn with items
+still in your queue, **schedule your own continuation** rather than going idle
+and waiting for someone to prompt you:
+
+```
+/loop 5m Continue my queue. Re-read my lane brief, pick up the next
+unfinished item, work it, push my branch. Stop the loop when the queue
+is empty or I am genuinely blocked.
+```
+
+**Stop the loop** (`ScheduleWakeup` with `stop: true`, or `CronDelete`) the
+moment your queue is empty or you are blocked — a loop that fires with nothing
+to do is pure waste, and a loop nobody stops outlives its usefulness.
+
+**Push your branch on every commit, even a partial one.** In-flight work is
+otherwise invisible: from outside, a lane deep in a hard problem and a lane that
+died look identical. Merge to main only when a piece is complete and green — the
+push is for visibility, the merge is for readiness.
+
 ⚠️ The door rule still applies inside the queue: two-way doors ship without
 asking; one-way doors (stored data, merchant-visible one-shots, live flag flips,
 scopes, auth) stop and ask **with a recommendation attached**. Asking is cheap;
