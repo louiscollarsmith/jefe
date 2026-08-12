@@ -144,6 +144,23 @@ export function getRequiredScopes(actionType) {
   return Array.isArray(def?.requiredScopes) ? def.requiredScopes : [];
 }
 
+/**
+ * Is THIS action type's write path switched on? Resolves the action's OWN `executeFlag` from
+ * the registry — the generic form of `isClearanceExecuteEnabled()`.
+ *
+ * ⚠️ Use this, never a specific primitive's flag helper, anywhere the action type is dynamic.
+ * `getActiveSuggestedAction` read `isClearanceExecuteEnabled()` for whatever row it loaded, so a
+ * second registered action type would have been gated on `CLEARANCE_EXECUTE_ENABLED` — a flag
+ * that is `true` in production. Fail-closed: an unregistered type, or one with no `executeFlag`,
+ * is never executable.
+ * @param {string} actionType
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function isActionExecuteEnabled(actionType, env = process.env) {
+  const def = getActionDefinition(actionType);
+  return Boolean(def?.executeFlag && env[def.executeFlag] === "true");
+}
+
 /** @param {string} actionType */
 export function getActionDefinition(actionType) {
   return Object.prototype.hasOwnProperty.call(ACTION_REGISTRY, actionType)

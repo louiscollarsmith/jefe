@@ -299,3 +299,32 @@ test("apply -> revert round-trips the store back to original prices", async () =
     assert.equal(client.store.get("v2"), 50);
   });
 });
+
+// ── the cap must fail closed on a field it cannot read ───────────────────────────
+// `undefined > 25` is false, so a preview missing variantCount used to pass the
+// blast-radius cap unmeasured — exactly the shape a foreign preview has.
+
+test("enforceBlastRadiusCap refuses a preview whose blast radius it cannot measure", () => {
+  const foreign = { changes: [{ productId: "p1" }], productCount: 1 }; // a product-status-shaped preview
+  const result = enforceBlastRadiusCap(/** @type {any} */ (foreign));
+  assert.equal(result.withinCap, false, "an uncheckable cap must never read as a passed cap");
+  assert.deepEqual(result.violations.map((v) => v.reason), ["uncheckable", "uncheckable"]);
+});
+
+test("enforceBlastRadiusCap still passes a well-formed in-bounds clearance preview", () => {
+  const ok = enforceBlastRadiusCap(/** @type {any} */ ({ variantCount: 3, maxDiscountPercent: 30 }));
+  assert.equal(ok.withinCap, true);
+  assert.deepEqual(ok.violations, []);
+});
+
+test("enforceBlastRadiusCap still names a genuine over-cap violation", () => {
+  const over = enforceBlastRadiusCap(/** @type {any} */ ({ variantCount: 9999, maxDiscountPercent: 30 }));
+  assert.equal(over.withinCap, false);
+  assert.equal(over.violations[0].cap, "maxVariants");
+  assert.equal(over.violations[0].actual, 9999);
+});
+
+test("an empty preview (zero variants) is measurable and within cap", () => {
+  const empty = enforceBlastRadiusCap(/** @type {any} */ ({ variantCount: 0, maxDiscountPercent: 0 }));
+  assert.equal(empty.withinCap, true, "zero is a real measurement, not a missing one");
+});

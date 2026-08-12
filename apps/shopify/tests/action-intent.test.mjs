@@ -5,6 +5,7 @@ import {
   APPLICABILITY_DIMENSIONS,
   getActionDefinition,
   getRequiredScopes,
+  isActionExecuteEnabled,
   listActionCapabilities,
   validateActionIntent,
   verdictForOutcome,
@@ -127,4 +128,27 @@ test("every registered action declares what success means for it", () => {
       `${actionType} verdict thresholds are inverted`,
     );
   }
+});
+
+// ── per-action execute flags ─────────────────────────────────────────────────────
+// Every site that resolves a DYNAMIC action type must read that type's own flag.
+// isClearanceExecuteEnabled() was doing this job, so a second registered type would
+// have inherited CLEARANCE_EXECUTE_ENABLED — true in production.
+
+test("isActionExecuteEnabled resolves the action's OWN flag", () => {
+  assert.equal(isActionExecuteEnabled("price_markdown", { CLEARANCE_EXECUTE_ENABLED: "true" }), true);
+  assert.equal(isActionExecuteEnabled("price_markdown", { CLEARANCE_EXECUTE_ENABLED: "false" }), false);
+  assert.equal(isActionExecuteEnabled("price_markdown", {}), false);
+  assert.equal(isActionExecuteEnabled("price_markdown", { CLEARANCE_EXECUTE_ENABLED: "1" }), false, "exact 'true' only");
+});
+
+test("isActionExecuteEnabled fails closed: another action's live flag never enables this one", () => {
+  // The bug this replaces: any action type inheriting clearance's flag.
+  assert.equal(
+    isActionExecuteEnabled("product_status_change", { CLEARANCE_EXECUTE_ENABLED: "true" }),
+    false,
+    "an unregistered type is never executable, however many other flags are on",
+  );
+  assert.equal(isActionExecuteEnabled("", { CLEARANCE_EXECUTE_ENABLED: "true" }), false);
+  assert.equal(isActionExecuteEnabled(undefined, { CLEARANCE_EXECUTE_ENABLED: "true" }), false);
 });

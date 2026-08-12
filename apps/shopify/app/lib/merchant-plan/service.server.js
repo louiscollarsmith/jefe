@@ -12,7 +12,7 @@ import { recordEvidence } from "../merchant-memory/service.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
 import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
-import { isClearanceExecuteEnabled } from "../actions/clearance-adapter.server.js";
+import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
 import {
   MERCHANT_PLAN_JOB_TYPE,
@@ -364,7 +364,10 @@ async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceR
       merchantId,
       shopId,
       intent,
-      writeEnabled: isClearanceExecuteEnabled(),
+      // This intent's OWN execute flag — never clearance's. A plan can emit any registered
+      // action type, and isClearanceExecuteEnabled() would have told a second type it was live
+      // because CLEARANCE_EXECUTE_ENABLED is true in production. Fail-closed on unknown types.
+      writeEnabled: isActionExecuteEnabled(intent?.actionType),
       sourceRecommendation,
     });
     logger.info("Plan emitted an action-intent", {

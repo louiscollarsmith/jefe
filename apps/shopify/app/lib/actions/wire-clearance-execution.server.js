@@ -54,6 +54,21 @@ export async function wireClearanceExecution(prisma, session, input, deps = {}) 
   }
   const preview = /** @type {any} */ (row.preview);
 
+  // ⛔ This function executes ONE primitive — the clearance adapter — and does not dispatch on
+  // action type. Refuse any other type explicitly rather than relying on it never arriving.
+  //
+  // Before this, nothing here checked: a foreign row would pass the `preview.changes` test (a
+  // product-status preview also has `.changes`), be gated on CLEARANCE_EXECUTE_ENABLED rather
+  // than its own flag, and reach `applyClearance`. It stopped only at a Prisma NOT NULL
+  // constraint on `targetRef` (a product-status change carries `productId`, not `variantId`) —
+  // an accident of the schema, not a decision. The single thing preventing it in practice was
+  // `RESOLVERS` having no second entry, which puts the safety in the resolver map rather than
+  // on the write path. When a second action type registers, it gets its own wire fn; this one
+  // says no.
+  if (row.actionType !== "price_markdown") {
+    return { ok: false, executed: false, reason: `wrong_primitive:${row.actionType}`, status: row.status };
+  }
+
   // Safety gates BEFORE recording approval — the row's resolvedMode is authoritative
   // (it's the merchant-dial × structural-gate decision made at propose time). The
   // caller's `mode` can never widen what the merchant authorized.

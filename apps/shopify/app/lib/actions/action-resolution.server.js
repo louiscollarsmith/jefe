@@ -13,7 +13,7 @@
 // here + re-checked by the gate.
 
 import { randomUUID } from "node:crypto";
-import { getRequiredScopes, validateActionIntent } from "./action-intent.server.js";
+import { getRequiredScopes, isActionExecuteEnabled, validateActionIntent } from "./action-intent.server.js";
 import { applyAutonomyPolicy, getActionMode, getActionPolicy } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
@@ -21,7 +21,6 @@ import {
   DEFAULT_CLEARANCE_CAPS,
   buildClearancePreview,
   computeClearanceAutoEligibility,
-  isClearanceExecuteEnabled,
   resolveAutonomyMode,
 } from "./clearance-adapter.server.js";
 
@@ -412,7 +411,11 @@ export async function getActiveSuggestedAction(prisma, input) {
         title: typeof item?.title === "string" ? item.title : "Product",
         detail: `${Number(item?.unitsOnHand) || 0} units · ${formatMoney(item?.trappedCapital, currency)} tied up`,
       })),
-    executable: isClearanceExecuteEnabled() && row.resolvedMode !== "recommend",
+    // Gated on THIS row's own action type, not on clearance's flag. Reading
+    // isClearanceExecuteEnabled() here meant a second registered type would inherit
+    // CLEARANCE_EXECUTE_ENABLED — `true` in production — and render a live Approve button
+    // its own write path had never been switched on for.
+    executable: isActionExecuteEnabled(row.actionType) && row.resolvedMode !== "recommend",
     actionRunId: row.runId,
     actionType: row.actionType,
     mode,
@@ -783,7 +786,7 @@ export async function reviseAction(prisma, input) {
       params: Object.keys(params).length ? params : undefined,
     },
     merchantSetting: existing.merchantSetting, // preserve the merchant's dial
-    writeEnabled: isClearanceExecuteEnabled(),
+    writeEnabled: isActionExecuteEnabled(existing.actionType), // this action's own flag, not clearance's
     sourceRecommendation: /** @type {any} */ (existing.proposalSummary)?.sourceRecommendation ?? null,
   });
   if (reproposed.status !== "proposed") {

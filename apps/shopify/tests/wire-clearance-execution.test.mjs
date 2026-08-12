@@ -245,3 +245,46 @@ test("flag ON: missing offline token throws (no silent write)", async () => {
     );
   });
 });
+
+// ── this wire fn executes ONE primitive and must say so ──────────────────────────
+// It never dispatched on actionType. A foreign row passed the `preview.changes`
+// check (a product-status preview also has `.changes`), was gated on
+// CLEARANCE_EXECUTE_ENABLED rather than its own flag, and reached applyClearance —
+// stopping only at a Prisma NOT NULL on targetRef. An accident, not a guard.
+
+test("wireClearanceExecution refuses a row that is not price_markdown, before any approval or write", async () => {
+  const row = makeRow({
+    actionType: "product_status_change",
+    actionKind: "archive_product",
+    // A product-status preview: same `.changes` key, entirely different contents.
+    preview: { changes: [{ productId: "gid://p/1", fromStatus: "ACTIVE", toStatus: "ARCHIVED" }], productCount: 1 },
+  });
+  const prisma = makeMockPrisma({ row, offlineToken: "shpat_test" });
+  const before = row.status;
+
+  const result = await wireClearanceExecution(prisma, { shop: SHOP }, {
+    merchantId: "m-1", actionRunId: "run-1", mode: "approve",
+  }, {
+    createGqlClient: () => { throw new Error("must never build a Shopify client for a foreign primitive"); },
+    loadOfflineToken: async () => { throw new Error("must never load a write token for a foreign primitive"); },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.executed, false);
+  assert.equal(result.reason, "wrong_primitive:product_status_change");
+  assert.equal(row.status, before, "refused BEFORE the proposed→approved transition is recorded");
+});
+
+test("the refusal is explicit, not a side effect of the empty-preview check", async () => {
+  // Same foreign type but a preview that WOULD satisfy every downstream gate —
+  // proving the guard is the action type itself, not the preview's shape.
+  const row = makeRow({
+    actionType: "product_status_change",
+    preview: { changes: [{ variantId: "gid://v/1", fromPrice: 10, toPrice: 8 }], variantCount: 1, maxDiscountPercent: 20 },
+  });
+  const prisma = makeMockPrisma({ row, offlineToken: "shpat_test" });
+  const result = await wireClearanceExecution(prisma, { shop: SHOP }, {
+    merchantId: "m-1", actionRunId: "run-1", mode: "approve",
+  }, { createGqlClient: () => { throw new Error("never"); }, loadOfflineToken: async () => { throw new Error("never"); } });
+  assert.equal(result.reason, "wrong_primitive:product_status_change");
+});

@@ -106,11 +106,17 @@ export function buildClearancePreview(proposal) {
  */
 export function enforceBlastRadiusCap(preview, caps = DEFAULT_CLEARANCE_CAPS) {
   const violations = [];
-  if (preview.variantCount > caps.maxVariants) {
-    violations.push({ cap: "maxVariants", limit: caps.maxVariants, actual: preview.variantCount });
-  }
-  if (preview.maxDiscountPercent > caps.maxDiscountPercent) {
-    violations.push({ cap: "maxDiscountPercent", limit: caps.maxDiscountPercent, actual: preview.maxDiscountPercent });
+  // ⚠️ FAIL CLOSED on a field this cap cannot read. `undefined > 25` is `false`, so a preview
+  // missing `variantCount` used to sail through the blast-radius cap unmeasured — which is
+  // exactly the shape a FOREIGN preview has (a product-status preview carries `productCount`).
+  // An uncheckable cap must never read as a passed cap.
+  for (const [field, limit] of [["variantCount", caps.maxVariants], ["maxDiscountPercent", caps.maxDiscountPercent]]) {
+    const actual = Number(preview?.[field]);
+    if (!Number.isFinite(actual)) {
+      violations.push({ cap: field, limit, actual: preview?.[field] ?? null, reason: "uncheckable" });
+    } else if (actual > Number(limit)) {
+      violations.push({ cap: field === "variantCount" ? "maxVariants" : "maxDiscountPercent", limit, actual });
+    }
   }
   return { withinCap: violations.length === 0, violations };
 }
