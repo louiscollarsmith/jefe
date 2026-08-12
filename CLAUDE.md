@@ -28,6 +28,25 @@ Jefe **acts on the merchant's store from install**, not advisory-for-months (see
 
 A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
 
+## Changelog posts go to #jefe-slack. Never #eng-matt.
+
+⛔ **FIXED RULE (Matt, 2026-08-12). Applies to every session working in this repo.**
+Jefe's live-changelog Slack post goes to **#jefe-slack (`C0BKHSV5FHB`)** and nowhere
+else. #eng-matt is the **quiver-london** channel and Jefe is not a quiver-london
+repo — posting Jefe changes there puts them in front of the wrong readers and
+buries the Quiver log.
+
+⚠️ The house rules at `~/Claude/CLAUDE.md` name #eng-matt. **That rule is scoped to
+quiver-london repos and this file overrides it here.** If you have been posting
+Jefe entries to #eng-matt, stop — do not delete what is already there, just route
+everything from now on to #jefe-slack.
+
+Everything else about the changelog is unchanged and still applies: post when it is
+**live and verified**, not when it is pushed; 1–2 lines; the headline is the
+achievement in a merchant's terms; a `_surface · live HH:MM_` footer; a `---------`
+separator; group by achievement rather than one post per commit; never automate the
+words.
+
 ## Product Truth
 
 Every important claim must distinguish:
