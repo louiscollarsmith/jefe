@@ -181,9 +181,11 @@ export function isLlmFallbackError(error) {
   );
   // 401/403: an expired or invalid primary API key — the most likely real Groq
   // outage mode — should degrade to the other provider, not hard-fail with it
-  // sitting idle. 404: a retired/renamed primary model. 429/498: rate-limit /
-  // capacity. 5xx: provider server error.
+  // sitting idle. 404: a retired/renamed primary model. 413: the provider's
+  // request envelope is too small for a prompt/schema another provider may
+  // accept. 429/498: rate-limit / capacity. 5xx: provider server error.
   if (status === 401 || status === 403 || status === 404) return true;
+  if (status === 413) return true;
   if (status === 429 || status === 498) return true;
   if (status >= 500 && status <= 599) return true;
   const message = error instanceof Error ? error.message : String(error);

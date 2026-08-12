@@ -1425,18 +1425,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop.id,
     });
   }
-  if (activeStep === "goals" && readiness.memoryReady && backfill.complete) {
-    await ensureMerchantGoalsQueued(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-    });
-  }
-  if (activeStep === "plan" && readiness.memoryReady && backfill.complete) {
-    await ensureMerchantPlanQueued(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-    });
-  }
   const insights =
     activeStep === "insights" && readiness.memoryReady && backfill.complete
       ? await getMerchantInsightsExperience(prisma, {

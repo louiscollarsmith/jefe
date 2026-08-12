@@ -413,7 +413,11 @@ test("Plan generation is wired to the async worker and not browser page load", (
   assert.equal(MERCHANT_PLAN_JOB_TYPE, "merchant_plan_generate");
   assert.match(workerSource, /MERCHANT_PLAN_JOB_TYPE/);
   assert.match(workerSource, /generateMerchantPlan/);
-  assert.match(routeSource, /ensureMerchantPlanQueued/);
+  assert.match(routeSource, /intent === "plan\.retry"[\s\S]*ensureMerchantPlanQueued/);
+  assert.doesNotMatch(
+    routeSource,
+    /activeStep === "plan"[\s\S]{0,240}ensureMerchantPlanQueued/,
+  );
   assert.doesNotMatch(routeSource, /generateMerchantPlan\(/);
 });
 
