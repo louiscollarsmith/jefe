@@ -500,6 +500,7 @@ test("parallel derivation lanes serialize first belief publication", async () =>
   let storedBelief = null;
   let createCount = 0;
   let lockCount = 0;
+  const transactionOptions = [];
   let transactionTail = Promise.resolve();
   const tx = {
     $queryRawUnsafe: async () => {
@@ -527,7 +528,8 @@ test("parallel derivation lanes serialize first belief publication", async () =>
     merchantMemoryEvidence: { create: async ({ data }) => data },
   };
   const prisma = {
-    $transaction(callback) {
+    $transaction(callback, options) {
+      transactionOptions.push(options);
       const transaction = transactionTail.then(() => callback(tx));
       transactionTail = transaction.catch(() => undefined);
       return transaction;
@@ -558,6 +560,10 @@ test("parallel derivation lanes serialize first belief publication", async () =>
   assert.equal(lockCount, 2);
   assert.equal(createCount, 1);
   assert.equal(storedBelief.id, "belief-1");
+  assert.deepEqual(transactionOptions, [
+    { maxWait: 10_000, timeout: 60_000 },
+    { maxWait: 10_000, timeout: 60_000 },
+  ]);
 });
 
 test("a late bootstrap publication reconciles after full memory is complete", async () => {

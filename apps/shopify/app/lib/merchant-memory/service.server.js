@@ -79,20 +79,28 @@ export async function upsertDerivedBelief(prisma, input) {
  */
 async function withBootstrapBeliefPublicationLock(prisma, input, callback) {
   if (typeof prisma.$transaction !== "function") return callback(prisma);
-  return prisma.$transaction(async (/** @type {any} */ tx) => {
-    if (typeof tx.$queryRawUnsafe === "function") {
-      const lockKey = [
-        input.merchantId,
-        input.shopId ?? "merchant",
-        "bootstrap_safe_beliefs",
-      ].join(":");
-      await tx.$queryRawUnsafe(
-        "SELECT 1::integer AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
-        lockKey,
-      );
-    }
-    return callback(tx);
-  });
+  return prisma.$transaction(
+    async (/** @type {any} */ tx) => {
+      if (typeof tx.$queryRawUnsafe === "function") {
+        const lockKey = [
+          input.merchantId,
+          input.shopId ?? "merchant",
+          "bootstrap_safe_beliefs",
+        ].join(":");
+        await tx.$queryRawUnsafe(
+          "SELECT 1::integer AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
+          lockKey,
+        );
+      }
+      return callback(tx);
+    },
+    // Prisma's interactive-transaction default is five seconds. Publishing the
+    // bounded safe-belief group over a remote production database can exceed
+    // that even though the work is healthy, which closes `tx` mid-history write.
+    // Keep the transaction and advisory lock bounded, but give this known group
+    // enough time for its small, sequential belief/history/evidence write set.
+    { maxWait: 10_000, timeout: 60_000 },
+  );
 }
 
 /** @param {string} key */
