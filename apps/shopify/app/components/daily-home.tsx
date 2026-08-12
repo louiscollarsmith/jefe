@@ -1,5 +1,5 @@
 import { Form, Link, useLocation, useNavigation } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
 import { formatDateInZone } from "../lib/home/home-dates.js";
@@ -193,16 +193,6 @@ function StoreConversation({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const submittedMessageRef = useRef("");
-  useEffect(() => {
-    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
-  }, [isThinking, pendingMessage]);
-  useEffect(() => {
-    if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
-      submittedMessageRef.current = "";
-    }
-  }, [isThinking, composerMessage]);
 
   const history = conversation?.messages ?? [];
   const hasMove = move.state !== "empty";
@@ -219,6 +209,15 @@ function StoreConversation({
     outcomes.length === 0 &&
     history.length === 0 &&
     headsUps.length === 0;
+  const bottomRef = useStickToBottom(
+    history.length +
+      outcomes.length +
+      headsUps.length +
+      (hasMove ? 1 : 0) +
+      (showQuietLine ? 1 : 0) +
+      (pendingMessage ? 1 : 0) +
+      (isThinking ? 1 : 0),
+  );
 
   return (
     <section style={conversationStyle}>
@@ -247,6 +246,7 @@ function StoreConversation({
             <div style={thinkingStyle}>Thinking</div>
           </div>
         ) : null}
+        <div ref={bottomRef} aria-hidden="true" />
       </div>
       <div style={chatComposerWrapStyle}>
         <div style={chipsStyle}>
@@ -432,16 +432,6 @@ function ActionChat({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const submittedMessageRef = useRef("");
-  useEffect(() => {
-    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
-  }, [isThinking, pendingMessage]);
-  useEffect(() => {
-    if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
-      submittedMessageRef.current = "";
-    }
-  }, [isThinking, composerMessage]);
   const messages = thread.messages.length
     ? thread.messages
     : [
@@ -453,6 +443,9 @@ function ActionChat({
         },
       ];
   const subtitle = informativeSubtitle(move.summary, move.title);
+  const bottomRef = useStickToBottom(
+    messages.length + (pendingMessage ? 1 : 0) + (isThinking ? 1 : 0),
+  );
   return (
     <main style={pageStyle}>
       <div style={chatShellStyle}>
@@ -495,6 +488,7 @@ function ActionChat({
               <div style={thinkingStyle}>Thinking</div>
             </div>
           ) : null}
+          <div ref={bottomRef} aria-hidden="true" />
         </div>
         <div style={chatComposerWrapStyle}>
           <div style={chipsStyle}>
@@ -600,10 +594,39 @@ function ChipButton({ children }: { children: ReactNode }) {
   );
 }
 
+// useLayoutEffect on the client (runs before paint, so the open-at-latest scroll isn't a
+// visible jump), plain useEffect on the server (where layout effects don't run anyway).
+const useIsoLayoutEffect = typeof document === "undefined" ? useEffect : useLayoutEffect;
+
+// Keep the conversation anchored to its LATEST message: a chat should open at the most
+// recent exchange, not the oldest. On first mount it scrolls the bottom into view before
+// paint (no jump). When a new message arrives it follows only if the merchant is already
+// near the bottom — never yanking them away from history they've scrolled up to read.
+// `signal` is a value that changes whenever the thread does (its message count).
+function useStickToBottom(signal: number) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const initialisedRef = useRef(false);
+  useIsoLayoutEffect(() => {
+    const el = bottomRef.current;
+    if (!el) return;
+    if (!initialisedRef.current) {
+      initialisedRef.current = true;
+      el.scrollIntoView({ block: "end" });
+      return;
+    }
+    const nearBottom =
+      window.innerHeight + window.scrollY >= document.body.scrollHeight - 240;
+    if (nearBottom) el.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [signal]);
+  return bottomRef;
+}
+
 // The chat composer, shared by the home thread and the per-move zoom. A textarea (not a
 // single-line input) that auto-grows to its content up to a cap; Enter sends, Shift+Enter
-// inserts a newline, and Enter is ignored mid-IME-composition. The parent owns the
-// message state + the clear-on-send logic; this is the input surface.
+// inserts a newline, and Enter is ignored mid-IME-composition. Clears the draft ON SUBMIT
+// (not when the reply lands) — the FormData is already captured by the time onSubmit fires,
+// so the sent value is intact and the box empties immediately instead of sitting full
+// through "Thinking" (which read as "it didn't send"). The parent owns the draft state.
 function ChatComposer({
   intent,
   placeholder,
@@ -630,7 +653,12 @@ function ChatComposer({
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
   }, [value]);
   return (
-    <Form ref={formRef} method="post" style={composerFormStyle}>
+    <Form
+      ref={formRef}
+      method="post"
+      style={composerFormStyle}
+      onSubmit={() => onChange("")}
+    >
       <input type="hidden" name="intent" value={intent} />
       {hiddenFields}
       <textarea
