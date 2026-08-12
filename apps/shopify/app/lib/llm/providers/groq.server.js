@@ -339,7 +339,10 @@ function retryDelayMs(error, attempt) {
     /** @type {{ retryAfter?: unknown }} */ (error ?? {}).retryAfter,
   );
   if (Number.isFinite(retryAfter) && retryAfter > 0) {
-    return retryAfter * 1000;
+    // This provider has a configured fallback. A long provider-supplied delay
+    // must not hold the request open for minutes before Gemini gets a turn.
+    // Keep the existing single local retry, bounded by its short backoff.
+    return Math.min(retryAfter * 1000, backoffMs(attempt));
   }
   return backoffMs(attempt);
 }

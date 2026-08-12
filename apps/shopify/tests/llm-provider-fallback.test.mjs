@@ -163,10 +163,10 @@ test("Groq body-read timeout reaches the configured fallback", async () => {
   });
   const fallback = fakeProvider(
     "gemini",
-    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
     async () => ({
       provider: "gemini",
-      model: "gemini-3.1-flash-lite",
+      model: "gemini-3.5-flash-lite",
       json: { reply: "from fallback" },
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
       attempts: 1,
@@ -186,6 +186,58 @@ test("Groq body-read timeout reaches the configured fallback", async () => {
     fromProvider: "groq",
     fromModel: "openai/gpt-oss-120b",
   });
+});
+
+test("Groq Retry-After cannot postpone the configured fallback", async () => {
+  let primaryCalls = 0;
+  let fallbackCalls = 0;
+  const primary = createGroqProvider({
+    config: baseConfig({ maxRetries: 1 }),
+    logger,
+    fetchImpl: async () => {
+      primaryCalls += 1;
+      return new Response(
+        JSON.stringify({ error: { type: "rate_limit_error" } }),
+        { status: 429, headers: { "retry-after": "120" } },
+      );
+    },
+  });
+  const fallback = fakeProvider(
+    "gemini",
+    "gemini-3.5-flash-lite",
+    async () => {
+      fallbackCalls += 1;
+      return {
+        provider: "gemini",
+        model: "gemini-3.5-flash-lite",
+        json: { reply: "from fallback" },
+        usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        attempts: 1,
+        durationMs: 5,
+      };
+    },
+  );
+
+  const startedAt = Date.now();
+  const result = await withFallbackProvider(
+    primary,
+    fallback,
+    logger,
+  ).generateStructuredJson({
+    systemPrompt: "system",
+    prompt: "merchant",
+    schema: { type: "OBJECT", properties: {} },
+  });
+
+  assert.equal(primaryCalls, 2);
+  assert.equal(fallbackCalls, 1);
+  assert.equal(result.provider, "gemini");
+  assert.equal(result.model, "gemini-3.5-flash-lite");
+  assert.deepEqual(result.fallback, {
+    fromProvider: "groq",
+    fromModel: "openai/gpt-oss-120b",
+  });
+  assert.ok(Date.now() - startedAt < 1000);
 });
 
 test("withFallbackProvider falls back on rate limits and preserves final model", async () => {
