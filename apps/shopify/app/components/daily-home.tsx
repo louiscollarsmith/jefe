@@ -1,11 +1,12 @@
 import {
   Form,
   Link,
+  useFetcher,
   useLocation,
   useNavigate,
   useNavigation,
 } from "react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   ActionList,
@@ -288,9 +289,10 @@ function StoreConversation({
         >
           <div style={threadIdentityStyle}>
             <Mono>Current chat</Mono>
-            <Text as="h2" variant="headingSm" truncate>
-              {displayedTitle}
-            </Text>
+            <ChatTitle
+              conversation={activeConversation}
+              displayedTitle={displayedTitle}
+            />
             <Text as="p" variant="bodySm" tone="subdued">
               {messageLabel}
             </Text>
@@ -451,6 +453,127 @@ function StoreConversation({
         </Form>
       </div>
     </section>
+  );
+}
+
+// Titles Jefe generated as a stand-in, never something the merchant typed. Seeding the edit
+// box with one of these would make "rename" mean "edit Jefe's guess", so the box opens empty
+// and the guess sits behind it as the placeholder.
+const PLACEHOLDER_TITLES = new Set(["New conversation", "Earlier conversation"]);
+
+// The chat's name, renameable in place. A thread is named from the merchant's first message,
+// which is a fair guess and often wrong — "hey jefe how're you" is not what that chat was
+// about. Renaming posts `chat.rename` through a FETCHER, not a Form: a navigation here would
+// scroll the merchant out of the thread they're reading. Submitting an empty box clears the
+// name and hands the thread back to the auto-title (server-side; see renameGeneralChat).
+function ChatTitle({
+  conversation,
+  displayedTitle,
+}: {
+  conversation: ChatConversation | null;
+  displayedTitle: string;
+}) {
+  const fetcher = useFetcher<{ ok?: boolean; error?: string; title?: string | null }>();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const storedTitle = conversation?.title ?? null;
+  const isPlaceholder = !storedTitle || PLACEHOLDER_TITLES.has(storedTitle);
+  const saving = fetcher.state !== "idle";
+  // While the save is in flight the merchant should see the name they just typed, not the
+  // old one — the loader revalidation that makes it real lands a moment later.
+  const pendingTitle =
+    saving && typeof fetcher.formData?.get("title") === "string"
+      ? String(fetcher.formData.get("title")).trim()
+      : null;
+  const shownTitle = pendingTitle || displayedTitle;
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+  // Close the editor once the save lands. Left open on failure so the merchant keeps what
+  // they typed and can try again.
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.ok) setEditing(false);
+  }, [fetcher.state, fetcher.data]);
+
+  if (!conversation) {
+    return (
+      <Text as="h2" variant="headingSm" truncate>
+        {displayedTitle}
+      </Text>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <div style={chatTitleRowStyle}>
+        <Text as="h2" variant="headingSm" truncate>
+          {shownTitle}
+        </Text>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(isPlaceholder ? "" : String(storedTitle));
+            setEditing(true);
+          }}
+          style={chatTitleEditButtonStyle}
+          aria-label={`Rename this chat (currently ${shownTitle})`}
+          title="Rename this chat"
+        >
+          Rename
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <fetcher.Form
+      method="post"
+      action="/app?index"
+      style={chatTitleFormStyle}
+      onSubmit={() => setEditing(true)}
+    >
+      <input type="hidden" name="intent" value="chat.rename" />
+      <input type="hidden" name="conversationId" value={conversation.id} />
+      <input
+        ref={inputRef}
+        name="title"
+        value={draft}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setEditing(false);
+          }
+        }}
+        // Matches CHAT_TITLE_MAX_LENGTH; the server re-clamps, this just stops the
+        // merchant typing past it with no feedback.
+        maxLength={72}
+        placeholder={isPlaceholder ? "Name this chat" : String(storedTitle)}
+        aria-label="Chat name"
+        autoComplete="off"
+        disabled={saving}
+        style={chatTitleInputStyle}
+      />
+      <button type="submit" style={chatTitleSaveStyle} disabled={saving}>
+        {saving ? "Saving" : "Save"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        style={chatTitleCancelStyle}
+        disabled={saving}
+      >
+        Cancel
+      </button>
+      {fetcher.state === "idle" && fetcher.data && fetcher.data.ok === false ? (
+        <Text as="span" variant="bodySm" tone="critical">
+          {fetcher.data.error ?? "That name could not be saved."}
+        </Text>
+      ) : null}
+    </fetcher.Form>
   );
 }
 
@@ -1625,6 +1748,63 @@ const threadIdentityStyle: CSSProperties = {
   flexDirection: "column",
   gap: 4,
   minWidth: 180,
+};
+const chatTitleRowStyle: CSSProperties = {
+  alignItems: "baseline",
+  display: "flex",
+  gap: 8,
+  minWidth: 0,
+};
+// Quiet by design: renaming is housekeeping, so the affordance sits beside the name without
+// competing with the thread's real controls (Store updates / Chats / New chat).
+const chatTitleEditButtonStyle: CSSProperties = {
+  background: "none",
+  border: "none",
+  color: COLORS.muted,
+  cursor: "pointer",
+  flex: "none",
+  fontFamily: "inherit",
+  fontSize: 11.5,
+  padding: 0,
+  textDecoration: "underline",
+};
+const chatTitleFormStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+};
+const chatTitleInputStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 6,
+  color: COLORS.ink,
+  fontFamily: "inherit",
+  fontSize: 13.5,
+  fontWeight: 600,
+  minWidth: 0,
+  padding: "4px 8px",
+  width: 200,
+};
+const chatTitleSaveStyle: CSSProperties = {
+  background: COLORS.navy,
+  border: `1px solid ${COLORS.navy}`,
+  borderRadius: 6,
+  color: COLORS.card,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: 12,
+  fontWeight: 600,
+  padding: "4px 10px",
+};
+const chatTitleCancelStyle: CSSProperties = {
+  background: "none",
+  border: "none",
+  color: COLORS.muted,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: 12,
+  padding: "4px 2px",
 };
 const emptyChatStyle: CSSProperties = {
   alignItems: "center",

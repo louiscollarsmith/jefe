@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-13
+
+### Added
+
+- **You can now name your chats.** A chat took its name from whatever you happened to type first, so a thread about Christmas stock was called "hey jefe how're you" forever, and the Chats list was a row of openers rather than a list of subjects. There's now a Rename beside the chat's name; clearing the box hands it back to the automatic name. Renaming doesn't reload the thread, so you don't lose your place, and Jefe never overwrites a name you chose. `app/lib/merchant-memory/general-chat.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`, `tests/chat-rename.test.mjs`.
+
 ## 2026-08-12
 
 ### Fixed
