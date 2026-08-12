@@ -223,7 +223,7 @@ test("insight snapshot selection is deterministic for a given belief set", async
   assert.deepEqual(first.beliefIds, second.beliefIds);
 });
 
-test("small insight snapshot is unchanged and keeps its exact hash", async () => {
+test("small insight snapshot keeps the v4 context hash", async () => {
   const snapshot = await buildMerchantInsightSnapshot(
     insightsPrismaFor(goldenBeliefs()),
     input,
@@ -231,11 +231,11 @@ test("small insight snapshot is unchanged and keeps its exact hash", async () =>
   assert.equal(snapshot.candidateCount, 5);
   assert.equal(snapshot.droppedBeliefCount, 0);
   assert.deepEqual(snapshot.droppedCategories, []);
-  // Golden hash captured from the pre-change builder: small stores are byte-for-
-  // byte identical, so cached runs are not invalidated.
+  // Golden hash for the versioned snapshot that includes the bounded unified
+  // context adapter. No per-run diagnostic identifiers enter this hash.
   assert.equal(
     snapshot.snapshotHash,
-    "10d79cf8bb95123ae1559d970cdd43c73719f26a038444441e35829c5ddab999",
+    "0d488846c4104ea4706f1a5e617dc4a93cb56b862f08b993a02218fbcc6da67e",
   );
 });
 
@@ -284,7 +284,7 @@ test("large goal snapshot is capped, stays under the token limit, and covers eve
   }
 });
 
-test("small goal snapshot is unchanged and keeps its exact hash", async () => {
+test("small goal snapshot keeps the v2 context hash", async () => {
   const snapshot = await buildMerchantGoalSnapshot(
     goalsPrismaFor(goldenBeliefs(), {
       findings: [
@@ -317,11 +317,11 @@ test("small goal snapshot is unchanged and keeps its exact hash", async () => {
   assert.equal(snapshot.beliefIds.includes("b-5"), false);
   assert.equal(
     snapshot.snapshotHash,
-    "887de717e4cc78b4026a394bed0eea7b0308e61a79587cdc13044088059d696d",
+    "fd380fe32046ea20d9a90bf495724e5164e59d53978948b121300875d49a4120",
   );
   assert.equal(
     snapshot.snapshot.memorySnapshotHash,
-    "fa63db726a735505f0fd47c84d3a93f0ffcb8769ca1debab032b06a44a0deb22",
+    "0678332561859836a3c2b040d4b0f92f607a61b8764a16b42817720ab8f20ed4",
   );
 });
 

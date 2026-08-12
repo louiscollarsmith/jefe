@@ -10,13 +10,16 @@ import {
   sha256Hex,
   verifyVerificationCode,
 } from "./crypto.server.js";
-import { ChannelServiceError, safeChannelErrorMessage } from "./errors.server.js";
+import {
+  ChannelServiceError,
+  safeChannelErrorMessage,
+} from "./errors.server.js";
 import { normalisePhoneToE164, maskPhoneNumber } from "./phone.server.js";
 import { SlackChannelAdapter } from "./slack.server.js";
 import { CHANNEL_STATUS } from "./status.js";
 import { WhatsAppChannelAdapter } from "./whatsapp.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
-import { sendConversationMessage } from "../merchant-memory/conversation.server.js";
+import { sendGeneralChatMessage } from "../merchant-memory/general-chat.server.js";
 
 const channelLog = baseLogger.child({ component: "channels" });
 
@@ -99,7 +102,8 @@ export async function resetPendingSlackAuthorisations(prisma, input) {
  */
 export async function startSlackConnection(prisma, input) {
   const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
-  if (!adapter.isConfigured()) throw new ChannelServiceError("provider_config_missing");
+  if (!adapter.isConfigured())
+    throw new ChannelServiceError("provider_config_missing");
   const now = input.now ?? new Date();
   const state = randomStateToken();
   const redirectUri = slackRedirectUri(input.requestUrl, input.env);
@@ -193,7 +197,12 @@ export async function getSlackReturnPathForState(prisma, input) {
  * @param {{ code?: string | null; error?: string | null; env?: Record<string, string | undefined>; adapter?: SlackChannelAdapter }} input
  * @param {Date} now
  */
-async function completeSlackConnectionForStateRow(prisma, stateRow, input, now) {
+async function completeSlackConnectionForStateRow(
+  prisma,
+  stateRow,
+  input,
+  now,
+) {
   const shopId = stateRow.shopId ?? "";
 
   if (input.error) {
@@ -201,12 +210,20 @@ async function completeSlackConnectionForStateRow(prisma, stateRow, input, now) 
       merchantId: stateRow.merchantId,
       shopId,
       provider: "slack",
-      code: input.error === "access_denied" ? "oauth_cancelled" : "workspace_installation_failed",
+      code:
+        input.error === "access_denied"
+          ? "oauth_cancelled"
+          : "workspace_installation_failed",
       now,
     });
-    throw new ChannelServiceError(input.error === "access_denied" ? "oauth_cancelled" : "workspace_installation_failed");
+    throw new ChannelServiceError(
+      input.error === "access_denied"
+        ? "oauth_cancelled"
+        : "workspace_installation_failed",
+    );
   }
-  if (!input.code?.trim()) throw new ChannelServiceError("workspace_installation_failed");
+  if (!input.code?.trim())
+    throw new ChannelServiceError("workspace_installation_failed");
 
   const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
   const installation = await adapter.completeOAuth({
@@ -303,7 +320,9 @@ export async function listSlackDestinations(prisma, input) {
  */
 export async function selectSlackDestination(prisma, input) {
   const destinations = await listSlackDestinations(prisma, input);
-  const destination = destinations.find((item) => item.id === input.destinationId);
+  const destination = destinations.find(
+    (item) => item.id === input.destinationId,
+  );
   if (!destination) throw new ChannelServiceError("unsupported_destination");
   if (destination.isPrivate && destination.isMember === false) {
     throw new ChannelServiceError("app_not_present_private_channel");
@@ -318,7 +337,9 @@ export async function selectSlackDestination(prisma, input) {
   const updated = await prisma.channelConnection.update({
     where: { id: connection.id },
     data: {
-      status: destinationChanged ? CHANNEL_STATUS.needsConfiguration : connection.status,
+      status: destinationChanged
+        ? CHANNEL_STATUS.needsConfiguration
+        : connection.status,
       destinationId: destination.id,
       destinationLabel: destination.label,
       verifiedAt: destinationChanged ? null : connection.verifiedAt,
@@ -390,7 +411,8 @@ export async function sendSlackConnectWelcomeDm(prisma, input) {
       return { sent: false, reason: "no_installer" };
     }
 
-    const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
+    const adapter =
+      input.adapter ?? new SlackChannelAdapter({ env: input.env });
     const dm = await adapter.openDirectMessageChannel({
       accessToken: asString(credential.accessToken),
       userId: authedUserId,
@@ -445,7 +467,7 @@ export async function processInboundSlackDm(prisma, input) {
     const connection = await prisma.channelConnection.findFirst({
       where: { provider: "slack", externalAccountId: input.teamId },
     });
-    if (!connection?.credentialRef) {
+    if (!connection?.credentialRef || !connection.shopId) {
       return { replied: false, reason: "no_connection" };
     }
 
@@ -456,34 +478,41 @@ export async function processInboundSlackDm(prisma, input) {
       select: { id: true },
     });
     if (existing) return { replied: false, reason: "duplicate" };
-    const delivery = await prisma.channelMessageDelivery.create({
-      data: {
-        merchantId: connection.merchantId,
-        shopId: connection.shopId,
-        connectionId: connection.id,
-        provider: "slack",
-        category: "inbound_reply",
-        idempotencyKey,
-        status: "pending",
-        metadata: { source: "slack_dm" },
-      },
-    });
+    let delivery;
+    try {
+      delivery = await prisma.channelMessageDelivery.create({
+        data: {
+          merchantId: connection.merchantId,
+          shopId: connection.shopId,
+          connectionId: connection.id,
+          provider: "slack",
+          category: "inbound_reply",
+          idempotencyKey,
+          status: "pending",
+          metadata: { source: "slack_dm" },
+        },
+      });
+    } catch (error) {
+      if (/** @type {any} */ (error)?.code === "P2002") {
+        return { replied: false, reason: "duplicate" };
+      }
+      throw error;
+    }
 
     // Same conversation service as the in-app chat: stores the merchant message,
     // interprets it, and stores Jefe's reply as an assistant message.
-    await sendConversationMessage(prisma, {
+    const conversationResult = await sendGeneralChatMessage(prisma, {
       merchantId: connection.merchantId,
       shopId: connection.shopId,
       message: input.text,
+      surface: "slack",
+      externalThreadId: `slack:${connection.id}:${input.channelId}`,
+      externalMessageId: input.eventId ?? null,
+      metadata: { channelConnectionId: connection.id },
       llmProvider: input.llmProvider,
       logger: channelLog,
     });
-    const reply = await prisma.merchantMemoryConversationMessage.findFirst({
-      where: { merchantId: connection.merchantId, role: "assistant" },
-      orderBy: { createdAt: "desc" },
-      select: { content: true },
-    });
-    const replyText = reply?.content?.trim();
+    const replyText = conversationResult.assistantMessage?.content?.trim();
     if (!replyText) {
       await prisma.channelMessageDelivery.update({
         where: { id: delivery.id },
@@ -499,7 +528,8 @@ export async function processInboundSlackDm(prisma, input) {
       credentialRef: connection.credentialRef,
       env: input.env,
     });
-    const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
+    const adapter =
+      input.adapter ?? new SlackChannelAdapter({ env: input.env });
     const sent = await adapter.sendMessage({
       accessToken: asString(credential.accessToken),
       channelId: input.channelId,
@@ -534,8 +564,10 @@ export async function processInboundSlackDm(prisma, input) {
  */
 export async function startWhatsAppVerification(prisma, input) {
   if (!input.consentAccepted) throw new ChannelServiceError("missing_consent");
-  const adapter = input.adapter ?? new WhatsAppChannelAdapter({ env: input.env });
-  if (!adapter.isConfigured()) throw new ChannelServiceError("provider_config_missing");
+  const adapter =
+    input.adapter ?? new WhatsAppChannelAdapter({ env: input.env });
+  if (!adapter.isConfigured())
+    throw new ChannelServiceError("provider_config_missing");
   const now = input.now ?? new Date();
   await enforceChallengeRateLimit(prisma, {
     merchantId: input.merchantId,
@@ -624,8 +656,10 @@ export async function confirmWhatsAppVerification(prisma, input) {
     orderBy: { createdAt: "desc" },
   });
   if (!challenge) throw new ChannelServiceError("verification_code_expired");
-  if (challenge.expiresAt <= now) throw new ChannelServiceError("verification_code_expired");
-  if (challenge.attempts >= challenge.maxAttempts) throw new ChannelServiceError("too_many_attempts");
+  if (challenge.expiresAt <= now)
+    throw new ChannelServiceError("verification_code_expired");
+  if (challenge.attempts >= challenge.maxAttempts)
+    throw new ChannelServiceError("too_many_attempts");
 
   const nextAttempts = challenge.attempts + 1;
   await prisma.channelVerificationChallenge.update({
@@ -640,7 +674,8 @@ export async function confirmWhatsAppVerification(prisma, input) {
     input.env,
   );
   if (!valid) {
-    if (nextAttempts >= challenge.maxAttempts) throw new ChannelServiceError("too_many_attempts");
+    if (nextAttempts >= challenge.maxAttempts)
+      throw new ChannelServiceError("too_many_attempts");
     throw new ChannelServiceError("invalid_verification_code");
   }
 
@@ -725,8 +760,10 @@ async function sendChannelMessage(prisma, input, options) {
   const existing = await prisma.channelMessageDelivery.findFirst({
     where: { merchantId: input.merchantId, idempotencyKey },
   });
-  if (existing?.status === "succeeded") return serializeConnection(input.provider, connection);
-  if (existing?.status === "pending") throw new ChannelServiceError("duplicate_submission");
+  if (existing?.status === "succeeded")
+    return serializeConnection(input.provider, connection);
+  if (existing?.status === "pending")
+    throw new ChannelServiceError("duplicate_submission");
 
   const delivery = await prisma.channelMessageDelivery.create({
     data: {
@@ -820,7 +857,8 @@ export async function disconnectChannelConnection(prisma, input) {
       env: input.env,
     }).catch(() => null);
     if (payload?.accessToken) {
-      const adapter = input.adapter ?? new SlackChannelAdapter({ env: input.env });
+      const adapter =
+        input.adapter ?? new SlackChannelAdapter({ env: input.env });
       await adapter.disconnect({ accessToken: asString(payload.accessToken) });
     }
   }
@@ -867,7 +905,10 @@ export async function hasVerifiedChannelConnection(prisma, input) {
  * @param {unknown} error
  */
 export function channelActionError(error) {
-  const code = error instanceof ChannelServiceError ? error.code : "provider_temporarily_unavailable";
+  const code =
+    error instanceof ChannelServiceError
+      ? error.code
+      : "provider_temporarily_unavailable";
   return { code, message: safeChannelErrorMessage(code) };
 }
 
@@ -901,7 +942,8 @@ function safeSlackReturnPath(metadata) {
     metadata && typeof metadata === "object" && !Array.isArray(metadata)
       ? /** @type {{ returnPath?: unknown }} */ (metadata).returnPath
       : null;
-  if (typeof value !== "string") return "/app?step=channels&channelProvider=slack";
+  if (typeof value !== "string")
+    return "/app?step=channels&channelProvider=slack";
   if (!value.startsWith("/app?") && value !== "/app") {
     return "/app?step=channels&channelProvider=slack";
   }
@@ -969,7 +1011,8 @@ async function consumeOAuthState(prisma, input) {
       consumedAt: null,
     },
   });
-  if (!state || state.expiresAt <= input.now) throw new ChannelServiceError("invalid_oauth_state");
+  if (!state || state.expiresAt <= input.now)
+    throw new ChannelServiceError("invalid_oauth_state");
   const consumed = await prisma.channelOAuthState.updateMany({
     where: {
       id: state.id,
@@ -978,7 +1021,8 @@ async function consumeOAuthState(prisma, input) {
     },
     data: { consumedAt: input.now },
   });
-  if (consumed.count !== 1) throw new ChannelServiceError("invalid_oauth_state");
+  if (consumed.count !== 1)
+    throw new ChannelServiceError("invalid_oauth_state");
   return state;
 }
 
@@ -1006,7 +1050,8 @@ async function consumeOAuthStateWithoutTenant(prisma, input) {
     },
     data: { consumedAt: input.now },
   });
-  if (consumed.count !== 1) throw new ChannelServiceError("invalid_oauth_state");
+  if (consumed.count !== 1)
+    throw new ChannelServiceError("invalid_oauth_state");
   return state;
 }
 
@@ -1021,7 +1066,10 @@ async function saveCredential(prisma, input) {
       shopId: input.shopId,
       provider: input.provider,
       connectionId: input.connectionId,
-      encryptedPayload: encryptChannelCredentialPayload(input.payload, input.env),
+      encryptedPayload: encryptChannelCredentialPayload(
+        input.payload,
+        input.env,
+      ),
       keyVersion: "v1",
     },
   });
@@ -1032,7 +1080,8 @@ async function saveCredential(prisma, input) {
  * @param {{ merchantId: string; shopId: string; provider: string; credentialRef: string | null; env?: Record<string, string | undefined> }} input
  */
 async function loadCredentialPayload(prisma, input) {
-  if (!input.credentialRef) throw new ChannelServiceError("connection_not_found");
+  if (!input.credentialRef)
+    throw new ChannelServiceError("connection_not_found");
   const credential = await prisma.channelCredential.findFirst({
     where: {
       id: input.credentialRef,
@@ -1042,7 +1091,10 @@ async function loadCredentialPayload(prisma, input) {
     },
   });
   if (!credential) throw new ChannelServiceError("connection_not_found");
-  return decryptChannelCredentialPayload(credential.encryptedPayload, input.env);
+  return decryptChannelCredentialPayload(
+    credential.encryptedPayload,
+    input.env,
+  );
 }
 
 /**
@@ -1051,7 +1103,8 @@ async function loadCredentialPayload(prisma, input) {
  * @param {{ env?: Record<string, string | undefined>; adapter?: SlackChannelAdapter; message: ReturnType<typeof testMessage> }} input
  */
 async function sendSlackMessage(prisma, connection, input) {
-  if (!connection.destinationId) throw new ChannelServiceError("destination_required");
+  if (!connection.destinationId)
+    throw new ChannelServiceError("destination_required");
   const payload = await loadCredentialPayload(prisma, {
     merchantId: connection.merchantId,
     shopId: connection.shopId ?? "",
@@ -1075,8 +1128,12 @@ async function sendWhatsAppMessage(connection, input) {
   if (!connection.phoneE164 || connection.verificationStatus !== "verified") {
     throw new ChannelServiceError("connection_not_found");
   }
-  const adapter = input.adapter ?? new WhatsAppChannelAdapter({ env: input.env });
-  return adapter.sendMessage({ to: connection.phoneE164, message: input.message });
+  const adapter =
+    input.adapter ?? new WhatsAppChannelAdapter({ env: input.env });
+  return adapter.sendMessage({
+    to: connection.phoneE164,
+    message: input.message,
+  });
 }
 
 /**
@@ -1106,7 +1163,9 @@ async function enforceTestMessageRateLimit(prisma, input) {
       shopId: input.shopId,
       provider: input.provider,
       category: "test",
-      createdAt: { gt: new Date(input.now.getTime() - TEST_MESSAGE_RATE_LIMIT_WINDOW_MS) },
+      createdAt: {
+        gt: new Date(input.now.getTime() - TEST_MESSAGE_RATE_LIMIT_WINDOW_MS),
+      },
     },
   });
   if (count >= 5) throw new ChannelServiceError("too_many_requests");
@@ -1179,13 +1238,15 @@ function serializeConnection(provider, connection) {
 
   const verified = Boolean(
     connection.status === CHANNEL_STATUS.connected &&
-      connection.verifiedAt &&
-      !connection.disconnectedAt,
+    connection.verifiedAt &&
+    !connection.disconnectedAt,
   );
   return {
     id: connection.id,
     provider,
-    status: connection.disconnectedAt ? CHANNEL_STATUS.disconnected : connection.status,
+    status: connection.disconnectedAt
+      ? CHANNEL_STATUS.disconnected
+      : connection.status,
     connected: verified,
     verified,
     accountName: connection.externalAccountName ?? null,
@@ -1198,10 +1259,13 @@ function serializeConnection(provider, connection) {
       : null,
     connectedAt: connection.connectedAt?.toISOString() ?? null,
     verifiedAt: connection.verifiedAt?.toISOString() ?? null,
-    lastSuccessfulMessageAt: connection.lastSuccessfulMessageAt?.toISOString() ?? null,
+    lastSuccessfulMessageAt:
+      connection.lastSuccessfulMessageAt?.toISOString() ?? null,
     consentStatus: connection.consentStatus ?? null,
     consentVersion: connection.consentVersion ?? null,
-    capabilities: Array.isArray(connection.capabilities) ? connection.capabilities : [],
+    capabilities: Array.isArray(connection.capabilities)
+      ? connection.capabilities
+      : [],
   };
 }
 

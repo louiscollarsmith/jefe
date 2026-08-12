@@ -1,9 +1,10 @@
 // @ts-check
 
 export const MERCHANT_GOALS_JOB_TYPE = "merchant_goals_generate";
-export const MERCHANT_GOALS_PROMPT_VERSION = "merchant-goals-v5";
+export const MERCHANT_GOALS_PROMPT_VERSION = "merchant-goals-v6-context";
 export const MERCHANT_GOALS_SCHEMA_VERSION = "merchant-goals-schema-v1";
-export const MERCHANT_GOALS_SNAPSHOT_VERSION = "merchant-goals-snapshot-v1";
+export const MERCHANT_GOALS_SNAPSHOT_VERSION =
+  "merchant-goals-snapshot-v2-context";
 
 export const GOAL_RUN_STATUS = {
   queued: "queued",

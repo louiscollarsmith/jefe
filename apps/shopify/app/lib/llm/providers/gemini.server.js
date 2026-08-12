@@ -6,14 +6,17 @@ import {
   LlmOutputValidationError,
   estimateTokens,
 } from "../errors.server.js";
+import { assertExternalLlmCallAllowed } from "../external-call-guard.server.js";
 import { parseAndValidateStructuredOperation } from "../structured-operation-schema.server.js";
 
 /**
- * @param {{ config: import("../config.server.js").getLlmConfig extends () => infer T ? T : never; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ config: import("../config.server.js").getLlmConfig extends () => infer T ? T : never; logger?: Pick<Console, "info" | "warn" | "error">; client?: GoogleGenAI }} input
  */
 export function createGeminiProvider(input) {
   const logger = input.logger ?? console;
-  const client = new GoogleGenAI({ apiKey: input.config.geminiApiKey });
+  const client =
+    input.client ?? new GoogleGenAI({ apiKey: input.config.geminiApiKey });
+  const hasInjectedTransport = Boolean(input.client);
 
   return {
     provider: "gemini",
@@ -23,6 +26,7 @@ export function createGeminiProvider(input) {
      * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
      */
     async generateStructuredOperation(request) {
+      assertExternalLlmCallAllowed({ hasInjectedTransport });
       const result = await generateStructuredJson({
         client,
         config: input.config,
@@ -49,6 +53,7 @@ export function createGeminiProvider(input) {
      * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
      */
     async generateStructuredJson(request) {
+      assertExternalLlmCallAllowed({ hasInjectedTransport });
       return generateStructuredJson({
         client,
         config: input.config,

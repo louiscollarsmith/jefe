@@ -11,6 +11,7 @@
 
 import { GoogleGenAI } from "@google/genai";
 import { DEFAULT_LLM_FALLBACK_MODEL, getLlmConfig } from "./config.server.js";
+import { assertExternalLlmCallAllowed } from "./external-call-guard.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
 
 const TRANSCRIBE_PROMPT =
@@ -43,9 +44,11 @@ export function extractTranscript(response) {
  */
 export async function transcribeVoiceNote(input) {
   const config = getLlmConfig();
-  if (!config.enabled || !config.geminiApiKey) {
+  const hasInjectedTransport = Boolean(input.client);
+  if ((!config.enabled || !config.geminiApiKey) && !hasInjectedTransport) {
     throw new Error("LLM is not configured (GEMINI_API_KEY missing) — cannot transcribe voice note.");
   }
+  assertExternalLlmCallAllowed({ hasInjectedTransport });
   const model = getVoiceTranscribeModel();
   const client = input.client ?? new GoogleGenAI({ apiKey: config.geminiApiKey });
 

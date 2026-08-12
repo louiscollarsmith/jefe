@@ -1,6 +1,19 @@
-import { Form, Link, useActionData, useLocation, useNavigation } from "react-router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Form,
+  Link,
+  useLocation,
+  useNavigate,
+  useNavigation,
+} from "react-router";
+import { useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import {
+  ActionList,
+  Button,
+  InlineStack,
+  Popover,
+  Text,
+} from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
@@ -41,13 +54,30 @@ const FONT = {
   mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
 };
 
-type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
 // A proactive heads-up Jefe posts into the thread from a standing condition (a run-out
 // approaching, refunds trending). Re-rendered from current state each load — not stored —
-// so it stays honest and can't go stale. Shown as a feed (uncapped in the render); the
-// cadence ceiling that keeps it from becoming noise lives on the outbound-send path.
+// so it stays honest and can't go stale. Kept deliberately small (see the cap in
+// StoreConversation): the chat is not a notification feed.
 type HeadsUp = { id: string; kind: string; text: string };
-type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
+type ChatConversation = {
+  id: string;
+  conversationType: string;
+  surface: string;
+  title: string;
+  lastMessageAt: string;
+  createdAt: string;
+};
+type ChatThread = {
+  conversation: ChatConversation | null;
+  conversations: ChatConversation[];
+  messages: Array<{ id: string; role: string; content: string }>;
+};
+type ChannelConn = {
+  provider: string;
+  connected: boolean;
+  maskedDestination?: string | null;
+  accountName?: string | null;
+};
 type EmailBrief = {
   address: string;
   enabled: boolean;
@@ -77,6 +107,13 @@ type PrimaryMove = {
   currentSignal: string | null;
 };
 
+type IndexEntry = {
+  id: string;
+  label: string;
+  kind: string;
+  dateLabel: string;
+};
+
 export function DailyHome(props: {
   storeName: string;
   merchantName?: string;
@@ -92,7 +129,13 @@ export function DailyHome(props: {
   conversation?: ChatThread | null;
   actionChatId?: string | null;
   actionChatThread?: ActionChatThread | null;
-  changelog?: Array<{ id: string; date: string; text: string; tag?: string | null; body?: string | null }>;
+  changelog?: Array<{
+    id: string;
+    date: string;
+    text: string;
+    tag?: string | null;
+    body?: string | null;
+  }>;
   emailBrief?: EmailBrief | null;
   openQuestions?: MemoryQuestion[];
   horizonNear: HorizonItem[];
@@ -125,26 +168,19 @@ export function DailyHome(props: {
     );
   }
 
-  // Shape B: the home IS the store-level conversation. The next move, and Jefe's
-  // reports back on moves already made, arrive as messages in that one thread — not
-  // as a dashboard of cards. Everything else (Watching, Goals, autonomy, changelog)
-  // has moved off the home to its own surface; nothing gets added back here.
+  // The home is the store-level conversation. Only canonical conversation messages
+  // appear in its transcript; live store signals, action outcomes and the proposed
+  // move stay reachable through Store updates without masquerading as chat history.
   const outcomes = actions.filter(
     (action) => action.actionRunId !== primaryMove.actionRunId,
   );
   // The frame for every recommendation: one quiet line, not a section (the reviewer's
   // single keep-from-the-strip). Null when Jefe has no goal yet — never fabricated.
   const goalLine = firstGoalLine(props.goals);
-  // The conversation index (left rail): wayfinding once the thread accumulates moments.
-  // Absent on a fresh store, so the home stays a single centered column until there's
-  // something to index. Hidden on narrow viewports (see HOME_INDEX_RESPONSIVE_CSS).
-  const indexEntries = buildConversationIndex(outcomes, primaryMove, props.storeTimeZone);
-  const hasIndex = indexEntries.length > 0;
 
   return (
     <main style={pageStyle}>
-      <style>{HOME_INDEX_RESPONSIVE_CSS}</style>
-      <div style={hasIndex ? shellWideStyle : shellStyle}>
+      <div style={shellStyle}>
         <Header
           storeName={props.storeName}
           todayLabel={props.todayLabel}
@@ -152,31 +188,28 @@ export function DailyHome(props: {
           brandLogoUrl={props.brandLogoUrl}
           currentSearch={location.search}
         />
-        <div style={homeGridStyle} className="jefe-home-grid">
-          {hasIndex ? <ConversationIndex entries={indexEntries} /> : null}
-          <div style={homeMainColStyle}>
-            <StoreConversation
-              conversation={props.conversation ?? null}
-              move={primaryMove}
-              outcomes={outcomes}
-              headsUps={props.horizonHeadsUps ?? []}
-              quietLine={buildQuietLine(props.horizonWatching, props.insights)}
-              currentSearch={location.search}
-            />
-          </div>
-        </div>
+        <StoreConversation
+          conversation={props.conversation ?? null}
+          move={primaryMove}
+          outcomes={outcomes}
+          headsUps={props.horizonHeadsUps ?? []}
+          quietLine={buildQuietLine(props.horizonWatching, props.insights)}
+          currentSearch={location.search}
+          storeTimeZone={props.storeTimeZone}
+        />
+        {/* The one door off the chat log: everything Jefe knows about the store. */}
+        <Link to="?view=memory" style={footerLinkStyle}>
+          See everything Jefe knows →
+        </Link>
       </div>
     </main>
   );
 }
 
-// The store-level conversation — Shape B's home. One thread: the real back-and-forth
-// (getDailyChatThread), Jefe reporting back on moves already made (outcomes as
-// messages), and the current move as the freshest message with a zoom into its own
-// action chat. The composer posts `chat.message` (the store thread); the per-move
-// zoom (ActionChat) posts `action.chat.message`. View decides the intent — no thread
-// picker. On a genuinely quiet day the thread is a single grounded line, never empty
-// and never fabricated.
+// The store-level conversation. The transcript is only the selected conversation's
+// real messages, so a newly created chat is visibly and genuinely blank. Derived
+// signals and proposed work live in the separate Store updates popover. The composer
+// posts `chat.message`; the per-move zoom posts `action.chat.message`.
 function StoreConversation({
   conversation,
   move,
@@ -184,6 +217,7 @@ function StoreConversation({
   headsUps,
   quietLine,
   currentSearch,
+  storeTimeZone,
 }: {
   conversation: ChatThread | null;
   move: PrimaryMove;
@@ -191,204 +225,357 @@ function StoreConversation({
   headsUps: HeadsUp[];
   quietLine: string;
   currentSearch: string;
+  storeTimeZone?: string | null;
 }) {
   const navigation = useNavigation();
+  const navigate = useNavigate();
   const pendingIntent = navigation.formData?.get("intent");
-  const isSending =
+  const isThinking =
     navigation.state !== "idle" && pendingIntent === "chat.message";
-  // A retry is Jefe having another go at a message already in the thread, so it shows the
-  // same "Thinking" line — but it must NOT re-render the merchant's text as pending, or
-  // their message would appear twice while it runs.
-  const isRetrying =
-    navigation.state !== "idle" && pendingIntent === "chat.retry";
-  const isThinking = isSending || isRetrying;
   const pendingMessage =
-    isSending && typeof navigation.formData?.get("message") === "string"
+    isThinking && typeof navigation.formData?.get("message") === "string"
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const actionData = useActionData() as
-    | { ok?: boolean; error?: string; kind?: string | null; intent?: string }
-    | undefined;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const handleComposerSubmit = () => setComposerMessage("");
 
   const history = conversation?.messages ?? [];
-  // A reply that never arrived, detected from the THREAD rather than from the failed
-  // request. The merchant's message commits before Jefe is asked, so a thread whose last
-  // message is theirs means Jefe owes them an answer — and that stays true after a reload,
-  // after the route error boundary's "Try again", and in a tab opened later. Keying this
-  // off the action result alone would lose the retry the moment the page reloaded, which
-  // is precisely the "nothing to retry" gap.
-  const lastMessage = history[history.length - 1];
-  const awaitingReply =
-    !isThinking &&
-    !pendingMessage &&
-    (lastMessage?.role === "merchant" || lastMessage?.role === "user");
-  const hasMove = move.state !== "empty";
-  // Proactive heads-ups (run-outs, refunds) render as a feed here — NOT capped: the
-  // merchant wants to see whatever's genuinely real (Matt's call). The ~5/day *cadence*
-  // ceiling is a different mechanism that lives on the outbound/proactive-send path
-  // (notifications/Slack), not this live render, and is a ceiling-not-target — Jefe says
-  // less when less is real, never filler. Dedup is inherent: they're re-derived from
-  // state each load, never stored.
-  // The grounded fallback line shows ONLY when there is genuinely nothing real to say —
-  // no move, no reports, no history, no heads-up. Silence-with-a-real-line, never filler.
-  const showQuietLine =
-    !hasMove &&
-    outcomes.length === 0 &&
-    history.length === 0 &&
-    headsUps.length === 0;
-  const bottomRef = useStickToBottom(
-    history.length +
-      outcomes.length +
-      headsUps.length +
-      (hasMove ? 1 : 0) +
-      (showQuietLine ? 1 : 0) +
-      (pendingMessage ? 1 : 0) +
-      (isThinking ? 1 : 0) +
-      (awaitingReply ? 1 : 0),
+  const activeConversation = conversation?.conversation ?? null;
+  const isBlankThread = history.length === 0;
+  // Budget: at most 2 proactive heads-ups — the chat is a conversation, not a
+  // notification feed. These are Horizon's top-ranked standing conditions; dedup is
+  // inherent because they're re-derived from state each load, never stored.
+  const shownHeadsUps = headsUps.slice(0, 2);
+  const displayedTitle = conversationTitle(activeConversation);
+  const messageLabel = isBlankThread
+    ? "Fresh chat · no messages yet"
+    : `${history.length} message${history.length === 1 ? "" : "s"}`;
+  const indexEntries = buildConversationIndex(
+    outcomes,
+    move,
+    storeTimeZone,
   );
 
   return (
     <section style={conversationStyle}>
+      <div style={threadControlsStyle}>
+        <InlineStack
+          align="space-between"
+          blockAlign="start"
+          gap="300"
+          wrap
+        >
+          <div style={threadIdentityStyle}>
+            <Mono>Current chat</Mono>
+            <Text as="h2" variant="headingSm" truncate>
+              {displayedTitle}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {messageLabel}
+            </Text>
+          </div>
+          <InlineStack gap="200" wrap={false}>
+            <Popover
+              active={updatesOpen}
+              onClose={() => setUpdatesOpen(false)}
+              activator={
+                <Button
+                  disclosure
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    setUpdatesOpen((open) => !open);
+                  }}
+                >
+                  Store updates
+                </Button>
+              }
+              preferredAlignment="right"
+            >
+              <StoreUpdatesPopover
+                move={move}
+                outcomes={outcomes}
+                headsUps={shownHeadsUps}
+                quietLine={quietLine}
+                currentSearch={currentSearch}
+                onNavigate={() => setUpdatesOpen(false)}
+              />
+            </Popover>
+            <Popover
+              active={historyOpen}
+              onClose={() => setHistoryOpen(false)}
+              activator={
+                <Button
+                  disclosure
+                  onClick={() => {
+                    setUpdatesOpen(false);
+                    setHistoryOpen((open) => !open);
+                  }}
+                >
+                  Chats
+                </Button>
+              }
+              preferredAlignment="right"
+            >
+              <ActionList
+                actionRole="menuitem"
+                items={
+                  (conversation?.conversations.length ?? 0) > 0
+                    ? (conversation?.conversations ?? []).map((item) => ({
+                        content: conversationHistoryTitle(
+                          item,
+                          activeConversation?.id ?? null,
+                        ),
+                        active: item.id === activeConversation?.id,
+                        helpText: formatConversationDate(
+                          item.lastMessageAt,
+                          storeTimeZone,
+                        ),
+                        onAction: () => {
+                          setHistoryOpen(false);
+                          navigate(
+                            searchWith(currentSearch, {
+                              conversation: item.id,
+                            }),
+                          );
+                        },
+                      }))
+                    : [{ content: "No earlier chats yet", disabled: true }]
+                }
+              />
+            </Popover>
+            <Form method="post">
+              <input type="hidden" name="intent" value="chat.new" />
+              <Button
+                submit
+                disabled={
+                  navigation.state !== "idle" ||
+                  Boolean(activeConversation && isBlankThread)
+                }
+              >
+                New chat
+              </Button>
+            </Form>
+          </InlineStack>
+        </InlineStack>
+      </div>
+      {indexEntries.length > 0 ? (
+        <ConversationIndex entries={indexEntries} />
+      ) : null}
       <div style={messagesStyle}>
+        {outcomes.map((action) => (
+          <ConversationMomentAnchor
+            key={action.actionRunId}
+            anchorId={`moment-${action.actionRunId}`}
+          />
+        ))}
+        {move.state !== "empty" ? (
+          <ConversationMomentAnchor
+            anchorId={`moment-${move.recommendationId ?? move.actionRunId ?? "move"}`}
+          />
+        ) : null}
+        {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
         {history.map((message) => (
           <MessageRow key={message.id} from={message.role}>
             {message.content}
           </MessageRow>
         ))}
-        {outcomes.map((action) => (
-          <MessageRow
-            key={action.actionRunId}
-            anchorId={`moment-${action.actionRunId}`}
-            from="assistant"
-          >
-            {outcomeMessageText(action)}
-          </MessageRow>
-        ))}
-        {headsUps.map((headsUp) => (
-          <MessageRow key={headsUp.id} from="assistant">
-            {headsUp.text}
-          </MessageRow>
-        ))}
-        {hasMove ? <MoveMessage move={move} currentSearch={currentSearch} /> : null}
-        {showQuietLine ? <MessageRow from="assistant">{quietLine}</MessageRow> : null}
-        {pendingMessage ? <MessageRow from="merchant">{pendingMessage}</MessageRow> : null}
+        {pendingMessage ? (
+          <MessageRow from="merchant">{pendingMessage}</MessageRow>
+        ) : null}
         {isThinking ? (
           <div style={messageRowStyle} aria-live="polite">
             <span style={smallMarkStyle}>J</span>
             <div style={thinkingStyle}>Thinking</div>
           </div>
         ) : null}
-        {awaitingReply ? (
-          <ReplyFailedRow message={actionData?.error} />
-        ) : null}
-        <div ref={bottomRef} aria-hidden="true" />
       </div>
       <div style={chatComposerWrapStyle}>
         <div style={chipsStyle}>
-          <StorePrompt message="What changed this week?" />
-          <StorePrompt message="Anything I should worry about?" />
-          <StorePrompt message="How are my goals looking?" />
+          <StorePrompt message="What changed this week?" conversationId={activeConversation?.id ?? null} />
+          <StorePrompt message="Anything I should worry about?" conversationId={activeConversation?.id ?? null} />
+          <StorePrompt message="How are my goals looking?" conversationId={activeConversation?.id ?? null} />
         </div>
-        <ChatComposer
-          intent="chat.message"
-          placeholder="Ask Jefe anything, or tell me what changed…"
-          ariaLabel="Message Jefe"
-          value={composerMessage}
-          onChange={setComposerMessage}
-          disabled={isThinking}
-        />
+        <Form
+          method="post"
+          style={composerStyle}
+          onSubmit={handleComposerSubmit}
+        >
+          <input type="hidden" name="intent" value="chat.message" />
+          <input
+            type="hidden"
+            name="conversationId"
+            value={conversation?.conversation?.id ?? ""}
+          />
+          <input
+            name="message"
+            required
+            autoComplete="off"
+            aria-label="Message Jefe"
+            placeholder="Ask Jefe anything, or tell me what changed…"
+            value={composerMessage}
+            onChange={(event) => setComposerMessage(event.currentTarget.value)}
+            style={composerInputStyle}
+            disabled={isThinking}
+          />
+          <button
+            type="submit"
+            style={sendButtonStateStyle(isThinking)}
+            disabled={isThinking}
+          >
+            Send
+          </button>
+        </Form>
       </div>
     </section>
   );
 }
 
-// Jefe failing to answer, said in the thread rather than on an error page. This renders in
-// Jefe's own message position on purpose: a reply that didn't arrive is Jefe's problem, not
-// a fault in what the merchant typed, and it reads as part of the conversation. The retry
-// posts `chat.retry`, which answers the message already sitting above it — the merchant
-// never retypes, and the thread never ends up holding what they said twice.
-function ReplyFailedRow({ message }: { message?: string }) {
-  const navigation = useNavigation();
-  const isRetrying =
-    navigation.state !== "idle" &&
-    navigation.formData?.get("intent") === "chat.retry";
+function conversationTitle(conversation: ChatConversation | null) {
+  if (!conversation || conversation.title === "New conversation")
+    return "New chat";
+  return conversation.title;
+}
+
+function conversationHistoryTitle(
+  conversation: ChatConversation,
+  activeId: string | null,
+) {
+  const title =
+    conversation.title === "New conversation"
+      ? "Empty chat"
+      : conversation.title;
+  return conversation.id === activeId ? `${title} · Current` : title;
+}
+
+function formatConversationDate(value: string, timeZone?: string | null) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("en-GB", {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: timeZone ?? "Europe/London",
+      }).format(date);
+}
+
+function EmptyChat() {
   return (
-    <div style={messageRowStyle} aria-live="polite">
-      <span style={smallMarkStyle}>J</span>
-      <div style={replyFailedBubbleStyle}>
-        <span>{message || "I couldn't get to that one just now — your message is saved."}</span>
-        <Form method="post">
-          <input type="hidden" name="intent" value="chat.retry" />
-          <button type="submit" style={replyRetryButtonStyle} disabled={isRetrying}>
-            {isRetrying ? "Trying again…" : "Try again"}
-          </button>
-        </Form>
-      </div>
+    <div style={emptyChatStyle}>
+      <span style={emptyChatMarkStyle}>J</span>
+      <Text as="h3" variant="headingMd">
+        Start a new conversation
+      </Text>
+      <Text as="p" variant="bodyMd" tone="subdued">
+        This chat is empty. Messages from earlier chats stay in Chats; Jefe can
+        still use what it knows about your store when you ask.
+      </Text>
     </div>
   );
 }
 
-function MessageRow({
-  from,
-  children,
-  anchorId,
+function StoreUpdatesPopover({
+  move,
+  outcomes,
+  headsUps,
+  quietLine,
+  currentSearch,
+  onNavigate,
 }: {
-  from: string;
-  children: ReactNode;
-  anchorId?: string;
+  move: PrimaryMove;
+  outcomes: ExecutedAction[];
+  headsUps: HeadsUp[];
+  quietLine: string;
+  currentSearch: string;
+  onNavigate: () => void;
 }) {
-  const isMerchant = from === "merchant" || from === "user";
-  return (
-    <div
-      id={anchorId}
-      style={{ ...messageRowStyle, justifyContent: isMerchant ? "flex-end" : "flex-start" }}
-    >
-      {!isMerchant ? <span style={smallMarkStyle}>J</span> : null}
-      <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>{children}</div>
-    </div>
-  );
-}
-
-// The move as a message in the thread: enough to recognise it, with a zoom into its
-// own action chat ("Talk this through →" sets ?actionChat=<id>) where the merchant
-// approves, declines or revises it. The decision never happens on the home feed.
-function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch: string }) {
+  const recentOutcomes = outcomes.slice(0, 2);
+  const hasUpdates =
+    move.state !== "empty" || headsUps.length > 0 || recentOutcomes.length > 0;
   const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
-  const subtitle = informativeSubtitle(move.summary, move.title);
+  const moveSubtitle = informativeSubtitle(move.summary, move.title);
+
   return (
-    <div
-      id={`moment-${chatTarget}`}
-      style={{ ...messageRowStyle, justifyContent: "flex-start" }}
-    >
-      <span style={smallMarkStyle}>J</span>
-      <div style={moveMessageStyle}>
-        <div style={cardTopStyle}>
-          <Mono>{move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}</Mono>
-          <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
+    <div style={updatesPopoverStyle}>
+      <div style={updatesPopoverHeaderStyle}>
+        <Text as="h3" variant="headingSm">
+          Store updates
+        </Text>
+        <Text as="p" variant="bodySm" tone="subdued">
+          Live store signals and proposed work. These are separate from the
+          current chat.
+        </Text>
+      </div>
+      {headsUps.map((headsUp) => (
+        <div key={headsUp.id} style={updateItemStyle}>
+          <Mono>Worth knowing</Mono>
+          <Text as="p" variant="bodySm">
+            {headsUp.text}
+          </Text>
         </div>
-        <strong style={moveMessageTitleStyle}>{move.title}</strong>
-        {subtitle ? <p style={moveMessageSummaryStyle}>{subtitle}</p> : null}
-        {/* Approve / decline / revise live in the move's own chat (the zoom level), never on
-            the home feed — an executable commitment happens in the focused surface. */}
-        <div style={moveMessageActionsStyle}>
-          <Link to={searchWith(currentSearch, { actionChat: chatTarget })} style={primaryButtonStyle}>
+      ))}
+      {recentOutcomes.map((action) => (
+        <div key={action.actionRunId} style={updateItemStyle}>
+          <Mono>Recent action</Mono>
+          <Text as="p" variant="bodySm">
+            {outcomeMessageText(action)}
+          </Text>
+        </div>
+      ))}
+      {move.state !== "empty" ? (
+        <div style={updateItemStyle}>
+          <Mono>{move.state === "in_progress" ? "In progress" : "Next move"}</Mono>
+          <Text as="h4" variant="headingSm">
+            {move.title}
+          </Text>
+          {moveSubtitle ? (
+            <Text as="p" variant="bodySm" tone="subdued">
+              {moveSubtitle}
+            </Text>
+          ) : null}
+          <Link
+            to={searchWith(currentSearch, { actionChat: chatTarget })}
+            style={updateActionLinkStyle}
+            onClick={onNavigate}
+          >
             Talk this through →
           </Link>
         </div>
-      </div>
+      ) : null}
+      {!hasUpdates ? (
+        <div style={updateItemStyle}>
+          <Text as="p" variant="bodySm">
+            {quietLine}
+          </Text>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-// The conversation index — wayfinding INSIDE the one thread (never a thread picker).
-// Only MOMENTS earn a place: an action executed / reported-back / declined / reverted, and
-// the current proposed move. Each carries the DOM id of its message so the rail can scroll
-// to it. Goals and free-text corrections are deliberately NOT here yet — they need change-
-// events / message tagging the layer doesn't emit, and a fabricated timestamp is worse than
-// an omission (AGENTS.md:58). The executed half is real ledger data. Pure — no message-text
-// scraping.
-type IndexEntry = { id: string; label: string; kind: string; dateLabel: string };
+function ConversationMomentAnchor({ anchorId }: { anchorId: string }) {
+  return <span id={anchorId} aria-hidden="true" style={momentAnchorStyle} />;
+}
+
+function MessageRow({ from, children }: { from: string; children: ReactNode }) {
+  const isMerchant = from === "merchant" || from === "user";
+  return (
+    <div
+      style={{
+        ...messageRowStyle,
+        justifyContent: isMerchant ? "flex-end" : "flex-start",
+      }}
+    >
+      {!isMerchant ? <span style={smallMarkStyle}>J</span> : null}
+      <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function buildConversationIndex(
   outcomes: ExecutedAction[],
@@ -429,8 +616,6 @@ function buildConversationIndex(
   return entries;
 }
 
-// Scroll the thread to a moment's message. Wayfinding, not navigation — it moves you
-// within the conversation you're already in; it never swaps threads or changes the URL.
 function scrollToMoment(id: string) {
   const el = typeof document === "undefined" ? null : document.getElementById(id);
   if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -438,7 +623,11 @@ function scrollToMoment(id: string) {
 
 function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
   return (
-    <nav className="jefe-home-index" aria-label="Conversation index" style={indexRailStyle}>
+    <nav
+      className="jefe-home-index"
+      aria-label="Conversation index"
+      style={indexRailStyle}
+    >
       <span style={indexHeadingStyle}>In this conversation</span>
       <div style={indexListStyle}>
         {entries.map((entry) => (
@@ -460,11 +649,14 @@ function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
 }
 
 // Jefe reporting back on a move already made — honest copy from the same fields the
-// old Action history / Also-in-progress cards used, now rendered as a thread message.
+// old Action history / Also-in-progress cards used, now rendered in Store updates.
 function outcomeMessageText(action: ExecutedAction): string {
   const name = action.sourceRecommendation?.title || action.headline;
   if (action.status === "rejected") {
-    return action.declineLearning ?? `You passed on “${name}” — I've noted it wasn't right for now.`;
+    return (
+      action.declineLearning ??
+      `You passed on “${name}” — I've noted it wasn't right for now.`
+    );
   }
   if (action.status === "reverted") {
     return `I reverted “${name}”.`;
@@ -477,7 +669,10 @@ function outcomeMessageText(action: ExecutedAction): string {
 
 // The quiet-day line: grounded in a real thing Jefe is watching (or last noticed),
 // never fabricated. Falls back to an honest generic when there's nothing to surface.
-function buildQuietLine(horizonWatching: HorizonWatch[], insights: Insight[]): string {
+function buildQuietLine(
+  horizonWatching: HorizonWatch[],
+  insights: Insight[],
+): string {
   const watch = (horizonWatching || []).find((item) => item.title);
   if (watch) {
     return watch.reason
@@ -509,9 +704,32 @@ export function DailyHomeLoading({ storeName }: { storeName: string }) {
         <section style={cardStyle} aria-label="Opening Jefe">
           <Mono>OPENING JEFE</Mono>
           <div style={{ height: 28 }} />
-          <div style={{ height: 24, maxWidth: 420, background: COLORS.hairline, borderRadius: 8 }} />
-          <div style={{ height: 16, maxWidth: 580, background: COLORS.hairline, borderRadius: 8, marginTop: 22 }} />
-          <div style={{ height: 16, maxWidth: 500, background: COLORS.hairline, borderRadius: 8, marginTop: 10 }} />
+          <div
+            style={{
+              height: 24,
+              maxWidth: 420,
+              background: COLORS.hairline,
+              borderRadius: 8,
+            }}
+          />
+          <div
+            style={{
+              height: 16,
+              maxWidth: 580,
+              background: COLORS.hairline,
+              borderRadius: 8,
+              marginTop: 22,
+            }}
+          />
+          <div
+            style={{
+              height: 16,
+              maxWidth: 500,
+              background: COLORS.hairline,
+              borderRadius: 8,
+              marginTop: 10,
+            }}
+          />
         </section>
       </div>
     </main>
@@ -620,6 +838,7 @@ function ActionChat({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
+  const handleComposerSubmit = () => setComposerMessage("");
   const messages = thread.messages.length
     ? thread.messages
     : [
@@ -631,9 +850,6 @@ function ActionChat({
         },
       ];
   const subtitle = informativeSubtitle(move.summary, move.title);
-  const bottomRef = useStickToBottom(
-    messages.length + (pendingMessage ? 1 : 0) + (isThinking ? 1 : 0),
-  );
   return (
     <main style={pageStyle}>
       <div style={chatShellStyle}>
@@ -643,7 +859,14 @@ function ActionChat({
           </Link>
           <DateLabel>{todayLabel ?? ""}</DateLabel>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 20 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginTop: 20,
+          }}
+        >
           <Mono>ABOUT THIS MOVE</Mono>
           <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
         </div>
@@ -656,11 +879,20 @@ function ActionChat({
               key={message.id}
               style={{
                 ...messageRowStyle,
-                justifyContent: message.role === "merchant" ? "flex-end" : "flex-start",
+                justifyContent:
+                  message.role === "merchant" ? "flex-end" : "flex-start",
               }}
             >
-              {message.role !== "merchant" ? <span style={smallMarkStyle}>J</span> : null}
-              <div style={message.role === "merchant" ? merchantBubbleStyle : assistantBubbleStyle}>
+              {message.role !== "merchant" ? (
+                <span style={smallMarkStyle}>J</span>
+              ) : null}
+              <div
+                style={
+                  message.role === "merchant"
+                    ? merchantBubbleStyle
+                    : assistantBubbleStyle
+                }
+              >
                 {message.content}
               </div>
             </div>
@@ -676,7 +908,6 @@ function ActionChat({
               <div style={thinkingStyle}>Thinking</div>
             </div>
           ) : null}
-          <div ref={bottomRef} aria-hidden="true" />
         </div>
         <div style={chatComposerWrapStyle}>
           <div style={chipsStyle}>
@@ -684,9 +915,21 @@ function ActionChat({
             <ChatPrompt message="What exactly would you order?" move={move} />
             {move.actionRunId ? (
               <Form method="post">
-                <input type="hidden" name="intent" value="action.revise_scope" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
-                <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="action.revise_scope"
+                />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
+                <input
+                  type="hidden"
+                  name="recommendationId"
+                  value={move.recommendationId ?? ""}
+                />
                 <input type="hidden" name="maxProducts" value="1" />
                 <ChipButton>Can we do just one product?</ChipButton>
               </Form>
@@ -694,26 +937,53 @@ function ActionChat({
             {move.actionRunId ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.defer" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <input type="hidden" name="reason" value="defer" />
                 <ChipButton>Maybe later</ChipButton>
               </Form>
             ) : null}
           </div>
-          <ChatComposer
-            intent="action.chat.message"
-            placeholder="Ask about this move, or tell me what to change..."
-            ariaLabel="Ask about this move"
-            value={composerMessage}
-            onChange={setComposerMessage}
-            disabled={isThinking}
-            hiddenFields={<MoveHiddenFields move={move} />}
-          />
+          <Form
+            method="post"
+            style={composerStyle}
+            onSubmit={handleComposerSubmit}
+          >
+            <input type="hidden" name="intent" value="action.chat.message" />
+            <MoveHiddenFields move={move} />
+            <input
+              name="message"
+              required
+              autoComplete="off"
+              aria-label="Ask about this move"
+              placeholder="Ask about this move, or tell me what to change..."
+              value={composerMessage}
+              onChange={(event) =>
+                setComposerMessage(event.currentTarget.value)
+              }
+              style={composerInputStyle}
+              disabled={isThinking}
+            />
+            <button
+              type="submit"
+              style={sendButtonStateStyle(isThinking)}
+              disabled={isThinking}
+            >
+              Send
+            </button>
+          </Form>
           <div style={decisionRowStyle}>
             {move.actionRunId && move.executable ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.approve" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <button type="submit" style={approveButtonStyle}>
                   Approve
                 </button>
@@ -722,7 +992,11 @@ function ActionChat({
             {move.actionRunId ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.defer" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <input type="hidden" name="reason" value="defer" />
                 <button type="submit" style={quietDecisionButtonStyle}>
                   Not right now
@@ -752,13 +1026,17 @@ function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
   );
 }
 
-// Suggested openers under the home composer — they post the store-level chat.message
-// intent (the same path the composer uses), so an empty thread still invites a real
-// question. Grounded and generic (never a fabricated claim); Jefe answers each.
-function StorePrompt({ message }: { message: string }) {
+function StorePrompt({
+  message,
+  conversationId,
+}: {
+  message: string;
+  conversationId?: string | null;
+}) {
   return (
     <Form method="post">
       <input type="hidden" name="intent" value="chat.message" />
+      <input type="hidden" name="conversationId" value={conversationId ?? ""} />
       <input type="hidden" name="message" value={message} />
       <ChipButton>{message}</ChipButton>
     </Form>
@@ -769,7 +1047,11 @@ function MoveHiddenFields({ move }: { move: PrimaryMove }) {
   return (
     <>
       <input type="hidden" name="actionRunId" value={move.actionRunId ?? ""} />
-      <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+      <input
+        type="hidden"
+        name="recommendationId"
+        value={move.recommendationId ?? ""}
+      />
     </>
   );
 }
@@ -782,100 +1064,13 @@ function ChipButton({ children }: { children: ReactNode }) {
   );
 }
 
-// useLayoutEffect on the client (runs before paint, so the open-at-latest scroll isn't a
-// visible jump), plain useEffect on the server (where layout effects don't run anyway).
-const useIsoLayoutEffect = typeof document === "undefined" ? useEffect : useLayoutEffect;
-
-// Keep the conversation anchored to its LATEST message: a chat should open at the most
-// recent exchange, not the oldest. On first mount it scrolls the bottom into view before
-// paint (no jump). When a new message arrives it follows only if the merchant is already
-// near the bottom — never yanking them away from history they've scrolled up to read.
-// `signal` is a value that changes whenever the thread does (its message count).
-function useStickToBottom(signal: number) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const initialisedRef = useRef(false);
-  useIsoLayoutEffect(() => {
-    const el = bottomRef.current;
-    if (!el) return;
-    if (!initialisedRef.current) {
-      initialisedRef.current = true;
-      el.scrollIntoView({ block: "end" });
-      return;
-    }
-    const nearBottom =
-      window.innerHeight + window.scrollY >= document.body.scrollHeight - 240;
-    if (nearBottom) el.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [signal]);
-  return bottomRef;
-}
-
-// The chat composer, shared by the home thread and the per-move zoom. A textarea (not a
-// single-line input) that auto-grows to its content up to a cap; Enter sends, Shift+Enter
-// inserts a newline, and Enter is ignored mid-IME-composition. Clears the draft ON SUBMIT
-// (not when the reply lands) — the FormData is already captured by the time onSubmit fires,
-// so the sent value is intact and the box empties immediately instead of sitting full
-// through "Thinking" (which read as "it didn't send"). The parent owns the draft state.
-function ChatComposer({
-  intent,
-  placeholder,
-  ariaLabel,
-  value,
-  onChange,
-  disabled,
-  hiddenFields,
+function StatusPill({
+  tone,
+  children,
 }: {
-  intent: string;
-  placeholder: string;
-  ariaLabel: string;
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-  hiddenFields?: ReactNode;
+  tone: "yellow" | "green";
+  children: ReactNode;
 }) {
-  const formRef = useRef<HTMLFormElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-  }, [value]);
-  return (
-    <Form
-      ref={formRef}
-      method="post"
-      style={composerFormStyle}
-      onSubmit={() => onChange("")}
-    >
-      <input type="hidden" name="intent" value={intent} />
-      {hiddenFields}
-      <textarea
-        ref={textareaRef}
-        name="message"
-        required
-        rows={1}
-        autoComplete="off"
-        aria-label={ariaLabel}
-        placeholder={placeholder}
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            if (value.trim()) formRef.current?.requestSubmit();
-          }
-        }}
-        style={composerTextareaStyle}
-        disabled={disabled}
-      />
-      <button type="submit" style={sendButtonStyle} disabled={disabled}>
-        Send
-      </button>
-    </Form>
-  );
-}
-
-function StatusPill({ tone, children }: { tone: "yellow" | "green"; children: ReactNode }) {
   const green = tone === "green";
   return (
     <span
@@ -946,9 +1141,18 @@ function buildPrimaryMove(input: {
     };
   }
 
-  const title = source?.title || input.suggestedAction?.headline || inProgress?.headline || "Review Jefe's next move";
-  const summary = source?.summary || input.suggestedAction?.headline || "Jefe has a move ready to discuss.";
-  const success = successSignalText(source?.successSignal ?? input.recommendation?.successSignal ?? null);
+  const title =
+    source?.title ||
+    input.suggestedAction?.headline ||
+    inProgress?.headline ||
+    "Review Jefe's next move";
+  const summary =
+    source?.summary ||
+    input.suggestedAction?.headline ||
+    "Jefe has a move ready to discuss.";
+  const success = successSignalText(
+    source?.successSignal ?? input.recommendation?.successSignal ?? null,
+  );
   if (inProgress && !input.suggestedAction) {
     return {
       title,
@@ -966,16 +1170,22 @@ function buildPrimaryMove(input: {
       statusTone: "green",
       approvedAt: inProgress.appliedAt,
       baselineSignal: inProgress.baselineSignal ?? null,
-      currentSignal: inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
+      currentSignal:
+        inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
     };
   }
 
   return {
     title,
     summary,
-    whyThisAction: source?.whyThisAction || input.recommendation?.whyThisAction || "",
+    whyThisAction:
+      source?.whyThisAction || input.recommendation?.whyThisAction || "",
     whyNow: source?.whyNow || input.recommendation?.whyNow || "",
-    successSignal: goalTitle(source?.primaryGoalId ?? input.recommendation?.primaryGoalId ?? null, input.goals) ?? success,
+    successSignal:
+      goalTitle(
+        source?.primaryGoalId ?? input.recommendation?.primaryGoalId ?? null,
+        input.goals,
+      ) ?? success,
     recommendationId: source?.id ?? input.recommendation?.id ?? null,
     recommendationRunId: source?.runId ?? input.recommendation?.runId ?? null,
     actionRunId: input.suggestedAction?.actionRunId ?? null,
@@ -1005,9 +1215,14 @@ function recommendationSource(recommendation: Recommendation) {
 }
 
 function baselineFromSuggested(action: SuggestedAction | null) {
-  const products = action?.keyNumbers?.find((item) => item.label === "Products")?.value;
-  const trapped = action?.keyNumbers?.find((item) => item.label === "Trapped capital")?.value;
-  if (products && trapped) return `${products} product${products === "1" ? "" : "s"} · ${trapped} tied up`;
+  const products = action?.keyNumbers?.find(
+    (item) => item.label === "Products",
+  )?.value;
+  const trapped = action?.keyNumbers?.find(
+    (item) => item.label === "Trapped capital",
+  )?.value;
+  if (products && trapped)
+    return `${products} product${products === "1" ? "" : "s"} · ${trapped} tied up`;
   return null;
 }
 
@@ -1019,8 +1234,10 @@ type SuccessSignalLike = {
 
 function successSignalText(signal: SuccessSignalLike) {
   if (!signal || typeof signal !== "object") return null;
-  const description = typeof signal.description === "string" ? signal.description : "";
-  const timeframe = typeof signal.timeframe === "string" ? signal.timeframe : "";
+  const description =
+    typeof signal.description === "string" ? signal.description : "";
+  const timeframe =
+    typeof signal.timeframe === "string" ? signal.timeframe : "";
   const target = typeof signal.target === "string" ? signal.target : "";
   return [description, target, timeframe].filter(Boolean).join(" · ") || null;
 }
@@ -1029,7 +1246,8 @@ function informativeSubtitle(summary: string, title: string) {
   const cleanSummary = summary.replace(/\s+/g, " ").trim();
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   if (!cleanSummary) return null;
-  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase()) return null;
+  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase())
+    return null;
   return cleanSummary;
 }
 
@@ -1043,8 +1261,14 @@ function goalTitle(goalId: string | null, goals: Goal[]) {
 // never the viewer's browser zone. Fixed instant + pinned zone ⇒ hydration-safe.
 // The current-day header label is separate: computed once in the loader
 // (computeHomeDateLabel) and passed as `todayLabel`, never read from the clock here.
-function formatShortDate(value: string | null | undefined, timeZone?: string | null) {
-  return formatDateInZone({ iso: value ?? null, timeZone: timeZone ?? undefined });
+function formatShortDate(
+  value: string | null | undefined,
+  timeZone?: string | null,
+) {
+  return formatDateInZone({
+    iso: value ?? null,
+    timeZone: timeZone ?? undefined,
+  });
 }
 
 function searchWith(search: string, updates: Record<string, string | null>) {
@@ -1072,65 +1296,6 @@ const shellStyle: CSSProperties = {
   margin: "0 auto",
   width: "100%",
 };
-// Widened when the conversation index is present, to fit the rail + the 760px thread.
-const shellWideStyle: CSSProperties = { ...shellStyle, maxWidth: 992 };
-const homeGridStyle: CSSProperties = {
-  display: "flex",
-  gap: 28,
-  alignItems: "flex-start",
-};
-const homeMainColStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  maxWidth: 760,
-  display: "flex",
-  flexDirection: "column",
-  gap: 40,
-};
-const indexRailStyle: CSSProperties = {
-  flex: "none",
-  width: 204,
-  position: "sticky",
-  top: 24,
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-};
-const indexHeadingStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 11,
-  fontWeight: 600,
-  padding: "0 8px 4px",
-};
-const indexListStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 1 };
-const indexEntryStyle: CSSProperties = {
-  alignItems: "flex-start",
-  background: "transparent",
-  border: 0,
-  borderRadius: 8,
-  cursor: "pointer",
-  display: "flex",
-  flexDirection: "column",
-  fontFamily: FONT.sans,
-  gap: 2,
-  padding: "8px 8px",
-  textAlign: "left",
-  width: "100%",
-};
-const indexEntryLabelStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 12.5,
-  lineHeight: 1.3,
-};
-const indexEntryMetaStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 11,
-};
-// The index is desktop wayfinding; on a narrow embedded viewport it would crowd the
-// thread, so hide it and let the conversation take the full width.
-const HOME_INDEX_RESPONSIVE_CSS =
-  "@media (max-width: 760px){.jefe-home-index{display:none}.jefe-home-grid{display:block}}";
 const chatShellStyle: CSSProperties = {
   maxWidth: 760,
   minHeight: "calc(100vh - 96px)",
@@ -1156,7 +1321,14 @@ const markStyle: CSSProperties = {
   justifyContent: "center",
   fontWeight: 800,
 };
-const smallMarkStyle: CSSProperties = { ...markStyle, width: 22, height: 22, borderRadius: 6, fontSize: 12, flex: "none" };
+const smallMarkStyle: CSSProperties = {
+  ...markStyle,
+  width: 22,
+  height: 22,
+  borderRadius: 6,
+  fontSize: 12,
+  flex: "none",
+};
 const logoMarkStyle: CSSProperties = {
   width: 32,
   height: 32,
@@ -1197,7 +1369,10 @@ const headlineStyle: CSSProperties = {
   margin: 0,
   letterSpacing: 0,
 };
-const headlineEmStyle: CSSProperties = { color: COLORS.navy, fontStyle: "italic" };
+const headlineEmStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontStyle: "italic",
+};
 const cardStyle: CSSProperties = {
   background: COLORS.card,
   border: `1px solid ${COLORS.border}`,
@@ -1208,30 +1383,12 @@ const cardStyle: CSSProperties = {
   gap: 22,
   padding: "clamp(24px, 3.5vw, 40px)",
 };
-const cardTopStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 20,
-};
 const summaryStyle: CSSProperties = {
   color: COLORS.body,
   fontSize: 16,
   lineHeight: 1.55,
   margin: 0,
   maxWidth: 760,
-};
-const primaryButtonStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  alignSelf: "flex-start",
-  background: COLORS.navy,
-  color: "#fff",
-  borderRadius: 8,
-  padding: "12px 22px",
-  fontSize: 14,
-  fontWeight: 700,
-  textDecoration: "none",
 };
 const pillStyle: CSSProperties = {
   alignItems: "center",
@@ -1243,6 +1400,14 @@ const pillStyle: CSSProperties = {
   fontWeight: 700,
   padding: "6px 14px",
   whiteSpace: "nowrap",
+};
+const footerLinkStyle: CSSProperties = {
+  color: COLORS.navy,
+  display: "block",
+  fontSize: 14.5,
+  fontWeight: 700,
+  textAlign: "right",
+  textDecoration: "none",
 };
 const chatTopStyle: CSSProperties = {
   display: "flex",
@@ -1267,13 +1432,16 @@ const chatSubtitleStyle: CSSProperties = {
   fontSize: 15.5,
   marginTop: 10,
 };
-const chatDividerStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
+const chatDividerStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+};
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
   display: "flex",
   flexDirection: "column",
   gap: 14,
-  padding: "24px 0",
+  minHeight: 320,
+  padding: "28px 0",
 };
 const messageRowStyle: CSSProperties = {
   display: "flex",
@@ -1313,28 +1481,6 @@ const thinkingStyle: CSSProperties = {
   lineHeight: 1.6,
   paddingTop: 1,
 };
-// Deliberately NOT an alarm colour. Jefe not getting to a message is a hiccup in a
-// conversation, not a store problem — dressing it in red would tell the merchant something
-// is wrong with their business.
-const replyFailedBubbleStyle: CSSProperties = {
-  ...assistantBubbleStyle,
-  alignItems: "flex-start",
-  color: COLORS.muted,
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 10,
-};
-const replyRetryButtonStyle: CSSProperties = {
-  background: "transparent",
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 999,
-  color: COLORS.ink,
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-  lineHeight: 1.2,
-  padding: "5px 12px",
-};
 const chatComposerWrapStyle: CSSProperties = {
   flex: "none",
   paddingTop: 16,
@@ -1343,35 +1489,112 @@ const conversationStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
 };
-const moveMessageStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 16,
-  boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
+const momentAnchorStyle: CSSProperties = {
+  display: "block",
+  height: 0,
+  overflow: "hidden",
+};
+const indexRailStyle: CSSProperties = {
+  borderBottom: `1px solid ${COLORS.hairline}`,
   display: "flex",
   flexDirection: "column",
-  gap: 12,
-  maxWidth: "86%",
-  padding: "18px 20px",
+  gap: 10,
+  padding: "14px 16px",
 };
-const moveMessageTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 17,
-  fontWeight: 700,
-  lineHeight: 1.3,
+const indexHeadingStyle: CSSProperties = {
+  ...monoStyle,
+  fontSize: 10,
 };
-const moveMessageSummaryStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 14.5,
-  lineHeight: 1.55,
-  margin: 0,
-};
-const moveMessageActionsStyle: CSSProperties = {
-  alignItems: "center",
+const indexListStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
-  gap: 14,
-  marginTop: 4,
+  gap: 8,
+};
+const indexEntryStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  color: COLORS.body,
+  cursor: "pointer",
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: FONT.sans,
+  gap: 2,
+  maxWidth: 220,
+  padding: "8px 10px",
+  textAlign: "left",
+};
+const indexEntryLabelStyle: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 700,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const indexEntryMetaStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 11,
+  fontWeight: 600,
+};
+
+const threadControlsStyle: CSSProperties = {
+  background: "rgba(255, 253, 250, 0.72)",
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  borderTop: `1px solid ${COLORS.hairline}`,
+  padding: "18px 16px",
+};
+const threadIdentityStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  minWidth: 180,
+};
+const emptyChatStyle: CSSProperties = {
+  alignItems: "center",
+  alignSelf: "center",
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  justifyContent: "center",
+  margin: "auto 0",
+  maxWidth: 430,
+  padding: "36px 24px",
+  textAlign: "center",
+};
+const emptyChatMarkStyle: CSSProperties = {
+  ...markStyle,
+  height: 38,
+  marginBottom: 4,
+  width: 38,
+};
+const updatesPopoverStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  maxHeight: 480,
+  maxWidth: 380,
+  minWidth: 320,
+  overflowY: "auto",
+  padding: 16,
+};
+const updatesPopoverHeaderStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+  padding: "2px 4px 14px",
+};
+const updateItemStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: 7,
+  padding: "14px 4px",
+};
+const updateActionLinkStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontSize: 13.5,
+  fontWeight: 700,
+  marginTop: 3,
+  textDecoration: "none",
 };
 const chipsStyle: CSSProperties = {
   display: "flex",
@@ -1411,17 +1634,6 @@ const composerInputStyle: CSSProperties = {
   outline: "none",
   padding: 0,
 };
-// The composer wrapper aligns Send to the BOTTOM so it stays put as the textarea grows.
-const composerFormStyle: CSSProperties = { ...composerStyle, alignItems: "flex-end" };
-const composerTextareaStyle: CSSProperties = {
-  ...composerInputStyle,
-  resize: "none",
-  overflowY: "auto",
-  maxHeight: 140,
-  lineHeight: 1.45,
-  paddingTop: 6,
-  paddingBottom: 6,
-};
 const sendButtonStyle: CSSProperties = {
   background: COLORS.navy,
   border: 0,
@@ -1433,6 +1645,14 @@ const sendButtonStyle: CSSProperties = {
   fontWeight: 700,
   padding: "10px 18px",
 };
+
+function sendButtonStateStyle(disabled: boolean): CSSProperties {
+  return {
+    ...sendButtonStyle,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+  };
+}
 const decisionRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",

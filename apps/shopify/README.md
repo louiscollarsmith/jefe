@@ -26,6 +26,17 @@ npm run config:link
 npm run dev
 ```
 
+Local PostgreSQL uses the PostgreSQL 16 pgvector image. If the named disposable
+container was created before this change, recreate it once (this deletes local
+development data only):
+
+```shell
+docker stop jefe-shopify-postgres
+docker rm -v jefe-shopify-postgres
+npm run db:up
+npm run setup
+```
+
 Use `DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"` for local development. The Shopify CLI will ask you to log in, connect an app, create a tunnel and install the app on a development store. Press `P` in the CLI session to open the embedded app.
 
 Use `npm run dev:split-worker` when you want the web server and Shopify import worker in separate processes while debugging first-install backfills or memory jobs.
@@ -45,6 +56,11 @@ LLM_ENABLED=true
 LLM_PROVIDER=gemini
 LLM_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=your_gemini_api_key_here
+MERCHANT_CONTEXT_V2_ENABLED=true
+MERCHANT_PASSIVE_MEMORY_ENABLED=true
+EPISODIC_EMBEDDING_ENABLED=true
+EPISODIC_EMBEDDING_MODEL=gemini-embedding-2
+EPISODIC_EMBEDDING_TIMEOUT_MS=5000
 ```
 
 Channel env vars are listed in `.env.example` and in the root `HANDOVER.md`.

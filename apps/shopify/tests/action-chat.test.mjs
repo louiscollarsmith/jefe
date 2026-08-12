@@ -15,6 +15,16 @@ const silentLogger = {
   warn() {},
   error() {},
 };
+const generalChatDecision = async () => ({
+  processed: true,
+  action: "general_chat",
+  candidates: [],
+});
+const commerceAnalysisDecision = async () => ({
+  processed: true,
+  action: "commerce_analysis",
+  candidates: [],
+});
 
 test("actionConversationTopic is stable per recommendation, falling back to action run", () => {
   assert.equal(
@@ -252,6 +262,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
     whyNow: "The stock has not sold.",
     message: `What are the two products? Customer name Jane Smith, owner@example.com, +44 7700 900123, ${fakeShopifyToken}.`,
     llmProvider,
+    messageDecisionProcessor: generalChatDecision,
   });
 
   assert.equal(result.ok, true);
@@ -321,6 +332,7 @@ test("action chat plans and executes commerce calculations before answering", as
     actionRunId: "run-1",
     message: "Can you quantify the predicted loss of revenue?",
     llmProvider,
+    messageDecisionProcessor: commerceAnalysisDecision,
   });
 
   assert.equal(result.ok, true);
@@ -369,6 +381,7 @@ test("action chat rejects invalid calculation plans and still answers from conte
     actionRunId: "run-1",
     message: "Can you quantify the predicted loss of revenue?",
     llmProvider,
+    messageDecisionProcessor: commerceAnalysisDecision,
     logger: silentLogger,
   });
 
@@ -437,6 +450,7 @@ test("action chat gives an opinionated replenishment quantity when commerce data
     actionRunId: "run-1",
     message: "How much should I purchase of each?",
     llmProvider,
+    messageDecisionProcessor: commerceAnalysisDecision,
     logger: silentLogger,
   });
 

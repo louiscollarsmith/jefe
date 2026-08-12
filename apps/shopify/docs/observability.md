@@ -126,6 +126,12 @@ traffic to an instance — that cannot do real work. Liveness (`/health`) and
 readiness (`/ready`) are deliberately split so a transient blip degrades
 readiness without triggering a liveness restart loop.
 
+The health payload also includes `checks.episodicEmbedding`: whether embeddings
+are configured, the model, recent provider failure count/reason, indexing counts
+by state and up to five recent failed episode IDs/reason codes. It never exposes
+conversation text, embedding values or prompt content; lexical retrieval remains
+available when embedding health is degraded.
+
 ## Correlation IDs
 
 `app/lib/observability/context.server.js` provides an `AsyncLocalStorage`-based
@@ -134,6 +140,7 @@ context. Anything run inside `runWithContext(bindings, fn)` has those bindings
 line the logger emits within that async call tree — no id argument threading.
 
 Established today at:
+
 - **Background jobs** — each claimed backfill/memory/insight/goal/plan job runs
   inside a context with a fresh `correlationId` + `jobId` + `shopDomain`, so all
   of that job run's logs (including the memory rebuild and any LLM calls it makes)
@@ -152,6 +159,7 @@ per-request web context (which needs React Router middleware), are follow-ups.
 a Slack-compatible incoming webhook (`ALERT_WEBHOOK_URL`) so failures reach a
 human, not just the log stream. It is wired into the default logger's `onError`
 hook. Properties:
+
 - **Disabled unless `ALERT_WEBHOOK_URL` is set** (a no-op otherwise).
 - **Never throws, never blocks** — the POST is fire-and-forget and swallows
   errors, so alerting can't break a request or a log call.
@@ -166,7 +174,7 @@ hook. Properties:
   red build reaches Slack, not just email.
 - **Uptime (Better Stack) → #jefe-slack.** An external monitor pings the app and
   pages Slack on downtime — the outside-in check the internal signals can't give.
-- **Sentry → #jefe-slack** via Better Stack's Sentry integration (see *Sentry*
+- **Sentry → #jefe-slack** via Better Stack's Sentry integration (see _Sentry_
   above).
 - **Ops panel** (`admin.mynamejefe.com`, `apps/ops`) reads the reliability +
   economics signals from the DB for a human-driven view alongside the push alerts.

@@ -807,6 +807,7 @@ export async function processMerchantGoalsDocument(prisma, input) {
         evidenceSourceType: "merchant_goals",
         evidenceSourceReference: `goals_document:${document.fileName}`,
         metadata: { fileName: document.fileName, processorOutput: parsed.output },
+        allowRetractedSuccessor: true,
         precedence:
           change.definition.kind === "policy"
             ? BELIEF_PRECEDENCE.houseRule

@@ -13,12 +13,26 @@ import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
 import { getWebhookHealth } from "../lib/observability/webhook-health.server";
 import { getLlmProviderHealth } from "../lib/observability/llm-provider-health.server";
 import { getInboundEmailHealth } from "../lib/email/inbound/health.server.js";
+import { getEpisodicEmbeddingConfig } from "../lib/llm/config.server.js";
+import {
+  getEmbeddingHealth,
+  getEpisodeIndexHealth,
+} from "../lib/observability/embedding-health.server.js";
 
 export const loader = async () => {
   const [database, bootstrapJobs] = await Promise.all([
     checkDatabaseHealth(db),
     getBootstrapJobHealth(db),
   ]);
+  const episodeIndex =
+    database.status === "ok"
+      ? await getEpisodeIndexHealth(db).catch((error) => {
+          logger.warn("Health check: episode index probe failed", {
+            err: error,
+          });
+          return { status: "unavailable", counts: {}, recentFailures: [] };
+        })
+      : { status: "unavailable", counts: {}, recentFailures: [] };
 
   const payload = {
     ...buildHealthPayload(process.env),
@@ -31,6 +45,10 @@ export const loader = async () => {
       webhooks: getWebhookHealth(),
       inboundEmail: getInboundEmailHealth(),
       llmFallback: getLlmProviderHealth(),
+      episodicEmbedding: {
+        ...getEmbeddingHealth(getEpisodicEmbeddingConfig()),
+        index: episodeIndex,
+      },
       ...buildDependencyHealth(process.env),
     },
     latency: getLatencyPercentiles(),
