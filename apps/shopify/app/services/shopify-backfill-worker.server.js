@@ -76,6 +76,7 @@ import {
   backfillMerchantEpisodes,
   processMerchantEpisodeBatch,
 } from "../lib/merchant-memory/episode-processor.server.js";
+import { ensureGapDrivenOpenQuestions } from "../lib/merchant-memory/conversation.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -832,12 +833,38 @@ async function runBackfillJob(prisma, job, options) {
         runId: stringValue(payload.runId),
         logger: context.logger,
       });
-    case EPISODE_PROCESS_JOB_TYPE:
-      return processMerchantEpisodeBatch(prisma, {
+    case EPISODE_PROCESS_JOB_TYPE: {
+      const episode = await processMerchantEpisodeBatch(prisma, {
         merchantId: context.merchantId,
         shopId: context.shopId,
         logger: context.logger,
       });
+      // Keep the gaps Jefe can ASK about in step with what it now knows.
+      //
+      // These are the questions only the merchant can answer — the big one being cost per
+      // item, without which Jefe cannot talk about margin at all. They were generated in
+      // exactly one place: opening the Merchant Memory view. So a merchant who only ever
+      // used the chat never had them created, and the retriever that feeds the chat had
+      // nothing to find. The most useful thing Jefe could say was conditional on visiting
+      // the page least likely to be visited.
+      //
+      // Here instead: this job is already enqueued after merchant messages and already
+      // coalesced, so it costs nothing extra and stays off the home loader's hot path.
+      // Best-effort — a failure to refresh a question must never fail episode processing.
+      try {
+        await ensureGapDrivenOpenQuestions(prisma, {
+          merchantId: context.merchantId,
+          shopId: context.shopId,
+        });
+      } catch (error) {
+        context.logger?.warn?.("Gap-driven open questions could not be refreshed", {
+          merchantId: context.merchantId,
+          shopId: context.shopId,
+          error: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+      return episode;
+    }
     case EPISODE_BACKFILL_JOB_TYPE:
       return backfillMerchantEpisodes(prisma, {
         merchantId: context.merchantId,

@@ -1387,7 +1387,7 @@ async function ensureInitialOpenQuestions(prisma, input) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null }} input
  */
-async function ensureGapDrivenOpenQuestions(prisma, input) {
+export async function ensureGapDrivenOpenQuestions(prisma, input) {
   const beliefs = await getBeliefsForMerchant(prisma, {
     merchantId: input.merchantId,
   });
