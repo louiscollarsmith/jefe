@@ -246,6 +246,41 @@ action type and *resolving* it must never be separated by more than one commit.
 a cap check that fails closed on a missing field) lands **before or with** the first
 new registration, not after. Routed to chat 10 as contract owner.
 
+### Newly load-bearing: the engine computes *why* it couldn't act, then discards it
+
+Matt ruled today (relayed via the roster lane) that **eligibility is a RUNTIME decision,
+not a settings-time one**: a merchant on `autonomous` gets Jefe doing what it safely can
+and **raising what it can't, with actionable steps, in the chat** — not a greyed dial or
+an eligibility grid in Settings.
+
+That makes an existing throwaway load-bearing. The propose path computes three distinct
+"why not autonomous" signals and keeps only the first:
+
+| Signal | Produced by | Fate |
+|---|---|---|
+| `["not_reversible", "over_blast_radius_cap", "below_confidence_threshold"]` | `computeClearanceAutoEligibility().reasons` | ✅ persisted in `eligibility` Json |
+| `"autonomous_not_eligible_degraded"` | `resolveAutonomyMode().reason` | ❌ **discarded** |
+| `["over_auto_max_trapped_capital", …]` + `"exceeds_autonomy_policy"` | `applyAutonomyPolicy().policyViolations` | ❌ **discarded** |
+
+`proposeActionFromIntent` returns `autonomy` to `maybeEmitPlanAction`, which logs only
+`status` and `runId`. Two of the three signals evaporate at the moment they are computed.
+
+Under the old settings-time model this was harmless plumbing — the dial carried the
+story. Under the runtime model **this is exactly the payload the raise needs**, and
+two-thirds of it is thrown away. Cheap to fix (persist `autonomy.reason` +
+`policyViolations` alongside the already-persisted `eligibility`), and it should land
+with the spine generalisation rather than after, since §6.2 means `eligibility` is
+currently computed by the *clearance* function whatever the action type.
+
+⚠️ **Contract mismatch to ratify (chat 10):** the roster will offer **two** modes
+(`approve` / `autonomous`) per live type. The engine stores **three** — `ACTION_MODES =
+["recommend", "approve_execute", "autonomous"]`, with `resolveAutonomyMode` branching on
+`recommend` and `DEFAULT_ACTION_MODE = "approve_execute"`. If nothing ever writes
+`recommend`, that branch goes dead and the 3-mode model documented across the schema
+comment, the adapter and `context/11_actions_and_autonomy.md` is stale. Either
+`recommend` is deliberately retired, or it stays reachable somewhere. Not this lane's
+call — flagged.
+
 ## 7. Recommended first two
 
 **1 · `product_status_change` — the freebie, and the forcing function.**
@@ -309,8 +344,14 @@ Flags stay off. Nothing goes live without a separate explicit call.
   carries one hard promise and one soft commitment — both recorded in §4. Standing loop:
   each registration names the scope it closes, chat 6 drafts the copy, Matt approves the
   publish.
-- **Settings/autonomy roster** — told what a definition provides, and warned about rows
-  that are registered-but-not-live, per-row scope gating, and caps that aren't money.
+- **Settings/autonomy roster** — replied 2026-08-12 relaying Matt's runtime-eligibility
+  ruling, which retires their earlier reversibility/eligibility-flag ask and moots the
+  caps question. Their consumer contract is now firm: `listActionTypes()` +
+  design copy keyed by `actionType`, two modes per live type, no eligibility matrix, a
+  new live type = a new row automatically. Consequences for this lane recorded in §6.
+  **Generalising `getScopeGatedOpportunity` is needed regardless of their open nav
+  question** — under the runtime model a missing scope is something Jefe raises in chat,
+  not a greyed settings row, so it is this lane's work either way.
 - **Memory/ontology lane** — deliberately not contacted; belief questions routed to
   chat 10 per the brief. §3 means this lane is not blocked on them.
 - **Not touched:** `app/routes/app._index.tsx`, `app/components/daily-home.tsx`.
