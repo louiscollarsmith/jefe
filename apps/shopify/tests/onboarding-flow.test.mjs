@@ -67,8 +67,13 @@ test("onboarding exposes Connect, Context, Insight, Action and terminal APP", ()
   assert.match(fastOnboardingSource, /Something jumped out/);
   assert.match(fastOnboardingSource, /Here’s what I’d do/);
   assert.match(fastOnboardingSource, /Here’s what I’m on/);
-  assert.match(fastOnboardingSource, /Skip setup — go to Jefe/);
+  assert.doesNotMatch(fastOnboardingSource, /Skip setup — go to Jefe/);
   assert.doesNotMatch(fastOnboardingSource, /<header>|jf-app-menu|jf-wordmark/);
+});
+
+test("fast onboarding does not render dev-only stage jump controls", () => {
+  assert.doesNotMatch(fastOnboardingSource, /jf-dev-states/);
+  assert.doesNotMatch(jefeStylesSource, /\.jf-dev-states/);
 });
 
 test("accepting the plan shows the home loading shell while opening Jefe", () => {
