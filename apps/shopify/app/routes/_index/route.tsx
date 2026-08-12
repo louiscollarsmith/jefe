@@ -190,9 +190,10 @@ export default function Index() {
             </span>
           </div>
           <div className="EA-scopes">
-            He reads your orders, products, customers, inventory and locations, and updates
-            products — for example, to mark down slow-moving stock. He never emails your
-            customers, and every change is previewed first and reversible after.
+            He reads your orders, products, customers, inventory and locations, and can act
+            on your store on your behalf — today that&rsquo;s product changes, like marking
+            down slow-moving stock. He never emails your customers, and every change is
+            previewed first and reversible after.
           </div>
         </div>
 
