@@ -168,6 +168,7 @@ import {
 } from "../lib/merchant-memory/conversation.server.js";
 import {
   getDailyChatExperience,
+  renameGeneralChat,
   retryLastGeneralChatReply,
   sendGeneralChatMessage,
   startNewGeneralChat,
@@ -631,6 +632,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         conversation: conversation.id,
       }),
     );
+  }
+
+  if (intent === "chat.rename") {
+    const conversationId = String(formData.get("conversationId") ?? "");
+    const result = await renameGeneralChat(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      title: String(formData.get("title") ?? ""),
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant chat rename rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        conversationId,
+      });
+      return { ok: false, error: result.error, intent };
+    }
+    // The title itself is merchant-authored free text — log that a rename happened, never
+    // what they typed.
+    actionLog.info("merchant renamed a chat", {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      cleared: result.title === null,
+    });
+    // Data, not a redirect: the rename posts through a fetcher, so the thread must not
+    // navigate and lose the merchant's place in it.
+    return { ok: true, intent, title: result.title };
   }
 
   if (intent === "chat.message") {

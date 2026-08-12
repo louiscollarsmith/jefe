@@ -439,6 +439,62 @@ function lowercaseFirst(value) {
   return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
 }
 
+/** The longest title we store. Matches `conversationTitleFromMessage`'s cap so a merchant-typed
+ * name and an auto-derived one can never render at different lengths. */
+export const CHAT_TITLE_MAX_LENGTH = 72;
+
+/**
+ * Rename a chat to whatever the merchant calls it.
+ *
+ * The auto-title (first merchant message) is a guess, and it is only ever written when
+ * `conversation.title` is still empty (episodic-memory.server.js) — so a name set here is
+ * permanent and will not be quietly overwritten by the next message.
+ *
+ * An empty/whitespace title RESETS to null rather than storing "", which hands the thread back
+ * to the auto-title — clearing the box is an undo, not a way to end up with a nameless chat.
+ *
+ * Tenant-scoped by merchant + shop + surface, exactly like `getDailyChatExperience` reads them,
+ * so a guessed conversation id from another store renames nothing.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; conversationId: string; title: string | null }} input
+ * @returns {Promise<{ ok: true; title: string | null } | { ok: false; error: string }>}
+ */
+export async function renameGeneralChat(prisma, input) {
+  const conversationId = String(input.conversationId ?? "").trim();
+  if (!conversationId) return { ok: false, error: "That chat could not be found." };
+
+  // Strip control characters/markup the same way every other merchant-authored string is
+  // handled, then collapse whitespace so a pasted multi-line title stays one line.
+  const clean = sanitizeMemoryText(input.title ?? "").replace(/\s+/g, " ").trim();
+  const title = clean
+    ? clean.length > CHAT_TITLE_MAX_LENGTH
+      ? `${clean.slice(0, CHAT_TITLE_MAX_LENGTH - 1).trimEnd()}…`
+      : clean
+    : null;
+
+  const conversation = await prisma.merchantMemoryConversation.findFirst({
+    where: {
+      id: conversationId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      surface: "app",
+      OR: [
+        { conversationType: "general" },
+        { conversationType: "legacy", topic: "memory" },
+      ],
+    },
+    select: { id: true },
+  });
+  if (!conversation) return { ok: false, error: "That chat could not be found." };
+
+  await prisma.merchantMemoryConversation.update({
+    where: { id: conversation.id },
+    data: { title },
+  });
+  return { ok: true, title };
+}
+
 /** @param {any} prisma @param {{ merchantId: string; shopId: string }} input */
 export async function startNewGeneralChat(prisma, input) {
   return createMerchantConversation(prisma, {
