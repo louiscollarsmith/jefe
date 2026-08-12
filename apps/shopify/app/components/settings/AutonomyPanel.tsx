@@ -144,7 +144,7 @@ export function AutonomyPanel({ actionModes }: { actionModes?: Record<string, st
         );
       })}
       <p style={{ margin: "16px 0 0", fontFamily: SANS, fontSize: 12.5, lineHeight: 1.55, color: COLORS.muted, borderLeft: `2px solid ${COLORS.navy}`, paddingLeft: 12 }}>
-        Autonomous still has limits — nothing&apos;s sold below what it cost you, and every action is reversible.
+        On Autonomous, Jefe does what it can safely do on its own and checks with you on anything it can&apos;t — everything it does shows up in your chat, and stays reversible.
       </p>
     </div>
   );
