@@ -110,12 +110,16 @@ export function enforceBlastRadiusCap(preview, caps = DEFAULT_CLEARANCE_CAPS) {
   // missing `variantCount` used to sail through the blast-radius cap unmeasured — which is
   // exactly the shape a FOREIGN preview has (a product-status preview carries `productCount`).
   // An uncheckable cap must never read as a passed cap.
-  for (const [field, limit] of [["variantCount", caps.maxVariants], ["maxDiscountPercent", caps.maxDiscountPercent]]) {
-    const actual = Number(preview?.[field]);
+  const checks = [
+    { field: "variantCount", cap: "maxVariants", limit: caps.maxVariants, value: preview?.variantCount },
+    { field: "maxDiscountPercent", cap: "maxDiscountPercent", limit: caps.maxDiscountPercent, value: preview?.maxDiscountPercent },
+  ];
+  for (const { field, cap, limit, value } of checks) {
+    const actual = Number(value);
     if (!Number.isFinite(actual)) {
-      violations.push({ cap: field, limit, actual: preview?.[field] ?? null, reason: "uncheckable" });
+      violations.push({ cap: field, limit, actual: value ?? null, reason: "uncheckable" });
     } else if (actual > Number(limit)) {
-      violations.push({ cap: field === "variantCount" ? "maxVariants" : "maxDiscountPercent", limit, actual });
+      violations.push({ cap, limit, actual });
     }
   }
   return { withinCap: violations.length === 0, violations };
