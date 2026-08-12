@@ -26,9 +26,17 @@ production order was mapped end-to-end.
 | `src/quiver-schema.mjs` — the Redshift contract | built, verified live |
 | `src/map.mjs` — Quiver rows → canonical records | built, 20 tests, verified on a real row |
 | `src/safety.mjs` — write guards | built |
+| `src/load.mjs` — canonical rows → corpus database | built, 9 tests, idempotent |
 | Metabase/Redshift reader | not built — access now available |
-| Loader (canonical rows → corpus database) | not built — design acked by architecture 2026-08-12 |
 | Run + capture across merchants | not built |
+
+**Test merchants chosen** (real, from the warehouse) — deliberately a pair, because one
+merchant can only catch "wrongly answers" *or* "wrongly refuses", never both:
+
+| merchant | id | orders (12m) | currencies | proves |
+| --- | ---: | ---: | ---: | --- |
+| The Fresh Fish Shop | 967 | 1,669 | 1 | money beliefs fire normally |
+| House of Spells | 988 | 931 | 20 | money beliefs must refuse |
 
 ## What is in there (measured 2026-08-12)
 
@@ -146,6 +154,10 @@ The remaining guards are belt-and-braces on top of that, all fail-closed:
    the corpus database a corpus shop is unreachable from tenant resolution, which
    uses `{ platform: "shopify", shopDomain }`. No session and no token, so **the
    action layer physically cannot write to anyone's store from a corpus shop.**
+   Enforced at one point — `loadCorpusRows` asserts it and is the only exported
+   write entry — and that assertion is tested directly rather than only via
+   `ensureCorpusShop`. ⚠️ A write path that does not come through `loadCorpusRows`
+   is **not** covered by it and needs its own assertion and test.
 3. **Customer emails are hashed** with a required ≥16-char salt, matching the app's
    existing `CustomerIdentity.emailHash` posture.
 
