@@ -2,6 +2,10 @@
 
 ## 2026-08-12
 
+### Changed
+
+- **Merchants who sell in more than one currency now get their numbers back.** Jefe previously added a store's currencies together and printed the result with no currency on it, then — after a first fix — refused to answer at all. Both were wrong: over half of real stores sell in several currencies, and every one of them has a main currency they think in. Jefe now answers in each currency separately, leads with the main one and how much of the business it represents, and says plainly that the figures are not added together and why. Asking for revenue in euros, or a breakdown by market, is now a normal question with a normal answer rather than something Jefe blocks. `app/lib/merchant-memory/{commerce-calculations,commerce-analyst}.server.js`.
+
 ### Added
 
 - **Jefe can now load a real merchant's trading history into an isolated simulation.** The Quiver corpus loader turns mapped warehouse orders into the same commerce records a connected store produces, so Merchant Memory, insights, goals and plan all run against a real business without a single change to how they work. Simulated stores are kept physically apart from real ones — their own database, a store address that cannot resolve, and no store connection at all, so nothing Jefe does in simulation can reach anyone's shop. Re-loading the same merchant updates rather than duplicates, and orders whose money does not make sense are held back and counted rather than quietly averaged into what Jefe believes. `tools/quiver-corpus/src/load.mjs`.

@@ -279,3 +279,97 @@ function inWindow(value, filter) {
   if (filter.lte && time > filter.lte.getTime()) return false;
   return true;
 }
+
+test("a multi-currency money measure answers per currency instead of refusing", async () => {
+  const packet = await executeCommerceCalculations(createCommercePrisma({ mixedCurrency: true }), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: NOW,
+    requests: [{ id: "revenue", kind: "aggregate", measure: "revenue", window: { days: 60 } }],
+  });
+
+  const result = packet.results[0];
+  assert.equal(result.ok, true);
+
+  // Each figure is money in a STATED currency — which needs no FX. This is the
+  // answer, not a consolation prize: 113 of 222 real merchants are multi-currency
+  // and every one of them has a dominant currency, so refusing outright withholds
+  // an answer that was available (founder ruling, 2026-08-12).
+  const byCurrency = Object.fromEntries(result.rows.map((row) => [row.dimensions.currency, row.value]));
+  assert.deepEqual(byCurrency, { GBP: 200, USD: 80 });
+  assert.deepEqual(result.dataQuality.currencies, ["GBP", "USD"]);
+
+  // The lead, so a caller can say "£200, 71% of value" rather than print every row.
+  assert.equal(result.dataQuality.dominantCurrency, "GBP");
+  // 200/280 — value-weighted, not row-weighted. Row-weighting would give 0.5 here.
+  assert.equal(result.dataQuality.dominantCurrencyShare, 0.7143);
+
+  // What must NOT happen: a cross-currency total. 200+80=280 is not money.
+  assert.equal(result.currency, null);
+  assert.equal(result.totals.value ?? null, null);
+  assert.equal(result.dataQuality.moneyUnavailable, "multi_currency_no_conversion");
+  assert.doesNotMatch(JSON.stringify(result.totals), /280/);
+
+  // The refusal of a TOTAL carries the offer of the breakdown — never a dead end.
+  assert.match(result.caveats.join(" "), /reported separately/i);
+  assert.match(result.caveats.join(" "), /GBP is the largest at 71%/);
+});
+
+test("a single-currency store's result shape is unchanged by currency bucketing", async () => {
+  const packet = await executeCommerceCalculations(createCommercePrisma(), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: NOW,
+    requests: [{ id: "revenue", kind: "aggregate", measure: "revenue", window: { days: 60 } }],
+  });
+
+  const result = packet.results[0];
+  // Money measures bucket by currency internally, but the dimension is stripped
+  // back out when there is only one — otherwise 109 of 222 merchants would get a
+  // changed row shape to fix a problem they do not have.
+  assert.equal(result.rows.every((row) => row.dimensions.currency === undefined), true);
+  assert.equal(result.currency, "GBP");
+  assert.equal(result.totals.value, 280);
+  assert.equal(result.dataQuality.moneyUnavailable, undefined);
+});
+
+test("currency is a requestable dimension, so per-market answers are first-class", async () => {
+  const packet = await executeCommerceCalculations(createCommercePrisma({ mixedCurrency: true }), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: NOW,
+    requests: [{
+      id: "by_currency",
+      kind: "breakdown",
+      measure: "revenue",
+      dimensions: ["currency"],
+      window: { days: 60 },
+    }],
+  });
+
+  const result = packet.results[0];
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.dimensions, ["currency"]);
+  assert.deepEqual(
+    Object.fromEntries(result.rows.map((row) => [row.label, row.value])),
+    { GBP: 200, USD: 80 },
+  );
+});
+
+test("non-money measures are untouched by currency bucketing", async () => {
+  const packet = await executeCommerceCalculations(createCommercePrisma({ mixedCurrency: true }), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: NOW,
+    requests: [{ id: "units", kind: "aggregate", measure: "units_sold", window: { days: 60 } }],
+  });
+
+  const result = packet.results[0];
+  // Units are countable across currencies; splitting them would be noise, and
+  // withholding them would be worse — they are what stays answerable when money
+  // does not.
+  assert.equal(result.rows.every((row) => row.dimensions.currency === undefined), true);
+  assert.equal(result.dataQuality.moneyUnavailable, undefined);
+  // units_sold totals under `value` (totalsFromRows), not `unitsSold`.
+  assert.ok(result.totals.value > 0);
+});

@@ -175,7 +175,7 @@ test("commerce analyst detects replenishment and quantitative commerce questions
   assert.equal(shouldAttemptCommerceAnalysis("Why did you recommend this move?"), false);
 });
 
-function createTwoProductAnalystFixture() {
+function createTwoProductAnalystFixture({ mixedCurrency = false } = {}) {
   const now = new Date("2026-08-11T12:00:00.000Z");
   const products = [
     { id: "p1", merchantId: "m1", shopId: "s1", title: "Picnic Xinomavro", vendor: "Picnic", productType: "Wine", status: "ACTIVE" },
@@ -187,7 +187,7 @@ function createTwoProductAnalystFixture() {
   ];
   const orders = [
     { id: "o1", merchantId: "m1", shopId: "s1", currency: "GBP", totalPrice: 180, totalDiscount: 0, processedAt: new Date(now.getTime() - 10 * 86400000), financialStatus: "paid", sourceName: "web", shippingCountry: "GB" },
-    { id: "o2", merchantId: "m1", shopId: "s1", currency: "GBP", totalPrice: 144, totalDiscount: 0, processedAt: new Date(now.getTime() - 8 * 86400000), financialStatus: "paid", sourceName: "web", shippingCountry: "GB" },
+    { id: "o2", merchantId: "m1", shopId: "s1", currency: mixedCurrency ? "EUR" : "GBP", totalPrice: 144, totalDiscount: 0, processedAt: new Date(now.getTime() - 8 * 86400000), financialStatus: "paid", sourceName: "web", shippingCountry: "GB" },
   ];
   const orderById = new Map(orders.map((order) => [order.id, order]));
   const orderLineItems = [
@@ -231,3 +231,52 @@ function createTwoProductAnalystFixture() {
     },
   };
 }
+
+test("a multi-currency revenue question is answered per currency, led by the dominant one", async () => {
+  const { prisma, actionContext } = createTwoProductAnalystFixture({ mixedCurrency: true });
+  const provider = {
+    provider: "mock",
+    model: "mock-commerce-analyst",
+    enabled: true,
+    generateStructuredJson: async (request) => {
+      if (request.prompt.includes("commerceAnalystToolCatalog")) {
+        return {
+          json: {
+            toolCalls: [{
+              id: "revenue",
+              kind: "commerce_calculation",
+              request: { id: "revenue", kind: "aggregate", measure: "revenue", window: { days: 30, label: "trailing_30d" } },
+            }],
+          },
+          usage: {},
+        };
+      }
+      // Force the deterministic fallback renderer, which is the surface under test.
+      return { json: {}, usage: {} };
+    },
+  };
+
+  const answer = await answerCommerceQuestion(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    message: "what is my revenue",
+    actionContext,
+    provider,
+    logger: silentLogger,
+  });
+
+  const reply = String(answer?.reply ?? "");
+
+  // Each currency reported in its own currency — no FX needed, nothing invented.
+  assert.match(reply, /GBP 180/);
+  assert.match(reply, /EUR 144/);
+  // The dominant currency leads and says how much of the business it represents.
+  assert.match(reply, /56% of value/); // 180/324
+  assert.ok(reply.indexOf("GBP 180") < reply.indexOf("EUR 144"), "dominant currency must lead");
+
+  // The limitation is stated ALONGSIDE the answer, never instead of it — and the
+  // cross-currency sum (180+144=324) must appear nowhere.
+  assert.match(reply, /not added together/i);
+  assert.doesNotMatch(reply, /324/);
+  assert.doesNotMatch(reply, /unavailable/i);
+});
