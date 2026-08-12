@@ -186,12 +186,13 @@ test("withFallbackProvider does not hide structured-output validation errors", a
   );
 });
 
-test("isLlmFallbackError: auth/retired/rate-limit/5xx degrade to fallback; deterministic errors do not", () => {
+test("isLlmFallbackError: auth/retired/request-size/rate-limit/5xx degrade to fallback; deterministic errors do not", () => {
   const withStatus = (s) =>
     Object.assign(new Error(`request failed with HTTP ${s}.`), { status: s });
   // 401/403 (bad/expired key — the most likely real Groq outage), 404 (retired
-  // model), 429/498 (rate-limit/capacity), 5xx (server) all fall back.
-  for (const s of [401, 403, 404, 429, 498, 500, 503]) {
+  // model), 413 (provider request-envelope limit), 429/498
+  // (rate-limit/capacity), 5xx (server) all fall back.
+  for (const s of [401, 403, 404, 413, 429, 498, 500, 503]) {
     assert.equal(
       isLlmFallbackError(withStatus(s)),
       true,

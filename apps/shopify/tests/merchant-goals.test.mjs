@@ -361,7 +361,11 @@ test("goal generation is wired to the async worker and not browser page load", (
   assert.equal(MERCHANT_GOALS_JOB_TYPE, "merchant_goals_generate");
   assert.match(workerSource, /MERCHANT_GOALS_JOB_TYPE/);
   assert.match(workerSource, /generateMerchantGoals/);
-  assert.match(routeSource, /ensureMerchantGoalsQueued/);
+  assert.match(routeSource, /intent === "goals\.retry"[\s\S]*ensureMerchantGoalsQueued/);
+  assert.doesNotMatch(
+    routeSource,
+    /activeStep === "goals"[\s\S]{0,240}ensureMerchantGoalsQueued/,
+  );
   assert.doesNotMatch(routeSource, /generateMerchantGoals\(/);
 });
 
