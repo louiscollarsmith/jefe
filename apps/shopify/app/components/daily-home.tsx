@@ -44,8 +44,8 @@ const FONT = {
 type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
 // A proactive heads-up Jefe posts into the thread from a standing condition (a run-out
 // approaching, refunds trending). Re-rendered from current state each load — not stored —
-// so it stays honest and can't go stale. Kept deliberately small (see the cap in
-// StoreConversation): the chat is not a notification feed.
+// so it stays honest and can't go stale. Shown as a feed (uncapped in the render); the
+// cadence ceiling that keeps it from becoming noise lives on the outbound-send path.
 type HeadsUp = { id: string; kind: string; text: string };
 type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
 type EmailBrief = {
@@ -206,17 +206,19 @@ function StoreConversation({
 
   const history = conversation?.messages ?? [];
   const hasMove = move.state !== "empty";
-  // Budget: at most 2 proactive heads-ups — the chat is a conversation, not a
-  // notification feed. These are Horizon's top-ranked standing conditions; dedup is
-  // inherent because they're re-derived from state each load, never stored.
-  const shownHeadsUps = headsUps.slice(0, 2);
+  // Proactive heads-ups (run-outs, refunds) render as a feed here — NOT capped: the
+  // merchant wants to see whatever's genuinely real (Matt's call). The ~5/day *cadence*
+  // ceiling is a different mechanism that lives on the outbound/proactive-send path
+  // (notifications/Slack), not this live render, and is a ceiling-not-target — Jefe says
+  // less when less is real, never filler. Dedup is inherent: they're re-derived from
+  // state each load, never stored.
   // The grounded fallback line shows ONLY when there is genuinely nothing real to say —
   // no move, no reports, no history, no heads-up. Silence-with-a-real-line, never filler.
   const showQuietLine =
     !hasMove &&
     outcomes.length === 0 &&
     history.length === 0 &&
-    shownHeadsUps.length === 0;
+    headsUps.length === 0;
 
   return (
     <section style={conversationStyle}>
@@ -231,7 +233,7 @@ function StoreConversation({
             {outcomeMessageText(action)}
           </MessageRow>
         ))}
-        {shownHeadsUps.map((headsUp) => (
+        {headsUps.map((headsUp) => (
           <MessageRow key={headsUp.id} from="assistant">
             {headsUp.text}
           </MessageRow>
