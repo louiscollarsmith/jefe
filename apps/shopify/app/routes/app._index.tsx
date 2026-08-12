@@ -89,11 +89,22 @@ import {
   readFurthestStep,
   onboardingStepIndex,
 } from "../lib/onboarding/steps";
-import { recordFurthestOnboardingStep, skipOnboarding } from "../services/onboarding.server";
+import {
+  recordFurthestOnboardingStep,
+  skipOnboarding,
+} from "../services/onboarding.server";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
-import { getActiveSuggestedAction, getExecutedActionFeed, rejectAction, reviseAction } from "../lib/actions/action-resolution.server";
-import { getActionMode, setActionMode } from "../lib/actions/action-autonomy-policy.server";
+import {
+  getActiveSuggestedAction,
+  getExecutedActionFeed,
+  rejectAction,
+  reviseAction,
+} from "../lib/actions/action-resolution.server";
+import {
+  getActionMode,
+  setActionMode,
+} from "../lib/actions/action-autonomy-policy.server";
 import { listActionTypes } from "../lib/actions/action-intent.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
@@ -142,12 +153,16 @@ import {
   CONVERSATION_TOPICS,
   addActionChatNote,
   getActionChatThread,
-  getDailyChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
   sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
+import {
+  getDailyChatExperience,
+  sendGeneralChatMessage,
+  startNewGeneralChat,
+} from "../lib/merchant-memory/general-chat.server.js";
 import {
   getBeliefDefinition,
   validateConversationalValue,
@@ -240,7 +255,10 @@ type SlackOAuthLaunchState = "idle" | "authorising" | "failed";
 // page, so skip the heavy app._index loader revalidation for it — the dial write is
 // a background fetcher. Approve/Decline/Edit are deliberately NOT skipped (they change
 // the proposed row / execute, so the card + "What Jefe did" feed must reload).
-export function shouldRevalidate({ formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+export function shouldRevalidate({
+  formData,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
   if (formData?.get("intent") === "action.set_mode") return false;
   return defaultShouldRevalidate;
 }
@@ -299,7 +317,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionRunId,
       executed: result.executed,
     });
-    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, { actionChat: null }),
+    );
   }
   if (intent === "action.reject") {
     // Split reason → Observe→Learn: the category chip + an optional free-text note,
@@ -307,7 +327,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // without parsing. Categories / merchant-typed notes only — never customer PII
     // (the reason picker exposes no PII field; text capped here as a backstop).
     const reasonCategory = String(formData.get("reason") ?? "").trim();
-    const reasonText = String(formData.get("reasonText") ?? "").trim().slice(0, 140);
+    const reasonText = String(formData.get("reasonText") ?? "")
+      .trim()
+      .slice(0, 140);
     const actionRunId = String(formData.get("actionRunId") ?? "");
     const result = await rejectAction(prisma, {
       merchantId: merchant.id,
@@ -325,7 +347,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (result.status === "rejected")
       actionLog.info("merchant declined suggested action", declineMeta);
     else actionLog.warn("merchant decline did not apply", declineMeta);
-    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, { actionChat: null }),
+    );
   }
   if (intent === "action.edit") {
     // Edit the suggestion's magnitude: re-propose at the merchant's markdown %.
@@ -337,12 +361,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const result = await reviseAction(prisma, {
       merchantId: merchant.id,
       actionRunId,
-      params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
+      params: Number.isFinite(markdownPercent)
+        ? { markdownPercent }
+        : undefined,
     });
     const editMeta = {
       merchantId: merchant.id,
       actionRunId,
-      markdownPercent: Number.isFinite(markdownPercent) ? markdownPercent : null,
+      markdownPercent: Number.isFinite(markdownPercent)
+        ? markdownPercent
+        : null,
       status: result.status,
     };
     if (result.status === "revised")
@@ -352,12 +380,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   if (intent === "action.revise_scope") {
     const actionRunId = String(formData.get("actionRunId") ?? "");
-    const recommendationId = String(formData.get("recommendationId") ?? "") || null;
+    const recommendationId =
+      String(formData.get("recommendationId") ?? "") || null;
     const maxProducts = Number(formData.get("maxProducts"));
     const result = await reviseAction(prisma, {
       merchantId: merchant.id,
       actionRunId,
-      params: Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : undefined,
+      params:
+        Number.isInteger(maxProducts) && maxProducts > 0
+          ? { maxProducts }
+          : undefined,
     });
     const revisedRunId =
       result.status === "revised" && result.execution?.runId
@@ -388,12 +420,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   if (intent === "action.defer") {
     const actionRunId = String(formData.get("actionRunId") ?? "");
-    const reasonCategory = String(formData.get("reason") ?? "defer").trim() || "defer";
+    const reasonCategory =
+      String(formData.get("reason") ?? "defer").trim() || "defer";
     const result = await rejectAction(prisma, {
       merchantId: merchant.id,
       actionRunId,
       reasonCategory,
-      reasonText: String(formData.get("reasonText") ?? "").trim().slice(0, 140) || undefined,
+      reasonText:
+        String(formData.get("reasonText") ?? "")
+          .trim()
+          .slice(0, 140) || undefined,
     });
     if (result.status === "rejected")
       actionLog.info("merchant deferred suggested action", {
@@ -408,11 +444,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         reasonCategory,
         status: result.status,
       });
-    return redirect(appPathFromSearch(new URL(request.url).search, { actionChat: null }));
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, { actionChat: null }),
+    );
   }
   if (intent === "action.chat.message") {
     const actionRunId = String(formData.get("actionRunId") ?? "") || null;
-    const recommendationId = String(formData.get("recommendationId") ?? "") || null;
+    const recommendationId =
+      String(formData.get("recommendationId") ?? "") || null;
     const result = await sendActionChatMessage(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -424,7 +463,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!result.ok) {
       return {
         ok: false,
-        error: result.error ?? "That message could not be sent.",
+        error:
+          ("error" in result ? result.error : null) ??
+          "That message could not be sent.",
         intent,
       };
     }
@@ -443,7 +484,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionType,
       mode,
     });
-    const modeMeta = { merchantId: merchant.id, actionType, mode, status: result.status };
+    const modeMeta = {
+      merchantId: merchant.id,
+      actionType,
+      mode,
+      status: result.status,
+    };
     if (result.status === "ok")
       actionLog.info("merchant set action autonomy mode", modeMeta);
     else actionLog.warn("merchant set-mode rejected", modeMeta);
@@ -452,14 +498,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { ok: result.status === "ok", mode };
   }
 
+  if (intent === "chat.new") {
+    const conversation = await startNewGeneralChat(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    actionLog.info("merchant started a new general chat", {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId: conversation.id,
+    });
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        conversation: conversation.id,
+      }),
+    );
+  }
+
   if (intent === "chat.message") {
-    // In-app chat with Jefe on the Daily Home. Reuses the merchant-memory
-    // conversation service, but — unlike memory.message, which opens the Polaris
-    // memory view — redirects back to the daily home so the merchant stays put.
-    const result = await sendConversationMessage(prisma, {
+    const result = await sendGeneralChatMessage(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
       message: String(formData.get("message") ?? ""),
+      conversationId: String(formData.get("conversationId") ?? "") || null,
+      surface: "app",
+      logger: actionLog,
     });
     if (!result.ok) {
       const messageError = result as { error?: string };
@@ -469,7 +532,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         intent,
       };
     }
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        conversation: result.conversationId,
+      }),
+    );
   }
 
   if (intent === "notification.set") {
@@ -786,7 +853,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const result = await processMerchantPlanMessage(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-          recommendationId: String(formData.get("recommendationId") ?? "") || null,
+          recommendationId:
+            String(formData.get("recommendationId") ?? "") || null,
           message: String(formData.get("message") ?? ""),
         });
         if (!result.ok) {
@@ -869,8 +937,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // confirm by key.
       if (intent === "memory.confirm") {
         const beliefId = String(formData.get("beliefId") ?? "");
-        const key = await resolveBeliefKeyById({ merchantId: merchant.id, beliefId });
-        if (!key) return { ok: false, error: "That memory could not be found.", intent };
+        const key = await resolveBeliefKeyById({
+          merchantId: merchant.id,
+          beliefId,
+        });
+        if (!key)
+          return {
+            ok: false,
+            error: "That memory could not be found.",
+            intent,
+          };
         await confirmBelief(prisma, {
           merchantId: merchant.id,
           key,
@@ -878,7 +954,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           evidenceSummary: "Merchant confirmed this on the memory surface.",
           evidenceSourceType: "merchant_memory_surface",
         });
-        memoryLog.info("merchant confirmed belief", { merchantId: merchant.id, beliefId });
+        memoryLog.info("merchant confirmed belief", {
+          merchantId: merchant.id,
+          beliefId,
+        });
         return { ok: true };
       }
 
@@ -891,8 +970,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // see, so the belief came back on the next full rebuild.
       if (intent === "memory.forget") {
         const beliefId = String(formData.get("beliefId") ?? "");
-        const key = await resolveBeliefKeyById({ merchantId: merchant.id, beliefId });
-        if (!key) return { ok: false, error: "That memory could not be found.", intent };
+        const key = await resolveBeliefKeyById({
+          merchantId: merchant.id,
+          beliefId,
+        });
+        if (!key)
+          return {
+            ok: false,
+            error: "That memory could not be found.",
+            intent,
+          };
         const result = await retractBeliefForMerchant(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
@@ -916,8 +1003,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // validates it and either corrects the belief or records a policy/context belief.
       if (intent === "memory.correct") {
         const beliefId = String(formData.get("beliefId") ?? "");
-        const statement = String(formData.get("statement") ?? "").trim().slice(0, 300);
-        if (!statement) return { ok: false, error: "Tell me what’s right.", intent };
+        const statement = String(formData.get("statement") ?? "")
+          .trim()
+          .slice(0, 300);
+        if (!statement)
+          return { ok: false, error: "Tell me what’s right.", intent };
         const belief = await prisma.merchantMemoryBelief.findFirst({
           where: {
             id: beliefId,
@@ -928,11 +1018,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
         const definition = belief ? getBeliefDefinition(belief.key) : null;
         if (!belief || !definition) {
-          return { ok: false, error: "That memory could not be found.", intent };
+          return {
+            ok: false,
+            error: "That memory could not be found.",
+            intent,
+          };
         }
         let corrected = false;
         if (definition.merchantCorrectable) {
-          const validated = validateConversationalValue(statement, definition) as {
+          const validated = validateConversationalValue(
+            statement,
+            definition,
+          ) as {
             ok: boolean;
             value?: unknown;
             error?: string;
@@ -960,7 +1057,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             const messageError = result as { error?: string };
             return {
               ok: false,
-              error: messageError.error ?? "That correction could not be saved.",
+              error:
+                messageError.error ?? "That correction could not be saved.",
               intent,
             };
           }
@@ -978,9 +1076,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // and records it via upsertMerchantSuppliedBelief (revertible via
       // revertLatestMerchantSuppliedChange when an undo affordance is added).
       if (intent === "memory.teach") {
-        const statement = String(formData.get("statement") ?? "").trim().slice(0, 300);
+        const statement = String(formData.get("statement") ?? "")
+          .trim()
+          .slice(0, 300);
         if (!statement) {
-          return { ok: false, error: "Tell me what you’d like me to know.", intent };
+          return {
+            ok: false,
+            error: "Tell me what you’d like me to know.",
+            intent,
+          };
         }
         const result = await sendConversationMessage(prisma, {
           merchantId: merchant.id,
@@ -995,7 +1099,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             intent,
           };
         }
-        memoryLog.info("merchant taught jefe a new fact", { merchantId: merchant.id });
+        memoryLog.info("merchant taught jefe a new fact", {
+          merchantId: merchant.id,
+        });
         return { ok: true };
       }
 
@@ -1006,9 +1112,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // open question before interpretation, so the answer + retraction land on that one, not a
       // priority-order guess. A stale/answered id falls back to top-priority (never errors).
       if (intent === "memory.answer_question") {
-        const relatedOpenQuestionId = String(formData.get("relatedOpenQuestionId") ?? "");
-        const answer = String(formData.get("answer") ?? "").trim().slice(0, 300);
-        if (!answer) return { ok: false, error: "Type an answer first.", intent };
+        const relatedOpenQuestionId = String(
+          formData.get("relatedOpenQuestionId") ?? "",
+        );
+        const answer = String(formData.get("answer") ?? "")
+          .trim()
+          .slice(0, 300);
+        if (!answer)
+          return { ok: false, error: "Type an answer first.", intent };
         const result = await sendConversationMessage(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
@@ -1062,7 +1173,8 @@ export function ErrorBoundary() {
           </Text>
           <Text as="p" tone="subdued" alignment="center">
             I hit a snag loading your store — usually a brief hiccup while
-            everything spins up. Try again and I&apos;ll pick up where I left off.
+            everything spins up. Try again and I&apos;ll pick up where I left
+            off.
           </Text>
           {status ? (
             <Text as="p" tone="subdued">
@@ -1128,29 +1240,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // today just price_markdown. One cheap indexed getActionMode per live type, so a
       // newly-graduated action's dial lights up here with no surface edit.
       const liveActionTypes = listActionTypes().filter((t) => t.live);
-      const metricsPromise = getStoreMetrics({ merchantId: merchant.id, shopId: shop.id });
+      const metricsPromise = getStoreMetrics({
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
       const insightsPromise = getLatestMerchantInsights(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
+        merchantId: merchant.id,
+        shopId: shop.id,
       });
       const goalsPromise = getLatestMerchantGoals(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
+        merchantId: merchant.id,
+        shopId: shop.id,
       });
       const planPromise = getLatestMerchantPlan(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
+        merchantId: merchant.id,
+        shopId: shop.id,
       });
       const liveActionModeEntriesPromise =
         // Folded into THIS Promise.all (with channel state) so the Settings reads run in
         // parallel and add ~no serial latency to the LCP-critical daily loader (per chat 10).
         Promise.all(
-          liveActionTypes.map(
-            async (t): Promise<[string, string]> => [
-              t.actionType,
-              await getActionMode(prisma, { merchantId: merchant.id, actionType: t.actionType }),
-            ],
-          ),
+          liveActionTypes.map(async (t): Promise<[string, string]> => [
+            t.actionType,
+            await getActionMode(prisma, {
+              merchantId: merchant.id,
+              actionType: t.actionType,
+            }),
+          ]),
         );
       const channelConnectionsPromise = listChannelConnections(prisma, {
         merchantId: merchant.id,
@@ -1214,16 +1330,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const brandLogoUrl = brandLogoFromPayload(
         (shop as { rawPayload?: unknown }).rawPayload,
       );
-      const conversationPromise = getDailyChatThread(prisma, {
+      const conversationPromise = getDailyChatExperience(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
+        conversationId: url.searchParams.get("conversation"),
       });
       const changelogPromise = loadAppHomeWhatsNew();
       const morningBriefPrefPromise = getNotificationPreference(prisma, {
         merchantId: merchant.id,
         category: "morning_brief",
       });
-      const contactEmailPromise = getShopContactEmail(prisma, { shopId: shop.id });
+      const contactEmailPromise = getShopContactEmail(prisma, {
+        shopId: shop.id,
+      });
       const [
         metrics,
         insights,
@@ -1263,7 +1382,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const primaryRecommendationId =
         suggestedAction?.sourceRecommendation?.id ??
         plan?.selectedRun?.recommendation?.id ??
-        executedActions.find((action) => action.sourceRecommendation?.id)?.sourceRecommendation?.id ??
+        executedActions.find((action) => action.sourceRecommendation?.id)
+          ?.sourceRecommendation?.id ??
         null;
       const primaryActionRunId =
         suggestedAction?.actionRunId ?? executedActions[0]?.actionRunId ?? null;
@@ -1271,8 +1391,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ? await getActionChatThread(prisma, {
             merchantId: merchant.id,
             shopId: shop.id,
-            recommendationId: actionChatId === primaryRecommendationId ? actionChatId : null,
-            actionRunId: actionChatId === primaryRecommendationId ? primaryActionRunId : actionChatId,
+            recommendationId:
+              actionChatId === primaryRecommendationId ? actionChatId : null,
+            actionRunId:
+              actionChatId === primaryRecommendationId
+                ? primaryActionRunId
+                : actionChatId,
           })
         : { topic: null, messages: [] };
       const emailBrief = contactEmail
@@ -1357,28 +1481,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  const [readiness, metrics, connected, storeName, shopMeta] = await Promise.all([
-    getMerchantMemoryReadiness({
-      merchantId: merchant.id,
-      shopId: shop.id,
-      shopDomain: session.shop,
-      sessionId: session.id,
-      scopes,
-    }),
-    getStoreMetrics({
-      merchantId: merchant.id,
-      shopId: shop.id,
-    }),
-    hasActiveShopifyConnection({
-      merchantId: merchant.id,
-      shopDomain: session.shop,
-    }),
-    storeNamePromise,
-    prisma.shop.findUnique({
-      where: { id: shop.id },
-      select: { onboardingMetadata: true },
-    }),
-  ]);
+  const [readiness, metrics, connected, storeName, shopMeta] =
+    await Promise.all([
+      getMerchantMemoryReadiness({
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
+        sessionId: session.id,
+        scopes,
+      }),
+      getStoreMetrics({
+        merchantId: merchant.id,
+        shopId: shop.id,
+      }),
+      hasActiveShopifyConnection({
+        merchantId: merchant.id,
+        shopDomain: session.shop,
+      }),
+      storeNamePromise,
+      prisma.shop.findUnique({
+        where: { id: shop.id },
+        select: { onboardingMetadata: true },
+      }),
+    ]);
   const backfill = summarizeBackfill(readiness, metrics);
   const furthestStep = readFurthestStep(shopMeta?.onboardingMetadata);
   const activeStep = normalizeOnboardingStep(
@@ -1504,7 +1629,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ),
       })
     : [];
-  const planEvidence = plan?.selectedRun?.recommendation?.supportingBeliefIds?.length
+  const planEvidence = plan?.selectedRun?.recommendation?.supportingBeliefIds
+    ?.length
     ? await getInsightEvidenceView({
         merchantId: merchant.id,
         shopId: shop.id,
@@ -1627,10 +1753,7 @@ export default function AppIndex() {
     pendingDestination !== null && pendingDestination !== data.activeStep;
 
   return (
-    <OnboardingShell
-      activeStep={visibleStep}
-      cinematic={data.cinematic}
-    >
+    <OnboardingShell activeStep={visibleStep} cinematic={data.cinematic}>
       {pendingDestination && showTransitionScene ? (
         <OnboardingTransitionScene
           destination={pendingDestination}
@@ -1732,7 +1855,9 @@ function OnboardingShell({
         cinematic ? " is-cinematic" : ""
       }`}
     >
-      {cinematic ? <div className="JefeCinematicAmbient" aria-hidden="true" /> : null}
+      {cinematic ? (
+        <div className="JefeCinematicAmbient" aria-hidden="true" />
+      ) : null}
       <div className="JefeOnboardingTopbar">
         <OnboardingStepper activeStep={activeStep} />
         {/* Skip the WHOLE funnel — for a returning/experienced merchant who
@@ -2146,7 +2271,10 @@ function importMilestoneState({
 }) {
   const hasEstimate = typeof total === "number" && Number.isFinite(total);
   const hasStarted =
-    status === "running" || status === "complete" || imported > 0 || hasEstimate;
+    status === "running" ||
+    status === "complete" ||
+    imported > 0 ||
+    hasEstimate;
   return {
     complete,
     done,
@@ -2245,8 +2373,8 @@ function ChannelsStep({
         </Text>
         <h1 className="JefeDisplayHeading">How should I reach you?</h1>
         <Text as="p" tone="subdued" alignment="center">
-          Pick any — I send recommendations and check in wherever you work.
-          Add or change these anytime.
+          Pick any — I send recommendations and check in wherever you work. Add
+          or change these anytime.
         </Text>
       </BlockStack>
 
@@ -2632,15 +2760,17 @@ function GoalsStep({
   const latestStoredGoalRevision = latestGoalCoachingRevision(
     conversation?.messages ?? [],
   );
-  const latestStoredRevisionStartIndex = latestStoredGoalRevision?.affectedHorizons
-    ?.length
+  const latestStoredRevisionStartIndex = latestStoredGoalRevision
+    ?.affectedHorizons?.length
     ? goalItems.findIndex(
         (goal) => goal.key === latestStoredGoalRevision.affectedHorizons[0],
       )
     : -1;
   const failedRefreshStartIndex = goalRefreshFailed
-    ? pendingGoalRevision?.startIndex ??
-      (latestStoredRevisionStartIndex >= 0 ? latestStoredRevisionStartIndex : 0)
+    ? (pendingGoalRevision?.startIndex ??
+      (latestStoredRevisionStartIndex >= 0
+        ? latestStoredRevisionStartIndex
+        : 0))
     : null;
   const currentGoal =
     goalItems[Math.min(currentGoalIndex, goalItems.length - 1)] ?? goalItems[0];
@@ -2655,9 +2785,11 @@ function GoalsStep({
           : 0
         : null;
   const currentGoalRefreshing =
-    activeRefreshStartIndex !== null && currentGoalIndex >= activeRefreshStartIndex;
+    activeRefreshStartIndex !== null &&
+    currentGoalIndex >= activeRefreshStartIndex;
   const currentGoalRefreshFailed =
-    failedRefreshStartIndex !== null && currentGoalIndex >= failedRefreshStartIndex;
+    failedRefreshStartIndex !== null &&
+    currentGoalIndex >= failedRefreshStartIndex;
   const activeRefreshGoalLabel =
     activeRefreshStartIndex !== null || failedRefreshStartIndex !== null
       ? formatAffectedGoalCheckpoints(
@@ -3010,15 +3142,17 @@ function GoalsStep({
             messages={[]}
             intent="goals.message"
             hiddenFields={
-              currentGoal ? [{ name: "goalHorizon", value: currentGoal.key }] : []
+              currentGoal
+                ? [{ name: "goalHorizon", value: currentGoal.key }]
+                : []
             }
             label="Confirm or revise goal"
             placeholder={
               currentGoalRefreshFailed
                 ? "Retry the goal refresh before confirming..."
                 : currentGoalRefreshing
-                ? "Jefe is updating these goals..."
-                : "Say 'looks good' to confirm, or tell Jefe what to change..."
+                  ? "Jefe is updating these goals..."
+                  : "Say 'looks good' to confirm, or tell Jefe what to change..."
             }
             value={message}
             onChange={setMessage}
@@ -3155,7 +3289,10 @@ function GoalFocusedSkeleton({ label }: { label: string }) {
   );
 }
 
-function formatAffectedGoalCheckpoints(goals: GoalGuideItem[], startIndex: number) {
+function formatAffectedGoalCheckpoints(
+  goals: GoalGuideItem[],
+  startIndex: number,
+) {
   const labels = goals.slice(startIndex).map((goal) => `${goal.months}`);
   if (labels.length === 0) return "these goals";
   if (labels.length === 1) return `the ${labels[0]} month goal`;
@@ -3200,7 +3337,10 @@ function getGoalConfirmationActionData(actionData: unknown) {
   if (data.intent !== "goals.message" || data.goalConfirmation !== true) {
     return null;
   }
-  if (typeof data.goalHorizon !== "string" || typeof data.message !== "string") {
+  if (
+    typeof data.goalHorizon !== "string" ||
+    typeof data.message !== "string"
+  ) {
     return null;
   }
   return {
@@ -3411,8 +3551,8 @@ function PlanStep({
       {plan?.stale ? (
         <Banner tone="warning">
           <Text as="p">
-            This Plan is from the previous valid memory set. I&apos;ll replace it
-            after the latest generation succeeds.
+            This Plan is from the previous valid memory set. I&apos;ll replace
+            it after the latest generation succeeds.
           </Text>
         </Banner>
       ) : null}
@@ -3561,7 +3701,11 @@ function PlanRecommendationCard({
         </BlockStack>
 
         {recommendation.assumption || recommendation.caveat ? (
-          <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+          <Box
+            padding="300"
+            background="bg-surface-secondary"
+            borderRadius="200"
+          >
             <BlockStack gap="100">
               {recommendation.assumption ? (
                 <Text as="p" tone="subdued">
@@ -3820,9 +3964,7 @@ function ChannelCard({
     looksConnected ? "is-connected" : ""
   } ${unavailable ? "is-unavailable" : ""} ${actionDisabled ? "is-inert" : ""}`;
 
-  const handleSlackOAuthSubmit = async (
-    event: FormEvent<HTMLFormElement>,
-  ) => {
+  const handleSlackOAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (slackOAuthLaunchState === "authorising") return;
 
@@ -4394,7 +4536,10 @@ function JefeMark() {
   // Square + J fills are CSS variables so the cinematic dark theme can invert them.
   return (
     <span className="JefeMark" aria-hidden="true">
-      <svg viewBox="0 0 64 64" style={{ width: "100%", height: "100%", display: "block" }}>
+      <svg
+        viewBox="0 0 64 64"
+        style={{ width: "100%", height: "100%", display: "block" }}
+      >
         <rect width="64" height="64" rx="16" fill="var(--jm-square, #33456b)" />
         <path
           d="M28 16h11v26c0 8-5 12-13 12-4 0-7-1.5-9-4l5-6c1 1.3 2.5 2 4 2 2.5 0 2-3.5 2-6.5V16z"
@@ -4644,7 +4789,11 @@ async function getMerchantMemoryView({
       statement: renderBeliefStatement(belief),
       // Confirm-queue ordering hint (higher = show sooner): impact × uncertainty, 0 for settled.
       // Lets the surface show the few unsure beliefs that matter, not the first-by-key of a big queue.
-      confirmPriority: beliefConfirmPriority(belief.status, belief.confidence, belief.key),
+      confirmPriority: beliefConfirmPriority(
+        belief.status,
+        belief.confidence,
+        belief.key,
+      ),
     });
     groups.set(category, rows);
   }
@@ -4813,10 +4962,10 @@ function summarizeCommerceImports(
     refundsComplete: refundsStatus?.status === "complete",
     importsComplete: Boolean(
       progress?.productsComplete &&
-        progress.customersComplete &&
-        progress.ordersComplete &&
-        progress.inventoryComplete &&
-        refundsStatus?.status === "complete",
+      progress.customersComplete &&
+      progress.ordersComplete &&
+      progress.inventoryComplete &&
+      refundsStatus?.status === "complete",
     ),
     productsStatus: statusLabel(productsStatus?.status),
     customersStatus: statusLabel(customersStatus?.status),
@@ -4824,7 +4973,9 @@ function summarizeCommerceImports(
     inventoryStatus: statusLabel(inventoryStatus?.status),
     refundsStatus: statusLabel(refundsStatus?.status),
     skuTotalEstimate: numericEstimate(productsStatus?.totalRecordsEstimate),
-    customersTotalEstimate: numericEstimate(customersStatus?.totalRecordsEstimate),
+    customersTotalEstimate: numericEstimate(
+      customersStatus?.totalRecordsEstimate,
+    ),
     ordersTotalEstimate: numericEstimate(ordersStatus?.totalRecordsEstimate),
   };
 }
@@ -5502,7 +5653,14 @@ function settingsChannelsPath(
 ) {
   const params = new URLSearchParams(search);
   // Drop the OAuth/onboarding-only params so we land clean on the panel.
-  for (const dead of ["code", "error", "state", "step", "channelProvider", "channelMode"]) {
+  for (const dead of [
+    "code",
+    "error",
+    "state",
+    "step",
+    "channelProvider",
+    "channelMode",
+  ]) {
     params.delete(dead);
   }
   params.set("panel", "channels");
@@ -5570,7 +5728,9 @@ function onboardingSceneHeaderCopy(step: Exclude<OnboardingStep, "connect">) {
   return copyByStep[step];
 }
 
-function onboardingTransitionCopy(destination: OnboardingNavigationDestination) {
+function onboardingTransitionCopy(
+  destination: OnboardingNavigationDestination,
+) {
   if (destination === "home") {
     return {
       status: "Loading Jefe...",

@@ -16,12 +16,15 @@ import { makeToolStackBeliefRecorder } from "../integrations/tool-stack-belief.s
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; category?: string; includeEvidence?: boolean }} input
+ * @param {{ merchantId: string; shopId?: string | null; category?: string; includeEvidence?: boolean }} input
  */
 export async function getBeliefsForMerchant(prisma, input) {
   const beliefs = await prisma.merchantMemoryBelief.findMany({
     where: {
       merchantId: input.merchantId,
+      ...(input.shopId
+        ? { OR: [{ shopId: input.shopId }, { shopId: null }] }
+        : {}),
       status: { in: ACTIVE_BELIEF_STATUSES },
       category: input.category ?? undefined,
     },
@@ -41,12 +44,15 @@ export async function getBeliefsForMerchant(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; key: string; includeEvidence?: boolean }} input
+ * @param {{ merchantId: string; shopId?: string | null; key: string; includeEvidence?: boolean }} input
  */
 export async function getBelief(prisma, input) {
   const belief = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
+      ...(input.shopId
+        ? { OR: [{ shopId: input.shopId }, { shopId: null }] }
+        : {}),
       key: input.key,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
@@ -482,12 +488,13 @@ export async function supersedeBelief(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; key: string; confirmedBy?: string; confirmedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any }} input
+ * @param {{ merchantId: string; shopId?: string | null; key: string; confirmedBy?: string; confirmedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any }} input
  */
 export async function confirmBelief(prisma, input) {
   const belief = await prisma.merchantMemoryBelief.findFirstOrThrow({
     where: {
       merchantId: input.merchantId,
+      ...beliefShopWhere(input.shopId),
       key: input.key,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
@@ -527,8 +534,11 @@ export async function confirmBelief(prisma, input) {
       changeReason: "merchant_confirmed_belief",
       changedBy: input.confirmedBy ?? "merchant",
       metadata: reconfirmableObservation
-        ? { ...(input.metadata ?? {}), confirmationMode: "observation_reconfirmable" }
-        : input.metadata ?? {},
+        ? {
+            ...(input.metadata ?? {}),
+            confirmationMode: "observation_reconfirmable",
+          }
+        : (input.metadata ?? {}),
     });
     if (input.evidenceSummary || reconfirmableObservation) {
       await recordEvidence(tx, {
@@ -536,9 +546,12 @@ export async function confirmBelief(prisma, input) {
         shopId: belief.shopId,
         beliefId: belief.id,
         sourceType: input.evidenceSourceType ?? "merchant_input",
-        sourceReference: input.evidenceSourceReference ?? input.confirmedBy ?? null,
+        sourceReference:
+          input.evidenceSourceReference ?? input.confirmedBy ?? null,
         evidenceType: "merchant_confirmation",
-        summary: input.evidenceSummary ?? "Merchant confirmed the current observation.",
+        summary:
+          input.evidenceSummary ??
+          "Merchant confirmed the current observation.",
         metadata: input.metadata ?? { confirmedAt: confirmedAt.toISOString() },
         observedAt: confirmedAt,
       });
@@ -549,12 +562,13 @@ export async function confirmBelief(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; key: string; value: any; valueType: string; correctedBy?: string; correctedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any }} input
+ * @param {{ merchantId: string; shopId?: string | null; key: string; value: any; valueType: string; correctedBy?: string; correctedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any }} input
  */
 export async function correctBelief(prisma, input) {
   const belief = await prisma.merchantMemoryBelief.findFirstOrThrow({
     where: {
       merchantId: input.merchantId,
+      ...beliefShopWhere(input.shopId),
       key: input.key,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
@@ -592,7 +606,8 @@ export async function correctBelief(prisma, input) {
       shopId: belief.shopId,
       beliefId: belief.id,
       sourceType: input.evidenceSourceType ?? "merchant_input",
-      sourceReference: input.evidenceSourceReference ?? input.correctedBy ?? null,
+      sourceReference:
+        input.evidenceSourceReference ?? input.correctedBy ?? null,
       evidenceType: "merchant_correction",
       summary: input.evidenceSummary ?? "Merchant supplied a correction.",
       metadata: input.metadata ?? { correctedAt: correctedAt.toISOString() },
@@ -604,18 +619,41 @@ export async function correctBelief(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; category: string; key: string; value: any; valueType: string; suppliedBy?: string; suppliedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any; precedence?: number }} input
+ * @param {{ merchantId: string; shopId?: string | null; category: string; key: string; value: any; valueType: string; suppliedBy?: string; suppliedAt?: Date; evidenceSummary?: string; evidenceSourceType?: string; evidenceSourceReference?: string | null; metadata?: any; precedence?: number; scope?: any; validFrom?: Date | null; validUntil?: Date | null; allowRetractedSuccessor?: boolean }} input
  */
 export async function upsertMerchantSuppliedBelief(prisma, input) {
   const suppliedAt = input.suppliedAt ?? new Date();
   const existing = await prisma.merchantMemoryBelief.findFirst({
     where: {
       merchantId: input.merchantId,
+      ...beliefShopWhere(input.shopId),
       key: input.key,
       status: { in: ACTIVE_BELIEF_STATUSES },
     },
     orderBy: { updatedAt: "desc" },
   });
+
+  const retracted = existing
+    ? null
+    : await prisma.merchantMemoryBelief.findFirst({
+        where: {
+          merchantId: input.merchantId,
+          ...beliefShopWhere(input.shopId),
+          key: input.key,
+          status: BELIEF_STATUS.merchantRetracted,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+  if (retracted && !input.allowRetractedSuccessor) {
+    return {
+      belief: retracted,
+      changed: false,
+      created: false,
+      suppressed: true,
+      reason: "merchant_retracted",
+    };
+  }
 
   if (!existing) {
     return runInTransaction(prisma, async (tx) => {
@@ -630,7 +668,12 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
           status: BELIEF_STATUS.merchantConfirmed,
           confidence: "1.0000",
           confidenceReason: "Merchant supplied this understanding.",
-          precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantConfirmation,
+          precedence:
+            input.precedence ?? BELIEF_PRECEDENCE.merchantConfirmation,
+          scope: input.scope ?? {},
+          validFrom: input.validFrom ?? null,
+          validUntil: input.validUntil ?? null,
+          supersedesBeliefId: retracted?.id ?? null,
           firstObservedAt: suppliedAt,
           lastObservedAt: suppliedAt,
           lastEvaluatedAt: suppliedAt,
@@ -650,12 +693,32 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
         changedBy: input.suppliedBy ?? "merchant",
         metadata: input.metadata ?? {},
       });
+      if (retracted) {
+        await tx.merchantMemoryBelief.update({
+          where: { id: retracted.id },
+          data: { status: BELIEF_STATUS.superseded, supersededAt: suppliedAt },
+        });
+        await recordHistory(tx, {
+          merchantId: retracted.merchantId,
+          shopId: input.shopId ?? retracted.shopId,
+          beliefId: retracted.id,
+          key: input.key,
+          previousStatus: BELIEF_STATUS.merchantRetracted,
+          newStatus: BELIEF_STATUS.superseded,
+          previousValue: retracted.value,
+          newValue: retracted.value,
+          changeReason: "merchant_explicitly_reactivated_belief",
+          changedBy: input.suppliedBy ?? "merchant",
+          metadata: { successorBeliefId: belief.id, ...(input.metadata ?? {}) },
+        });
+      }
       await recordEvidence(tx, {
         merchantId: input.merchantId,
         shopId: input.shopId,
         beliefId: belief.id,
         sourceType: input.evidenceSourceType ?? "merchant_input",
-        sourceReference: input.evidenceSourceReference ?? input.suppliedBy ?? null,
+        sourceReference:
+          input.evidenceSourceReference ?? input.suppliedBy ?? null,
         evidenceType: "merchant_supplied_context",
         summary: input.evidenceSummary ?? "Merchant supplied business context.",
         metadata: input.metadata ?? { suppliedAt: suppliedAt.toISOString() },
@@ -677,6 +740,9 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
         confidence: "1.0000",
         confidenceReason: "Merchant updated this understanding.",
         precedence: input.precedence ?? BELIEF_PRECEDENCE.merchantCorrection,
+        scope: input.scope ?? existing.scope ?? {},
+        validFrom: input.validFrom ?? existing.validFrom,
+        validUntil: input.validUntil ?? existing.validUntil,
         lastObservedAt: suppliedAt,
         lastEvaluatedAt: suppliedAt,
         lastConfirmedAt: suppliedAt,
@@ -700,7 +766,8 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
       shopId: input.shopId ?? existing.shopId,
       beliefId: existing.id,
       sourceType: input.evidenceSourceType ?? "merchant_input",
-      sourceReference: input.evidenceSourceReference ?? input.suppliedBy ?? null,
+      sourceReference:
+        input.evidenceSourceReference ?? input.suppliedBy ?? null,
       evidenceType: "merchant_supplied_context",
       summary: input.evidenceSummary ?? "Merchant updated business context.",
       metadata: input.metadata ?? { suppliedAt: suppliedAt.toISOString() },
@@ -738,7 +805,9 @@ export async function revertLatestMerchantSuppliedChange(prisma, input) {
 
   const revertedAt = input.revertedAt ?? new Date();
   const previousStatus = history.previousStatus ?? BELIEF_STATUS.obsolete;
-  const previousValue = /** @type {any} */ (history.previousValue ?? belief.value);
+  const previousValue = /** @type {any} */ (
+    history.previousValue ?? belief.value
+  );
   const updated = await prisma.merchantMemoryBelief.update({
     where: { id: belief.id },
     data: {
@@ -845,9 +914,7 @@ export async function refreshBeliefs(prisma, input) {
         ? await obsoleteUnsupportedDeterministicBeliefs(prisma, {
             merchantId: input.merchantId,
             shopId: input.shopId,
-            skippedKeys: new Set(
-              skippedOutcomes.map((outcome) => outcome.key),
-            ),
+            skippedKeys: new Set(skippedOutcomes.map((outcome) => outcome.key)),
             runId: run.id,
           })
         : 0;
@@ -1022,7 +1089,13 @@ const HIGH_IMPACT_BELIEF_KEYS = new Set([
 /** @param {string} key */
 function beliefImpactWeight(key) {
   if (HIGH_IMPACT_BELIEF_KEYS.has(key)) return 3;
-  if (typeof key === "string" && (key.startsWith("policies.") || key.startsWith("preferences.") || key.startsWith("business."))) return 2;
+  if (
+    typeof key === "string" &&
+    (key.startsWith("policies.") ||
+      key.startsWith("preferences.") ||
+      key.startsWith("business."))
+  )
+    return 2;
   return 1;
 }
 
@@ -1048,13 +1121,18 @@ function beliefSourceLine(belief) {
   const shortDate = (/** @type {any} */ d) => {
     if (!d) return null;
     try {
-      return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+      return new Date(d).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+      });
     } catch {
       return null;
     }
   };
   if (MERCHANT_AUTHORED_STATUSES.has(belief.status)) {
-    const when = shortDate(belief.lastConfirmedAt ?? belief.lastObservedAt ?? belief.lastEvaluatedAt);
+    const when = shortDate(
+      belief.lastConfirmedAt ?? belief.lastObservedAt ?? belief.lastEvaluatedAt,
+    );
     return `you told Jefe${when ? ` · ${when}` : ""}`;
   }
   const when = shortDate(belief.lastEvaluatedAt ?? belief.lastObservedAt);

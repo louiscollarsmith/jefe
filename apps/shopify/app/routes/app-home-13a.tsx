@@ -41,15 +41,29 @@ export default function AppHome13aPreview() {
           borderBottom: `1px solid ${R.frame}`,
         }}
       >
-        Design preview · /app-home-13a · Home Brief register · illustrative Everdew data - not merchant-facing
+        Design preview · /app-home-13a · Home Brief register · illustrative
+        Everdew data - not merchant-facing
       </div>
-      <div style={{ maxWidth: 1180, margin: "16px auto", background: R.surface, border: `1px solid ${R.frame}`, borderRadius: 4, overflow: "hidden" }}>
+      <div
+        style={{
+          maxWidth: 1180,
+          margin: "16px auto",
+          background: R.surface,
+          border: `1px solid ${R.frame}`,
+          borderRadius: 4,
+          overflow: "hidden",
+        }}
+      >
         <DailyHome
           {...SAMPLE_APP_HOME}
           insights={[]}
           channels={[]}
           actionChatId={actionChatId}
-          actionChatThread={{ topic: actionChatId ? `action:${actionChatId}` : null, messages: [] }}
+          actionChatThread={{
+            topic: actionChatId ? `action:${actionChatId}` : null,
+            messages: [],
+          }}
+          conversation={{ conversation: null, conversations: [], messages: [] }}
         />
       </div>
     </div>

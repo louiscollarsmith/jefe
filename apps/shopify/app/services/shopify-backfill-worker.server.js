@@ -57,6 +57,15 @@ import { maybeAlertWebhookHealth } from "../lib/observability/webhook-health.ser
 import { maybeAlertInboundEmailHealth } from "../lib/email/inbound/health.server.js";
 import { shouldPageOnWorkerError } from "./deployment-health.server.js";
 import { recordWorkerTick } from "../lib/observability/heartbeat.server.js";
+import {
+  EPISODE_BACKFILL_JOB_TYPE,
+  EPISODE_PROCESS_JOB_TYPE,
+  enqueueCoalescingMemoryJob,
+} from "../lib/merchant-memory/episodic-memory.server.js";
+import {
+  backfillMerchantEpisodes,
+  processMerchantEpisodeBatch,
+} from "../lib/merchant-memory/episode-processor.server.js";
 
 const LOOP_INTERVAL_MS = 15_000;
 const INITIAL_LOOP_DELAY_MS = 5_000;
@@ -71,11 +80,31 @@ const DELTA_SYNC_OVERLAP_HOURS = 24;
  * @type {Record<string, { type: string; topic: string; label: string }>}
  */
 const JOB_SUCCESS_EVENT = {
-  [MEMORY_REFRESH_JOB_TYPE]: { type: "memory_rebuilt", topic: "memory", label: "Memory rebuilt" },
-  [MERCHANT_INSIGHTS_JOB_TYPE]: { type: "insights_generated", topic: "generation", label: "Insights generated" },
-  [MERCHANT_GOALS_JOB_TYPE]: { type: "goals_generated", topic: "generation", label: "Goals generated" },
-  [MERCHANT_PLAN_JOB_TYPE]: { type: "plan_generated", topic: "generation", label: "Plan generated" },
-  backfill_finalize: { type: "backfill_completed", topic: "onboarding", label: "Evidence backfill completed" },
+  [MEMORY_REFRESH_JOB_TYPE]: {
+    type: "memory_rebuilt",
+    topic: "memory",
+    label: "Memory rebuilt",
+  },
+  [MERCHANT_INSIGHTS_JOB_TYPE]: {
+    type: "insights_generated",
+    topic: "generation",
+    label: "Insights generated",
+  },
+  [MERCHANT_GOALS_JOB_TYPE]: {
+    type: "goals_generated",
+    topic: "generation",
+    label: "Goals generated",
+  },
+  [MERCHANT_PLAN_JOB_TYPE]: {
+    type: "plan_generated",
+    topic: "generation",
+    label: "Plan generated",
+  },
+  backfill_finalize: {
+    type: "backfill_completed",
+    topic: "onboarding",
+    label: "Evidence backfill completed",
+  },
 };
 
 /**
@@ -154,7 +183,10 @@ async function maybePostDailyDigest(prisma, logger) {
   const webhookUrl =
     process.env.ACTIVITY_WEBHOOK_URL || process.env.ALERT_WEBHOOK_URL;
   if (!webhookUrl) return;
-  const result = await runActivityDigest(prisma, { windowHours: 24, webhookUrl });
+  const result = await runActivityDigest(prisma, {
+    windowHours: 24,
+    webhookUrl,
+  });
   logger.info("Daily activity digest posted", {
     posted: result.posted,
     events: result.feed?.totalEvents ?? 0,
@@ -180,7 +212,11 @@ async function maybeMeasureClearanceOutcomes(prisma, logger) {
   if (process.env.ENABLE_CLEARANCE_OUTCOME_JOB === "false") return;
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
-  if (lastOutcomeMeasureDay === dayKey || now.getUTCHours() < OUTCOME_MEASURE_HOUR_UTC) return;
+  if (
+    lastOutcomeMeasureDay === dayKey ||
+    now.getUTCHours() < OUTCOME_MEASURE_HOUR_UTC
+  )
+    return;
   lastOutcomeMeasureDay = dayKey;
   try {
     const result = await measureAndRecordClearanceOutcomes(prisma, { logger });
@@ -218,7 +254,8 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
   }
 
   loopStarted = true;
-  const logger = options.logger ?? baseLogger.child({ component: "backfill-worker" });
+  const logger =
+    options.logger ?? baseLogger.child({ component: "backfill-worker" });
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
   const workerPrisma = createWorkerPrismaClient() ?? prisma;
   loopPrisma = workerPrisma;
@@ -305,6 +342,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
  * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; shopId?: string; jobType?: string; ignoreRunAfter?: boolean; holdQueuedJobsUntil?: Date; loadOfflineToken?: (shop: string) => Promise<string>; maxJobs?: number }} [options]
  */
 export async function processReadyBackfillJobs(prisma, options = {}) {
+  await ensurePendingMerchantMemoryJobs(prisma);
   const maxJobs = Math.max(1, options.maxJobs ?? MAX_READY_JOBS_PER_TICK);
   const results = [];
   for (let processed = 0; processed < maxJobs; processed += 1) {
@@ -389,12 +427,17 @@ export async function processNextBackfillJob(prisma, options = {}) {
  */
 async function runClaimedBackfillJob(prisma, job, options) {
   try {
-    const result = await runBackfillJob(prisma, job, options);
+    const result = /** @type {any} */ (
+      await runBackfillJob(prisma, job, options)
+    );
+    const shouldRequeue = Boolean(result?.requeue);
     const completed = await prisma.backfillJob.updateMany({
-      where: { id: job.id },
+      where: { id: job.id, status: "running" },
       data: {
-        status: "succeeded",
-        completedAt: new Date(),
+        status: shouldRequeue ? "queued" : "succeeded",
+        runAfter: shouldRequeue ? new Date() : job.runAfter,
+        ...(shouldRequeue ? { startedAt: null } : {}),
+        completedAt: shouldRequeue ? null : new Date(),
         failedAt: null,
         lastError: null,
         resultJson: result ?? {},
@@ -403,9 +446,17 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (completed.count !== 1) {
       return { status: "cancelled", jobType: job.jobType, result };
     }
-    trackJobSuccess(prisma, job);
-    await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
-    return { status: "succeeded", jobType: job.jobType, result };
+    if (!shouldRequeue) trackJobSuccess(prisma, job);
+    await holdQueuedBackfillJobs(
+      prisma,
+      job.shopId,
+      options.holdQueuedJobsUntil,
+    );
+    return {
+      status: shouldRequeue ? "queued" : "succeeded",
+      jobType: job.jobType,
+      result,
+    };
   } catch (error) {
     const failure = backfillFailureDetails(error);
     const message = failure.message;
@@ -450,6 +501,9 @@ async function runClaimedBackfillJob(prisma, job, options) {
         runId: stringValue(jsonObject(job.payloadJson).runId),
         message,
       });
+    } else if (isMerchantMemoryMaintenanceJob(job.jobType)) {
+      // Episodic indexes are rebuildable. The failed job and structured log are
+      // the health signal; never mark Shopify evidence or setup as partial.
     } else if (failedPermanently) {
       await markEvidenceFailed(prisma, job, failure);
       await prisma.shop.update({
@@ -462,7 +516,11 @@ async function runClaimedBackfillJob(prisma, job, options) {
         data: { setupStatus: "backfill_partial" },
       });
     }
-    await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
+    await holdQueuedBackfillJobs(
+      prisma,
+      job.shopId,
+      options.holdQueuedJobsUntil,
+    );
     return { status: "failed", jobType: job.jobType, error: message };
   }
 }
@@ -533,7 +591,9 @@ async function runBackfillJob(prisma, job, options) {
     job.jobType !== MEMORY_REFRESH_JOB_TYPE &&
     job.jobType !== MERCHANT_INSIGHTS_JOB_TYPE &&
     job.jobType !== MERCHANT_GOALS_JOB_TYPE &&
-    job.jobType !== MERCHANT_PLAN_JOB_TYPE;
+    job.jobType !== MERCHANT_PLAN_JOB_TYPE &&
+    job.jobType !== EPISODE_PROCESS_JOB_TYPE &&
+    job.jobType !== EPISODE_BACKFILL_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
     shopId: job.shopId,
@@ -546,7 +606,9 @@ async function runBackfillJob(prisma, job, options) {
     // of reaching the real unauthenticated.admin OAuth refresh (which throws with
     // no refresh-token grant, as it did in CI — see the ingestion job-chain test).
     accessToken: requiresShopifyToken
-      ? await (options.loadOfflineToken ?? loadFreshOfflineToken)(job.shop.shopDomain)
+      ? await (options.loadOfflineToken ?? loadFreshOfflineToken)(
+          job.shop.shopDomain,
+        )
       : null,
     fetchImpl: options.fetchImpl,
     logger: options.logger ?? console,
@@ -601,9 +663,146 @@ async function runBackfillJob(prisma, job, options) {
         runId: stringValue(payload.runId),
         logger: context.logger,
       });
+    case EPISODE_PROCESS_JOB_TYPE:
+      return processMerchantEpisodeBatch(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+        logger: context.logger,
+      });
+    case EPISODE_BACKFILL_JOB_TYPE:
+      return backfillMerchantEpisodes(prisma, {
+        merchantId: context.merchantId,
+        shopId: context.shopId,
+      });
     default:
       return {};
   }
+}
+
+/**
+ * Durable lost-wakeup sweeper. Source-row states, rather than queue payloads,
+ * decide whether a coalesced job must exist.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ */
+export async function ensurePendingMerchantMemoryJobs(prisma) {
+  if (
+    !prisma.merchantMemoryEpisode ||
+    !prisma.merchantMemoryConversationMessage
+  ) {
+    return { episodeJobs: 0, backfillJobs: 0 };
+  }
+  const inactiveBefore = new Date(Date.now() - 30 * 60 * 1000);
+  const [episodeSources, backfillSources, inactiveConversations] =
+    await Promise.all([
+      prisma.merchantMemoryEpisode.findMany({
+        where: {
+          shopId: { not: null },
+          OR: [
+            { processingStatus: { in: ["pending", "stale"] } },
+            { embeddingStatus: "pending" },
+          ],
+        },
+        select: { merchantId: true, shopId: true },
+        distinct: ["shopId"],
+        take: 100,
+      }),
+      prisma.merchantMemoryConversationMessage.findMany({
+        where: { shopId: { not: null }, processingStatus: "backfill_pending" },
+        select: { merchantId: true, shopId: true },
+        distinct: ["shopId"],
+        take: 100,
+      }),
+      prisma.merchantMemoryConversation?.findMany
+        ? prisma.merchantMemoryConversation.findMany({
+            where: {
+              shopId: { not: null },
+              OR: [
+                { closedAt: { not: null } },
+                { lastMessageAt: { lte: inactiveBefore } },
+              ],
+            },
+            select: {
+              id: true,
+              merchantId: true,
+              shopId: true,
+              lastMessageAt: true,
+            },
+            take: 100,
+          })
+        : [],
+    ]);
+  const summaryRows =
+    inactiveConversations.length > 0
+      ? await prisma.merchantMemoryEpisode.findMany({
+          where: {
+            conversationId: {
+              in: inactiveConversations.map((conversation) => conversation.id),
+            },
+            documentType: "summary",
+            visibility: "current",
+          },
+          select: { conversationId: true, occurredAt: true },
+          orderBy: { occurredAt: "desc" },
+        })
+      : [];
+  const latestSummaryAt = new Map();
+  for (const summary of summaryRows) {
+    if (!latestSummaryAt.has(summary.conversationId)) {
+      latestSummaryAt.set(summary.conversationId, summary.occurredAt);
+    }
+  }
+  const summarySources = inactiveConversations.filter((conversation) => {
+    const summaryAt = latestSummaryAt.get(conversation.id);
+    return (
+      !summaryAt ||
+      !conversation.lastMessageAt ||
+      summaryAt < conversation.lastMessageAt
+    );
+  });
+  await Promise.all([
+    ...episodeSources
+      .filter((row) => row.shopId)
+      .map((row) =>
+        enqueueCoalescingMemoryJob(prisma, {
+          merchantId: row.merchantId,
+          shopId: /** @type {string} */ (row.shopId),
+          jobType: EPISODE_PROCESS_JOB_TYPE,
+          priority: 35,
+        }),
+      ),
+    ...backfillSources
+      .filter((row) => row.shopId)
+      .map((row) =>
+        enqueueCoalescingMemoryJob(prisma, {
+          merchantId: row.merchantId,
+          shopId: /** @type {string} */ (row.shopId),
+          jobType: EPISODE_BACKFILL_JOB_TYPE,
+          priority: 36,
+        }),
+      ),
+    ...summarySources
+      .filter((row) => row.shopId)
+      .map((row) =>
+        enqueueCoalescingMemoryJob(prisma, {
+          merchantId: row.merchantId,
+          shopId: /** @type {string} */ (row.shopId),
+          jobType: EPISODE_PROCESS_JOB_TYPE,
+          priority: 35,
+        }),
+      ),
+  ]);
+  return {
+    episodeJobs: episodeSources.length + summarySources.length,
+    backfillJobs: backfillSources.length,
+  };
+}
+
+/** @param {string} jobType */
+function isMerchantMemoryMaintenanceJob(jobType) {
+  return (
+    jobType === EPISODE_PROCESS_JOB_TYPE ||
+    jobType === EPISODE_BACKFILL_JOB_TYPE
+  );
 }
 
 /**
@@ -1077,9 +1276,10 @@ async function loadBackfillCountEstimate(context, domain) {
     });
 
     if (domain === "productVariants") {
-      const data = /** @type {{ productVariantsCount?: { count?: number } }} */ (
-        await client.request(PRODUCT_VARIANTS_COUNT_QUERY)
-      );
+      const data =
+        /** @type {{ productVariantsCount?: { count?: number } }} */ (
+          await client.request(PRODUCT_VARIANTS_COUNT_QUERY)
+        );
       const count = data.productVariantsCount?.count;
       return typeof count === "number" && Number.isFinite(count) ? count : null;
     }

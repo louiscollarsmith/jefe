@@ -30,6 +30,7 @@
 // exactly wrong for a redaction request arriving after uninstall.
 
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { normalizeShopDomain } from "../../shopify/admin-graphql.server.js";
 import { jsonObject } from "./normalize.server.js";
 import { hashEmail, maskEmail, normalizeEmail } from "./canonical.server.js";
@@ -151,7 +152,8 @@ async function redactCustomer(prisma, input) {
   for (const identity of identities) {
     const orderIds = jsonObject(identity.rawPayload).orderIds;
     if (Array.isArray(orderIds)) {
-      for (const id of orderIds) if (typeof id === "string") orderExternalIds.add(id);
+      for (const id of orderIds)
+        if (typeof id === "string") orderExternalIds.add(id);
     }
   }
   const ordersToRedact = Array.isArray(payload.orders_to_redact)
@@ -197,6 +199,15 @@ async function redactCustomer(prisma, input) {
     orderTokens,
     normalizedEmail,
   });
+  const suppressedMemoryDocuments = await suppressCustomerDerivedMemory(
+    prisma,
+    {
+      shopId,
+      normalizedEmail,
+      customerGid,
+      orderExternalIds,
+    },
+  );
 
   // 4. Delete the identity row(s) — the stored emailHash + maskedEmail record.
   let deletedIdentities = 0;
@@ -214,7 +225,63 @@ async function redactCustomer(prisma, input) {
     deletedIdentities,
     scrubbedOrders,
     scrubbedLedgerEvents,
+    suppressedMemoryDocuments,
   };
+}
+
+/**
+ * Derived search documents are rebuildable, so exact verified customer identifiers
+ * are suppressed rather than retained in full-text/vector indexes. Canonical
+ * conversation text is not inspected by this derived-data pass.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string; normalizedEmail: string | null; customerGid: string | null; orderExternalIds: Set<string> }} input
+ */
+async function suppressCustomerDerivedMemory(prisma, input) {
+  const tokens = /** @type {string[]} */ ([
+    ...new Set(
+      [
+        input.normalizedEmail,
+        input.customerGid,
+        ...input.orderExternalIds,
+      ].filter((value) => typeof value === "string" && value.length >= 8),
+    ),
+  ]);
+  if (tokens.length === 0 || !prisma.merchantMemoryEpisode?.findMany) return 0;
+  const rows = await prisma.merchantMemoryEpisode.findMany({
+    where: {
+      shopId: input.shopId,
+      OR: /** @type {any[]} */ (
+        tokens.map((token) => ({
+          searchText: { contains: token, mode: "insensitive" },
+        }))
+      ),
+    },
+    select: { id: true },
+  });
+  const ids = rows.map((row) => row.id);
+  if (ids.length === 0) return 0;
+  await prisma.merchantMemoryEpisode.updateMany({
+    where: { shopId: input.shopId, id: { in: ids } },
+    data: {
+      searchText: "[suppressed for customer privacy]",
+      structuredSummary: Prisma.JsonNull,
+      entityRefs: [],
+      visibility: "suppressed",
+      processingStatus: "suppressed",
+      embeddingStatus: "suppressed",
+      embeddingModel: null,
+      embeddingDimensions: null,
+      embeddingErrorCode: "customer_redaction",
+      embeddedAt: null,
+    },
+  });
+  await prisma.$executeRaw(Prisma.sql`
+    UPDATE "merchant_memory_episodes"
+    SET "embedding" = NULL, "updated_at" = CURRENT_TIMESTAMP
+    WHERE "shop_id" = ${input.shopId}::uuid
+      AND "id" IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+  `);
+  return ids.length;
 }
 
 /**
@@ -238,7 +305,13 @@ async function scrubCustomerLedgerEvents(prisma, input) {
   let scrubbed = 0;
   for (const event of events) {
     const raw = jsonObject(event.rawPayload);
-    if (!ledgerEventReferencesCustomer(raw, input.orderTokens, input.normalizedEmail)) {
+    if (
+      !ledgerEventReferencesCustomer(
+        raw,
+        input.orderTokens,
+        input.normalizedEmail,
+      )
+    ) {
       continue;
     }
     await prisma.ledgerEvent.update({
@@ -295,39 +368,41 @@ async function recordCustomerDataRequest(prisma, input) {
   const orderExternalIds = new Set();
   const identityOrderIds = jsonObject(identity?.rawPayload).orderIds;
   if (Array.isArray(identityOrderIds)) {
-    for (const id of identityOrderIds) if (typeof id === "string") orderExternalIds.add(id);
+    for (const id of identityOrderIds)
+      if (typeof id === "string") orderExternalIds.add(id);
   }
   for (const id of ordersRequested) {
     const gid = toGid("Order", id);
     if (gid) orderExternalIds.add(gid);
   }
-  const orders = customerGid || orderExternalIds.size
-    ? await prisma.order.findMany({
-        where: {
-          shopId,
-          OR: [
-            ...(customerGid ? [{ customerExternalId: customerGid }] : []),
-            ...(orderExternalIds.size
-              ? [{ externalId: { in: [...orderExternalIds] } }]
-              : []),
-          ],
-        },
-        select: {
-          externalId: true,
-          orderName: true,
-          financialStatus: true,
-          fulfillmentStatus: true,
-          currency: true,
-          subtotalPrice: true,
-          totalPrice: true,
-          totalDiscount: true,
-          totalTax: true,
-          totalShipping: true,
-          processedAt: true,
-          sourceCreatedAt: true,
-        },
-      })
-    : [];
+  const orders =
+    customerGid || orderExternalIds.size
+      ? await prisma.order.findMany({
+          where: {
+            shopId,
+            OR: [
+              ...(customerGid ? [{ customerExternalId: customerGid }] : []),
+              ...(orderExternalIds.size
+                ? [{ externalId: { in: [...orderExternalIds] } }]
+                : []),
+            ],
+          },
+          select: {
+            externalId: true,
+            orderName: true,
+            financialStatus: true,
+            fulfillmentStatus: true,
+            currency: true,
+            subtotalPrice: true,
+            totalPrice: true,
+            totalDiscount: true,
+            totalTax: true,
+            totalShipping: true,
+            processedAt: true,
+            sourceCreatedAt: true,
+          },
+        })
+      : [];
 
   const exportPayload = {
     topic: "customers/data_request",
@@ -352,11 +427,14 @@ async function recordCustomerDataRequest(prisma, input) {
       financialStatus: order.financialStatus,
       fulfillmentStatus: order.fulfillmentStatus,
       currency: order.currency,
-      subtotalPrice: order.subtotalPrice == null ? null : String(order.subtotalPrice),
+      subtotalPrice:
+        order.subtotalPrice == null ? null : String(order.subtotalPrice),
       totalPrice: order.totalPrice == null ? null : String(order.totalPrice),
-      totalDiscount: order.totalDiscount == null ? null : String(order.totalDiscount),
+      totalDiscount:
+        order.totalDiscount == null ? null : String(order.totalDiscount),
       totalTax: order.totalTax == null ? null : String(order.totalTax),
-      totalShipping: order.totalShipping == null ? null : String(order.totalShipping),
+      totalShipping:
+        order.totalShipping == null ? null : String(order.totalShipping),
       processedAt: order.processedAt,
       sourceCreatedAt: order.sourceCreatedAt,
     })),
@@ -437,6 +515,9 @@ async function redactShop(prisma, input) {
       await tx.channelConnection.deleteMany(scoped);
       await tx.ledgerEvent.deleteMany(scoped);
       await tx.connectorAccount.deleteMany(scoped);
+      await tx.merchantContextRetrievalRun.deleteMany(scoped);
+      await tx.merchantMemoryCandidate.deleteMany(scoped);
+      await tx.merchantMemoryEpisode.deleteMany(scoped);
       await tx.merchantMemoryConversationMessage.deleteMany(scoped);
       await tx.merchantMemoryOpenQuestion.deleteMany(scoped);
       await tx.merchantMemoryConversation.deleteMany(scoped);
@@ -445,6 +526,18 @@ async function redactShop(prisma, input) {
       await tx.merchantMemoryBelief.deleteMany(scoped);
       await tx.merchantMemoryRefreshRun.deleteMany(scoped);
       await tx.storeUnderstandingRun.deleteMany(scoped);
+      const executions = await tx.actionExecution.findMany({
+        where: { shopId },
+        select: { id: true },
+      });
+      if (executions.length > 0) {
+        await tx.actionExecutionWrite.deleteMany({
+          where: {
+            executionId: { in: executions.map((execution) => execution.id) },
+          },
+        });
+      }
+      await tx.actionExecution.deleteMany(scoped);
 
       // B. Delete the shop; cascade removes all onDelete: Cascade children.
       await tx.shop.delete({ where: { id: shopId } });
@@ -485,7 +578,9 @@ async function findShopByVerifiedDomain(prisma, shopDomain) {
   if (!shopDomain) return null;
   const normalized = normalizeShopDomain(shopDomain);
   const shop = await prisma.shop.findUnique({
-    where: { platform_shopDomain: { platform: "shopify", shopDomain: normalized } },
+    where: {
+      platform_shopDomain: { platform: "shopify", shopDomain: normalized },
+    },
     select: { id: true, merchantId: true, shopDomain: true },
   });
   return shop;

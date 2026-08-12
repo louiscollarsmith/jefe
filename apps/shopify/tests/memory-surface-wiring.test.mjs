@@ -40,6 +40,10 @@ const conversationSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/conversation.server.js", import.meta.url),
   "utf8",
 );
+const generalChatSource = fs.readFileSync(
+  new URL("../app/lib/merchant-memory/general-chat.server.js", import.meta.url),
+  "utf8",
+);
 const commerceAnalystSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/commerce-analyst.server.js", import.meta.url),
   "utf8",
@@ -88,7 +92,10 @@ test("memory.correct validates free text before a direct correction, else defers
   // Only correctable beliefs get a direct write, and only when the text validates against the
   // belief definition — so a free-text edit can never corrupt a typed belief.
   assert.match(appIndexSource, /definition\.merchantCorrectable/);
-  assert.match(appIndexSource, /validateConversationalValue\(statement, definition\)/);
+  assert.match(
+    appIndexSource,
+    /validateConversationalValue\(\s*statement,\s*definition,?\s*\)/,
+  );
   // Fallback path when it can't be parsed as this belief's type.
   assert.match(appIndexSource, /if \(!corrected\)/);
 });
@@ -186,7 +193,9 @@ test("action chat submits identifiers only and rebuilds factual context server-s
 });
 
 test("action chat quantification uses the governed commerce analyst executor", () => {
-  assert.match(conversationSource, /answerCommerceQuestion/);
+  assert.match(conversationSource, /sendGeneralChatMessage/);
+  assert.match(generalChatSource, /answerCommerceQuestion/);
+  assert.match(generalChatSource, /actionChat \? "action_chat" : "general_chat"/);
   assert.match(commerceAnalystSource, /commerceCalculationCatalogForPrompt/);
   assert.match(commerceAnalystSource, /executeCommerceCalculations/);
   assert.match(commerceAnalystSource, /analysisPacket/);
@@ -198,6 +207,7 @@ test("action chat quantification uses the governed commerce analyst executor", (
   assert.match(commerceCalculationsSource, /DIMENSIONS/);
   assert.doesNotMatch(commerceCalculationsSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
   assert.doesNotMatch(conversationSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
+  assert.doesNotMatch(generalChatSource, /queryRawUnsafe|executeRaw|mcp/i);
   assert.doesNotMatch(commerceAnalystSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
 });
 

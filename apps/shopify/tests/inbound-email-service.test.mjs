@@ -5,7 +5,8 @@ import { processInboundEmail } from "../app/lib/email/inbound/service.server.js"
 import { emailHashOf } from "../app/lib/email/inbound/identity.server.js";
 
 // signUnsubscribeToken (used when rendering an AI reply) reads process.env directly.
-process.env.SESSION_SECRET = process.env.SESSION_SECRET || "test-session-secret";
+process.env.SESSION_SECRET =
+  process.env.SESSION_SECRET || "test-session-secret";
 
 const ENV = {
   ENABLE_INBOUND_EMAIL: "true",
@@ -19,7 +20,13 @@ const ENV = {
 const SILENT = { info() {}, warn() {}, error() {}, debug() {} };
 
 /** In-memory Prisma double covering the methods the service + resolver touch. */
-function makeFakePrisma({ identities = [], sessions = [], shops = [], events = [], assistantReply = "" } = {}) {
+function makeFakePrisma({
+  identities = [],
+  sessions = [],
+  shops = [],
+  events = [],
+  assistantReply = "",
+} = {}) {
   const eventRows = events.map((e) => ({ ...e }));
   const idRows = identities.map((r) => ({ ...r }));
   let seq = 1;
@@ -27,7 +34,9 @@ function makeFakePrisma({ identities = [], sessions = [], shops = [], events = [
     _events: eventRows,
     inboundEmailEvent: {
       async findUnique({ where }) {
-        const row = eventRows.find((e) => e.providerMessageId === where.providerMessageId);
+        const row = eventRows.find(
+          (e) => e.providerMessageId === where.providerMessageId,
+        );
         return row ? { id: row.id } : null;
       },
       async create({ data }) {
@@ -45,7 +54,11 @@ function makeFakePrisma({ identities = [], sessions = [], shops = [], events = [
       async findUnique({ where }) {
         const row = idRows.find((i) => i.emailHash === where.emailHash);
         return row
-          ? { merchantId: row.merchantId, shopId: row.shopId, shop: { shopDomain: row.shopDomain ?? null } }
+          ? {
+              merchantId: row.merchantId,
+              shopId: row.shopId,
+              shop: { shopDomain: row.shopDomain ?? null },
+            }
           : null;
       },
       async upsert({ where, update, create }) {
@@ -62,7 +75,9 @@ function makeFakePrisma({ identities = [], sessions = [], shops = [], events = [
     },
     shop: {
       async findUnique({ where }) {
-        const shop = shops.find((s) => s.shopDomain === where.platform_shopDomain.shopDomain);
+        const shop = shops.find(
+          (s) => s.shopDomain === where.platform_shopDomain.shopDomain,
+        );
         return shop ? { ...shop } : null;
       },
     },
@@ -74,7 +89,9 @@ function makeFakePrisma({ identities = [], sessions = [], shops = [], events = [
   };
 }
 
-function spyEmail(result = { delivered: true, disabled: false, id: "re_out_1" }) {
+function spyEmail(
+  result = { delivered: true, disabled: false, id: "re_out_1" },
+) {
   const calls = [];
   const fn = async (input) => {
     calls.push(input);
@@ -83,11 +100,19 @@ function spyEmail(result = { delivered: true, disabled: false, id: "re_out_1" })
   return { fn, calls };
 }
 
-function spyConversation() {
+function spyConversation(
+  reply = "You have 12 units of dead stock across 3 SKUs.",
+) {
   const calls = [];
   const fn = async (_prisma, input) => {
     calls.push(input);
-    return { ok: true };
+    return {
+      ok: true,
+      conversationId: "conversation-1",
+      merchantMessageId: "message-1",
+      assistantMessage: { id: "message-2", content: reply },
+      citedContextIds: [],
+    };
   };
   return { fn, calls };
 }
@@ -99,7 +124,10 @@ function fullRecord(overrides = {}) {
     to: ["jefe@reply.mynamejefe.com"],
     subject: "How much dead stock?",
     text: "How much dead stock do I have right now?",
-    headers: { "authentication-results": "mx.google.com; spf=pass; dkim=pass; dmarc=pass" },
+    headers: {
+      "authentication-results":
+        "mx.google.com; spf=pass; dkim=pass; dmarc=pass",
+    },
     message_id: "<abc@mail>",
     ...overrides,
   };
@@ -109,7 +137,9 @@ function spyFetch({ ok = true, record, reason = "fetch_failed" } = {}) {
   const calls = [];
   const fn = async (messageId, opts) => {
     calls.push({ messageId, opts });
-    return ok ? { ok: true, record: record ?? fullRecord() } : { ok: false, reason };
+    return ok
+      ? { ok: true, record: record ?? fullRecord() }
+      : { ok: false, reason };
   };
   return { fn, calls };
 }
@@ -131,7 +161,12 @@ function webhook(overrides = {}) {
 function knownSenderPrisma(extra = {}) {
   return makeFakePrisma({
     identities: [
-      { emailHash: emailHashOf("owner@shop.com"), merchantId: "m1", shopId: "s1", shopDomain: "shop.myshopify.com" },
+      {
+        emailHash: emailHashOf("owner@shop.com"),
+        merchantId: "m1",
+        shopId: "s1",
+        shopDomain: "shop.myshopify.com",
+      },
     ],
     assistantReply: "You have 12 units of dead stock across 3 SKUs.",
     ...extra,
@@ -144,13 +179,17 @@ test("Door A: verify → resolve → fetch full email → auth-gate → brain �
   const brain = spyConversation();
   const fetch = spyFetch();
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "replied");
   assert.equal(res.door, "ai");
@@ -185,13 +224,17 @@ test("dark flag: recorded + parked BEFORE any fetch/interpret/send", async () =>
   const brain = spyConversation();
   const fetch = spyFetch();
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: { ...ENV, ENABLE_INBOUND_EMAIL: "false" },
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: { ...ENV, ENABLE_INBOUND_EMAIL: "false" },
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "parked");
   assert.equal(res.reason, "inbound_disabled");
@@ -206,16 +249,24 @@ test("failed sender auth (on the fetched email) is parked, never actioned", asyn
   const email = spyEmail();
   const brain = spyConversation();
   const fetch = spyFetch({
-    record: fullRecord({ headers: { "authentication-results": "mx; spf=fail; dkim=fail; dmarc=fail" } }),
+    record: fullRecord({
+      headers: {
+        "authentication-results": "mx; spf=fail; dkim=fail; dmarc=fail",
+      },
+    }),
   });
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "parked");
   assert.equal(res.reason, "auth_fail");
@@ -230,13 +281,17 @@ test("a fetch failure fails cleanly (no brain, no reply)", async () => {
   const brain = spyConversation();
   const fetch = spyFetch({ ok: false, reason: "fetch_failed" });
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "failed");
   assert.equal(res.reason, "fetch_failed");
@@ -250,13 +305,17 @@ test("an empty fetched body is parked (nothing to answer)", async () => {
   const brain = spyConversation();
   const fetch = spyFetch({ record: fullRecord({ text: "", html: "" }) });
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "parked");
   assert.equal(res.reason, "empty_body");
@@ -272,13 +331,17 @@ test("a duplicate delivery (same message id) is ignored — no fetch, no reply",
   const brain = spyConversation();
   const fetch = spyFetch();
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "duplicate");
   assert.equal(fetch.calls.length, 0);
@@ -292,17 +355,25 @@ test("Door A from an unknown sender is parked WITHOUT fetching — never touch a
   const brain = spyConversation();
   const fetch = spyFetch();
 
-  const res = await processInboundEmail(prisma, { payload: webhook({ from: "stranger@elsewhere.com" }) }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook({ from: "stranger@elsewhere.com" }) },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "parked");
   assert.equal(res.reason, "unknown_sender");
-  assert.equal(fetch.calls.length, 0, "resolve happens before fetch — no API call for strangers");
+  assert.equal(
+    fetch.calls.length,
+    0,
+    "resolve happens before fetch — no API call for strangers",
+  );
   assert.equal(email.calls.length, 0);
   assert.equal(brain.calls.length, 0);
 });
@@ -312,13 +383,22 @@ test("Door B (team@) fetches the body and forwards to the human inbox; brain nev
   const email = spyEmail();
   const brain = spyConversation();
   const fetch = spyFetch({
-    record: fullRecord({ to: ["team@mynamejefe.com"], text: "Can a human call me about billing?" }),
+    record: fullRecord({
+      to: ["team@mynamejefe.com"],
+      text: "Can a human call me about billing?",
+    }),
   });
 
   const res = await processInboundEmail(
     prisma,
     { payload: webhook({ to: ["team@mynamejefe.com"], email_id: "in_team" }) },
-    { env: ENV, logger: SILENT, sendEmailFn: email.fn, sendConversationFn: brain.fn, fetchReceivedEmailFn: fetch.fn },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
   );
 
   assert.equal(res.outcome, "forwarded");
@@ -336,13 +416,17 @@ test("when the send adapter is disabled, Door A records a stub (no throw)", asyn
   const brain = spyConversation();
   const fetch = spyFetch();
 
-  const res = await processInboundEmail(prisma, { payload: webhook() }, {
-    env: ENV,
-    logger: SILENT,
-    sendEmailFn: email.fn,
-    sendConversationFn: brain.fn,
-    fetchReceivedEmailFn: fetch.fn,
-  });
+  const res = await processInboundEmail(
+    prisma,
+    { payload: webhook() },
+    {
+      env: ENV,
+      logger: SILENT,
+      sendEmailFn: email.fn,
+      sendConversationFn: brain.fn,
+      fetchReceivedEmailFn: fetch.fn,
+    },
+  );
 
   assert.equal(res.outcome, "replied");
   assert.equal(res.reason, "reply_stubbed");

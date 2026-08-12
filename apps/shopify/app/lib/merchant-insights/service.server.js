@@ -797,6 +797,7 @@ export async function correctMerchantInsightFinding(prisma, input) {
           originalCorrection: correction,
           processorOutput,
         },
+        allowRetractedSuccessor: true,
       });
     }
 

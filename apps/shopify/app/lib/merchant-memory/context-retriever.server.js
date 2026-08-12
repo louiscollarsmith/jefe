@@ -8,6 +8,8 @@ import {
   heuristicCommerceCalculationRequests,
 } from "./commerce-calculations.server.js";
 
+export { retrieveMerchantContext } from "./merchant-context.server.js";
+
 export const PLAN_EVIDENCE_SNAPSHOT_VERSION = "plan_evidence_snapshot_v1";
 
 const MAX_CONTEXT_BLOCKS = 32;
@@ -32,14 +34,16 @@ export const BELIEF_EXPANSION_BY_KEY = Object.freeze({
 
 const QUESTION_KEYWORDS = [
   {
-    pattern: /\b(stock|stockout|stockouts|cover|reorder|replenish|inventory|low stock)\b/i,
+    pattern:
+      /\b(stock|stockout|stockouts|cover|reorder|replenish|inventory|low stock)\b/i,
     keys: [
       "inventory.at_risk_stockout_count.trailing_30d",
       "inventory.low_cover_products.trailing_30d",
     ],
   },
   {
-    pattern: /\b(dead stock|clearance|no sale|not sold|slow moving|stale stock)\b/i,
+    pattern:
+      /\b(dead stock|clearance|no sale|not sold|slow moving|stale stock)\b/i,
     keys: [
       "products.no_sale_active_product_count.trailing_90d",
       "products.dead_stock.trailing_90d",
@@ -69,8 +73,12 @@ const QUESTION_KEYWORDS = [
  * @param {{ allBeliefs: any[]; seedBeliefs: any[]; max?: number }} input
  */
 export function expandBeliefRowsForContext(input) {
-  const max = Number.isFinite(Number(input.max)) ? Number(input.max) : MAX_CONTEXT_BLOCKS;
-  const allByKey = new Map((input.allBeliefs ?? []).map((belief) => [String(belief.key), belief]));
+  const max = Number.isFinite(Number(input.max))
+    ? Number(input.max)
+    : MAX_CONTEXT_BLOCKS;
+  const allByKey = new Map(
+    (input.allBeliefs ?? []).map((belief) => [String(belief.key), belief]),
+  );
   const seen = new Set();
   const rows = [];
 
@@ -96,7 +104,10 @@ export function expandBeliefRowsForContext(input) {
  * @param {{ merchantId: string; shopId: string; recommendation: any; sourceSnapshotHash?: string | null; snapshotSource?: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function buildPlanEvidenceSnapshot(prisma, input) {
-  if (!input.recommendation?.id || !prisma.merchantPlanEvidenceSnapshot?.create) {
+  if (
+    !input.recommendation?.id ||
+    !prisma.merchantPlanEvidenceSnapshot?.create
+  ) {
     return null;
   }
   const existing = await prisma.merchantPlanEvidenceSnapshot.findUnique?.({
@@ -139,7 +150,10 @@ export async function buildPlanEvidenceSnapshot(prisma, input) {
     });
     return snapshot;
   } catch (error) {
-    if (isUniqueConflict(error) && prisma.merchantPlanEvidenceSnapshot.findUnique) {
+    if (
+      isUniqueConflict(error) &&
+      prisma.merchantPlanEvidenceSnapshot.findUnique
+    ) {
       const raced = await prisma.merchantPlanEvidenceSnapshot.findUnique({
         where: { recommendationId: input.recommendation.id },
       });
@@ -166,17 +180,22 @@ export async function getMerchantContextForQuestion(prisma, input) {
   // but neither should be silent.
   if (!shopScope(input.shopId)) {
     warnings.push("missing_shop_scope_context_withheld");
-    log.warn("merchant memory context requested without shop scope; reading nothing", {
-      merchantId: input.merchantId,
-      actionRunId: input.actionRunId ?? null,
-      recommendationId: input.recommendationId ?? null,
-    });
+    log.warn(
+      "merchant memory context requested without shop scope; reading nothing",
+      {
+        merchantId: input.merchantId,
+        actionRunId: input.actionRunId ?? null,
+        recommendationId: input.recommendationId ?? null,
+      },
+    );
   }
   const actionRow = await loadActionExecution(prisma, input);
   const actionSourceRecommendation = sourceRecommendationFromAction(actionRow);
   const suppliedRawRecommendationId = identityText(input.recommendationId);
   const suppliedRecommendationId = uuidString(suppliedRawRecommendationId);
-  const actionRecommendationId = uuidString(identityText(actionSourceRecommendation?.id));
+  const actionRecommendationId = uuidString(
+    identityText(actionSourceRecommendation?.id),
+  );
   if (suppliedRawRecommendationId && !suppliedRecommendationId) {
     warnings.push("malformed_recommendation_id_ignored");
     log.warn("action chat ignored malformed recommendation id", {
@@ -185,7 +204,8 @@ export async function getMerchantContextForQuestion(prisma, input) {
       actionRunId: actionRow?.runId ?? input.actionRunId ?? null,
     });
   }
-  let canonicalRecommendationId = suppliedRecommendationId || actionRecommendationId || null;
+  let canonicalRecommendationId =
+    suppliedRecommendationId || actionRecommendationId || null;
   if (
     actionRow &&
     suppliedRecommendationId &&
@@ -194,13 +214,16 @@ export async function getMerchantContextForQuestion(prisma, input) {
   ) {
     canonicalRecommendationId = actionRecommendationId;
     warnings.push("supplied_recommendation_id_ignored_action_source_mismatch");
-    log.warn("action chat recommendation id mismatch; using action source recommendation", {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? actionRow.shopId ?? null,
-      actionRunId: actionRow.runId,
-      suppliedRecommendationId,
-      actionRecommendationId,
-    });
+    log.warn(
+      "action chat recommendation id mismatch; using action source recommendation",
+      {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? actionRow.shopId ?? null,
+        actionRunId: actionRow.runId,
+        suppliedRecommendationId,
+        actionRecommendationId,
+      },
+    );
   }
 
   const recommendation = await loadPlanRecommendation(prisma, {
@@ -208,21 +231,36 @@ export async function getMerchantContextForQuestion(prisma, input) {
     recommendationId: canonicalRecommendationId,
   });
   let scopedActionRow = actionRow;
-  if (scopedActionRow && recommendation && !recommendationMatchesActionSource(recommendation, actionSourceRecommendation)) {
+  if (
+    scopedActionRow &&
+    recommendation &&
+    !recommendationMatchesActionSource(
+      recommendation,
+      actionSourceRecommendation,
+    )
+  ) {
     warnings.push("action_preview_dropped_recommendation_mismatch");
-    log.warn("action chat action preview dropped after recommendation mismatch", {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? scopedActionRow.shopId ?? recommendation.shopId ?? null,
-      actionRunId: scopedActionRow.runId,
-      recommendationId: recommendation.id,
-      actionRecommendationId: actionRecommendationId || null,
-      actionRecommendationRunId: actionSourceRecommendation?.runId || null,
-      recommendationRunId: recommendation.runId || null,
-    });
+    log.warn(
+      "action chat action preview dropped after recommendation mismatch",
+      {
+        merchantId: input.merchantId,
+        shopId:
+          input.shopId ??
+          scopedActionRow.shopId ??
+          recommendation.shopId ??
+          null,
+        actionRunId: scopedActionRow.runId,
+        recommendationId: recommendation.id,
+        actionRecommendationId: actionRecommendationId || null,
+        actionRecommendationRunId: actionSourceRecommendation?.runId || null,
+        recommendationRunId: recommendation.runId || null,
+      },
+    );
     scopedActionRow = null;
   }
 
-  const fallbackRecommendation = recommendation ?? sourceRecommendationFromAction(scopedActionRow);
+  const fallbackRecommendation =
+    recommendation ?? sourceRecommendationFromAction(scopedActionRow);
   const planSnapshot = recommendation
     ? await loadOrBackfillPlanEvidenceSnapshot(prisma, {
         merchantId: input.merchantId,
@@ -233,7 +271,8 @@ export async function getMerchantContextForQuestion(prisma, input) {
     : null;
   const currentBlocks = await buildCurrentSystemBlocks(prisma, {
     merchantId: input.merchantId,
-    shopId: input.shopId ?? recommendation?.shopId ?? scopedActionRow?.shopId ?? null,
+    shopId:
+      input.shopId ?? recommendation?.shopId ?? scopedActionRow?.shopId ?? null,
     recommendation: fallbackRecommendation,
     actionRow: scopedActionRow,
     message: input.message ?? "",
@@ -248,21 +287,28 @@ export async function getMerchantContextForQuestion(prisma, input) {
       uuidString(fallbackRecommendation?.id) ||
       canonicalRecommendationId ||
       null,
-    actionRunId: scopedActionRow?.runId ?? (actionRow ? null : input.actionRunId ?? null),
+    actionRunId:
+      scopedActionRow?.runId ??
+      (actionRow ? null : (input.actionRunId ?? null)),
     planEvidenceAtRecommendationTime: planSnapshot
       ? {
           snapshotId: planSnapshot.id,
           snapshotVersion: planSnapshot.snapshotVersion,
           sourceSnapshotHash: planSnapshot.sourceSnapshotHash ?? null,
           generatedAt: planSnapshot.createdAt?.toISOString?.() ?? null,
-          blocks: Array.isArray(planSnapshot.blocksJson) ? planSnapshot.blocksJson : [],
+          blocks: Array.isArray(planSnapshot.blocksJson)
+            ? planSnapshot.blocksJson
+            : [],
           limits: planSnapshot.limitsJson ?? {},
         }
       : null,
     currentSystemContext: {
       generatedAt: new Date().toISOString(),
       blocks: currentBlocks,
-      limits: buildLimits({ snapshotSource: "current_system_retrieval", blockCount: currentBlocks.length }),
+      limits: buildLimits({
+        snapshotSource: "current_system_retrieval",
+        blockCount: currentBlocks.length,
+      }),
     },
     retrieval: {
       snapshotStatus: planSnapshot
@@ -272,7 +318,9 @@ export async function getMerchantContextForQuestion(prisma, input) {
           : "not_applicable",
       expansionKeys,
       currentBlockCount: currentBlocks.length,
-      planBlockCount: Array.isArray(planSnapshot?.blocksJson) ? planSnapshot.blocksJson.length : 0,
+      planBlockCount: Array.isArray(planSnapshot?.blocksJson)
+        ? planSnapshot.blocksJson.length
+        : 0,
       warnings,
     },
   };
@@ -348,7 +396,9 @@ async function buildPlanCalculationBlocks(prisma, input) {
       input.recommendation.summary,
       input.recommendation.whyThisAction,
       input.recommendation.whyNow,
-    ].filter(Boolean).join(" "),
+    ]
+      .filter(Boolean)
+      .join(" "),
     actionContext,
     includeDefaultScopedImpact: true,
   });
@@ -377,7 +427,9 @@ async function buildPlanCalculationBlocks(prisma, input) {
  * @param {{ merchantId: string; shopId?: string | null; recommendation?: any; actionRow?: any; message?: string }} input
  */
 async function buildCurrentSystemBlocks(prisma, input) {
-  const recommendation = input.recommendation ? normalizeRecommendation(input.recommendation) : null;
+  const recommendation = input.recommendation
+    ? normalizeRecommendation(input.recommendation)
+    : null;
   const beliefIds = recommendation?.supportingBeliefIds ?? [];
   const beliefKeys = questionDrivenBeliefKeys(input.message ?? "");
   const goalIds = uniqueStrings([
@@ -404,7 +456,9 @@ async function buildCurrentSystemBlocks(prisma, input) {
     loadActionHistory(prisma, input),
   ]);
   const blocks = [
-    recommendation ? recommendationBlock(recommendation, "current_plan_recommendation") : null,
+    recommendation
+      ? recommendationBlock(recommendation, "current_plan_recommendation")
+      : null,
     input.actionRow ? actionPreviewBlock(input.actionRow) : null,
     ...goals.map(goalBlock),
     ...insights.map(insightBlock),
@@ -477,19 +531,23 @@ async function loadBeliefsWithExpansion(prisma, input) {
   const orFilters = [];
   if (seedIds.length) orFilters.push({ id: { in: seedIds } });
   if (seedKeys.length) orFilters.push({ key: { in: seedKeys } });
-  const seedBeliefs =
-    orFilters.length
-      ? await prisma.merchantMemoryBelief.findMany({
-          where: {
-            merchantId: input.merchantId,
-            AND: [beliefShopFilter(shopId)],
-            supersededAt: null,
-            status: { in: ACTIVE_BELIEF_STATUSES },
-            OR: orFilters,
+  const seedBeliefs = orFilters.length
+    ? await prisma.merchantMemoryBelief.findMany({
+        where: {
+          merchantId: input.merchantId,
+          AND: [beliefShopFilter(shopId)],
+          supersededAt: null,
+          status: { in: ACTIVE_BELIEF_STATUSES },
+          OR: orFilters,
+        },
+        include: {
+          evidence: {
+            orderBy: { createdAt: "desc" },
+            take: MAX_EVIDENCE_PER_BELIEF,
           },
-          include: { evidence: { orderBy: { createdAt: "desc" }, take: MAX_EVIDENCE_PER_BELIEF } },
-        })
-      : [];
+        },
+      })
+    : [];
   const expansionKeys = uniqueStrings(
     seedBeliefs.flatMap((belief) => expansionKeysForBelief(String(belief.key))),
   );
@@ -505,7 +563,12 @@ async function loadBeliefsWithExpansion(prisma, input) {
           status: { in: ACTIVE_BELIEF_STATUSES },
           key: { in: missingExpansionKeys },
         },
-        include: { evidence: { orderBy: { createdAt: "desc" }, take: MAX_EVIDENCE_PER_BELIEF } },
+        include: {
+          evidence: {
+            orderBy: { createdAt: "desc" },
+            take: MAX_EVIDENCE_PER_BELIEF,
+          },
+        },
       })
     : [];
   return expandBeliefRowsForContext({
@@ -561,7 +624,8 @@ async function loadInsights(prisma, input) {
  */
 async function loadPlanRecommendation(prisma, input) {
   const recommendationId = uuidString(input.recommendationId);
-  if (!recommendationId || !prisma.merchantPlanRecommendation?.findFirst) return null;
+  if (!recommendationId || !prisma.merchantPlanRecommendation?.findFirst)
+    return null;
   const shopId = shopScope(input.shopId);
   if (!shopId) return null;
   return prisma.merchantPlanRecommendation.findFirst({
@@ -614,7 +678,8 @@ async function loadActionExecution(prisma, input) {
  * @param {{ merchantId: string; shopId: string; recommendation: any; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 async function loadOrBackfillPlanEvidenceSnapshot(prisma, input) {
-  if (input.recommendation?.evidenceSnapshot) return input.recommendation.evidenceSnapshot;
+  if (input.recommendation?.evidenceSnapshot)
+    return input.recommendation.evidenceSnapshot;
   if (!prisma.merchantPlanEvidenceSnapshot?.findUnique) {
     return null;
   }
@@ -623,11 +688,14 @@ async function loadOrBackfillPlanEvidenceSnapshot(prisma, input) {
   });
   if (existing) return existing;
   try {
-    input.logger?.warn?.("plan evidence snapshot missing; backfilling from current memory", {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      recommendationId: input.recommendation.id,
-    });
+    input.logger?.warn?.(
+      "plan evidence snapshot missing; backfilling from current memory",
+      {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        recommendationId: input.recommendation.id,
+      },
+    );
     return await buildPlanEvidenceSnapshot(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -680,7 +748,11 @@ async function loadActionHistory(prisma, input) {
 
 /** @param {unknown} error */
 function isUniqueConflict(error) {
-  return Boolean(error && typeof error === "object" && /** @type {any} */ (error).code === "P2002");
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    /** @type {any} */ (error).code === "P2002",
+  );
 }
 
 /** @param {any} row */
@@ -710,14 +782,20 @@ function sourceRecommendationFromAction(row) {
  * @param {any} recommendation
  * @param {any} actionSourceRecommendation
  */
-function recommendationMatchesActionSource(recommendation, actionSourceRecommendation) {
+function recommendationMatchesActionSource(
+  recommendation,
+  actionSourceRecommendation,
+) {
   const source = normalizeRecommendation(actionSourceRecommendation);
   const candidate = normalizeRecommendation(recommendation);
   const hasSourceIdentity = Boolean(source.id || source.runId);
   if (!hasSourceIdentity) return false;
   if (source.id && candidate.id && source.id !== candidate.id) return false;
-  if (source.runId && candidate.runId && source.runId !== candidate.runId) return false;
-  return Boolean((source.id && candidate.id) || (source.runId && candidate.runId));
+  if (source.runId && candidate.runId && source.runId !== candidate.runId)
+    return false;
+  return Boolean(
+    (source.id && candidate.id) || (source.runId && candidate.runId),
+  );
 }
 
 /** @param {any} recommendation */
@@ -734,10 +812,18 @@ function normalizeRecommendation(recommendation) {
     whyThisAction: safeText(recommendation?.whyThisAction, 700),
     whyNow: safeText(recommendation?.whyNow, 500),
     startToday: safeText(recommendation?.startToday, 500),
-    successSignal: compactValue(recommendation?.successSignal, "successSignal", 0),
+    successSignal: compactValue(
+      recommendation?.successSignal,
+      "successSignal",
+      0,
+    ),
     expectedBenefit: safeText(recommendation?.expectedBenefit, 500),
-    supportingBeliefIds: uniqueStrings(recommendation?.supportingBeliefIds ?? []),
-    supportingInsightIds: uniqueStrings(recommendation?.supportingInsightIds ?? []),
+    supportingBeliefIds: uniqueStrings(
+      recommendation?.supportingBeliefIds ?? [],
+    ),
+    supportingInsightIds: uniqueStrings(
+      recommendation?.supportingInsightIds ?? [],
+    ),
     confidence: text(recommendation?.confidence),
   };
 }
@@ -938,7 +1024,11 @@ function expansionKeysForBlocks(blocks) {
   return uniqueStrings(
     blocks
       .map((block) => block?.data?.key)
-      .filter((key) => Object.values(BELIEF_EXPANSION_BY_KEY).some((keys) => keys.includes(key))),
+      .filter((key) =>
+        Object.values(BELIEF_EXPANSION_BY_KEY).some((keys) =>
+          keys.includes(key),
+        ),
+      ),
   );
 }
 
@@ -949,16 +1039,21 @@ function expansionKeysForBlocks(blocks) {
 function topItems(summary, preview) {
   const summaryItems = Array.isArray(summary.topItems) ? summary.topItems : [];
   const previewItems = Array.isArray(preview.changes) ? preview.changes : [];
-  return (summaryItems.length ? summaryItems : previewItems).slice(0, MAX_STRUCTURED_ITEMS).map((item) => ({
-    productId: text(item?.productId),
-    variantId: text(item?.variantId),
-    title: safeText(item?.title ?? item?.productTitle ?? item?.variantId, 180),
-    unitsOnHand: numberOrNull(item?.unitsOnHand),
-    trappedCapital: numberOrNull(item?.trappedCapital),
-    fromPrice: numberOrNull(item?.fromPrice),
-    toPrice: numberOrNull(item?.toPrice),
-    discountPercent: numberOrNull(item?.discountPercent),
-  }));
+  return (summaryItems.length ? summaryItems : previewItems)
+    .slice(0, MAX_STRUCTURED_ITEMS)
+    .map((item) => ({
+      productId: text(item?.productId),
+      variantId: text(item?.variantId),
+      title: safeText(
+        item?.title ?? item?.productTitle ?? item?.variantId,
+        180,
+      ),
+      unitsOnHand: numberOrNull(item?.unitsOnHand),
+      trappedCapital: numberOrNull(item?.trappedCapital),
+      fromPrice: numberOrNull(item?.fromPrice),
+      toPrice: numberOrNull(item?.toPrice),
+      discountPercent: numberOrNull(item?.discountPercent),
+    }));
 }
 
 /**
@@ -983,8 +1078,14 @@ function structuredValueForKnownBelief(key, value) {
       atRiskProductCount: numberOrNull(record.atRiskProductCount),
       thresholdDays: numberOrNull(record.thresholdDays),
       window: text(record.window),
-      topAtRiskProduct: compactValue(record.topAtRiskProduct, "topAtRiskProduct", 0),
-      items: items.slice(0, MAX_STRUCTURED_ITEMS).map((item) => compactValue(item, "lowCoverItem", 0)),
+      topAtRiskProduct: compactValue(
+        record.topAtRiskProduct,
+        "topAtRiskProduct",
+        0,
+      ),
+      items: items
+        .slice(0, MAX_STRUCTURED_ITEMS)
+        .map((item) => compactValue(item, "lowCoverItem", 0)),
     };
   }
   if (key === "products.dead_stock.trailing_90d") {
@@ -996,7 +1097,9 @@ function structuredValueForKnownBelief(key, value) {
       currency: text(record.currency),
       window: text(record.window),
       topDeadProduct: compactValue(record.topDeadProduct, "topDeadProduct", 0),
-      items: items.slice(0, MAX_STRUCTURED_ITEMS).map((item) => compactValue(item, "deadStockItem", 0)),
+      items: items
+        .slice(0, MAX_STRUCTURED_ITEMS)
+        .map((item) => compactValue(item, "deadStockItem", 0)),
     };
   }
   return null;
@@ -1010,25 +1113,35 @@ function structuredValueForKnownBelief(key, value) {
  */
 function compactValue(value, key, depth) {
   if (value === null || value === undefined) return null;
-  if (typeof value === "string") return safeText(value, depth === 0 ? MAX_TEXT : 180);
+  if (typeof value === "string")
+    return safeText(value, depth === 0 ? MAX_TEXT : 180);
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_STRUCTURED_ITEMS).map((item) => compactValue(item, key, depth + 1));
+    return value
+      .slice(0, MAX_STRUCTURED_ITEMS)
+      .map((item) => compactValue(item, key, depth + 1));
   }
-  if (typeof value !== "object" || depth >= 3 || isLowSignalValueKey(key)) return null;
+  if (typeof value !== "object" || depth >= 3 || isLowSignalValueKey(key))
+    return null;
   /** @type {Record<string, any>} */
   const output = {};
-  for (const [childKey, item] of Object.entries(value).slice(0, depth === 0 ? 12 : 8)) {
+  for (const [childKey, item] of Object.entries(value).slice(
+    0,
+    depth === 0 ? 12 : 8,
+  )) {
     if (isLowSignalValueKey(childKey)) continue;
     const compact = compactValue(item, childKey, depth + 1);
-    if (compact !== undefined && compact !== null && compact !== "") output[childKey] = compact;
+    if (compact !== undefined && compact !== null && compact !== "")
+      output[childKey] = compact;
   }
   return Object.keys(output).length > 0 ? output : null;
 }
 
 /** @param {string | null | undefined} key */
 function isLowSignalValueKey(key) {
-  return /raw|payload|credential|token|secret|email|phone|address|customer/i.test(key ?? "");
+  return /raw|payload|credential|token|secret|email|phone|address|customer/i.test(
+    key ?? "",
+  );
 }
 
 /** @param {unknown} value */
@@ -1084,7 +1197,9 @@ function uniqueStrings(values) {
 /** @param {unknown[]} values */
 function uuidStrings(values) {
   return uniqueStrings(values).filter((value) =>
-    /^(urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
+    /^(urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    ),
   );
 }
 

@@ -13,13 +13,17 @@ export const DEFAULT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;
 export const DEFAULT_LLM_MAX_RETRIES = 1;
+export const DEFAULT_EPISODIC_EMBEDDING_MODEL = "gemini-embedding-2";
+export const DEFAULT_EPISODIC_EMBEDDING_DIMENSIONS = 768;
+export const DEFAULT_EPISODIC_EMBEDDING_TIMEOUT_MS = 5000;
 
 export function getLlmConfig() {
   const geminiApiKey = process.env.GEMINI_API_KEY || "";
   const groqApiKey = process.env.GROQ_API_KEY || "";
   const enabled =
     process.env.LLM_ENABLED === "true" ||
-    (process.env.LLM_ENABLED !== "false" && Boolean(geminiApiKey || groqApiKey));
+    (process.env.LLM_ENABLED !== "false" &&
+      Boolean(geminiApiKey || groqApiKey));
   return {
     enabled,
     provider: process.env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
@@ -44,6 +48,22 @@ export function getLlmConfig() {
     maxRetries: positiveInteger(
       process.env.LLM_MAX_RETRIES,
       DEFAULT_LLM_MAX_RETRIES,
+    ),
+  };
+}
+
+export function getEpisodicEmbeddingConfig() {
+  const apiKey = process.env.GEMINI_API_KEY || "";
+  return {
+    enabled:
+      process.env.EPISODIC_EMBEDDING_ENABLED !== "false" && Boolean(apiKey),
+    apiKey,
+    model:
+      process.env.EPISODIC_EMBEDDING_MODEL || DEFAULT_EPISODIC_EMBEDDING_MODEL,
+    dimensions: DEFAULT_EPISODIC_EMBEDDING_DIMENSIONS,
+    timeoutMs: positiveInteger(
+      process.env.EPISODIC_EMBEDDING_TIMEOUT_MS,
+      DEFAULT_EPISODIC_EMBEDDING_TIMEOUT_MS,
     ),
   };
 }

@@ -52,6 +52,9 @@ model Merchant {
   storeUnderstandingRuns        StoreUnderstandingRun[]
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
+  memoryEpisodes                MerchantMemoryEpisode[]
+  memoryCandidates              MerchantMemoryCandidate[]
+  memoryContextRetrievalRuns    MerchantContextRetrievalRun[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
   merchantInsightRuns           MerchantInsightRun[]
   merchantInsightFindings       MerchantInsightFinding[]
@@ -118,6 +121,9 @@ model Shop {
   storeUnderstandingRuns        StoreUnderstandingRun[]
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
+  memoryEpisodes                MerchantMemoryEpisode[]
+  memoryCandidates              MerchantMemoryCandidate[]
+  memoryContextRetrievalRuns    MerchantContextRetrievalRun[]
   memoryOpenQuestions           MerchantMemoryOpenQuestion[]
   merchantInsightRuns           MerchantInsightRun[]
   merchantInsightFindings       MerchantInsightFinding[]
@@ -214,10 +220,10 @@ model InboundEmailEvent {
 model NotificationPreference {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId String   @map("merchant_id") @db.Uuid
-  category   String   // registry key, e.g. "morning_brief" | "action_needs_approval"
+  category   String // registry key, e.g. "morning_brief" | "action_needs_approval"
   enabled    Boolean? // null = use the category's registry default
-  channels   Json?    // string[] of provider keys ("email"|"slack"|"whatsapp"); null = default, [] = muted
-  schedule   Json?    // { frequency:"daily"|"weekdays"|"off", hour:0-23, minute:0-59, timezone? }; null = default (schedulable categories only)
+  channels   Json? // string[] of provider keys ("email"|"slack"|"whatsapp"); null = default, [] = muted
+  schedule   Json? // { frequency:"daily"|"weekdays"|"off", hour:0-23, minute:0-59, timezone? }; null = default (schedulable categories only)
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
@@ -683,6 +689,9 @@ model MerchantMemoryBelief {
   lastConfirmedAt    DateTime?                     @map("last_confirmed_at") @db.Timestamptz(6)
   supersededAt       DateTime?                     @map("superseded_at") @db.Timestamptz(6)
   supersedesBeliefId String?                       @map("supersedes_belief_id") @db.Uuid
+  scope              Json                          @default("{}") @map("scope_json")
+  validFrom          DateTime?                     @map("valid_from") @db.Timestamptz(6)
+  validUntil         DateTime?                     @map("valid_until") @db.Timestamptz(6)
   createdAt          DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   merchant           Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
@@ -691,6 +700,7 @@ model MerchantMemoryBelief {
   supersededBy       MerchantMemoryBelief[]        @relation("MerchantMemoryBeliefSupersession")
   evidence           MerchantMemoryEvidence[]
   history            MerchantMemoryBeliefHistory[]
+  memoryCandidates   MerchantMemoryCandidate[]
 
   @@index([merchantId, category, key])
   @@index([merchantId, status])
@@ -799,47 +809,177 @@ model StoreUnderstandingRun {
 }
 
 model MerchantMemoryConversation {
-  id         String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId String                              @map("merchant_id") @db.Uuid
-  shopId     String?                             @map("shop_id") @db.Uuid
-  topic      String                              @default("memory")
-  status     String                              @default("active")
-  context    Json                                @default("{}") @map("context_json")
-  createdAt  DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant   Merchant                            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop       Shop?                               @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  messages   MerchantMemoryConversationMessage[]
+  id               String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId       String                              @map("merchant_id") @db.Uuid
+  shopId           String?                             @map("shop_id") @db.Uuid
+  topic            String                              @default("memory")
+  conversationType String                              @default("legacy") @map("conversation_type")
+  surface          String                              @default("app")
+  externalThreadId String?                             @map("external_thread_id")
+  title            String?
+  status           String                              @default("active")
+  context          Json                                @default("{}") @map("context_json")
+  lastMessageAt    DateTime?                           @map("last_message_at") @db.Timestamptz(6)
+  closedAt         DateTime?                           @map("closed_at") @db.Timestamptz(6)
+  createdAt        DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant         Merchant                            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop?                               @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  messages         MerchantMemoryConversationMessage[]
+  episodes         MerchantMemoryEpisode[]
 
+  @@unique([merchantId, shopId, surface, externalThreadId], map: "mm_conversations_external_thread_key")
   @@index([merchantId, status, updatedAt])
+  @@index([merchantId, shopId, conversationType, surface, lastMessageAt], map: "mm_conversations_type_surface_last_message_idx")
   @@index([merchantId, shopId, topic, status, updatedAt], map: "merchant_memory_conversations_merchant_id_shop_id_topic_status_")
   @@index([shopId, status])
   @@map("merchant_memory_conversations")
 }
 
 model MerchantMemoryConversationMessage {
-  id                    String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  conversationId        String                      @map("conversation_id") @db.Uuid
-  merchantId            String                      @map("merchant_id") @db.Uuid
-  shopId                String?                     @map("shop_id") @db.Uuid
+  id                    String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conversationId        String                        @map("conversation_id") @db.Uuid
+  merchantId            String                        @map("merchant_id") @db.Uuid
+  shopId                String?                       @map("shop_id") @db.Uuid
   role                  String
   content               String
-  structuredOperation   Json?                       @map("structured_operation_json")
-  operationStatus       String?                     @map("operation_status")
-  relatedBeliefIds      String[]                    @default([]) @map("related_belief_ids")
-  relatedOpenQuestionId String?                     @map("related_open_question_id") @db.Uuid
-  safeSummary           String?                     @map("safe_summary")
-  createdAt             DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
-  conversation          MerchantMemoryConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  merchant              Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                  Shop?                       @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  openQuestion          MerchantMemoryOpenQuestion? @relation(fields: [relatedOpenQuestionId], references: [id], onDelete: SetNull)
+  structuredOperation   Json?                         @map("structured_operation_json")
+  operationStatus       String?                       @map("operation_status")
+  relatedBeliefIds      String[]                      @default([]) @map("related_belief_ids")
+  relatedOpenQuestionId String?                       @map("related_open_question_id") @db.Uuid
+  safeSummary           String?                       @map("safe_summary")
+  surface               String                        @default("app")
+  externalMessageId     String?                       @map("external_message_id")
+  recommendationId      String?                       @map("recommendation_id") @db.Uuid
+  actionRunId           String?                       @map("action_run_id") @db.Uuid
+  metadata              Json                          @default("{}") @map("metadata_json")
+  processingStatus      String                        @default("pending") @map("processing_status")
+  visibility            String                        @default("current")
+  retractedAt           DateTime?                     @map("retracted_at") @db.Timestamptz(6)
+  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  conversation          MerchantMemoryConversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  merchant              Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                  Shop?                         @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  openQuestion          MerchantMemoryOpenQuestion?   @relation(fields: [relatedOpenQuestionId], references: [id], onDelete: SetNull)
+  memoryCandidates      MerchantMemoryCandidate[]
+  contextRetrievalRuns  MerchantContextRetrievalRun[]
 
+  @@unique([merchantId, surface, externalMessageId], map: "mm_messages_external_id_key")
   @@index([conversationId, createdAt])
   @@index([merchantId, createdAt])
   @@index([shopId, createdAt])
   @@index([relatedOpenQuestionId])
+  @@index([recommendationId])
+  @@index([actionRunId])
+  @@index([merchantId, shopId, visibility, createdAt], map: "mm_messages_visibility_created_idx")
   @@map("merchant_memory_conversation_messages")
+}
+
+/// Rebuildable episodic search document. Conversation messages remain canonical;
+/// message/chunk/summary documents exist only to make bounded historical recall fast.
+model MerchantMemoryEpisode {
+  id                  String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId          String                      @map("merchant_id") @db.Uuid
+  shopId              String?                     @map("shop_id") @db.Uuid
+  conversationId      String                      @map("conversation_id") @db.Uuid
+  documentType        String                      @map("document_type")
+  role                String?
+  sourceMessageIds    String[]                    @default([]) @map("source_message_ids") @db.Uuid
+  searchText          String                      @map("search_text")
+  structuredSummary   Json                        @default("{}") @map("structured_summary_json")
+  entityRefs          Json                        @default("[]") @map("entity_refs_json")
+  relatedBeliefIds    String[]                    @default([]) @map("related_belief_ids") @db.Uuid
+  recommendationId    String?                     @map("recommendation_id") @db.Uuid
+  actionRunId         String?                     @map("action_run_id") @db.Uuid
+  occurredAt          DateTime                    @map("occurred_at") @db.Timestamptz(6)
+  visibility          String                      @default("current")
+  sourceHash          String                      @map("source_hash")
+  indexVersion        String                      @default("episodic-v1") @map("index_version")
+  processingStatus    String                      @default("pending") @map("processing_status")
+  embeddingStatus     String                      @default("pending") @map("embedding_status")
+  embeddingModel      String?                     @map("embedding_model")
+  embeddingDimensions Int?                        @map("embedding_dimensions")
+  embeddingErrorCode  String?                     @map("embedding_error_code")
+  embeddedAt          DateTime?                   @map("embedded_at") @db.Timestamptz(6)
+  searchVector        Unsupported("tsvector")?    @map("search_vector")
+  embedding           Unsupported("vector(768)")?
+  createdAt           DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant            Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                Shop?                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  conversation        MerchantMemoryConversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, documentType, sourceHash], map: "mm_episodes_conversation_document_hash_key")
+  @@index([merchantId, shopId, visibility, occurredAt], map: "mm_episodes_visibility_occurred_idx")
+  @@index([conversationId, occurredAt])
+  @@index([recommendationId])
+  @@index([actionRunId])
+  @@index([processingStatus, createdAt], map: "mm_episodes_processing_created_idx")
+  @@index([embeddingStatus, createdAt], map: "mm_episodes_embedding_created_idx")
+  @@index([searchVector], type: Gin, map: "mm_episodes_search_vector_idx")
+  @@map("merchant_memory_episodes")
+}
+
+/// An LLM-proposed memory change. Deterministic application code decides whether
+/// it is promoted, rejected, conflicted, or retained only as an episode.
+model MerchantMemoryCandidate {
+  id                   String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId           String                            @map("merchant_id") @db.Uuid
+  shopId               String?                           @map("shop_id") @db.Uuid
+  sourceMessageId      String                            @map("source_message_id") @db.Uuid
+  candidateFingerprint String                            @unique @map("candidate_fingerprint")
+  operationType        String                            @map("operation_type")
+  category             String?
+  key                  String?
+  proposedValue        Json?                             @map("proposed_value_json")
+  valueType            String?                           @map("value_type")
+  scope                Json                              @default("{}") @map("scope_json")
+  validFrom            DateTime?                         @map("valid_from") @db.Timestamptz(6)
+  validUntil           DateTime?                         @map("valid_until") @db.Timestamptz(6)
+  confidence           Decimal?                          @db.Decimal(5, 4)
+  rationaleSummary     String?                           @map("rationale_summary")
+  extractorVersion     String                            @map("extractor_version")
+  schemaVersion        String                            @map("schema_version")
+  status               String                            @default("pending")
+  reasonCode           String?                           @map("reason_code")
+  promotedBeliefId     String?                           @map("promoted_belief_id") @db.Uuid
+  processedAt          DateTime?                         @map("processed_at") @db.Timestamptz(6)
+  createdAt            DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant             Merchant                          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop?                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  sourceMessage        MerchantMemoryConversationMessage @relation(fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  promotedBelief       MerchantMemoryBelief?             @relation(fields: [promotedBeliefId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, shopId, status, createdAt], map: "mm_candidates_status_created_idx")
+  @@index([sourceMessageId])
+  @@index([promotedBeliefId])
+  @@map("merchant_memory_candidates")
+}
+
+/// PII-safe retrieval trace used to explain why context was or was not selected.
+model MerchantContextRetrievalRun {
+  id              String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId      String                             @map("merchant_id") @db.Uuid
+  shopId          String?                            @map("shop_id") @db.Uuid
+  queryMessageId  String?                            @map("query_message_id") @db.Uuid
+  task            String
+  queryHash       String                             @map("query_hash")
+  strategy        Json                               @default("{}") @map("strategy_json")
+  historicalMode  Boolean                            @default(false) @map("historical_mode")
+  candidateCounts Json                               @default("{}") @map("candidate_counts_json")
+  selectedItems   Json                               @default("[]") @map("selected_items_json")
+  tokenBudget     Int                                @map("token_budget")
+  tokenUsed       Int                                @map("token_used")
+  discardedCount  Int                                @default(0) @map("discarded_count")
+  createdAt       DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant        Merchant                           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop            Shop?                              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  queryMessage    MerchantMemoryConversationMessage? @relation(fields: [queryMessageId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, shopId, task, createdAt], map: "merchant_context_retrieval_task_created_idx")
+  @@index([queryMessageId])
+  @@map("merchant_context_retrieval_runs")
 }
 
 model MerchantMemoryOpenQuestion {
@@ -988,32 +1128,32 @@ model MerchantGoalHorizon {
 }
 
 model MerchantPlanRun {
-  id                    String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId            String                       @map("merchant_id") @db.Uuid
-  shopId                String                       @map("shop_id") @db.Uuid
-  status                String                       @default("queued")
-  snapshotVersion       String                       @map("snapshot_version")
-  snapshotHash          String                       @map("snapshot_hash")
-  relevantBeliefIds     String[]                     @default([]) @map("relevant_belief_ids")
-  insightRunId          String?                      @map("insight_run_id") @db.Uuid
-  goalRunId             String?                      @map("goal_run_id") @db.Uuid
-  promptVersion         String                       @map("prompt_version")
-  schemaVersion         String                       @map("schema_version")
-  provider              String?
-  modelIdentifier       String?                      @map("model_identifier")
-  safeErrorCode         String?                      @map("safe_error_code")
-  lastError             String?                      @map("last_error")
-  startedAt             DateTime?                    @map("started_at") @db.Timestamptz(6)
-  completedAt           DateTime?                    @map("completed_at") @db.Timestamptz(6)
-  failedAt              DateTime?                    @map("failed_at") @db.Timestamptz(6)
-  supersededAt          DateTime?                    @map("superseded_at") @db.Timestamptz(6)
-  result                Json                         @default("{}") @map("result_json")
-  createdAt             DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant              Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  recommendation        MerchantPlanRecommendation?
-  evidenceSnapshots     MerchantPlanEvidenceSnapshot[]
+  id                String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId        String                         @map("merchant_id") @db.Uuid
+  shopId            String                         @map("shop_id") @db.Uuid
+  status            String                         @default("queued")
+  snapshotVersion   String                         @map("snapshot_version")
+  snapshotHash      String                         @map("snapshot_hash")
+  relevantBeliefIds String[]                       @default([]) @map("relevant_belief_ids")
+  insightRunId      String?                        @map("insight_run_id") @db.Uuid
+  goalRunId         String?                        @map("goal_run_id") @db.Uuid
+  promptVersion     String                         @map("prompt_version")
+  schemaVersion     String                         @map("schema_version")
+  provider          String?
+  modelIdentifier   String?                        @map("model_identifier")
+  safeErrorCode     String?                        @map("safe_error_code")
+  lastError         String?                        @map("last_error")
+  startedAt         DateTime?                      @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?                      @map("completed_at") @db.Timestamptz(6)
+  failedAt          DateTime?                      @map("failed_at") @db.Timestamptz(6)
+  supersededAt      DateTime?                      @map("superseded_at") @db.Timestamptz(6)
+  result            Json                           @default("{}") @map("result_json")
+  createdAt         DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant          Merchant                       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop              Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  recommendation    MerchantPlanRecommendation?
+  evidenceSnapshots MerchantPlanEvidenceSnapshot[]
 
   @@unique([shopId, snapshotHash, promptVersion, schemaVersion])
   @@index([merchantId, status, createdAt])
@@ -1025,34 +1165,34 @@ model MerchantPlanRun {
 }
 
 model MerchantPlanRecommendation {
-  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  runId                String          @unique @map("run_id") @db.Uuid
-  merchantId           String          @map("merchant_id") @db.Uuid
-  shopId               String          @map("shop_id") @db.Uuid
+  id                   String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId                String                        @unique @map("run_id") @db.Uuid
+  merchantId           String                        @map("merchant_id") @db.Uuid
+  shopId               String                        @map("shop_id") @db.Uuid
   title                String
   summary              String
-  primaryGoalId        String          @map("primary_goal_id")
-  supportingGoalIds    String[]        @default([]) @map("supporting_goal_ids")
-  whyThisAction        String          @map("why_this_action")
-  whyNow               String          @map("why_now")
-  startToday           String          @map("start_today")
-  executionSteps       Json            @default("[]") @map("execution_steps_json")
-  successSignal        Json            @default("{}") @map("success_signal_json")
-  expectedBenefit      String          @map("expected_benefit")
-  supportingBeliefIds  String[]        @default([]) @map("supporting_belief_ids")
-  supportingInsightIds String[]        @default([]) @map("supporting_insight_ids")
+  primaryGoalId        String                        @map("primary_goal_id")
+  supportingGoalIds    String[]                      @default([]) @map("supporting_goal_ids")
+  whyThisAction        String                        @map("why_this_action")
+  whyNow               String                        @map("why_now")
+  startToday           String                        @map("start_today")
+  executionSteps       Json                          @default("[]") @map("execution_steps_json")
+  successSignal        Json                          @default("{}") @map("success_signal_json")
+  expectedBenefit      String                        @map("expected_benefit")
+  supportingBeliefIds  String[]                      @default([]) @map("supporting_belief_ids")
+  supportingInsightIds String[]                      @default([]) @map("supporting_insight_ids")
   confidence           String
   assumption           String?
   caveat               String?
-  reviewStatus         String          @default("proposed") @map("review_status")
-  acceptedAt           DateTime?       @map("accepted_at") @db.Timestamptz(6)
-  rejectedAt           DateTime?       @map("rejected_at") @db.Timestamptz(6)
-  completedAt          DateTime?       @map("completed_at") @db.Timestamptz(6)
-  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt            DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  run                  MerchantPlanRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  merchant             Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop                 Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  reviewStatus         String                        @default("proposed") @map("review_status")
+  acceptedAt           DateTime?                     @map("accepted_at") @db.Timestamptz(6)
+  rejectedAt           DateTime?                     @map("rejected_at") @db.Timestamptz(6)
+  completedAt          DateTime?                     @map("completed_at") @db.Timestamptz(6)
+  createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  run                  MerchantPlanRun               @relation(fields: [runId], references: [id], onDelete: Cascade)
+  merchant             Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   evidenceSnapshot     MerchantPlanEvidenceSnapshot?
 
   @@index([merchantId, reviewStatus, createdAt])
@@ -1220,7 +1360,7 @@ model ActionAutonomyPolicy {
   merchantId String   @map("merchant_id") @db.Uuid
   actionType String   @map("action_type") // e.g. "price_markdown"
   mode       String // "recommend" | "approve_execute" | "autonomous"
-  policy     Json?    // autonomy-as-policy caps for the "autonomous" mode, e.g. { autoMaxTrappedCapital, autoMaxVariants, autoMaxDiscountPercent } — an auto run exceeding a cap degrades to approve. Null = no extra constraint (structural caps still apply).
+  policy     Json? // autonomy-as-policy caps for the "autonomous" mode, e.g. { autoMaxTrappedCapital, autoMaxVariants, autoMaxDiscountPercent } — an auto run exceeding a cap degrades to approve. Null = no extra constraint (structural caps still apply).
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

@@ -1,6 +1,19 @@
-import { Form, Link, useLocation, useNavigation } from "react-router";
+import {
+  Form,
+  Link,
+  useLocation,
+  useNavigate,
+  useNavigation,
+} from "react-router";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import {
+  ActionList,
+  Button,
+  InlineStack,
+  Popover,
+  Text,
+} from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
@@ -41,13 +54,30 @@ const FONT = {
   mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace",
 };
 
-type ChatThread = { messages: Array<{ id: string; role: string; content: string }> };
 // A proactive heads-up Jefe posts into the thread from a standing condition (a run-out
 // approaching, refunds trending). Re-rendered from current state each load — not stored —
 // so it stays honest and can't go stale. Kept deliberately small (see the cap in
 // StoreConversation): the chat is not a notification feed.
 type HeadsUp = { id: string; kind: string; text: string };
-type ChannelConn = { provider: string; connected: boolean; maskedDestination?: string | null; accountName?: string | null };
+type ChatConversation = {
+  id: string;
+  conversationType: string;
+  surface: string;
+  title: string;
+  lastMessageAt: string;
+  createdAt: string;
+};
+type ChatThread = {
+  conversation: ChatConversation | null;
+  conversations: ChatConversation[];
+  messages: Array<{ id: string; role: string; content: string }>;
+};
+type ChannelConn = {
+  provider: string;
+  connected: boolean;
+  maskedDestination?: string | null;
+  accountName?: string | null;
+};
 type EmailBrief = {
   address: string;
   enabled: boolean;
@@ -92,7 +122,13 @@ export function DailyHome(props: {
   conversation?: ChatThread | null;
   actionChatId?: string | null;
   actionChatThread?: ActionChatThread | null;
-  changelog?: Array<{ id: string; date: string; text: string; tag?: string | null; body?: string | null }>;
+  changelog?: Array<{
+    id: string;
+    date: string;
+    text: string;
+    tag?: string | null;
+    body?: string | null;
+  }>;
   emailBrief?: EmailBrief | null;
   openQuestions?: MemoryQuestion[];
   horizonNear: HorizonItem[];
@@ -185,6 +221,7 @@ function StoreConversation({
   currentSearch: string;
 }) {
   const navigation = useNavigation();
+  const navigate = useNavigate();
   const pendingIntent = navigation.formData?.get("intent");
   const isThinking =
     navigation.state !== "idle" && pendingIntent === "chat.message";
@@ -193,13 +230,16 @@ function StoreConversation({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
   const submittedMessageRef = useRef("");
   useEffect(() => {
-    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
+    if (isThinking && pendingMessage)
+      submittedMessageRef.current = pendingMessage;
   }, [isThinking, pendingMessage]);
   useEffect(() => {
     if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
+      if (composerMessage.trim() === submittedMessageRef.current)
+        setComposerMessage("");
       submittedMessageRef.current = "";
     }
   }, [isThinking, composerMessage]);
@@ -220,6 +260,62 @@ function StoreConversation({
 
   return (
     <section style={conversationStyle}>
+      <div style={threadControlsStyle}>
+        <InlineStack
+          align="space-between"
+          blockAlign="center"
+          gap="300"
+          wrap={false}
+        >
+          <div style={{ minWidth: 0 }}>
+            <Text as="h2" variant="headingSm" truncate>
+              {conversation?.conversation?.title ?? "New conversation"}
+            </Text>
+          </div>
+          <InlineStack gap="200" wrap={false}>
+            <Popover
+              active={historyOpen}
+              onClose={() => setHistoryOpen(false)}
+              activator={
+                <Button
+                  disclosure
+                  onClick={() => setHistoryOpen((open) => !open)}
+                >
+                  History
+                </Button>
+              }
+              preferredAlignment="right"
+            >
+              <ActionList
+                actionRole="menuitem"
+                items={
+                  (conversation?.conversations.length ?? 0) > 0
+                    ? (conversation?.conversations ?? []).map((item) => ({
+                        content: item.title,
+                        active: item.id === conversation?.conversation?.id,
+                        helpText: formatConversationDate(item.lastMessageAt),
+                        onAction: () => {
+                          setHistoryOpen(false);
+                          navigate(
+                            searchWith(currentSearch, {
+                              conversation: item.id,
+                            }),
+                          );
+                        },
+                      }))
+                    : [{ content: "No earlier chats yet", disabled: true }]
+                }
+              />
+            </Popover>
+            <Form method="post">
+              <input type="hidden" name="intent" value="chat.new" />
+              <Button submit disabled={navigation.state !== "idle"}>
+                New chat
+              </Button>
+            </Form>
+          </InlineStack>
+        </InlineStack>
+      </div>
       <div style={messagesStyle}>
         {history.map((message) => (
           <MessageRow key={message.id} from={message.role}>
@@ -236,9 +332,15 @@ function StoreConversation({
             {headsUp.text}
           </MessageRow>
         ))}
-        {hasMove ? <MoveMessage move={move} currentSearch={currentSearch} /> : null}
-        {showQuietLine ? <MessageRow from="assistant">{quietLine}</MessageRow> : null}
-        {pendingMessage ? <MessageRow from="merchant">{pendingMessage}</MessageRow> : null}
+        {hasMove ? (
+          <MoveMessage move={move} currentSearch={currentSearch} />
+        ) : null}
+        {showQuietLine ? (
+          <MessageRow from="assistant">{quietLine}</MessageRow>
+        ) : null}
+        {pendingMessage ? (
+          <MessageRow from="merchant">{pendingMessage}</MessageRow>
+        ) : null}
         {isThinking ? (
           <div style={messageRowStyle} aria-live="polite">
             <span style={smallMarkStyle}>J</span>
@@ -249,6 +351,11 @@ function StoreConversation({
       <div style={chatComposerWrapStyle}>
         <Form method="post" style={composerStyle}>
           <input type="hidden" name="intent" value="chat.message" />
+          <input
+            type="hidden"
+            name="conversationId"
+            value={conversation?.conversation?.id ?? ""}
+          />
           <input
             name="message"
             required
@@ -269,12 +376,29 @@ function StoreConversation({
   );
 }
 
+function formatConversationDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("en-GB", {
+        day: "numeric",
+        month: "short",
+      }).format(date);
+}
+
 function MessageRow({ from, children }: { from: string; children: ReactNode }) {
   const isMerchant = from === "merchant" || from === "user";
   return (
-    <div style={{ ...messageRowStyle, justifyContent: isMerchant ? "flex-end" : "flex-start" }}>
+    <div
+      style={{
+        ...messageRowStyle,
+        justifyContent: isMerchant ? "flex-end" : "flex-start",
+      }}
+    >
       {!isMerchant ? <span style={smallMarkStyle}>J</span> : null}
-      <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>{children}</div>
+      <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -282,7 +406,13 @@ function MessageRow({ from, children }: { from: string; children: ReactNode }) {
 // The move as a message in the thread: enough to recognise it, with a zoom into its
 // own action chat ("Talk this through →" sets ?actionChat=<id>) where the merchant
 // approves, declines or revises it. The decision never happens on the home feed.
-function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch: string }) {
+function MoveMessage({
+  move,
+  currentSearch,
+}: {
+  move: PrimaryMove;
+  currentSearch: string;
+}) {
   const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
   const subtitle = informativeSubtitle(move.summary, move.title);
   return (
@@ -290,7 +420,9 @@ function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch
       <span style={smallMarkStyle}>J</span>
       <div style={moveMessageStyle}>
         <div style={cardTopStyle}>
-          <Mono>{move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}</Mono>
+          <Mono>
+            {move.state === "in_progress" ? "IN PROGRESS" : "YOUR NEXT MOVE"}
+          </Mono>
           <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
         </div>
         <strong style={moveMessageTitleStyle}>{move.title}</strong>
@@ -298,7 +430,10 @@ function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch
         {/* Approve / decline / revise live in the move's own chat (the zoom level), never on
             the home feed — an executable commitment happens in the focused surface. */}
         <div style={moveMessageActionsStyle}>
-          <Link to={searchWith(currentSearch, { actionChat: chatTarget })} style={primaryButtonStyle}>
+          <Link
+            to={searchWith(currentSearch, { actionChat: chatTarget })}
+            style={primaryButtonStyle}
+          >
             Talk this through →
           </Link>
         </div>
@@ -312,7 +447,10 @@ function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch
 function outcomeMessageText(action: ExecutedAction): string {
   const name = action.sourceRecommendation?.title || action.headline;
   if (action.status === "rejected") {
-    return action.declineLearning ?? `You passed on “${name}” — I've noted it wasn't right for now.`;
+    return (
+      action.declineLearning ??
+      `You passed on “${name}” — I've noted it wasn't right for now.`
+    );
   }
   if (action.status === "reverted") {
     return `I reverted “${name}”.`;
@@ -325,7 +463,10 @@ function outcomeMessageText(action: ExecutedAction): string {
 
 // The quiet-day line: grounded in a real thing Jefe is watching (or last noticed),
 // never fabricated. Falls back to an honest generic when there's nothing to surface.
-function buildQuietLine(horizonWatching: HorizonWatch[], insights: Insight[]): string {
+function buildQuietLine(
+  horizonWatching: HorizonWatch[],
+  insights: Insight[],
+): string {
   const watch = (horizonWatching || []).find((item) => item.title);
   if (watch) {
     return watch.reason
@@ -357,9 +498,32 @@ export function DailyHomeLoading({ storeName }: { storeName: string }) {
         <section style={cardStyle} aria-label="Opening Jefe">
           <Mono>OPENING JEFE</Mono>
           <div style={{ height: 28 }} />
-          <div style={{ height: 24, maxWidth: 420, background: COLORS.hairline, borderRadius: 8 }} />
-          <div style={{ height: 16, maxWidth: 580, background: COLORS.hairline, borderRadius: 8, marginTop: 22 }} />
-          <div style={{ height: 16, maxWidth: 500, background: COLORS.hairline, borderRadius: 8, marginTop: 10 }} />
+          <div
+            style={{
+              height: 24,
+              maxWidth: 420,
+              background: COLORS.hairline,
+              borderRadius: 8,
+            }}
+          />
+          <div
+            style={{
+              height: 16,
+              maxWidth: 580,
+              background: COLORS.hairline,
+              borderRadius: 8,
+              marginTop: 22,
+            }}
+          />
+          <div
+            style={{
+              height: 16,
+              maxWidth: 500,
+              background: COLORS.hairline,
+              borderRadius: 8,
+              marginTop: 10,
+            }}
+          />
         </section>
       </div>
     </main>
@@ -436,11 +600,13 @@ function ActionChat({
   const [composerMessage, setComposerMessage] = useState("");
   const submittedMessageRef = useRef("");
   useEffect(() => {
-    if (isThinking && pendingMessage) submittedMessageRef.current = pendingMessage;
+    if (isThinking && pendingMessage)
+      submittedMessageRef.current = pendingMessage;
   }, [isThinking, pendingMessage]);
   useEffect(() => {
     if (!isThinking && submittedMessageRef.current) {
-      if (composerMessage.trim() === submittedMessageRef.current) setComposerMessage("");
+      if (composerMessage.trim() === submittedMessageRef.current)
+        setComposerMessage("");
       submittedMessageRef.current = "";
     }
   }, [isThinking, composerMessage]);
@@ -464,7 +630,14 @@ function ActionChat({
           </Link>
           <DateLabel>{todayLabel ?? ""}</DateLabel>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 20 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginTop: 20,
+          }}
+        >
           <Mono>ABOUT THIS MOVE</Mono>
           <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
         </div>
@@ -477,11 +650,20 @@ function ActionChat({
               key={message.id}
               style={{
                 ...messageRowStyle,
-                justifyContent: message.role === "merchant" ? "flex-end" : "flex-start",
+                justifyContent:
+                  message.role === "merchant" ? "flex-end" : "flex-start",
               }}
             >
-              {message.role !== "merchant" ? <span style={smallMarkStyle}>J</span> : null}
-              <div style={message.role === "merchant" ? merchantBubbleStyle : assistantBubbleStyle}>
+              {message.role !== "merchant" ? (
+                <span style={smallMarkStyle}>J</span>
+              ) : null}
+              <div
+                style={
+                  message.role === "merchant"
+                    ? merchantBubbleStyle
+                    : assistantBubbleStyle
+                }
+              >
                 {message.content}
               </div>
             </div>
@@ -504,9 +686,21 @@ function ActionChat({
             <ChatPrompt message="What exactly would you order?" move={move} />
             {move.actionRunId ? (
               <Form method="post">
-                <input type="hidden" name="intent" value="action.revise_scope" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
-                <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="action.revise_scope"
+                />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
+                <input
+                  type="hidden"
+                  name="recommendationId"
+                  value={move.recommendationId ?? ""}
+                />
                 <input type="hidden" name="maxProducts" value="1" />
                 <ChipButton>Can we do just one product?</ChipButton>
               </Form>
@@ -514,7 +708,11 @@ function ActionChat({
             {move.actionRunId ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.defer" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <input type="hidden" name="reason" value="defer" />
                 <ChipButton>Maybe later</ChipButton>
               </Form>
@@ -530,7 +728,9 @@ function ActionChat({
               aria-label="Ask about this move"
               placeholder="Ask about this move, or tell me what to change..."
               value={composerMessage}
-              onChange={(event) => setComposerMessage(event.currentTarget.value)}
+              onChange={(event) =>
+                setComposerMessage(event.currentTarget.value)
+              }
               style={composerInputStyle}
               disabled={isThinking}
             />
@@ -542,7 +742,11 @@ function ActionChat({
             {move.actionRunId && move.executable ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.approve" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <button type="submit" style={approveButtonStyle}>
                   Approve
                 </button>
@@ -551,7 +755,11 @@ function ActionChat({
             {move.actionRunId ? (
               <Form method="post">
                 <input type="hidden" name="intent" value="action.defer" />
-                <input type="hidden" name="actionRunId" value={move.actionRunId} />
+                <input
+                  type="hidden"
+                  name="actionRunId"
+                  value={move.actionRunId}
+                />
                 <input type="hidden" name="reason" value="defer" />
                 <button type="submit" style={quietDecisionButtonStyle}>
                   Not right now
@@ -585,7 +793,11 @@ function MoveHiddenFields({ move }: { move: PrimaryMove }) {
   return (
     <>
       <input type="hidden" name="actionRunId" value={move.actionRunId ?? ""} />
-      <input type="hidden" name="recommendationId" value={move.recommendationId ?? ""} />
+      <input
+        type="hidden"
+        name="recommendationId"
+        value={move.recommendationId ?? ""}
+      />
     </>
   );
 }
@@ -598,7 +810,13 @@ function ChipButton({ children }: { children: ReactNode }) {
   );
 }
 
-function StatusPill({ tone, children }: { tone: "yellow" | "green"; children: ReactNode }) {
+function StatusPill({
+  tone,
+  children,
+}: {
+  tone: "yellow" | "green";
+  children: ReactNode;
+}) {
   const green = tone === "green";
   return (
     <span
@@ -669,9 +887,18 @@ function buildPrimaryMove(input: {
     };
   }
 
-  const title = source?.title || input.suggestedAction?.headline || inProgress?.headline || "Review Jefe's next move";
-  const summary = source?.summary || input.suggestedAction?.headline || "Jefe has a move ready to discuss.";
-  const success = successSignalText(source?.successSignal ?? input.recommendation?.successSignal ?? null);
+  const title =
+    source?.title ||
+    input.suggestedAction?.headline ||
+    inProgress?.headline ||
+    "Review Jefe's next move";
+  const summary =
+    source?.summary ||
+    input.suggestedAction?.headline ||
+    "Jefe has a move ready to discuss.";
+  const success = successSignalText(
+    source?.successSignal ?? input.recommendation?.successSignal ?? null,
+  );
   if (inProgress && !input.suggestedAction) {
     return {
       title,
@@ -689,16 +916,22 @@ function buildPrimaryMove(input: {
       statusTone: "green",
       approvedAt: inProgress.appliedAt,
       baselineSignal: inProgress.baselineSignal ?? null,
-      currentSignal: inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
+      currentSignal:
+        inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
     };
   }
 
   return {
     title,
     summary,
-    whyThisAction: source?.whyThisAction || input.recommendation?.whyThisAction || "",
+    whyThisAction:
+      source?.whyThisAction || input.recommendation?.whyThisAction || "",
     whyNow: source?.whyNow || input.recommendation?.whyNow || "",
-    successSignal: goalTitle(source?.primaryGoalId ?? input.recommendation?.primaryGoalId ?? null, input.goals) ?? success,
+    successSignal:
+      goalTitle(
+        source?.primaryGoalId ?? input.recommendation?.primaryGoalId ?? null,
+        input.goals,
+      ) ?? success,
     recommendationId: source?.id ?? input.recommendation?.id ?? null,
     recommendationRunId: source?.runId ?? input.recommendation?.runId ?? null,
     actionRunId: input.suggestedAction?.actionRunId ?? null,
@@ -728,9 +961,14 @@ function recommendationSource(recommendation: Recommendation) {
 }
 
 function baselineFromSuggested(action: SuggestedAction | null) {
-  const products = action?.keyNumbers?.find((item) => item.label === "Products")?.value;
-  const trapped = action?.keyNumbers?.find((item) => item.label === "Trapped capital")?.value;
-  if (products && trapped) return `${products} product${products === "1" ? "" : "s"} · ${trapped} tied up`;
+  const products = action?.keyNumbers?.find(
+    (item) => item.label === "Products",
+  )?.value;
+  const trapped = action?.keyNumbers?.find(
+    (item) => item.label === "Trapped capital",
+  )?.value;
+  if (products && trapped)
+    return `${products} product${products === "1" ? "" : "s"} · ${trapped} tied up`;
   return null;
 }
 
@@ -742,8 +980,10 @@ type SuccessSignalLike = {
 
 function successSignalText(signal: SuccessSignalLike) {
   if (!signal || typeof signal !== "object") return null;
-  const description = typeof signal.description === "string" ? signal.description : "";
-  const timeframe = typeof signal.timeframe === "string" ? signal.timeframe : "";
+  const description =
+    typeof signal.description === "string" ? signal.description : "";
+  const timeframe =
+    typeof signal.timeframe === "string" ? signal.timeframe : "";
   const target = typeof signal.target === "string" ? signal.target : "";
   return [description, target, timeframe].filter(Boolean).join(" · ") || null;
 }
@@ -752,7 +992,8 @@ function informativeSubtitle(summary: string, title: string) {
   const cleanSummary = summary.replace(/\s+/g, " ").trim();
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   if (!cleanSummary) return null;
-  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase()) return null;
+  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase())
+    return null;
   return cleanSummary;
 }
 
@@ -766,8 +1007,14 @@ function goalTitle(goalId: string | null, goals: Goal[]) {
 // never the viewer's browser zone. Fixed instant + pinned zone ⇒ hydration-safe.
 // The current-day header label is separate: computed once in the loader
 // (computeHomeDateLabel) and passed as `todayLabel`, never read from the clock here.
-function formatShortDate(value: string | null | undefined, timeZone?: string | null) {
-  return formatDateInZone({ iso: value ?? null, timeZone: timeZone ?? undefined });
+function formatShortDate(
+  value: string | null | undefined,
+  timeZone?: string | null,
+) {
+  return formatDateInZone({
+    iso: value ?? null,
+    timeZone: timeZone ?? undefined,
+  });
 }
 
 function searchWith(search: string, updates: Record<string, string | null>) {
@@ -820,7 +1067,14 @@ const markStyle: CSSProperties = {
   justifyContent: "center",
   fontWeight: 800,
 };
-const smallMarkStyle: CSSProperties = { ...markStyle, width: 22, height: 22, borderRadius: 6, fontSize: 12, flex: "none" };
+const smallMarkStyle: CSSProperties = {
+  ...markStyle,
+  width: 22,
+  height: 22,
+  borderRadius: 6,
+  fontSize: 12,
+  flex: "none",
+};
 const logoMarkStyle: CSSProperties = {
   width: 32,
   height: 32,
@@ -861,7 +1115,10 @@ const headlineStyle: CSSProperties = {
   margin: 0,
   letterSpacing: 0,
 };
-const headlineEmStyle: CSSProperties = { color: COLORS.navy, fontStyle: "italic" };
+const headlineEmStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontStyle: "italic",
+};
 const cardStyle: CSSProperties = {
   background: COLORS.card,
   border: `1px solid ${COLORS.border}`,
@@ -939,7 +1196,9 @@ const chatSubtitleStyle: CSSProperties = {
   fontSize: 15.5,
   marginTop: 10,
 };
-const chatDividerStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
+const chatDividerStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+};
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
   display: "flex",
@@ -982,6 +1241,11 @@ const chatComposerWrapStyle: CSSProperties = {
 const conversationStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
+};
+
+const threadControlsStyle: CSSProperties = {
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  padding: "14px 16px",
 };
 const moveMessageStyle: CSSProperties = {
   background: COLORS.card,

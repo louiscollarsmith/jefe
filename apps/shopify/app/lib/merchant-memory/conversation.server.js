@@ -1,19 +1,11 @@
 // @ts-check
 
-import { Type } from "@google/genai";
-import {
-  createLlmProvider,
-} from "../llm/provider.server.js";
-import { redact } from "../observability/redact.server.js";
-import { getMerchantContextForQuestion } from "./context-retriever.server.js";
-import { answerCommerceQuestion } from "./commerce-analyst.server.js";
+import { createLlmProvider } from "../llm/provider.server.js";
 import {
   STRUCTURED_OPERATION_SCHEMA,
   parseAndValidateStructuredOperation,
 } from "../llm/structured-operation-schema.server.js";
-import {
-  BELIEF_PRECEDENCE,
-} from "./constants.server.js";
+import { BELIEF_PRECEDENCE } from "./constants.server.js";
 import {
   OPERATION_STATUS,
   OPERATION_TYPES,
@@ -36,6 +28,14 @@ import {
 } from "./conversational-belief-registry.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import { getLlmConfig } from "../llm/config.server.js";
+import {
+  appendConversationMessage,
+  linkConversationMessageToBelief,
+  sanitizeMemoryText,
+} from "./episodic-memory.server.js";
+import { sendGeneralChatMessage } from "./general-chat.server.js";
+import { retrieveMerchantContext } from "./merchant-context.server.js";
+import { historicaliseBeliefSources } from "./passive-memory.server.js";
 
 export { OPERATION_STATUS, OPERATION_TYPES };
 
@@ -46,23 +46,12 @@ export const CONVERSATION_TOPICS = Object.freeze({
   action: "action",
 });
 
-const ACTION_CHAT_REPLY_SCHEMA = {
-  type: Type.OBJECT,
-  required: ["reply"],
-  properties: {
-    reply: { type: Type.STRING },
-    confidence: { type: Type.NUMBER, nullable: true },
-  },
-};
-
-const ACTION_CHAT_LATEST_MESSAGE_MAX = 900;
-const ACTION_CHAT_THREAD_MESSAGE_MAX = 600;
-
 const INITIAL_OPEN_QUESTIONS = [
   {
     category: "preferences",
     questionKey: "preferences.optimisation_priority",
-    question: "What should Jefe optimise for: growth, profit, cash flow, or something else?",
+    question:
+      "What should Jefe optimise for: growth, profit, cash flow, or something else?",
     reason: "This affects how Jefe should evaluate tradeoffs.",
     priority: 10,
     answerType: "option",
@@ -72,7 +61,8 @@ const INITIAL_OPEN_QUESTIONS = [
     category: "policies",
     questionKey: "policies.business_rules",
     question: "Are there any business rules Jefe should never break?",
-    reason: "Hard constraints prevent unsafe or unsuitable future recommendations.",
+    reason:
+      "Hard constraints prevent unsafe or unsuitable future recommendations.",
     priority: 20,
     answerType: "text",
     answerOptions: [],
@@ -82,7 +72,10 @@ const INITIAL_OPEN_QUESTIONS = [
 // Open questions the GAP generator owns. Listing them lets us retract a question
 // automatically once its gap has been filled (a question that memory answered
 // for itself from data should stop being asked).
-const GAP_DRIVEN_QUESTION_KEYS = ["data.product_costs", "policies.no_sale_products"];
+const GAP_DRIVEN_QUESTION_KEYS = [
+  "data.product_costs",
+  "policies.no_sale_products",
+];
 
 /** @param {any} belief */
 function beliefPercentage(belief) {
@@ -126,7 +119,9 @@ export function buildGapDrivenOpenQuestions(beliefs) {
 
   // Several active products with no recent sales: memory can't tell dead stock
   // from seasonal or newly launched lines — only the merchant can.
-  const noSale = byKey.get("products.no_sale_active_product_count.trailing_90d");
+  const noSale = byKey.get(
+    "products.no_sale_active_product_count.trailing_90d",
+  );
   const noSaleCount = Number(noSale?.value?.count ?? 0);
   if (noSaleCount >= 5) {
     questions.push({
@@ -137,7 +132,12 @@ export function buildGapDrivenOpenQuestions(beliefs) {
         "Lets Jefe classify no-sale products correctly instead of assuming they are dead stock.",
       priority: 40,
       answerType: "option",
-      answerOptions: ["discontinued", "seasonal", "new_or_launching", "keep_promoting"],
+      answerOptions: [
+        "discontinued",
+        "seasonal",
+        "new_or_launching",
+        "keep_promoting",
+      ],
     });
   }
 
@@ -186,18 +186,20 @@ export async function getMerchantMemoryConversationExperience(prisma, input) {
     merchantId: input.merchantId,
   });
 
-  if (messages.length === 0 && conversation.topic === CONVERSATION_TOPICS.memory) {
-    await prisma.merchantMemoryConversationMessage.create({
-      data: {
-        conversationId: conversation.id,
-        merchantId: input.merchantId,
-        shopId: input.shopId ?? null,
-        role: "assistant",
-        content: buildOpeningMessage(summary),
-        operationStatus: null,
-        relatedBeliefIds: summary.overviewItems.map((item) => item.id),
-        safeSummary: "Initial Jefe introduction.",
-      },
+  if (
+    messages.length === 0 &&
+    conversation.topic === CONVERSATION_TOPICS.memory
+  ) {
+    await appendConversationMessage(prisma, {
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId ?? null,
+      role: "assistant",
+      content: buildOpeningMessage(summary),
+      surface: conversation.surface ?? "app",
+      operationStatus: null,
+      relatedBeliefIds: summary.overviewItems.map((item) => item.id),
+      safeSummary: "Initial Jefe introduction.",
     });
     messages = await listConversationMessages(prisma, {
       conversationId: conversation.id,
@@ -296,72 +298,21 @@ export async function getActionChatThread(prisma, input) {
  * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendActionChatMessage(prisma, input) {
-  const content = input.message.trim();
-  if (!content) return { ok: false, error: "Message is required." };
   const topic = actionConversationTopic(input);
-  const conversation = await getOrCreateConversation(prisma, {
+  if (!input.shopId)
+    return { ok: false, error: "A shop is required for action chat." };
+  const result = await sendGeneralChatMessage(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
-    topic,
-  });
-  await prisma.merchantMemoryConversationMessage.create({
-    data: {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      role: "merchant",
-      content,
-      safeSummary: summarizeMerchantStatement(content),
-    },
-  });
-  const [actionContext, recentMessages] = await Promise.all([
-    getMerchantContextForQuestion(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionRunId: input.actionRunId,
-      recommendationId: input.recommendationId,
-      message: content,
-      logger: input.logger,
-    }),
-    listRecentActionMessages(prisma, {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      take: 10,
-    }),
-  ]);
-  await updateConversationContext(prisma, conversation, {
-    currentActionRunId: actionContext.actionRunId ?? null,
-    actionRunId: actionContext.actionRunId ?? null,
-    recommendationId: actionContext.recommendationId ?? null,
-    planEvidenceSnapshotId:
-      actionContext.planEvidenceAtRecommendationTime?.snapshotId ?? null,
-  });
-  const reply = await generateActionChatReply({
-    message: content,
-    actionContext,
-    recentMessages,
+    message: input.message,
+    surface: "app",
+    externalThreadId: topic,
+    recommendationId: input.recommendationId,
+    actionRunId: input.actionRunId,
     llmProvider: input.llmProvider,
     logger: input.logger,
-    usage: {
-      prisma,
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      feature: "action_chat",
-    },
   });
-  await createAssistantMessage(prisma, {
-    conversation,
-    content: reply.content,
-    operation: {
-      operationType: "action_chat_reply",
-      reason: reply.source === "llm" ? "LLM action-scoped reply." : "Fallback action-scoped reply.",
-      actionRunId: actionContext.actionRunId ?? null,
-      recommendationId: actionContext.recommendationId ?? null,
-      source: reply.source,
-    },
-    operationStatus: null,
-  });
-  return { ok: true, topic };
+  return result.ok ? { ok: true, topic } : result;
 }
 
 /**
@@ -392,285 +343,6 @@ export async function addActionChatNote(prisma, input) {
     operationStatus: null,
   });
   return { ok: true, topic };
-}
-
-/** @param {unknown} value */
-function asRecord(value) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? /** @type {Record<string, any>} */ (value)
-    : null;
-}
-
-/** @param {unknown} value */
-function text(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
-/** @param {string} value */
-function parseJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ conversationId: string; merchantId: string; take?: number }} input
- */
-async function listRecentActionMessages(prisma, input) {
-  const rows = await prisma.merchantMemoryConversationMessage.findMany({
-    where: {
-      conversationId: input.conversationId,
-      merchantId: input.merchantId,
-    },
-    orderBy: { createdAt: "desc" },
-    take: input.take ?? 10,
-  });
-  return rows.reverse().map((message) => ({
-    role: message.role,
-    content: message.content,
-  }));
-}
-
-/**
- * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
- */
-async function generateActionChatReply(input) {
-  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
-  const commerceAnswer = input.usage?.prisma && input.usage?.merchantId
-    ? await answerCommerceQuestion(input.usage.prisma, {
-        merchantId: input.usage.merchantId,
-        shopId: input.usage.shopId ?? null,
-        message: input.message,
-        actionContext: input.actionContext,
-        recentMessages: input.recentMessages,
-        provider: provider ?? undefined,
-        logger: input.logger,
-      })
-    : { source: "commerce_analyst", reply: null, analysisPacket: null };
-  if (commerceAnswer.reply) {
-    return {
-      source: commerceAnswer.source === "llm" ? "llm" : "fallback",
-      content: commerceAnswer.reply,
-    };
-  }
-  const analysisPacket = commerceAnswer.analysisPacket ?? null;
-  const fallback = {
-    source: "fallback",
-    content: buildActionChatReply(input.message, input.actionContext, analysisPacket),
-  };
-  if (!provider?.enabled || !provider.generateStructuredJson) return fallback;
-
-  try {
-    const result = await provider.generateStructuredJson({
-      systemPrompt: buildActionChatSystemPrompt(),
-      prompt: buildActionChatPrompt({ ...input, analysisPacket }),
-      schema: ACTION_CHAT_REPLY_SCHEMA,
-      maxOutputTokens: 700,
-    });
-    const reply = parseActionChatReply(result.json);
-    if (!reply) return fallback;
-    return { source: "llm", content: reply };
-  } catch (error) {
-    input.logger?.warn?.("LLM action chat reply unavailable; using fallback", {
-      provider: provider.provider,
-      model: provider.model,
-      error: error instanceof Error ? error.name : "UnknownError",
-    });
-    return fallback;
-  }
-}
-
-function buildActionChatSystemPrompt() {
-  return [
-    "You are Jefe, an AI eCommerce manager, inside a chat scoped to exactly one proposed action.",
-    "Answer the merchant's latest message using only the supplied plan evidence at recommendation time, current system context, commerce analysis results and recent thread.",
-    "Use planEvidenceAtRecommendationTime for why Jefe made this recommendation. Use currentSystemContext for what Jefe can see right now.",
-    "Use analysisPacket for quantified answers. If a value is not in analysisPacket or context, do not invent it.",
-    "If recommendation-time evidence and current context differ, clearly label the difference instead of blending the two.",
-    "Do not invent product names, counts, prices, dates, supplier details or performance results. If the context does not contain the requested detail, say that plainly and explain what Jefe can verify from the current context.",
-    "Do not approve, decline, execute, promise an external write, or create a standing Merchant Memory rule. Scope changes and approvals happen through the visible controls.",
-    "Keep replies concise, natural and specific. Use short bullets only when they make the answer easier to scan.",
-  ].join("\n");
-}
-
-/**
- * @param {{ message: string; actionContext: any; recentMessages: Array<{ role: string; content: string }>; analysisPacket?: any }} input
- */
-function buildActionChatPrompt(input) {
-  const recentThread = input.recentMessages.slice(-8).map((message) => ({
-    role: safePromptRole(message.role),
-    content: safePromptText(message.content, ACTION_CHAT_THREAD_MESSAGE_MAX),
-  }));
-  return JSON.stringify({
-    latestMerchantMessage: safePromptText(input.message, ACTION_CHAT_LATEST_MESSAGE_MAX),
-    planEvidenceAtRecommendationTime:
-      input.actionContext?.planEvidenceAtRecommendationTime ?? null,
-    currentSystemContext: input.actionContext?.currentSystemContext ?? null,
-    analysisPacket: input.analysisPacket ?? null,
-    retrieval: input.actionContext?.retrieval ?? null,
-    recentThread,
-    responseContract: {
-      reply: "Merchant-facing answer. No markdown tables. No invented data.",
-    },
-  });
-}
-
-/** @param {unknown} role */
-function safePromptRole(role) {
-  const value = typeof role === "string" ? role : "";
-  return ["merchant", "assistant", "system"].includes(value) ? value : "message";
-}
-
-/**
- * Redact merchant-entered text before it crosses the AI boundary. The original
- * message stays in the scoped thread; provider prompts receive only this copy.
- * @param {unknown} value
- * @param {number} max
- */
-function safePromptText(value, max) {
-  const raw = String(value ?? "").replace(/\s+/g, " ").trim();
-  if (!raw) return "";
-  const redacted = redact(raw, { maxString: max });
-  const text = typeof redacted === "string" ? redacted : raw.slice(0, max);
-  return text
-    .replace(/\b(customer|client|buyer|recipient)\s+(?:name\s*)?[:#-]?\s+[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,3}/gi, "$1 [redacted-name]")
-    .replace(/\+?\d[\d\s().-]{7,}\d/g, (match) =>
-      /^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[redacted-phone]",
-    )
-    .slice(0, max);
-}
-
-/** @param {unknown} raw */
-function parseActionChatReply(raw) {
-  const value = typeof raw === "string" ? parseJson(raw) : raw;
-  const reply = text(asRecord(value)?.reply);
-  if (!reply || reply.length < 2) return null;
-  return reply.slice(0, 1800);
-}
-
-/**
- * @param {string} message
- * @param {any} actionContext
- * @param {any} [analysisPacket]
- */
-function buildActionChatReply(message, actionContext, analysisPacket = null) {
-  const normalized = message.toLowerCase();
-  const title = actionTitleFromContext(actionContext) || "this move";
-  if (/revenue|sales|loss|lost|risk|impact|amount|dollars?|\$|£|€|worth/.test(normalized)) {
-    const lines = calculationLinesFromResults(analysisPacket);
-    if (lines.length) {
-      return `Here is what I can calculate from Jefe's current commerce data:\n\n${lines.map((line) => `- ${line}`).join("\n")}`;
-    }
-  }
-  if (/why|reason|how.*got|how.*here/.test(normalized)) {
-    const why = recommendationReasonFromContext(actionContext);
-    return [
-      why.whyThis ? `Why this: ${why.whyThis}` : null,
-      why.whyNow ? `Why now: ${why.whyNow}` : null,
-      "If you want to change the scope, use one of the options below and I will re-check the typed preview before anything can be approved.",
-    ].filter(Boolean).join("\n\n");
-  }
-  if (/what|which|two|product|products|items|names/.test(normalized)) {
-    const products = productLinesFromContext(actionContext);
-    if (products.length) {
-      return `I can see these product details in Jefe's context:\n\n${products.map((line) => `- ${line}`).join("\n")}`;
-    }
-  }
-  if (/one product|just one|smaller|scope/.test(normalized)) {
-    return "Yes. Choose \"Can we do just one product?\" and I will narrow the typed preview to the highest-priority product before you approve anything.";
-  }
-  if (/discount.?free|no discount|without discount|keep.*price/.test(normalized)) {
-    return "Understood. I will treat discount-free feedback as applying to this move only, not as a standing rule. If this makes the current move wrong, choose \"Not right now\" and Jefe will hold it.";
-  }
-  if (/remind|next week|later|hold|defer/.test(normalized)) {
-    return "Understood. Use \"Remind me next week\" or \"Not right now\" and I will hold this move instead of asking you to approve it.";
-  }
-  return `I am keeping this thread about ${title}. Ask why, change the scope, or approve/hold it below.`;
-}
-
-/** @param {any} packet */
-function calculationLinesFromResults(packet) {
-  if (!packet || !Array.isArray(packet.results)) return [];
-  const lines = [];
-  for (const result of packet.results.slice(0, 3)) {
-    const value = result.totals?.atRiskRevenue ?? result.totals?.value;
-    const currency = result.currency ? `${result.currency} ` : "";
-    if (Number.isFinite(Number(value))) {
-      lines.push(`${labelForCalculation(result)}: ${currency}${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}${result.window?.label ? ` (${result.window.label})` : ""}`);
-    }
-    for (const row of Array.isArray(result.rows) ? result.rows.slice(0, 5) : []) {
-      if (!Number.isFinite(Number(row.value))) continue;
-      const label = row.title || row.label || Object.values(row.dimensions ?? {}).join(" / ");
-      if (label) lines.push(`${label}: ${currency}${Number(row.value).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
-    }
-  }
-  return [...new Set(lines)].slice(0, 8);
-}
-
-/** @param {any} result */
-function labelForCalculation(result) {
-  if (result.kind === "impact_estimate") return "Estimated at-risk revenue";
-  if (result.measure === "line_revenue" || result.measure === "revenue") return "Revenue";
-  if (result.measure === "units_sold") return "Units sold";
-  if (result.measure === "average_order_value") return "Average order value";
-  if (result.measure === "gross_margin") return "Gross margin";
-  return result.measure;
-}
-
-/** @param {any} actionContext */
-function actionTitleFromContext(actionContext) {
-  const recommendation = allContextBlocks(actionContext).find((block) => block.kind === "recommendation");
-  return text(recommendation?.data?.title);
-}
-
-/** @param {any} actionContext */
-function recommendationReasonFromContext(actionContext) {
-  const recommendation = allContextBlocks(actionContext).find((block) => block.kind === "recommendation");
-  return {
-    whyThis: text(recommendation?.data?.whyThisAction),
-    whyNow: text(recommendation?.data?.whyNow),
-  };
-}
-
-/** @param {any} actionContext */
-function productLinesFromContext(actionContext) {
-  const lines = [];
-  for (const section of [
-    ["When this plan was made", actionContext?.planEvidenceAtRecommendationTime?.blocks],
-    ["Right now", actionContext?.currentSystemContext?.blocks],
-  ]) {
-    const [label, blocks] = section;
-    for (const block of Array.isArray(blocks) ? blocks : []) {
-      if (block?.kind !== "structured_evidence" || !Array.isArray(block?.data?.items)) continue;
-      for (const item of block.data.items.slice(0, 5)) {
-        const title = text(item.title);
-        if (!title) continue;
-        const details = [
-          Number.isFinite(Number(item.daysOfCover)) ? `${Number(item.daysOfCover)} days cover` : null,
-          Number.isFinite(Number(item.available)) ? `${Number(item.available)} available` : null,
-          Number.isFinite(Number(item.dailyVelocity)) ? `selling ${Number(item.dailyVelocity)}/day` : null,
-          Number.isFinite(Number(item.unitsOnHand)) ? `${Number(item.unitsOnHand)} units on hand` : null,
-        ].filter(Boolean).join(", ");
-        lines.push(`${label}: ${title}${details ? ` (${details})` : ""}`);
-      }
-    }
-  }
-  return [...new Set(lines)].slice(0, 8);
-}
-
-/** @param {any} actionContext */
-function allContextBlocks(actionContext) {
-  return [
-    ...(Array.isArray(actionContext?.planEvidenceAtRecommendationTime?.blocks)
-      ? actionContext.planEvidenceAtRecommendationTime.blocks
-      : []),
-    ...(Array.isArray(actionContext?.currentSystemContext?.blocks)
-      ? actionContext.currentSystemContext.blocks
-      : []),
-  ];
 }
 
 /**
@@ -783,30 +455,45 @@ export async function sendConversationMessage(prisma, input) {
 
   await ensureInitialOpenQuestions(prisma, input);
   const conversation = await getOrCreateConversation(prisma, input);
-  const userMessage = await prisma.merchantMemoryConversationMessage.create({
-    data: {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      role: "merchant",
-      content,
-      safeSummary: summarizeMerchantStatement(content),
-    },
+  const { message: userMessage } = await appendConversationMessage(prisma, {
+    conversationId: conversation.id,
+    merchantId: input.merchantId,
+    shopId: input.shopId ?? null,
+    role: "merchant",
+    content,
+    surface: conversation.surface ?? "app",
+    safeSummary: summarizeMerchantStatement(content),
   });
 
-  const [beliefs, openQuestions, recentMessages] = await Promise.all([
-    getBeliefsForMerchant(prisma, {
-      merchantId: input.merchantId,
-      includeEvidence: true,
-    }),
-    getOpenQuestions(prisma, input),
-    listConversationMessages(prisma, {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      take: 12,
-    }),
-  ]);
-  const context = buildConversationContext(conversation.context, recentMessages);
+  const [beliefs, openQuestions, recentMessages, merchantContext] =
+    await Promise.all([
+      getBeliefsForMerchant(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        includeEvidence: true,
+      }),
+      getOpenQuestions(prisma, input),
+      listConversationMessages(prisma, {
+        conversationId: conversation.id,
+        merchantId: input.merchantId,
+        take: 12,
+      }),
+      input.shopId
+        ? retrieveMerchantContext(prisma, {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            task: "memory_edit",
+            query: content,
+            queryMessageId: userMessage.id,
+            conversationId: conversation.id,
+            tokenBudget: 6000,
+          })
+        : Promise.resolve(null),
+    ]);
+  const context = buildConversationContext(
+    conversation.context,
+    recentMessages,
+  );
   // Exact-targeting: when the merchant answers a SPECIFIC open question from the surface (the
   // answer composer posts its id), aim the interpreter at THAT question rather than the
   // top-priority fallback in interpretMerchantMessage. An id that is no longer open harmlessly
@@ -814,25 +501,30 @@ export async function sendConversationMessage(prisma, input) {
   if (input.relatedOpenQuestionId) {
     context.currentOpenQuestionId = input.relatedOpenQuestionId;
   }
-  const operation = /** @type {any} */ (await interpretMerchantMessageWithLlm({
-    message: content,
-    beliefs,
-    openQuestions,
-    context,
-    llmProvider: input.llmProvider,
-    logger: input.logger,
-    usage: {
-      prisma,
+  const operation = /** @type {any} */ (
+    await interpretMerchantMessageWithLlm({
+      message: sanitizeMemoryText(content),
+      beliefs,
+      openQuestions,
+      context,
+      merchantContext,
+      llmProvider: input.llmProvider,
+      logger: input.logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? null,
+        feature: "conversation",
+      },
+    })
+  );
+  const validation = /** @type {any} */ (
+    await validateStructuredOperation(prisma, {
       merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      feature: "conversation",
-    },
-  }));
-  const validation = /** @type {any} */ (await validateStructuredOperation(prisma, {
-    merchantId: input.merchantId,
-    operation,
-    beliefs,
-  }));
+      operation,
+      beliefs,
+    })
+  );
 
   if (!validation.ok) {
     const failedOperation = {
@@ -846,7 +538,9 @@ export async function sendConversationMessage(prisma, input) {
       content: validation.merchantMessage,
       operation: failedOperation,
       operationStatus: OPERATION_STATUS.proposed,
-      relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
+      relatedBeliefIds: operation.targetBeliefId
+        ? [operation.targetBeliefId]
+        : [],
       relatedOpenQuestionId: operation.relatedOpenQuestionId,
     });
     return { ok: true };
@@ -859,7 +553,9 @@ export async function sendConversationMessage(prisma, input) {
       content: assistantContent,
       operation,
       operationStatus: null,
-      relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
+      relatedBeliefIds: operation.targetBeliefId
+        ? [operation.targetBeliefId]
+        : [],
     });
     await updateConversationContext(prisma, conversation, {
       lastDiscussedBeliefKeys: operation.targetBeliefKey
@@ -907,7 +603,9 @@ export async function sendConversationMessage(prisma, input) {
       content: operation.reason,
       operation,
       operationStatus: OPERATION_STATUS.proposed,
-      relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
+      relatedBeliefIds: operation.targetBeliefId
+        ? [operation.targetBeliefId]
+        : [],
       relatedOpenQuestionId: operation.relatedOpenQuestionId,
     });
     return { ok: true };
@@ -919,7 +617,9 @@ export async function sendConversationMessage(prisma, input) {
       content: buildProposedChangeResponse(operation, beliefs),
       operation,
       operationStatus: OPERATION_STATUS.proposed,
-      relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
+      relatedBeliefIds: operation.targetBeliefId
+        ? [operation.targetBeliefId]
+        : [],
       relatedOpenQuestionId: operation.relatedOpenQuestionId,
     });
     await updateConversationContext(prisma, conversation, {
@@ -965,15 +665,14 @@ export async function addMerchantConversationNote(prisma, input) {
   const content = input.message.trim();
   if (!content) return { ok: false, error: "Message is required." };
   const conversation = await getOrCreateConversation(prisma, input);
-  await prisma.merchantMemoryConversationMessage.create({
-    data: {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      role: "merchant",
-      content,
-      safeSummary: summarizeMerchantStatement(content),
-    },
+  await appendConversationMessage(prisma, {
+    conversationId: conversation.id,
+    merchantId: input.merchantId,
+    shopId: input.shopId ?? null,
+    role: "merchant",
+    content,
+    surface: conversation.surface ?? "app",
+    safeSummary: summarizeMerchantStatement(content),
   });
   return { ok: true };
 }
@@ -1017,10 +716,12 @@ export async function confirmProposedOperation(prisma, input) {
   }
 
   const operation = /** @type {any} */ (message.structuredOperation);
-  const validation = /** @type {any} */ (await validateStructuredOperation(prisma, {
-    merchantId: input.merchantId,
-    operation,
-  }));
+  const validation = /** @type {any} */ (
+    await validateStructuredOperation(prisma, {
+      merchantId: input.merchantId,
+      operation,
+    })
+  );
   if (!validation.ok) {
     await prisma.merchantMemoryConversationMessage.update({
       where: { id: message.id },
@@ -1053,7 +754,9 @@ export async function confirmProposedOperation(prisma, input) {
     content: buildCommittedChangeResponse(operation, commit),
     operation,
     operationStatus: OPERATION_STATUS.committed,
-    relatedBeliefIds: commit.beliefId ? [commit.beliefId] : message.relatedBeliefIds,
+    relatedBeliefIds: commit.beliefId
+      ? [commit.beliefId]
+      : message.relatedBeliefIds,
     relatedOpenQuestionId: message.relatedOpenQuestionId,
   });
   await updateConversationContext(prisma, message.conversation, {
@@ -1136,9 +839,10 @@ export function interpretMerchantMessage(input) {
   const message = input.message.trim();
   const normalized = normalize(message);
   const target = findTargetBelief(normalized, input.beliefs, input.context);
-  const currentQuestion = (input.openQuestions ?? []).find(
-    (question) => question.id === input.context?.currentOpenQuestionId,
-  ) ?? input.openQuestions?.[0];
+  const currentQuestion =
+    (input.openQuestions ?? []).find(
+      (question) => question.id === input.context?.currentOpenQuestionId,
+    ) ?? input.openQuestions?.[0];
 
   if (isUndo(normalized)) {
     // Was noMemoryChange — which meant "undo that" was ACKNOWLEDGED and then ignored:
@@ -1198,16 +902,21 @@ export function interpretMerchantMessage(input) {
   // retires a fact the merchant may never notice is gone. So this branch resolves a target
   // only when it is certain, and asks otherwise. Never guess what to forget.
   if (isObsoleteRequest(normalized)) {
-    const candidate = target ?? input.beliefs.find(
-      (item) => item.key === input.context?.lastDiscussedBeliefKeys?.[0],
-    );
+    const candidate =
+      target ??
+      input.beliefs.find(
+        (item) => item.key === input.context?.lastDiscussedBeliefKeys?.[0],
+      );
     // `findTargetBelief` returns a bare `{ key }` when a keyword matched but the merchant
     // holds no such belief — a phantom. Requiring `id` keeps a phantom from becoming a
     // "forgotten" belief that never existed.
     const resolved = candidate?.id ? candidate : null;
     const onlyOneThingDiscussed =
       (input.context?.lastDiscussedBeliefKeys ?? []).length === 1;
-    if (!resolved || !(onlyOneThingDiscussed || hasExplicitBeliefReference(normalized))) {
+    if (
+      !resolved ||
+      !(onlyOneThingDiscussed || hasExplicitBeliefReference(normalized))
+    ) {
       return clarification(
         "Which understanding should I forget? Name it and I'll drop it.",
         message,
@@ -1240,9 +949,11 @@ export function interpretMerchantMessage(input) {
         input.context,
       );
     }
-    const belief = target ?? input.beliefs.find(
-      (item) => item.key === input.context.lastDiscussedBeliefKeys[0],
-    );
+    const belief =
+      target ??
+      input.beliefs.find(
+        (item) => item.key === input.context.lastDiscussedBeliefKeys[0],
+      );
     return {
       operationType: OPERATION_TYPES.confirmBelief,
       targetBeliefKey: belief?.key,
@@ -1265,22 +976,21 @@ export function interpretMerchantMessage(input) {
   if (extracted) return extracted;
 
   if (currentQuestion && !isQuestion(normalized) && message.length > 8) {
-    const openQuestionOperation = operationForOpenQuestion(currentQuestion, message);
+    const openQuestionOperation = operationForOpenQuestion(
+      currentQuestion,
+      message,
+    );
     if (openQuestionOperation) return openQuestionOperation;
   }
 
   if (normalized.includes("wrong") || normalized.includes("not right")) {
-    return clarification(
-      "What should I change it to?",
-      message,
-      input.context,
-    );
+    return clarification("What should I change it to?", message, input.context);
   }
 
   return {
     operationType: OPERATION_TYPES.noMemoryChange,
     reason:
-      "I can use this in the conversation, but I need a little more detail before I treat it as something I should remember.",
+      "I understand. If you want this to change how I run the business, tell me the specific rule, priority, or fact to use.",
     merchantStatement: message,
     confidence: 0.55,
     relatedBeliefKeys: target ? [target.key] : [],
@@ -1289,11 +999,12 @@ export function interpretMerchantMessage(input) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
  */
 export async function interpretMerchantMessageWithLlm(input) {
   const fallbackOperation = interpretMerchantMessage(input);
-  const provider = input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
+  const provider =
+    input.llmProvider ?? safeCreateLlmProvider(input.logger, input.usage);
   if (!provider?.enabled) return fallbackOperation;
 
   try {
@@ -1315,11 +1026,14 @@ export async function interpretMerchantMessageWithLlm(input) {
     }
     return parsed.operation;
   } catch (error) {
-    input.logger?.warn?.("LLM structured operation unavailable; using fallback", {
-      provider: provider.provider,
-      model: provider.model,
-      error: error instanceof Error ? error.name : "UnknownError",
-    });
+    input.logger?.warn?.(
+      "LLM structured operation unavailable; using fallback",
+      {
+        provider: provider.provider,
+        model: provider.model,
+        error: error instanceof Error ? error.name : "UnknownError",
+      },
+    );
     return fallbackOperation;
   }
 }
@@ -1346,7 +1060,9 @@ export async function validateStructuredOperation(prisma, input) {
   const key = input.operation.targetBeliefKey;
   const definition = key ? getBeliefDefinition(key) : null;
   if (!key || !definition) {
-    return invalid("I need to understand exactly what this changes before I update Jefe’s understanding.");
+    return invalid(
+      "I need to understand exactly what this changes before I update Jefe’s understanding.",
+    );
   }
   if (!isAllowedConversationalCategory(definition.category)) {
     return invalid("I can’t use that kind of business context yet.");
@@ -1371,7 +1087,9 @@ export async function validateStructuredOperation(prisma, input) {
     input.operation.operationType === OPERATION_TYPES.correctBelief &&
     (!existing || !definition.merchantCorrectable)
   ) {
-    return invalid("I should keep that observed Shopify fact separate from merchant interpretation.");
+    return invalid(
+      "I should keep that observed Shopify fact separate from merchant interpretation.",
+    );
   }
 
   // Forget must name something Jefe actually holds AND something the merchant is allowed to
@@ -1380,7 +1098,9 @@ export async function validateStructuredOperation(prisma, input) {
   // Correcting is the right move there, which is what this steers them to.
   if (input.operation.operationType === OPERATION_TYPES.obsoleteBelief) {
     if (!existing) {
-      return invalid("I don’t have that in memory, so there’s nothing for me to forget.");
+      return invalid(
+        "I don’t have that in memory, so there’s nothing for me to forget.",
+      );
     }
     if (!definition.merchantObsoletable) {
       return invalid(
@@ -1404,10 +1124,9 @@ export async function validateStructuredOperation(prisma, input) {
     input.operation.operationType !== OPERATION_TYPES.confirmBelief &&
     input.operation.operationType !== OPERATION_TYPES.obsoleteBelief
   ) {
-    const value = /** @type {any} */ (validateConversationalValue(
-      input.operation.proposedValue,
-      definition,
-    ));
+    const value = /** @type {any} */ (
+      validateConversationalValue(input.operation.proposedValue, definition)
+    );
     if (!value.ok) return invalid(value.error);
     input.operation.proposedValue = value.value;
     input.operation.valueType = definition.valueType;
@@ -1433,6 +1152,7 @@ async function commitStructuredOperation(prisma, input) {
   if (operation.operationType === OPERATION_TYPES.confirmBelief) {
     const belief = await confirmBelief(prisma, {
       merchantId: input.merchantId,
+      shopId: input.shopId,
       key: operation.targetBeliefKey,
       confirmedBy: "merchant_conversation",
       evidenceSummary: summarizeMerchantStatement(operation.merchantStatement),
@@ -1444,8 +1164,16 @@ async function commitStructuredOperation(prisma, input) {
   }
 
   if (operation.operationType === OPERATION_TYPES.correctBelief) {
+    if (operation.targetBeliefId) {
+      await historicaliseBeliefSources(prisma, {
+        beliefId: operation.targetBeliefId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      });
+    }
     const belief = await correctBelief(prisma, {
       merchantId: input.merchantId,
+      shopId: input.shopId,
       key: operation.targetBeliefKey,
       value: operation.proposedValue,
       valueType: operation.valueType,
@@ -1454,6 +1182,11 @@ async function commitStructuredOperation(prisma, input) {
       evidenceSourceType: "merchant_conversation",
       evidenceSourceReference: reference,
       metadata,
+    });
+    await linkConversationMessageToBelief(prisma, {
+      merchantId: input.merchantId,
+      messageId: input.messageId,
+      beliefId: belief.id,
     });
     return { beliefId: belief.id, belief };
   }
@@ -1467,6 +1200,14 @@ async function commitStructuredOperation(prisma, input) {
       retractedBy: "merchant_conversation",
       metadata,
     });
+    if (belief) {
+      await historicaliseBeliefSources(prisma, {
+        beliefId: belief.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceMessageId: input.messageId,
+      });
+    }
     // null = nothing active under that key (already forgotten, or a double-send). Harmless,
     // and the caller reports it as done rather than surfacing an error for a no-op.
     return { beliefId: belief?.id ?? null, belief };
@@ -1488,10 +1229,16 @@ async function commitStructuredOperation(prisma, input) {
       evidenceSourceType: "merchant_conversation",
       evidenceSourceReference: reference,
       metadata,
+      allowRetractedSuccessor: true,
       precedence:
         getBeliefDefinition(operation.targetBeliefKey)?.kind === "policy"
           ? BELIEF_PRECEDENCE.houseRule
           : undefined,
+    });
+    await linkConversationMessageToBelief(prisma, {
+      merchantId: input.merchantId,
+      messageId: input.messageId,
+      beliefId: result.belief.id,
     });
     if (operation.relatedOpenQuestionId) {
       await prisma.merchantMemoryOpenQuestion.updateMany({
@@ -1558,7 +1305,9 @@ async function ensureGapDrivenOpenQuestions(prisma, input) {
     (belief) => !belief.shopId || belief.shopId === input.shopId,
   );
   const applying = buildGapDrivenOpenQuestions(scoped);
-  const applyingKeys = new Set(applying.map((question) => question.questionKey));
+  const applyingKeys = new Set(
+    applying.map((question) => question.questionKey),
+  );
 
   const toResolve = GAP_DRIVEN_QUESTION_KEYS.filter(
     (key) => !applyingKeys.has(key),
@@ -1634,9 +1383,21 @@ async function getOrCreateConversation(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId ?? null,
       topic,
+      conversationType: conversationTypeForTopic(topic),
+      surface: "app",
+      lastMessageAt: new Date(),
       context: {},
     },
   });
+}
+
+/** @param {string} topic */
+function conversationTypeForTopic(topic) {
+  if (topic === CONVERSATION_TOPICS.memory) return "memory_review";
+  if (topic === CONVERSATION_TOPICS.onboardingGoals) return "goal_coaching";
+  if (topic === CONVERSATION_TOPICS.onboardingPlan) return "plan_refinement";
+  if (topic.startsWith(`${CONVERSATION_TOPICS.action}:`)) return "action";
+  return "general";
 }
 
 /** @param {{ topic?: string }} input */
@@ -1665,20 +1426,23 @@ async function listConversationMessages(prisma, input) {
  * @param {{ conversation: any; content: string; operation?: any; operationStatus?: string | null; relatedBeliefIds?: string[]; relatedOpenQuestionId?: string | null }} input
  */
 async function createAssistantMessage(prisma, input) {
-  return prisma.merchantMemoryConversationMessage.create({
-    data: {
-      conversationId: input.conversation.id,
-      merchantId: input.conversation.merchantId,
-      shopId: input.conversation.shopId,
-      role: "assistant",
-      content: input.content,
-      structuredOperation: input.operation ?? undefined,
-      operationStatus: input.operationStatus ?? null,
-      relatedBeliefIds: input.relatedBeliefIds ?? [],
-      relatedOpenQuestionId: input.relatedOpenQuestionId ?? null,
-      safeSummary: input.operation?.reason ?? input.content.slice(0, 160),
-    },
+  const result = await appendConversationMessage(prisma, {
+    conversation: input.conversation,
+    conversationId: input.conversation.id,
+    merchantId: input.conversation.merchantId,
+    shopId: input.conversation.shopId,
+    role: "assistant",
+    content: input.content,
+    surface: input.conversation.surface ?? "app",
+    recommendationId: input.operation?.recommendationId ?? null,
+    actionRunId: input.operation?.actionRunId ?? null,
+    structuredOperation: input.operation ?? undefined,
+    operationStatus: input.operationStatus ?? null,
+    relatedBeliefIds: input.relatedBeliefIds ?? [],
+    relatedOpenQuestionId: input.relatedOpenQuestionId ?? null,
+    safeSummary: input.operation?.reason ?? input.content.slice(0, 160),
   });
+  return result.message;
 }
 
 /**
@@ -1698,7 +1462,8 @@ async function updateConversationContext(prisma, conversation, patch) {
  * @param {any[]} messages
  */
 function buildConversationContext(rawContext, messages) {
-  const context = rawContext && typeof rawContext === "object" ? rawContext : {};
+  const context =
+    rawContext && typeof rawContext === "object" ? rawContext : {};
   const recentBeliefKeys = [...messages]
     .reverse()
     .flatMap((message) => {
@@ -1729,7 +1494,7 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Use obsolete_belief only when the merchant clearly asks you to forget or drop something they can name. It takes a target belief key and no value.",
     "Never choose obsolete_belief to fix a wrong value — that is correct_belief. Forgetting removes the understanding entirely.",
     "If you cannot tell which belief a forget request refers to, return clarification_required instead. Never guess the target of a forget.",
-    "Use undo_last_change when the merchant wants the previous change put back (\"undo that\", \"actually keep it\"). It takes no target and no value — the server resolves what to reverse from history.",
+    'Use undo_last_change when the merchant wants the previous change put back ("undo that", "actually keep it"). It takes no target and no value — the server resolves what to reverse from history.',
     "Do not create customer-level personal beliefs or store customer PII.",
     "Use only the supplied supported belief keys.",
   ].join("\n");
@@ -1771,7 +1536,9 @@ function serializePromptBelief(belief) {
     confidence: belief.confidence,
     evidenceSummaries: (belief.evidence ?? [])
       .slice(0, 1)
-      .map((/** @type {any} */ evidence) => truncateForPrompt(evidence.summary, 110)),
+      .map((/** @type {any} */ evidence) =>
+        truncateForPrompt(evidence.summary, 110),
+      ),
   };
 }
 
@@ -1824,7 +1591,10 @@ export function selectPromptBeliefs(input, budgetChars) {
     if (selected.length >= MAX_PROMPT_BELIEFS) break;
     const serialized = serializePromptBelief(belief);
     const cost = JSON.stringify(serialized).length + 1;
-    if (usedChars + cost > budgetChars && selected.length >= MIN_PROMPT_BELIEFS) {
+    if (
+      usedChars + cost > budgetChars &&
+      selected.length >= MIN_PROMPT_BELIEFS
+    ) {
       break;
     }
     selected.push(serialized);
@@ -1836,7 +1606,7 @@ export function selectPromptBeliefs(input, budgetChars) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any }} input
  */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
@@ -1847,15 +1617,24 @@ function buildMerchantMemoryLlmPrompt(input) {
       currentOpenQuestionId: input.context?.currentOpenQuestionId ?? null,
       lastCommittedBeliefKey: input.context?.lastCommittedBeliefKey ?? null,
     },
+    retrievedContext: input.merchantContext
+      ? {
+          episodicMemory: input.merchantContext.episodicMemory,
+          actionMemory: input.merchantContext.actionMemory,
+          openQuestions: input.merchantContext.openQuestions,
+        }
+      : null,
     activeBeliefs: /** @type {any[]} */ ([]),
-    openQuestions: (input.openQuestions ?? []).slice(0, 3).map((/** @type {any} */ question) => ({
-      id: question.id,
-      questionKey: question.questionKey,
-      category: question.category,
-      question: question.question,
-      answerType: question.answerType,
-      answerOptions: question.answerOptions,
-    })),
+    openQuestions: (input.openQuestions ?? [])
+      .slice(0, 3)
+      .map((/** @type {any} */ question) => ({
+        id: question.id,
+        questionKey: question.questionKey,
+        category: question.category,
+        question: question.question,
+        answerType: question.answerType,
+        answerOptions: question.answerOptions,
+      })),
     supportedBeliefDefinitions: Object.values(registry).map((definition) => ({
       key: definition.key,
       category: definition.category,
@@ -1876,7 +1655,10 @@ function buildMerchantMemoryLlmPrompt(input) {
   // prompt stays under the provider's input-token limit however rich the memory.
   const overheadChars = JSON.stringify(prompt).length;
   const maxPromptChars = getLlmConfig().maxInputTokens * CHARS_PER_TOKEN;
-  prompt.activeBeliefs = selectPromptBeliefs(input, maxPromptChars - overheadChars);
+  prompt.activeBeliefs = selectPromptBeliefs(
+    input,
+    maxPromptChars - overheadChars,
+  );
   return JSON.stringify(prompt);
 }
 
@@ -1988,9 +1770,12 @@ function buildExplanation(operation, beliefs) {
     );
   }
   if (belief.lastEvaluatedAt) {
-    parts.push(`I last checked this on ${formatDateTime(belief.lastEvaluatedAt)}.`);
+    parts.push(
+      `I last checked this on ${formatDateTime(belief.lastEvaluatedAt)}.`,
+    );
   }
-  if (belief.confidenceReason) parts.push(`Worth knowing: ${belief.confidenceReason}`);
+  if (belief.confidenceReason)
+    parts.push(`Worth knowing: ${belief.confidenceReason}`);
   return parts.join("\n\n");
 }
 
@@ -2023,7 +1808,10 @@ function buildNoChangeResponse(operation, beliefs, openQuestions) {
 /**
  * @param {any} operation
  */
-function buildProposedChangeResponse(operation, /** @type {any[]} */ beliefs = []) {
+function buildProposedChangeResponse(
+  operation,
+  /** @type {any[]} */ beliefs = [],
+) {
   const label = labelForBeliefKey(operation.targetBeliefKey);
   if (operation.operationType === OPERATION_TYPES.obsoleteBelief) {
     // Show what is about to GO, with its current value. This is the merchant's one chance to
@@ -2142,12 +1930,14 @@ function findTargetBelief(normalized, beliefs, context) {
                 ? "catalog.active_product_count"
                 : normalized.includes("product")
                   ? "catalog.total_product_count"
-                  : normalized.includes("store name") || normalized.includes("business name")
+                  : normalized.includes("store name") ||
+                      normalized.includes("business name")
                     ? "business.store_name"
                     : null;
   if (key) return beliefs.find((belief) => belief.key === key) ?? { key };
   const lastKey = context?.lastDiscussedBeliefKeys?.[0];
-  return lastKey && /\b(that|this|it|those|yes|correct|right|why)\b/.test(normalized)
+  return lastKey &&
+    /\b(that|this|it|those|yes|correct|right|why)\b/.test(normalized)
     ? beliefs.find((belief) => belief.key === lastKey)
     : null;
 }
@@ -2159,7 +1949,13 @@ function findTargetBelief(normalized, beliefs, context) {
  * @param {any} currentQuestion
  * @param {any} context
  */
-function extractSupportedChange(normalized, message, target, currentQuestion, context) {
+function extractSupportedChange(
+  normalized,
+  message,
+  target,
+  currentQuestion,
+  context,
+) {
   const currency = extractCurrency(normalized);
   if (currency && target?.key === "business.primary_currency") {
     return {
@@ -2176,7 +1972,9 @@ function extractSupportedChange(normalized, message, target, currentQuestion, co
     };
   }
 
-  const lowStock = normalized.match(/(?:fewer than|less than|below|under)\s+(\d+)/);
+  const lowStock = normalized.match(
+    /(?:fewer than|less than|below|under)\s+(\d+)/,
+  );
   if (normalized.includes("low stock") && lowStock) {
     return {
       operationType: OPERATION_TYPES.createMerchantBelief,
@@ -2218,7 +2016,10 @@ function extractSupportedChange(normalized, message, target, currentQuestion, co
   }
 
   if (currentQuestion && !isQuestion(normalized) && message.length > 8) {
-    const openQuestionOperation = operationForOpenQuestion(currentQuestion, message);
+    const openQuestionOperation = operationForOpenQuestion(
+      currentQuestion,
+      message,
+    );
     if (openQuestionOperation) return openQuestionOperation;
   }
 
@@ -2356,7 +2157,15 @@ function operationForOpenQuestion(question, message) {
  * @param {boolean} requiresConfirmation
  * @param {any} [question]
  */
-function merchantBelief(key, category, value, reason, message, requiresConfirmation, question) {
+function merchantBelief(
+  key,
+  category,
+  value,
+  reason,
+  message,
+  requiresConfirmation,
+  question,
+) {
   return {
     operationType: question
       ? OPERATION_TYPES.answerOpenQuestion
@@ -2393,9 +2202,19 @@ function clarification(reason, message, context) {
  * @param {string} value
  */
 function categoryFromMessage(value) {
-  return ["business", "catalog", "orders", "customers", "inventory", "operations", "preferences", "policies"].find(
-    (category) => value.includes(category),
-  ) ?? (value.includes("stock") ? "inventory" : null);
+  return (
+    [
+      "business",
+      "catalog",
+      "orders",
+      "customers",
+      "inventory",
+      "operations",
+      "preferences",
+      "policies",
+    ].find((category) => value.includes(category)) ??
+    (value.includes("stock") ? "inventory" : null)
+  );
 }
 
 /**
@@ -2428,28 +2247,37 @@ function hasExplicitBeliefReference(value) {
  * @param {string} value
  */
 function isQuestion(value) {
-  return value.includes("?") || /^(what|why|how|where|show|tell me|do you)/.test(value);
+  return (
+    value.includes("?") ||
+    /^(what|why|how|where|show|tell me|do you)/.test(value)
+  );
 }
 
 /**
  * @param {string} value
  */
 function isInspectRequest(value) {
-  return /what.*(know|learn|understand|believe)|show.*believe|what.*need/.test(value);
+  return /what.*(know|learn|understand|believe)|show.*believe|what.*need/.test(
+    value,
+  );
 }
 
 /**
  * @param {string} value
  */
 function isExplanationRequest(value) {
-  return /\bwhy\b|how did|where did|how confident|calculate|calculated|come from/.test(value);
+  return /\bwhy\b|how did|where did|how confident|calculate|calculated|come from/.test(
+    value,
+  );
 }
 
 /**
  * @param {string} value
  */
 function isConfirmation(value) {
-  return /\b(yes|correct|right|accurate|looks good|that is correct|that's correct)\b/.test(value);
+  return /\b(yes|correct|right|accurate|looks good|that is correct|that's correct)\b/.test(
+    value,
+  );
 }
 
 // Deliberately NARROW. This is the one detector whose false positives destroy something, so
@@ -2462,7 +2290,8 @@ const OBSOLETE_INTENT =
 // "Don't forget we ship on Fridays" is a merchant TEACHING Jefe something — the exact
 // opposite instruction, and it contains the trigger word. "I forget what the margin is" is a
 // merchant admitting they don't know, not asking Jefe to drop anything.
-const OBSOLETE_NEGATION = /\b(do not|don't|dont|never) forget\b|\bi (forget|forgot)\b/;
+const OBSOLETE_NEGATION =
+  /\b(do not|don't|dont|never) forget\b|\bi (forget|forgot)\b/;
 
 /**
  * @param {string} value
