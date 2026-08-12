@@ -3,12 +3,12 @@
 export const DEFAULT_LLM_PROVIDER = "groq";
 export const DEFAULT_LLM_MODEL = "openai/gpt-oss-120b";
 export const DEFAULT_LLM_FALLBACK_PROVIDER = "gemini";
-// NOTE (held for a founder call): -3.5-flash-lite's free quota was exhausted
-// (CHANGELOG 2026-08-07) and LLM_MODEL was moved off it, so a fallback onto it
-// would 429 exactly when the primary (Groq) does. Recommended change:
-// gemini-3.1-flash-lite. Prod runs this default (no LLM_FALLBACK_MODEL env), so
-// changing it alters live fallback behaviour — not shipped without a nod.
-export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+// gemini-3.1-flash-lite, NOT -3.5-flash-lite: -3.5-flash-lite's free quota was
+// exhausted (CHANGELOG 2026-08-07) and LLM_MODEL was already moved off it for that
+// reason, so a fallback onto it would 429 exactly when the primary (Groq) does —
+// a dead safety net. Point the fallback at the same non-exhausted Gemini tier the
+// app already defaults LLM_MODEL to.
+export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 export const DEFAULT_LLM_TIMEOUT_MS = 8000;
 export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;
