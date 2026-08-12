@@ -167,6 +167,63 @@ function addAmounts(a, b) {
 }
 
 /**
+ * Amount (in currency units) above which a single order component is treated as
+ * implausible rather than merely large.
+ *
+ * Measured against live Redshift on 2026-08-12, over 4,880,522 GBP orders in the
+ * trailing 12 months: only 15 orders carry a subtotal above £100k (plausible B2B),
+ * but 3 carry a DISCOUNT above £100k — the largest £212,755,177. £1m is set above
+ * the real B2B tail and below the garbage.
+ */
+export const IMPLAUSIBLE_AMOUNT = 1_000_000;
+
+/**
+ * Flag orders whose money does not make sense, WITHOUT dropping them here.
+ *
+ * Measured on the same 4.88M orders: **43,873 (0.9%) have a DISCOUNT greater than
+ * their SUBTOTAL.** Small enough to ignore per-order, far too large to ignore in an
+ * aggregate — a 0.9% tail of nonsense discounts skews any "average discount rate"
+ * belief, and the three £100m+ rows would wreck a mean outright.
+ *
+ * Flagging rather than silently dropping is the point: "Jefe ignored 0.9% of your
+ * orders" is a fact a reviewer needs to see, and a filter that quietly removes rows
+ * makes a corpus look cleaner than the merchant's real data actually is.
+ *
+ * @param {Record<string, string | null>} money Canonical amounts, from reducePrices.
+ * @returns {string[]} Anomaly codes, empty when the order looks sane.
+ */
+export function orderAnomalies(money) {
+  const anomalies = [];
+  const subtotal = toNumber(money?.[QUIVER_PRICE_TYPES.SUBTOTAL]);
+  const total = toNumber(money?.[QUIVER_PRICE_TYPES.TOTAL]);
+  const discount = toNumber(money?.[QUIVER_PRICE_TYPES.DISCOUNT]);
+
+  if (subtotal !== null && subtotal < 0) anomalies.push("subtotal_negative");
+  if (subtotal !== null && discount !== null && subtotal > 0 && discount > subtotal) {
+    anomalies.push("discount_exceeds_subtotal");
+  }
+  for (const [type, value] of [
+    [QUIVER_PRICE_TYPES.SUBTOTAL, subtotal],
+    [QUIVER_PRICE_TYPES.TOTAL, total],
+    [QUIVER_PRICE_TYPES.DISCOUNT, discount],
+  ]) {
+    if (value !== null && Math.abs(value) > IMPLAUSIBLE_AMOUNT) {
+      anomalies.push(`implausible_${String(type).toLowerCase()}`);
+    }
+  }
+  if (subtotal === null && total === null) anomalies.push("no_order_value");
+
+  return anomalies;
+}
+
+/** @param {string | null | undefined} amount */
+function toNumber(amount) {
+  if (amount === null || amount === undefined) return null;
+  const parsed = Number(amount);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Map one Quiver order (plus its price and line rows) to canonical Jefe records.
  *
  * @param {{
@@ -198,6 +255,7 @@ export function mapQuiverOrder(source, context) {
   const currency = selectCurrency(prices, preferredCurrency);
   const money = reducePrices(prices, currency);
   const placedAt = toDate(row.order_created_at);
+  const anomalies = orderAnomalies(money);
 
   const order = {
     merchantId,
@@ -221,7 +279,13 @@ export function mapQuiverOrder(source, context) {
     sourceCreatedAt: placedAt,
     sourceUpdatedAt: toDate(row.updated_at),
     processedAt: placedAt,
-    rawPayload: buildRawPayload(row, { includePersonalFields }),
+    rawPayload: {
+      ...buildRawPayload(row, { includePersonalFields }),
+      // Travels with the row so the loader can quarantine it and a reviewer can see
+      // what was excluded, rather than the corpus silently looking cleaner than the
+      // merchant's real data.
+      dataQualityAnomalies: anomalies,
+    },
   };
 
   const lineItems = lines.map((line, index) => ({
@@ -264,7 +328,7 @@ export function mapQuiverOrder(source, context) {
       }
     : null;
 
-  return { order, lineItems, refund };
+  return { order, lineItems, refund, anomalies };
 }
 
 /**

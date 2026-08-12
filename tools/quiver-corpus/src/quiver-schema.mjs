@@ -2,15 +2,22 @@
 //
 // The Quiver Redshift schema this tool reads from.
 //
-// PROVENANCE — every column below was read from Quiver's OWN TypeORM entities,
-// not guessed and not sampled from live data:
+// PROVENANCE — every column below was read from Quiver's OWN TypeORM entities:
 //   /Users/mb/quiver/etl-task/src/entities/{Order,OrderLineItem,OrderPrice,MerchantOrderStats}.ts
 //   /Users/mb/quiver/lambdas/shared/redshift_database.py            (query shapes)
 //   /Users/mb/quiver/lambdas/functions/merchant_order_stats_generator/main.py
-// Re-verify against those files before trusting this module — Quiver's ETL is a
-// separate repo on its own release cadence, so this is a COPY of a contract we do
-// not own. A column that quietly changes there shows up here as a wrong number,
-// not as an error.
+// and then VERIFIED against the live warehouse via Metabase on 2026-08-12 (database
+// id 5, "Redshift"): the column list matches exactly, and one real order was mapped
+// end-to-end. Re-verify before trusting this module — Quiver's ETL is a separate
+// repo on its own release cadence, so this is a COPY of a contract we do not own. A
+// column that quietly changes there shows up here as a wrong number, not an error.
+//
+// Live shape as of 2026-08-12: 247 merchants / 21.6M orders, first order 2021-01-01,
+// current to yesterday. By platform: shopify 239 merchants / 21.19M orders,
+// bigcommerce 4 / 420k, magento 4 / 1,574.
+//
+// Multi-currency is REAL and must not be assumed away: GBP, EUR, USD, AED, AUD, CAD
+// all appear, and an order can be entirely non-GBP (the verification order was AED).
 //
 // Money: Quiver stores every `order_prices.amount` as an INTEGER NUMBER OF PENCE
 // (confirmed by `get_merchant_aov` in redshift_database.py, which divides by 100).

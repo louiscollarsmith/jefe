@@ -4,12 +4,14 @@ import test from "node:test";
 
 import {
   CORPUS_PLATFORM,
+  IMPLAUSIBLE_AMOUNT,
   NEVER_CARRIED_COLUMNS,
   corpusShopMetadata,
   deriveCatalog,
   hashCustomerRef,
   lineItemExternalId,
   mapQuiverOrder,
+  orderAnomalies,
   orderExternalId,
   penceToAmount,
   selectCurrency,
@@ -270,6 +272,61 @@ test("catalog is derived from sold lines only, and deduplicated", () => {
   // No cost and no price: a margin calculation must report unavailable, not zero.
   assert.equal(variants[0].unitCost, null);
   assert.equal(variants[0].price, null);
+});
+
+test("nonsense money is flagged, and sane money is left alone", () => {
+  // Every threshold here is calibrated against live Redshift (2026-08-12, 4,880,522
+  // GBP orders in the trailing 12 months) — not invented.
+  assert.deepEqual(orderAnomalies({ SUBTOTAL: "75.00", TOTAL: "84.00", DISCOUNT: "5.00" }), []);
+
+  // 43,873 real orders (0.9%) look like this.
+  assert.deepEqual(
+    orderAnomalies({ SUBTOTAL: "20.00", DISCOUNT: "50.00" }),
+    ["discount_exceeds_subtotal"],
+  );
+
+  // The worst real row: a £212,755,177 discount.
+  assert.ok(
+    orderAnomalies({ SUBTOTAL: "40.00", DISCOUNT: "212755177.20" })
+      .includes("implausible_discount"),
+  );
+
+  assert.deepEqual(orderAnomalies({ SUBTOTAL: "-3.85" }), ["subtotal_negative"]);
+  assert.deepEqual(orderAnomalies({}), ["no_order_value"]);
+
+  // A large but plausible B2B order must NOT be flagged — 15 real orders exceed
+  // £100k legitimately, which is why the bound sits at £1m rather than £100k.
+  assert.equal(IMPLAUSIBLE_AMOUNT, 1_000_000);
+  assert.deepEqual(orderAnomalies({ SUBTOTAL: "150000.00", TOTAL: "150000.00" }), []);
+});
+
+test("anomalies travel with the mapped order rather than being dropped silently", () => {
+  const { order, anomalies } = mapQuiverOrder(
+    {
+      order: quiverOrder(),
+      prices: [
+        { type: "SUBTOTAL", currency_code: "GBP", amount: "2000" },
+        { type: "DISCOUNT", currency_code: "GBP", amount: "5000" },
+      ],
+      lineItems: [],
+    },
+    { merchantId: "m-1", shopId: "s-1", customerSalt: SALT },
+  );
+
+  assert.deepEqual(anomalies, ["discount_exceeds_subtotal"]);
+  // Also stamped on the row, so a reviewer looking at the corpus can see what was
+  // quarantined instead of the corpus looking cleaner than the real data.
+  assert.deepEqual(order.rawPayload.dataQualityAnomalies, ["discount_exceeds_subtotal"]);
+
+  const { anomalies: clean } = mapQuiverOrder(
+    {
+      order: quiverOrder(),
+      prices: [{ type: "SUBTOTAL", currency_code: "GBP", amount: "7500" }],
+      lineItems: [],
+    },
+    { merchantId: "m-1", shopId: "s-1", customerSalt: SALT },
+  );
+  assert.deepEqual(clean, []);
 });
 
 test("corpus shop metadata carries the coverage gaps with the data", () => {

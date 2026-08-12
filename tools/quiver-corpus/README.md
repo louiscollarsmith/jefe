@@ -17,19 +17,62 @@ corpus database.
 
 ## Status
 
-**The mapping layer is built and tested. The data pull is not connected yet** — it is
-waiting on Metabase MCP access (founder is setting this up, 2026-08-12). Everything in
-`src/` was written against Quiver's own ETL entity definitions rather than sampled
-live data, so connecting the pull should be a config change rather than a rewrite.
+The mapping layer is built, tested, and **verified against the live warehouse**
+(Metabase database id 5, 2026-08-12): the column list matches exactly, and a real
+production order was mapped end-to-end.
 
 | Piece | State |
 | --- | --- |
-| `src/quiver-schema.mjs` — the Redshift contract | built |
-| `src/map.mjs` — Quiver rows → canonical records | built, 18 tests |
+| `src/quiver-schema.mjs` — the Redshift contract | built, verified live |
+| `src/map.mjs` — Quiver rows → canonical records | built, 20 tests, verified on a real row |
 | `src/safety.mjs` — write guards | built |
-| Metabase/Redshift reader | **blocked on access** |
+| Metabase/Redshift reader | not built — access now available |
 | Loader (canonical rows → corpus database) | not built — design acked by architecture 2026-08-12 |
 | Run + capture across merchants | not built |
+
+## What is in there (measured 2026-08-12)
+
+**247 merchants, 21.6M orders**, from 2021-01-01 and current to yesterday.
+
+| platform | merchants | orders |
+| --- | ---: | ---: |
+| shopify | 239 | 21,189,908 |
+| bigcommerce | 4 | 419,962 |
+| magento | 4 | 1,574 |
+
+Merchants by trailing-12-month order volume — the corpus should be **sampled**, not
+imported whole, and the middle bands look most like Jefe's actual target:
+
+| band | merchants | orders (12m) |
+| --- | ---: | ---: |
+| 100k+ | 13 | 2,918,969 |
+| 20k–100k | 30 | 1,282,824 |
+| 5k–20k | 45 | 536,986 |
+| 500–5k | 69 | 142,640 |
+| under 500 | 77 | 11,877 |
+
+⚠️ **Multi-currency is real.** GBP, EUR, USD, AED, AUD and CAD all appear, and an
+order can be entirely non-GBP. Never assume GBP — `selectCurrency` picks one currency
+per order and reads only its rows, because summing across them would invent a number
+that is not money in any currency.
+
+## Data quality — flag, don't silently drop
+
+Measured over 4,880,522 GBP orders in the trailing 12 months:
+
+| check | count |
+| --- | ---: |
+| discount greater than subtotal | **43,873 (0.9%)** |
+| discount over £100k (worst: £212,755,177) | 3 |
+| subtotal over £100k (plausibly real B2B) | 15 |
+| negative subtotal · missing subtotal | 0 · 0 |
+
+Not systemic, but a 0.9% tail of nonsense discounts would skew any "average discount"
+belief and those three rows would wreck a mean outright. `orderAnomalies()` flags
+them and stamps the codes onto the row; the loader decides whether to quarantine.
+**Flagging rather than dropping is deliberate** — "Jefe ignored 0.9% of your orders"
+is a fact a reviewer needs to see, and a silent filter makes the corpus look cleaner
+than the merchant's real data actually is.
 
 ## Schema provenance
 
