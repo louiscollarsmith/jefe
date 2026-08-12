@@ -272,14 +272,46 @@ two-thirds of it is thrown away. Cheap to fix (persist `autonomy.reason` +
 with the spine generalisation rather than after, since §6.2 means `eligibility` is
 currently computed by the *clearance* function whatever the action type.
 
-⚠️ **Contract mismatch to ratify (chat 10):** the roster will offer **two** modes
-(`approve` / `autonomous`) per live type. The engine stores **three** — `ACTION_MODES =
-["recommend", "approve_execute", "autonomous"]`, with `resolveAutonomyMode` branching on
-`recommend` and `DEFAULT_ACTION_MODE = "approve_execute"`. If nothing ever writes
-`recommend`, that branch goes dead and the 3-mode model documented across the schema
-comment, the adapter and `context/11_actions_and_autonomy.md` is stale. Either
-`recommend` is deliberately retired, or it stays reachable somewhere. Not this lane's
-call — flagged.
+### ⛔ Retiring `recommend`: two teeth, on a path that is live in production
+
+**Resolved 2026-08-12:** `recommend` is retired as a *merchant-selectable mode* — the
+roster offers two modes, and unavailability becomes a runtime raise. The roster lane read
+that off Matt's rulings and routed the engine + docs consequence to chat 10. Agreed on
+the direction. **But "retire the mode" must not be executed as "delete the string",** and
+the routed wording names `resolveAutonomyMode` explicitly. Two hazards, both on a path
+where `CLEARANCE_EXECUTE_ENABLED` is **`true` in production**.
+
+**Tooth 1 — dropping it from `ACTION_MODES` silently promotes any merchant who chose it.**
+`getActionMode` is `if (row && isValidActionMode(row.mode)) return row.mode; return
+DEFAULT_ACTION_MODE`. Remove `recommend` from `ACTION_MODES` and every stored
+`recommend` row fails validation and **falls through to `approve_execute`** — a merchant
+who explicitly asked Jefe to only advise is upgraded, without being told, to
+propose-and-execute-on-tap. That is a merchant-consent regression, not a cleanup.
+`AutonomyPanel.tsx:56` reasons there should be "~none — the dial only went live that
+day"; that is probably right and **must be checked against production data, not
+assumed**, before the constant changes. If any row exists, it needs an explicit
+migration decision from Matt, not a fallback.
+
+**Tooth 2 — `resolvedMode === "recommend"` is a write-path guard in three places, not a
+settings value.**
+
+| Site | Role |
+|---|---|
+| `wire-clearance-execution.server.js:60` | refuses to execute the run |
+| `clearance-adapter.server.js:238` | hard throw — *"structural guard so a 'recommend' run can't execute even if the adapter is mistakenly invoked"* |
+| `product-status-adapter.server.js:126` | same guard in the unregistered second primitive |
+
+plus two `executable` gates (`action-resolution.server.js:322`, `:383`). This is
+defence-in-depth on the live write path, and `ActionExecution.resolvedMode` is
+**immutable ledger history** — rows recording a past `recommend` decision must keep
+resolving correctly forever. Retiring the merchant-facing mode is orthogonal to these;
+they should stay as fail-closed checks even once nothing can newly produce the value.
+
+**Position:** direction agreed, execution is Matt-level, not a bilateral tidy-up. The
+roster lane already declined to touch the engine for exactly this reason
+(`AutonomyPanel.tsx:57-58` — *"the stored value + the engine's handling of `recommend`
+are left untouched (one-way — Matt's call)"*). That judgement was right and should not
+be undone by the retirement it handed on.
 
 ## 7. Recommended first two
 
