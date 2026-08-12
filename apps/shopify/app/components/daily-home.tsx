@@ -254,23 +254,14 @@ function StoreConversation({
           <StorePrompt message="Anything I should worry about?" />
           <StorePrompt message="How are my goals looking?" />
         </div>
-        <Form method="post" style={composerStyle}>
-          <input type="hidden" name="intent" value="chat.message" />
-          <input
-            name="message"
-            required
-            autoComplete="off"
-            aria-label="Message Jefe"
-            placeholder="Ask Jefe anything, or tell me what changed…"
-            value={composerMessage}
-            onChange={(event) => setComposerMessage(event.currentTarget.value)}
-            style={composerInputStyle}
-            disabled={isThinking}
-          />
-          <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-            Send
-          </button>
-        </Form>
+        <ChatComposer
+          intent="chat.message"
+          placeholder="Ask Jefe anything, or tell me what changed…"
+          ariaLabel="Message Jefe"
+          value={composerMessage}
+          onChange={setComposerMessage}
+          disabled={isThinking}
+        />
       </div>
     </section>
   );
@@ -527,24 +518,15 @@ function ActionChat({
               </Form>
             ) : null}
           </div>
-          <Form method="post" style={composerStyle}>
-            <input type="hidden" name="intent" value="action.chat.message" />
-            <MoveHiddenFields move={move} />
-            <input
-              name="message"
-              required
-              autoComplete="off"
-              aria-label="Ask about this move"
-              placeholder="Ask about this move, or tell me what to change..."
-              value={composerMessage}
-              onChange={(event) => setComposerMessage(event.currentTarget.value)}
-              style={composerInputStyle}
-              disabled={isThinking}
-            />
-            <button type="submit" style={sendButtonStyle} disabled={isThinking}>
-              Send
-            </button>
-          </Form>
+          <ChatComposer
+            intent="action.chat.message"
+            placeholder="Ask about this move, or tell me what to change..."
+            ariaLabel="Ask about this move"
+            value={composerMessage}
+            onChange={setComposerMessage}
+            disabled={isThinking}
+            hiddenFields={<MoveHiddenFields move={move} />}
+          />
           <div style={decisionRowStyle}>
             {move.actionRunId && move.executable ? (
               <Form method="post">
@@ -615,6 +597,65 @@ function ChipButton({ children }: { children: ReactNode }) {
     <button type="submit" style={chipStyle}>
       {children}
     </button>
+  );
+}
+
+// The chat composer, shared by the home thread and the per-move zoom. A textarea (not a
+// single-line input) that auto-grows to its content up to a cap; Enter sends, Shift+Enter
+// inserts a newline, and Enter is ignored mid-IME-composition. The parent owns the
+// message state + the clear-on-send logic; this is the input surface.
+function ChatComposer({
+  intent,
+  placeholder,
+  ariaLabel,
+  value,
+  onChange,
+  disabled,
+  hiddenFields,
+}: {
+  intent: string;
+  placeholder: string;
+  ariaLabel: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  hiddenFields?: ReactNode;
+}) {
+  const formRef = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }, [value]);
+  return (
+    <Form ref={formRef} method="post" style={composerFormStyle}>
+      <input type="hidden" name="intent" value={intent} />
+      {hiddenFields}
+      <textarea
+        ref={textareaRef}
+        name="message"
+        required
+        rows={1}
+        autoComplete="off"
+        aria-label={ariaLabel}
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            if (value.trim()) formRef.current?.requestSubmit();
+          }
+        }}
+        style={composerTextareaStyle}
+        disabled={disabled}
+      />
+      <button type="submit" style={sendButtonStyle} disabled={disabled}>
+        Send
+      </button>
+    </Form>
   );
 }
 
@@ -1070,6 +1111,17 @@ const composerInputStyle: CSSProperties = {
   minWidth: 0,
   outline: "none",
   padding: 0,
+};
+// The composer wrapper aligns Send to the BOTTOM so it stays put as the textarea grows.
+const composerFormStyle: CSSProperties = { ...composerStyle, alignItems: "flex-end" };
+const composerTextareaStyle: CSSProperties = {
+  ...composerInputStyle,
+  resize: "none",
+  overflowY: "auto",
+  maxHeight: 140,
+  lineHeight: 1.45,
+  paddingTop: 6,
+  paddingBottom: 6,
 };
 const sendButtonStyle: CSSProperties = {
   background: COLORS.navy,

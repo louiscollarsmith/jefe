@@ -201,12 +201,17 @@ test("action chat quantification uses the governed commerce analyst executor", (
   assert.doesNotMatch(commerceAnalystSource, /\$queryRaw|queryRawUnsafe|executeRaw|mcp/i);
 });
 
-test("action chat composer clears the submitted draft after send", () => {
+test("chat composer clears the submitted draft after send, via a multi-line textarea", () => {
+  // The message state + clear-on-send live in the parent (StoreConversation / ActionChat)...
   assert.match(dailyHomeSource, /const \[composerMessage, setComposerMessage\] = useState\(""\)/);
   assert.match(dailyHomeSource, /submittedMessageRef\.current = pendingMessage/);
   assert.match(dailyHomeSource, /setComposerMessage\(""\)/);
+  // ...and are handed to the shared ChatComposer.
   assert.match(dailyHomeSource, /value=\{composerMessage\}/);
-  assert.match(dailyHomeSource, /onChange=\{\(event\) => setComposerMessage\(event\.currentTarget\.value\)\}/);
+  assert.match(dailyHomeSource, /onChange=\{setComposerMessage\}/);
+  // The composer is a textarea (multi-line) that sends on Enter — Shift+Enter is a newline.
+  assert.match(dailyHomeSource, /<textarea/);
+  assert.match(dailyHomeSource, /event\.key === "Enter" && !event\.shiftKey/);
 });
 
 test("AppHome13a still defaults to non-interactive and the preview uses the new DailyHome", () => {
