@@ -43,6 +43,11 @@ export const APPLICABILITY_DIMENSIONS = /** @type {const} */ ({
   tracked_stock: { evidence: "data.inventory_variant_coverage", means: "Inventory is tracked, so stock-based actions have something real to act on." },
   made_to_order: { evidence: "data.inventory_variant_coverage", means: "Little or no tracked stock — stock-clearing actions are meaningless." },
   costed_catalog: { evidence: "products.cost_coverage", means: "Unit costs are known, so a price floor can be computed." },
+  // Both evidenced by the business-shape tranche, which is what that tranche is FOR: the
+  // vocabulary's own rule is that a dimension Jefe cannot evaluate is decoration, so a new
+  // one is only admissible once a belief speaks to it.
+  untyped_catalogue: { evidence: "business.range_composition", means: "Sellable products carry no product type, so search, reporting and Jefe's own read of the range are all working with gaps." },
+  single_product_catalogue: { evidence: "business.catalogue_shape", means: "One product — categorisation work has nothing to organise." },
 });
 
 /**
@@ -80,6 +85,52 @@ export const APPLICABILITY_DIMENSIONS = /** @type {const} */ ({
  * @type {Record<string, ActionDefinition>}
  */
 export const ACTION_REGISTRY = {
+  // Settings → Autonomy already lists "Listing copy" as SOON. The badge is driven by
+  // registered + execute-flag-on, so this entry alone changes NOTHING a merchant sees:
+  // `LISTING_COPY_EXECUTE_ENABLED` is unset everywhere, which keeps the row on SOON and the
+  // write path closed. Flipping it is the founder's call, not a side effect of this landing.
+  //
+  // ⚠️ SCOPED TO PRODUCT TYPE ONLY, deliberately. The panel's subtitle says "descriptions,
+  // titles, product types", and those are not one job:
+  //   - product type is a structured taxonomy field. Reversible to the exact previous string,
+  //     no voice, no judgement, and it is the field Jefe's OWN `business.range_composition`
+  //     belief is gated on (it needs a type on ≥70% of products) — so filling it in makes
+  //     Jefe understand the merchant better, not just tidier.
+  //   - descriptions and titles are marketing PROSE written onto a live storefront in
+  //     someone's brand voice. Same adapter shape, completely different risk: a wrong price
+  //     is obviously wrong, wrong copy just sounds like the merchant said it. That needs a
+  //     voice decision and an approve-first period before it belongs here.
+  // Widening this to prose is a deliberate later step, not a config tweak.
+  listing_copy: {
+    label: "Fill in missing product types",
+    description:
+      "Set the product type on sellable products that have none, so the catalogue is categorised for search, reporting and Jefe's own read of the range.",
+    targetKinds: ["missing_product_type"],
+    reversible: true,
+    primitive: "listing-copy-adapter",
+    executeFlag: "LISTING_COPY_EXECUTE_ENABLED",
+    requiredScopes: ["write_products"],
+    applicability: {
+      // The gap itself is the qualifier — nothing to fill, nothing to propose.
+      suits: ["untyped_catalogue"],
+      // A single-product store gains nothing from taxonomy work. NOT listed:
+      // "the merchant curates their own types" — that would be decoration, because the
+      // adapter's blank-only rule already makes it unreachable, and the vocabulary's rule is
+      // that a dimension Jefe cannot evaluate does not belong here.
+      unsuitedWhen: ["single_product_catalogue"],
+    },
+    outcome: {
+      // The gap is the thing: what share of sellable products still lack a type after the
+      // run. Nothing else about this action is worth claiming — it does not promise sales.
+      metric: "productTypeCoveragePercent",
+      windowDays: 1,
+      baseline: 0,
+      // ⚠️ Proposed defaults, never measured — no listing-copy run has happened. The
+      // clearance entry carries the same warning and it still holds: these are a starting
+      // point to be replaced by real runs, not a finding.
+      verdict: { goodAtOrAbove: 95, underperformedAtOrBelow: 50 },
+    },
+  },
   price_markdown: {
     label: "Mark down prices",
     description: "Reduce prices on a set of variants, each floored at unit cost so it never sells below cost.",
