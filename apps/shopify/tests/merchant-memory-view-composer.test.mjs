@@ -3,21 +3,22 @@ import fs from "node:fs";
 import test from "node:test";
 
 // After the action-chat home redesign orphaned the per-belief Memory controls, the reachable
-// ?view=memory surface must let a merchant correct memory ENTIRELY through the free-text
-// composer (founder's call: "make it work, but within the free text composer"). Source-level
-// guards, so a redesign can't quietly regress it back to a bare box: the composer is the single
-// input (memory.message, no per-belief action forms), and the view actually surfaces what the
-// merchant needs to see to talk to it — the plain-English statement, provenance, priority
-// order, and the open questions only they can answer.
+// ?view=memory surface must let a merchant correct memory ENTIRELY through the free-text composer
+// (founder's call: "make it work, but within the free text composer"). Matt's follow-up: keep it
+// SHORT and easy to INTERRUPT — a "Not right?" next to each belief that PREFILLS the composer (so
+// correction is local) but never commits (commit is still the composer). Source-level guards, so
+// a redesign can't quietly regress it: the composer is the single COMMIT path (memory.message,
+// no per-belief commit intents), the belief list is capped (not a wall), and the view surfaces
+// what the merchant needs — statement, provenance, priority order, and the open questions.
 
 const viewSource = fs.readFileSync(
   new URL("../app/components/merchant-memory-view.tsx", import.meta.url),
   "utf8",
 );
 
-test("the composer is the single interaction — posts memory.message, no per-belief buttons", () => {
+test("the composer is the single COMMIT path — Not right? prefills it, no per-belief commit intents", () => {
   assert.match(viewSource, /name="intent" value="memory\.message"/);
-  // Correction is conversational: no dedicated confirm/correct/forget/answer FORMS in this view.
+  // Correction is conversational: NO dedicated confirm/correct/forget/answer commit intents here.
   for (const intent of [
     "memory.confirm",
     "memory.correct",
@@ -26,9 +27,22 @@ test("the composer is the single interaction — posts memory.message, no per-be
   ]) {
     assert.ok(
       !viewSource.includes(`value="${intent}"`),
-      `${intent} must NOT be a button in the composer-only view`,
+      `${intent} must NOT be a committing button in the composer-only view`,
     );
   }
+  // Local interruption ("Not right?") is a PREFILL + focus of the composer, never a commit: it
+  // sets the message and touches no intent, so correction still happens by sending.
+  assert.match(viewSource, /Not right\?/);
+  assert.match(viewSource, /const correctThis = \(belief/);
+  assert.match(viewSource, /setMessage\(`About/);
+});
+
+test("the belief list is capped — top few, then a show-everything expander (not a wall)", () => {
+  // Matt: it's "quite long". Lead with what's most worth checking (confirmPriority) and collapse
+  // the rest behind one click, so the page is short by default.
+  assert.match(viewSource, /const TOP_BELIEFS = \d+/);
+  assert.match(viewSource, /showAll \? beliefs : beliefs\.slice\(0, TOP_BELIEFS\)/);
+  assert.match(viewSource, /Show everything Jefe knows/);
 });
 
 test("the view surfaces what a merchant needs to talk about", () => {

@@ -1,30 +1,33 @@
 import { useState } from "react";
 import { Form } from "react-router";
 import {
-  Badge,
   BlockStack,
   Box,
   Button,
   Card,
-  InlineGrid,
   InlineStack,
   Text,
   TextField,
 } from "@shopify/polaris";
 
-// The reachable Merchant Memory surface (?view=memory). After the action-chat home redesign
-// this is the ONLY place a merchant reaches Merchant Memory, so the founder's call is: make
-// correction work here, entirely through the free-text composer — no per-belief buttons.
+// The reachable Merchant Memory surface (?view=memory) — the merchant's window into what Jefe
+// has worked out about their business, and the one place they can put it right. After the
+// action-chat home redesign this is the ONLY place Merchant Memory is reachable.
 //
-// It LEADS WITH THE ASK, not the archive (Matt asked twice what the page is "for"): the point
-// isn't to browse what Jefe knows, it's to check he's got the business right — and correcting a
-// belief changes the advice, because every recommendation is built from these. So the top of the
-// page is the few highest-`confirmPriority` beliefs framed as questions ("… — is that right?")
-// plus the open questions, with the composer as the one answer box; the full labelled list sits
-// below as browsable reference. The composer posts `memory.message` → sendConversationMessage →
-// interpret/validate/commit (confirm / correct / answer / teach / forget — forget always shows
-// what it's about to drop and asks first, and is undoable). Presentation-only: the loader shapes
-// each belief; this component renders it.
+// Design (Matt's direct feedback, 2026-08-12): it doesn't need to tell the merchant what to DO —
+// it needs to be SHORT, legible and easy to INTERRUPT. So:
+//   • the beliefs are ONE tight list, most-worth-checking first (confirmPriority), capped with a
+//     "show everything" expander so the page never becomes a wall to scroll;
+//   • each belief carries a quiet "Not right?" that drops the merchant into the composer with
+//     that belief already named — local correction, one click, no scrolling-and-describing;
+//   • correction still COMMITS only through the free-text composer (Matt's rule — no per-belief
+//     action buttons); "Not right?" just prefills + focuses it, it never acts on its own.
+// The composer posts memory.message → sendConversationMessage (confirm / correct / answer / teach
+// / forget — forget shows what it'll drop, asks first, and is undoable). Presentation-only: the
+// loader shapes each belief; this component renders it.
+
+const COMPOSER_ID = "jefe-memory-composer";
+const TOP_BELIEFS = 6;
 
 type MemoryBelief = {
   id: string;
@@ -36,8 +39,8 @@ type MemoryBelief = {
   evidenceSummary: string | null;
   statusLabel: string;
   statusTone: "success" | "attention" | "info";
-  // Rich fields getMerchantMemoryView now computes — plain-English statement in Jefe's
-  // voice, a provenance line, and a confirm-priority (higher = more worth your eyes).
+  // Rich fields getMerchantMemoryView computes — plain-English statement in Jefe's voice, a
+  // provenance line, and a confirm-priority (higher = more worth your eyes).
   statement?: string | null;
   sourceLine?: string | null;
   authorship?: "merchant" | "jefe" | null;
@@ -57,8 +60,6 @@ type OpenQuestion = { id: string; question: string; reason: string | null };
 
 type MemoryConversation = {
   messages: Array<{ id: string; role: string; content: string }>;
-  // getMerchantMemoryConversationExperience surfaces the top open questions in its summary
-  // (already capped, so this stays a short, paced list — not a wall).
   summary?: { openQuestions?: OpenQuestion[] | null } | null;
 };
 
@@ -74,125 +75,63 @@ export function MerchantMemoryView({
   conversation: MemoryConversation | null;
 }) {
   const [message, setMessage] = useState("");
-  const messages = (conversation?.messages ?? []).slice(-6);
+  const [showAll, setShowAll] = useState(false);
+  const messages = (conversation?.messages ?? []).slice(-4);
   const openQuestions = conversation?.summary?.openQuestions ?? [];
-  // Highest confirm-priority first, so what's most worth your eyes leads; settled beliefs
-  // (priority 0) sink to the bottom of each group as browsable reference.
-  const groups = memory.groups.map((group) => ({
-    ...group,
-    beliefs: [...group.beliefs].sort(
-      (a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0),
-    ),
-  }));
-  // Lead with the ASK, not the archive: the few beliefs most worth confirming (highest
-  // confirmPriority = impact × uncertainty) become the questions Jefe is asking. Capped so it
-  // stays a short, answerable ask — the point of the page — not a wall of facts to inspect.
-  const toConfirm = groups
+
+  // One list, most-worth-checking first (confirmPriority = impact × uncertainty). Capped so the
+  // page stays short — the rest is one click away, not a wall.
+  const beliefs = memory.groups
     .flatMap((group) => group.beliefs)
-    .filter(
-      (belief) =>
-        (belief.confirmPriority ?? 0) > 0 && Boolean(belief.statement || belief.title),
-    )
-    .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0))
-    .slice(0, 4);
-  const hasAsk = toConfirm.length > 0 || openQuestions.length > 0;
+    .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0));
+  const visible = showAll ? beliefs : beliefs.slice(0, TOP_BELIEFS);
+  const hiddenCount = beliefs.length - visible.length;
+
+  // Local interruption: name the belief in the composer and focus it, so correcting the one Jefe
+  // has wrong is a click + a sentence — not a scroll-and-describe. Prefill only; the correction
+  // commits when the merchant sends (the composer-only rule).
+  const correctThis = (belief: MemoryBelief) => {
+    const subject = (belief.statement || belief.title).replace(/["\n]/g, " ").trim();
+    setMessage(`About "${subject}": `);
+    if (typeof document !== "undefined") {
+      const el = document.getElementById(COMPOSER_ID);
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+  };
 
   return (
     <main className="JefeMemoryView">
-      <BlockStack gap="600">
-        {/* Purpose, legible in the first line: this is where you keep Jefe right, and being
-            right is what changes his advice — not a knowledge dump to browse. */}
-        <BlockStack gap="150">
+      <BlockStack gap="500">
+        <BlockStack gap="100">
           <Text as="p" tone="subdued">
             {merchantName}
           </Text>
-          <Text as="h1" variant="heading2xl">
-            Is this right about {storeName}?
+          <Text as="h1" variant="headingXl">
+            What Jefe&apos;s worked out about {storeName}
           </Text>
           <Text as="p" tone="subdued">
-            Everything Jefe suggests comes from what he&apos;s worked out about your
-            business. If something here is wrong, tell him in plain English and the advice
-            changes with it — no forms, just talk.
+            Everything he suggests comes from this — see something off, and put him right in a
+            line. It changes the advice.
           </Text>
         </BlockStack>
 
         <Card>
-          <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">
-              {hasAsk ? "Does this look right?" : "Tell me about your business"}
-            </Text>
-            {hasAsk ? (
-              <BlockStack gap="200">
-                {toConfirm.map((belief) => (
-                  <Box
-                    key={belief.id}
-                    paddingBlockEnd="200"
-                    borderBlockEndWidth="025"
-                    borderColor="border"
-                  >
-                    <BlockStack gap="050">
-                      <Text as="p" fontWeight="semibold">
-                        {belief.statement || belief.title} — is that right?
-                      </Text>
-                      {belief.sourceLine ? (
-                        <Text as="p" tone="subdued">
-                          {belief.sourceLine}
-                        </Text>
-                      ) : null}
-                    </BlockStack>
-                  </Box>
-                ))}
-                {openQuestions.map((question) => (
-                  <Box
-                    key={question.id}
-                    paddingBlockEnd="200"
-                    borderBlockEndWidth="025"
-                    borderColor="border"
-                  >
-                    <BlockStack gap="050">
-                      <Text as="p" fontWeight="semibold">
-                        {question.question}
-                      </Text>
-                      {question.reason ? (
-                        <Text as="p" tone="subdued">
-                          {question.reason}
-                        </Text>
-                      ) : null}
-                    </BlockStack>
-                  </Box>
-                ))}
-              </BlockStack>
-            ) : null}
-            <Text as="p" tone="subdued">
-              {hasAsk
-                ? "Answer any of these below — “yes” if it’s right, or tell me what’s off. A correction from you outranks anything I’ve only guessed."
-                : "Tell me anything about how your business works — who your customers are, what you sell, how you fulfil — and I’ll remember it."}
-            </Text>
-            {messages.length > 0 ? (
-              <BlockStack gap="150">
-                {messages.map((item) => (
-                  <Text
-                    key={item.id}
-                    as="p"
-                    tone={item.role === "assistant" ? "subdued" : undefined}
-                  >
-                    {(item.role === "assistant" ? "Jefe: " : "You: ") +
-                      item.content}
-                  </Text>
-                ))}
-              </BlockStack>
-            ) : null}
+          <BlockStack gap="200">
             <Form method="post">
               <input type="hidden" name="intent" value="memory.message" />
-              <BlockStack gap="200">
+              <BlockStack gap="150">
                 <TextField
-                  label="Tell Jefe"
+                  label="Correct Jefe"
                   labelHidden
+                  id={COMPOSER_ID}
                   name="message"
                   value={message}
                   onChange={setMessage}
-                  placeholder="e.g. Yes, that's right — or, most of my sales are wholesale, not retail"
-                  multiline={3}
+                  placeholder="Tell me what's off — or confirm one, answer a question, or say “forget that”"
+                  multiline={2}
                   autoComplete="off"
                 />
                 <InlineStack align="end">
@@ -202,79 +141,92 @@ export function MerchantMemoryView({
                 </InlineStack>
               </BlockStack>
             </Form>
-            <Text as="p" tone="subdued">
-              You can also teach me something new, or tell me to forget something — I&apos;ll
-              show you exactly what I&apos;m about to drop and check first, and you can always
-              undo it.
-            </Text>
+            {messages.length > 0 ? (
+              <BlockStack gap="100">
+                {messages.map((item) => (
+                  <Text
+                    key={item.id}
+                    as="p"
+                    variant="bodySm"
+                    tone={item.role === "assistant" ? "subdued" : undefined}
+                  >
+                    {(item.role === "assistant" ? "Jefe: " : "You: ") + item.content}
+                  </Text>
+                ))}
+              </BlockStack>
+            ) : null}
           </BlockStack>
         </Card>
 
-        {groups.length > 0 ? (
-          <BlockStack gap="050">
-            <Text as="h2" variant="headingMd">
-              Everything Jefe knows
+        {openQuestions.length > 0 ? (
+          <BlockStack gap="150">
+            <Text as="h2" variant="headingSm">
+              A few things only you can tell me
             </Text>
-            <Text as="p" tone="subdued">
-              The full picture, most-important first — browse if you like, but the
-              questions above are what sharpen his advice.
-            </Text>
+            {openQuestions.map((question) => (
+              <Box
+                key={question.id}
+                paddingBlockEnd="150"
+                borderBlockEndWidth="025"
+                borderColor="border"
+              >
+                <BlockStack gap="050">
+                  <Text as="p" fontWeight="semibold">
+                    {question.question}
+                  </Text>
+                  {question.reason ? (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {question.reason}
+                    </Text>
+                  ) : null}
+                </BlockStack>
+              </Box>
+            ))}
           </BlockStack>
         ) : null}
-        {groups.length === 0 ? (
+
+        {beliefs.length === 0 ? (
           <Card>
             <Text as="p">
-              Jefe is still reading your store. Once the first import and memory pass
-              finish, what he&apos;s worked out shows up here for you to check.
+              Jefe is still reading your store. What he works out shows up here for you to
+              check.
             </Text>
           </Card>
         ) : (
-          <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-            {groups.map((group) => (
-              <Card key={group.category}>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">
-                    {group.label}
-                  </Text>
-                  <BlockStack gap="200">
-                    {group.beliefs.map((belief) => (
-                      <Box
-                        key={belief.id}
-                        paddingBlockEnd="200"
-                        borderBlockEndWidth="025"
-                        borderColor="border"
-                      >
-                        <BlockStack gap="100">
-                          <InlineStack align="space-between" gap="300">
-                            <Text as="p" fontWeight="semibold">
-                              {belief.statement || belief.title}
-                            </Text>
-                            <Badge tone={belief.statusTone}>
-                              {belief.statusLabel}
-                            </Badge>
-                          </InlineStack>
-                          {/* With a plain-English statement the raw value is redundant;
-                              show it only as the fallback when no statement exists. */}
-                          {belief.statement ? null : (
-                            <Text as="p">{belief.value}</Text>
-                          )}
-                          {belief.sourceLine ? (
-                            <Text as="p" tone="subdued">
-                              {belief.sourceLine}
-                            </Text>
-                          ) : belief.evidenceSummary ? (
-                            <Text as="p" tone="subdued">
-                              {belief.evidenceSummary}
-                            </Text>
-                          ) : null}
-                        </BlockStack>
-                      </Box>
-                    ))}
+          <BlockStack gap="150">
+            <Text as="h2" variant="headingSm">
+              What he believes
+            </Text>
+            {visible.map((belief) => (
+              <Box
+                key={belief.id}
+                paddingBlockEnd="150"
+                borderBlockEndWidth="025"
+                borderColor="border"
+              >
+                <InlineStack align="space-between" blockAlign="start" gap="300" wrap={false}>
+                  <BlockStack gap="050">
+                    <Text as="p" fontWeight="semibold">
+                      {belief.statement || belief.title}
+                    </Text>
+                    {belief.sourceLine ? (
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        {belief.sourceLine}
+                      </Text>
+                    ) : null}
                   </BlockStack>
-                </BlockStack>
-              </Card>
+                  <Button variant="plain" onClick={() => correctThis(belief)}>
+                    Not right?
+                  </Button>
+                </InlineStack>
+              </Box>
             ))}
-          </InlineGrid>
+            {hiddenCount > 0 ? (
+              <Button variant="plain" onClick={() => setShowAll(true)}>
+                {`Show everything Jefe knows (${hiddenCount} more)`}
+              </Button>
+            ) : null}
+          </BlockStack>
         )}
       </BlockStack>
     </main>
