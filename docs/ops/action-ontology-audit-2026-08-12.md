@@ -378,7 +378,65 @@ on a per-customer cohort belief that does not exist.
 
 Flags stay off. Nothing goes live without a separate explicit call.
 
-## 9. Coordination
+## 9. ⭐ PLAYS — Matt's ruling, 2026-08-12
+
+Matt's concern, verbatim in substance: the ontology is *"very discreet"* rather than composable —
+*"we can do different things for clients when they need them, or stack different actions together
+to take one big action."*
+
+**The question underneath it: what is the unit a merchant approves?** If it is the primitive, the
+ontology must grow by enumeration and merchants approve mechanical steps. If it is the **play**,
+the primitive set stays small and safe and the ontology grows by *combination*. N primitives
+compose into far more than N moves — so the way to make the ontology "increase hugely" is mostly
+**not** more primitives.
+
+Three things were tangled in "discrete", and they resolve differently:
+
+| | Disposition |
+|---|---|
+| **Write primitives** | Stay **discrete and closed**. Each needs dry-run, revert, caps, idempotency, scope. ~15–25 exist that Shopify can express within our scopes. This is the safety floor, not a limitation. |
+| **Composition (plays)** | **Missing, and it's the real gap.** "Mark these down; if they haven't moved in two weeks, archive them" is ONE thing to a merchant and three primitives to us. |
+| **Per-merchant variation** | **Data, not code** — `applicability` + business-relative windows. Parameterising primitives, never new ones. |
+
+⛔ **Bespoke *plays* per client = config, fine and desirable. Bespoke *primitives* per client = a
+trap** — each drags the whole safety chain behind it and turns this into a services business.
+
+### RATIFIED (Matt, 2026-08-12) — all three contract decisions
+
+1. **An execution can have a parent.** `ActionExecution` gains a parent link. *Schema change —
+   cheap now, a live-ledger migration later.*
+2. **A play is ONE card over several executions** — one description, many executions underneath.
+3. **A step can depend on the previous step's verdict.** `verdict → next step` is the composition
+   operator, and chat 10's outcome contract (landed today) is exactly what makes it expressible.
+
+### ⭐ The product principle that drives the rest
+
+> *"The user ultimately doesn't care about the execution by Jefe. It cares about the overall
+> action and the impact to their store."* — Matt
+
+Executions are plumbing; the play and its impact are the merchant-facing object. Three consequences
+that follow directly and are **not yet in any lane's contract**:
+
+- **Outcome and verdict must exist at PLAY level, not only per step.** A card that reports impact
+  cannot be assembled from three unaggregated step outcomes. This is an addition to chat 10's
+  `ActionOutcome` contract, not a surface concern.
+- **"Undo" becomes a play-level verb** — reverting the applied *prefix* when a later step failed
+  or the merchant changes their mind. Per-step revert already exists; nothing composes it.
+- **Blast radius needs a play-level ceiling.** Three steps each within cap can be a large move in
+  aggregate; today nothing sums them.
+
+### Sequencing
+
+Build the composition layer at **3+ primitives**, not over one atom that currently cannot write
+(§6, the GID defect). Orchestration before there is anything to orchestrate is the standard way to
+get this wrong. **But the three ratified decisions are cheap now and expensive to retrofit**, so
+they land before the second and third primitive, not after.
+
+`price_markdown → product_status_change` (mark it down; if it still hasn't moved, archive it) is
+**the first play**, which is why registering the second primitive is the enabling step rather than
+a competing one.
+
+## 10. Coordination
 
 - **chat 10 (architecture II)** — owns `ACTION_REGISTRY`'s shape and the per-primitive
   `measure`/`verdict` contract. Asked: the outcome-contract shape; whether they own the
