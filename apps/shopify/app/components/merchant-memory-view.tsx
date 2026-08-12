@@ -12,17 +12,19 @@ import {
   TextField,
 } from "@shopify/polaris";
 
-// The reachable Merchant Memory surface (?view=memory). After the action-chat home
-// redesign this is the ONLY place a merchant reaches Merchant Memory, so the founder's
-// call is: make correction work here, entirely through the free-text composer — no
-// per-belief buttons. So this view is deliberately conversational:
-//   • it renders what Jefe believes in plain English (the `statement` + provenance the
-//     loader computes), ordered by how much each is worth confirming (`confirmPriority`);
-//   • it surfaces the open questions only the merchant can answer;
-//   • and the ONE input is the composer, which posts `memory.message` →
-//     sendConversationMessage → interpret/validate/commit (confirm / correct / answer,
-//     and — once the interpreter's obsolete op lands — forget).
-// Presentation-only: the loader shapes each belief; this component just renders it.
+// The reachable Merchant Memory surface (?view=memory). After the action-chat home redesign
+// this is the ONLY place a merchant reaches Merchant Memory, so the founder's call is: make
+// correction work here, entirely through the free-text composer — no per-belief buttons.
+//
+// It LEADS WITH THE ASK, not the archive (Matt asked twice what the page is "for"): the point
+// isn't to browse what Jefe knows, it's to check he's got the business right — and correcting a
+// belief changes the advice, because every recommendation is built from these. So the top of the
+// page is the few highest-`confirmPriority` beliefs framed as questions ("… — is that right?")
+// plus the open questions, with the composer as the one answer box; the full labelled list sits
+// below as browsable reference. The composer posts `memory.message` → sendConversationMessage →
+// interpret/validate/commit (confirm / correct / answer / teach / forget — forget always shows
+// what it's about to drop and asks first, and is undoable). Presentation-only: the loader shapes
+// each belief; this component renders it.
 
 type MemoryBelief = {
   id: string;
@@ -82,34 +84,89 @@ export function MerchantMemoryView({
       (a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0),
     ),
   }));
+  // Lead with the ASK, not the archive: the few beliefs most worth confirming (highest
+  // confirmPriority = impact × uncertainty) become the questions Jefe is asking. Capped so it
+  // stays a short, answerable ask — the point of the page — not a wall of facts to inspect.
+  const toConfirm = groups
+    .flatMap((group) => group.beliefs)
+    .filter(
+      (belief) =>
+        (belief.confirmPriority ?? 0) > 0 && Boolean(belief.statement || belief.title),
+    )
+    .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0))
+    .slice(0, 4);
+  const hasAsk = toConfirm.length > 0 || openQuestions.length > 0;
 
   return (
     <main className="JefeMemoryView">
       <BlockStack gap="600">
+        {/* Purpose, legible in the first line: this is where you keep Jefe right, and being
+            right is what changes his advice — not a knowledge dump to browse. */}
         <BlockStack gap="150">
           <Text as="p" tone="subdued">
             {merchantName}
           </Text>
           <Text as="h1" variant="heading2xl">
-            What Jefe knows about {storeName}
+            Is this right about {storeName}?
           </Text>
           <Text as="p" tone="subdued">
-            Merchant Memory is built from Shopify evidence, merchant corrections
-            and lower-authority inferences that stay clearly labelled.
+            Everything Jefe suggests comes from what he&apos;s worked out about your
+            business. If something here is wrong, tell him in plain English and the advice
+            changes with it — no forms, just talk.
           </Text>
         </BlockStack>
 
         <Card>
           <BlockStack gap="300">
             <Text as="h2" variant="headingMd">
-              Talk to me — I&apos;ll update what I know
+              {hasAsk ? "Does this look right?" : "Tell me about your business"}
             </Text>
+            {hasAsk ? (
+              <BlockStack gap="200">
+                {toConfirm.map((belief) => (
+                  <Box
+                    key={belief.id}
+                    paddingBlockEnd="200"
+                    borderBlockEndWidth="025"
+                    borderColor="border"
+                  >
+                    <BlockStack gap="050">
+                      <Text as="p" fontWeight="semibold">
+                        {belief.statement || belief.title} — is that right?
+                      </Text>
+                      {belief.sourceLine ? (
+                        <Text as="p" tone="subdued">
+                          {belief.sourceLine}
+                        </Text>
+                      ) : null}
+                    </BlockStack>
+                  </Box>
+                ))}
+                {openQuestions.map((question) => (
+                  <Box
+                    key={question.id}
+                    paddingBlockEnd="200"
+                    borderBlockEndWidth="025"
+                    borderColor="border"
+                  >
+                    <BlockStack gap="050">
+                      <Text as="p" fontWeight="semibold">
+                        {question.question}
+                      </Text>
+                      {question.reason ? (
+                        <Text as="p" tone="subdued">
+                          {question.reason}
+                        </Text>
+                      ) : null}
+                    </BlockStack>
+                  </Box>
+                ))}
+              </BlockStack>
+            ) : null}
             <Text as="p" tone="subdued">
-              Everything here you can change just by telling me, in plain English.
-              Confirm something (&ldquo;that&apos;s right&rdquo;), correct it
-              (&ldquo;most of my sales are wholesale, not retail&rdquo;), or answer
-              one of the questions below. A correction from you outranks anything
-              I&apos;ve only inferred.
+              {hasAsk
+                ? "Answer any of these below — “yes” if it’s right, or tell me what’s off. A correction from you outranks anything I’ve only guessed."
+                : "Tell me anything about how your business works — who your customers are, what you sell, how you fulfil — and I’ll remember it."}
             </Text>
             {messages.length > 0 ? (
               <BlockStack gap="150">
@@ -134,7 +191,7 @@ export function MerchantMemoryView({
                   name="message"
                   value={message}
                   onChange={setMessage}
-                  placeholder="e.g. That's right — or, most of my sales are wholesale, not retail"
+                  placeholder="e.g. Yes, that's right — or, most of my sales are wholesale, not retail"
                   multiline={3}
                   autoComplete="off"
                 />
@@ -145,49 +202,30 @@ export function MerchantMemoryView({
                 </InlineStack>
               </BlockStack>
             </Form>
+            <Text as="p" tone="subdued">
+              You can also teach me something new, or tell me to forget something — I&apos;ll
+              show you exactly what I&apos;m about to drop and check first, and you can always
+              undo it.
+            </Text>
           </BlockStack>
         </Card>
 
-        {openQuestions.length > 0 ? (
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">
-                A few things only you can tell me
-              </Text>
-              <Text as="p" tone="subdued">
-                Answer any of these in the box above — it&apos;s the fastest way
-                to sharpen what I know.
-              </Text>
-              <BlockStack gap="200">
-                {openQuestions.map((question) => (
-                  <Box
-                    key={question.id}
-                    paddingBlockEnd="200"
-                    borderBlockEndWidth="025"
-                    borderColor="border"
-                  >
-                    <BlockStack gap="050">
-                      <Text as="p" fontWeight="semibold">
-                        {question.question}
-                      </Text>
-                      {question.reason ? (
-                        <Text as="p" tone="subdued">
-                          {question.reason}
-                        </Text>
-                      ) : null}
-                    </BlockStack>
-                  </Box>
-                ))}
-              </BlockStack>
-            </BlockStack>
-          </Card>
+        {groups.length > 0 ? (
+          <BlockStack gap="050">
+            <Text as="h2" variant="headingMd">
+              Everything Jefe knows
+            </Text>
+            <Text as="p" tone="subdued">
+              The full picture, most-important first — browse if you like, but the
+              questions above are what sharpen his advice.
+            </Text>
+          </BlockStack>
         ) : null}
-
         {groups.length === 0 ? (
           <Card>
             <Text as="p">
-              Merchant Memory is still being built. Come back once Shopify
-              import and memory generation have finished.
+              Jefe is still reading your store. Once the first import and memory pass
+              finish, what he&apos;s worked out shows up here for you to check.
             </Text>
           </Card>
         ) : (
