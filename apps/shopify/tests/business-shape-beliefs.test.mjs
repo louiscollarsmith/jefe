@@ -118,6 +118,115 @@ test("business-shape beliefs derive but are not yet shown to merchants", async (
   assert.equal(isMerchantVisibleBeliefKey("orders.average_order_value.all_time"), true);
 });
 
+const BANDS = "business.order_value_bands.trailing_90d";
+const FOOTPRINT = "business.delivery_footprint.trailing_90d";
+const CONSIDERATION = "business.purchase_consideration.trailing_90d";
+
+test("order-value bands describe the merchant's own spread, in their own currency", async () => {
+  // Same shape, different currency. A cross-merchant "premium/budget" threshold would label
+  // these two differently for no reason but the currency; describing each against itself
+  // cannot. That is why this is a spread, not a verdict.
+  const pounds = await derive({ ...baseSpec(), orderValues: spread(), currency: "GBP" });
+  const yen = await derive({ ...baseSpec(), orderValues: spread().map((v) => v * 190), currency: "JPY" });
+
+  const gbp = pounds.find((o) => o.key === BANDS);
+  const jpy = yen.find((o) => o.key === BANDS);
+
+  assert.equal(gbp?.value?.enum, jpy?.value?.enum);
+  assert.equal(gbp?.value?.currency, "GBP");
+  assert.equal(jpy?.value?.currency, "JPY");
+  assert.ok(gbp?.value?.typicalOrderValue > 0);
+});
+
+test("a long tail of big orders reads differently from a merely wide spread", async () => {
+  // A few orders many times the typical size usually means trade buyers inside a retail
+  // order book — a different business from one that simply sells a wide price range.
+  const tail = await derive({
+    ...baseSpec(),
+    orderValues: [...Array.from({ length: 45 }, () => 40), ...Array.from({ length: 5 }, () => 900)],
+  });
+  const tight = await derive({
+    ...baseSpec(),
+    orderValues: Array.from({ length: 50 }, (_, i) => 40 + (i % 5)),
+  });
+
+  assert.equal(tail.find((o) => o.key === BANDS)?.value?.enum, "long_tail");
+  assert.equal(tight.find((o) => o.key === BANDS)?.value?.enum, "tight_band");
+});
+
+test("delivery footprint separates a single market from an international one", async () => {
+  const domestic = await derive({ ...baseSpec(), countries: ["GB"] });
+  const global = await derive({
+    ...baseSpec(),
+    countries: ["GB", "US", "DE", "FR", "ES", "IT", "NL", "SE", "AU", "CA", "JP", "IE"],
+  });
+
+  assert.equal(domestic.find((o) => o.key === FOOTPRINT)?.value?.enum, "single_market");
+  assert.equal(global.find((o) => o.key === FOOTPRINT)?.value?.enum, "international");
+});
+
+test("the top destination is reported as the primary market, never assumed to be home", async () => {
+  // Jefe does not store the shop's own country, so calling the top destination "domestic"
+  // would be an assumption presented as a fact.
+  const outcomes = await derive({ ...baseSpec(), countries: ["DE", "DE", "DE", "GB"] });
+  const footprint = outcomes.find((o) => o.key === FOOTPRINT);
+  assert.equal(footprint?.value?.primaryMarket, "DE");
+  assert.equal(Object.keys(footprint?.value ?? {}).includes("domestic"), false);
+});
+
+test("considered and habitual buying are told apart, and a mixed signal stays mixed", async () => {
+  // One expensive item, nobody comes back → considered.
+  const considered = await derive({
+    ...baseSpec(),
+    orderValues: Array.from({ length: 50 }, () => 600),
+    itemsPerOrder: 1,
+    variantPrice: "300.00",
+    repeatEveryDays: null,
+    customerCount: 50,
+  });
+  // Small baskets of several ordinary items, customers return constantly → habitual.
+  const habitual = await derive({
+    ...baseSpec(),
+    orderValues: Array.from({ length: 50 }, () => 30),
+    itemsPerOrder: 3,
+    variantPrice: "10.00",
+    repeatEveryDays: 14,
+    customerCount: 8,
+  });
+
+  assert.equal(considered.find((o) => o.key === CONSIDERATION)?.value?.enum, "considered");
+  assert.equal(habitual.find((o) => o.key === CONSIDERATION)?.value?.enum, "habitual");
+});
+
+test("consideration falls back to mixed rather than guessing when signals disagree", async () => {
+  // Single expensive items, but customers return often — that is a real business (a jeweller
+  // with loyal buyers) and neither label fits. Saying "mixed" beats inventing a verdict.
+  const outcomes = await derive({
+    ...baseSpec(),
+    orderValues: Array.from({ length: 50 }, () => 600),
+    itemsPerOrder: 1,
+    variantPrice: "300.00",
+    repeatEveryDays: 14,
+    customerCount: 8,
+  });
+  assert.equal(outcomes.find((o) => o.key === CONSIDERATION)?.value?.enum, "mixed");
+});
+
+function baseSpec() {
+  return {
+    productCount: 12,
+    variantsPerProduct: 2,
+    sourceNames: ["web"],
+    repeatEveryDays: 30,
+    customerCount: 30,
+    orderCount: 50,
+  };
+}
+
+function spread() {
+  return Array.from({ length: 50 }, (_, i) => 20 + i * 4);
+}
+
 async function shapeOf(spec) {
   const outcomes = await derive(spec);
   const shape = {};
@@ -144,7 +253,13 @@ function mockPrisma({
   repeatEveryDays,
   customerCount,
   orderCount,
+  orderValues = null,
+  currency = "GBP",
+  countries = ["GB"],
+  itemsPerOrder = 1,
+  variantPrice = "25.00",
 }) {
+  const count = orderValues ? orderValues.length : orderCount;
   const now = Date.now();
   const products = Array.from({ length: productCount }, (_, i) => ({
     id: `product-${i + 1}`,
@@ -159,15 +274,15 @@ function mockPrisma({
       productId: product.id,
       sku: `SKU-${p + 1}-${v + 1}`,
       title: `V${v + 1}`,
-      price: "25.00",
-      currency: "GBP",
+      price: variantPrice,
+      currency,
       inventoryItemExternalId: `inv-${p + 1}-${v + 1}`,
     })),
   );
   // Spread orders over the last 80 days so they land inside the 90-day windows. When
   // repeatEveryDays is set, customers recur at that interval; otherwise every order is a
   // distinct customer and nobody comes back.
-  const orders = Array.from({ length: orderCount }, (_, i) => {
+  const orders = Array.from({ length: count }, (_, i) => {
     const customerIndex = repeatEveryDays == null ? i : i % customerCount;
     const repeatRound = repeatEveryDays == null ? 0 : Math.floor(i / customerCount);
     const daysAgo = repeatEveryDays == null
@@ -177,8 +292,8 @@ function mockPrisma({
     return {
       id: `order-${i + 1}`,
       externalId: `ext-order-${i + 1}`,
-      currency: "GBP",
-      totalPrice: "80.00",
+      currency,
+      totalPrice: orderValues ? String(orderValues[i]) + ".00" : "80.00",
       totalDiscount: "0.00",
       totalTax: "0.00",
       totalShipping: "0.00",
@@ -188,7 +303,7 @@ function mockPrisma({
       customerExternalId: `customer-${customerIndex + 1}`,
       financialStatus: "PAID",
       sourceName: sourceNames[i % sourceNames.length],
-      shippingCountry: "GB",
+      shippingCountry: countries[i % countries.length],
     };
   });
 
@@ -219,7 +334,7 @@ function mockPrisma({
           orderId: order.id,
           productId: products[i % products.length].id,
           variantId: variants[i % variants.length].id,
-          quantity: 1,
+          quantity: itemsPerOrder,
           unitPrice: "80.00",
           totalPrice: "80.00",
         })),

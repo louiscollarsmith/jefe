@@ -313,6 +313,12 @@ function deriveDefinition(context, definition) {
         return catalogueShape(context, definition);
       case "business.purchase_cadence.all_stored_history":
         return purchaseCadence(context, definition);
+      case "business.order_value_bands.trailing_90d":
+        return orderValueBands(context, definition, 90);
+      case "business.delivery_footprint.trailing_90d":
+        return deliveryFootprint(context, definition, 90);
+      case "business.purchase_consideration.trailing_90d":
+        return purchaseConsideration(context, definition, 90);
       case "business.active_selling_days.trailing_30d":
       case "business.active_selling_days.trailing_90d":
         return activeSellingDays(context, definition, trailingDays(definition.key));
@@ -834,6 +840,194 @@ function purchaseCadence(context, definition) {
     confidenceReason: "Median gap between consecutive orders from the same customer.",
     summary: "How often the merchant's customers come back.",
     sampleSize: gapDays.length,
+  });
+}
+
+/**
+ * What this merchant's order values actually look like — the SHAPE of the spread, not a
+ * "premium/budget" verdict.
+ *
+ * ⛔ Deliberately NOT a cross-merchant band. Calling a store "premium" needs a basis to be
+ * premium *against*, and the benchmark-prior module ships with no data; picking thresholds
+ * in sterling would mislabel every merchant trading in yen. Everything here describes the
+ * merchant against THEMSELVES, so it needs no currency threshold and is honest for all of
+ * them. A comparative band can be added the day real benchmarks land.
+ */
+function orderValueBands(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 20) {
+    return skipped(definition, "insufficient_data", "At least 20 priced orders are required to describe a price spread.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  if (!currency.ok) {
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { orders: orders.length });
+  }
+  const values = orders.map(orderValue).filter((value) => value > 0).sort((a, b) => a - b);
+  if (values.length < 20) {
+    return skipped(definition, "insufficient_data", "At least 20 orders with a positive value are required.", { pricedOrders: values.length });
+  }
+  const p25 = percentile(values, 0.25);
+  const median = percentile(values, 0.5);
+  const p75 = percentile(values, 0.75);
+  const p90 = percentile(values, 0.9);
+  // Ratios, so the shape reads the same whether the merchant trades in pounds or yen.
+  const spread = p25 > 0 ? p75 / p25 : null;
+  // Skew, NOT p90/median: a tail is by definition a small share of orders, and p90 sits at
+  // the boundary of a 10% tail — so five £900 orders among forty-five £40 ones scored 1.0
+  // and read as tight. Mean-to-median catches it (3.15), and it is the same skew measure
+  // `orders.order_value_mean_to_median_ratio` already uses.
+  const mean = average(values);
+  const skew = median > 0 ? mean / median : null;
+
+  let shape = "broad_band";
+  if (spread != null && spread < 1.8) shape = "tight_band";
+  else if (spread != null && spread > 4) shape = "wide_spread";
+  // A long tail is a different business from a merely wide one: a few orders many times the
+  // typical size usually means trade/bulk buyers sitting inside a retail order book.
+  if (skew != null && skew >= 1.5) shape = "long_tail";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      currency: currency.currency,
+      typicalOrderValue: roundMoney(median),
+      lowerQuartile: roundMoney(p25),
+      upperQuartile: roundMoney(p75),
+      topDecile: roundMoney(p90),
+      quartileSpread: spread == null ? null : roundNumber(spread, 2),
+      valueSkew: skew == null ? null : roundNumber(skew, 2),
+      orderCount: values.length,
+      window: `trailing_${days}d`,
+      thresholdVersion: "order-value-bands-v1",
+    },
+    confidence: sampleConfidence(0.85, values.length, 20, 200),
+    confidenceReason: "Quartiles of stored order values in the shop's base currency.",
+    summary: "The spread of what customers spend per order.",
+    sampleSize: values.length,
+  });
+}
+
+/**
+ * Where the merchant delivers. Concentration and reach, not a country list — "one market" vs
+ * "shipping everywhere" changes advice; the ranked countries already live in
+ * `business.revenue_by_region`.
+ *
+ * Counted by ORDERS so a single large export order can't make a domestic shop look global,
+ * and reported as the PRIMARY market rather than "domestic": Jefe doesn't store the shop's
+ * own country, so calling the top destination "home" would be an assumption, not a fact.
+ */
+function deliveryFootprint(context, definition, days) {
+  const orders = ordersInWindow(context, days);
+  if (orders.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 orders in the window are required to read a delivery footprint.", { orders: orders.length });
+  }
+  const byCountry = new Map();
+  let known = 0;
+  for (const order of orders) {
+    const country = stringValue(order.shippingCountry)?.toUpperCase();
+    if (!country) continue;
+    known += 1;
+    byCountry.set(country, (byCountry.get(country) ?? 0) + 1);
+  }
+  const coverage = known / orders.length;
+  if (known < 10 || coverage < 0.7) {
+    return skipped(definition, "insufficient_data", "Too few orders record a destination country (a re-backfill fills this in).", { countryCoverage: roundNumber(coverage, 4), classifiedOrders: known });
+  }
+  const ranked = Array.from(byCountry.entries()).sort((a, b) => b[1] - a[1]);
+  const [primaryCountry, primaryCount] = ranked[0];
+  const primaryShare = primaryCount / known;
+  const countryCount = ranked.length;
+
+  let shape = "multi_market";
+  if (primaryShare >= 0.95) shape = "single_market";
+  else if (primaryShare >= 0.75) shape = "one_market_plus_export";
+  else if (countryCount >= 10) shape = "international";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      primaryMarket: primaryCountry,
+      primaryMarketShare: roundNumber(primaryShare, 4),
+      countriesServed: countryCount,
+      classifiedOrders: known,
+      destinationCoverage: roundNumber(coverage, 4),
+      window: `trailing_${days}d`,
+      thresholdVersion: "delivery-footprint-v1",
+    },
+    confidence: coverageConfidence(0.85, coverage),
+    confidenceReason: "Share of orders per destination country over the window.",
+    summary: "How concentrated the merchant's delivery markets are.",
+    sampleSize: known,
+  });
+}
+
+/**
+ * Is buying here a decision or a habit? A mattress shop and a coffee subscription can turn
+ * the same revenue and need opposite advice — "win them back" is meaningless where there is
+ * no back.
+ *
+ * Built only from RATIOS (basket size, order value against the merchant's own catalogue
+ * prices, repeat rate), so it needs no currency threshold and no vertical label. Falls to
+ * `mixed` unless the signals agree — a guess dressed as a verdict about someone's business
+ * is worse than saying nothing.
+ */
+function purchaseConsideration(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 20) {
+    return skipped(definition, "insufficient_data", "At least 20 priced orders are required.", { orders: orders.length });
+  }
+  const catalogPrices = activeVariantPrices(context);
+  if (catalogPrices.length < 3) {
+    return skipped(definition, "insufficient_data", "At least 3 priced active variants are required to compare order values against the range.", { pricedActiveVariants: catalogPrices.length });
+  }
+  const basketSizes = orders
+    .map((order) => context.quantitiesByOrder.get(order.id))
+    .filter((quantity) => typeof quantity === "number" && quantity > 0);
+  if (basketSizes.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 orders with line items are required to read basket size.", { ordersWithLines: basketSizes.length });
+  }
+  const medianBasket = percentile(basketSizes, 0.5);
+  const medianOrder = percentile(orders.map(orderValue).filter((v) => v > 0), 0.5);
+  const medianCatalogPrice = percentile(catalogPrices, 0.5);
+  // Where the typical order sits in the merchant's own price range: ~1 means people buy one
+  // ordinary item; well above means they reach for the expensive end or buy several.
+  const basketToCatalogue = medianCatalogPrice > 0 ? medianOrder / medianCatalogPrice : null;
+
+  const repeatCustomers = new Map();
+  for (const order of context.datedOrders) {
+    const key = stringValue(order.customerExternalId);
+    if (!key) continue;
+    repeatCustomers.set(key, (repeatCustomers.get(key) ?? 0) + 1);
+  }
+  const customers = repeatCustomers.size;
+  const returning = Array.from(repeatCustomers.values()).filter((count) => count > 1).length;
+  const repeatShare = customers === 0 ? null : returning / customers;
+
+  let shape = "mixed";
+  const singleItemOrders = medianBasket <= 1;
+  const reachesUpwards = basketToCatalogue != null && basketToCatalogue >= 1.5;
+  const rarelyReturns = repeatShare != null && repeatShare <= 0.15;
+  const oftenReturns = repeatShare != null && repeatShare >= 0.35;
+  // Both signals must agree. One alone is just basket size or just loyalty restated.
+  if (singleItemOrders && reachesUpwards && rarelyReturns) shape = "considered";
+  else if (!singleItemOrders && oftenReturns) shape = "habitual";
+  else if (medianBasket >= 2 && basketToCatalogue != null && basketToCatalogue < 1.5) shape = "basket";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      medianItemsPerOrder: roundNumber(medianBasket, 2),
+      orderValueVsTypicalItem: basketToCatalogue == null ? null : roundNumber(basketToCatalogue, 2),
+      repeatCustomerShare: repeatShare == null ? null : roundNumber(repeatShare, 4),
+      customers,
+      orderCount: orders.length,
+      window: `trailing_${days}d`,
+      thresholdVersion: "purchase-consideration-v1",
+    },
+    confidence: sampleConfidence(0.75, orders.length, 20, 200),
+    confidenceReason: "Basket size and order value against the merchant's own price range, with repeat rate.",
+    summary: "Whether buying here is a considered decision or a habit.",
+    sampleSize: orders.length,
   });
 }
 

@@ -1699,6 +1699,75 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.order_value_bands.trailing_90d",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "quartiles of order value in shop base currency; shape from p75/p25 spread and mean/median skew",
+    "minimumData": "At least 20 priced orders with a positive value",
+    "confidenceRule": "0.85 scaled by sample size",
+    "legacyConfidenceRule": "0.85 scaled by sample size",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
+    "key": "business.delivery_footprint.trailing_90d",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "share of orders per destination country; shape from primary-market share and country count",
+    "minimumData": "At least 10 orders in the window with a destination country on >=70% of them",
+    "confidenceRule": "0.85 scaled by destination coverage",
+    "legacyConfidenceRule": "0.85 scaled by destination coverage",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
+    "key": "business.purchase_consideration.trailing_90d",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "median basket size, median order value against median catalogue price, and repeat share; both signals must agree or falls to mixed",
+    "minimumData": "At least 20 priced orders, 3 priced active variants and 10 orders with line items",
+    "confidenceRule": "0.75 scaled by sample size",
+    "legacyConfidenceRule": "0.75 scaled by sample size",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
     "key": "business.channel_mix.trailing_90d",
     "tranche": "Business shape v1",
     "category": "business",
