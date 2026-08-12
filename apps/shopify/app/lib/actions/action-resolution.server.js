@@ -13,7 +13,7 @@
 // here + re-checked by the gate.
 
 import { randomUUID } from "node:crypto";
-import { getRequiredScopes, isActionExecuteEnabled, validateActionIntent } from "./action-intent.server.js";
+import { getActionDefinition, getRequiredScopes, isActionExecuteEnabled, validateActionIntent } from "./action-intent.server.js";
 import { applyAutonomyPolicy, getActionMode, getActionPolicy } from "./action-autonomy-policy.server.js";
 import { buildDeadStockClearanceProposal } from "./dead-stock-clearance.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
@@ -62,10 +62,15 @@ async function adaptMarkdownFromMemory(prisma, input) {
  * Resolver for `price_markdown` on `dead_stock`: the deterministic half. Reads the
  * dead-stock proposal (only costed variants, markdown floored at unit cost), builds
  * the previewed changes. Returns null when there's nothing safe to act on.
+ *
+ * Returns the generic `{ preview, summary, magnitude }` binding shape. The SUMMARY is built
+ * here rather than by the caller because its shape is inherently this primitive's — a
+ * markdown percentage and trapped capital mean nothing to a status change. `magnitude` is
+ * the small, named set of numbers the merchant's autonomy caps are expressed in.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: import("./action-intent.server.js").ActionIntent }} input
+ * @param {{ merchantId: string; shopId: string; intent: import("./action-intent.server.js").ActionIntent; sourceRecommendation?: any }} input
  */
-async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
+async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent, sourceRecommendation = null }) {
   const requested = Number(intent.params?.markdownPercent);
   // The effective default markdown that produced this proposal — the exact knob the
   // merchant edits (reviseAction round-trips it). Clamp to [0,100]; default 30.
@@ -88,22 +93,93 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent }) {
   if (proposal.status !== "proposed") return null;
   const preview = buildClearancePreview(/** @type {any} */ (proposal));
   if (preview.variantCount === 0) return null; // all refused (below-floor / missing-floor) or none
+  const scope = Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : null;
+  const summary = buildProposalSummary(proposal, preview, markdownPercent, sourceRecommendation, scope);
   return {
-    proposal,
     preview,
-    markdownPercent,
-    scope: Number.isInteger(maxProducts) && maxProducts > 0 ? { maxProducts } : null,
+    summary,
+    // What the merchant's autonomy caps are measured in, for this primitive. A primitive
+    // with no magnitude (a status flip has none) returns {} and the caps simply don't bite.
+    magnitude: {
+      trappedCapital: summary.totalTrappedCapital,
+      variantCount: preview.variantCount,
+      maxDiscountPercent: preview.maxDiscountPercent,
+    },
   };
 }
 
 /**
- * Explicit dispatch, action-type → resolver. Stays explicit until a 2nd primitive
- * exists (no premature interface — the shared shape gets extracted from two real
- * ones, per the execution-contract owner).
+ * The PRIMITIVE BINDING TABLE — the seam that makes this layer generic, and the one place
+ * an action type declares the behaviour that cannot live in the (metadata-only) registry.
+ *
+ * The registry says WHAT an action is; this says HOW this layer runs it. Everything here is
+ * a function or a value the layer used to hardcode to clearance: the resolver, the safety
+ * caps, the eligibility calculator, the ledger's `actionKind`, and the card presenters.
+ *
+ * ⚠️ Every field is REQUIRED. A partially-bound primitive is refused at module load
+ * (see the assertion below) rather than silently inheriting clearance's behaviour — which
+ * is exactly how the wrong-flag and wrong-caps bugs happened.
+ *
+ * ⚠️ Membership here — NOT the registry — is what makes an action proposable. A registry
+ * entry with no binding returns `unsupported` and no row is ever created. Keep the two in
+ * step: registering an action type without binding it makes it advertisable to the LLM but
+ * unresolvable, and binding one without registering it makes it unreachable.
+ *
+ * @typedef {Object} PrimitiveBinding
+ * @property {(prisma: any, input: { merchantId: string, shopId: string, intent: any, sourceRecommendation?: any }) => Promise<{ preview: any, summary: any, magnitude: Record<string, number|undefined> } | null>} resolve
+ *   Deterministic half: find the targets, size the change safely, build the preview AND the
+ *   persisted summary (both shapes are the primitive's own). null = no safe opportunity.
+ * @property {Record<string, number>} caps  Structural blast-radius caps for this primitive.
+ * @property {(preview: any, confidence: number, caps?: any) => { autoEligible: boolean, reversible: boolean, withinCap: boolean, confident: boolean, reasons: string[] }} computeEligibility
+ * @property {(targetKind: string) => string} actionKindFor  Ledger `actionKind` from the intent's target.
+ * @property {(input: { summary: any, preview: any, runId: string, executable: boolean }) => any} card
+ *   Propose-time card (raw numbers). Each presenter names its OWN actionType — a hardcode
+ *   that is correct once the function is explicitly one primitive's presenter.
+ * @property {(input: { summary: any, preview: any, currency: string }) => { headline: string, keyNumbers: any[], topItems: any[] } | null} readCard
+ *   Read-time card from the persisted row, money formatted. null = nothing safe to show.
+ * @property {(status: string, count: number, summary: any) => string} executedHeadline
+ * @property {(input: { summary: any, currency: string, missingScopes: string[] }) => any | null} scopeNudge
+ *   The value-first permission ask, in this primitive's own terms.
+ * @type {Record<string, PrimitiveBinding>}
  */
-const RESOLVERS = /** @type {Record<string, typeof resolvePriceMarkdown>} */ ({
-  price_markdown: resolvePriceMarkdown,
-});
+const PRIMITIVES = {
+  price_markdown: {
+    resolve: resolvePriceMarkdown,
+    caps: DEFAULT_CLEARANCE_CAPS,
+    computeEligibility: computeClearanceAutoEligibility,
+    actionKindFor: (targetKind) => (targetKind === "dead_stock" ? "dead_stock_clearance" : targetKind),
+    card: clearanceProposeCard,
+    readCard: clearanceReadCard,
+    executedHeadline: clearanceExecutedHeadline,
+    scopeNudge: clearanceScopeNudge,
+  },
+};
+
+/** Every field of the binding contract. Adding one here fails an under-bound primitive loudly. */
+const REQUIRED_BINDING_FIELDS = ["resolve", "caps", "computeEligibility", "actionKindFor", "card", "readCard", "executedHeadline", "scopeNudge"];
+
+for (const [actionType, binding] of Object.entries(PRIMITIVES)) {
+  for (const field of REQUIRED_BINDING_FIELDS) {
+    if (binding[field] == null) {
+      throw new Error(`Primitive binding "${actionType}" is missing "${field}" — a partial binding would silently inherit clearance's behaviour.`);
+    }
+  }
+}
+
+/**
+ * The bound primitive for an action type, or null. Fail-closed by design: every caller
+ * treats null as "cannot do this", never as "fall back to clearance".
+ * @param {string} actionType
+ * @returns {PrimitiveBinding | null}
+ */
+function getPrimitive(actionType) {
+  return Object.prototype.hasOwnProperty.call(PRIMITIVES, actionType) ? PRIMITIVES[actionType] : null;
+}
+
+/** Action types this layer can actually propose — the binding table, not the registry. */
+export function listResolvableActionTypes() {
+  return Object.keys(PRIMITIVES);
+}
 
 /** Round to 2 decimals (mirrors the clearance sizing math). @param {unknown} n */
 function round2(n) {
@@ -205,6 +281,53 @@ function cleanStringList(value) {
     : [];
 }
 
+// ── price_markdown presenters ────────────────────────────────────────────────────
+// Each primitive owns how it describes itself. These three hardcode "price_markdown"
+// and dead-stock wording — correct, now that they are explicitly ONE primitive's
+// presenters reached through the binding table rather than the only path there is.
+// `getActiveSuggestedAction` used to render this clearance headline for whatever row it
+// loaded, so a second action type would have been announced to the merchant as a clearance.
+
+/**
+ * Propose-time card. Built from the persisted SUMMARY rather than the raw proposal, so the
+ * money agrees with the variant count shown and with what the merchant sees on reload.
+ *
+ * ⚠️ Deliberate fix, not a refactor artefact: this read `proposal.totalTrappedCapital` —
+ * the total over ALL dead-stock items, including those the preview's cost floor REFUSED —
+ * while the read-time card reads the summary's total over surviving items only. The same
+ * proposal could therefore quote two different figures depending on whether the page had
+ * been reloaded. The summary is the honest one (it matches the products actually listed).
+ * @param {{ summary: any; preview: any; runId: string; executable: boolean }} input
+ */
+function clearanceProposeCard({ summary, preview, runId, executable }) {
+  return toSuggestedAction({ proposal: summary, preview, runId, executable });
+}
+
+/**
+ * Read-time card from the persisted row, money formatted against the shop currency.
+ * Returns null when there is nothing safe to show.
+ * @param {{ summary: any; preview: any; currency: string }} input
+ */
+function clearanceReadCard({ summary, preview, currency }) {
+  const variantCount = Number(summary.variantCount ?? preview.variantCount ?? 0);
+  if (!(variantCount > 0)) return null;
+  const windowDays = Number(summary.windowDays ?? 90);
+  return {
+    headline: `${variantCount} product${variantCount === 1 ? "" : "s"} with cash tied up haven't sold in ${windowDays} days — a floored clearance frees it.`,
+    keyNumbers: [
+      { label: "Trapped capital", value: formatMoney(summary.totalTrappedCapital, currency) },
+      { label: "Projected recovery", value: formatMoney(summary.totalProjectedRecovery, currency) },
+      { label: "Products", value: String(variantCount) },
+    ],
+    topItems: (Array.isArray(summary.topItems) ? summary.topItems : [])
+      .slice(0, 3)
+      .map((/** @type {any} */ item) => ({
+        title: typeof item?.title === "string" ? item.title : "Product",
+        detail: `${Number(item?.unitsOnHand) || 0} units · ${formatMoney(item?.trappedCapital, currency)} tied up`,
+      })),
+  };
+}
+
 /**
  * Shape the immediate render-ready SuggestedAction returned at propose time (the
  * optimistic shape a caller can echo before a reload). The Daily Home surface itself
@@ -280,16 +403,19 @@ export async function proposeActionFromIntent(prisma, input) {
   if (!validation.ok) return { status: "invalid", reason: validation.reason };
   const intent = validation.intent;
 
-  const resolver = RESOLVERS[intent.actionType];
-  if (!resolver) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
+  // The BINDING, not the registry, is what makes an action proposable — and it carries the
+  // caps, eligibility calculator and presenters this function used to hardcode to clearance.
+  const primitive = getPrimitive(intent.actionType);
+  if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
 
-  const resolved = await resolver(prisma, {
+  const resolved = await primitive.resolve(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     intent,
+    sourceRecommendation: input.sourceRecommendation,
   });
   if (!resolved) return { status: "no_opportunity" };
-  const { proposal, preview, markdownPercent, scope } = resolved;
+  const { preview, summary: proposalSummary, magnitude } = resolved;
 
   // Deterministic proposal: the numbers are facts (only costed variants, floored at
   // cost), so the sizing confidence is full. Refine per data-completeness later.
@@ -300,26 +426,14 @@ export async function proposeActionFromIntent(prisma, input) {
   const merchantSetting =
     input.merchantSetting ??
     (await getActionMode(prisma, { merchantId: input.merchantId, actionType: intent.actionType }));
-  const eligibility = computeClearanceAutoEligibility(preview, confidence);
+  const eligibility = primitive.computeEligibility(preview, confidence, primitive.caps);
   const baseAutonomy = resolveAutonomyMode(merchantSetting, eligibility);
-  // Persist the money summary alongside the execution preview so the Daily Home card
-  // renders key numbers + top items without re-running the proposal (a read-time query).
-  const proposalSummary = buildProposalSummary(
-    proposal,
-    preview,
-    markdownPercent,
-    input.sourceRecommendation,
-    scope,
-  );
   // Governance: apply the merchant's autonomy POLICY on top of the resolved mode — an
   // "auto" run over a per-action-type cap ("autonomous up to £X") degrades to approve-
-  // first. No-op unless the mode is auto AND a cap is set AND exceeded.
+  // first. No-op unless the mode is auto AND a cap is set AND exceeded. The magnitude the
+  // caps read is the primitive's own — a status flip has none, so its caps never bite.
   const policy = await getActionPolicy(prisma, { merchantId: input.merchantId, actionType: intent.actionType });
-  const autonomy = applyAutonomyPolicy(baseAutonomy, policy, {
-    trappedCapital: proposalSummary.totalTrappedCapital,
-    variantCount: preview.variantCount,
-    maxDiscountPercent: preview.maxDiscountPercent,
-  });
+  const autonomy = applyAutonomyPolicy(baseAutonomy, policy, magnitude);
 
   const runId = randomUUID();
   const execution = await prisma.actionExecution.create({
@@ -328,7 +442,7 @@ export async function proposeActionFromIntent(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionType: intent.actionType,
-      actionKind: intent.targetKind === "dead_stock" ? "dead_stock_clearance" : intent.targetKind,
+      actionKind: primitive.actionKindFor(intent.targetKind),
       status: "proposed",
       merchantSetting,
       resolvedMode: autonomy.mode,
@@ -336,7 +450,9 @@ export async function proposeActionFromIntent(prisma, input) {
       confidence,
       preview: /** @type {any} */ (preview),
       proposalSummary: /** @type {any} */ (proposalSummary),
-      caps: /** @type {any} */ (DEFAULT_CLEARANCE_CAPS),
+      // This primitive's OWN caps — persisting DEFAULT_CLEARANCE_CAPS regardless meant the
+      // ledger recorded limits that were never the ones actually enforced.
+      caps: /** @type {any} */ (primitive.caps),
     },
     select: { id: true, runId: true, resolvedMode: true },
   });
@@ -345,8 +461,8 @@ export async function proposeActionFromIntent(prisma, input) {
     status: "proposed",
     execution,
     autonomy,
-    suggestedAction: toSuggestedAction({
-      proposal,
+    suggestedAction: primitive.card({
+      summary: proposalSummary,
       preview,
       runId,
       // Executable only when the write path is live AND the mode isn't recommend-only.
@@ -389,28 +505,22 @@ export async function getActiveSuggestedAction(prisma, input) {
   const summary = /** @type {any} */ (row.proposalSummary) ?? {};
   const preview = /** @type {any} */ (row.preview) ?? {};
   const currency = input.currency || "GBP";
-  const variantCount = Number(summary.variantCount ?? preview.variantCount ?? 0);
-  if (!(variantCount > 0)) return null; // nothing safe to show
 
-  const windowDays = Number(summary.windowDays ?? 90);
+  // Describe the row with ITS OWN presenter. An action type this layer cannot describe
+  // renders NOTHING — never someone else's headline. Before, the clearance wording was
+  // emitted for whatever row was loaded, so a second action type would have been
+  // announced to the merchant as a dead-stock clearance.
+  const primitive = getPrimitive(row.actionType);
+  const card = primitive?.readCard({ summary, preview, currency }) ?? null;
+  if (!card) return null; // nothing safe to show
+
   const mode = await getActionMode(prisma, {
     merchantId: input.merchantId,
     actionType: row.actionType,
   });
 
   return {
-    headline: `${variantCount} product${variantCount === 1 ? "" : "s"} with cash tied up haven't sold in ${windowDays} days — a floored clearance frees it.`,
-    keyNumbers: [
-      { label: "Trapped capital", value: formatMoney(summary.totalTrappedCapital, currency) },
-      { label: "Projected recovery", value: formatMoney(summary.totalProjectedRecovery, currency) },
-      { label: "Products", value: String(variantCount) },
-    ],
-    topItems: (Array.isArray(summary.topItems) ? summary.topItems : [])
-      .slice(0, 3)
-      .map((/** @type {any} */ item) => ({
-        title: typeof item?.title === "string" ? item.title : "Product",
-        detail: `${Number(item?.unitsOnHand) || 0} units · ${formatMoney(item?.trappedCapital, currency)} tied up`,
-      })),
+    ...card,
     // Gated on THIS row's own action type, not on clearance's flag. Reading
     // isClearanceExecuteEnabled() here meant a second registered type would inherit
     // CLEARANCE_EXECUTE_ENABLED — `true` in production — and render a live Approve button
@@ -447,10 +557,11 @@ function formatExecutedOutcome(outcome, currency) {
 }
 
 /**
- * A short "what Jefe did" headline for one executed action.
+ * A short "what Jefe did" headline for one executed CLEARANCE. Reached through the binding
+ * table — an action type with no presenter gets a neutral line rather than this wording.
  * @param {string} status @param {number} variantCount @param {any} summary
  */
-function buildExecutedHeadline(status, variantCount, summary) {
+function clearanceExecutedHeadline(status, variantCount, summary) {
   const source = normalizeSourceRecommendation(summary?.sourceRecommendation);
   if (status === "rejected" && source?.title) return source.title;
   const noun = `${variantCount} product${variantCount === 1 ? "" : "s"}`;
@@ -503,7 +614,11 @@ export async function getExecutedActionFeed(prisma, input) {
       actionRunId: row.runId,
       actionType: row.actionType,
       status: row.status,
-      headline: buildExecutedHeadline(row.status, variantCount, summary),
+      // This row's OWN presenter. An unrecognised type gets a neutral, honest line —
+      // never "Marked N products down for clearance" for something that was not one.
+      headline:
+        getPrimitive(row.actionType)?.executedHeadline(row.status, variantCount, summary)
+        ?? `${row.status === "rejected" ? "Declined" : row.status === "reverted" ? "Reverted" : "Completed"} an action on your store`,
       appliedAt: row.appliedAt?.toISOString?.() ?? null,
       revertedAt: row.revertedAt?.toISOString?.() ?? null,
       rejectedAt: row.status === "rejected" ? row.updatedAt?.toISOString?.() ?? null : null,
@@ -586,33 +701,51 @@ async function getGrantedShopifyScopes(prisma, input) {
  */
 export async function getScopeGatedOpportunity(prisma, input) {
   const currency = input.currency || "GBP";
-  // Is there a valuable action to offer? (clearance is the first verb.)
-  const proposal = await buildDeadStockClearanceProposal(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-  });
-  if (proposal.status !== "proposed") return null;
-  const preview = buildClearancePreview(/** @type {any} */ (proposal));
-  if (preview.variantCount === 0) return null;
-
-  const actionType = "price_markdown";
-  const required = getRequiredScopes(actionType);
-  if (required.length === 0) return null; // no write scope needed → nothing to nudge
-
   const granted = await getGrantedShopifyScopes(prisma, { shopId: input.shopId, shopDomain: input.shopDomain });
-  const missingScopes = required.filter((scope) => !granted.includes(scope));
-  if (missingScopes.length === 0) return null; // already granted → the action can just run
 
-  // Real value gated on a missing permission → the nudge signal.
-  const summary = buildProposalSummary(proposal, preview);
+  // Every action this layer can actually propose, not just clearance. Scope-gating is
+  // per-action — a merchant may have granted write_products and not write_inventory — so
+  // the nudge has to name the action whose value is actually blocked.
+  for (const actionType of listResolvableActionTypes()) {
+    const required = getRequiredScopes(actionType);
+    if (required.length === 0) continue; // no write scope needed → nothing to nudge
+    const missingScopes = required.filter((scope) => !granted.includes(scope));
+    if (missingScopes.length === 0) continue; // already granted → the action can just run
+
+    // Scope check FIRST: it is a cheap array compare, while resolving hits the database.
+    // The old order resolved a full proposal before discovering the scope was already
+    // granted, doing the expensive half to reach "nothing to nudge".
+    const primitive = getPrimitive(actionType);
+    const targetKind = getActionDefinition(actionType)?.targetKinds?.[0];
+    if (!primitive || !targetKind) continue;
+    const resolved = await primitive.resolve(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      intent: { actionType, targetKind },
+    });
+    if (!resolved) continue; // no real value behind this permission → never nudge for it
+
+    const nudge = primitive.scopeNudge({ summary: resolved.summary, currency, missingScopes });
+    if (nudge) return { actionType, missingScopes, ...nudge };
+  }
+  return null;
+}
+
+/**
+ * The clearance flavour of the value-first permission ask. Per-primitive because the ask has
+ * to name what the merchant actually gets — "free the cash in these products" is meaningless
+ * for a primitive that moves stock or tags a customer.
+ * @param {{ summary: any; currency: string; missingScopes: string[] }} input
+ */
+function clearanceScopeNudge({ summary, currency }) {
+  const productCount = Number(summary?.variantCount) || 0;
+  if (productCount < 1) return null;
   const trapped = formatMoney(summary.totalTrappedCapital, currency);
   return {
-    actionType,
-    missingScopes,
-    productCount: summary.variantCount,
+    productCount,
     trappedCapital: trapped,
     projectedRecovery: formatMoney(summary.totalProjectedRecovery, currency),
-    headline: `Jefe found ${trapped} tied up in ${summary.variantCount} product${summary.variantCount === 1 ? "" : "s"} it can clear for you — grant "Edit products" access to let it act.`,
+    headline: `Jefe found ${trapped} tied up in ${productCount} product${productCount === 1 ? "" : "s"} it can clear for you — grant "Edit products" access to let it act.`,
   };
 }
 

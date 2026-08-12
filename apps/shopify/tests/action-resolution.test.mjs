@@ -8,6 +8,7 @@ import {
   getActiveSuggestedAction,
   getExecutedActionFeed,
   getScopeGatedOpportunity,
+  listResolvableActionTypes,
   proposeActionFromIntent,
   rejectAction,
   reviseAction,
@@ -622,4 +623,51 @@ test("buildEligibilityRecord tolerates a missing or malformed autonomy result wi
   assert.equal(record.modeReason, null);
   assert.deepEqual(record.policyViolations, [], "never undefined — the column is read directly");
   assert.equal(record.degradedFromAutonomous, false);
+});
+
+// ── the primitive binding table ──────────────────────────────────────────────────
+// Membership here — not the registry — is what makes an action proposable, and every
+// caller treats an unbound type as "cannot do this", never "fall back to clearance".
+
+test("listResolvableActionTypes reports what this layer can actually propose", () => {
+  assert.deepEqual(listResolvableActionTypes(), ["price_markdown"]);
+});
+
+test("an action type with no binding is unsupported — no row is ever created", async () => {
+  let created = false;
+  const prisma = { actionExecution: { create: async () => { created = true; return {}; } } };
+  const res = await proposeActionFromIntent(/** @type {any} */ (prisma), {
+    merchantId: "m1", shopId: "s1",
+    // A registry-shaped intent for a type nothing binds.
+    intent: { actionType: "product_status_change", targetKind: "dead_stock" },
+  });
+  // Rejected at validation (unregistered) or at binding (registered, unbound) — either way
+  // it must never reach the ledger. This is the guard that kept the write path safe.
+  assert.notEqual(res.status, "proposed");
+  assert.equal(created, false, "no ledger row for an action this layer cannot resolve");
+});
+
+test("getActiveSuggestedAction shows NOTHING for a type it cannot describe, never clearance's words", async () => {
+  const row = {
+    runId: "run-x", actionType: "some_future_action", resolvedMode: "approve",
+    // A summary that WOULD satisfy the clearance presenter — proving the refusal is the
+    // action type, not missing data. Before, this rendered "N products with cash tied up…".
+    proposalSummary: { variantCount: 4, windowDays: 90, totalTrappedCapital: 900, topItems: [] },
+    preview: { variantCount: 4 },
+  };
+  const prisma = /** @type {any} */ ({
+    actionExecution: { findFirst: async () => row },
+    actionAutonomyPolicy: { findUnique: async () => null },
+  });
+  assert.equal(await getActiveSuggestedAction(prisma, { merchantId: "m1", shopId: "s1" }), null);
+});
+
+test("the executed feed gives an unrecognised action a neutral line, not a clearance line", async () => {
+  const rows = [
+    { runId: "r1", actionType: "some_future_action", status: "applied", preview: { variantCount: 2 }, proposalSummary: { variantCount: 2 }, outcome: null, outcomeStatus: "pending", appliedAt: null, revertedAt: null, updatedAt: null },
+  ];
+  const prisma = /** @type {any} */ ({ actionExecution: { findMany: async () => rows } });
+  const feed = await getExecutedActionFeed(prisma, { merchantId: "m1", shopId: "s1" });
+  assert.doesNotMatch(feed[0].headline, /clearance|Marked/i, "must not claim a clearance happened");
+  assert.match(feed[0].headline, /Completed an action/);
 });
