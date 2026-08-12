@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **A quick reinstall can no longer crash the app before onboarding loads.** If a shop was uninstalled and immediately reinstalled while Jefe was healing tenant records, the retry path could find the old shop row but skip the same merchant-relinking guard used by normal requests. The next connector write then pointed at a missing merchant and `/app.data` returned a server error instead of letting the merchant back into Jefe. Reinstall recovery now relinks the shop before refreshing the Shopify connector account on both paths, with a regression test for the race. `app/lib/ingestion/shopify/tenant.server.js`, `tests/tenant-resilience.test.mjs`.
+
 - **First-run onboarding no longer gets stuck after a fast read misses the first move.** The recent-order bootstrap can be stricter than the full business read; when it found no eligible contract, onboarding used to stop at Context even after the full read had produced a supported insight and recommendation. Jefe now keeps waiting while the full read is still active, and if the full read produces the first move, onboarding shows that Insight and Action instead of sending the merchant into Jefe empty. `app/lib/onboarding/fast-onboarding.server.js`, `app/components/fast-value-onboarding.tsx`, `tests/fast-onboarding.test.mjs`.
 
 - **The onboarding screen no longer shows internal stage-jump controls.** In development mode, the first-run footer could expose an internal `CONNECTCONTEXTINSIGHTACTIONAPP` control that crowded the real learning status and looked broken. Those buttons are gone from the onboarding screen, so merchants and local testers see only the real setup flow. `app/components/fast-value-onboarding.tsx`, `app/styles/jefe.css`, `tests/onboarding-flow.test.mjs`.

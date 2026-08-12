@@ -44,6 +44,49 @@ function mockPrisma({ merchant, status = "active" }) {
   };
 }
 
+function mockCreateRacePrisma() {
+  const shopRow = {
+    id: "shop1",
+    merchantId: "gone-merchant",
+    platform: "shopify",
+    shopDomain: "app-review.myshopify.com",
+    status: "active",
+    setupStatus: "installed",
+  };
+  const calls = { merchantCreate: 0, shopFindUnique: 0, shopUpdate: [], connectorUpsert: [] };
+  return {
+    calls,
+    prisma: {
+      shop: {
+        findUnique: async () => {
+          calls.shopFindUnique += 1;
+          return calls.shopFindUnique === 1 ? null : shopRow;
+        },
+        update: async ({ data }) => {
+          calls.shopUpdate.push(data);
+          return { ...shopRow, ...data };
+        },
+      },
+      merchant: {
+        findUnique: async () => null,
+        create: async ({ data }) => {
+          calls.merchantCreate += 1;
+          if (calls.merchantCreate === 1) {
+            throw Object.assign(new Error("duplicate shop"), { code: "P2002" });
+          }
+          return { id: "merchant-new", ...data };
+        },
+      },
+      connectorAccount: {
+        upsert: async ({ create }) => {
+          calls.connectorUpsert.push(create);
+          return {};
+        },
+      },
+    },
+  };
+}
+
 test("self-heals a dangling merchant instead of 5xx-ing (the review incident)", async () => {
   const { prisma, calls } = mockPrisma({ merchant: null });
   const result = await ensureShopifyTenant(prisma, {
@@ -95,4 +138,20 @@ test("reactivating an uninstalled shop clears the stale uninstalledAt stamp", as
     null,
     "reactivation clears Shop.uninstalledAt so a reinstalled shop isn't mislabelled as churned",
   );
+});
+
+test("self-heals a dangling merchant after a concurrent create race", async () => {
+  const { prisma, calls } = mockCreateRacePrisma();
+  const result = await ensureShopifyTenant(prisma, {
+    shopDomain: "app-review.myshopify.com",
+  });
+
+  assert.equal(result.merchant.id, "merchant-new");
+  assert.equal(calls.merchantCreate, 2);
+  assert.ok(
+    calls.shopUpdate.some((d) => d.merchantId === "merchant-new"),
+    "relinked the raced shop before connector upsert",
+  );
+  assert.equal(calls.connectorUpsert.length, 1);
+  assert.equal(calls.connectorUpsert[0].merchantId, "merchant-new");
 });

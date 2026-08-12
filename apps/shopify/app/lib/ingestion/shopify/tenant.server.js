@@ -53,8 +53,11 @@ export async function ensureShopifyTenant(prisma, input) {
 
     const racedShop = await findShopifyShop(prisma, shopDomain);
     if (!racedShop) throw error;
+    const shop = racedShop.merchant
+      ? racedShop
+      : await relinkOrphanedShop(prisma, racedShop, shopDomain);
 
-    return activateExistingShopifyTenant(prisma, racedShop, {
+    return activateExistingShopifyTenant(prisma, shop, {
       ...input,
       shopDomain,
     });
