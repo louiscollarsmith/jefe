@@ -29,9 +29,80 @@ const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
 
 const log = baseLogger.child({ component: "merchant-general-chat" });
 
+// What a merchant sees when Jefe could not produce a reply. Said in Jefe's voice and from
+// their side: they asked something and got nothing back, which is Jefe's failure, not theirs.
+export const REPLY_FAILED_MESSAGE =
+  "I couldn't get to that one just now — your message is saved, so ask me to try again.";
+export const REPLY_FAILED_KIND = "reply_failed";
+
+/**
+ * The merchant's own already-stored turn, re-loaded for a retry. Tenant- and
+ * conversation-scoped, and role-checked, so a retry can never adopt somebody else's message
+ * or an assistant one. Shaped like appendConversationMessage's return so the caller is
+ * identical either way.
+ *
+ * @param {any} prisma
+ * @param {{ messageId: string; conversationId: string; merchantId: string; shopId: string }} input
+ */
+async function loadStoredMerchantMessage(prisma, input) {
+  const message = await prisma.merchantMemoryConversationMessage.findFirst({
+    where: {
+      id: input.messageId,
+      conversationId: input.conversationId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      role: "merchant",
+    },
+  });
+  return message ? { duplicate: false, message } : null;
+}
+
+/**
+ * Answer the merchant's last message when the first attempt produced no reply.
+ *
+ * Reads the tail of the thread rather than trusting a client-supplied id: the merchant is
+ * asking for the thing they can SEE, and the tail is that thing.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; conversationId?: string | null; surface?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @returns {Promise<any>}
+ */
+export async function retryLastGeneralChatReply(prisma, input) {
+  const conversation = await getOrCreateMerchantConversation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    conversationId: input.conversationId,
+    conversationType: "general",
+    surface: input.surface ?? "app",
+    topic: "general",
+  });
+  const latest = await prisma.merchantMemoryConversationMessage.findFirst({
+    where: {
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      visibility: "current",
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  // Nothing to retry — an empty thread, or Jefe has already answered. Idempotent by
+  // construction: a double-tapped Retry, or one clicked in a stale tab, is a no-op rather
+  // than a second reply to a message that already has one.
+  if (!latest || latest.role !== "merchant") {
+    return { ok: true, retried: false, conversationId: conversation.id };
+  }
+  const result = await sendGeneralChatMessage(prisma, {
+    ...input,
+    conversationId: conversation.id,
+    message: latest.content,
+    reuseMessageId: latest.id,
+  });
+  return { ...result, retried: true };
+}
+
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; reuseMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  * @returns {Promise<any>}
  */
 export async function sendGeneralChatMessage(prisma, input) {
@@ -64,21 +135,36 @@ export async function sendGeneralChatMessage(prisma, input) {
       },
     });
   }
-  const persisted = await appendConversationMessage(prisma, {
-    conversation,
-    conversationId: conversation.id,
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    role: "merchant",
-    content,
-    surface,
-    externalMessageId: input.externalMessageId,
-    recommendationId: input.recommendationId,
-    actionRunId: input.actionRunId,
-    metadata: input.metadata,
-    safeSummary: content.length > 240 ? `${content.slice(0, 237)}...` : content,
-    enqueue: false,
-  });
+  // A retry answers a message that is ALREADY stored. The merchant's turn is persisted
+  // before Jefe is asked, so a failure leaves their words in the thread with no reply —
+  // re-appending would make the thread say the same thing twice. Note the duplicate branch
+  // below cannot serve this: it returns early with `assistantMessage: null`, which is
+  // exactly the state a retry exists to get out of.
+  const persisted = input.reuseMessageId
+    ? await loadStoredMerchantMessage(prisma, {
+        messageId: input.reuseMessageId,
+        conversationId: conversation.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      })
+    : await appendConversationMessage(prisma, {
+        conversation,
+        conversationId: conversation.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        role: "merchant",
+        content,
+        surface,
+        externalMessageId: input.externalMessageId,
+        recommendationId: input.recommendationId,
+        actionRunId: input.actionRunId,
+        metadata: input.metadata,
+        safeSummary: content.length > 240 ? `${content.slice(0, 237)}...` : content,
+        enqueue: false,
+      });
+  if (!persisted) {
+    return { ok: false, error: REPLY_FAILED_MESSAGE, kind: REPLY_FAILED_KIND };
+  }
   if (persisted.duplicate) {
     return {
       ok: true,

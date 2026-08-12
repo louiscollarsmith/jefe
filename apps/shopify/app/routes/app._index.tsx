@@ -163,12 +163,12 @@ import {
   getActionChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
-  retryLastConversationReply,
   sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
 import {
   getDailyChatExperience,
+  retryLastGeneralChatReply,
   sendGeneralChatMessage,
   startNewGeneralChat,
 } from "../lib/merchant-memory/general-chat.server.js";
@@ -660,9 +660,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "chat.retry") {
     // Answer the message the merchant can already see failed, rather than asking them to
     // type it again — re-sending would store what they said a second time.
-    const result = await retryLastConversationReply(prisma, {
+    // Must target the SAME path chat.message uses: since #81 that is the general-chat
+    // conversation, not the memory-topic one. Pointed at the wrong conversation this
+    // silently reports "nothing to retry", which is worse than having no button.
+    const result = await retryLastGeneralChatReply(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
+      conversationId: String(formData.get("conversationId") ?? "") || null,
+      surface: "app",
       logger: actionLog,
     });
     if (!result.ok) {
