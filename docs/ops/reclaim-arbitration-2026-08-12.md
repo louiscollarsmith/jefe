@@ -132,7 +132,7 @@ nav shape — watch it doesn't resurrect the global Polaris left-nav `0acdf68` r
 | `getLatestHorizon` | **KEEP** — `horizonWatching` is live in DailyHome; only `horizon.near` is dead |
 | Autonomy roster / dial | **CONFIRMED RESTORE** → Settings → Autonomy panel (landed `7e48f3f`). Approve / execute / autonomous. |
 | Memory correction controls | **CONFIRMED RESTORE** → into `merchant-memory-view.tsx` (middle path). Not a 13a restore. |
-| Channels UI | Out of onboarding permanently → Settings panel, Slack-first (inbound-email lane) |
+| Channels UI | Out of onboarding permanently → Settings panel, Slack-first (inbound-email lane). `ChannelsStep` + `channelProviderUrl` in `app._index.tsx` are now genuinely orphaned (nothing renders `ChannelsStep`, no `activeStep==="channels"`; Channels live at `/app/settings?panel=channels`). **PENDING DELETION** — trigger: once the Settings channels panel is confirmed the sole path (Slack callbacks already fixed, `1c9909c`/`68f949f`). Correctly not deleted yet (re-home-not-delete). |
 | Email prefs control (`notification.set`) | KEEP → new Settings panel. Restore-priority (win-back sending; opt-out exists in-email). |
 | AppHome13a shell + superseded section exports (Brief/Goals/Queue) | **PENDING DELETION** — held this cycle. Trigger: delete only once every re-home has a surface AND the residue is provably dead; 13a only if Matt un-parks it ("we can come back to"). |
 | Unreachable action/memory handlers | Landing points if RESTORE; delete with their sections if LET-GO — held. |
@@ -285,25 +285,38 @@ runtime eligibility decides per-run whether it fires.
 So new actions are NOT blocked on the memory lane for targeting — they need a trigger condition
 + their own resolver.
 
-## Currency contract — base/dominant lens + breakdowns (Matt, refined)
-Supersedes the blunt-refuse stop-gap (`bfc2b4c`, the crude floor).
-- **Backing (222 real merchants):** 0 lack a dominant currency; 56 are ≥95% single-currency yet
-  were being refused. The base/dominant lens never fails to exist.
-- **Contract:** single currency → unchanged; multi-currency money measure → base/dominant total
-  + per-currency breakdown with dominance share (renderer leads "£X, 94% of your orders");
-  `currency` becomes a requestable **dimension** (joins country/channel); refusal survives **only**
-  for an explicitly-requested *converted* cross-currency total, and it **carries the offer**
-  ("…but I can show each currency separately" — part 9).
-- **Extraction (gate condition):** extract `currencyDistribution` into a shared module both layers
-  call — do NOT export `shopBaseCurrency()` (its context arg is the derivation context the analyst
-  can't produce). **Same source must feed `business.primary_currency` AND the analyst**, or the
-  belief's dominant and the analyst's leads-with disagree = the duplication bug in a new coat.
-  Diff routes through the gate.
-- **Measurement:** a labelled breakdown counts as a PASS, not only a refusal.
-- ⏳ **Pending founder decision — FX:** there is **no exchange-rate / conversion data anywhere in
-  the tree.** A converted cross-currency total is impossible today; per-currency breakdowns are the
-  ceiling. "Do we want exchange rates?" (rates provider + rate-date policy) is Matt's product call —
-  surfaced, not decided in a bug fix.
+## Currency contract — CORRECTED 2026-08-12: stored revenue is base-currency and summable
+⚠️ **This replaces an earlier version of this section that enshrined a wrong premise.** The
+"multi-currency can't be totalled" framing — my stop-gap `bfc2b4c` AND the model-testing lane's
+`9241e8d` — was misdiagnosed. Verified against the ingestion:
+- **Every stored money AMOUNT is `shopMoney`** = the shop's single base currency, summable across
+  orders (`canonical.server.js:174-219`; GraphQL query `queries.server.js:155-239` fetches only
+  `shopMoney`, never `presentmentMoney`).
+- **`order.currency` is the PRESENTMENT currency** (top-level `Order.currencyCode`,
+  `queries.server.js:139`) — the customer's currency, varying per order. It does NOT describe the
+  amount beside it. A shop has exactly one base currency, so the field that varies is presentment by
+  construction (that is why one store showed "20 currencies").
+- **The belief layer already had it right:** `shopBaseCurrency()` (`shopify-derivations.server.js:2949`)
+  — "every stored money amount is Shopify shopMoney… summable regardless of the customer's presentment
+  currency… revenue beliefs must not skip on it." Revenue beliefs sum shopMoney and report one total.
+  `9241e8d` made the analyst *contradict* the correct belief = spine-issue #1, live.
+
+**Corrected contract:**
+- **Revenue/money totals are summable, always.** Amounts are base-currency shopMoney; never refuse
+  for "multiple currencies". Match the belief layer.
+- **Label totals with the shop BASE currency** — `shopMoney.currencyCode` (already fetched at
+  `:158/:164`) or `shopBaseCurrency()`. The presentment label is actively misleading (£144 shown as
+  "EUR 144").
+- **No per-presentment-currency money "breakdown"** — it buckets base-currency amounts by an
+  unrelated label. A real "revenue in the customer's currency" lens needs `presentmentMoney` AMOUNTS,
+  which are not ingested — impossible today without a query/ingestion change.
+- **`currency` stays a coverage signal only** ("which presentment currencies customers pay in" —
+  `business.multi_currency_order_share` already does this), NOT a money-bucketing axis.
+- **Owner:** model-testing lane correct-forwards `9241e8d` (sum + base label); architecture gates.
+  ~113/222 merchants affected in live analyst output → fast follow. Tracked as task #23.
+- **FX to Matt — reframed:** stored revenue needs NO FX (it is all base currency). FX/presentment
+  data would only enable a "revenue in the customer's currency" lens, which needs presentmentMoney
+  amounts we do not fetch — a fetch/ingestion decision, not a rates provider.
 
 ## Fleet infra rulings (2026-08-12)
 - **node_modules-empty hazard (dangerous — induces a wrong fix):** the main checkout's
@@ -313,10 +326,18 @@ Supersedes the blunt-refuse stop-gap (`bfc2b4c`, the crude floor).
   your install is gone). **Fix:** `rm -f node_modules && npm ci` per worktree.
 - **Gate throughput at ~15 lanes (ruled, reversible):** shrink the pre-push HOOK to a fast subset
   (typecheck + lint + changed-file unit tests — no build, no full-DB) so the ref-lock race window
-  drops ~3min→~30s; on a lost race **rebase + fast-check, do NOT re-run the full gate** (re-running
-  is what creates the re-run-till-green habit); mandate `&&` not `;` in every preflight-then-push
+  drops ~3min→~30s. On a lost ref-lock race the re-run is **risk-based, not blanket** (refines the
+  AGENTS.md:70 hard rider): `git diff --name-only HEAD@{1} HEAD` (what the rebase pulled in) vs
+  `git diff --name-only <merge-base> HEAD` (what you changed) — file/module overlap → **full gate**;
+  no overlap → **fast subset suffices**. Targets the actual semantic-conflict risk (red main blocks
+  15 lanes ≫ 3 min) rather than the calendar. Mandate `&&` not `;` in every preflight-then-push
   snippet. The larger "feature branches / merge queue vs direct-to-main" change is a ways-of-working
-  call for Matt.
+  call for Matt — flag the rebase relaxation to him in the same envelope, since "green preflight"
+  means something slightly weaker afterwards.
+- **No pinned Node → local runtimes drift from CI (fixed):** `.nvmrc`=`20` added at repo root to
+  match CI (`engines` permits 20/22/24, CI runs 20, no pin existed → a session could pass preflight
+  on a runtime CI never exercises; it already happened). Moving CI to 22 + pinning there is a
+  defensible one-way-ish call for Matt; the range stays permissive, the pin says what we use.
 - **db-tests flake (observability lane):** connection exhaustion on shared `jefe-shopify-postgres`
   at 8+ sessions. Cap each run's Prisma `connection_limit` (demand) first, `max_connections=200` in
   `db:up` (supply) at next quiet recreate, schema-isolation held unless row-contention shows.
