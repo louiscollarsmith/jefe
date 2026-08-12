@@ -199,10 +199,9 @@ export function DailyHome(props: {
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
         />
-        {/* The one door off the chat log: everything Jefe knows about the store. */}
-        <Link to="?view=memory" style={footerLinkStyle}>
-          See everything Jefe knows →
-        </Link>
+        {/* No footer link. Merchant Memory is reached from the shell gear →
+            Settings → "Everything Jefe knows" (see surface-reachability tests);
+            the chat log itself stays clean. */}
       </div>
     </main>
   );
@@ -1445,14 +1444,6 @@ const pillStyle: CSSProperties = {
   fontWeight: 700,
   padding: "6px 14px",
   whiteSpace: "nowrap",
-};
-const footerLinkStyle: CSSProperties = {
-  color: COLORS.navy,
-  display: "block",
-  fontSize: 14.5,
-  fontWeight: 700,
-  textAlign: "right",
-  textDecoration: "none",
 };
 const chatTopStyle: CSSProperties = {
   display: "flex",

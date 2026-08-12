@@ -40,6 +40,16 @@ test("navigation keeps the params embedded Shopify needs", () => {
   assert.match(settings, /next\.delete\("panel"\)/);
 });
 
+test("the home carries no memory footer link", () => {
+  // Removed on Matt's call in 63d0337, then silently resurrected by a rebase in #81 (holistic
+  // memory retrieval) — he asked for it gone twice. The gear → Settings → "Everything Jefe
+  // knows" door above is the reachability guarantee, so this is safe to pin: the chat log home
+  // carries no Memory link of its own, and a future rebase that drags it back fails here
+  // instead of shipping.
+  assert.doesNotMatch(dailyHome, /See everything Jefe knows/);
+  assert.doesNotMatch(dailyHome, /to="\?view=memory"/);
+});
+
 test("the settings gear is shell chrome, not chat chrome", () => {
   assert.doesNotMatch(dailyHome, /aria-label="Settings"/);
   assert.doesNotMatch(dailyHome, /settingsHref/);

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-13
+
+### Changed
+
+- **The "See everything Jefe knows →" link is off the home for good.** Matt asked for it gone twice: the quiet chat-log home shouldn't carry a footer link, and Merchant Memory is reached from the shell gear → Settings → "Everything Jefe knows". It *was* removed (`63d0337`) and then silently came back with the holistic-memory rebase in #81, which is why a guard now fails the build if it reappears — the reachability tests that already prove there's a way *in* to Memory make pinning its absence on the home safe. `app/components/daily-home.tsx`, `tests/surface-reachability.test.mjs`.
+
 ## 2026-08-12
 
 ### Fixed
