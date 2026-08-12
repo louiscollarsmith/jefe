@@ -1,0 +1,5 @@
+# Real merchant data pulled from Quiver's warehouse. NEVER commit it: it is real
+# trade from real businesses, and the repo is not where it belongs. The snapshot is
+# reproducible from Metabase, so nothing is lost by keeping it local.
+*
+!.gitignore

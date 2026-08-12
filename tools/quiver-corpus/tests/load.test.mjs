@@ -17,7 +17,7 @@ test.after(() => { console.log = realLog; });
 function fakePrisma(overrides = {}) {
   let sequence = 0;
   const id = (prefix) => `${prefix}-${++sequence}`;
-  const store = { merchants: [], shops: [], products: [], variants: [], orders: [], lineItems: [], refunds: [] };
+  const store = { merchants: [], shops: [], products: [], variants: [], orders: [], lineItems: [], refunds: [], customers: [] };
   const calls = { upserts: 0, creates: 0 };
 
   const upsertInto = (collection, matches) => async ({ where, create, update }) => {
@@ -54,6 +54,11 @@ function fakePrisma(overrides = {}) {
         store.shops.push(row);
         return row;
       },
+      async update({ where, data }) {
+        const row = store.shops.find((s) => s.id === where.id);
+        if (row) Object.assign(row, data);
+        return row;
+      },
       ...(overrides.shop ?? {}),
     },
     product: { upsert: upsertInto(store.products, (r, w) => r.externalId === w.shopId_externalId.externalId) },
@@ -64,6 +69,7 @@ function fakePrisma(overrides = {}) {
         r.orderId === w.orderId_externalId.orderId && r.externalId === w.orderId_externalId.externalId),
     },
     refund: { upsert: upsertInto(store.refunds, (r, w) => r.externalId === w.shopId_externalId.externalId) },
+    customerIdentity: { upsert: upsertInto(store.customers, (r, w) => r.emailHash === w.shopId_emailHash.emailHash) },
   };
 }
 
@@ -306,4 +312,35 @@ test("only the merchant's dominant currency is loaded, and the loss is counted",
 
   // The totals Jefe will sum are now homogeneous, which is the whole point.
   assert.equal(prisma.store.orders.length, 3);
+});
+
+test("the corpus records what it actually knows: active products, customers, history span", async () => {
+  const prisma = fakePrisma();
+  const repeatBuyer = { ...sourceOrder({ order_id: "900010" }).order, email: "regular@example.com" };
+  const orders = [
+    { ...sourceOrder({ order_id: "900010" }), order: { ...repeatBuyer, order_created_at: "2026-06-01T10:00:00Z" } },
+    { ...sourceOrder({ order_id: "900011" }), order: { ...repeatBuyer, order_created_at: "2026-07-01T10:00:00Z" } },
+    sourceOrder({ order_id: "900012", email: "someone-else@example.com", order_created_at: "2026-07-15T10:00:00Z" }),
+  ];
+  const summary = await loadCorpusMerchant(prisma, { merchant, orders }, { customerSalt: SALT });
+
+  // Products must be ACTIVE. Left null, Jefe concluded the store had ZERO active
+  // products and silently skipped five downstream beliefs.
+  assert.ok(prisma.store.products.length > 0);
+  assert.ok(prisma.store.products.every((p) => p.status === "ACTIVE"));
+  assert.equal(prisma.store.products[0].rawPayload.statusSource, "inferred_from_having_sold");
+
+  // Two distinct customers, one of whom bought twice — without the roster,
+  // known_customer_count derived to zero and repeat-purchase analysis was dead.
+  assert.equal(summary.customers, 2);
+  const regular = prisma.store.customers.find((c) => c.orderCount === 2);
+  assert.ok(regular, "the repeat buyer must be recognised as one customer, not two");
+  assert.ok(regular.firstSeenOrderAt < regular.lastOrderAt);
+  assert.equal(regular.maskedEmail, null, "we hash the address and never hold it");
+
+  // The shop must not claim history it does not have: a short slice otherwise reads
+  // as an "intermittent" business whose quiet days are just missing data.
+  const shop = prisma.store.shops[0];
+  assert.equal(shop.historicalOrderAccess, "partial");
+  assert.equal(shop.availableOrderHistoryDays, 44, "2026-06-01 to 2026-07-15");
 });

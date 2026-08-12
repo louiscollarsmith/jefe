@@ -68,7 +68,12 @@ export async function ensureCorpusShop(prisma, merchant) {
       // code reading setupStatus should see something it does not recognise as a
       // live tenant rather than something it mistakes for one.
       setupStatus: "corpus",
-      historicalOrderAccess: "full",
+      // NOT "full". A corpus shop holds whatever slice was pulled, and claiming
+      // full history is what made Jefe read a 47-day slice of a healthy daily
+      // trader as an "intermittent" business with 54% zero-sales days — the empty
+      // days were simply before the data began. `loadCorpusMerchant` overwrites
+      // this with the measured span once the orders are in.
+      historicalOrderAccess: "partial",
       onboardingMetadata: corpusShopMetadata({
         platform: merchant.platform,
         merchantName: displayName,
@@ -160,6 +165,29 @@ export async function loadCorpusMerchant(prisma, source, options) {
 
   const written = await loadCorpusRows(prisma, shop, mapped, { batchSize });
 
+  // Record the span the corpus ACTUALLY covers. Any window-based belief — activity
+  // profile, zero-sales-day share, weekly consistency — reads a short slice as a
+  // struggling business unless it knows the history is truncated. Measured against
+  // a real merchant: a 47-day slice produced "intermittent, 54% zero-sales days"
+  // for a store that trades most days.
+  const placedAt = mapped
+    .map((entry) => entry.order.processedAt)
+    .filter((date) => date instanceof Date);
+  const spanDays = placedAt.length
+    ? Math.max(
+        1,
+        Math.ceil(
+          (Math.max(...placedAt.map(Number)) - Math.min(...placedAt.map(Number)))
+            / 86_400_000,
+        ),
+      )
+    : 0;
+  await prisma.shop.update({
+    where: { id: shop.id },
+    data: { availableOrderHistoryDays: spanDays, backfillCompletedAt: new Date() },
+  });
+  log("history.recorded", { shopDomain: shop.shopDomain, availableOrderHistoryDays: spanDays });
+
   const summary = {
     ...written,
     baseCurrency: base.currency,
@@ -206,8 +234,10 @@ export async function loadCorpusRows(prisma, shop, mapped, options = {}) {
   const productIds = await loadProducts(prisma, shop, catalog.products, batchSize);
   const variantIds = await loadVariants(prisma, shop, catalog.variants, productIds, batchSize);
   const orders = await loadOrders(prisma, shop, mapped, { productIds, variantIds, batchSize });
+  const customers = await loadCustomerIdentities(prisma, shop, mapped);
 
   return {
+    customers,
     shopDomain: shop.shopDomain,
     shopId: shop.id,
     merchantId: shop.merchantId,
@@ -215,6 +245,62 @@ export async function loadCorpusRows(prisma, shop, mapped, options = {}) {
     variants: variantIds.size,
     orders,
   };
+}
+
+/**
+ * Build the customer roster from the pseudonymous refs already on the orders.
+ *
+ * Without this, `customers.known_customer_count` derives to ZERO and every
+ * repeat-purchase belief dies — verified against a real merchant whose data
+ * plainly contained repeat buyers. The orders carried the identity all along; only
+ * the roster row was missing.
+ *
+ * `maskedEmail` stays null: we hash the address and never hold it, so there is
+ * nothing honest to mask. Order counts and first/last dates are computed from the
+ * loaded orders, so they describe the corpus slice rather than claiming lifetime
+ * history.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {any} shop
+ * @param {Array<{ order: Record<string, any> }>} mapped
+ */
+async function loadCustomerIdentities(prisma, shop, mapped) {
+  /** @type {Map<string, { orderCount: number, first: Date | null, last: Date | null }>} */
+  const byCustomer = new Map();
+  for (const { order } of mapped) {
+    const ref = order.customerExternalId;
+    if (!ref) continue;
+    const placed = order.processedAt instanceof Date ? order.processedAt : null;
+    const entry = byCustomer.get(ref) ?? { orderCount: 0, first: null, last: null };
+    entry.orderCount += 1;
+    if (placed && (!entry.first || placed < entry.first)) entry.first = placed;
+    if (placed && (!entry.last || placed > entry.last)) entry.last = placed;
+    byCustomer.set(ref, entry);
+  }
+
+  for (const [emailHash, entry] of byCustomer) {
+    await prisma.customerIdentity.upsert({
+      where: { shopId_emailHash: { shopId: shop.id, emailHash } },
+      create: {
+        merchantId: shop.merchantId,
+        shopId: shop.id,
+        emailHash,
+        // Matches the app's own ingestion convention (canonical.server.js): an
+        // identity derived from the address on an order, not from a customer record.
+        source: "order_email",
+        maskedEmail: null,
+        firstSeenOrderAt: entry.first,
+        lastOrderAt: entry.last,
+        orderCount: entry.orderCount,
+      },
+      update: {
+        firstSeenOrderAt: entry.first,
+        lastOrderAt: entry.last,
+        orderCount: entry.orderCount,
+      },
+    });
+  }
+  return byCustomer.size;
 }
 
 /**

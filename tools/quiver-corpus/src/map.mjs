@@ -402,10 +402,19 @@ export function deriveCatalog(lineItems, context) {
         externalId: productKey,
         title: line.title || productKey,
         handle: null,
-        status: null,
+        // Quiver has no product status. Leaving it null made Jefe conclude the store
+        // had ZERO active products — verified against a real merchant, where it also
+        // silently killed five downstream beliefs ("at least one active product is
+        // required"). A product that appears on a real order was, by definition,
+        // sellable at that moment, so ACTIVE is the honest reading — but it is an
+        // INFERENCE, not an observation, so it says so in the payload.
+        status: "ACTIVE",
         vendor: null,
         productType: null,
-        rawPayload: { derived_from: "quiver_order_line_items" },
+        rawPayload: {
+          derived_from: "quiver_order_line_items",
+          statusSource: "inferred_from_having_sold",
+        },
       });
     }
     const variantKey = line.variantExternalId;
