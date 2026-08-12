@@ -762,7 +762,11 @@ function buildWatching(insights: Insight[], horizonWatching: HorizonWatch[]) {
     title: item.title,
     body: item.reason,
   }));
-  return [...fromInsights, ...fromHorizon].slice(0, 3);
+  // Reserve at least one slot for Horizon when it has items, so a store with ≥3
+  // insights can't silently starve it — both are "watching, not acting" signals and
+  // neither should win purely by concatenation order.
+  const reservedForHorizon = Math.min(fromHorizon.length, 1);
+  return [...fromInsights.slice(0, 3 - reservedForHorizon), ...fromHorizon].slice(0, 3);
 }
 
 function horizonLabel(horizon: string) {
