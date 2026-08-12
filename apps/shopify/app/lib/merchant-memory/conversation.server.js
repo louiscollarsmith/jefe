@@ -109,13 +109,16 @@ export function buildGapDrivenOpenQuestions(beliefs) {
   const coveragePct = beliefPercentage(byKey.get("products.cost_coverage"));
   const hasMargin = byKey.has("products.gross_margin.trailing_90d");
   if (!hasMargin || (coveragePct !== null && coveragePct < 70)) {
+    const roundedPct = coveragePct !== null ? Math.round(coveragePct) : null;
+    // Below ~5% reads as "none" to a merchant, and a bare "0%" looks like a bug — so
+    // speak plainly instead of quoting a number no one trusts.
+    const haveSomeCosts = roundedPct !== null && roundedPct >= 5;
     questions.push({
       category: "costs",
       questionKey: "data.product_costs",
-      question:
-        coveragePct !== null
-          ? `Jefe can see cost prices for only ${Math.round(coveragePct)}% of your products, so it can't track your margin accurately yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?`
-          : "Jefe can't see your product cost prices, so it can't track margin or profit yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?",
+      question: haveSomeCosts
+        ? `I’ve only got cost prices for about ${roundedPct}% of your products, so I can’t work out your margins reliably yet. If you add cost-per-item on the rest in Shopify (open a product → Inventory → Cost per item), I’ll start tracking your profit properly.`
+        : "I can’t see cost prices for your products yet, so I can’t work out your margins or profit. If you add cost-per-item in Shopify (open a product → Inventory → Cost per item), I’ll start tracking profit for you.",
       reason:
         "Cost per item is the one margin input Jefe cannot observe; with it, margin and profit beliefs unlock.",
       priority: 15,
@@ -132,7 +135,7 @@ export function buildGapDrivenOpenQuestions(beliefs) {
     questions.push({
       category: "policies",
       questionKey: "policies.no_sale_products",
-      question: `${noSaleCount} of your active products haven't sold in 90 days. Should Jefe treat products like these as discontinued, seasonal, or still worth promoting?`,
+      question: `I can see ${noSaleCount} of your active products haven’t sold in the last 90 days. Do you want me to treat products like these as discontinued, seasonal, newly launched, or still worth promoting?`,
       reason:
         "Lets Jefe classify no-sale products correctly instead of assuming they are dead stock.",
       priority: 40,
@@ -885,7 +888,7 @@ export async function sendConversationMessage(prisma, input) {
   if (operation.operationType === OPERATION_TYPES.noMemoryChange) {
     await createAssistantMessage(prisma, {
       conversation,
-      content: buildNoChangeResponse(operation, beliefs, openQuestions),
+      content: buildNoChangeResponse(operation, beliefs),
       operation,
       operationStatus: null,
       relatedBeliefIds: operation.relatedBeliefIds ?? [],
@@ -904,7 +907,7 @@ export async function sendConversationMessage(prisma, input) {
     void track(prisma, buildUnfulfilledIntentEvent(input, content, operation));
     await createAssistantMessage(prisma, {
       conversation,
-      content: operation.reason,
+      content: buildClarificationReply(operation),
       operation,
       operationStatus: OPERATION_STATUS.proposed,
       relatedBeliefIds: operation.targetBeliefId ? [operation.targetBeliefId] : [],
@@ -1277,10 +1280,12 @@ export function interpretMerchantMessage(input) {
     );
   }
 
+  const softNoChange =
+    "I can use this in the conversation, but I need a little more detail before I treat it as something I should remember.";
   return {
     operationType: OPERATION_TYPES.noMemoryChange,
-    reason:
-      "I can use this in the conversation, but I need a little more detail before I treat it as something I should remember.",
+    reason: softNoChange,
+    merchantReply: softNoChange,
     merchantStatement: message,
     confidence: 0.55,
     relatedBeliefKeys: target ? [target.key] : [],
@@ -1723,6 +1728,9 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Merchant corrections have authority, but raw observations and merchant policies must stay separate.",
     "Do not invent evidence.",
     "Ask for clarification when a reference is ambiguous.",
+    "Write `reason` for yourself: it is your private justification and is never shown to the merchant.",
+    "Write `merchantReply` as the words the merchant will actually read: speak to them directly as \"you\", keep it warm and plain, and never refer to \"the merchant\" or narrate your own reasoning.",
+    "Set `merchantReply` whenever operationType is clarification_required or no_memory_change. For clarification_required make it a direct question that names exactly what you need (\"Which product do you mean?\"), not a note that says you need clarification.",
     // The model can now emit a DESTRUCTIVE op, so it gets an explicit rule rather than
     // inferring the risk. Server-side validation enforces all of this regardless — this only
     // stops the model proposing retractions the merchant then has to decline.
@@ -1995,11 +2003,24 @@ function buildExplanation(operation, beliefs) {
 }
 
 /**
+ * The merchant-facing text for a clarification. `operation.reason` is the model's
+ * private, third-person justification and must never be shown; prefer the dedicated
+ * second-person `merchantReply`, and fall back to a general but still-human question
+ * rather than leaking the rationale.
+ * @param {any} operation
+ */
+export function buildClarificationReply(operation) {
+  return (
+    text(operation?.merchantReply) ||
+    "I want to get this right — could you tell me a bit more about which part you mean?"
+  );
+}
+
+/**
  * @param {any} operation
  * @param {any[]} beliefs
- * @param {any[]} openQuestions
  */
-function buildNoChangeResponse(operation, beliefs, openQuestions) {
+export function buildNoChangeResponse(operation, beliefs) {
   if ((operation.relatedBeliefKeys ?? []).length > 0) {
     const related = beliefs.filter((belief) =>
       operation.relatedBeliefKeys.includes(belief.key),
@@ -2014,10 +2035,14 @@ function buildNoChangeResponse(operation, beliefs, openQuestions) {
   if (operation.reason?.includes("undo")) {
     return "Tell me what you want to undo, and I’ll try to reverse the latest matching change from this conversation.";
   }
-  if (openQuestions.length > 0) {
-    return `${operation.reason}\n\nOne thing I still need to know: ${openQuestions[0].question}`;
-  }
-  return operation.reason;
+  // A no-change reply speaks for itself. It must NOT bolt on an unrelated open
+  // question — that is what produced replies that answered nothing and then re-asked
+  // a stray cost prompt — and it must not leak the model's private `reason`. Prefer
+  // the second-person merchantReply; otherwise a plain human acknowledgement.
+  return (
+    text(operation.merchantReply) ||
+    "Got it — I’ve taken that in. Nothing for me to change in what I remember just yet."
+  );
 }
 
 /**
@@ -2382,6 +2407,9 @@ function clarification(reason, message, context) {
   return {
     operationType: OPERATION_TYPES.clarificationRequired,
     reason,
+    // The deterministic clarifications are already phrased to the merchant, so the
+    // spoken reply is that same text. The LLM path fills merchantReply itself.
+    merchantReply: reason,
     merchantStatement: message,
     confidence: 0.6,
     requiresConfirmation: true,
