@@ -1077,6 +1077,7 @@ export function ErrorBoundary() {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const loaderStartedAt = performance.now();
   const { session } = await authenticateAppRequest(request);
   const { merchant, shop } = await ensureShopifyTenant(prisma, {
     shopDomain: session.shop,
@@ -1122,20 +1123,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // today just price_markdown. One cheap indexed getActionMode per live type, so a
       // newly-graduated action's dial lights up here with no surface edit.
       const liveActionTypes = listActionTypes().filter((t) => t.live);
-      const [metrics, insights, goals, plan, liveActionModeEntries, channelConnections, openQuestions, horizon] = await Promise.all([
-        getStoreMetrics({ merchantId: merchant.id, shopId: shop.id }),
-        getLatestMerchantInsights(prisma, {
+      const metricsPromise = getStoreMetrics({ merchantId: merchant.id, shopId: shop.id });
+      const insightsPromise = getLatestMerchantInsights(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-        }),
-        getLatestMerchantGoals(prisma, {
+      });
+      const goalsPromise = getLatestMerchantGoals(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-        }),
-        getLatestMerchantPlan(prisma, {
+      });
+      const planPromise = getLatestMerchantPlan(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-        }),
+      });
+      const liveActionModeEntriesPromise =
         // Folded into THIS Promise.all (with channel state) so the Settings reads run in
         // parallel and add ~no serial latency to the LCP-critical daily loader (per chat 10).
         Promise.all(
@@ -1145,37 +1146,97 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               await getActionMode(prisma, { merchantId: merchant.id, actionType: t.actionType }),
             ],
           ),
-        ),
-        listChannelConnections(prisma, { merchantId: merchant.id, shopId: shop.id }),
+        );
+      const channelConnectionsPromise = listChannelConnections(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
+      const openQuestionsPromise =
         // openQuestions feeds Memory's "Still guessing" group (getOpenQuestions is
         // idempotent + safe to call — ensures the initial questions, returns the open set).
-        getOpenQuestions(prisma, { merchantId: merchant.id, shopId: shop.id }),
+        getOpenQuestions(prisma, { merchantId: merchant.id, shopId: shop.id });
+      const horizonPromise =
         // Store-grounded Horizon: near-term run-out / refund items + a "watching" block,
         // computed read-only from persisted facts (never fabricated), seasonal timeline
         // merged in. Non-throwing → degrades to seasonal-only, so it can't 5xx the loader.
-        getLatestHorizon(prisma, { merchantId: merchant.id, shopId: shop.id }),
+        getLatestHorizon(prisma, { merchantId: merchant.id, shopId: shop.id });
+      const suggestedActionPromise = metricsPromise.then((metrics) =>
+        // Jefe's first visible action: the latest proposed action as a render-ready card,
+        // money formatted in the shop currency. Read-only (a single indexed row) and
+        // null when nothing is proposed, so the card stays inert. Executable only when the
+        // write path is live (CLEARANCE_EXECUTE_ENABLED) — advisory until then.
+        getActiveSuggestedAction(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          currency: metrics?.currency || "GBP",
+        }),
+      );
+      const executedActionsPromise = metricsPromise.then((metrics) =>
+        // The "what Jefe did for you" feed — applied/reverted actions with their
+        // measured outcome (chat 9's read, server-formatted). Empty until execution
+        // is live, so the Daily Home section self-hides until the first real action.
+        getExecutedActionFeed(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          currency: metrics?.currency || "GBP",
+        }),
+      );
+      const actionChatId = url.searchParams.get("actionChat");
+      // 13a home extras: the real in-app chat thread (thin read — NO memory writes
+      // on the home), the "New in Jefe" changelog, and the email-brief preference.
+      // ensureShopContactEmail best-effort populates Shop.contactEmail from
+      // shop{email} — fire-and-forget so its (first-load-only) Admin GraphQL call
+      // stays OFF the LCP path; the email row shows from the next load once
+      // persisted (hidden until then — never a fabricated address).
+      void ensureShopContactEmail(prisma, {
+        shopId: shop.id,
+        shopDomain: session.shop,
+        accessToken: session.accessToken,
+      }).catch(() => {});
+      const conversationPromise = getDailyChatThread(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
+      const changelogPromise = loadAppHomeWhatsNew();
+      const morningBriefPrefPromise = getNotificationPreference(prisma, {
+        merchantId: merchant.id,
+        category: "morning_brief",
+      });
+      const contactEmailPromise = getShopContactEmail(prisma, { shopId: shop.id });
+      const [
+        metrics,
+        insights,
+        goals,
+        plan,
+        liveActionModeEntries,
+        channelConnections,
+        openQuestions,
+        horizon,
+        suggestedAction,
+        executedActions,
+        conversation,
+        changelog,
+        morningBriefPref,
+        contactEmail,
+      ] = await Promise.all([
+        metricsPromise,
+        insightsPromise,
+        goalsPromise,
+        planPromise,
+        liveActionModeEntriesPromise,
+        channelConnectionsPromise,
+        openQuestionsPromise,
+        horizonPromise,
+        suggestedActionPromise,
+        executedActionsPromise,
+        conversationPromise,
+        changelogPromise,
+        morningBriefPrefPromise,
+        contactEmailPromise,
       ]);
       // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
       // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
       const actionModes = Object.fromEntries(liveActionModeEntries);
-      // Jefe's first visible action: the latest proposed action as a render-ready card,
-      // money formatted in the shop currency. Read-only (a single indexed row) and
-      // null when nothing is proposed, so the card stays inert. Executable only when the
-      // write path is live (CLEARANCE_EXECUTE_ENABLED) — advisory until then.
-      const suggestedAction = await getActiveSuggestedAction(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        currency: metrics?.currency || "GBP",
-      });
-      // The "what Jefe did for you" feed — applied/reverted actions with their
-      // measured outcome (chat 9's read, server-formatted). Empty until execution
-      // is live, so the Daily Home section self-hides until the first real action.
-      const executedActions = await getExecutedActionFeed(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        currency: metrics?.currency || "GBP",
-      });
-      const actionChatId = url.searchParams.get("actionChat");
       const primaryRecommendationId =
         suggestedAction?.sourceRecommendation?.id ??
         plan?.selectedRun?.recommendation?.id ??
@@ -1191,27 +1252,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             actionRunId: actionChatId === primaryRecommendationId ? primaryActionRunId : actionChatId,
           })
         : { topic: null, messages: [] };
-      // 13a home extras: the real in-app chat thread (thin read — NO memory writes
-      // on the home), the "New in Jefe" changelog, and the email-brief preference.
-      // ensureShopContactEmail best-effort populates Shop.contactEmail from
-      // shop{email} — fire-and-forget so its (first-load-only) Admin GraphQL call
-      // stays OFF the LCP path; the email row shows from the next load once
-      // persisted (hidden until then — never a fabricated address).
-      void ensureShopContactEmail(prisma, {
-        shopId: shop.id,
-        shopDomain: session.shop,
-        accessToken: session.accessToken,
-      }).catch(() => {});
-      const [conversation, changelog, morningBriefPref, contactEmail] =
-        await Promise.all([
-          getDailyChatThread(prisma, { merchantId: merchant.id, shopId: shop.id }),
-          loadAppHomeWhatsNew(),
-          getNotificationPreference(prisma, {
-            merchantId: merchant.id,
-            category: "morning_brief",
-          }),
-          getShopContactEmail(prisma, { shopId: shop.id }),
-        ]);
       const emailBrief = contactEmail
         ? {
             address: contactEmail,
@@ -1237,6 +1277,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const todayLabel = computeHomeDateLabel({
         now: currentServerInstant(),
         timeZone: homeTimeZone,
+      });
+      logSlowAppIndexLoader(loaderStartedAt, {
+        mode: "daily",
+        shopDomain: session.shop,
       });
       return {
         appMode: "daily" as const,
@@ -4811,6 +4855,22 @@ function jobLabel(jobType: string) {
 }
 
 const onboardingLog = baseLogger.child({ component: "onboarding" });
+const appIndexLoaderLog = baseLogger.child({ component: "app-index-loader" });
+const SLOW_APP_INDEX_LOADER_MS = 3000;
+
+function logSlowAppIndexLoader(
+  startedAt: number,
+  metadata: { mode: "daily" | "memory" | "onboarding"; shopDomain: string },
+) {
+  const durationMs = Math.round(performance.now() - startedAt);
+  if (durationMs < SLOW_APP_INDEX_LOADER_MS) return;
+
+  appIndexLoaderLog.warn("Slow app index loader", {
+    durationMs,
+    mode: metadata.mode,
+    shopDomain: metadata.shopDomain,
+  });
+}
 
 async function getPersistedStoreName({
   shop,

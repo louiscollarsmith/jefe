@@ -125,6 +125,9 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent, source
  * step: registering an action type without binding it makes it advertisable to the LLM but
  * unresolvable, and binding one without registering it makes it unreachable.
  *
+ */
+
+/**
  * @typedef {Object} PrimitiveBinding
  * @property {(prisma: any, input: { merchantId: string, shopId: string, intent: any, sourceRecommendation?: any }) => Promise<{ preview: any, summary: any, magnitude: Record<string, number|undefined> } | null>} resolve
  *   Deterministic half: find the targets, size the change safely, build the preview AND the
@@ -140,8 +143,9 @@ async function resolvePriceMarkdown(prisma, { merchantId, shopId, intent, source
  * @property {(status: string, count: number, summary: any) => string} executedHeadline
  * @property {(input: { summary: any, currency: string, missingScopes: string[] }) => any | null} scopeNudge
  *   The value-first permission ask, in this primitive's own terms.
- * @type {Record<string, PrimitiveBinding>}
  */
+
+/** @type {Record<string, PrimitiveBinding>} */
 const PRIMITIVES = {
   price_markdown: {
     resolve: resolvePriceMarkdown,
@@ -193,7 +197,9 @@ for (const [actionType, binding] of Object.entries(PRIMITIVES)) {
  * @returns {PrimitiveBinding | null}
  */
 function getPrimitive(actionType) {
-  return Object.prototype.hasOwnProperty.call(PRIMITIVES, actionType) ? PRIMITIVES[actionType] : null;
+  return Object.prototype.hasOwnProperty.call(PRIMITIVES, actionType)
+    ? PRIMITIVES[actionType]
+    : null;
 }
 
 /** Action types this layer can actually propose — the binding table, not the registry. */
