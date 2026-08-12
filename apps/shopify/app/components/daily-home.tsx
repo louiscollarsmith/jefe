@@ -135,28 +135,39 @@ export function DailyHome(props: {
   // The frame for every recommendation: one quiet line, not a section (the reviewer's
   // single keep-from-the-strip). Null when Jefe has no goal yet — never fabricated.
   const goalLine = firstGoalLine(props.goals);
+  // The conversation index (left rail): wayfinding once the thread accumulates moments.
+  // Absent on a fresh store, so the home stays a single centered column until there's
+  // something to index. Hidden on narrow viewports (see HOME_INDEX_RESPONSIVE_CSS).
+  const indexEntries = buildConversationIndex(outcomes, primaryMove, props.storeTimeZone);
+  const hasIndex = indexEntries.length > 0;
 
   return (
     <main style={pageStyle}>
-      <div style={shellStyle}>
+      <style>{HOME_INDEX_RESPONSIVE_CSS}</style>
+      <div style={hasIndex ? shellWideStyle : shellStyle}>
         <Header
           storeName={props.storeName}
           todayLabel={props.todayLabel}
           goalLine={goalLine}
           brandLogoUrl={props.brandLogoUrl}
         />
-        <StoreConversation
-          conversation={props.conversation ?? null}
-          move={primaryMove}
-          outcomes={outcomes}
-          headsUps={props.horizonHeadsUps ?? []}
-          quietLine={buildQuietLine(props.horizonWatching, props.insights)}
-          currentSearch={location.search}
-        />
-        {/* The one door off the chat log: everything Jefe knows about the store. */}
-        <Link to="?view=memory" style={footerLinkStyle}>
-          See everything Jefe knows →
-        </Link>
+        <div style={homeGridStyle} className="jefe-home-grid">
+          {hasIndex ? <ConversationIndex entries={indexEntries} /> : null}
+          <div style={homeMainColStyle}>
+            <StoreConversation
+              conversation={props.conversation ?? null}
+              move={primaryMove}
+              outcomes={outcomes}
+              headsUps={props.horizonHeadsUps ?? []}
+              quietLine={buildQuietLine(props.horizonWatching, props.insights)}
+              currentSearch={location.search}
+            />
+            {/* The one door off the chat log: everything Jefe knows about the store. */}
+            <Link to="?view=memory" style={footerLinkStyle}>
+              See everything Jefe knows →
+            </Link>
+          </div>
+        </div>
       </div>
     </main>
   );
@@ -228,7 +239,11 @@ function StoreConversation({
           </MessageRow>
         ))}
         {outcomes.map((action) => (
-          <MessageRow key={action.actionRunId} from="assistant">
+          <MessageRow
+            key={action.actionRunId}
+            anchorId={`moment-${action.actionRunId}`}
+            from="assistant"
+          >
             {outcomeMessageText(action)}
           </MessageRow>
         ))}
@@ -267,10 +282,21 @@ function StoreConversation({
   );
 }
 
-function MessageRow({ from, children }: { from: string; children: ReactNode }) {
+function MessageRow({
+  from,
+  children,
+  anchorId,
+}: {
+  from: string;
+  children: ReactNode;
+  anchorId?: string;
+}) {
   const isMerchant = from === "merchant" || from === "user";
   return (
-    <div style={{ ...messageRowStyle, justifyContent: isMerchant ? "flex-end" : "flex-start" }}>
+    <div
+      id={anchorId}
+      style={{ ...messageRowStyle, justifyContent: isMerchant ? "flex-end" : "flex-start" }}
+    >
       {!isMerchant ? <span style={smallMarkStyle}>J</span> : null}
       <div style={isMerchant ? merchantBubbleStyle : assistantBubbleStyle}>{children}</div>
     </div>
@@ -284,7 +310,10 @@ function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch
   const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
   const subtitle = informativeSubtitle(move.summary, move.title);
   return (
-    <div style={{ ...messageRowStyle, justifyContent: "flex-start" }}>
+    <div
+      id={`moment-${chatTarget}`}
+      style={{ ...messageRowStyle, justifyContent: "flex-start" }}
+    >
       <span style={smallMarkStyle}>J</span>
       <div style={moveMessageStyle}>
         <div style={cardTopStyle}>
@@ -302,6 +331,84 @@ function MoveMessage({ move, currentSearch }: { move: PrimaryMove; currentSearch
         </div>
       </div>
     </div>
+  );
+}
+
+// The conversation index — wayfinding INSIDE the one thread (never a thread picker).
+// Only MOMENTS earn a place: an action executed / reported-back / declined / reverted, and
+// the current proposed move. Each carries the DOM id of its message so the rail can scroll
+// to it. Goals and free-text corrections are deliberately NOT here yet — they need change-
+// events / message tagging the layer doesn't emit, and a fabricated timestamp is worse than
+// an omission (AGENTS.md:58). The executed half is real ledger data. Pure — no message-text
+// scraping.
+type IndexEntry = { id: string; label: string; kind: string; dateLabel: string };
+
+function buildConversationIndex(
+  outcomes: ExecutedAction[],
+  move: PrimaryMove,
+  storeTimeZone?: string | null,
+): IndexEntry[] {
+  const entries: IndexEntry[] = outcomes.map((action) => {
+    let kind: string;
+    let when: string | null;
+    if (action.status === "rejected") {
+      kind = "Declined";
+      when = action.rejectedAt ?? null;
+    } else if (action.status === "reverted") {
+      kind = "Reverted";
+      when = action.revertedAt ?? null;
+    } else if (action.outcome.measured) {
+      kind = "Reported back";
+      when = action.appliedAt ?? null;
+    } else {
+      kind = "Done";
+      when = action.appliedAt ?? null;
+    }
+    return {
+      id: `moment-${action.actionRunId}`,
+      label: action.sourceRecommendation?.title || action.headline,
+      kind,
+      dateLabel: formatShortDate(when, storeTimeZone),
+    };
+  });
+  if (move.state !== "empty") {
+    entries.push({
+      id: `moment-${move.recommendationId ?? move.actionRunId ?? "move"}`,
+      label: move.title,
+      kind: move.state === "in_progress" ? "In progress" : "Move proposed",
+      dateLabel: "",
+    });
+  }
+  return entries;
+}
+
+// Scroll the thread to a moment's message. Wayfinding, not navigation — it moves you
+// within the conversation you're already in; it never swaps threads or changes the URL.
+function scrollToMoment(id: string) {
+  const el = typeof document === "undefined" ? null : document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
+  return (
+    <nav className="jefe-home-index" aria-label="Conversation index" style={indexRailStyle}>
+      <span style={indexHeadingStyle}>In this conversation</span>
+      <div style={indexListStyle}>
+        {entries.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            style={indexEntryStyle}
+            onClick={() => scrollToMoment(entry.id)}
+          >
+            <span style={indexEntryLabelStyle}>{entry.label}</span>
+            <span style={indexEntryMetaStyle}>
+              {entry.dateLabel ? `${entry.kind} · ${entry.dateLabel}` : entry.kind}
+            </span>
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -884,6 +991,65 @@ const shellStyle: CSSProperties = {
   margin: "0 auto",
   width: "100%",
 };
+// Widened when the conversation index is present, to fit the rail + the 760px thread.
+const shellWideStyle: CSSProperties = { ...shellStyle, maxWidth: 992 };
+const homeGridStyle: CSSProperties = {
+  display: "flex",
+  gap: 28,
+  alignItems: "flex-start",
+};
+const homeMainColStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  maxWidth: 760,
+  display: "flex",
+  flexDirection: "column",
+  gap: 40,
+};
+const indexRailStyle: CSSProperties = {
+  flex: "none",
+  width: 204,
+  position: "sticky",
+  top: 24,
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+};
+const indexHeadingStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 11,
+  fontWeight: 600,
+  padding: "0 8px 4px",
+};
+const indexListStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 1 };
+const indexEntryStyle: CSSProperties = {
+  alignItems: "flex-start",
+  background: "transparent",
+  border: 0,
+  borderRadius: 8,
+  cursor: "pointer",
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: FONT.sans,
+  gap: 2,
+  padding: "8px 8px",
+  textAlign: "left",
+  width: "100%",
+};
+const indexEntryLabelStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 12.5,
+  lineHeight: 1.3,
+};
+const indexEntryMetaStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 11,
+};
+// The index is desktop wayfinding; on a narrow embedded viewport it would crowd the
+// thread, so hide it and let the conversation take the full width.
+const HOME_INDEX_RESPONSIVE_CSS =
+  "@media (max-width: 760px){.jefe-home-index{display:none}.jefe-home-grid{display:block}}";
 const chatShellStyle: CSSProperties = {
   maxWidth: 760,
   minHeight: "calc(100vh - 96px)",

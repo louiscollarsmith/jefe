@@ -35,3 +35,19 @@ test("home-chat polish: single 'Thinking' indicator + wired prompt chips", () =>
   assert.match(dailyHomeSource, /function StorePrompt/);
   assert.match(dailyHomeSource, /<StorePrompt message=/);
 });
+
+test("the conversation index lists moments and scrolls the thread to them (not a thread swap)", () => {
+  // A left-rail index built from real moments (executed/reported/declined actions + the
+  // current move), each carrying the DOM id of its message so the rail can scroll to it.
+  assert.match(dailyHomeSource, /function buildConversationIndex/);
+  assert.match(dailyHomeSource, /function ConversationIndex/);
+  assert.match(dailyHomeSource, /className="jefe-home-index"/);
+  assert.match(dailyHomeSource, /anchorId=\{`moment-\$\{action\.actionRunId\}`\}/);
+  // Wayfinding inside the one thread: scrollIntoView, never a navigate/URL change.
+  assert.match(dailyHomeSource, /function scrollToMoment/);
+  assert.match(dailyHomeSource, /scrollIntoView\(\{ behavior: "smooth", block: "center" \}\)/);
+  assert.doesNotMatch(
+    dailyHomeSource,
+    /scrollToMoment[\s\S]{0,120}(navigate\(|window\.location)/,
+  );
+});
