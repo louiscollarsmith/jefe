@@ -156,6 +156,7 @@ import {
   getDailyChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
+  retryLastConversationReply,
   sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
@@ -583,12 +584,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       merchantId: merchant.id,
       shopId: shop.id,
       message: String(formData.get("message") ?? ""),
+      logger: actionLog,
     });
     if (!result.ok) {
-      const messageError = result as { error?: string };
+      // Returned, NOT thrown. A reply that times out used to reject out of the action and
+      // land the merchant on the route ErrorBoundary — "Jefe is still getting set up" —
+      // mid-conversation, with the whole thread replaced by a setup screen.
+      const messageError = result as { error?: string; kind?: string };
       return {
         ok: false,
         error: messageError.error ?? "That message could not be sent.",
+        kind: messageError.kind ?? null,
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+
+  if (intent === "chat.retry") {
+    // Answer the message the merchant can already see failed, rather than asking them to
+    // type it again — re-sending would store what they said a second time.
+    const result = await retryLastConversationReply(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      const retryError = result as { error?: string; kind?: string };
+      return {
+        ok: false,
+        error: retryError.error ?? "That message could not be sent.",
+        kind: retryError.kind ?? null,
         intent,
       };
     }

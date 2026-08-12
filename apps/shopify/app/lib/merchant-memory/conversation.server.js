@@ -47,6 +47,14 @@ export const CONVERSATION_TOPICS = Object.freeze({
   action: "action",
 });
 
+// A reply that never arrived. Said in Jefe's voice and from the merchant's side — they
+// asked something and got nothing back, which is Jefe's failure, not theirs. Deliberately
+// does NOT say "try again" as the whole sentence: the surface renders a real retry next to
+// it, and a dead end with no way forward is exactly what we're fixing.
+export const REPLY_FAILED_MESSAGE =
+  "I couldn't get to that one just now — your message is saved, so ask me to try again.";
+export const REPLY_FAILED_KIND = "reply_failed";
+
 const ACTION_CHAT_REPLY_SCHEMA = {
   type: Type.OBJECT,
   required: ["reply"],
@@ -779,7 +787,7 @@ export async function getOpenQuestions(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string; relatedOpenQuestionId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string; relatedOpenQuestionId?: string | null; reuseMessageId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendConversationMessage(prisma, input) {
   const content = input.message.trim();
@@ -787,16 +795,31 @@ export async function sendConversationMessage(prisma, input) {
 
   await ensureInitialOpenQuestions(prisma, input);
   const conversation = await getOrCreateConversation(prisma, input);
-  const userMessage = await prisma.merchantMemoryConversationMessage.create({
-    data: {
-      conversationId: conversation.id,
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      role: "merchant",
-      content,
-      safeSummary: summarizeMerchantStatement(content),
-    },
-  });
+  // A retry answers the merchant's EXISTING message rather than storing a second copy of
+  // it. The first attempt already committed the merchant's row (it commits before the LLM
+  // is called), so re-sending would leave the thread saying the same thing twice.
+  const userMessage = input.reuseMessageId
+    ? await prisma.merchantMemoryConversationMessage.findFirst({
+        where: {
+          id: input.reuseMessageId,
+          conversationId: conversation.id,
+          merchantId: input.merchantId,
+          role: "merchant",
+        },
+      })
+    : await prisma.merchantMemoryConversationMessage.create({
+        data: {
+          conversationId: conversation.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? null,
+          role: "merchant",
+          content,
+          safeSummary: summarizeMerchantStatement(content),
+        },
+      });
+  if (!userMessage) {
+    return { ok: false, error: REPLY_FAILED_MESSAGE, kind: REPLY_FAILED_KIND };
+  }
 
   const [beliefs, openQuestions, recentMessages] = await Promise.all([
     getBeliefsForMerchant(prisma, {
@@ -818,20 +841,44 @@ export async function sendConversationMessage(prisma, input) {
   if (input.relatedOpenQuestionId) {
     context.currentOpenQuestionId = input.relatedOpenQuestionId;
   }
-  const operation = /** @type {any} */ (await interpretMerchantMessageWithLlm({
-    message: content,
-    beliefs,
-    openQuestions,
-    context,
-    llmProvider: input.llmProvider,
-    logger: input.logger,
-    usage: {
-      prisma,
+  // The interpret call is the flaky step — ~6k-token prompts against an LLM timeout. It is
+  // also side-effect-free, so failing it is recoverable: the merchant's message is already
+  // stored, and a retry can answer it without writing anything twice. Catch it HERE rather
+  // than around the whole function — everything below this point mutates Merchant Memory,
+  // and a write that half-failed must surface, not be swallowed as "couldn't reply".
+  let operation;
+  try {
+    operation = /** @type {any} */ (await interpretMerchantMessageWithLlm({
+      message: content,
+      beliefs,
+      openQuestions,
+      context,
+      llmProvider: input.llmProvider,
+      logger: input.logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? null,
+        feature: "conversation",
+      },
+    }));
+  } catch (error) {
+    // Redacted: a merchant message can carry customer names/emails, and this is the one
+    // path that logs while holding the raw text.
+    input.logger?.error?.("conversation reply failed", {
       merchantId: input.merchantId,
       shopId: input.shopId ?? null,
-      feature: "conversation",
-    },
-  }));
+      conversationId: conversation.id,
+      messageId: userMessage.id,
+      reason: redact(error instanceof Error ? error.message : String(error)),
+    });
+    return {
+      ok: false,
+      error: REPLY_FAILED_MESSAGE,
+      kind: REPLY_FAILED_KIND,
+      retryMessageId: userMessage.id,
+    };
+  }
   const validation = /** @type {any} */ (await validateStructuredOperation(prisma, {
     merchantId: input.merchantId,
     operation,
@@ -959,6 +1006,35 @@ export async function sendConversationMessage(prisma, input) {
     currentOpenQuestionId: openQuestions[1]?.id ?? null,
   });
   return { ok: true };
+}
+
+/**
+ * Answer the merchant's last message when the first attempt failed to produce a reply.
+ *
+ * Reads the thread rather than taking a message id from the client: the merchant is asking
+ * for the thing they can SEE, and the tail of the thread is that thing.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function retryLastConversationReply(prisma, input) {
+  const conversation = await getOrCreateConversation(prisma, input);
+  const latest = await prisma.merchantMemoryConversationMessage.findFirst({
+    where: { conversationId: conversation.id, merchantId: input.merchantId },
+    orderBy: { createdAt: "desc" },
+  });
+  // Nothing to retry — an empty thread, or Jefe has already answered. Idempotent by
+  // construction: a double-tapped Retry, or one clicked on a stale tab, is a no-op rather
+  // than a second reply to a message that already has one.
+  if (!latest || latest.role !== "merchant") {
+    return { ok: true, retried: false };
+  }
+  const result = await sendConversationMessage(prisma, {
+    ...input,
+    message: latest.content,
+    reuseMessageId: latest.id,
+  });
+  return { ...result, retried: true };
 }
 
 /**

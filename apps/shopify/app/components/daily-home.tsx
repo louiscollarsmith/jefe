@@ -1,4 +1,4 @@
-import { Form, Link, useLocation, useNavigation } from "react-router";
+import { Form, Link, useActionData, useLocation, useNavigation } from "react-router";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
@@ -197,15 +197,35 @@ function StoreConversation({
 }) {
   const navigation = useNavigation();
   const pendingIntent = navigation.formData?.get("intent");
-  const isThinking =
+  const isSending =
     navigation.state !== "idle" && pendingIntent === "chat.message";
+  // A retry is Jefe having another go at a message already in the thread, so it shows the
+  // same "Thinking" line — but it must NOT re-render the merchant's text as pending, or
+  // their message would appear twice while it runs.
+  const isRetrying =
+    navigation.state !== "idle" && pendingIntent === "chat.retry";
+  const isThinking = isSending || isRetrying;
   const pendingMessage =
-    isThinking && typeof navigation.formData?.get("message") === "string"
+    isSending && typeof navigation.formData?.get("message") === "string"
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
+  const actionData = useActionData() as
+    | { ok?: boolean; error?: string; kind?: string | null; intent?: string }
+    | undefined;
 
   const history = conversation?.messages ?? [];
+  // A reply that never arrived, detected from the THREAD rather than from the failed
+  // request. The merchant's message commits before Jefe is asked, so a thread whose last
+  // message is theirs means Jefe owes them an answer — and that stays true after a reload,
+  // after the route error boundary's "Try again", and in a tab opened later. Keying this
+  // off the action result alone would lose the retry the moment the page reloaded, which
+  // is precisely the "nothing to retry" gap.
+  const lastMessage = history[history.length - 1];
+  const awaitingReply =
+    !isThinking &&
+    !pendingMessage &&
+    (lastMessage?.role === "merchant" || lastMessage?.role === "user");
   const hasMove = move.state !== "empty";
   // Proactive heads-ups (run-outs, refunds) render as a feed here — NOT capped: the
   // merchant wants to see whatever's genuinely real (Matt's call). The ~5/day *cadence*
@@ -227,7 +247,8 @@ function StoreConversation({
       (hasMove ? 1 : 0) +
       (showQuietLine ? 1 : 0) +
       (pendingMessage ? 1 : 0) +
-      (isThinking ? 1 : 0),
+      (isThinking ? 1 : 0) +
+      (awaitingReply ? 1 : 0),
   );
 
   return (
@@ -261,6 +282,9 @@ function StoreConversation({
             <div style={thinkingStyle}>Thinking</div>
           </div>
         ) : null}
+        {awaitingReply ? (
+          <ReplyFailedRow message={actionData?.error} />
+        ) : null}
         <div ref={bottomRef} aria-hidden="true" />
       </div>
       <div style={chatComposerWrapStyle}>
@@ -279,6 +303,32 @@ function StoreConversation({
         />
       </div>
     </section>
+  );
+}
+
+// Jefe failing to answer, said in the thread rather than on an error page. This renders in
+// Jefe's own message position on purpose: a reply that didn't arrive is Jefe's problem, not
+// a fault in what the merchant typed, and it reads as part of the conversation. The retry
+// posts `chat.retry`, which answers the message already sitting above it — the merchant
+// never retypes, and the thread never ends up holding what they said twice.
+function ReplyFailedRow({ message }: { message?: string }) {
+  const navigation = useNavigation();
+  const isRetrying =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "chat.retry";
+  return (
+    <div style={messageRowStyle} aria-live="polite">
+      <span style={smallMarkStyle}>J</span>
+      <div style={replyFailedBubbleStyle}>
+        <span>{message || "I couldn't get to that one just now — your message is saved."}</span>
+        <Form method="post">
+          <input type="hidden" name="intent" value="chat.retry" />
+          <button type="submit" style={replyRetryButtonStyle} disabled={isRetrying}>
+            {isRetrying ? "Trying again…" : "Try again"}
+          </button>
+        </Form>
+      </div>
+    </div>
   );
 }
 
@@ -1229,6 +1279,28 @@ const thinkingStyle: CSSProperties = {
   fontSize: 15,
   lineHeight: 1.6,
   paddingTop: 1,
+};
+// Deliberately NOT an alarm colour. Jefe not getting to a message is a hiccup in a
+// conversation, not a store problem — dressing it in red would tell the merchant something
+// is wrong with their business.
+const replyFailedBubbleStyle: CSSProperties = {
+  ...assistantBubbleStyle,
+  alignItems: "flex-start",
+  color: COLORS.muted,
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 10,
+};
+const replyRetryButtonStyle: CSSProperties = {
+  background: "transparent",
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  color: COLORS.ink,
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 600,
+  lineHeight: 1.2,
+  padding: "5px 12px",
 };
 const chatComposerWrapStyle: CSSProperties = {
   flex: "none",
