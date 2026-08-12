@@ -107,6 +107,13 @@ type PrimaryMove = {
   currentSignal: string | null;
 };
 
+type IndexEntry = {
+  id: string;
+  label: string;
+  kind: string;
+  dateLabel: string;
+};
+
 export function DailyHome(props: {
   storeName: string;
   merchantName?: string;
@@ -244,6 +251,11 @@ function StoreConversation({
   const messageLabel = isBlankThread
     ? "Fresh chat · no messages yet"
     : `${history.length} message${history.length === 1 ? "" : "s"}`;
+  const indexEntries = buildConversationIndex(
+    outcomes,
+    move,
+    storeTimeZone,
+  );
 
   return (
     <section style={conversationStyle}>
@@ -347,7 +359,21 @@ function StoreConversation({
           </InlineStack>
         </InlineStack>
       </div>
+      {indexEntries.length > 0 ? (
+        <ConversationIndex entries={indexEntries} />
+      ) : null}
       <div style={messagesStyle}>
+        {outcomes.map((action) => (
+          <ConversationMomentAnchor
+            key={action.actionRunId}
+            anchorId={`moment-${action.actionRunId}`}
+          />
+        ))}
+        {move.state !== "empty" ? (
+          <ConversationMomentAnchor
+            anchorId={`moment-${move.recommendationId ?? move.actionRunId ?? "move"}`}
+          />
+        ) : null}
         {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
         {history.map((message) => (
           <MessageRow key={message.id} from={message.role}>
@@ -365,6 +391,11 @@ function StoreConversation({
         ) : null}
       </div>
       <div style={chatComposerWrapStyle}>
+        <div style={chipsStyle}>
+          <StorePrompt message="What changed this week?" conversationId={activeConversation?.id ?? null} />
+          <StorePrompt message="Anything I should worry about?" conversationId={activeConversation?.id ?? null} />
+          <StorePrompt message="How are my goals looking?" conversationId={activeConversation?.id ?? null} />
+        </div>
         <Form
           method="post"
           style={composerStyle}
@@ -524,6 +555,10 @@ function StoreUpdatesPopover({
   );
 }
 
+function ConversationMomentAnchor({ anchorId }: { anchorId: string }) {
+  return <span id={anchorId} aria-hidden="true" style={momentAnchorStyle} />;
+}
+
 function MessageRow({ from, children }: { from: string; children: ReactNode }) {
   const isMerchant = from === "merchant" || from === "user";
   return (
@@ -538,6 +573,77 @@ function MessageRow({ from, children }: { from: string; children: ReactNode }) {
         {children}
       </div>
     </div>
+  );
+}
+
+function buildConversationIndex(
+  outcomes: ExecutedAction[],
+  move: PrimaryMove,
+  storeTimeZone?: string | null,
+): IndexEntry[] {
+  const entries: IndexEntry[] = outcomes.map((action) => {
+    let kind: string;
+    let when: string | null;
+    if (action.status === "rejected") {
+      kind = "Declined";
+      when = action.rejectedAt ?? null;
+    } else if (action.status === "reverted") {
+      kind = "Reverted";
+      when = action.revertedAt ?? null;
+    } else if (action.outcome.measured) {
+      kind = "Reported back";
+      when = action.appliedAt ?? null;
+    } else {
+      kind = "Done";
+      when = action.appliedAt ?? null;
+    }
+    return {
+      id: `moment-${action.actionRunId}`,
+      label: action.sourceRecommendation?.title || action.headline,
+      kind,
+      dateLabel: formatShortDate(when, storeTimeZone),
+    };
+  });
+  if (move.state !== "empty") {
+    entries.push({
+      id: `moment-${move.recommendationId ?? move.actionRunId ?? "move"}`,
+      label: move.title,
+      kind: move.state === "in_progress" ? "In progress" : "Move proposed",
+      dateLabel: "",
+    });
+  }
+  return entries;
+}
+
+function scrollToMoment(id: string) {
+  const el = typeof document === "undefined" ? null : document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
+  return (
+    <nav
+      className="jefe-home-index"
+      aria-label="Conversation index"
+      style={indexRailStyle}
+    >
+      <span style={indexHeadingStyle}>In this conversation</span>
+      <div style={indexListStyle}>
+        {entries.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            style={indexEntryStyle}
+            onClick={() => scrollToMoment(entry.id)}
+          >
+            <span style={indexEntryLabelStyle}>{entry.label}</span>
+            <span style={indexEntryMetaStyle}>
+              {entry.dateLabel ? `${entry.kind} · ${entry.dateLabel}` : entry.kind}
+            </span>
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -879,6 +985,23 @@ function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
     <Form method="post">
       <input type="hidden" name="intent" value="action.chat.message" />
       <MoveHiddenFields move={move} />
+      <input type="hidden" name="message" value={message} />
+      <ChipButton>{message}</ChipButton>
+    </Form>
+  );
+}
+
+function StorePrompt({
+  message,
+  conversationId,
+}: {
+  message: string;
+  conversationId?: string | null;
+}) {
+  return (
+    <Form method="post">
+      <input type="hidden" name="intent" value="chat.message" />
+      <input type="hidden" name="conversationId" value={conversationId ?? ""} />
       <input type="hidden" name="message" value={message} />
       <ChipButton>{message}</ChipButton>
     </Form>
@@ -1320,6 +1443,53 @@ const chatComposerWrapStyle: CSSProperties = {
 const conversationStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
+};
+const momentAnchorStyle: CSSProperties = {
+  display: "block",
+  height: 0,
+  overflow: "hidden",
+};
+const indexRailStyle: CSSProperties = {
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: "14px 16px",
+};
+const indexHeadingStyle: CSSProperties = {
+  ...monoStyle,
+  fontSize: 10,
+};
+const indexListStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+};
+const indexEntryStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  color: COLORS.body,
+  cursor: "pointer",
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: FONT.sans,
+  gap: 2,
+  maxWidth: 220,
+  padding: "8px 10px",
+  textAlign: "left",
+};
+const indexEntryLabelStyle: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 700,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const indexEntryMetaStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 11,
+  fontWeight: 600,
 };
 
 const threadControlsStyle: CSSProperties = {

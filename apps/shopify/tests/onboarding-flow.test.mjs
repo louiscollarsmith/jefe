@@ -8,6 +8,10 @@ const appIndexSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
   "utf8",
 );
+const fastOnboardingSource = fs.readFileSync(
+  new URL("../app/components/fast-value-onboarding.tsx", import.meta.url),
+  "utf8",
+);
 const merchantMemoryViewSource = fs.readFileSync(
   new URL("../app/components/merchant-memory-view.tsx", import.meta.url),
   "utf8",
@@ -52,26 +56,19 @@ const shopifyDocumentResponseSource = fs.readFileSync(
   "utf8",
 );
 
-test("onboarding exposes Connect, Insights, Goals and Plan", () => {
+test("onboarding exposes Connect, Context, Insight, Action and terminal APP", () => {
   assert.deepEqual(
     [...ONBOARDING_STEPS],
-    ["connect", "insights", "goals", "plan"],
+    ["connect", "context", "insight", "action", "app"],
   );
-  assert.match(appIndexSource, /"Connect"/);
-  assert.match(appIndexSource, /"Insights"/);
-  assert.match(appIndexSource, /"Goals"/);
-  assert.match(appIndexSource, /"Plan"/);
-  assert.match(appIndexSource, /Continue to Insights/);
-  assert.match(appIndexSource, /Continue to Goals/);
-  assert.match(appIndexSource, /Continue to Plan/);
-  assert.match(appIndexSource, /Accept Plan and open Jefe/);
-  assert.match(appIndexSource, /Tell me what winning looks like/);
-  assert.match(appIndexSource, /Here(?:&apos;|')s where I(?:&apos;|')d start\./);
-  assert.match(appIndexSource, /normalizeOnboardingStep/);
-  assert.doesNotMatch(appIndexSource, /data\.activeStep === "channels"/);
-  assert.doesNotMatch(appIndexSource, /Continue to Channels/);
-  assert.doesNotMatch(appIndexSource, /disabled=\{!hasVerifiedChannel\}/);
-  assert.doesNotMatch(appIndexSource, /href=\{?["'`][^"'`]*step=integrations/);
+  assert.match(appIndexSource, /appMode: "fast_onboarding"/);
+  assert.match(appIndexSource, /<FastValueOnboarding/);
+  assert.match(fastOnboardingSource, /While I finish looking/);
+  assert.match(fastOnboardingSource, /Something jumped out/);
+  assert.match(fastOnboardingSource, /Here’s what I’d do/);
+  assert.match(fastOnboardingSource, /Here’s what I’m on/);
+  assert.match(fastOnboardingSource, /Skip setup — go to Jefe/);
+  assert.doesNotMatch(fastOnboardingSource, /<header>|jf-app-menu|jf-wordmark/);
 });
 
 test("accepting the plan shows the home loading shell while opening Jefe", () => {
@@ -85,46 +82,16 @@ test("accepting the plan shows the home loading shell while opening Jefe", () =>
   assert.match(jefeStylesSource, /\.JefeAppHomeSkeleton/);
 });
 
-test("Connect step starts Shopify backfill and shows learning progress", () => {
+test("Connect starts independent durable work and shows attention rather than import progress", () => {
   assert.match(appIndexSource, /queueInstallShopifyBackfill/);
-  assert.match(appIndexSource, /getMerchantMemoryReadiness/);
-  assert.match(appIndexSource, /getShopBackfillProgress/);
-  assert.match(appIndexSource, /enqueueMerchantMemoryRefresh/);
-  assert.match(appIndexSource, /MetricGrid/);
-  assert.match(appIndexSource, /LearningMilestones/);
-  assert.match(appIndexSource, /importTileValue/);
-  assert.match(appIndexSource, /JefeMetricSkeleton/);
-  assert.match(appIndexSource, /importedCount <= 0/);
-  assert.match(appIndexSource, /stock levels/);
-  assert.match(appIndexSource, /refundsComplete/);
-  assert.match(appIndexSource, /importsComplete/);
-  assert.match(appIndexSource, /Boolean\(data\.backfill\.importsComplete\)/);
-  assert.doesNotMatch(
-    appIndexSource,
-    /data\.memoryReady && Boolean\(data\.backfill\.complete\)/,
-  );
-  assert.match(appIndexSource, /Estimating SKUs and variants/);
-  assert.match(appIndexSource, /Importing SKUs and variants/);
-  assert.match(appIndexSource, /Mapped stock levels/);
-  assert.match(appIndexSource, /Estimating stock levels/);
-  assert.match(appIndexSource, /Importing stock levels/);
-  assert.match(appIndexSource, /Estimating customers/);
-  assert.match(appIndexSource, /Importing customers/);
-  assert.match(appIndexSource, /Estimating orders/);
-  assert.match(appIndexSource, /Importing up to 24 months of orders/);
-  assert.match(appIndexSource, /Estimating refunds/);
-  assert.match(appIndexSource, /Importing refunds/);
-  assert.match(appIndexSource, /importMilestoneState/);
-  assert.match(appIndexSource, /status === "running"/);
-  assert.match(appIndexSource, /!data\.memoryReady/);
-  assert.match(appIndexSource, /!data\.backfill\.complete/);
-  assert.match(appIndexSource, /detail=\{backfill\.detail\}[\s\S]*skeleton/);
-  assert.doesNotMatch(appIndexSource, /orders and refunds/);
-  assert.doesNotMatch(appIndexSource, /revenue\/month/);
-  assert.doesNotMatch(appIndexSource, /Noticing a few things worth talking about/);
-  assert.match(appIndexSource, /useConnectStatusPolling/);
-  assert.match(appIndexSource, /revalidator\.revalidate\(\)/);
-  assert.doesNotMatch(appIndexSource, /runShopifyBackfill/);
+  assert.match(appIndexSource, /ensureMerchantBootstrapQueued/);
+  assert.match(fastOnboardingSource, /Shopify connected/);
+  assert.match(fastOnboardingSource, /Reading your most recent orders/);
+  assert.match(fastOnboardingSource, /Looking at what’s selling/);
+  assert.match(fastOnboardingSource, /Checking where there may be an opportunity/);
+  assert.match(fastOnboardingSource, /revalidator\.revalidate\(\)/);
+  assert.doesNotMatch(fastOnboardingSource, /progress bar|spinner|\bETA\b|Importing refunds/i);
+  assert.doesNotMatch(fastOnboardingSource, /\d+\s*\/\s*\d+/);
 });
 
 test("onboarding does not expose the retired goal form or interview path", () => {

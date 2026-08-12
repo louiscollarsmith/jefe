@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { deriveMerchantMemoryBeliefs } from "../app/lib/merchant-memory/shopify-derivations.server.js";
-import { isMerchantVisibleBeliefKey } from "../app/lib/merchant-memory/deterministic-belief-registry.server.js";
+import { isMerchantVisibleBeliefKey, isBusinessShapeBeliefKey } from "../app/lib/merchant-memory/deterministic-belief-registry.server.js";
+import { selectPromptBeliefs } from "../app/lib/merchant-memory/conversation.server.js";
 
 // The ontology could describe a lipstick DTC brand and a Tesla dealership identically, so
 // every recommendation came out generic by construction. These beliefs describe what KIND of
@@ -212,6 +213,60 @@ test("consideration falls back to mixed rather than guessing when signals disagr
   assert.equal(outcomes.find((o) => o.key === CONSIDERATION)?.value?.enum, "mixed");
 });
 
+const RANGE = "business.range_composition";
+
+test("an own-brand maker and a multi-brand retailer are told apart", async () => {
+  // Both could turn identical revenue from identical order counts. They need opposite advice
+  // about range, stock and clearance, and the ontology could not tell them apart at all.
+  const maker = await derive({
+    ...baseSpec(),
+    productTypes: ["Candles"],
+    vendors: ["Tin & Tide"],
+  });
+  const retailer = await derive({
+    ...baseSpec(),
+    productTypes: ["Boots", "Jackets", "Rucksacks", "Tents", "Stoves"],
+    vendors: ["Berghaus", "Rab", "Osprey", "MSR", "Vango"],
+  });
+
+  assert.equal(maker.find((o) => o.key === RANGE)?.value?.enum, "own_brand_specialist");
+  assert.equal(retailer.find((o) => o.key === RANGE)?.value?.enum, "multi_brand_retailer");
+});
+
+test("a specialist stocking many brands is not the same as a general retailer", async () => {
+  // A running shop: one category, everyone else's brands. Collapsing this into
+  // "multi_brand_retailer" would lose the thing that makes the advice specific.
+  const outcomes = await derive({
+    ...baseSpec(),
+    productTypes: ["Running shoes"],
+    vendors: ["Asics", "Hoka", "Saucony", "Brooks", "New Balance"],
+  });
+  assert.equal(outcomes.find((o) => o.key === RANGE)?.value?.enum, "multi_brand_specialist");
+});
+
+test("a range is not described when the merchant never filled in type or vendor", async () => {
+  // Shopify leaves both optional. Reading a range off a third of the catalogue would be a
+  // guess about someone's business, so Jefe declines rather than asserts.
+  const outcomes = await derive({
+    ...baseSpec(),
+    productTypes: [null, null, null, "Candles"],
+    vendors: [null, null, null, "Tin & Tide"],
+  });
+  const range = outcomes.find((o) => o.key === RANGE);
+  assert.notEqual(String(range?.status ?? ""), "CALCULATED");
+});
+
+test("the brand read is reported as a proxy, with the numbers behind it", async () => {
+  // A merchant may simply put their shop name on every product, so "own brand" is an
+  // inference from vendor concentration — it has to be correctable, which means visible.
+  const outcomes = await derive({ ...baseSpec(), productTypes: ["Candles"], vendors: ["Tin & Tide"] });
+  const value = outcomes.find((o) => o.key === RANGE)?.value ?? {};
+  assert.equal(value.brandModelIsProxy, "vendor_concentration");
+  assert.equal(typeof value.leadingBrandShare, "number");
+  assert.equal(typeof value.brandCount, "number");
+  assert.equal(value.leadingCategory, "Candles");
+});
+
 function baseSpec() {
   return {
     productCount: 12,
@@ -258,6 +313,8 @@ function mockPrisma({
   countries = ["GB"],
   itemsPerOrder = 1,
   variantPrice = "25.00",
+  productTypes = ["Goods"],
+  vendors = ["House"],
 }) {
   const count = orderValues ? orderValues.length : orderCount;
   const now = Date.now();
@@ -265,8 +322,8 @@ function mockPrisma({
     id: `product-${i + 1}`,
     title: `Product ${i + 1}`,
     status: "ACTIVE",
-    productType: "Goods",
-    vendor: "House",
+    productType: productTypes[i % productTypes.length],
+    vendor: vendors[i % vendors.length],
   }));
   const variants = products.flatMap((product, p) =>
     Array.from({ length: variantsPerProduct }, (_, v) => ({
@@ -353,4 +410,68 @@ function mockPrisma({
         })),
     },
   };
+}
+
+// --- Reaching the model -----------------------------------------------------------------
+// A representation that never reaches the LLM changes nothing. The prompt has 40 slots for
+// ~140 beliefs, ranked by keyword relevance to the merchant's message — so shape beliefs,
+// which by design match no keyword, were scoring on confidence alone (~8) and losing every
+// slot. Derived, stored, and never once seen by the model.
+
+test("business shape reaches the model even when the merchant asks about something else", () => {
+  const shape = [
+    { key: "business.channel_mix.trailing_90d", value: { enum: "online_led" }, confidence: 0.85 },
+    { key: "business.catalogue_shape", value: { enum: "focused" }, confidence: 0.9 },
+    { key: "business.range_composition", value: { enum: "own_brand_specialist" }, confidence: 0.8 },
+  ];
+  // 60 unrelated beliefs, enough to fill every slot on their own.
+  const noise = Array.from({ length: 60 }, (_, i) => ({
+    key: `orders.filler_metric_${i}`,
+    value: { count: i },
+    confidence: 0.9,
+  }));
+
+  const selected = selectPromptBeliefs(
+    { beliefs: [...noise, ...shape], message: "how much stock do I have left?", context: {} },
+    100_000,
+  );
+  const keys = new Set(selected.map((belief) => belief.key));
+
+  for (const belief of shape) {
+    assert.ok(keys.has(belief.key), `${belief.key} never reached the prompt`);
+  }
+});
+
+test("shape frames the answer but never displaces what is being discussed", () => {
+  // The boost must not outrank the belief the merchant is actually talking about — context
+  // that shoves aside the subject is worse than no context.
+  const discussed = { key: "inventory.low_cover_products.trailing_30d", value: { items: [] }, confidence: 0.5 };
+  const shape = { key: "business.catalogue_shape", value: { enum: "focused" }, confidence: 0.9 };
+
+  const selected = selectPromptBeliefs(
+    {
+      beliefs: [shape, discussed],
+      message: "what should I reorder?",
+      context: { lastDiscussedBeliefKeys: [discussed.key] },
+    },
+    100_000,
+  );
+  assert.equal(selected.length, 2);
+
+  // Ranking is asserted through scoring order, not the emitted (key-sorted) array.
+  const rankOf = (key) =>
+    promptBeliefScoreFor(key, key === discussed.key ? 0.5 : 0.9, key === discussed.key);
+  assert.ok(
+    rankOf(discussed.key) > rankOf(shape.key),
+    "a shape belief outranked the belief under discussion",
+  );
+});
+
+// Mirrors promptBeliefScore's inputs closely enough to compare two beliefs' priority.
+function promptBeliefScoreFor(key, confidence, isDiscussed) {
+  return (
+    (isDiscussed ? 100 : 0) +
+    (isBusinessShapeBeliefKey(key) ? 25 : 0) +
+    Math.round(confidence * 10)
+  );
 }

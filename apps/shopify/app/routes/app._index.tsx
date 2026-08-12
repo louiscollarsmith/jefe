@@ -51,6 +51,7 @@ import {
 // users pay only a tiny glue delta (~1.7kB gzip, measured), not the whole module.
 // (MerchantMemoryView stays lazy below — a secondary, non-LCP-critical path.)
 import { DailyHome, DailyHomeLoading } from "../components/daily-home";
+import { FastValueOnboarding } from "../components/fast-value-onboarding";
 import {
   OnboardingChat,
   type OnboardingChatMessage,
@@ -84,15 +85,22 @@ import {
 import { CHANNEL_STATUS } from "../lib/channels/status.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import {
-  ONBOARDING_STEPS,
-  resolveOnboardingStep,
   readFurthestStep,
   onboardingStepIndex,
 } from "../lib/onboarding/steps";
+import { recordFurthestOnboardingStep } from "../services/onboarding.server";
 import {
-  recordFurthestOnboardingStep,
-  skipOnboarding,
-} from "../services/onboarding.server";
+  answerOnboardingContext,
+  approveOnboardingRecommendation,
+  completeExecutedRecommendationHandoff,
+  continueOnboardingInsight,
+  deferOnboardingRecommendation,
+  getFastOnboardingExperience,
+  recordFastOnboardingMilestone,
+  requestOnboardingAlternative,
+  retryFastOnboarding,
+  skipFastOnboarding,
+} from "../lib/onboarding/fast-onboarding.server.js";
 import { wireClearanceExecution } from "../lib/actions/wire-clearance-execution.server";
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import {
@@ -155,6 +163,7 @@ import {
   getActionChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
+  retryLastConversationReply,
   sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
@@ -191,9 +200,12 @@ import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import {
   getShopBackfillProgress,
+  ensureMerchantBootstrapQueued,
   queueInstallShopifyBackfill,
   splitScopes,
 } from "../services/shopify-backfill-status.server";
+
+const ONBOARDING_STEPS = ["connect", "insights", "goals", "plan"] as const;
 
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const WHATSAPP_COMING_SOON: boolean = true;
@@ -250,16 +262,27 @@ type SlackDestinationView = {
   isMember?: boolean | null;
 };
 type SlackOAuthLaunchState = "idle" | "authorising" | "failed";
+type FastOnboardingActionResult = {
+  ok: boolean;
+  mode?: string;
+  token?: string;
+  handoffId?: string;
+  actionRunId?: string;
+  recommendationId?: string;
+  error?: string;
+};
 
 // A one-field autonomy-mode toggle (action.set_mode) changes nothing else on the
 // page, so skip the heavy app._index loader revalidation for it — the dial write is
 // a background fetcher. Approve/Decline/Edit are deliberately NOT skipped (they change
 // the proposed row / execute, so the card + "What Jefe did" feed must reload).
-export function shouldRevalidate({
-  formData,
-  defaultShouldRevalidate,
-}: ShouldRevalidateFunctionArgs) {
-  if (formData?.get("intent") === "action.set_mode") return false;
+export function shouldRevalidate({ formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+  const intent = formData?.get("intent");
+  if (
+    intent === "action.set_mode" ||
+    intent === "onboarding.milestone" ||
+    intent === "onboarding.recommendation.approve"
+  ) return false;
   return defaultShouldRevalidate;
 }
 
@@ -274,18 +297,113 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
 
+  if (intent === "onboarding.context.answer") {
+    return answerOnboardingContext(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      value: String(formData.get("value") ?? ""),
+    });
+  }
+  if (intent === "onboarding.insight.continue") {
+    return continueOnboardingInsight(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      recommendationId: String(formData.get("recommendationId") ?? ""),
+    });
+  }
+  if (intent === "onboarding.insight.alternative") {
+    return requestOnboardingAlternative(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      recommendationId: String(formData.get("recommendationId") ?? ""),
+    });
+  }
+  if (intent === "onboarding.recommendation.approve") {
+    const approval = (await approveOnboardingRecommendation(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      recommendationId: String(formData.get("recommendationId") ?? ""),
+    })) as FastOnboardingActionResult;
+    if (!approval.ok) return approval;
+    let handoff: FastOnboardingActionResult = approval;
+    if (approval.mode === "execute" && approval.actionRunId && approval.recommendationId) {
+      const executionResult = await wireClearanceExecution(
+        prisma,
+        session,
+        { merchantId: merchant.id, actionRunId: approval.actionRunId, mode: "approve" },
+        { loadOfflineToken: (_prisma, domain) => loadFreshOfflineToken(domain) },
+      );
+      if (!executionResult.ok || (!executionResult.executed && executionResult.reason !== "already_applied")) {
+        return {
+          ok: false,
+          error: "I couldn’t safely start that store action. Nothing was changed, and the recommendation is still here.",
+        };
+      }
+      handoff = await completeExecutedRecommendationHandoff(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
+        recommendationId: approval.recommendationId,
+      });
+    }
+    if (!handoff.token) return { ok: false, error: "The APP handoff could not be created." };
+    return {
+      ...handoff,
+      handoffUrl: appPathFromSearch(new URL(request.url).search, {
+        step: null,
+        handoff: handoff.token,
+      }),
+    };
+  }
+  if (intent === "onboarding.recommendation.defer") {
+    const handoff = (await deferOnboardingRecommendation(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      recommendationId: String(formData.get("recommendationId") ?? ""),
+    })) as FastOnboardingActionResult;
+    if (!handoff.ok) return handoff;
+    if (!handoff.token) return { ok: false, error: "The APP handoff could not be created." };
+    return redirect(appPathFromSearch(new URL(request.url).search, { step: null, handoff: handoff.token }));
+  }
+  if (intent === "onboarding.milestone") {
+    return recordFastOnboardingMilestone(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      type: String(formData.get("type") ?? ""),
+      entityId: String(formData.get("entityId") ?? "") || null,
+      token: String(formData.get("token") ?? "") || null,
+    });
+  }
+  if (intent === "onboarding.retry") {
+    return retryFastOnboarding(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      sessionId: session.id,
+      scopes: splitScopes(session.scope),
+      target: String(formData.get("target") ?? "") || null,
+    });
+  }
+
   if (intent === "onboarding.skip") {
     // Skip the whole setup: mark the shop onboarded (source "skipped") and drop
     // the merchant on the home.
-    await skipOnboarding(prisma, { shopId: shop.id });
-    return redirect(
-      appPathFromSearch(new URL(request.url).search, {
-        step: null,
-        channelProvider: null,
-        channelMode: null,
-        channelNotice: null,
-      }),
-    );
+    const handoff = await skipFastOnboarding(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+    });
+    return redirect(appPathFromSearch(new URL(request.url).search, {
+      step: null,
+      channelProvider: null,
+      channelMode: null,
+      channelNotice: null,
+      handoff: handoff.token,
+    }));
   }
 
   // The merchant's decisions on Jefe's proposed actions (the "suggested action"
@@ -525,10 +643,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       logger: actionLog,
     });
     if (!result.ok) {
-      const messageError = result as { error?: string };
+      // Returned, NOT thrown. A reply that times out used to reject out of the action and
+      // land the merchant on the route ErrorBoundary — "Jefe is still getting set up" —
+      // mid-conversation, with the whole thread replaced by a setup screen.
+      const messageError = result as { error?: string; kind?: string };
       return {
         ok: false,
         error: messageError.error ?? "That message could not be sent.",
+        kind: messageError.kind ?? null,
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+
+  if (intent === "chat.retry") {
+    // Answer the message the merchant can already see failed, rather than asking them to
+    // type it again — re-sending would store what they said a second time.
+    const result = await retryLastConversationReply(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      const retryError = result as { error?: string; kind?: string };
+      return {
+        ok: false,
+        error: retryError.error ?? "That message could not be sent.",
+        kind: retryError.kind ?? null,
         intent,
       };
     }
@@ -1217,6 +1359,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const previewDaily = url.searchParams.get("home") === "daily";
   const viewMemory = url.searchParams.get("view") === "memory";
+  const handoffToken = url.searchParams.get("handoff");
+  if (handoffToken) {
+    const [storeName, fastOnboarding] = await Promise.all([
+      storeNamePromise,
+      getFastOnboardingExperience(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
+        handoffToken,
+      }),
+    ]);
+    if (fastOnboarding.stage === "app") {
+      return {
+        appMode: "fast_onboarding" as const,
+        shop: session.shop,
+        merchantName: merchant.name,
+        storeName,
+        fastOnboarding,
+      };
+    }
+  }
   if (shop.onboardingCompletedAt || previewDaily || viewMemory) {
     const [storeName, memory] = await Promise.all([
       storeNamePromise,
@@ -1481,31 +1644,57 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  const [readiness, metrics, connected, storeName, shopMeta] =
-    await Promise.all([
-      getMerchantMemoryReadiness({
-        merchantId: merchant.id,
-        shopId: shop.id,
-        shopDomain: session.shop,
-        sessionId: session.id,
-        scopes,
-      }),
-      getStoreMetrics({
-        merchantId: merchant.id,
-        shopId: shop.id,
-      }),
-      hasActiveShopifyConnection({
-        merchantId: merchant.id,
-        shopDomain: session.shop,
-      }),
+  if (process.env.ENABLE_FAST_ONBOARDING !== "false") {
+    await ensureMerchantBootstrapQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      sessionId: session.id,
+      scopes,
+    });
+    const [storeName, fastOnboarding] = await Promise.all([
       storeNamePromise,
-      prisma.shop.findUnique({
-        where: { id: shop.id },
-        select: { onboardingMetadata: true },
+      getFastOnboardingExperience(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
       }),
     ]);
+    return {
+      appMode: "fast_onboarding" as const,
+      shop: session.shop,
+      merchantName: merchant.name,
+      storeName,
+      fastOnboarding,
+    };
+  }
+
+  const [readiness, metrics, connected, storeName, shopMeta] = await Promise.all([
+    getMerchantMemoryReadiness({
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: session.shop,
+      sessionId: session.id,
+      scopes,
+    }),
+    getStoreMetrics({
+      merchantId: merchant.id,
+      shopId: shop.id,
+    }),
+    hasActiveShopifyConnection({
+      merchantId: merchant.id,
+      shopDomain: session.shop,
+    }),
+    storeNamePromise,
+    prisma.shop.findUnique({
+      where: { id: shop.id },
+      select: { onboardingMetadata: true },
+    }),
+  ]);
   const backfill = summarizeBackfill(readiness, metrics);
-  const furthestStep = readFurthestStep(shopMeta?.onboardingMetadata);
+  const persistedFurthestStep = readFurthestStep(shopMeta?.onboardingMetadata);
+  const furthestStep: (typeof ONBOARDING_STEPS)[number] =
+    persistedFurthestStep === "connect" ? "connect" : "connect";
   const activeStep = normalizeOnboardingStep(
     url,
     readiness.memoryReady,
@@ -1663,10 +1852,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
+// Client-only: true on every fresh document load (the module is freshly evaluated),
+// set false after the stale-zoom guard below runs once. It lets AppIndex tell a FRESH
+// app entry (App Bridge restoring the last URL on re-open, or a refresh) apart from an
+// in-session navigation, so a left-behind ?actionChat can't silently re-open a move chat.
+let staleZoomGuardArmed = true;
+
 export default function AppIndex() {
   const data = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const navigate = useNavigate();
+  const location = useLocation();
   const safeActionError = getSafeActionError(actionData);
   const canContinueToInsights =
     data.appMode === "onboarding"
@@ -1696,6 +1893,31 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
+
+  // Opening Jefe always lands on the conversation. The embedded app's URL is persistent
+  // (App Bridge restores the last location on re-open), so a move zoom the merchant left
+  // would re-open on a fresh entry — which Matt hit. On the first mount of a fresh
+  // document load, drop a stale ?actionChat and land on the home; in-session zoom
+  // navigation is untouched (the guard disarms after one run, so later revalidations are
+  // no-ops). A deliberate deep-link into a move can opt back in later.
+  useEffect(() => {
+    if (!staleZoomGuardArmed) return;
+    staleZoomGuardArmed = false;
+    if (data.appMode === "daily" && data.actionChatId) {
+      navigate(appPathFromSearch(location.search, { actionChat: null }), {
+        replace: true,
+      });
+    }
+  }, [data, navigate, location.search]);
+
+  if (data.appMode === "fast_onboarding") {
+    return (
+      <FastValueOnboarding
+        storeName={data.storeName}
+        experience={data.fastOnboarding}
+      />
+    );
+  }
 
   const pendingDestination = getPendingOnboardingDestination(navigation);
   if (pendingDestination === "home") {
@@ -5761,13 +5983,12 @@ function normalizeOnboardingStep(
   backfillComplete: boolean,
   furthestStep: (typeof ONBOARDING_STEPS)[number] = "connect",
 ): (typeof ONBOARDING_STEPS)[number] {
-  // Thin URL adapter over the pure, unit-tested resolver in lib/onboarding/steps.
-  return resolveOnboardingStep({
-    requestedStep: url.searchParams.get("step"),
-    memoryReady,
-    backfillComplete,
-    furthestStep,
-  });
+  const requested = url.searchParams.get("step");
+  if (ONBOARDING_STEPS.includes(requested as (typeof ONBOARDING_STEPS)[number])) {
+    return requested as (typeof ONBOARDING_STEPS)[number];
+  }
+  if (!memoryReady || !backfillComplete) return "connect";
+  return furthestStep;
 }
 
 function safeMerchantFacingError(error: unknown) {

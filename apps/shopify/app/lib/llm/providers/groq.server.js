@@ -185,7 +185,6 @@ async function generateStructuredJson(input) {
         durationMs,
       };
     } catch (error) {
-      clearTimeout(timeout);
       lastError = error;
       // A rate limit is a provider-availability failure, not an in-request
       // retry opportunity. Return it to the composed provider immediately so
@@ -240,6 +239,11 @@ async function generateStructuredJson(input) {
         throw error;
       }
       await wait(retryDelayMs(error, attempt));
+    } finally {
+      // Fetch resolves as soon as response headers arrive. Keep the deadline
+      // active while the response body is consumed as well, otherwise a
+      // stalled streaming body can hang forever and prevent provider fallback.
+      clearTimeout(timeout);
     }
   }
 
@@ -502,13 +506,13 @@ export function retryDelayMs(error, attempt) {
   if (rawRetryAfter !== null && rawRetryAfter !== undefined && rawRetryAfter !== "") {
     const retryAfterSeconds = Number(rawRetryAfter);
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
-      return Math.ceil(retryAfterSeconds * 1000);
+      return Math.min(Math.ceil(retryAfterSeconds * 1000), backoffMs(attempt));
     }
   }
   if (typeof rawRetryAfter === "string") {
     const retryAt = Date.parse(rawRetryAfter);
     if (Number.isFinite(retryAt)) {
-      return Math.max(0, retryAt - Date.now());
+      return Math.min(Math.max(0, retryAt - Date.now()), backoffMs(attempt));
     }
   }
   return backoffMs(attempt);

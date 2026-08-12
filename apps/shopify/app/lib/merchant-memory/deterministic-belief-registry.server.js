@@ -1768,6 +1768,29 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "merchantVisible": false
   },
   {
+    "key": "business.range_composition",
+    "tranche": "Business shape v1",
+    "category": "business",
+    "valueType": "enum",
+    "derivationVersion": "v1",
+    "window": "current_stored_state",
+    "calculation": "concentration of active products across productType and vendor; own-brand from vendor share, focus from leading category share",
+    "minimumData": "At least 5 active products with a type or vendor on >=70% of them",
+    "confidenceRule": "0.80 scaled by the better of type/vendor coverage",
+    "legacyConfidenceRule": "0.80 scaled by the better of type/vendor coverage",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": [
+      "incomplete_source_coverage"
+    ],
+    "merchantVisible": false
+  },
+  {
     "key": "business.channel_mix.trailing_90d",
     "tranche": "Business shape v1",
     "category": "business",
@@ -5472,4 +5495,25 @@ const MERCHANT_HIDDEN_BELIEF_KEYS = new Set(
 /** @param {string} key */
 export function isMerchantVisibleBeliefKey(key) {
   return !MERCHANT_HIDDEN_BELIEF_KEYS.has(key);
+}
+
+// The business-shape tranche: what KIND of business this is, rather than a fact about it.
+//
+// Derived from the tranche rather than a hand-kept list, so a new dimension is included the
+// day it lands instead of the day someone remembers to add it here.
+const BUSINESS_SHAPE_BELIEF_KEYS = new Set(
+  DETERMINISTIC_BELIEF_REGISTRY.filter((entry) => entry.tranche === "Business shape v1").map(
+    (entry) => entry.key,
+  ),
+);
+
+/**
+ * Shape beliefs FRAME an answer rather than being the subject of one. A merchant asking
+ * about stock needs the stock numbers — but the answer should differ depending on whether
+ * they are a one-product maker or a 5,000-SKU retailer, and that context is relevant to
+ * every question, not just to questions that happen to mention it.
+ * @param {string} key
+ */
+export function isBusinessShapeBeliefKey(key) {
+  return BUSINESS_SHAPE_BELIEF_KEYS.has(key);
 }

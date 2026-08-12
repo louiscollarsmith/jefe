@@ -76,6 +76,76 @@ test("proposeActionFromIntent rejects an invalid intent before touching the DB",
   assert.equal(created, false); // never proposed a bogus action
 });
 
+test("proposeActionFromIntent reuses the one execution linked to a recommendation", async () => {
+  let creates = 0;
+  const existing = {
+    id: "exec-existing",
+    runId: "run-existing",
+    merchantId: "m1",
+    shopId: "s1",
+    sourceRecommendationId: "rec-1",
+    actionType: "price_markdown",
+    status: "proposed",
+    resolvedMode: "approve",
+    preview: {
+      variantCount: 1,
+      changes: [{ variantId: "v1", title: "Parka", fromPrice: 200, toPrice: 140, discountPercent: 30 }],
+    },
+    proposalSummary: {
+      windowDays: 90,
+      variantCount: 1,
+      totalTrappedCapital: 800,
+      totalProjectedRecovery: 1400,
+      topItems: [],
+    },
+  };
+  const prisma = {
+    actionExecution: {
+      findUnique: async () => existing,
+      create: async () => { creates += 1; return {}; },
+    },
+  };
+  const result = await proposeActionFromIntent(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    sourceRecommendationId: "rec-1",
+    intent: { actionType: "price_markdown", targetKind: "dead_stock" },
+  });
+  assert.equal(result.status, "proposed");
+  assert.equal(result.reused, true);
+  assert.equal(result.execution.runId, "run-existing");
+  assert.equal(creates, 0);
+});
+
+test("reusing a terminal recommendation execution preserves its lifecycle and is not executable", async () => {
+  for (const status of ["applied", "rejected", "failed"]) {
+    const existing = {
+      id: `exec-${status}`,
+      runId: `run-${status}`,
+      merchantId: "m1",
+      shopId: "s1",
+      sourceRecommendationId: "rec-1",
+      actionType: "price_markdown",
+      status,
+      resolvedMode: "approve",
+      preview: {},
+      proposalSummary: {},
+    };
+    const result = await proposeActionFromIntent(
+      { actionExecution: { findUnique: async () => existing } },
+      {
+        merchantId: "m1",
+        shopId: "s1",
+        sourceRecommendationId: "rec-1",
+        intent: { actionType: "price_markdown", targetKind: "dead_stock" },
+        writeEnabled: true,
+      },
+    );
+    assert.equal(result.status, status);
+    assert.equal(result.suggestedAction, null);
+  }
+});
+
 test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row + SuggestedAction", async () => {
   let row = null;
   const prisma = mockPrisma({

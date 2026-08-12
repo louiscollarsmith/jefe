@@ -8,6 +8,7 @@ import {
 } from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
 import { createGroqProvider } from "./providers/groq.server.js";
+import { createOpenAiCompatibleProvider } from "./providers/openai-compatible.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
 import { recordLlmFallback } from "../observability/llm-provider-health.server.js";
@@ -71,6 +72,20 @@ function createProviderForTarget(input) {
       ? createGroqProvider({ config: targetConfig, logger })
       : null;
   }
+  // Registry-driven OpenAI-compatible providers (Kimi/Moonshot, Meta Spark, …).
+  // Dark until the provider's API key env is set (unkeyed ⇒ null, same as above).
+  const compat = config.openAiCompatible?.[provider];
+  if (compat) {
+    return compat.apiKey
+      ? createOpenAiCompatibleProvider({
+          providerName: provider,
+          baseUrl: compat.baseUrl,
+          apiKey: compat.apiKey,
+          config: targetConfig,
+          logger,
+        })
+      : null;
+  }
   throw new Error(`Unsupported LLM_PROVIDER: ${provider}`);
 }
 
@@ -104,6 +119,11 @@ function missingApiKeyError(provider) {
   }
   if (provider === "gemini") {
     return new Error("GEMINI_API_KEY is required when LLM_ENABLED=true.");
+  }
+  if (provider === "kimi") {
+    return new Error(
+      "KIMI_API_KEY (or MOONSHOT_API_KEY) is required when the LLM provider is kimi.",
+    );
   }
   return new Error(`API key is required for LLM_PROVIDER=${provider}.`);
 }

@@ -56,6 +56,18 @@ export const STRUCTURED_OPERATION_SCHEMA = {
     merchantStatement: {
       type: Type.STRING,
     },
+    // What to SAY BACK to the merchant, in their own second person, for operations
+    // that produce a spoken reply rather than a memory write — clarification_required
+    // (a direct question naming what's missing) and no_memory_change (a short human
+    // acknowledgement). `reason` above is the model's private justification and is
+    // never shown to the merchant; this is. Optional so the deterministic fallback and
+    // older persisted operations still parse.
+    merchantReply: {
+      type: Type.STRING,
+      nullable: true,
+      description:
+        "The exact words to show the merchant, addressed to them in the second person (you/your), warm and plain. Never write 'the merchant' or narrate your reasoning here. Set this whenever operationType is clarification_required (make it a direct question that names what you need) or no_memory_change (a brief human acknowledgement).",
+    },
     confidence: {
       type: Type.NUMBER,
       minimum: 0,
@@ -121,6 +133,7 @@ export function parseAndValidateStructuredOperation(raw) {
     valueType: nullableString(operation.valueType),
     reason: operation.reason.slice(0, 500),
     merchantStatement: operation.merchantStatement.slice(0, 1000),
+    merchantReply: nullableString(operation.merchantReply)?.slice(0, 600) ?? null,
     confidence: Number(operation.confidence),
     requiresConfirmation: operation.requiresConfirmation,
     relatedOpenQuestionId: nullableString(operation.relatedOpenQuestionId),

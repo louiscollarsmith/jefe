@@ -45,7 +45,7 @@ const ALL_CATEGORIES = Array.from(
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[] }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; beliefKeys?: string[]; evidenceScope?: { source?: string; orderExternalIds?: string[]; productExternalIds?: string[]; variantExternalIds?: string[]; inventoryComplete?: boolean; lineItemsComplete?: boolean; completeRequestedWindow?: boolean; observedFrom?: string | null; observedTo?: string | null; passCount?: number; truncated?: boolean } }} input
  */
 export async function deriveMerchantMemoryBeliefs(prisma, input) {
   const categories =
@@ -53,8 +53,9 @@ export async function deriveMerchantMemoryBeliefs(prisma, input) {
       ? new Set(input.categories)
       : new Set(ALL_CATEGORIES);
   const context = await loadDerivationContext(prisma, input);
-  const definitions = DETERMINISTIC_BELIEF_REGISTRY.filter((definition) =>
-    categories.has(definition.category),
+  const beliefKeys = input.beliefKeys?.length ? new Set(input.beliefKeys) : null;
+  const definitions = DETERMINISTIC_BELIEF_REGISTRY.filter(
+    (definition) => categories.has(definition.category) && (!beliefKeys || beliefKeys.has(definition.key)),
   );
   const outcomes = definitions.map((definition) => deriveDefinition(context, definition));
   const calculated = outcomes.filter(
@@ -66,18 +67,52 @@ export async function deriveMerchantMemoryBeliefs(prisma, input) {
   const derivationAttempts = outcomes.map(derivationAttemptSummary);
 
   return {
-    derivations: calculated.map((outcome) =>
-      belief(context.merchantId, context.shopId, outcome.definition, {
-        value: outcome.value,
-        confidence: outcome.confidence,
-        confidenceReason: outcome.confidenceReason,
+    derivations: calculated.map((outcome) => {
+      const scopedOutcome = bootstrapScopedOutcome(outcome, input.evidenceScope);
+      return belief(context.merchantId, context.shopId, outcome.definition, {
+        value: scopedOutcome.value,
+        confidence: scopedOutcome.confidence,
+        confidenceReason: scopedOutcome.confidenceReason,
         sourceCounts: context.sourceCounts,
         summary: outcome.summary,
         observedAt: outcome.observedAt,
         now: context.now,
-        metadata: outcome.metadata ?? {},
-      }),
-    ),
+        metadata: {
+          ...(outcome.metadata ?? {}),
+          ...(input.evidenceScope
+              ? {
+                source: input.evidenceScope.source ?? "scoped",
+                sourceMode: input.evidenceScope.source ?? "scoped",
+                observedWindow: {
+                  from: input.evidenceScope.observedFrom ?? null,
+                  to: input.evidenceScope.observedTo ?? null,
+                  complete: input.evidenceScope.completeRequestedWindow === true,
+                },
+                evidenceScope: {
+                  source: input.evidenceScope.source ?? "scoped",
+                  completeRequestedWindow: input.evidenceScope.completeRequestedWindow === true,
+                  observedFrom: input.evidenceScope.observedFrom ?? null,
+                  observedTo: input.evidenceScope.observedTo ?? null,
+                  passCount: input.evidenceScope.passCount ?? 1,
+                  truncated: input.evidenceScope.truncated === true,
+                  orderCount: input.evidenceScope.orderExternalIds?.length ?? 0,
+                  productCount: input.evidenceScope.productExternalIds?.length ?? 0,
+                  variantCount: input.evidenceScope.variantExternalIds?.length ?? 0,
+                  inventoryComplete: input.evidenceScope.inventoryComplete === true,
+                  lineItemsComplete: input.evidenceScope.lineItemsComplete === true,
+                  confidenceCap: bootstrapConfidenceCap(outcome.definition.key),
+                  caveat: bootstrapEvidenceCaveat(outcome.definition.key, input.evidenceScope),
+                  supportingRecords: {
+                    orderExternalIds: input.evidenceScope.orderExternalIds ?? [],
+                    productExternalIds: input.evidenceScope.productExternalIds ?? [],
+                    variantExternalIds: input.evidenceScope.variantExternalIds ?? [],
+                  },
+                },
+              }
+            : {}),
+        },
+      });
+    }),
     skippedOutcomes,
     derivationAttempts,
     derivationReport: buildDerivationReport(definitions, outcomes),
@@ -85,9 +120,58 @@ export async function deriveMerchantMemoryBeliefs(prisma, input) {
   };
 }
 
+function bootstrapScopedOutcome(outcome, scope) {
+  if (scope?.source !== "bootstrap") return outcome;
+  const capped = {
+    ...outcome,
+    confidence: Math.min(Number(outcome.confidence ?? 0.9), 0.9),
+  };
+  if (
+    outcome.definition.key !== "inventory.low_cover_products.trailing_30d" &&
+    outcome.definition.key !== "inventory.at_risk_stockout_count.trailing_30d"
+  ) {
+    return capped;
+  }
+  const value = { ...outcome.value, evidenceBasis: "conservative_upper_bound" };
+  if (Array.isArray(value.items)) {
+    value.items = value.items.map((item) => ({
+      ...item,
+      daysOfCoverUpperBound: item.daysOfCover,
+    }));
+    if (value.topAtRiskProduct) {
+      value.topAtRiskProduct = {
+        ...value.topAtRiskProduct,
+        daysOfCoverUpperBound: value.topAtRiskProduct.daysOfCover,
+      };
+    }
+  }
+  return {
+    ...capped,
+    value,
+    confidence: Math.min(Number(capped.confidence ?? 0.7), 0.7),
+    confidenceReason:
+      "Conservative upper bound from partial recent orders: omitted orders can only increase observed sales velocity and reduce cover.",
+  };
+}
+
+function bootstrapConfidenceCap(key) {
+  return key === "inventory.low_cover_products.trailing_30d" || key === "inventory.at_risk_stockout_count.trailing_30d"
+    ? 0.7
+    : 0.9;
+}
+
+function bootstrapEvidenceCaveat(key, scope) {
+  if (key === "inventory.low_cover_products.trailing_30d" || key === "inventory.at_risk_stockout_count.trailing_30d") {
+    return "Recent orders establish a conservative upper bound on days of cover; additional sales can only make the risk more urgent.";
+  }
+  return scope.completeRequestedWindow
+    ? "This conclusion is limited to the complete recent window Jefe read during onboarding."
+    : "The recent Shopify window is incomplete, so this evidence cannot support a period-wide conclusion.";
+}
+
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {{ merchantId: string; shopId?: string | null; evidenceScope?: { orderExternalIds?: string[]; productExternalIds?: string[]; variantExternalIds?: string[] } }} input
  */
 async function loadDerivationContext(prisma, input) {
   const merchant = await prisma.merchant.findUniqueOrThrow({
@@ -102,12 +186,35 @@ async function loadDerivationContext(prisma, input) {
   const shop = merchant.shops[0] ?? null;
   const shopId = input.shopId ?? shop?.id ?? null;
   const where = { merchantId: input.merchantId, shopId: shopId ?? undefined };
-  const [products, variants, orders, lineItems, refunds, customerIdentities, inventoryLevels, planRecommendations, clearanceOutcomes, actionDeclines] =
+  const orderExternalIds = input.evidenceScope?.orderExternalIds ?? [];
+  const productExternalIds = input.evidenceScope?.productExternalIds ?? [];
+  const variantExternalIds = input.evidenceScope?.variantExternalIds ?? [];
+  const scopedOrderWhere = orderExternalIds.length
+    ? { ...where, externalId: { in: orderExternalIds } }
+    : where;
+  const scopedProductWhere = productExternalIds.length
+    ? { ...where, externalId: { in: productExternalIds } }
+    : where;
+  const scopedVariantWhere = variantExternalIds.length
+    ? { ...where, externalId: { in: variantExternalIds } }
+    : where;
+  const scopedLineItemWhere = {
+    ...where,
+    ...(orderExternalIds.length ? { order: { externalId: { in: orderExternalIds } } } : {}),
+    ...(productExternalIds.length
+      ? { OR: [{ productId: null }, { product: { externalId: { in: productExternalIds } } }] }
+      : {}),
+  };
+  const scopedInventoryWhere = variantExternalIds.length
+    ? { ...where, variant: { externalId: { in: variantExternalIds } } }
+    : where;
+  const [loadedProducts, loadedVariants, loadedOrders, loadedLineItems, loadedRefunds, loadedCustomerIdentities, loadedInventoryLevels, loadedPlanRecommendations, loadedClearanceOutcomes, loadedActionDeclines] =
     await Promise.all([
       prisma.product.findMany({
-        where,
+        where: scopedProductWhere,
         select: {
           id: true,
+          externalId: true,
           title: true,
           status: true,
           productType: true,
@@ -117,9 +224,10 @@ async function loadDerivationContext(prisma, input) {
         },
       }),
       prisma.variant.findMany({
-        where,
+        where: scopedVariantWhere,
         select: {
           id: true,
+          externalId: true,
           productId: true,
           sku: true,
           title: true,
@@ -131,7 +239,7 @@ async function loadDerivationContext(prisma, input) {
         },
       }),
       prisma.order.findMany({
-        where,
+        where: scopedOrderWhere,
         select: {
           id: true,
           externalId: true,
@@ -150,7 +258,7 @@ async function loadDerivationContext(prisma, input) {
         },
       }),
       prisma.orderLineItem.findMany({
-        where,
+        where: scopedLineItemWhere,
         select: {
           orderId: true,
           externalId: true,
@@ -161,8 +269,8 @@ async function loadDerivationContext(prisma, input) {
           totalPrice: true,
         },
       }),
-      prisma.refund.findMany({
-        where,
+      input.evidenceScope ? Promise.resolve([]) : prisma.refund.findMany({
+        where: scopedOrderWhere,
         select: {
           orderId: true,
           amount: true,
@@ -171,12 +279,12 @@ async function loadDerivationContext(prisma, input) {
           rawPayload: true,
         },
       }),
-      prisma.customerIdentity.findMany({
+      input.evidenceScope ? Promise.resolve([]) : prisma.customerIdentity.findMany({
         where,
         select: { orderCount: true, totalSpend: true, rawPayload: true },
       }),
       prisma.inventoryLevel.findMany({
-        where,
+        where: scopedInventoryWhere,
         select: {
           variantId: true,
           available: true,
@@ -188,7 +296,7 @@ async function loadDerivationContext(prisma, input) {
       }),
       // Recommendation outcomes are the Observe→Learn signal. Guarded so
       // derivation fixtures/mocks without this accessor simply see none.
-      prisma.merchantPlanRecommendation?.findMany
+      !input.evidenceScope && prisma.merchantPlanRecommendation?.findMany
         ? prisma.merchantPlanRecommendation.findMany({
             where,
             select: {
@@ -201,7 +309,7 @@ async function loadDerivationContext(prisma, input) {
         : Promise.resolve([]),
       // Measured clearance outcomes — the Observe→Learn "did the action work" signal.
       // Guarded so derivation fixtures/mocks without the accessor simply see none.
-      prisma.actionExecution?.findMany
+      !input.evidenceScope && prisma.actionExecution?.findMany
         ? prisma.actionExecution.findMany({
             where: { merchantId: input.merchantId, shopId: shopId ?? undefined, actionType: "price_markdown", outcomeStatus: "measured" },
             select: { outcome: true, appliedAt: true },
@@ -209,13 +317,50 @@ async function loadDerivationContext(prisma, input) {
         : Promise.resolve([]),
       // Declined actions — the "what/why the merchant rejected" Observe→Learn signal.
       // reasonCategory is a PII-safe slug; the free-text note is already redacted at write.
-      prisma.activityEvent?.findMany
+      !input.evidenceScope && prisma.activityEvent?.findMany
         ? prisma.activityEvent.findMany({
             where: { merchantId: input.merchantId, shopId: shopId ?? undefined, type: "merchant_action_declined" },
             select: { properties: true },
           })
         : Promise.resolve([]),
     ]);
+
+  const scopedOrderExternalIds = input.evidenceScope?.orderExternalIds?.length
+    ? new Set(input.evidenceScope.orderExternalIds)
+    : null;
+  const scopedProductExternalIds = input.evidenceScope?.productExternalIds?.length
+    ? new Set(input.evidenceScope.productExternalIds)
+    : null;
+  const scopedVariantExternalIds = input.evidenceScope?.variantExternalIds?.length
+    ? new Set(input.evidenceScope.variantExternalIds)
+    : null;
+  const products = scopedProductExternalIds
+    ? loadedProducts.filter((product) => scopedProductExternalIds.has(product.externalId))
+    : loadedProducts;
+  const productIds = new Set(products.map((product) => product.id));
+  const variants = scopedVariantExternalIds
+    ? loadedVariants.filter((variant) => scopedVariantExternalIds.has(variant.externalId))
+    : scopedProductExternalIds
+      ? loadedVariants.filter((variant) => productIds.has(variant.productId))
+    : loadedVariants;
+  const variantIds = new Set(variants.map((variant) => variant.id));
+  const orders = scopedOrderExternalIds
+    ? loadedOrders.filter((order) => scopedOrderExternalIds.has(order.externalId))
+    : loadedOrders;
+  const orderIds = new Set(orders.map((order) => order.id));
+  const lineItems = scopedOrderExternalIds || scopedProductExternalIds
+    ? loadedLineItems.filter((item) => orderIds.has(item.orderId) && (!item.productId || productIds.has(item.productId)))
+    : loadedLineItems;
+  const refunds = scopedOrderExternalIds
+    ? loadedRefunds.filter((refund) => orderIds.has(refund.orderId))
+    : loadedRefunds;
+  const customerIdentities = input.evidenceScope ? [] : loadedCustomerIdentities;
+  const inventoryLevels = scopedProductExternalIds
+    ? loadedInventoryLevels.filter((level) => level.variantId && variantIds.has(level.variantId))
+    : loadedInventoryLevels;
+  const planRecommendations = input.evidenceScope ? [] : loadedPlanRecommendations;
+  const clearanceOutcomes = input.evidenceScope ? [] : loadedClearanceOutcomes;
+  const actionDeclines = input.evidenceScope ? [] : loadedActionDeclines;
 
   const now = new Date();
   const shopTimezone = shopTimezoneFrom(shop?.rawPayload);
@@ -319,6 +464,8 @@ function deriveDefinition(context, definition) {
         return deliveryFootprint(context, definition, 90);
       case "business.purchase_consideration.trailing_90d":
         return purchaseConsideration(context, definition, 90);
+      case "business.range_composition":
+        return rangeComposition(context, definition);
       case "business.active_selling_days.trailing_30d":
       case "business.active_selling_days.trailing_90d":
         return activeSellingDays(context, definition, trailingDays(definition.key));
@@ -1028,6 +1175,81 @@ function purchaseConsideration(context, definition, days) {
     confidenceReason: "Basket size and order value against the merchant's own price range, with repeat rate.",
     summary: "Whether buying here is a considered decision or a habit.",
     sampleSize: orders.length,
+  });
+}
+
+/**
+ * What the merchant actually sells, and whose. `productType` and `vendor` were already
+ * ingested but only ever used to RANK revenue (`products.revenue_by_product_type` /
+ * `_by_vendor`) — nothing read them to say what kind of range this is. A one-category
+ * own-brand maker and a multi-brand retailer across eight categories need opposite advice
+ * about range, stock and clearance, and were indistinguishable to the ontology.
+ *
+ * Weighted by PRODUCT COUNT, not revenue: this describes what the business stocks, and
+ * revenue-weighting would let a single bestseller define the whole range. What sells is a
+ * different question, and the revenue beliefs already answer it.
+ */
+function rangeComposition(context, definition) {
+  const products = context.activeProducts;
+  if (products.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 active products are required to describe a range.", { activeProducts: products.length });
+  }
+  const typed = products.map((product) => stringValue(product.productType)?.trim()).filter(Boolean);
+  const branded = products.map((product) => stringValue(product.vendor)?.trim()).filter(Boolean);
+  const typeCoverage = typed.length / products.length;
+  const vendorCoverage = branded.length / products.length;
+
+  // Shopify leaves both optional and plenty of merchants never fill them in. A range read
+  // off a third of the catalogue would be a guess about someone's business, so it declines.
+  // Vendor alone is enough for the brand model; type alone is enough for the category read.
+  if (typeCoverage < 0.7 && vendorCoverage < 0.7) {
+    return skipped(definition, "insufficient_data", "Too few products record a type or vendor to describe the range.", {
+      typeCoverage: roundNumber(typeCoverage, 4),
+      vendorCoverage: roundNumber(vendorCoverage, 4),
+    });
+  }
+
+  const share = (values) => {
+    if (!values.length) return { top: null, topShare: null, distinct: 0 };
+    const counts = new Map();
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+    const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return { top: ranked[0][0], topShare: ranked[0][1] / values.length, distinct: ranked.length };
+  };
+  const category = typeCoverage >= 0.7 ? share(typed) : { top: null, topShare: null, distinct: 0 };
+  const brand = vendorCoverage >= 0.7 ? share(branded) : { top: null, topShare: null, distinct: 0 };
+
+  const focusedCategory = category.topShare != null ? category.topShare >= 0.5 : null;
+  // One vendor across nearly everything is the signature of a maker selling their own label;
+  // many vendors is a retailer stocking other people's. A PROXY — a merchant may simply put
+  // their shop name on every product — so both the share and the vendor count are reported
+  // for the merchant to correct against.
+  const ownBrand = brand.topShare != null ? brand.topShare >= 0.8 : null;
+
+  let shape = "mixed";
+  if (ownBrand === true && focusedCategory === true) shape = "own_brand_specialist";
+  else if (ownBrand === true && focusedCategory === false) shape = "own_brand_range";
+  else if (ownBrand === false && focusedCategory === true) shape = "multi_brand_specialist";
+  else if (ownBrand === false && focusedCategory === false) shape = "multi_brand_retailer";
+
+  return derived(context, definition, {
+    value: {
+      enum: shape,
+      leadingCategory: category.top,
+      leadingCategoryShare: category.topShare == null ? null : roundNumber(category.topShare, 4),
+      categoryCount: category.distinct,
+      leadingBrandShare: brand.topShare == null ? null : roundNumber(brand.topShare, 4),
+      brandCount: brand.distinct,
+      brandModelIsProxy: "vendor_concentration",
+      activeProductCount: products.length,
+      typeCoverage: roundNumber(typeCoverage, 4),
+      vendorCoverage: roundNumber(vendorCoverage, 4),
+      thresholdVersion: "range-composition-v1",
+    },
+    confidence: coverageConfidence(0.8, Math.max(typeCoverage, vendorCoverage)),
+    confidenceReason: "Concentration of active products across Shopify product types and vendors.",
+    summary: "Whether the merchant sells one category or many, their own brand or other people's.",
+    sampleSize: products.length,
   });
 }
 

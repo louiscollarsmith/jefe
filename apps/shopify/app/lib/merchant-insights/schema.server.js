@@ -201,7 +201,7 @@ function numericClaimsAreGrounded(insight, beliefsById) {
  * @param {any} insight
  * @param {Map<string, string>} searchableByBeliefId
  */
-function validateInterpretationGrounding(insight, searchableByBeliefId) {
+export function validateInterpretationGrounding(insight, searchableByBeliefId) {
   const text = normalizeSearchText(
     [insight.title, insight.finding, insight.whyItMatters, insight.caveat]
       .filter(Boolean)

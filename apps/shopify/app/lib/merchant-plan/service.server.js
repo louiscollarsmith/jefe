@@ -160,6 +160,7 @@ export async function getLatestMerchantPlan(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       status: PLAN_RUN_STATUS.completed,
+      sourceMode: "full",
     },
     include: { recommendation: true },
     orderBy: { completedAt: "desc" },
@@ -245,9 +246,9 @@ export async function generateMerchantPlan(prisma, input) {
 
     let persistedRecommendation = null;
     await prisma.$transaction(async (tx) => {
-      await tx.merchantPlanRecommendation.deleteMany({ where: { runId: run.id } });
-      persistedRecommendation = await tx.merchantPlanRecommendation.create({
-        data: {
+      persistedRecommendation = await tx.merchantPlanRecommendation.upsert({
+        where: { runId: run.id },
+        create: {
           runId: run.id,
           merchantId: input.merchantId,
           shopId: input.shopId,
@@ -266,7 +267,26 @@ export async function generateMerchantPlan(prisma, input) {
           confidence: recommendation.confidence,
           assumption: recommendation.assumption,
           caveat: recommendation.caveat,
+          actionIntent: recommendation.actionIntent,
           reviewStatus: PLAN_REVIEW_STATUS.proposed,
+        },
+        update: {
+          title: recommendation.title,
+          summary: recommendation.summary,
+          primaryGoalId: recommendation.primaryGoalId,
+          supportingGoalIds: recommendation.supportingGoalIds,
+          whyThisAction: recommendation.whyThisAction,
+          whyNow: recommendation.whyNow,
+          startToday: recommendation.startToday,
+          executionSteps: recommendation.executionSteps,
+          successSignal: recommendation.successSignal,
+          expectedBenefit: recommendation.expectedBenefit,
+          supportingBeliefIds: recommendation.supportingBeliefIds,
+          supportingInsightIds: recommendation.supportingInsightIds,
+          confidence: recommendation.confidence,
+          assumption: recommendation.assumption,
+          caveat: recommendation.caveat,
+          actionIntent: recommendation.actionIntent,
         },
       });
       await buildPlanEvidenceSnapshot(tx, {
@@ -369,6 +389,7 @@ async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceR
       // because CLEARANCE_EXECUTE_ENABLED is true in production. Fail-closed on unknown types.
       writeEnabled: isActionExecuteEnabled(intent?.actionType),
       sourceRecommendation,
+      sourceRecommendationId: sourceRecommendation?.id ?? null,
     });
     logger.info("Plan emitted an action-intent", {
       merchantId,

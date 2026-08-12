@@ -9,6 +9,7 @@ That one line is the whole system. The rest of this file is how it is actually b
 ```
 Shopify (Admin GraphQL + webhooks)
   → ingestion:   HMAC → append-only ledger → canonical commerce tables    [deterministic]
+                 ↳ independent bootstrap + full-history jobs in BackfillJob
   → derivation:  belief registry → facts + evidence + confidence          [deterministic]
   → Merchant Memory: beliefs · evidence · history · open questions        [system of record]
   → LLM inference:   insights · goals · plan · store-understanding · chat  [proposes only, validated]
@@ -35,7 +36,7 @@ What keeps the system correct — and what makes earned autonomy safe to grow in
 2. **Merchant corrections outrank inference**, enforced at every write site via a numeric precedence ladder: llmInference 10 → systemInference 20 → directObservation 40 → merchantConfirmation 60 → merchantCorrection 80 → houseRule 100. Inference is never laundered into fact — provenance + confidence are always attached.
 3. **History is append-only; memory versions rather than overwrites.** A belief row supersedes (new row + lineage) on a `derivationVersion` change; the history table is the audit trail.
 4. **Idempotency throughout.** Ledger/canonical natural keys dedupe ingestion; generation runs are keyed by `(shop, snapshotHash, promptVersion, schemaVersion)`, so an unchanged snapshot reuses its run (free caching) and a new one supersedes the old.
-5. **One unified job queue** (`BackfillJob`) drives both ingestion backfill and all LLM generation, drained by an in-process poll worker. (Scaling note: no separate worker service today — concurrency safety rests on a DB unique key + in-memory guards.)
+5. **One unified job queue** (`BackfillJob`) drives ingestion, the high-priority Merchant Memory bootstrap, recommendation review and all LLM generation, drained by an in-process poll worker. Bootstrap and full history are independent jobs with separate status domains and priorities; neither is a prerequisite for the other. (Scaling note: no separate worker service today — concurrency safety rests on DB uniqueness, leases and in-memory guards.)
 6. **Observability by default** (`lib/observability`): structured logger with always-on redaction, a central error hook → Sentry + the activity log, correlation ids across jobs. Health: `/health` liveness, `/ready` readiness.
 7. **External writes go only through typed adapters** — idempotency key, preview, approval gate, blast-radius cap, reversibility, merchant as principal. This is the permanent guardrail the autonomy ramp grows within (see `11_actions_and_autonomy.md`).
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Form } from "react-router";
+import { Form, Link, useLocation } from "react-router";
 import {
   BlockStack,
   Box,
@@ -93,6 +93,15 @@ export function MerchantMemoryView({
   memory: MemoryData;
   conversation: MemoryConversation | null;
 }) {
+  const location = useLocation();
+  // Back to the conversation. Strip only `view` — shop/host/embedded params must survive
+  // or an embedded app loses its session.
+  const backToHome = (() => {
+    const params = new URLSearchParams(location.search);
+    params.delete("view");
+    const qs = params.toString();
+    return qs ? `?${qs}` : "?";
+  })();
   const [message, setMessage] = useState("");
   const [showAllWorkedOut, setShowAllWorkedOut] = useState(false);
   const messages = (conversation?.messages ?? []).slice(-4);
@@ -100,7 +109,11 @@ export function MerchantMemoryView({
 
   // Grouped by PROVENANCE (what the merchant told Jefe vs what he worked out), each ordered
   // most-worth-checking first (confirmPriority = impact × uncertainty).
+  // `data` beliefs are OUR ingestion diagnostics — orphan line items, link coverage,
+  // timestamp coverage. Not facts about the merchant's business; they must never render
+  // here. Chat 10 is adding a first-class audience field; category is the honest proxy.
   const all = memory.groups
+    .filter((group) => group.category !== "data")
     .flatMap((group) => group.beliefs)
     .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0));
   const toldByMerchant = all.filter((belief) => belief.authorship === "merchant");
@@ -113,6 +126,8 @@ export function MerchantMemoryView({
   return (
     <main className="JefeMemoryView">
       <BlockStack gap="500">
+        <Link to={backToHome}>← Back to Jefe</Link>
+
         <BlockStack gap="100">
           <Text as="p" tone="subdued">
             {merchantName}

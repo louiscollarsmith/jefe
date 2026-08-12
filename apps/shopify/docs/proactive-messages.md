@@ -19,23 +19,38 @@ stops. **Never manufacture content to fill the thread** — that is `AGENTS.md:5
 fabricate merchant data) applied to pacing. A quiet home with one true line beats a busy
 home of filler. Silence-with-one-real-line is a valid output, not a bug.
 
-## Budget
+## Cadence, not a per-render cap (Matt's call, 2026-08-12)
 
-At most **2 proactive messages** rendered on a home load today (Horizon heads-ups, below
-the primary move). The primary move is **not** counted against this — it is the home's
-reason to exist. Everything else competes for the remaining slots. Raise the number only
-with evidence that merchants want more, never to give every lane a seat.
+The home chat is **a notification feed**: the live render shows **whatever is genuinely
+real** — it is **not** capped. Matt's words: *"we do want it to potentially be a
+notification feed… just don't cap it… as our system comes up with realisations or
+suggestions we communicate them… at a reasonable cadence, maybe a max of 5/day."*
 
-## Priority (highest wins the scarce slots)
+So the constraint is a **cadence ceiling (~5/day), not a render cap**, and the two live in
+different places:
 
-1. The primary move (always shown; not budgeted)
+- **The live in-chat render (this surface): no cap.** Show every genuinely-real heads-up.
+  The realness bar does the limiting — `getHorizonHeadsUps` only returns run-outs actually
+  approaching and refunds actually trending, so the count is naturally small.
+- **The ~5/day ceiling belongs on the outbound / proactive-send path** (notifications /
+  Slack), where Jefe *pushes* to a merchant who isn't looking. It is a **ceiling, not a
+  target** — Jefe sends fewer when less is real, and silence is fine (see the floor). That
+  mechanism is owned by the notifications + Horizon lanes with chat 10, not by this render.
+
+The primary move is separate from all of this — it is the home's reason to exist, always
+shown.
+
+## Priority (ordering, when several are real at once)
+
+1. The primary move (always shown)
 2. Outcome reports on a move already made (an event the merchant may reply to)
 3. Run-out / refund heads-ups (a standing condition with a deadline)
 4. Store-hygiene fixes (proposable, lower urgency)
 5. Everything else
 
-When the budget is tight, lower-priority messages wait for a future load. Rank _within_
-your lane before you hand messages up — surface your top one or two, not everything.
+Ordering, not gating: the render shows them all, in this order (the move is freshest,
+nearest the composer). The ~5/day *outbound* ceiling, when it bites, drops lowest-priority
+first. Rank _within_ your lane before handing messages up.
 
 ## Dedup & decay
 
@@ -76,9 +91,9 @@ from current state, so a resolved condition simply stops appearing.
 Expose a **read-only** function returning `{ id, kind, text }[]` — the shape
 `getHorizonHeadsUps` uses. It must return `[]` on any error (never throw into the loader,
 so it can't 5xx the home). The home loader calls it; `StoreConversation` renders the
-results as assistant messages, capped by the budget, at your priority. Keep the ranking
-and the never-fabricate guards inside your lane; the home owns placement, budget and the
-quiet floor.
+results as assistant messages (uncapped) at your priority. Keep the ranking and the
+never-fabricate guards inside your lane; the home owns placement and the quiet floor, and
+the outbound-send path owns the ~5/day cadence ceiling.
 
 Current customers: Horizon run-out / refund heads-ups (`getHorizonHeadsUps`, live).
 Queued: store-hygiene fixes (proposable, needs a "want me to draft it?" affordance —

@@ -5,6 +5,7 @@ import {
   shouldPageOnDependencyFailure,
   buildWorkerHealth,
   buildDependencyHealth,
+  getBootstrapJobHealth,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
 import { getLatencyPercentiles } from "../lib/observability/perf.server";
@@ -19,7 +20,10 @@ import {
 } from "../lib/observability/embedding-health.server.js";
 
 export const loader = async () => {
-  const database = await checkDatabaseHealth(db);
+  const [database, bootstrapJobs] = await Promise.all([
+    checkDatabaseHealth(db),
+    getBootstrapJobHealth(db),
+  ]);
   const episodeIndex =
     database.status === "ok"
       ? await getEpisodeIndexHealth(db).catch((error) => {
@@ -37,6 +41,7 @@ export const loader = async () => {
       worker: buildWorkerHealth(getWorkerLastTickAt(), {
         enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
       }),
+      bootstrapJobs,
       webhooks: getWebhookHealth(),
       inboundEmail: getInboundEmailHealth(),
       llmFallback: getLlmProviderHealth(),

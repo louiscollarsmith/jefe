@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   OPERATION_TYPES,
+  buildClarificationReply,
   buildGapDrivenOpenQuestions,
+  buildNoChangeResponse,
   buildUnfulfilledIntentEvent,
   interpretMerchantMessage,
   interpretMerchantMessageWithLlm,
   selectPromptBeliefs,
   validateStructuredOperation,
 } from "../app/lib/merchant-memory/conversation.server.js";
+import { parseAndValidateStructuredOperation } from "../app/lib/llm/structured-operation-schema.server.js";
 import {
   createDisabledProvider,
   createMockLlmProvider,
@@ -47,6 +50,104 @@ test("gap-driven open questions raise on fillable gaps and retract when filled",
     },
   ];
   assert.equal(buildGapDrivenOpenQuestions(filledState).length, 0);
+});
+
+test("clarification reply speaks to the merchant and never leaks the model's private reason", () => {
+  // The LLM fills `reason` with its own third-person rationale; only `merchantReply`
+  // is ever shown. Rendering must prefer merchantReply and must not surface reason.
+  const internalReason =
+    "The merchant asked for a Shopify URL but did not specify which resource. Need clarification on what 'this' refers to.";
+  const reply = buildClarificationReply({
+    operationType: OPERATION_TYPES.clarificationRequired,
+    reason: internalReason,
+    merchantReply: "Which page do you mean — a product, an order, or a collection?",
+  });
+  assert.equal(reply, "Which page do you mean — a product, an order, or a collection?");
+  assert.doesNotMatch(reply, /the merchant/i);
+
+  // With no merchantReply, fall back to a human question — never the internal note.
+  const fallback = buildClarificationReply({
+    operationType: OPERATION_TYPES.clarificationRequired,
+    reason: internalReason,
+  });
+  assert.notEqual(fallback, internalReason);
+  assert.doesNotMatch(fallback, /the merchant|need clarification/i);
+  assert.match(fallback, /\?$/); // it asks the merchant something
+});
+
+test("no-change reply never appends an unrelated open question and never leaks the reason", () => {
+  const strayGapQuestion =
+    "I can’t see cost prices for your products yet — can you add cost-per-item?";
+  // buildNoChangeResponse no longer takes openQuestions, so a stray gap prompt cannot
+  // be bolted onto an unrelated answer.
+  assert.equal(buildNoChangeResponse.length, 2); // signature dropped the openQuestions arg
+  const reply = buildNoChangeResponse(
+    {
+      operationType: OPERATION_TYPES.noMemoryChange,
+      reason: "Merchant asked for a Shopify URL; no memory change.",
+      merchantReply:
+        "That lives on your Shopify products page — want me to point you to it?",
+      relatedBeliefKeys: [],
+    },
+    [],
+  );
+  assert.equal(
+    reply,
+    "That lives on your Shopify products page — want me to point you to it?",
+  );
+  assert.ok(!reply.includes(strayGapQuestion));
+  assert.doesNotMatch(reply, /Merchant asked|no memory change/i);
+
+  // Related beliefs are still shown as observations.
+  const withBelief = buildNoChangeResponse(
+    {
+      operationType: OPERATION_TYPES.noMemoryChange,
+      relatedBeliefKeys: ["business.store_name"],
+    },
+    [{ key: "business.store_name", value: { text: "Acme" } }],
+  );
+  assert.match(withBelief, /Acme/);
+});
+
+test("gap copy speaks in the first person and avoids a bare 0% for absent cost data", () => {
+  // No cost-coverage belief at all: must not invent a "0%" and must speak as "I".
+  const absent = buildGapDrivenOpenQuestions([]).find(
+    (q) => q.questionKey === "data.product_costs",
+  );
+  assert.ok(absent);
+  assert.doesNotMatch(absent.question, /\b0%/);
+  assert.doesNotMatch(absent.question, /\bJefe\b/); // first person, not third
+  assert.match(absent.question, /\bI\b/);
+
+  // Explicit zero coverage: same treatment, no jarring "0%".
+  const zero = buildGapDrivenOpenQuestions([
+    { key: "products.cost_coverage", value: { percentage: 0 } },
+  ]).find((q) => q.questionKey === "data.product_costs");
+  assert.doesNotMatch(zero.question, /\b0%/);
+
+  // Partial coverage keeps the number (it is meaningful) but stays first-person.
+  const partial = buildGapDrivenOpenQuestions([
+    { key: "products.cost_coverage", value: { percentage: 42 } },
+  ]).find((q) => q.questionKey === "data.product_costs");
+  assert.match(partial.question, /42%/);
+  assert.match(partial.question, /\bI\b/);
+});
+
+test("structured-operation schema carries merchantReply through validation", () => {
+  const parsed = parseAndValidateStructuredOperation({
+    operationType: OPERATION_TYPES.clarificationRequired,
+    reason: "Ambiguous 'this' — need the target resource.",
+    merchantStatement: "give me the shopify url for where this is",
+    merchantReply:
+      "Which item do you mean — the product, the order, or the collection?",
+    confidence: 0.6,
+    requiresConfirmation: true,
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(
+    parsed.operation.merchantReply,
+    "Which item do you mean — the product, the order, or the collection?",
+  );
 });
 
 test("intent-capture shapes a PII-safe candidate-intent event from an unresolved ask", () => {

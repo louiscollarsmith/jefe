@@ -162,9 +162,9 @@ test("Groq provider surfaces sanitized rate-limit errors", async () => {
 });
 
 test("Groq parses provider rate-limit timing for diagnostics", () => {
-  assert.equal(retryDelayMs({ retryAfter: "2" }, 1), 2_000);
-  assert.equal(retryDelayMs({ retryAfter: "42.5" }, 1), 42_500);
-  assert.equal(retryDelayMs({ retryAfter: "600" }, 1), 600_000);
+  assert.equal(retryDelayMs({ retryAfter: "2" }, 1), 250);
+  assert.equal(retryDelayMs({ retryAfter: "42.5" }, 1), 250);
+  assert.equal(retryDelayMs({ retryAfter: "600" }, 1), 250);
   assert.equal(retryDelayMs({}, 2), 500);
   assert.equal(parseGroqDurationMs("644ms"), 644);
   assert.equal(parseGroqDurationMs("1m26.4s"), 86_400);
@@ -205,6 +205,49 @@ test("Groq serializes concurrent calls sharing an API key", async () => {
   releaseFirst();
   await Promise.all([first, second]);
   assert.equal(calls, 2);
+});
+
+test("Groq body-read timeout reaches the configured fallback", async () => {
+  const primary = createGroqProvider({
+    config: baseConfig({ timeoutMs: 10 }),
+    logger,
+    fetchImpl: async (_url, options) => ({
+      ok: true,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Request timed out.", "AbortError")),
+            { once: true },
+          );
+        }),
+    }),
+  });
+  const fallback = fakeProvider(
+    "gemini",
+    "gemini-3.5-flash-lite",
+    async () => ({
+      provider: "gemini",
+      model: "gemini-3.5-flash-lite",
+      json: { reply: "from fallback" },
+      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+      attempts: 1,
+      durationMs: 5,
+    }),
+  );
+
+  const provider = withFallbackProvider(primary, fallback, logger);
+  const result = await provider.generateStructuredJson({
+    systemPrompt: "system",
+    prompt: "merchant",
+    schema: { type: "OBJECT", properties: {} },
+  });
+
+  assert.equal(result.provider, "gemini");
+  assert.deepEqual(result.fallback, {
+    fromProvider: "groq",
+    fromModel: "openai/gpt-oss-120b",
+  });
 });
 
 test("Groq 429 immediately uses Gemini and suppresses further Groq calls until reset", async () => {

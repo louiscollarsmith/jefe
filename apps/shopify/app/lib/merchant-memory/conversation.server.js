@@ -26,6 +26,7 @@ import {
   labelForBeliefKey,
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
+import { isBusinessShapeBeliefKey } from "./deterministic-belief-registry.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import { getLlmConfig } from "../llm/config.server.js";
 import {
@@ -36,6 +37,7 @@ import {
 import { sendGeneralChatMessage } from "./general-chat.server.js";
 import { retrieveMerchantContext } from "./merchant-context.server.js";
 import { historicaliseBeliefSources } from "./passive-memory.server.js";
+import { redact } from "../observability/redact.server.js";
 
 export { OPERATION_STATUS, OPERATION_TYPES };
 
@@ -45,6 +47,20 @@ export const CONVERSATION_TOPICS = Object.freeze({
   onboardingPlan: "onboarding_plan",
   action: "action",
 });
+
+// A reply that never arrived. Said in Jefe's voice and from the merchant's side — they
+// asked something and got nothing back, which is Jefe's failure, not theirs. Deliberately
+// does NOT say "try again" as the whole sentence: the surface renders a real retry next to
+// it, and a dead end with no way forward is exactly what we're fixing.
+export const REPLY_FAILED_MESSAGE =
+  "I couldn't get to that one just now — your message is saved, so ask me to try again.";
+export const REPLY_FAILED_KIND = "reply_failed";
+
+// How much of the home conversation the interpreter sees. Beliefs take whatever character
+// budget is left after the fixed parts, so a longer thread costs beliefs rather than
+// overflowing the provider limit — see the budget note in buildMerchantMemoryLlmPrompt.
+const MEMORY_CHAT_THREAD_TURNS = 8;
+const MEMORY_CHAT_THREAD_MESSAGE_MAX = 600;
 
 const INITIAL_OPEN_QUESTIONS = [
   {
@@ -102,13 +118,16 @@ export function buildGapDrivenOpenQuestions(beliefs) {
   const coveragePct = beliefPercentage(byKey.get("products.cost_coverage"));
   const hasMargin = byKey.has("products.gross_margin.trailing_90d");
   if (!hasMargin || (coveragePct !== null && coveragePct < 70)) {
+    const roundedPct = coveragePct !== null ? Math.round(coveragePct) : null;
+    // Below ~5% reads as "none" to a merchant, and a bare "0%" looks like a bug — so
+    // speak plainly instead of quoting a number no one trusts.
+    const haveSomeCosts = roundedPct !== null && roundedPct >= 5;
     questions.push({
       category: "costs",
       questionKey: "data.product_costs",
-      question:
-        coveragePct !== null
-          ? `Jefe can see cost prices for only ${Math.round(coveragePct)}% of your products, so it can't track your margin accurately yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?`
-          : "Jefe can't see your product cost prices, so it can't track margin or profit yet. Can you add cost-per-item in Shopify (a product → Inventory → Cost per item)?",
+      question: haveSomeCosts
+        ? `I’ve only got cost prices for about ${roundedPct}% of your products, so I can’t work out your margins reliably yet. If you add cost-per-item on the rest in Shopify (open a product → Inventory → Cost per item), I’ll start tracking your profit properly.`
+        : "I can’t see cost prices for your products yet, so I can’t work out your margins or profit. If you add cost-per-item in Shopify (open a product → Inventory → Cost per item), I’ll start tracking profit for you.",
       reason:
         "Cost per item is the one margin input Jefe cannot observe; with it, margin and profit beliefs unlock.",
       priority: 15,
@@ -127,7 +146,7 @@ export function buildGapDrivenOpenQuestions(beliefs) {
     questions.push({
       category: "policies",
       questionKey: "policies.no_sale_products",
-      question: `${noSaleCount} of your active products haven't sold in 90 days. Should Jefe treat products like these as discontinued, seasonal, or still worth promoting?`,
+      question: `I can see ${noSaleCount} of your active products haven’t sold in the last 90 days. Do you want me to treat products like these as discontinued, seasonal, newly launched, or still worth promoting?`,
       reason:
         "Lets Jefe classify no-sale products correctly instead of assuming they are dead stock.",
       priority: 40,
@@ -448,7 +467,7 @@ export async function getOpenQuestions(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string; relatedOpenQuestionId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; message: string; relatedOpenQuestionId?: string | null; reuseMessageId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendConversationMessage(prisma, input) {
   const content = input.message.trim();
@@ -456,15 +475,32 @@ export async function sendConversationMessage(prisma, input) {
 
   await ensureInitialOpenQuestions(prisma, input);
   const conversation = await getOrCreateConversation(prisma, input);
-  const { message: userMessage } = await appendConversationMessage(prisma, {
-    conversationId: conversation.id,
-    merchantId: input.merchantId,
-    shopId: input.shopId ?? null,
-    role: "merchant",
-    content,
-    surface: conversation.surface ?? "app",
-    safeSummary: summarizeMerchantStatement(content),
-  });
+  // A retry answers the merchant's EXISTING message rather than storing a second copy of
+  // it. The first attempt already committed the merchant's row (it commits before the LLM
+  // is called), so re-sending would leave the thread saying the same thing twice.
+  const userMessage = input.reuseMessageId
+    ? await prisma.merchantMemoryConversationMessage.findFirst({
+        where: {
+          id: input.reuseMessageId,
+          conversationId: conversation.id,
+          merchantId: input.merchantId,
+          role: "merchant",
+        },
+      })
+    : (
+        await appendConversationMessage(prisma, {
+          conversationId: conversation.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? null,
+          role: "merchant",
+          content,
+          surface: conversation.surface ?? "app",
+          safeSummary: summarizeMerchantStatement(content),
+        })
+      ).message;
+  if (!userMessage) {
+    return { ok: false, error: REPLY_FAILED_MESSAGE, kind: REPLY_FAILED_KIND };
+  }
 
   const [beliefs, openQuestions, recentMessages, merchantContext] =
     await Promise.all([
@@ -474,7 +510,7 @@ export async function sendConversationMessage(prisma, input) {
         includeEvidence: true,
       }),
       getOpenQuestions(prisma, input),
-      listConversationMessages(prisma, {
+      listRecentConversationMessages(prisma, {
         conversationId: conversation.id,
         merchantId: input.merchantId,
         take: 12,
@@ -491,9 +527,12 @@ export async function sendConversationMessage(prisma, input) {
           })
         : Promise.resolve(null),
     ]);
-  const context = buildConversationContext(
-    conversation.context,
-    recentMessages,
+  const context = buildConversationContext(conversation.context, recentMessages);
+  // What was said before this turn. The merchant's current message is already stored by the
+  // time we read the thread, so it comes back in `recentMessages` — drop it here rather than
+  // send the model the same sentence twice, once as history and once as the question.
+  const priorMessages = recentMessages.filter(
+    (message) => message.id !== userMessage.id,
   );
   // Exact-targeting: when the merchant answers a SPECIFIC open question from the surface (the
   // answer composer posts its id), aim the interpreter at THAT question rather than the
@@ -502,13 +541,20 @@ export async function sendConversationMessage(prisma, input) {
   if (input.relatedOpenQuestionId) {
     context.currentOpenQuestionId = input.relatedOpenQuestionId;
   }
-  const operation = /** @type {any} */ (
-    await interpretMerchantMessageWithLlm({
+  // The interpret call is the flaky step — ~6k-token prompts against an LLM timeout. It is
+  // also side-effect-free, so failing it is recoverable: the merchant's message is already
+  // stored, and a retry can answer it without writing anything twice. Catch it HERE rather
+  // than around the whole function — everything below this point mutates Merchant Memory,
+  // and a write that half-failed must surface, not be swallowed as "couldn't reply".
+  let operation;
+  try {
+    operation = /** @type {any} */ (await interpretMerchantMessageWithLlm({
       message: sanitizeMemoryText(content),
       beliefs,
       openQuestions,
       context,
       merchantContext,
+      recentMessages: priorMessages,
       llmProvider: input.llmProvider,
       logger: input.logger,
       usage: {
@@ -517,15 +563,29 @@ export async function sendConversationMessage(prisma, input) {
         shopId: input.shopId ?? null,
         feature: "conversation",
       },
-    })
-  );
-  const validation = /** @type {any} */ (
-    await validateStructuredOperation(prisma, {
+    }));
+  } catch (error) {
+    // Redacted: a merchant message can carry customer names/emails, and this is the one
+    // path that logs while holding the raw text.
+    input.logger?.error?.("conversation reply failed", {
       merchantId: input.merchantId,
-      operation,
-      beliefs,
-    })
-  );
+      shopId: input.shopId ?? null,
+      conversationId: conversation.id,
+      messageId: userMessage.id,
+      reason: redact(error instanceof Error ? error.message : String(error)),
+    });
+    return {
+      ok: false,
+      error: REPLY_FAILED_MESSAGE,
+      kind: REPLY_FAILED_KIND,
+      retryMessageId: userMessage.id,
+    };
+  }
+  const validation = /** @type {any} */ (await validateStructuredOperation(prisma, {
+    merchantId: input.merchantId,
+    operation,
+    beliefs,
+  }));
 
   if (!validation.ok) {
     const failedOperation = {
@@ -582,7 +642,7 @@ export async function sendConversationMessage(prisma, input) {
   if (operation.operationType === OPERATION_TYPES.noMemoryChange) {
     await createAssistantMessage(prisma, {
       conversation,
-      content: buildNoChangeResponse(operation, beliefs, openQuestions),
+      content: buildNoChangeResponse(operation, beliefs),
       operation,
       operationStatus: null,
       relatedBeliefIds: operation.relatedBeliefIds ?? [],
@@ -601,7 +661,7 @@ export async function sendConversationMessage(prisma, input) {
     void track(prisma, buildUnfulfilledIntentEvent(input, content, operation));
     await createAssistantMessage(prisma, {
       conversation,
-      content: operation.reason,
+      content: buildClarificationReply(operation),
       operation,
       operationStatus: OPERATION_STATUS.proposed,
       relatedBeliefIds: operation.targetBeliefId
@@ -656,6 +716,35 @@ export async function sendConversationMessage(prisma, input) {
     currentOpenQuestionId: openQuestions[1]?.id ?? null,
   });
   return { ok: true };
+}
+
+/**
+ * Answer the merchant's last message when the first attempt failed to produce a reply.
+ *
+ * Reads the thread rather than taking a message id from the client: the merchant is asking
+ * for the thing they can SEE, and the tail of the thread is that thing.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function retryLastConversationReply(prisma, input) {
+  const conversation = await getOrCreateConversation(prisma, input);
+  const latest = await prisma.merchantMemoryConversationMessage.findFirst({
+    where: { conversationId: conversation.id, merchantId: input.merchantId },
+    orderBy: { createdAt: "desc" },
+  });
+  // Nothing to retry — an empty thread, or Jefe has already answered. Idempotent by
+  // construction: a double-tapped Retry, or one clicked on a stale tab, is a no-op rather
+  // than a second reply to a message that already has one.
+  if (!latest || latest.role !== "merchant") {
+    return { ok: true, retried: false, conversationId: conversation.id };
+  }
+  const result = await sendConversationMessage(prisma, {
+    ...input,
+    message: latest.content,
+    reuseMessageId: latest.id,
+  });
+  return { ...result, retried: true, conversationId: conversation.id };
 }
 
 /**
@@ -1000,7 +1089,7 @@ export function interpretMerchantMessage(input) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any; recentMessages?: Array<{ role: string; content: string }>; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; usage?: { prisma: any; merchantId?: string | null; shopId?: string | null; feature: string } }} input
  */
 export async function interpretMerchantMessageWithLlm(input) {
   const fallbackOperation = interpretMerchantMessage(input);
@@ -1410,6 +1499,34 @@ function conversationTopic(input) {
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ conversationId: string; merchantId: string; take?: number }} input
  */
+/**
+ * The most recent N messages, in chronological order.
+ *
+ * `listConversationMessages` orders ASC, so giving it a `take` returns the OLDEST N — right
+ * for rendering a whole thread, wrong for "what was just said". The conversation path needs
+ * the tail, which is why the action chat has always had its own reader
+ * (`listRecentActionMessages`); this is the same read for the memory path, keeping the
+ * fields `buildConversationContext` needs.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ conversationId: string; merchantId: string; take: number }} input
+ */
+async function listRecentConversationMessages(prisma, input) {
+  const rows = await prisma.merchantMemoryConversationMessage.findMany({
+    where: {
+      conversationId: input.conversationId,
+      merchantId: input.merchantId,
+    },
+    orderBy: { createdAt: "desc" },
+    take: input.take,
+  });
+  return rows.reverse().map(serializeMessage);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ conversationId: string; merchantId: string; take?: number }} input
+ */
 async function listConversationMessages(prisma, input) {
   const messages = await prisma.merchantMemoryConversationMessage.findMany({
     where: {
@@ -1489,6 +1606,13 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Merchant corrections have authority, but raw observations and merchant policies must stay separate.",
     "Do not invent evidence.",
     "Ask for clarification when a reference is ambiguous.",
+    // Without this the model treated every turn as the first one. `recentThread` is the
+    // conversation so far, oldest first, and `merchantMessage` is the turn being answered.
+    "`recentThread` is what has already been said in this conversation, oldest first; `merchantMessage` is the new turn. Resolve references like \"that\", \"it\", \"what you said before\" against it.",
+    "Never ask the merchant to repeat something they have already told you in `recentThread`.",
+    "Write `reason` for yourself: it is your private justification and is never shown to the merchant.",
+    "Write `merchantReply` as the words the merchant will actually read: speak to them directly as \"you\", keep it warm and plain, and never refer to \"the merchant\" or narrate your own reasoning.",
+    "Set `merchantReply` whenever operationType is clarification_required or no_memory_change. For clarification_required make it a direct question that names exactly what you need (\"Which product do you mean?\"), not a note that says you need clarification.",
     // The model can now emit a DESTRUCTIVE op, so it gets an explicit rule rather than
     // inferring the risk. Server-side validation enforces all of this regardless — this only
     // stops the model proposing retractions the merchant then has to decline.
@@ -1510,6 +1634,27 @@ function truncateForPrompt(value, max) {
   if (value === null || value === undefined) return null;
   const text = String(value);
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * @param {unknown} value
+ * @param {number} max
+ */
+function safePromptText(value, max) {
+  return truncateForPrompt(value, max) ?? "";
+}
+
+/** @param {unknown} role */
+function safePromptRole(role) {
+  if (role === "merchant") return "merchant";
+  if (role === "assistant") return "assistant";
+  return "message";
+}
+
+/** @param {unknown} value */
+function text(value) {
+  if (typeof value !== "string") return "";
+  return value.trim();
 }
 
 // Belief-budget tuning for the conversation prompt. CHARS_PER_TOKEN is a
@@ -1559,6 +1704,15 @@ function promptBeliefScore(belief, messageLower, discussedKeys) {
   if (label.length > 3 && messageLower.includes(label)) score += 40;
   if (belief.status === "merchant_corrected") score += 30;
   else if (belief.status === "merchant_confirmed") score += 20;
+  // What KIND of business this is frames every answer, so it earns a standing place in the
+  // prompt rather than competing on keyword relevance. Without this the shape beliefs scored
+  // ~8 (confidence alone) against 140 competitors for 40 slots, so they were derived and then
+  // never reached the model — the representation existed and the advice stayed generic.
+  //
+  // A boost, deliberately NOT a pin: below a keyword match (+50) and far below the belief
+  // actually under discussion (+100), so shape frames the answer without ever displacing the
+  // subject of it.
+  if (isBusinessShapeBeliefKey(key)) score += 25;
   score += Math.round(Number(belief.confidence ?? 0) * 10);
   return score;
 }
@@ -1607,12 +1761,25 @@ export function selectPromptBeliefs(input, budgetChars) {
 }
 
 /**
- * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any }} input
+ * @param {{ message: string; beliefs: any[]; openQuestions?: any[]; context?: any; merchantContext?: any; recentMessages?: Array<{ role: string; content: string }> }} input
  */
 function buildMerchantMemoryLlmPrompt(input) {
   const registry = getConversationalBeliefRegistry();
+  // The conversation so far. Without this the model saw one sentence and three belief keys,
+  // so "for what you said before, the cost-per-item in Shopify" was unanswerable — it had no
+  // "before" — and Jefe asked the merchant to re-explain what they had just explained. The
+  // action chat has always sent its thread; this is the same read for the home path.
+  // Redacted through safePromptText like every other merchant text crossing the AI boundary.
+  const recentThread = (input.recentMessages ?? [])
+    .slice(-MEMORY_CHAT_THREAD_TURNS)
+    .map((/** @type {any} */ message) => ({
+      role: safePromptRole(message.role),
+      content: safePromptText(message.content, MEMORY_CHAT_THREAD_MESSAGE_MAX),
+    }))
+    .filter((/** @type {{ role: string; content: string }} */ message) => message.content);
   const prompt = {
     merchantMessage: input.message,
+    recentThread,
     conversationContext: {
       lastDiscussedBeliefKeys: input.context?.lastDiscussedBeliefKeys ?? [],
       currentOpenQuestionId: input.context?.currentOpenQuestionId ?? null,
@@ -1781,11 +1948,24 @@ function buildExplanation(operation, beliefs) {
 }
 
 /**
+ * The merchant-facing text for a clarification. `operation.reason` is the model's
+ * private, third-person justification and must never be shown; prefer the dedicated
+ * second-person `merchantReply`, and fall back to a general but still-human question
+ * rather than leaking the rationale.
+ * @param {any} operation
+ */
+export function buildClarificationReply(operation) {
+  return (
+    text(operation?.merchantReply) ||
+    "I want to get this right — could you tell me a bit more about which part you mean?"
+  );
+}
+
+/**
  * @param {any} operation
  * @param {any[]} beliefs
- * @param {any[]} openQuestions
  */
-function buildNoChangeResponse(operation, beliefs, openQuestions) {
+export function buildNoChangeResponse(operation, beliefs) {
   if ((operation.relatedBeliefKeys ?? []).length > 0) {
     const related = beliefs.filter((belief) =>
       operation.relatedBeliefKeys.includes(belief.key),
@@ -1800,10 +1980,14 @@ function buildNoChangeResponse(operation, beliefs, openQuestions) {
   if (operation.reason?.includes("undo")) {
     return "Tell me what you want to undo, and I’ll try to reverse the latest matching change from this conversation.";
   }
-  if (openQuestions.length > 0) {
-    return `${operation.reason}\n\nOne thing I still need to know: ${openQuestions[0].question}`;
-  }
-  return operation.reason;
+  // A no-change reply speaks for itself. It must NOT bolt on an unrelated open
+  // question — that is what produced replies that answered nothing and then re-asked
+  // a stray cost prompt — and it must not leak the model's private `reason`. Prefer
+  // the second-person merchantReply; otherwise a plain human acknowledgement.
+  return (
+    text(operation.merchantReply) ||
+    "Got it — I’ve taken that in. Nothing for me to change in what I remember just yet."
+  );
 }
 
 /**
@@ -2192,6 +2376,9 @@ function clarification(reason, message, context) {
   return {
     operationType: OPERATION_TYPES.clarificationRequired,
     reason,
+    // The deterministic clarifications are already phrased to the merchant, so the
+    // spoken reply is that same text. The LLM path fills merchantReply itself.
+    merchantReply: reason,
     merchantStatement: message,
     confidence: 0.6,
     requiresConfirmation: true,
