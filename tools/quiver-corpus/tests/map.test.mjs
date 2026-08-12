@@ -8,6 +8,7 @@ import {
   NEVER_CARRIED_COLUMNS,
   corpusShopMetadata,
   deriveCatalog,
+  dominantCurrency,
   hashCustomerRef,
   lineItemExternalId,
   mapQuiverOrder,
@@ -396,4 +397,13 @@ test("a weak customer salt is refused", () => {
   assert.throws(() => resolveCustomerSalt({}), /at least 16 characters/);
   assert.throws(() => resolveCustomerSalt({ QUIVER_CORPUS_CUSTOMER_SALT: "short" }), /at least 16/);
   assert.equal(resolveCustomerSalt({ QUIVER_CORPUS_CUSTOMER_SALT: SALT }), SALT);
+});
+
+test("dominantCurrency picks by frequency, deterministically, and handles emptiness", () => {
+  assert.deepEqual(dominantCurrency(["GBP", "GBP", "EUR"]), { currency: "GBP", share: 2 / 3, total: 3 });
+  // Ties break alphabetically so the same data always names the same currency.
+  assert.equal(dominantCurrency(["USD", "EUR"]).currency, "EUR");
+  assert.equal(dominantCurrency(["gbp", " GBP "]).currency, "GBP", "case/whitespace normalised");
+  assert.deepEqual(dominantCurrency([]), { currency: null, share: 0, total: 0 });
+  assert.deepEqual(dominantCurrency([null, undefined, ""]), { currency: null, share: 0, total: 0 });
 });

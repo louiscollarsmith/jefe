@@ -189,27 +189,38 @@ the execution adapters — both assume a session and token a corpus shop lacks.
 
 ---
 
-## 4. ⚠️ Known bug in the corpus mapper — fix this first
+## 4. Corpus currency handling — FIXED, and the reason matters
 
-**`tools/quiver-corpus/src/map.mjs` writes Quiver's presentment currency into
-`Order.currency`.** Given §1, that is semantically wrong: in Jefe that field means
-*shop base currency*.
+⚠️ **Quiver and Jefe store money the opposite way round.**
 
-Consequence: **every corpus merchant looks multi-currency when no real Jefe
-merchant does.** The corpus would exercise a code path production never hits and
-misrepresent those businesses to the model — confidently wrong inputs producing
-confidently wrong conclusions, which is the one thing a test harness must not do.
+| | amount | label | consequence |
+| --- | --- | --- | --- |
+| **Jefe** | `shopMoney` (shop base currency) | presentment | amounts ARE summable; the label misleads |
+| **Quiver** | `presentmentMoney` | matching presentment code | label is honest; amounts are NOT summable |
 
-**Fix:** carry a single base currency per corpus shop (Quiver has no base-currency
-column, so the dominant presentment code is the honest proxy — state it as such in
-`rawPayload`), and keep the per-order presentment code in `rawPayload` where it is
-truthful rather than in `Order.currency` where it is not.
+Quiver evidence: `/Users/mb/quiver/etl-task/src/etl/importOrders.ts:312-341` —
+every price is `...Set.presentmentMoney.amount` with the matching `currencyCode`.
 
-This also means **House of Spells (Quiver merchant 988) is no longer a valid
-acceptance test** for multi-currency behaviour — it was only "20 currencies"
-because of presentment.
+So Quiver rows cannot be poured into Jefe's canonical tables as-is. Jefe's belief
+and calculation layers sum `totalPrice` across orders assuming one currency;
+feeding them AED + GBP + EUR produces a confident, meaningless revenue figure —
+the exact failure a test harness must never have. **Relabelling alone would not
+have fixed it; the amounts themselves are in different denominations.**
 
----
+**The fix, now in `map.mjs` + `load.mjs`:** the loader picks the merchant's
+**dominant presentment currency** as the corpus shop's single currency — the
+closest honest analogue of a shop's base currency — and orders in any other
+currency are skipped and **counted** as `foreign_currency_order`. Every load
+reports `baseCurrency` and `currencyCoverage`, so "we loaded this store" can never
+be mistaken for "we loaded all of it".
+
+**Once FX rates exist** (founder said yes, 2026-08-12 — see §5) the skipped orders
+can be converted and coverage widened. That is the main thing FX unlocks here.
+
+⚠️ **House of Spells (Quiver merchant 988) is NOT a valid multi-currency acceptance
+test** — its "20 currencies" are presentment codes. Under the corrected
+understanding a real Jefe merchant has one base currency, so there is no
+production analogue of a 20-currency store.
 
 ## 5. What Matt has ruled
 

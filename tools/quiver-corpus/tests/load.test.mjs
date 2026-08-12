@@ -275,3 +275,35 @@ test("an order-level refund becomes a refund row attached to its order", async (
   assert.equal(prisma.store.refunds[0].amount, "42.00");
   assert.equal(prisma.store.refunds[0].orderId, prisma.store.orders[0].id);
 });
+
+test("only the merchant's dominant currency is loaded, and the loss is counted", async () => {
+  // Quiver stores presentmentMoney: amounts are in whatever the customer paid in,
+  // so they are NOT summable. Jefe sums totalPrice assuming one currency. Loading
+  // both would produce a confident, meaningless revenue figure.
+  const gbp = (id) => sourceOrder({ order_id: id }, [
+    { type: "SUBTOTAL", currency_code: "GBP", amount: "4200" },
+    { type: "TOTAL", currency_code: "GBP", amount: "4200" },
+  ]);
+  const aed = (id) => sourceOrder({ order_id: id }, [
+    { type: "SUBTOTAL", currency_code: "AED", amount: "52785" },
+    { type: "TOTAL", currency_code: "AED", amount: "52785" },
+  ]);
+
+  const prisma = fakePrisma();
+  const summary = await loadCorpusMerchant(
+    prisma,
+    { merchant, orders: [gbp("1"), gbp("2"), gbp("3"), aed("4")] },
+    { customerSalt: SALT },
+  );
+
+  assert.equal(summary.baseCurrency, "GBP");
+  assert.equal(summary.orders, 3, "the AED order must not be loaded");
+  assert.equal(summary.anomalyCounts.foreign_currency_order, 1);
+  // Coverage is always reported, so "we loaded this store" is never mistaken for
+  // "we loaded all of it" — the skipped order is real trade we could not carry.
+  assert.equal(summary.currencyCoverage, 0.75);
+  assert.ok(prisma.store.orders.every((o) => o.currency === "GBP"));
+
+  // The totals Jefe will sum are now homogeneous, which is the whole point.
+  assert.equal(prisma.store.orders.length, 3);
+});

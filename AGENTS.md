@@ -49,7 +49,7 @@ Historical context, reset audits and previous product prompts live under `docs/a
 - Inspect existing code before replacing it.
 - Preserve useful Shopify ingestion, canonical commerce records, ledger, provenance, approval and action-safety patterns where they currently exist.
 - Do not resurrect retired COGS dashboard, Daily Brief, Klaviyo Winback, Watchdog or old operator-roadmap code from archived material.
-- Do not expose production secrets or production customer data to AI tools.
+- Do not expose production secrets or production **merchant-customer** data to AI tools. **Exception — Quiver's own data (founder ruling, 2026-08-12):** *"Quiver owns this data and as Jefe is part of Quiver we can use this data in any way we want to."* Quiver's Redshift warehouse may be read and used freely, including its end-customer fields, for the model-testing corpus (`tools/quiver-corpus`). This does **not** extend to a Jefe merchant's own customers, which stay covered by the rule above. In practice the corpus keeps personal columns **off by default** because the belief layer has no use for them — that is a scope choice, not a policy gate, and turning them on is permitted. See `docs/ops/model-testing-quiver-handover-2026-08-12.md`.
 - Do not let any LLM directly mutate Shopify, Klaviyo or third-party systems.
 - External writes require typed adapters, idempotency keys, previews, approval gates and blast-radius caps.
 - Use TypeScript types properly and keep changes scoped to the user's current request.

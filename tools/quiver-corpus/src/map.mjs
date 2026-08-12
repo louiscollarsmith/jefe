@@ -178,6 +178,45 @@ function addAmounts(a, b) {
 export const IMPLAUSIBLE_AMOUNT = 1_000_000;
 
 /**
+ * ⚠️ QUIVER AND JEFE STORE MONEY THE OPPOSITE WAY ROUND. This is the single most
+ * important thing in this file.
+ *
+ *   Jefe:   amount = `shopMoney` (the shop's ONE base currency), label = presentment
+ *           → amounts ARE summable; the `Order.currency` label is the misleading part.
+ *           (`apps/shopify/app/lib/ingestion/shopify/canonical.server.js:164,174`)
+ *   Quiver: amount = `presentmentMoney`, label = the MATCHING presentment code
+ *           → the label is honest, but amounts are in different denominations and
+ *           are NOT summable. (`/Users/mb/quiver/etl-task/src/etl/importOrders.ts:312-341`)
+ *
+ * So Quiver rows cannot be poured into Jefe's canonical tables as-is: Jefe's belief
+ * and calculation layers sum `totalPrice` across orders on the assumption that every
+ * amount shares one currency. Feeding them AED + GBP + EUR would produce a confident,
+ * meaningless revenue figure — the exact failure a test harness must never have.
+ *
+ * The corpus therefore loads ONE currency per merchant: the dominant presentment
+ * currency, which is the closest honest analogue of a shop's base currency. Orders in
+ * other currencies are skipped and COUNTED, so the coverage loss is visible rather
+ * than silent. Once FX rates exist the rest can be converted and the coverage widened.
+ * @param {Array<string | null | undefined>} codes
+ * @returns {{ currency: string | null, share: number, total: number }}
+ */
+export function dominantCurrency(codes) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const code of codes ?? []) {
+    const key = String(code ?? "").trim().toUpperCase();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  if (!total) return { currency: null, share: 0, total: 0 };
+  // Deterministic: most frequent, ties broken alphabetically.
+  const [currency, n] = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  return { currency, share: n / total, total };
+}
+
+/**
  * Flag orders whose money does not make sense, WITHOUT dropping them here.
  *
  * Measured on the same 4.88M orders: **43,873 (0.9%) have a DISCOUNT greater than
@@ -237,6 +276,7 @@ function toNumber(amount) {
  *   customerSalt: string,
  *   includePersonalFields?: boolean,
  *   preferredCurrency?: string,
+ *   baseCurrency?: string | null,
  * }} context
  */
 export function mapQuiverOrder(source, context) {
@@ -256,6 +296,13 @@ export function mapQuiverOrder(source, context) {
   const money = reducePrices(prices, currency);
   const placedAt = toDate(row.order_created_at);
   const anomalies = orderAnomalies(money);
+
+  // An order denominated in anything other than the corpus shop's single currency
+  // cannot be loaded: Jefe sums these amounts assuming one currency. Flagged rather
+  // than silently dropped so the coverage loss is counted and reportable.
+  if (context.baseCurrency && currency !== context.baseCurrency) {
+    anomalies.push("foreign_currency_order");
+  }
 
   const order = {
     merchantId,

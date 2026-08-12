@@ -16,6 +16,7 @@ import {
   CORPUS_PLATFORM,
   corpusShopMetadata,
   deriveCatalog,
+  dominantCurrency,
   mapQuiverOrder,
 } from "./map.mjs";
 import { assertCorpusShop, corpusShopDomain } from "./safety.mjs";
@@ -106,7 +107,30 @@ export async function loadCorpusMerchant(prisma, source, options) {
   } = options;
 
   const shop = await ensureCorpusShop(prisma, source.merchant);
-  const context = { merchantId: shop.merchantId, shopId: shop.id, customerSalt, includePersonalFields };
+
+  // Pick the merchant's single currency BEFORE mapping. Quiver stores
+  // presentmentMoney, so its amounts are in whatever the customer paid in and are
+  // not summable — but Jefe sums `totalPrice` assuming one currency. Loading one
+  // currency per corpus shop is what makes the corpus semantically the same shape
+  // as a real Shopify store. See the note above `dominantCurrency` in map.mjs.
+  const base = dominantCurrency(
+    (source.orders ?? []).flatMap((row) =>
+      (row.prices ?? []).map((price) => price?.currency_code)),
+  );
+  log("currency.selected", {
+    shopDomain: shop.shopDomain,
+    baseCurrency: base.currency,
+    share: Math.round(base.share * 1000) / 1000,
+  });
+
+  const context = {
+    merchantId: shop.merchantId,
+    shopId: shop.id,
+    customerSalt,
+    includePersonalFields,
+    baseCurrency: base.currency,
+    preferredCurrency: base.currency ?? "GBP",
+  };
 
   const mapped = [];
   const quarantined = [];
@@ -138,6 +162,11 @@ export async function loadCorpusMerchant(prisma, source, options) {
 
   const summary = {
     ...written,
+    baseCurrency: base.currency,
+    // What fraction of the merchant's orders this corpus shop actually represents.
+    // Stated always, so "we loaded this store" is never mistaken for "we loaded all
+    // of it" — the foreign-currency orders are real trade we could not carry.
+    currencyCoverage: Math.round(base.share * 1000) / 1000,
     quarantined: quarantined.length,
     anomalyCounts,
   };
