@@ -594,12 +594,9 @@ function storeName(context, definition) {
 }
 
 function primaryCurrency(context, definition) {
-  const pricedCurrencies = [
-    ...context.pricedOrders.map((order) => order.currency),
-    ...context.pricedActiveVariants.map((variant) => variant.currency),
-    ...context.successfulRefundCoverage.successfulTransactions.map((transaction) => transaction.currency),
-  ];
-  const distribution = currencyDistribution(pricedCurrencies);
+  // Shares `pricedCurrencySample` with `shopBaseCurrency` so this belief and the currency
+  // stamped on every money belief are computed from identical input and cannot disagree.
+  const distribution = currencyDistribution(pricedCurrencySample(context));
   if (distribution.total === 0) return skipped(definition, "insufficient_data", "No priced commerce records are stored.", context.sourceCounts);
   const dominant = distribution.entries[0];
   return derived(context, definition, {
@@ -734,7 +731,7 @@ function revenuePerActiveDay(context, definition, days) {
   const activeDays = activeDaySet(context, orders).size;
   const currency = shopBaseCurrency(context);
   if (orders.length < 1 || activeDays < 1) return skipped(definition, "insufficient_data", "At least one priced order on an active selling day is required.", { orders: orders.length, activeDays });
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   return derived(context, definition, {
     value: { amount: roundMoney(sum(orders.map(orderValue)) / activeDays), currency: currency.currency, activeSellingDays: activeDays, orderCount: orders.length, window: `trailing_${days}d`, orderValuePolicy: orderValuePolicy() },
     confidence: sampleConfidence(0.9, orders.length, 1, 50),
@@ -757,7 +754,7 @@ function orderValueDispersion(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   const currency = shopBaseCurrency(context);
   if (orders.length < 10) return skipped(definition, "insufficient_data", "At least 10 priced orders are required for dispersion.", { orders: orders.length });
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   const values = orders.map(orderValue);
   const mean = average(values);
   return derived(context, definition, {
@@ -773,7 +770,7 @@ function orderValueMeanMedianRatio(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   const currency = shopBaseCurrency(context);
   if (orders.length < 10) return skipped(definition, "insufficient_data", "At least 10 priced orders are required for mean-to-median ratio.", { orders: orders.length });
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   const values = orders.map(orderValue);
   const med = percentile(values, 0.5);
   return derived(context, definition, {
@@ -789,7 +786,7 @@ function topSalesDayShare(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   const currency = shopBaseCurrency(context);
   if (orders.length < 5) return skipped(definition, "insufficient_data", "At least 5 priced orders are required.", { orders: orders.length });
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   const byDay = sumBy(orders, (order) => dayKey(orderTime(order), context.shopTimezone), orderValue);
   return shareFromValues(context, definition, Array.from(byDay.values()), `trailing_${days}d`, "Top merchant-local sales day revenue divided by window revenue.");
 }
@@ -799,7 +796,7 @@ function topSalesWeekShare(context, definition, days) {
   const currency = shopBaseCurrency(context);
   const weekKeys = new Set(orders.map((order) => weekKey(orderTime(order), context.shopTimezone)));
   if (weekKeys.size < 8) return skipped(definition, "insufficient_data", "At least 8 observed weeks are required.", { observedWeeks: weekKeys.size, orders: orders.length });
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   const byWeek = sumBy(orders, (order) => weekKey(orderTime(order), context.shopTimezone), orderValue);
   return shareFromValues(context, definition, Array.from(byWeek.values()), `trailing_${days}d`, "Top merchant-local sales week revenue divided by window revenue.");
 }
@@ -825,8 +822,8 @@ function hasProductVariants(context, definition) {
 function variantPriceAggregate(context, definition, method, minimum) {
   const prices = activeVariantPrices(context);
   if (prices.length < minimum) return skipped(definition, "insufficient_data", `At least ${minimum} priced active variant(s) are required.`, { pricedActiveVariants: prices.length });
-  const currency = singleCurrency(context.pricedActiveVariants.map((variant) => variant.currency));
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple variant currencies are present without conversion support.", { currencies: currency.currencies.length });
+  const currency = moneyLabelCurrency(context, context.pricedActiveVariants.map((variant) => variant.currency));
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced active variant carries a currency to report in.", { pricedActiveVariants: context.pricedActiveVariants.length });
   const amount = method === "mean" ? average(prices) : method === "min" ? Math.min(...prices) : method === "max" ? Math.max(...prices) : percentile(prices, percentileFor(method));
   return derived(context, definition, {
     value: { amount: roundMoney(amount), currency: currency.currency, pricedVariantCount: prices.length },
@@ -984,8 +981,8 @@ function totalRefundedAmount(context, definition) {
   if (coverage.refundsWithSuccessfulTransactionAmount < context.refunds.length) {
     return skipped(definition, "insufficient_data", "Successful refund transaction amounts are not available for every refund record.", { refunds: context.refunds.length, refundsWithSuccessfulTransactionAmount: coverage.refundsWithSuccessfulTransactionAmount });
   }
-  const currency = singleCurrency(coverage.successfulTransactions.map((transaction) => transaction.currency));
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple refund transaction currencies are present without conversion support.", { currencies: currency.currencies.length });
+  const currency = moneyLabelCurrency(context, coverage.successfulTransactions.map((transaction) => transaction.currency));
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No successful refund transaction carries a currency to report in.", { successfulTransactions: coverage.successfulTransactions.length });
   return derived(context, definition, {
     value: { amount: roundMoney(sum(coverage.successfulTransactions.map((transaction) => transaction.amount))), currency: currency.currency, refundCount: context.refunds.length, window: "all_stored_history" },
     confidence: 0.9,
@@ -1035,8 +1032,8 @@ function inventoryAvailabilityAggregate(context, definition, method, minimum) {
 function retailValueOfAvailableStock(context, definition) {
   const rows = stockRetailValues(context);
   if (rows.length < 1) return skipped(definition, "insufficient_data", "At least one priced active tracked variant with positive known inventory is required.", context.sourceCounts);
-  const currency = singleCurrency(rows.map((row) => row.currency));
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple variant currencies are present without conversion support.", { currencies: currency.currencies.length });
+  const currency = moneyLabelCurrency(context, rows.map((row) => row.currency));
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No stocked variant carries a currency to report in.", { pricedStockedVariants: rows.length });
   return derived(context, definition, {
     value: { amount: roundMoney(sum(rows.map((row) => row.value))), currency: currency.currency, pricedStockedVariantCount: rows.length },
     confidence: 0.85,
@@ -1050,8 +1047,8 @@ function retailValueOfAvailableStock(context, definition) {
 function topVariantRetailValueShare(context, definition) {
   const rows = stockRetailValues(context);
   if (rows.length < 5) return skipped(definition, "insufficient_data", "At least five priced stocked variants are required.", { pricedStockedVariants: rows.length });
-  const currency = singleCurrency(rows.map((row) => row.currency));
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple variant currencies are present without conversion support.", { currencies: currency.currencies.length });
+  const currency = moneyLabelCurrency(context, rows.map((row) => row.currency));
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No stocked variant carries a currency to report in.", { pricedStockedVariants: rows.length });
   const values = rows.map((row) => row.value).sort((a, b) => b - a);
   return shareOutcome(context, definition, sum(values.slice(0, 5)), sum(values), "Top five stocked variant retail values divided by total available stock retail value.", { confidence: 0.85 });
 }
@@ -1208,7 +1205,7 @@ function grossOrderValueWindow(context, definition, days) {
   const orders = pricedOrdersInWindow(context, days);
   if (orders.length < 1) return skipped(definition, "insufficient_data", "At least one priced order is required.", { pricedOrders: 0 });
   const currency = shopBaseCurrency(context);
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   return derived(context, definition, {
     value: { amount: roundMoney(sum(orders.map(orderValue))), currency: currency.currency, orderCount: orders.length, window: `trailing_${days}d`, orderValuePolicy: orderValuePolicy() },
     confidence: sampleConfidence(0.9, orders.length, 1, 100),
@@ -1222,7 +1219,7 @@ function grossOrderValueWindow(context, definition, days) {
 function orderValueAggregate(context, definition, orders, method, minimum) {
   if (orders.length < minimum) return skipped(definition, "insufficient_data", `At least ${minimum} priced order(s) are required.`, { pricedOrders: orders.length });
   const currency = shopBaseCurrency(context);
-  if (!currency.ok) return skipped(definition, "blocked_by_data_quality", "Multiple currencies are present without conversion support.", { currencies: currency.currencies.length });
+  if (!currency.ok) return skipped(definition, "insufficient_data", "No priced order carries a currency to report in.", { pricedOrders: context.pricedOrders.length });
   const values = orders.map(orderValue);
   const amount = method === "mean" ? average(values) : percentile(values, percentileFor(method));
   return derived(context, definition, {
@@ -1950,7 +1947,7 @@ function grossMargin(context, definition, days) {
   }
   const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
   }
   const orderIds = new Set(orders.map((order) => order.id));
   const costByVariant = variantUnitCostMap(context);
@@ -2004,7 +2001,7 @@ function marginByRegion(context, definition, days) {
   }
   const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
   }
   const countryByOrder = new Map();
   for (const order of orders) {
@@ -2077,7 +2074,7 @@ function discountDepth(context, definition, days) {
   }
   const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
   }
   let totalDiscount = 0;
   let totalNet = 0;
@@ -2386,7 +2383,7 @@ function topProductRevenueShare(context, definition, days, topN) {
   }
   const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
   }
   const revenues = Array.from(revenueByProduct.values())
     .filter((revenue) => revenue > 0)
@@ -2406,7 +2403,7 @@ function bestsellerByRevenue(context, definition, days) {
   }
   const currency = shopBaseCurrency(context);
   if (!currency.ok) {
-    return skipped(definition, "blocked_by_data_quality", "No priced orders in a determinable currency.", { currencies: currency.currencies.length });
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
   }
   const ranked = Array.from(revenueByProduct.entries())
     .filter((entry) => entry[1] > 0)
@@ -2941,32 +2938,84 @@ function currencyDistribution(currencies) {
   return { total: entries.reduce((total, entry) => total + entry.count, 0), entries };
 }
 
-function singleCurrency(currencies) {
+// The base currency of a set of stored money records, and the ONLY currency guard money
+// beliefs should use.
+//
+// It never fails on currency multiplicity, because multiplicity is not a problem: every
+// amount Jefe stores is Shopify `shopMoney`, already converted into the shop's base currency
+// at the rate that applied when the sale happened. A merchant selling in six currencies has
+// one real, correct average order value in their own currency — Shopify did the conversion
+// before we ever saw the row. What varies is the CUSTOMER's presentment currency, which says
+// nothing about whether the shop-currency amounts can be added up.
+//
+// This replaced a `singleCurrency` guard that refused whenever more than one currency label
+// appeared. That refusal produced no belief at all, and a skipped belief is invisible to the
+// merchant — so Jefe silently knew nothing about the money of any store that sells abroad,
+// and it looked principled rather than broken. `ok` is false only when there are no priced
+// records to read a currency from, which is an insufficient-data case, not a quality one.
+/** @param {Array<string | null | undefined>} currencies */
+function baseCurrencyOf(currencies) {
   const distribution = currencyDistribution(currencies);
-  return { ok: distribution.entries.length <= 1, currency: distribution.entries[0]?.currency ?? null, currencies: distribution.entries.map((entry) => entry.currency) };
-}
-
-// The shop's base currency. Every stored money amount is Shopify shopMoney,
-// denominated in the shop's base currency (constant per shop) — so order/line
-// revenue and margin are summable across orders regardless of the customer's
-// *presentment* currency. A single store selling internationally is the common
-// case, not a data-quality problem, so revenue beliefs must not skip on it. We
-// only need the base-currency label; the dominant priced currency is the proxy
-// (exact capture from shopMoney.currencyCode is a documented follow-up). `ok` is
-// false only when there are no priced records at all. Returns the singleCurrency
-// shape so it is a drop-in at order-revenue call sites.
-function shopBaseCurrency(context) {
-  const distribution = currencyDistribution([
-    ...context.pricedOrders.map((order) => order.currency),
-    ...(context.successfulRefundCoverage?.successfulTransactions ?? []).map(
-      (transaction) => transaction.currency,
-    ),
-  ]);
   return {
     ok: distribution.entries.length >= 1,
     currency: distribution.entries[0]?.currency ?? null,
     currencies: distribution.entries.map((entry) => entry.currency),
   };
+}
+
+// Every record Jefe can read a REAL currency from. The dominant one is the working proxy for
+// the shop's base currency.
+//
+// ⛔ This EXACT sample also feeds `business.primary_currency`, and that is not incidental —
+// it is what stops Jefe contradicting itself. When `shopBaseCurrency` read one set of records
+// and `primary_currency` read another, the two disagreed on any near-tie, and Jefe would tell
+// a merchant their primary currency was GBP and their average order was "€100" on the same
+// screen. The belief is canonical; a figure Jefe states must never contradict the belief
+// describing it. One sample, one answer.
+//
+// ⛔ VARIANTS ARE EXCLUDED, and must stay excluded. `Variant.currency` is not observed data:
+// ingestion calls `currencyCode(variant.price)`, the Shopify query fetches `price` as a bare
+// Money scalar ("10.00"), and `currencyCode` falls through to a hardcoded "GBP" default
+// (`normalize.server.js:26-35`). So EVERY variant of EVERY merchant reads GBP, including a
+// US store's. Counting those votes let an invented value decide what currency Jefe states a
+// merchant's money in — inferred data presented as observed, which is the one line we don't
+// cross.
+//
+// ⚠️ What remains is still a PROXY: `Order.currency` is the customer's PRESENTMENT currency,
+// not the shop's base currency (the amounts beside it are already base-currency shopMoney).
+// The true value is fetched and stored — `Order.rawPayload.currentTotalPriceSet.shopMoney
+// .currencyCode` — but the derivation's order select doesn't read `rawPayload`, and pulling a
+// full JSON blob per order to get it is not free. The real fix is to persist the shop's base
+// currency once, on the shop, where it belongs. Until then this is the honest best available,
+// and it is at least consistent across everything Jefe says.
+/** @param {any} context */
+function pricedCurrencySample(context) {
+  return [
+    ...context.pricedOrders.map((/** @type {any} */ order) => order.currency),
+    ...(context.successfulRefundCoverage?.successfulTransactions ?? []).map(
+      (/** @type {any} */ transaction) => transaction.currency,
+    ),
+  ];
+}
+
+// The shop's base currency. See `baseCurrencyOf` for why multiplicity is not a failure.
+function shopBaseCurrency(context) {
+  return baseCurrencyOf(pricedCurrencySample(context));
+}
+
+// The currency to STATE a money figure in. Always the shop's base currency where Jefe has
+// one, whatever records the figure was computed from — because every stored amount is
+// base-currency shopMoney, so one shop has exactly one honest money label.
+//
+// `fallbackCurrencies` covers the store that has products but has not sold anything yet:
+// there are no orders to read a base currency from, but a price belief is still worth having.
+// It is a fallback only — for a trading store the shop answer always wins, which is what
+// stops the hardcoded "GBP" on variant rows (see `pricedCurrencySample`) labelling a US
+// merchant's stock value in sterling.
+/** @param {any} context @param {Array<string | null | undefined>} fallbackCurrencies */
+function moneyLabelCurrency(context, fallbackCurrencies) {
+  const shop = shopBaseCurrency(context);
+  return shop.ok ? shop : baseCurrencyOf(fallbackCurrencies);
 }
 
 function shopTimezoneFrom(rawPayload) {
