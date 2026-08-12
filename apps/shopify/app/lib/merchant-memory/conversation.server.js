@@ -1829,11 +1829,26 @@ function buildConversationContext(rawContext, messages) {
       return operation?.targetBeliefKey ?? [];
     })
     .filter(Boolean);
+  // `??` only falls through on null/undefined, and EVERY no-change turn stores
+  // `relatedBeliefKeys ?? []` — so the first one wrote an empty array and, from then on, this
+  // line kept returning it and the recompute-from-history fallback below was unreachable for
+  // the life of the conversation. Confirmed empty on a production conversation row.
+  //
+  // The thread now reaching the prompt does not cover this: `lastDiscussedBeliefKeys` feeds
+  // the DETERMINISTIC path, where it resolves "that" for "that's right" and "forget that".
+  // With it stuck empty, isConfirmation sees nothing under discussion and Jefe asks "which
+  // part should I mark as confirmed?" about a belief named one message earlier.
+  const storedKeys = Array.isArray(context.lastDiscussedBeliefKeys)
+    ? context.lastDiscussedBeliefKeys.filter(Boolean)
+    : null;
   return {
     ...context,
     lastDiscussedBeliefKeys:
-      context.lastDiscussedBeliefKeys ??
-      (recentBeliefKeys.length ? [recentBeliefKeys[0]] : []),
+      storedKeys && storedKeys.length
+        ? storedKeys
+        : recentBeliefKeys.length
+          ? [recentBeliefKeys[0]]
+          : [],
   };
 }
 
