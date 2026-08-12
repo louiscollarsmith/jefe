@@ -232,7 +232,7 @@ function createTwoProductAnalystFixture({ mixedCurrency = false } = {}) {
   };
 }
 
-test("a multi-currency revenue question is answered per currency, led by the dominant one", async () => {
+test("a revenue question is totalled in base currency even when customers paid in several", async () => {
   const { prisma, actionContext } = createTwoProductAnalystFixture({ mixedCurrency: true });
   const provider = {
     provider: "mock",
@@ -267,16 +267,14 @@ test("a multi-currency revenue question is answered per currency, led by the dom
 
   const reply = String(answer?.reply ?? "");
 
-  // Each currency reported in its own currency — no FX needed, nothing invented.
-  assert.match(reply, /GBP 180/);
-  assert.match(reply, /EUR 144/);
-  // The dominant currency leads and says how much of the business it represents.
-  assert.match(reply, /56% of value/); // 180/324
-  assert.ok(reply.indexOf("GBP 180") < reply.indexOf("EUR 144"), "dominant currency must lead");
-
-  // The limitation is stated ALONGSIDE the answer, never instead of it — and the
-  // cross-currency sum (180+144=324) must appear nowhere.
-  assert.match(reply, /not added together/i);
-  assert.doesNotMatch(reply, /324/);
+  // 180 + 144 = 324. Both amounts are shopMoney in the shop's single base currency;
+  // the differing order.currency values are PRESENTMENT codes (what the customer
+  // paid in), not the denomination of the stored amount. Summing is correct, and
+  // the belief layer sums the same way.
+  assert.match(reply, /324/);
+  // Never mislabel a base-currency amount with a presentment code, and never
+  // dead-end on a total that is perfectly computable.
+  assert.doesNotMatch(reply, /EUR 144/);
   assert.doesNotMatch(reply, /unavailable/i);
+  assert.doesNotMatch(reply, /not added together/i);
 });

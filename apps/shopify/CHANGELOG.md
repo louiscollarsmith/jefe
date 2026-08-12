@@ -14,7 +14,7 @@
 
 ### Changed
 
-- **Merchants who sell in more than one currency now get their numbers back.** Jefe previously added a store's currencies together and printed the result with no currency on it, then — after a first fix — refused to answer at all. Both were wrong: over half of real stores sell in several currencies, and every one of them has a main currency they think in. Jefe now answers in each currency separately, leads with the main one and how much of the business it represents, and says plainly that the figures are not added together and why. Asking for revenue in euros, or a breakdown by market, is now a normal question with a normal answer rather than something Jefe blocks. `app/lib/merchant-memory/{commerce-calculations,commerce-analyst}.server.js`.
+- **Revenue totals are correct again for stores whose customers pay in different currencies.** Jefe briefly split these stores' revenue up by the currency each customer paid in, and told them there was no single total. Both were wrong: the amounts Jefe stores are always already converted to the store's own currency, so they add up normally — the currency on an order only records what the shopper paid in. A store selling to Europe now sees one correct revenue figure in its own currency, matching what Jefe's understanding of the business already said, instead of a split-up view that labelled pounds as euros. `app/lib/merchant-memory/{commerce-calculations,commerce-analyst}.server.js`.
 
 ### Added
 

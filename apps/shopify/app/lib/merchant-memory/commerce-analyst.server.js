@@ -1268,61 +1268,11 @@ function replenishmentReply(result) {
   ].join("\n\n");
 }
 
-/**
- * Render a money result that spans several currencies: the dominant currency first
- * with its share, then the others, then a plain statement of why there is no single
- * total. Never a bare unlabelled number, and never a dead end — the limitation is
- * stated alongside the answer rather than instead of it.
- * @param {AnyRecord} result
- * @returns {string[]}
- */
-function multiCurrencyLines(result) {
-  const dominant = result.dataQuality?.dominantCurrency ?? null;
-  const share = Number(result.dataQuality?.dominantCurrencyShare);
-  const rows = (Array.isArray(result.rows) ? result.rows : [])
-    .filter((/** @type {AnyRecord} */ row) => row?.dimensions?.currency && Number.isFinite(Number(row.value)))
-    // Dominant first, then by value — so the merchant's main number leads.
-    .sort((/** @type {AnyRecord} */ a, /** @type {AnyRecord} */ b) => {
-      if (a.dimensions.currency === dominant) return -1;
-      if (b.dimensions.currency === dominant) return 1;
-      return Number(b.value) - Number(a.value);
-    });
-
-  if (!rows.length) {
-    // No per-currency rows to offer, so this genuinely is a refusal. Still says why.
-    return [`${labelForResult(result)}: no single total — this store trades in multiple currencies and I have no conversion rates.`];
-  }
-
-  const lines = rows.slice(0, 8).map((/** @type {AnyRecord} */ row) => {
-    const code = String(row.dimensions.currency);
-    const amount = Number(row.value).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const lead = code === dominant && Number.isFinite(share)
-      ? ` (${Math.round(share * 100)}% of value)`
-      : "";
-    return `${labelForResult(result)} in ${code}: ${code} ${amount}${lead}`;
-  });
-
-  const remaining = rows.length - lines.length;
-  if (remaining > 0) lines.push(`…and ${remaining} more ${remaining === 1 ? "currency" : "currencies"}.`);
-  lines.push("These are not added together: there is no single total across currencies without conversion rates, which I do not have.");
-  return lines;
-}
 
 /** @param {AnyRecord} packet */
 function calculationLines(packet) {
   const lines = [];
   for (const result of Array.isArray(packet?.results) ? packet.results.slice(0, 3) : []) {
-    // Money spanning several currencies has no single total (there is no FX data in
-    // this app to convert with) — but it is NOT unanswerable. The rows are already
-    // grouped by currency, so each figure is money in a stated currency. Lead with
-    // the dominant one and show the rest, rather than a dead end: a merchant who is
-    // 94% GBP asking "what's my revenue" should hear their number, not a refusal.
-    // Founder ruling 2026-08-12; measured — every one of 222 real merchants has a
-    // dominant currency.
-    if (result.dataQuality?.moneyUnavailable) {
-      lines.push(...multiCurrencyLines(result));
-      continue;
-    }
     const value = result.totals?.atRiskRevenue ?? result.totals?.value;
     const currency = result.currency ? `${result.currency} ` : "";
     if (Number.isFinite(Number(value))) {

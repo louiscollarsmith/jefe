@@ -131,16 +131,16 @@ test("mixed currency and invalid planner shapes return caveats or rejected resul
   });
 
   assert.equal(packet.results[0].ok, true);
-  assert.equal(packet.results[0].currency, null);
-  // Honesty: a money measure with no single currency is refused (matches the belief
-  // layer), never summed across currencies into a bare number.
-  assert.equal(
-    packet.results[0].dataQuality.moneyUnavailable,
-    "multi_currency_no_conversion",
-  );
+  // Differing presentment currencies do NOT make the amounts incomparable: every
+  // stored amount is shopMoney in the shop's one base currency, so the total is
+  // real and the label is never null. An earlier version of this test asserted a
+  // refusal here — it encoded the mistaken premise that order.currency described
+  // the amount, when it describes what the customer paid in.
+  assert.ok(packet.results[0].currency);
+  assert.equal(packet.results[0].dataQuality.moneyUnavailable, undefined);
   assert.match(
     packet.results[0].caveats.join(" "),
-    /multiple currencies|without conversion/i,
+    /does not affect the total/i,
   );
   assert.equal(packet.results[1].ok, false);
   assert.match(packet.results[1].error, /Unsupported calculation kind/);
@@ -280,39 +280,31 @@ function inWindow(value, filter) {
   return true;
 }
 
-test("a multi-currency money measure answers per currency instead of refusing", async () => {
+test("money totals stay summable when customers paid in different currencies", async () => {
   const packet = await executeCommerceCalculations(createCommercePrisma({ mixedCurrency: true }), {
-    merchantId: "m1",
-    shopId: "s1",
-    now: NOW,
+    merchantId: "m1", shopId: "s1", now: NOW,
     requests: [{ id: "revenue", kind: "aggregate", measure: "revenue", window: { days: 60 } }],
   });
 
   const result = packet.results[0];
   assert.equal(result.ok, true);
 
-  // Each figure is money in a STATED currency — which needs no FX. This is the
-  // answer, not a consolation prize: 113 of 222 real merchants are multi-currency
-  // and every one of them has a dominant currency, so refusing outright withholds
-  // an answer that was available (founder ruling, 2026-08-12).
-  const byCurrency = Object.fromEntries(result.rows.map((row) => [row.dimensions.currency, row.value]));
-  assert.deepEqual(byCurrency, { GBP: 200, USD: 80 });
-  assert.deepEqual(result.dataQuality.currencies, ["GBP", "USD"]);
+  // Every stored amount is shopMoney in the shop's ONE base currency
+  // (canonical.server.js:174 reads currentTotalPriceSet.shopMoney). order.currency
+  // is the PRESENTMENT code (canonical.server.js:164) - what the customer paid in,
+  // not what the amount is denominated in. So 200 + 80 = 280 is a real total, and
+  // refusing it would contradict the belief layer, which sums shopMoney correctly.
+  assert.equal(result.totals.value, 280);
+  assert.equal(result.dataQuality.moneyUnavailable, undefined);
 
-  // The lead, so a caller can say "£200, 71% of value" rather than print every row.
-  assert.equal(result.dataQuality.dominantCurrency, "GBP");
-  // 200/280 — value-weighted, not row-weighted. Row-weighting would give 0.5 here.
-  assert.equal(result.dataQuality.dominantCurrencyShare, 0.7143);
-
-  // What must NOT happen: a cross-currency total. 200+80=280 is not money.
-  assert.equal(result.currency, null);
-  assert.equal(result.totals.value ?? null, null);
-  assert.equal(result.dataQuality.moneyUnavailable, "multi_currency_no_conversion");
-  assert.doesNotMatch(JSON.stringify(result.totals), /280/);
-
-  // The refusal of a TOTAL carries the offer of the breakdown — never a dead end.
-  assert.match(result.caveats.join(" "), /reported separately/i);
-  assert.match(result.caveats.join(" "), /GBP is the largest at 71%/);
+  // The label falls back to the dominant presentment code as a base-currency proxy
+  // - never null, and never a per-presentment "breakdown" of base-currency amounts,
+  // which would report a GBP figure as "EUR".
+  assert.ok(result.currency);
+  assert.deepEqual(result.dataQuality.presentmentCurrencies, ["GBP", "USD"]);
+  assert.equal(result.dataQuality.baseCurrencySource, "dominant_presentment_proxy");
+  assert.match(result.caveats.join(" "), /does not affect the total/);
+  assert.equal(result.rows.every((row) => row.dimensions.currency === undefined), true);
 });
 
 test("a single-currency store's result shape is unchanged by currency bucketing", async () => {

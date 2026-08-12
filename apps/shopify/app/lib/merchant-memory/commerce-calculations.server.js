@@ -656,16 +656,14 @@ function orderMetricResult(request, dataset, source) {
     if (order.currency) bucket.currencies.add(String(order.currency));
     grouped.set(key, bucket);
   }
-  const collapsed = collapseSingleCurrency(
-    [...grouped.values()].map((bucket) => rowFromBucket(request, bucket)),
-    request,
-  );
+  const collapsed = { rows: [...grouped.values()].map((bucket) => rowFromBucket(request, bucket)) };
   return finalizeResult(request, {
     rows: shapeRows(request, collapsed.rows),
     totals: totalsFromRows(request, collapsed.rows),
     formula: formulaFor(request),
     sourceTables: ["orders"],
     currency: singleCurrency([...grouped.values()].flatMap((bucket) => [...bucket.currencies])),
+    currencies: [...grouped.values()].flatMap((bucket) => [...bucket.currencies]),
     source,
   });
 }
@@ -714,10 +712,7 @@ function lineMetricResult(request, dataset, source) {
     if (currency) bucket.currencies.add(String(currency));
     grouped.set(key, bucket);
   }
-  const rows = collapseSingleCurrency(
-    [...grouped.values()].map((bucket) => rowFromBucket(request, bucket)),
-    request,
-  ).rows;
+  const rows = [...grouped.values()].map((bucket) => rowFromBucket(request, bucket));
   const dataQuality = request.measure === "gross_margin"
     ? { costCoverage: costCoverage(rows), rowCount: lines.length }
     : { rowCount: lines.length };
@@ -727,6 +722,7 @@ function lineMetricResult(request, dataset, source) {
     formula: formulaFor(request),
     sourceTables: ["order_line_items", "orders", ...(request.measure === "gross_margin" ? ["variants"] : [])],
     currency: singleCurrency([...grouped.values()].flatMap((bucket) => [...bucket.currencies])),
+    currencies: [...grouped.values()].flatMap((bucket) => [...bucket.currencies]),
     dataQuality,
     source,
   });
@@ -751,21 +747,19 @@ function refundResult(request, dataset, source) {
     if (refund.currency) bucket.currencies.add(String(refund.currency));
     grouped.set(key, bucket);
   }
-  const rows = collapseSingleCurrency(
-    [...grouped.values()].map((bucket) => ({
-      dimensions: bucket.dimensions,
-      label: bucket.label,
-      value: round(bucket.value),
-      refundCount: bucket.count,
-    })),
-    request,
-  ).rows;
+  const rows = [...grouped.values()].map((bucket) => ({
+    dimensions: bucket.dimensions,
+    label: bucket.label,
+    value: round(bucket.value),
+    refundCount: bucket.count,
+  }));
   return finalizeResult(request, {
     rows: shapeRows(request, rows),
     totals: { value: round(sum(rows.map((row) => row.value))), refundCount: refunds.length },
     formula: "sum(refund.amount) for stored refund records in the requested window",
     sourceTables: ["refunds"],
     currency: singleCurrency([...grouped.values()].flatMap((bucket) => [...bucket.currencies])),
+    currencies: [...grouped.values()].flatMap((bucket) => [...bucket.currencies]),
     source,
   });
 }
@@ -844,6 +838,7 @@ function inventoryResult(request, dataset, source) {
     formula: formulaFor(request),
     sourceTables: ["inventory_levels", "variants", ...(request.measure === "stock_cover_days" ? ["order_line_items", "orders"] : [])],
     currency: singleCurrency([...grouped.values()].flatMap((bucket) => [...bucket.currencies])),
+    currencies: [...grouped.values()].flatMap((bucket) => [...bucket.currencies]),
     dataQuality: { inventoryRows: dataset.inventoryLevels.length },
     source,
   });
@@ -1073,61 +1068,39 @@ function withShares(rows) {
   }));
 }
 
-/**
- * Null every money-valued total (keeping *count fields) so no cross-currency figure is
- * emitted or rendered anywhere downstream. Used when a MONEY measure has no single
- * currency — the measure is money, so every non-count numeric total is money.
- */
 
 /**
- * Which currencies a multi-currency result covers, and which one leads.
+ * Which presentment currencies appear, and which dominates.
  *
- * Dominance is by VALUE, not row count: a merchant with one enormous GBP order and
- * forty small EUR ones is a GBP business, and counting rows would say otherwise.
- * Mirrors the belief layer's `business.primary_currency`, which also picks a
- * dominant rather than declaring the question unanswerable.
- * @param {AnyRecord[]} rows
- * @returns {{ currencies: string[], dominant: string | null, dominantShare: number | null }}
+ * Used ONLY to pick a base-currency LABEL when orders carry several presentment
+ * codes — the same dominant-as-proxy rule `shopBaseCurrency` uses. It is NOT a
+ * money breakdown: every stored amount is already shopMoney in one base currency,
+ * so there is nothing to break down.
+ * @param {Array<string|null|undefined>} codes
+ * @returns {{ currencies: string[], dominant: string | null }}
  */
-function currencyBreakdown(rows) {
+function currencyBreakdown(codes) {
   /** @type {Map<string, number>} */
   const byCurrency = new Map();
-  for (const row of rows ?? []) {
-    const code = row?.dimensions?.currency;
+  for (const code of codes ?? []) {
     if (!code) continue;
-    byCurrency.set(String(code), (byCurrency.get(String(code)) ?? 0) + Math.abs(number(row.value)));
+    byCurrency.set(String(code), (byCurrency.get(String(code)) ?? 0) + 1);
   }
   const currencies = [...byCurrency.keys()].sort();
-  if (byCurrency.size === 0) return { currencies, dominant: null, dominantShare: null };
-
-  const total = [...byCurrency.values()].reduce((a, b) => a + b, 0);
-  // Deterministic: highest value, ties broken alphabetically, so the same data
-  // always names the same leader.
-  const [dominant, value] = [...byCurrency.entries()]
+  if (byCurrency.size === 0) return { currencies, dominant: null };
+  // Deterministic: most frequent, ties broken alphabetically.
+  const [dominant] = [...byCurrency.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
-  return { currencies, dominant, dominantShare: total > 0 ? round(value / total, 4) : null };
-}
-
-/**
- * @param {AnyRecord | undefined} totals
- * @returns {AnyRecord}
- */
-function stripMoneyTotals(totals) {
-  /** @type {AnyRecord} */
-  const out = {};
-  for (const [key, value] of Object.entries(totals ?? {})) {
-    out[key] = /count$/i.test(key) ? value : null;
-  }
-  return out;
+  return { currencies, dominant };
 }
 
 /**
  * @param {AnyRecord} request
- * @param {{ rows: AnyRecord[]; totals?: AnyRecord; formula: string; sourceTables: string[]; currency?: string | null; dataQuality?: AnyRecord; caveats?: string[]; source: string }} input
+ * @param {{ rows: AnyRecord[]; totals?: AnyRecord; formula: string; sourceTables: string[]; currency?: string | null; currencies?: Array<string|null|undefined>; dataQuality?: AnyRecord; caveats?: string[]; source: string }} input
  * @returns {CommerceCalculationResult}
  */
 function finalizeResult(request, input) {
-  const currency = input.currency ?? currencyFromRows(input.rows);
+  let currency = input.currency ?? currencyFromRows(input.rows);
   const caveats = [...(input.caveats ?? [])];
   /** @type {AnyRecord} */
   let totals = input.totals ?? totalsFromRows(request, input.rows);
@@ -1144,21 +1117,27 @@ function finalizeResult(request, input) {
   // Measured on 222 real merchants: every one has a dominant currency (none below
   // 50%), and 56 of the multi-currency ones are ≥95% single — for whom a flat
   // refusal would withhold an answer that was available all along.
+  // Money totals ARE summable: every stored amount is shopMoney in the shop's one
+  // base currency. Orders differing in `currency` only means customers PAID in
+  // different presentment currencies — it does not make the amounts incomparable,
+  // and refusing to total on it contradicts the belief layer, which sums correctly.
+  //
+  // What we cannot do is label the total with a presentment code. Where orders carry
+  // several, we fall back to the dominant one as a proxy for the shop's base
+  // currency (the same proxy `shopBaseCurrency` uses) and say so, rather than
+  // labelling the sum with whichever code happened to sort first.
   if (MONEY_MEASURES.has(request.measure) && currency === null) {
-    const breakdown = currencyBreakdown(input.rows);
+    const breakdown = currencyBreakdown(input.currencies ?? []);
+    currency = breakdown.dominant;
     dataQuality = {
       ...dataQuality,
-      moneyUnavailable: "multi_currency_no_conversion",
-      currencies: breakdown.currencies,
-      dominantCurrency: breakdown.dominant,
-      dominantCurrencyShare: breakdown.dominantShare,
+      presentmentCurrencies: breakdown.currencies,
+      baseCurrencySource: "dominant_presentment_proxy",
     };
     caveats.push(
-      breakdown.dominant
-        ? `This store trades in ${breakdown.currencies.length} currencies, so there is no single total without conversion. Each currency is reported separately below; ${breakdown.dominant} is the largest at ${Math.round((breakdown.dominantShare ?? 0) * 100)}% of value.`
-        : "This store trades in multiple currencies, so there is no single total without conversion. Each currency is reported separately below.",
+      "Amounts are totalled in the store's base currency. Customers paid in "
+        + `${breakdown.currencies.length} different currencies, which does not affect the total.`,
     );
-    totals = stripMoneyTotals(totals);
   }
   return {
     id: request.id,
@@ -1269,57 +1248,30 @@ function actionFormula(measure) {
 }
 
 /**
- * The dimensions a request is actually grouped by.
+ * The dimensions a request is grouped by.
  *
- * A MONEY measure is ALWAYS bucketed by currency, even when the merchant didn't ask
- * for it. Summing GBP + EUR + AED produces a number that is not money in any
- * currency, and 113 of 222 real merchants trade in more than one (measured against
- * Quiver's warehouse, 2026-08-12). Bucketing by currency means each figure is
- * always money in a stated currency, with no FX needed.
+ * ⚠️ This deliberately does NOT bucket money by `order.currency`, and that is the
+ * whole lesson of this file's history. `order.currency` is the order's
+ * **presentment** currency (`canonical.server.js:164` reads top-level
+ * `order.currencyCode`), but every stored AMOUNT is **`shopMoney`** — the shop's
+ * single base currency (`canonical.server.js:174-190`, and `queries.server.js`
+ * fetches `shopMoney` 10 times and `presentmentMoney` never).
  *
- * `collapseSingleCurrency` strips the dimension back out when the store turns out to
- * trade in exactly one — which is 109 of those 222 — so nothing changes for them.
+ * So the label and the amount describe different things. An order from a euro
+ * customer stores £144 of shopMoney and labels it "EUR". Bucketing by that label
+ * produced "EUR 144" for a figure that is £144 — attaching a WRONG currency where
+ * there had merely been none, and contradicting the belief layer, which sums
+ * shopMoney into one correct total (`shopBaseCurrency`, shopify-derivations.js).
+ *
+ * Amounts are all one currency and ARE summable. A genuine per-customer-currency
+ * money view would need `presentmentMoney` AMOUNTS, which we do not ingest.
  * @param {AnyRecord} request
  * @returns {string[]}
  */
 function groupingDimensions(request) {
-  const dimensions = Array.isArray(request?.dimensions) ? request.dimensions : [];
-  if (!MONEY_MEASURES.has(request?.measure) || dimensions.includes("currency")) return dimensions;
-  return [...dimensions, "currency"];
+  return Array.isArray(request?.dimensions) ? request.dimensions : [];
 }
 
-/**
- * Drop the auto-added currency dimension when the result only covers one currency.
- *
- * Keeps the output shape identical to before this change for single-currency
- * stores: same row labels, same dimension keys. Without this, every single-currency
- * merchant's rows would suddenly grow a `currency` key and re-label from "All" to
- * "GBP" — changing the answer for the majority in order to fix the minority.
- * @param {AnyRecord[]} rows
- * @param {AnyRecord} request
- * @returns {{ rows: AnyRecord[], currencies: string[] }}
- */
-function collapseSingleCurrency(rows, request) {
-  const currencies = uniqueStrings(rows.map((row) => row.dimensions?.currency).filter(Boolean));
-  const autoAdded = MONEY_MEASURES.has(request?.measure)
-    && !(Array.isArray(request?.dimensions) && request.dimensions.includes("currency"));
-  if (!autoAdded || currencies.length > 1) return { rows, currencies };
-
-  return {
-    currencies,
-    rows: rows.map((row) => {
-      // Built by omission rather than destructuring-and-discarding: the discarded
-      // binding reads as dead code to the linter, and it is not worth an eslint
-      // disable for a one-key drop.
-      /** @type {AnyRecord} */
-      const rest = {};
-      for (const [key, value] of Object.entries(row.dimensions ?? {})) {
-        if (key !== "currency") rest[key] = value;
-      }
-      return { ...row, dimensions: rest, label: labelFromDimensions(rest) };
-    }),
-  };
-}
 
 /**
  * @param {AnyRecord} order
