@@ -149,6 +149,12 @@ export function DailyHome(props: {
         <ActionHistory actions={history} />
         <WatchingSection items={watching} />
         <GoalsSection goals={props.goals} />
+        {/* The door to Merchant Memory — persistent, so it's reachable even when the home is
+            all-clear (it previously lived inside WatchingSection, which is hidden when there's
+            nothing to watch, making the memory surface unreachable on a quiet store). */}
+        <Link to="?view=memory" style={footerLinkStyle}>
+          See everything Jefe knows →
+        </Link>
       </div>
     </main>
   );
@@ -357,9 +363,6 @@ function WatchingSection({ items }: { items: Array<{ id: string; title: string; 
           <span style={{ color: COLORS.border }}>→</span>
         </div>
       ))}
-      <Link to="?view=memory" style={footerLinkStyle}>
-        See everything Jefe knows →
-      </Link>
     </section>
   );
 }
