@@ -159,6 +159,19 @@ export async function getMerchantContextForQuestion(prisma, input) {
     input.logger ??
     baseLogger.child({ component: "merchant-memory-context-retriever" });
   const warnings = [];
+  // Fail closed, loudly. Each loader below independently refuses to read without a shop
+  // scope, so an unscoped call returns an EMPTY packet rather than one built from every
+  // shop this merchant owns. Log it once here (not per-loader) so the gap is visible:
+  // silently answering from nothing is better than silently answering from another shop,
+  // but neither should be silent.
+  if (!shopScope(input.shopId)) {
+    warnings.push("missing_shop_scope_context_withheld");
+    log.warn("merchant memory context requested without shop scope; reading nothing", {
+      merchantId: input.merchantId,
+      actionRunId: input.actionRunId ?? null,
+      recommendationId: input.recommendationId ?? null,
+    });
+  }
   const actionRow = await loadActionExecution(prisma, input);
   const actionSourceRecommendation = sourceRecommendationFromAction(actionRow);
   const suppliedRawRecommendationId = identityText(input.recommendationId);
@@ -415,11 +428,49 @@ function questionDrivenBeliefKeys(message) {
 }
 
 /**
+ * Tenant scope for every read in this module.
+ *
+ * ⛔ NEVER `shopId: input.shopId ?? undefined`. Prisma DROPS an `undefined` filter, so a
+ * missing shopId silently widens the read to EVERY shop the merchant owns — one merchant's
+ * Shop A answering a question with Shop B's beliefs, with nothing in the logs to show it.
+ * A missing scope must FAIL CLOSED (read nothing), never fail open. Mirrors the guard in
+ * `executeCommerceCalculations` (commerce-calculations.server.js:307).
+ *
+ * Presence-checked, not UUID-checked: the column is `@db.Uuid` in production but callers in
+ * tests use plain ids, and format is not what this guard is for.
+ *
+ * ⛔ `identityText`, NOT `safeText`. `safeText` is the free-text PII REDACTOR: its
+ * phone-number rule (`\+?\d[\d\s().-]{7,}\d`) matches the numeric-and-hyphen runs that occur
+ * naturally inside a UUID, so `safeText` turns e.g. `…-1234-5678-…` into `…-[redacted]-…`
+ * and Prisma then rejects the id. Same class as the 2026-08-11 fix that kept UUID
+ * identifiers out of free-text redaction. An identifier is never free text.
+ * @param {unknown} shopId
+ * @returns {string} the scoped shop id, or "" when there is no usable scope
+ */
+function shopScope(shopId) {
+  return identityText(shopId);
+}
+
+/**
+ * Row-level scope for MerchantMemoryBelief, whose `shopId` is NULLABLE: a merchant-wide
+ * belief is a real row with `shopId: null`. So the correct read is "this shop's beliefs
+ * ∪ the merchant-wide ones" — never other shops'. A plain `shopId: input.shopId` would be
+ * just as wrong as the `?? undefined` it replaces, in the opposite direction: it would
+ * silently DROP every merchant-wide belief from retrieved context. Ratified by chat 10.
+ * @param {string} shopId
+ */
+function beliefShopFilter(shopId) {
+  return { OR: [{ shopId }, { shopId: null }] };
+}
+
+/**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null; beliefIds?: string[]; beliefKeys?: string[] }} input
  */
 async function loadBeliefsWithExpansion(prisma, input) {
   if (!prisma.merchantMemoryBelief?.findMany) return [];
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return [];
   const seedIds = uuidStrings(input.beliefIds ?? []);
   const seedKeys = uniqueStrings(input.beliefKeys ?? []);
   /** @type {any[]} */
@@ -431,7 +482,7 @@ async function loadBeliefsWithExpansion(prisma, input) {
       ? await prisma.merchantMemoryBelief.findMany({
           where: {
             merchantId: input.merchantId,
-            shopId: input.shopId ?? undefined,
+            AND: [beliefShopFilter(shopId)],
             supersededAt: null,
             status: { in: ACTIVE_BELIEF_STATUSES },
             OR: orFilters,
@@ -449,7 +500,7 @@ async function loadBeliefsWithExpansion(prisma, input) {
     ? await prisma.merchantMemoryBelief.findMany({
         where: {
           merchantId: input.merchantId,
-          shopId: input.shopId ?? undefined,
+          AND: [beliefShopFilter(shopId)],
           supersededAt: null,
           status: { in: ACTIVE_BELIEF_STATUSES },
           key: { in: missingExpansionKeys },
@@ -471,10 +522,12 @@ async function loadBeliefsWithExpansion(prisma, input) {
 async function loadGoals(prisma, input) {
   const ids = uuidStrings(input.goalIds ?? []);
   if (!ids.length || !prisma.merchantGoalHorizon?.findMany) return [];
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return [];
   return prisma.merchantGoalHorizon.findMany({
     where: {
       merchantId: input.merchantId,
-      shopId: input.shopId ?? undefined,
+      shopId,
       id: { in: ids },
     },
     orderBy: { orderIndex: "asc" },
@@ -489,10 +542,12 @@ async function loadGoals(prisma, input) {
 async function loadInsights(prisma, input) {
   const ids = uuidStrings(input.insightIds ?? []);
   if (!ids.length || !prisma.merchantInsightFinding?.findMany) return [];
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return [];
   return prisma.merchantInsightFinding.findMany({
     where: {
       merchantId: input.merchantId,
-      shopId: input.shopId ?? undefined,
+      shopId,
       id: { in: ids },
     },
     orderBy: { orderIndex: "asc" },
@@ -507,11 +562,13 @@ async function loadInsights(prisma, input) {
 async function loadPlanRecommendation(prisma, input) {
   const recommendationId = uuidString(input.recommendationId);
   if (!recommendationId || !prisma.merchantPlanRecommendation?.findFirst) return null;
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return null;
   return prisma.merchantPlanRecommendation.findFirst({
     where: {
       id: recommendationId,
       merchantId: input.merchantId,
-      shopId: input.shopId ?? undefined,
+      shopId,
     },
     include: {
       run: { select: { snapshotHash: true } },
@@ -526,10 +583,12 @@ async function loadPlanRecommendation(prisma, input) {
  */
 async function loadActionExecution(prisma, input) {
   if (!input.actionRunId || !prisma.actionExecution?.findFirst) return null;
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return null;
   return prisma.actionExecution.findFirst({
     where: {
       merchantId: input.merchantId,
-      shopId: input.shopId ?? undefined,
+      shopId,
       runId: input.actionRunId,
     },
     select: {
@@ -594,10 +653,12 @@ async function loadOrBackfillPlanEvidenceSnapshot(prisma, input) {
  */
 async function loadActionHistory(prisma, input) {
   if (!input.actionRow?.runId || !prisma.actionExecution?.findMany) return [];
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return [];
   return prisma.actionExecution.findMany({
     where: {
       merchantId: input.merchantId,
-      shopId: input.shopId ?? undefined,
+      shopId,
       runId: { not: input.actionRow.runId },
       status: { in: ["applied", "partially_applied", "rejected", "reverted"] },
     },

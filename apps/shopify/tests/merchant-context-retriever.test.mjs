@@ -245,6 +245,141 @@ test("retrieved context redacts customer PII and excludes raw payload fields", a
   assert.match(serialized, /Yuzu Tonic \[redacted\]/);
 });
 
+// --- Tenant scoping -------------------------------------------------------
+// Every read in the retriever is scoped to ONE shop. These tests assert the WHERE clause
+// itself rather than fixture output, because the failure mode is silent: a dropped filter
+// returns MORE rows and a naive filter returns FEWER, and a stub that ignores `where`
+// cannot tell either apart from correct behaviour.
+
+test("belief reads are scoped to the shop AND the merchant-wide rows", async () => {
+  const wheres = captureWheres(createContextPrisma());
+
+  await getMerchantContextForQuestion(wheres.prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    recommendationId: RECOMMENDATION_ID,
+    message: "which products are low on cover?",
+    logger: silentLogger,
+  });
+
+  assert.ok(wheres.belief.length > 0, "expected at least one belief read");
+  for (const where of wheres.belief) {
+    // Shop's own beliefs ∪ merchant-wide (null-shopId) beliefs — never another shop's.
+    assert.deepEqual(where.AND, [{ OR: [{ shopId: "s1" }, { shopId: null }] }]);
+    // A bare equality here would silently drop every merchant-wide belief.
+    assert.equal(where.shopId, undefined);
+  }
+});
+
+test("not-null models are scoped by plain equality, never a null-inclusive OR", async () => {
+  const wheres = captureWheres(createContextPrisma());
+
+  await getMerchantContextForQuestion(wheres.prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    recommendationId: RECOMMENDATION_ID,
+    actionRunId: "run-1",
+    message: "what happened?",
+    logger: silentLogger,
+  });
+
+  // MerchantGoalHorizon / MerchantInsightFinding / MerchantPlanRecommendation /
+  // ActionExecution all have NOT NULL shop_id, so a `{ shopId: null }` arm would be dead
+  // weight that invites someone to copy the belief filter onto a model that must not have it.
+  for (const where of [...wheres.recommendation, ...wheres.action]) {
+    assert.equal(where.shopId, "s1");
+    assert.equal(where.AND, undefined);
+  }
+});
+
+test("the shop scope reaches Prisma byte-for-byte, never through free-text redaction", async () => {
+  const wheres = captureWheres(createContextPrisma());
+  // A REAL-SHAPED shop id. The middle groups are numeric on purpose: the free-text PII
+  // redactor's phone-number rule (\+?\d[\d\s().-]{7,}\d) matches `1234-5678` inside a UUID
+  // and rewrites it to "[redacted]", which Prisma then rejects as a malformed uuid. Fixture
+  // ids like "s1" cannot catch this — they contain no digit run to redact.
+  const shopId = "facdb9ef-1234-5678-81f2-f90b543224c2";
+
+  await getMerchantContextForQuestion(wheres.prisma, {
+    merchantId: "m1",
+    shopId,
+    recommendationId: RECOMMENDATION_ID,
+    actionRunId: "run-1",
+    message: "which products are low on cover?",
+    logger: silentLogger,
+  });
+
+  assert.ok(wheres.belief.length > 0, "expected at least one belief read");
+  for (const where of wheres.belief) {
+    assert.deepEqual(where.AND, [{ OR: [{ shopId }, { shopId: null }] }]);
+  }
+  for (const where of [...wheres.recommendation, ...wheres.action]) {
+    assert.equal(where.shopId, shopId);
+  }
+  const serialized = JSON.stringify([...wheres.belief, ...wheres.recommendation, ...wheres.action]);
+  assert.doesNotMatch(serialized, /\[redacted\]/);
+});
+
+test("a missing shop scope reads nothing rather than every shop the merchant owns", async () => {
+  const wheres = captureWheres(createContextPrisma());
+  const warned = [];
+
+  const context = await getMerchantContextForQuestion(wheres.prisma, {
+    merchantId: "m1",
+    shopId: null,
+    recommendationId: RECOMMENDATION_ID,
+    actionRunId: "run-1",
+    // A message that DOES drive a keyword belief lookup, so an unguarded loader would
+    // genuinely issue the query. With a message that matches nothing, this test would pass
+    // whether or not the guard exists.
+    message: "which products are dead stock?",
+    logger: { ...silentLogger, warn: (_message, data) => warned.push(data) },
+  });
+
+  // Fail CLOSED: not one scoped row is read. Before this guard, `shopId: undefined` made
+  // Prisma drop the filter entirely and answer from every shop under the merchant.
+  assert.deepEqual(wheres.belief, []);
+  assert.deepEqual(wheres.recommendation, []);
+  assert.deepEqual(wheres.action, []);
+  assert.deepEqual(context.currentSystemContext.blocks, []);
+  assert.equal(context.planEvidenceAtRecommendationTime, null);
+  // ...and loudly: an empty answer must not look like a merchant with no data.
+  assert.ok(context.retrieval.warnings.includes("missing_shop_scope_context_withheld"));
+  assert.equal(warned.length, 1);
+  assert.equal(warned[0].merchantId, "m1");
+});
+
+// Wrap a fixture prisma so each model's `where` is recorded, leaving its behaviour intact.
+function captureWheres(prisma) {
+  const belief = [];
+  const recommendation = [];
+  const action = [];
+  const spy = (list, fn) => async (args) => {
+    if (args?.where) list.push(args.where);
+    return fn(args);
+  };
+  return {
+    belief,
+    recommendation,
+    action,
+    prisma: {
+      ...prisma,
+      merchantMemoryBelief: {
+        findMany: spy(belief, prisma.merchantMemoryBelief.findMany),
+      },
+      merchantPlanRecommendation: {
+        findFirst: spy(recommendation, prisma.merchantPlanRecommendation.findFirst),
+      },
+      merchantGoalHorizon: { findMany: spy(recommendation, prisma.merchantGoalHorizon.findMany) },
+      merchantInsightFinding: { findMany: spy(recommendation, prisma.merchantInsightFinding.findMany) },
+      actionExecution: {
+        findFirst: spy(action, prisma.actionExecution.findFirst),
+        findMany: spy(action, prisma.actionExecution.findMany),
+      },
+    },
+  };
+}
+
 function createContextPrisma({
   beliefs = [
     beliefFixture({
