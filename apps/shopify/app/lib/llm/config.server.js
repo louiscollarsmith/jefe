@@ -14,12 +14,39 @@ export const DEFAULT_LLM_MAX_INPUT_TOKENS = 6000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 900;
 export const DEFAULT_LLM_MAX_RETRIES = 1;
 
+/**
+ * OpenAI-compatible backup providers beyond the built-in groq/gemini (Kimi K3 /
+ * Moonshot today; Meta Spark and any other `/chat/completions`-speaking vendor
+ * drop in as one entry here — no new adapter code). Each is DARK until its API
+ * key env is set: an unkeyed provider yields no client. The MODEL is supplied by
+ * LLM_MODEL / LLM_FALLBACK_MODEL when the provider is selected, e.g.
+ * `LLM_FALLBACK_PROVIDER=kimi LLM_FALLBACK_MODEL=kimi-k3`.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {Record<string, { apiKey: string; baseUrl: string }>}
+ */
+export function getOpenAiCompatibleProviders(env = process.env) {
+  return {
+    kimi: {
+      apiKey: env.KIMI_API_KEY || env.MOONSHOT_API_KEY || "",
+      baseUrl: env.KIMI_BASE_URL || "https://api.moonshot.ai/v1",
+    },
+    // meta-spark: add here once its base URL is confirmed (same shape if it's
+    // OpenAI-compatible; otherwise it needs its own adapter).
+  };
+}
+
 export function getLlmConfig() {
   const geminiApiKey = process.env.GEMINI_API_KEY || "";
   const groqApiKey = process.env.GROQ_API_KEY || "";
+  const openAiCompatible = getOpenAiCompatibleProviders();
+  const anyCompatKey = Object.values(openAiCompatible).some((p) =>
+    Boolean(p.apiKey),
+  );
   const enabled =
     process.env.LLM_ENABLED === "true" ||
-    (process.env.LLM_ENABLED !== "false" && Boolean(geminiApiKey || groqApiKey));
+    (process.env.LLM_ENABLED !== "false" &&
+      Boolean(geminiApiKey || groqApiKey || anyCompatKey));
   return {
     enabled,
     provider: process.env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER,
@@ -29,6 +56,7 @@ export function getLlmConfig() {
     fallbackModel: process.env.LLM_FALLBACK_MODEL || DEFAULT_LLM_FALLBACK_MODEL,
     geminiApiKey,
     groqApiKey,
+    openAiCompatible,
     timeoutMs: positiveInteger(
       process.env.LLM_TIMEOUT_MS,
       DEFAULT_LLM_TIMEOUT_MS,
