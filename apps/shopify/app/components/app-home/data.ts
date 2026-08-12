@@ -71,6 +71,12 @@ export type SuggestedAction = {
   mode?: ActionMode;
   markdownPercent?: number;
   note?: string;
+  /**
+   * Why Jefe is leaving this one to the merchant, in their words. Null when there is nothing
+   * specific to say — the surface then uses its own general line rather than inventing a
+   * reason. Read from the stored eligibility record, which had been written and never used.
+   */
+  raise?: { reason: string; detail: string | null } | null;
 };
 
 export type ExecutedActionOutcome =

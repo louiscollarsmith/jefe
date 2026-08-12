@@ -99,6 +99,9 @@ type PrimaryMove = {
   actionRunId: string | null;
   actionType: string | null;
   executable: boolean;
+  // Why Jefe is leaving this one to the merchant. Null when there is nothing specific to
+  // say — the surface falls back to its own line rather than inventing a cause.
+  raise: { reason: string; detail: string | null } | null;
   state: "proposed" | "in_progress" | "empty";
   statusLabel: string;
   statusTone: "yellow" | "green";
@@ -1020,14 +1023,37 @@ function ActionChat({
               </Form>
             ) : null}
             {!move.actionRunId || !move.executable ? (
-              <span style={{ color: COLORS.muted, fontWeight: 700 }}>
-                This move is advisory until a typed action preview is available.
-              </span>
+              <InstructPath move={move} />
             ) : null}
           </div>
         </div>
       </div>
     </main>
+  );
+}
+
+// What a merchant sees when Jefe is NOT going to do this one itself.
+//
+// This replaces "This move is advisory until a typed action preview is available." — our
+// vocabulary, framed as an absence, offering nothing to do. It sat on the branch that most
+// recommendations land in, because Jefe has one adapter and can talk about far more than it
+// can execute. So the most common outcome read as a failed action rather than as advice.
+//
+// The no-dead-ends invariant says every recommendation either executes, asks for approval, or
+// INSTRUCTS. This is the instruct path: say plainly that it's the merchant's to make, and give
+// the real reason when we have one. `raise` comes from the stored eligibility record — a cap
+// they set, a confidence Jefe couldn't reach — and is null when there is nothing specific to
+// say, in which case we say the general thing rather than invent a cause.
+function InstructPath({ move }: { move: PrimaryMove }) {
+  return (
+    <div style={instructPathStyle}>
+      <span style={instructLeadStyle}>
+        {move.raise?.reason ?? "This one's yours to make — I can't do it for you yet."}
+      </span>
+      {move.raise?.detail ? (
+        <span style={instructDetailStyle}>{move.raise.detail}</span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1148,6 +1174,7 @@ function buildPrimaryMove(input: {
       actionRunId: null,
       actionType: null,
       executable: false,
+      raise: null,
       state: "empty",
       statusLabel: "All clear",
       statusTone: "green",
@@ -1181,6 +1208,7 @@ function buildPrimaryMove(input: {
       actionRunId: inProgress.actionRunId,
       actionType: inProgress.actionType,
       executable: false,
+      raise: null,
       state: "in_progress",
       statusLabel: `Approved ${formatShortDate(inProgress.appliedAt, input.storeTimeZone)}`,
       statusTone: "green",
@@ -1207,6 +1235,7 @@ function buildPrimaryMove(input: {
     actionRunId: input.suggestedAction?.actionRunId ?? null,
     actionType: input.suggestedAction?.actionType ?? null,
     executable: input.suggestedAction?.executable ?? false,
+    raise: input.suggestedAction?.raise ?? null,
     state: "proposed",
     statusLabel: "Needs your OK",
     statusTone: "yellow",
@@ -1504,6 +1533,24 @@ const replyRetryButtonStyle: CSSProperties = {
   fontWeight: 600,
   lineHeight: 1.2,
   padding: "5px 12px",
+};
+// Deliberately reads as a considered position, not a greyed-out control. Same weight and
+// colour as anything else Jefe says — an instruction is the product working, not degraded.
+const instructPathStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  maxWidth: "86%",
+};
+const instructLeadStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 15,
+  lineHeight: 1.6,
+};
+const instructDetailStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 13.5,
+  lineHeight: 1.5,
 };
 const thinkingStyle: CSSProperties = {
   color: COLORS.meta,
