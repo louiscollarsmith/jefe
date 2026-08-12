@@ -160,7 +160,9 @@ export async function getLatestMerchantPlan(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       status: PLAN_RUN_STATUS.completed,
-      sourceMode: "full",
+      // "proactive" runs are the same primary-move plan, generated on Jefe's own cadence
+      // rather than the merchant's — surface them on the home too.
+      sourceMode: { in: ["full", "proactive"] },
     },
     include: { recommendation: true },
     orderBy: { completedAt: "desc" },
@@ -634,6 +636,11 @@ async function preparePlanRun(prisma, input) {
     goalRunId: snapshot.goalRunId,
     promptVersion: MERCHANT_PLAN_PROMPT_VERSION,
     schemaVersion: MERCHANT_PLAN_SCHEMA_VERSION,
+    // Marks who first generated this snapshot's plan. "proactive" = Jefe deciding on its
+    // own cadence (not the merchant) — counted against the per-day proactive cap and
+    // surfaced alongside "full" runs. Set on CREATE only; the upsert `update` below never
+    // reclassifies an existing run, so a snapshot keeps whichever trigger reached it first.
+    sourceMode: input.sourceMode === "proactive" ? "proactive" : "full",
   };
   const run = await prisma.merchantPlanRun.upsert({
     where: {

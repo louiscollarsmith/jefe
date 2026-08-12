@@ -82,3 +82,58 @@ export async function decideProactiveGeneration(
     reason: budget.reason,
   };
 }
+
+/**
+ * Start of the merchant's current day as a UTC Date — the daily-cap window boundary. Uses the
+ * shop's timezone to pick the calendar date, then midnight-UTC of that date (the codebase's
+ * dayKey convention). Not the exact local midnight (no offset math), but a stable, monotonic
+ * per-day boundary, which is all the cap needs. Falls back to UTC on a bad timezone.
+ * @param {Date} now
+ * @param {string} [timeZone]
+ * @returns {Date}
+ */
+export function startOfMerchantDay(now, timeZone) {
+  const tz = typeof timeZone === "string" && timeZone ? timeZone : "UTC";
+  const format = (zone) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now);
+  let ymd;
+  try {
+    ymd = format(tz);
+  } catch {
+    ymd = format("UTC");
+  }
+  return new Date(`${ymd}T00:00:00Z`);
+}
+
+/**
+ * Proactive generation for ONE merchant: if under the daily cap, enqueue a plan run marked
+ * `sourceMode: "proactive"`. Generation reuses the existing plan pipeline (deduped by belief
+ * snapshot), so it only truly regenerates when the merchant's situation changed — an
+ * unchanged snapshot comes back "reused" and does NOT consume the cap (correct silence).
+ * `ensureQueued` is injected (the worker passes `ensureMerchantPlanQueued`) so this module
+ * stays dependency-light and testable on plain Node.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string; cap?: number; ensureQueued: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countProactivePlanRunsSince } }} input
+ * @returns {Promise<{ enqueued: boolean; status: string; remaining: number; reason: string | null }>}
+ */
+export async function maybeEnqueueProactivePlan(
+  prisma,
+  { merchantId, shopId, now, timeZone, cap = DEFAULT_PROACTIVE_DAILY_CAP, ensureQueued, deps = {} },
+) {
+  const since = startOfMerchantDay(now, timeZone);
+  const decision = await decideProactiveGeneration(prisma, { merchantId, since, cap, deps });
+  if (!decision.enqueue) {
+    return { enqueued: false, status: "skipped", remaining: decision.remaining, reason: decision.reason };
+  }
+  const result = await ensureQueued(prisma, { merchantId, shopId, sourceMode: PROACTIVE_SOURCE_MODE });
+  const status = result?.status ?? "unknown";
+  // "queued" = a fresh generation was enqueued (new belief snapshot). "reused"/other = nothing
+  // new to say; the snapshot was already generated, so no proactive run row was created and the
+  // cap was not consumed.
+  return { enqueued: status === "queued", status, remaining: decision.remaining, reason: decision.reason };
+}
