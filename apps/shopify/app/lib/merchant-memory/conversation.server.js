@@ -870,6 +870,18 @@ export async function sendConversationMessage(prisma, input) {
     return { ok: true };
   }
 
+  // Undo runs its own path: it reverses the merchant's last memory change and reports what
+  // it reversed, rather than proposing anything. No confirmation gate — undo is the safe
+  // direction, and asking "are you sure you want to undo?" after a destructive act is the
+  // wrong place to add friction.
+  if (operation.operationType === OPERATION_TYPES.undoLastChange) {
+    return undoLatestMerchantMemoryChange(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      topic: input.topic,
+    });
+  }
+
   if (operation.operationType === OPERATION_TYPES.noMemoryChange) {
     await createAssistantMessage(prisma, {
       conversation,
@@ -1088,12 +1100,13 @@ export async function rejectProposedOperation(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null }} input
+ * @param {{ merchantId: string; shopId?: string | null; topic?: string }} input
  */
 export async function undoLatestMerchantMemoryChange(prisma, input) {
   const conversation = await getOrCreateConversation(prisma, input);
   const reverted = await revertLatestMerchantSuppliedChange(prisma, {
     merchantId: input.merchantId,
+    shopId: input.shopId,
     changedByPrefix: "merchant_conversation",
     revertedBy: "merchant_conversation",
     metadata: { conversationId: conversation.id },
@@ -1128,8 +1141,12 @@ export function interpretMerchantMessage(input) {
   ) ?? input.openQuestions?.[0];
 
   if (isUndo(normalized)) {
+    // Was noMemoryChange — which meant "undo that" was ACKNOWLEDGED and then ignored:
+    // `undoLatestMerchantMemoryChange` existed but had no caller anywhere, so the merchant
+    // got a reply and nothing was reversed. That is worse than having no undo at all, and
+    // it mattered most right after a forget, where the reply promises one.
     return {
-      operationType: OPERATION_TYPES.noMemoryChange,
+      operationType: OPERATION_TYPES.undoLastChange,
       reason: "Merchant wants to undo the latest change.",
       merchantStatement: message,
       confidence: 0.9,
@@ -1319,7 +1336,9 @@ export async function validateStructuredOperation(prisma, input) {
   if (
     input.operation.operationType === OPERATION_TYPES.noMemoryChange ||
     input.operation.operationType === OPERATION_TYPES.requestExplanation ||
-    input.operation.operationType === OPERATION_TYPES.clarificationRequired
+    input.operation.operationType === OPERATION_TYPES.clarificationRequired ||
+    // Undo names no belief — it resolves its own target from history.
+    input.operation.operationType === OPERATION_TYPES.undoLastChange
   ) {
     return { ok: true };
   }
@@ -1710,6 +1729,7 @@ function buildMerchantMemoryLlmSystemPrompt() {
     "Use obsolete_belief only when the merchant clearly asks you to forget or drop something they can name. It takes a target belief key and no value.",
     "Never choose obsolete_belief to fix a wrong value — that is correct_belief. Forgetting removes the understanding entirely.",
     "If you cannot tell which belief a forget request refers to, return clarification_required instead. Never guess the target of a forget.",
+    "Use undo_last_change when the merchant wants the previous change put back (\"undo that\", \"actually keep it\"). It takes no target and no value — the server resolves what to reverse from history.",
     "Do not create customer-level personal beliefs or store customer PII.",
     "Use only the supplied supported belief keys.",
   ].join("\n");

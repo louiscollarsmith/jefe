@@ -127,6 +127,32 @@ test("\"don't forget\" teaches Jefe something — it is the opposite instruction
   }
 });
 
+test("\"undo that\" reaches the undo path instead of being acknowledged and dropped", () => {
+  // The committed-forget reply tells the merchant to say "undo that". This asserts that
+  // sentence is TRUE. It previously resolved to noMemoryChange, and
+  // undoLatestMerchantMemoryChange had no caller anywhere — so undo was acknowledged in
+  // words and never performed, which is worse than offering no undo at all.
+  for (const message of ["undo that", "undo", "not what i meant"]) {
+    const op = interpretMerchantMessage({
+      message,
+      beliefs: [DESCRIPTION],
+      openQuestions: [],
+      context: discussing("business.description"),
+    });
+    assert.equal(op.operationType, OPERATION_TYPES.undoLastChange, message);
+  }
+});
+
+test("undo needs no target belief to validate — it resolves one from history", async () => {
+  const result = await validateStructuredOperation(null, {
+    merchantId: "m1",
+    operation: { operationType: OPERATION_TYPES.undoLastChange },
+    beliefs: [],
+  });
+
+  assert.equal(result.ok, true);
+});
+
 test("an observed Shopify fact cannot be forgotten — it can be corrected", async () => {
   const result = await validateStructuredOperation(null, {
     merchantId: "m1",

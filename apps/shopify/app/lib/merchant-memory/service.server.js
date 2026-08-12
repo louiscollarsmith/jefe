@@ -712,13 +712,17 @@ export async function upsertMerchantSuppliedBelief(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; changedByPrefix?: string; revertedBy?: string; revertedAt?: Date; metadata?: any }} input
+ * @param {{ merchantId: string; shopId?: string | null; changedByPrefix?: string; revertedBy?: string; revertedAt?: Date; metadata?: any }} input
  */
 export async function revertLatestMerchantSuppliedChange(prisma, input) {
   const changedByPrefix = input.changedByPrefix ?? "merchant_conversation";
   const history = await prisma.merchantMemoryBeliefHistory.findFirst({
     where: {
       merchantId: input.merchantId,
+      // Shop-scoped like the belief reads: "undo my last change" must mean THIS shop's last
+      // change, not whichever of the merchant's shops happened to be edited most recently.
+      // History rows carry a nullable shopId, so merchant-wide changes stay in scope.
+      ...beliefShopWhere(input.shopId),
       changedBy: { startsWith: changedByPrefix },
       changeReason: { in: REVERTIBLE_MERCHANT_CHANGE_REASONS },
     },
