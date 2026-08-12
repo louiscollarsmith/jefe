@@ -450,6 +450,60 @@ test("onboarding insight cards do not expose correction UI", () => {
   assert.doesNotMatch(routeSource, /setSelectedBeliefId/);
 });
 
+test("onboarding polling reuses a queued Insights job without postponing it", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Merchant Insight persistence tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({
+    datasources: { db: { url: databaseUrl } },
+  });
+  const suffix = uniqueSuffix();
+  try {
+    const { merchant, shop } = await createInsightFixture(prisma, suffix);
+    const originalRunAfter = new Date(Date.now() + 60 * 60 * 1000);
+    const first = await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      runAfter: originalRunAfter,
+    });
+    await prisma.backfillJob.update({
+      where: {
+        shopId_jobType: {
+          shopId: shop.id,
+          jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+        },
+      },
+      data: { attemptCount: 2 },
+    });
+
+    const second = await ensureMerchantInsightsQueued(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    const job = await prisma.backfillJob.findUniqueOrThrow({
+      where: {
+        shopId_jobType: {
+          shopId: shop.id,
+          jobType: MERCHANT_INSIGHTS_JOB_TYPE,
+        },
+      },
+    });
+
+    assert.equal(first.status, "queued");
+    assert.equal(second.status, "reused");
+    assert.equal(second.run.id, first.run.id);
+    assert.equal(job.runAfter.toISOString(), originalRunAfter.toISOString());
+    assert.equal(job.attemptCount, 2);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Merchant Insights Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("merchant insight generation persists validated findings and review confirmation", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Insight persistence tests");

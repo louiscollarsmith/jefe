@@ -7,6 +7,7 @@ import {
   BELIEF_STATUS,
 } from "../merchant-memory/constants.server.js";
 import { getBeliefDefinition } from "../merchant-memory/conversational-belief-registry.server.js";
+import { retrieveMerchantContext } from "../merchant-memory/merchant-context.server.js";
 import {
   MAX_INSIGHT_BELIEFS,
   MERCHANT_INSIGHTS_SNAPSHOT_VERSION,
@@ -22,30 +23,39 @@ const RECENCY_WEIGHT = 12;
  * @param {{ merchantId: string; shopId: string }} input
  */
 export async function buildMerchantInsightSnapshot(prisma, input) {
-  const beliefs = await prisma.merchantMemoryBelief.findMany({
-    where: {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      status: { in: ACTIVE_BELIEF_STATUSES },
-      supersededAt: null,
-    },
-    include: {
-      evidence: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
+  const [beliefs, memoryRefreshRun, merchantContext] = await Promise.all([
+    prisma.merchantMemoryBelief.findMany({
+      where: {
+        merchantId: input.merchantId,
+        OR: [{ shopId: input.shopId }, { shopId: null }],
+        status: { in: ACTIVE_BELIEF_STATUSES },
+        supersededAt: null,
       },
-    },
-    orderBy: [{ category: "asc" }, { key: "asc" }, { updatedAt: "desc" }],
-  });
-  const memoryRefreshRun = await prisma.merchantMemoryRefreshRun.findFirst({
-    where: {
+      include: {
+        evidence: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+      orderBy: [{ category: "asc" }, { key: "asc" }, { updatedAt: "desc" }],
+    }),
+    prisma.merchantMemoryRefreshRun.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: "completed",
+      },
+      orderBy: { completedAt: "desc" },
+      select: { id: true, completedAt: true },
+    }),
+    retrieveMerchantContext(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      status: "completed",
-    },
-    orderBy: { completedAt: "desc" },
-    select: { id: true, completedAt: true },
-  });
+      task: "insights",
+      query: "Generate current merchant insights",
+      tokenBudget: 8000,
+    }),
+  ]);
 
   const scored = withRecencyScores(
     beliefs
@@ -91,6 +101,7 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     },
     beliefCount: candidates.length,
     beliefs: candidates,
+    merchantContext: generationContext(merchantContext),
   };
   const snapshotHash = hashSnapshot(snapshot);
   return {
@@ -101,6 +112,29 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     droppedBeliefCount: selection.droppedCount,
     droppedCategories: selection.droppedCategories,
     memoryRefreshRunId: memoryRefreshRun?.id ?? null,
+  };
+}
+
+/** @param {any} context */
+function generationContext(context) {
+  return {
+    version: context.version,
+    episodicMemory: context.episodicMemory.filter(
+      (item) => item.authority === "merchant_statement",
+    ),
+    actionMemory: context.actionMemory.filter(
+      (item) =>
+        item.data?.outcomeStatus === "measured" ||
+        [
+          "applied",
+          "partially_applied",
+          "reverted",
+          "failed",
+          "completed",
+        ].includes(item.data?.status),
+    ),
+    liveEvidence: context.liveEvidence,
+    openQuestions: context.openQuestions,
   };
 }
 
@@ -219,9 +253,7 @@ function byPriorityDesc(a, b) {
  * @param {Array<{ candidate: any; category: string; key: string; base: number; recencyMs: number | null }>} items
  */
 function withRecencyScores(items) {
-  const times = items
-    .map((item) => item.recencyMs)
-    .filter((ms) => ms !== null);
+  const times = items.map((item) => item.recencyMs).filter((ms) => ms !== null);
   const min = times.length ? Math.min(...times) : 0;
   const max = times.length ? Math.max(...times) : 0;
   const span = max - min;
@@ -272,7 +304,8 @@ function beliefRecencyMs(belief) {
     belief.createdAt ??
     null;
   if (value === null || value === undefined) return null;
-  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  const ms =
+    value instanceof Date ? value.getTime() : new Date(value).getTime();
   return Number.isFinite(ms) ? ms : null;
 }
 

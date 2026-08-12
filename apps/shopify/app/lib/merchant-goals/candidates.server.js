@@ -65,7 +65,9 @@ export async function buildMerchantGoalSnapshot(prisma, input) {
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      evidenceType: { in: ["merchant_goal_coaching", "merchant_goal_document_context"] },
+      evidenceType: {
+        in: ["merchant_goal_coaching", "merchant_goal_document_context"],
+      },
     },
     orderBy: { createdAt: "desc" },
     take: 8,
@@ -97,6 +99,7 @@ export async function buildMerchantGoalSnapshot(prisma, input) {
     },
     beliefCount: beliefs.length,
     beliefs,
+    merchantContext: memory.snapshot.merchantContext,
     insights,
     goalCoaching: coachingEvidence
       .map((item) => ({

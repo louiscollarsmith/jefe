@@ -43,7 +43,8 @@ const REGISTRY = {
     key: "business.primary_currency",
     category: "business",
     label: "Primary currency",
-    description: "The currency Jefe should treat as primary for business reporting.",
+    description:
+      "The currency Jefe should treat as primary for business reporting.",
     valueType: CONVERSATIONAL_VALUE_TYPES.currencyCode,
     merchantCreatable: false,
     merchantCorrectable: true,
@@ -78,7 +79,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "merchant_statement",
     merchantObsoletable: true,
-    guidance: "Map explicit positioning such as premium, value-focused or specialist.",
+    guidance:
+      "Map explicit positioning such as premium, value-focused or specialist.",
   },
   "catalog.active_product_count": {
     key: "catalog.active_product_count",
@@ -91,7 +93,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "observation",
     merchantObsoletable: false,
-    guidance: "Do not overwrite raw catalogue counts with merchant interpretation.",
+    guidance:
+      "Do not overwrite raw catalogue counts with merchant interpretation.",
   },
   "catalog.total_product_count": {
     key: "catalog.total_product_count",
@@ -104,7 +107,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "observation",
     merchantObsoletable: false,
-    guidance: "Do not overwrite raw catalogue counts with merchant interpretation.",
+    guidance:
+      "Do not overwrite raw catalogue counts with merchant interpretation.",
   },
   "catalog.out_of_stock_product_count": {
     key: "catalog.out_of_stock_product_count",
@@ -131,7 +135,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "observation",
     merchantObsoletable: false,
-    guidance: "Allow corrections only when the merchant clearly scopes the count.",
+    guidance:
+      "Allow corrections only when the merchant clearly scopes the count.",
   },
   "orders.average_order_value.all_time": {
     key: "orders.average_order_value.all_time",
@@ -185,7 +190,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "preference",
     merchantObsoletable: true,
-    guidance: "Examples include online store, wholesale, retail or marketplace.",
+    guidance:
+      "Examples include online store, wholesale, retail or marketplace.",
   },
   "business.business_model": {
     key: "business.business_model",
@@ -211,7 +217,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "inference",
     merchantObsoletable: true,
-    guidance: "Do not store customer PII. Use aggregate customer descriptions only.",
+    guidance:
+      "Do not store customer PII. Use aggregate customer descriptions only.",
   },
   "customers.primary_purchase_reason": {
     key: "customers.primary_purchase_reason",
@@ -224,20 +231,23 @@ const REGISTRY = {
     confirmable: true,
     kind: "inference",
     merchantObsoletable: true,
-    guidance: "Use aggregate buying reasons such as gifting, replenishment or quality.",
+    guidance:
+      "Use aggregate buying reasons such as gifting, replenishment or quality.",
   },
   "marketing.primary_acquisition_channel": {
     key: "marketing.primary_acquisition_channel",
     category: "marketing",
     label: "Primary acquisition channel",
-    description: "Where the merchant says most new customers currently come from.",
+    description:
+      "Where the merchant says most new customers currently come from.",
     valueType: CONVERSATIONAL_VALUE_TYPES.string,
     merchantCreatable: true,
     merchantCorrectable: true,
     confirmable: true,
     kind: "merchant_statement",
     merchantObsoletable: true,
-    guidance: "Examples include Instagram, paid search, SEO, wholesale referrals or email.",
+    guidance:
+      "Examples include Instagram, paid search, SEO, wholesale referrals or email.",
   },
   "operations.fulfilment_model": {
     key: "operations.fulfilment_model",
@@ -250,20 +260,23 @@ const REGISTRY = {
     confirmable: true,
     kind: "policy",
     merchantObsoletable: true,
-    guidance: "Examples include one warehouse, dropshipped or mixed fulfilment.",
+    guidance:
+      "Examples include one warehouse, dropshipped or mixed fulfilment.",
   },
   "operations.biggest_operational_pain": {
     key: "operations.biggest_operational_pain",
     category: "operations",
     label: "Biggest operational problem",
-    description: "The operational issue the merchant most wants Jefe to understand.",
+    description:
+      "The operational issue the merchant most wants Jefe to understand.",
     valueType: CONVERSATIONAL_VALUE_TYPES.string,
     merchantCreatable: true,
     merchantCorrectable: true,
     confirmable: true,
     kind: "constraint",
     merchantObsoletable: true,
-    guidance: "Use the merchant's stated pain point without inventing a solution.",
+    guidance:
+      "Use the merchant's stated pain point without inventing a solution.",
   },
   "preferences.optimisation_priority": {
     key: "preferences.optimisation_priority",
@@ -283,7 +296,8 @@ const REGISTRY = {
     key: "policies.low_stock_threshold",
     category: "policies",
     label: "Low-stock threshold",
-    description: "The inventory level below which the merchant considers an item low stock.",
+    description:
+      "The inventory level below which the merchant considers an item low stock.",
     valueType: CONVERSATIONAL_VALUE_TYPES.number,
     merchantCreatable: true,
     merchantCorrectable: true,
@@ -298,7 +312,8 @@ const REGISTRY = {
     key: "policies.preorder_zero_inventory_available",
     category: "policies",
     label: "Preorder availability",
-    description: "Whether zero-inventory preorder products should still be treated as available.",
+    description:
+      "Whether zero-inventory preorder products should still be treated as available.",
     valueType: CONVERSATIONAL_VALUE_TYPES.boolean,
     merchantCreatable: true,
     merchantCorrectable: true,
@@ -319,7 +334,8 @@ const REGISTRY = {
     confirmable: true,
     kind: "policy",
     merchantObsoletable: true,
-    guidance: "Keep the merchant's product group description, not customer PII.",
+    guidance:
+      "Keep the merchant's product group description, not customer PII.",
   },
   "policies.never_recommend": {
     key: "policies.never_recommend",
@@ -333,6 +349,39 @@ const REGISTRY = {
     kind: "policy",
     merchantObsoletable: true,
     guidance: "Use only explicit merchant restrictions or strong preferences.",
+  },
+  "policies.allow_blanket_storewide_discounts": {
+    key: "policies.allow_blanket_storewide_discounts",
+    category: "policies",
+    label: "Blanket storewide discounts",
+    description:
+      "Whether Jefe may recommend blanket discounts across the whole store.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.boolean,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "policy",
+    merchantObsoletable: true,
+    decisionImpact: "constraint",
+    guidance:
+      "Set false only from an explicit merchant rule against blanket storewide discounts.",
+  },
+  "policies.margin_cost_basis": {
+    key: "policies.margin_cost_basis",
+    category: "policies",
+    label: "Margin cost basis",
+    description:
+      "The cost source Jefe must use when assessing or calculating margin.",
+    valueType: CONVERSATIONAL_VALUE_TYPES.enum,
+    merchantCreatable: true,
+    merchantCorrectable: true,
+    confirmable: true,
+    kind: "policy",
+    merchantObsoletable: true,
+    allowedValues: ["shopify_cost_per_item"],
+    decisionImpact: "constraint",
+    guidance:
+      "Use shopify_cost_per_item when the merchant explicitly requires Shopify Cost per item for margin decisions.",
   },
   "goals.generated.three_months": {
     key: "goals.generated.three_months",
@@ -389,6 +438,16 @@ export function getBeliefDefinition(key) {
   return REGISTRY[key] ?? null;
 }
 
+/** @param {ConversationalBeliefDefinition} definition */
+export function beliefDefinitionChangesBehaviour(definition) {
+  return Boolean(
+    definition.decisionImpact ||
+    ["policy", "preference", "constraint", "merchant_statement"].includes(
+      definition.kind,
+    ),
+  );
+}
+
 /**
  * @param {string} category
  */
@@ -403,13 +462,17 @@ export function isAllowedConversationalCategory(category) {
 export function validateConversationalValue(value, definition) {
   const objectValue = asRecord(value);
   if (containsLikelyCustomerPii(value)) {
-    return { ok: false, error: "This looks like customer personal information." };
+    return {
+      ok: false,
+      error: "This looks like customer personal information.",
+    };
   }
 
   if (definition.valueType === CONVERSATIONAL_VALUE_TYPES.string) {
     const text = extractTextValue(value);
     if (!text) return { ok: false, error: "Expected a text value." };
-    if (text.length > 300) return { ok: false, error: "Text value is too long." };
+    if (text.length > 300)
+      return { ok: false, error: "Text value is too long." };
     return { ok: true, value: { text } };
   }
 
@@ -426,7 +489,8 @@ export function validateConversationalValue(value, definition) {
   }
 
   if (definition.valueType === CONVERSATIONAL_VALUE_TYPES.boolean) {
-    if (typeof value === "boolean") return { ok: true, value: { boolean: value } };
+    if (typeof value === "boolean")
+      return { ok: true, value: { boolean: value } };
     if (typeof objectValue?.boolean === "boolean") {
       return { ok: true, value: { boolean: objectValue.boolean } };
     }
@@ -441,15 +505,13 @@ export function validateConversationalValue(value, definition) {
           ? objectValue.currency
           : "";
     const normalized = normalizeCurrencyCode(currency);
-    if (!normalized) return { ok: false, error: "Expected a valid currency code." };
+    if (!normalized)
+      return { ok: false, error: "Expected a valid currency code." };
     return { ok: true, value: { currency: normalized } };
   }
 
   if (definition.valueType === CONVERSATIONAL_VALUE_TYPES.currencyAmount) {
-    if (
-      objectValue &&
-      Number.isFinite(Number(objectValue.amount))
-    ) {
+    if (objectValue && Number.isFinite(Number(objectValue.amount))) {
       return {
         ok: true,
         value: {
@@ -516,7 +578,9 @@ export function formatBeliefValue(value) {
   }
   if (Number.isFinite(Number(objectValue.amount))) {
     const currency =
-      typeof objectValue.currency === "string" ? ` ${objectValue.currency}` : "";
+      typeof objectValue.currency === "string"
+        ? ` ${objectValue.currency}`
+        : "";
     return `${Number(objectValue.amount).toLocaleString("en-GB", {
       maximumFractionDigits: 2,
     })}${currency}`;
@@ -535,7 +599,8 @@ export function formatBeliefValue(value) {
   if (typeof objectValue.boolean === "boolean") {
     return objectValue.boolean ? "Yes" : "No";
   }
-  if (typeof objectValue.option === "string") return humanize(objectValue.option);
+  if (typeof objectValue.option === "string")
+    return humanize(objectValue.option);
   if (typeof objectValue.timestamp === "string") {
     return new Date(objectValue.timestamp).toLocaleDateString("en-GB", {
       day: "numeric",
@@ -630,7 +695,9 @@ function containsLikelyCustomerPii(value) {
  * @param {string} value
  */
 function humanize(value) {
-  return value.replace(/[._-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return value
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /**
@@ -649,5 +716,6 @@ function humanize(value) {
  *   min?: number;
  *   max?: number;
  *   guidance: string;
+ *   decisionImpact?: "recommendation" | "confidence" | "constraint";
  * }} ConversationalBeliefDefinition
  */

@@ -2,6 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { createLlmProvider } from "../llm/provider.server.js";
+import { logger as baseLogger } from "../observability/logger.server.js";
 import {
   STORE_UNDERSTANDING_OUTPUT_SCHEMA,
   parseAndValidateStoreUnderstandingOutput,
@@ -24,18 +25,22 @@ import {
   hasMinimumEvidence,
   validateStoreUnderstandingValue,
 } from "./store-understanding-registry.server.js";
+import { retrieveMerchantContext } from "./merchant-context.server.js";
 
 const MAX_PRODUCTS = 50;
 const MAX_VARIANTS = 80;
 const MAX_BELIEFS = 40;
 const MIN_ACCEPTED_CONFIDENCE = 0.25;
+const storeUnderstandingLog = baseLogger.child({
+  component: "store-understanding",
+});
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null; trigger?: string; force?: boolean; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function runStoreUnderstandingPass(prisma, input) {
-  const logger = input.logger ?? console;
+  const logger = input.logger ?? storeUnderstandingLog;
   const startedAt = new Date();
   const summary = await buildStoreUnderstandingSummary(prisma, input);
   const inputSummaryHash = hashSummary(summary);
@@ -75,7 +80,10 @@ export async function runStoreUnderstandingPass(prisma, input) {
           },
         },
       });
-      return { status: STORE_UNDERSTANDING_RUN_STATUS.skipped, inputSummaryHash };
+      return {
+        status: STORE_UNDERSTANDING_RUN_STATUS.skipped,
+        inputSummaryHash,
+      };
     }
   }
 
@@ -128,7 +136,9 @@ export async function runStoreUnderstandingPass(prisma, input) {
     });
     const parsed = parseAndValidateStoreUnderstandingOutput(llmResult.json);
     if (!parsed.ok) {
-      throw new Error("error" in parsed ? parsed.error : "Invalid model output.");
+      throw new Error(
+        "error" in parsed ? parsed.error : "Invalid model output.",
+      );
     }
     const output = /** @type {any} */ (parsed).output;
 
@@ -215,12 +225,15 @@ export async function runStoreUnderstandingPass(prisma, input) {
         result: { errorName: error instanceof Error ? error.name : "Error" },
       },
     });
-    logger.warn("Store Understanding failed; Merchant Memory will continue without provisional inferences", {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? null,
-      runId: run.id,
-      error: error instanceof Error ? error.name : "UnknownError",
-    });
+    logger.warn(
+      "Store Understanding failed; Merchant Memory will continue without provisional inferences",
+      {
+        merchantId: input.merchantId,
+        shopId: input.shopId ?? null,
+        runId: run.id,
+        error: error instanceof Error ? error.name : "UnknownError",
+      },
+    );
     return {
       status: STORE_UNDERSTANDING_RUN_STATUS.failed,
       inputSummaryHash,
@@ -237,88 +250,119 @@ export async function buildStoreUnderstandingSummary(prisma, input) {
   const merchant = await prisma.merchant.findUniqueOrThrow({
     where: { id: input.merchantId },
     include: {
-      shops: { where: input.shopId ? { id: input.shopId } : undefined, take: 1 },
+      shops: {
+        where: input.shopId ? { id: input.shopId } : undefined,
+        take: 1,
+      },
     },
   });
   const shop = merchant.shops[0] ?? null;
   const shopId = input.shopId ?? shop?.id ?? null;
 
-  const [beliefs, products, variants, orders, lineItems, refunds, customers, inventory] =
-    await Promise.all([
-      prisma.merchantMemoryBelief.findMany({
-        where: {
+  const [
+    beliefs,
+    products,
+    variants,
+    orders,
+    lineItems,
+    refunds,
+    customers,
+    inventory,
+    merchantContext,
+  ] = await Promise.all([
+    prisma.merchantMemoryBelief.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: shopId ?? undefined,
+        status: { in: ACTIVE_BELIEF_STATUSES },
+      },
+      orderBy: [{ category: "asc" }, { key: "asc" }],
+      take: MAX_BELIEFS,
+    }),
+    prisma.product.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      orderBy: [{ status: "asc" }, { title: "asc" }],
+      take: MAX_PRODUCTS,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        vendor: true,
+        productType: true,
+        rawPayload: true,
+      },
+    }),
+    prisma.variant.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      orderBy: [{ title: "asc" }, { externalId: "asc" }],
+      take: MAX_VARIANTS,
+      select: {
+        productId: true,
+        title: true,
+        price: true,
+        currency: true,
+      },
+    }),
+    prisma.order.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      select: {
+        id: true,
+        totalPrice: true,
+        currency: true,
+        processedAt: true,
+        sourceCreatedAt: true,
+      },
+    }),
+    prisma.orderLineItem.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      select: {
+        productId: true,
+        title: true,
+        quantity: true,
+        totalPrice: true,
+      },
+    }),
+    prisma.refund.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      select: { orderId: true, amount: true },
+    }),
+    prisma.customerIdentity.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      select: { orderCount: true, totalSpend: true, averageOrderValue: true },
+    }),
+    prisma.inventoryLevel.findMany({
+      where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
+      select: { variantId: true, available: true },
+    }),
+    shopId
+      ? retrieveMerchantContext(prisma, {
           merchantId: input.merchantId,
-          shopId: shopId ?? undefined,
-          status: { in: ACTIVE_BELIEF_STATUSES },
-        },
-        orderBy: [{ category: "asc" }, { key: "asc" }],
-        take: MAX_BELIEFS,
-      }),
-      prisma.product.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        orderBy: [{ status: "asc" }, { title: "asc" }],
-        take: MAX_PRODUCTS,
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          vendor: true,
-          productType: true,
-          rawPayload: true,
-        },
-      }),
-      prisma.variant.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        orderBy: [{ title: "asc" }, { externalId: "asc" }],
-        take: MAX_VARIANTS,
-        select: {
-          productId: true,
-          title: true,
-          price: true,
-          currency: true,
-        },
-      }),
-      prisma.order.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        select: {
-          id: true,
-          totalPrice: true,
-          currency: true,
-          processedAt: true,
-          sourceCreatedAt: true,
-        },
-      }),
-      prisma.orderLineItem.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        select: {
-          productId: true,
-          title: true,
-          quantity: true,
-          totalPrice: true,
-        },
-      }),
-      prisma.refund.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        select: { orderId: true, amount: true },
-      }),
-      prisma.customerIdentity.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        select: { orderCount: true, totalSpend: true, averageOrderValue: true },
-      }),
-      prisma.inventoryLevel.findMany({
-        where: { merchantId: input.merchantId, shopId: shopId ?? undefined },
-        select: { variantId: true, available: true },
-      }),
-    ]);
+          shopId,
+          task: "store_understanding",
+          query: "Understand the current store and its operating context",
+          tokenBudget: 8000,
+        })
+      : Promise.resolve(null),
+  ]);
 
   const activeProducts = products.filter((product) => isActiveProduct(product));
   const pricedVariants = variants.filter((variant) => variant.price !== null);
-  const productTypeDistribution = topCounts(products.map((product) => product.productType));
-  const vendorDistribution = topCounts(products.map((product) => product.vendor));
+  const productTypeDistribution = topCounts(
+    products.map((product) => product.productType),
+  );
+  const vendorDistribution = topCounts(
+    products.map((product) => product.vendor),
+  );
   const priceValues = pricedVariants.map((variant) => Number(variant.price));
-  const commerceOrders = orders.filter((order) => order.processedAt || order.totalPrice !== null);
-  const pricedOrders = commerceOrders.filter((order) => order.totalPrice !== null);
-  const repeatCustomers = customers.filter((customer) => customer.orderCount > 1).length;
+  const commerceOrders = orders.filter(
+    (order) => order.processedAt || order.totalPrice !== null,
+  );
+  const pricedOrders = commerceOrders.filter(
+    (order) => order.totalPrice !== null,
+  );
+  const repeatCustomers = customers.filter(
+    (customer) => customer.orderCount > 1,
+  ).length;
   const datedOrders = commerceOrders
     .map((order) => order.processedAt ?? order.sourceCreatedAt)
     .filter((value) => value instanceof Date)
@@ -345,10 +389,13 @@ export async function buildStoreUnderstandingSummary(prisma, input) {
       },
       orders: {
         orderCount: commerceOrders.length,
-        averageOrderValue: averageMoney(pricedOrders.map((order) => order.totalPrice)),
+        averageOrderValue: averageMoney(
+          pricedOrders.map((order) => order.totalPrice),
+        ),
         averageItemsPerOrder: averageItemsPerOrder(commerceOrders, lineItems),
         firstOrderAt: datedOrders[0]?.toISOString?.() ?? null,
-        latestOrderAt: datedOrders[datedOrders.length - 1]?.toISOString?.() ?? null,
+        latestOrderAt:
+          datedOrders[datedOrders.length - 1]?.toISOString?.() ?? null,
       },
       customers: {
         knownCustomerCount: customers.length,
@@ -362,8 +409,12 @@ export async function buildStoreUnderstandingSummary(prisma, input) {
         refundedOrderRate:
           commerceOrders.length === 0
             ? null
-            : roundNumber((new Set(refunds.map((refund) => refund.orderId)).size /
-                commerceOrders.length) * 100, 2),
+            : roundNumber(
+                (new Set(refunds.map((refund) => refund.orderId)).size /
+                  commerceOrders.length) *
+                  100,
+                2,
+              ),
       },
       inventory: {
         inventoryLevelCount: inventory.length,
@@ -397,6 +448,15 @@ export async function buildStoreUnderstandingSummary(prisma, input) {
       confidence: belief.confidence === null ? null : Number(belief.confidence),
       derivationVersion: belief.derivationVersion,
     })),
+    merchantContext: merchantContext
+      ? {
+          version: merchantContext.version,
+          semanticMemory: merchantContext.semanticMemory,
+          episodicMemory: merchantContext.episodicMemory,
+          actionMemory: merchantContext.actionMemory,
+          openQuestions: merchantContext.openQuestions,
+        }
+      : null,
     privacy: {
       excludesCustomerNamesEmailsPhonesAddresses: true,
       excludesRawOrderPayloads: true,
@@ -420,16 +480,18 @@ function buildStoreUnderstandingSystemPrompt() {
 
 /** @param {any} summary */
 function buildStoreUnderstandingPrompt(summary) {
-  const registry = Object.values(getStoreUnderstandingRegistry()).map((definition) => ({
-    key: definition.key,
-    category: definition.category,
-    valueType: definition.valueType,
-    allowedValues: definition.allowedValues ?? [],
-    description: definition.description,
-    minimumEvidence: definition.minimumEvidence,
-    confidenceCeiling: definition.confidenceCeiling,
-    guidance: definition.promptGuidance,
-  }));
+  const registry = Object.values(getStoreUnderstandingRegistry()).map(
+    (definition) => ({
+      key: definition.key,
+      category: definition.category,
+      valueType: definition.valueType,
+      allowedValues: definition.allowedValues ?? [],
+      description: definition.description,
+      minimumEvidence: definition.minimumEvidence,
+      confidenceCeiling: definition.confidenceCeiling,
+      guidance: definition.promptGuidance,
+    }),
+  );
   return JSON.stringify({
     promptVersion: STORE_UNDERSTANDING_DERIVATION_VERSION,
     instructions: {
@@ -456,13 +518,19 @@ function validateCandidateBeliefs(input) {
   const seen = new Set();
   for (const candidate of input.output.candidateBeliefs) {
     if (seen.has(candidate.beliefKey)) {
-      rejected.push({ beliefKey: candidate.beliefKey, reason: "duplicate_key" });
+      rejected.push({
+        beliefKey: candidate.beliefKey,
+        reason: "duplicate_key",
+      });
       continue;
     }
     seen.add(candidate.beliefKey);
     const definition = getStoreUnderstandingDefinition(candidate.beliefKey);
     if (!definition) {
-      rejected.push({ beliefKey: candidate.beliefKey, reason: "unsupported_key" });
+      rejected.push({
+        beliefKey: candidate.beliefKey,
+        reason: "unsupported_key",
+      });
       continue;
     }
     if (!hasMinimumEvidence(definition, input.summary)) {
@@ -482,7 +550,10 @@ function validateCandidateBeliefs(input) {
       continue;
     }
     if (candidate.supportingEvidence.length === 0) {
-      rejected.push({ beliefKey: candidate.beliefKey, reason: "missing_evidence" });
+      rejected.push({
+        beliefKey: candidate.beliefKey,
+        reason: "missing_evidence",
+      });
       continue;
     }
     const confidence = cappedStoreUnderstandingConfidence(
@@ -711,7 +782,9 @@ function runInTransaction(prisma, callback) {
 /** @param {any} summary */
 function hashSummary(summary) {
   const stableSummary = { ...summary, generatedAt: undefined };
-  return createHash("sha256").update(JSON.stringify(stableSummary)).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(stableSummary))
+    .digest("hex");
 }
 
 /**
@@ -796,7 +869,10 @@ function priceDistribution(values) {
 function averageMoney(values) {
   const clean = values.map(Number).filter(Number.isFinite);
   if (clean.length === 0) return null;
-  return roundNumber(clean.reduce((total, value) => total + value, 0) / clean.length, 2);
+  return roundNumber(
+    clean.reduce((total, value) => total + value, 0) / clean.length,
+    2,
+  );
 }
 
 /** @param {Array<{ id: string }>} orders @param {Array<{ productId: string | null; title: string | null; quantity: number; totalPrice: unknown }>} lineItems */
@@ -849,7 +925,13 @@ function valuesEqual(a, b) {
  */
 function storeNameFrom(rawPayload, merchantName) {
   const payload = jsonObject(rawPayload);
-  const candidates = [payload.name, payload.shop?.name, payload.shopName, merchantName];
-  return candidates.find((value) => typeof value === "string" && value.trim())
+  const candidates = [
+    payload.name,
+    payload.shop?.name,
+    payload.shopName,
+    merchantName,
+  ];
+  return candidates
+    .find((value) => typeof value === "string" && value.trim())
     ?.trim();
 }

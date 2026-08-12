@@ -15,88 +15,111 @@ import {
   PLAN_REVIEW_STATUS,
 } from "./constants.server.js";
 import { expandBeliefRowsForContext } from "../merchant-memory/context-retriever.server.js";
+import { retrieveMerchantContext } from "../merchant-memory/merchant-context.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string }} input
  */
 export async function buildMerchantPlanSnapshot(prisma, input) {
-  const [goalRun, insightRun, beliefs, contextEvidence, priorRecommendations] =
-    await Promise.all([
-      prisma.merchantGoalRun.findFirst({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: GOAL_RUN_STATUS.completed,
-          supersededAt: null,
+  const [
+    goalRun,
+    insightRun,
+    beliefs,
+    contextEvidence,
+    priorRecommendations,
+    unifiedContext,
+  ] = await Promise.all([
+    prisma.merchantGoalRun.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: GOAL_RUN_STATUS.completed,
+        supersededAt: null,
+      },
+      include: { horizons: { orderBy: { orderIndex: "asc" } } },
+      orderBy: { completedAt: "desc" },
+    }),
+    prisma.merchantInsightRun.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: INSIGHT_RUN_STATUS.completed,
+        supersededAt: null,
+      },
+      include: { findings: { orderBy: { orderIndex: "asc" } } },
+      orderBy: { completedAt: "desc" },
+    }),
+    prisma.merchantMemoryBelief.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: { in: ACTIVE_BELIEF_STATUSES },
+        supersededAt: null,
+      },
+      include: {
+        evidence: { orderBy: { createdAt: "desc" }, take: 2 },
+      },
+      orderBy: [{ category: "asc" }, { key: "asc" }, { updatedAt: "desc" }],
+    }),
+    prisma.merchantMemoryEvidence.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        evidenceType: {
+          in: [
+            "merchant_goal_coaching",
+            "merchant_goal_document_context",
+            "merchant_insight_correction",
+            "merchant_plan_refinement",
+          ],
         },
-        include: { horizons: { orderBy: { orderIndex: "asc" } } },
-        orderBy: { completedAt: "desc" },
-      }),
-      prisma.merchantInsightRun.findFirst({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: INSIGHT_RUN_STATUS.completed,
-          supersededAt: null,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+    }),
+    prisma.merchantPlanRecommendation.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        reviewStatus: {
+          in: [
+            PLAN_REVIEW_STATUS.accepted,
+            PLAN_REVIEW_STATUS.rejected,
+            PLAN_REVIEW_STATUS.refinementRequested,
+            PLAN_REVIEW_STATUS.completed,
+          ],
         },
-        include: { findings: { orderBy: { orderIndex: "asc" } } },
-        orderBy: { completedAt: "desc" },
-      }),
-      prisma.merchantMemoryBelief.findMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: { in: ACTIVE_BELIEF_STATUSES },
-          supersededAt: null,
-        },
-        include: {
-          evidence: { orderBy: { createdAt: "desc" }, take: 2 },
-        },
-        orderBy: [{ category: "asc" }, { key: "asc" }, { updatedAt: "desc" }],
-      }),
-      prisma.merchantMemoryEvidence.findMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          evidenceType: {
-            in: [
-              "merchant_goal_coaching",
-              "merchant_goal_document_context",
-              "merchant_insight_correction",
-              "merchant_plan_refinement",
-            ],
-          },
-        },
-        orderBy: { createdAt: "desc" },
-        take: 12,
-      }),
-      prisma.merchantPlanRecommendation.findMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          reviewStatus: {
-            in: [
-              PLAN_REVIEW_STATUS.accepted,
-              PLAN_REVIEW_STATUS.rejected,
-              PLAN_REVIEW_STATUS.refinementRequested,
-              PLAN_REVIEW_STATUS.completed,
-            ],
-          },
-        },
-        include: { run: true },
-        orderBy: { createdAt: "desc" },
-        take: 8,
-      }),
-    ]);
+      },
+      include: { run: true },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    }),
+    retrieveMerchantContext(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      task: "plan",
+      query:
+        "Choose the next action that best advances current goals while respecting every current merchant policy and constraint.",
+      tokenBudget: 8000,
+    }),
+  ]);
 
-  const allowedGoalIds = new Set((goalRun?.horizons ?? []).map((goal) => goal.id));
-  const allowedInsightIds = new Set((insightRun?.findings ?? []).map((finding) => finding.id));
+  const allowedGoalIds = new Set(
+    (goalRun?.horizons ?? []).map((goal) => goal.id),
+  );
+  const allowedInsightIds = new Set(
+    (insightRun?.findings ?? []).map((finding) => finding.id),
+  );
   const directlySupportedBeliefIds = new Set([
     ...(goalRun?.horizons ?? []).flatMap((goal) => goal.supportingBeliefIds),
-    ...(insightRun?.findings ?? []).flatMap((finding) => finding.supportingBeliefIds),
+    ...(insightRun?.findings ?? []).flatMap(
+      (finding) => finding.supportingBeliefIds,
+    ),
   ]);
-  const eligibleBeliefs = beliefs.filter((belief) => !isGeneratedOnboardingBelief(belief));
+  const eligibleBeliefs = beliefs.filter(
+    (belief) => !isGeneratedOnboardingBelief(belief),
+  );
   const seedBeliefRows = eligibleBeliefs
     .map((belief) => ({
       belief,
@@ -168,15 +191,40 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
     insights,
     beliefCount: selectedBeliefs.length,
     beliefs: selectedBeliefs,
-    merchantContext: contextEvidence
-      .map((item) => ({
-        id: item.id,
-        sourceType: item.sourceType,
-        evidenceType: item.evidenceType,
-        summary: safeText(item.summary, 700),
-        observedAt: item.observedAt?.toISOString?.() ?? null,
-      }))
-      .reverse(),
+    merchantContext: [
+      ...contextEvidence
+        .map((item) => ({
+          id: item.id,
+          sourceType: item.sourceType,
+          evidenceType: item.evidenceType,
+          summary: safeText(item.summary, 700),
+          observedAt: item.observedAt?.toISOString?.() ?? null,
+        }))
+        .reverse(),
+      ...unifiedContext.episodicMemory
+        .filter(isMerchantAuthoredContext)
+        .map((item) => ({
+          id: item.id,
+          sourceType: "conversation_episode",
+          evidenceType:
+            item.temporalStatus === "historical"
+              ? "historical_context"
+              : "current_conversation_context",
+          summary: safeText(item.content, 700),
+          observedAt: item.occurredAt,
+          provenance: item.source,
+        })),
+      ...unifiedContext.actionMemory
+        .filter(isCompletedActionContext)
+        .map((item) => ({
+          id: item.id,
+          sourceType: "action_memory",
+          evidenceType: "action_status_or_outcome",
+          summary: safeText(item.content, 700),
+          observedAt: item.occurredAt,
+          provenance: item.source,
+        })),
+    ],
     previousRecommendations,
   };
   const snapshotHash = hashSnapshot(snapshot);
@@ -193,17 +241,44 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
   };
 }
 
+/** @param {any} item */
+function isMerchantAuthoredContext(item) {
+  return item.authority === "merchant_statement";
+}
+
+/** @param {any} item */
+function isCompletedActionContext(item) {
+  return (
+    item.data?.outcomeStatus === "measured" ||
+    [
+      "applied",
+      "partially_applied",
+      "reverted",
+      "failed",
+      "completed",
+    ].includes(item.data?.status)
+  );
+}
+
 function beliefRelevanceScore(belief, directlySupportedBeliefIds) {
-  const confidence = belief.confidence === null ? null : Number(belief.confidence);
+  const confidence =
+    belief.confidence === null ? null : Number(belief.confidence);
   if (Number.isFinite(confidence) && confidence <= 0) return 0;
   if (isRejectedInference(belief)) return 0;
   let score = directlySupportedBeliefIds.has(belief.id) ? 100 : 0;
   const key = `${belief.category}.${belief.key}`.toLowerCase();
-  if (/goal|constraint|preference|policy|priority|business/.test(key)) score += 34;
-  if (/revenue|order|customer|retention|product|catalog|inventory|margin|refund|growth|operation/.test(key)) score += 22;
+  if (/goal|constraint|preference|policy|priority|business/.test(key))
+    score += 34;
+  if (
+    /revenue|order|customer|retention|product|catalog|inventory|margin|refund|growth|operation/.test(
+      key,
+    )
+  )
+    score += 22;
   if (belief.status === BELIEF_STATUS.merchantCorrected) score += 40;
   if (belief.status === BELIEF_STATUS.merchantConfirmed) score += 32;
-  if (Number(belief.precedence ?? 0) >= BELIEF_PRECEDENCE.directObservation) score += 18;
+  if (Number(belief.precedence ?? 0) >= BELIEF_PRECEDENCE.directObservation)
+    score += 18;
   if (Number.isFinite(confidence)) score += Math.round(confidence * 20);
   return score;
 }
@@ -213,7 +288,8 @@ function isRejectedInference(belief) {
 }
 
 function normalizeBelief(belief) {
-  const confidence = belief.confidence === null ? null : Number(belief.confidence);
+  const confidence =
+    belief.confidence === null ? null : Number(belief.confidence);
   const evidence = Array.isArray(belief.evidence) ? belief.evidence : [];
   const definition = getBeliefDefinition(belief.key);
   return {
@@ -225,8 +301,14 @@ function normalizeBelief(belief) {
     type: belief.valueType,
     conf: Number.isFinite(confidence) ? Number(confidence.toFixed(2)) : null,
     status: String(belief.status ?? ""),
-    authority: authorityLevel(Number(belief.precedence ?? 0), String(belief.status ?? "")),
-    evidence: evidence.map((item) => safeText(item.summary, 140)).filter(Boolean).slice(0, 2),
+    authority: authorityLevel(
+      Number(belief.precedence ?? 0),
+      String(belief.status ?? ""),
+    ),
+    evidence: evidence
+      .map((item) => safeText(item.summary, 140))
+      .filter(Boolean)
+      .slice(0, 2),
     caveat: importantCaveat(belief, confidence),
   };
 }
@@ -244,12 +326,15 @@ function authorityLevel(precedence, status) {
   if (status === BELIEF_STATUS.merchantCorrected) return "merchant_corrected";
   if (status === BELIEF_STATUS.merchantConfirmed) return "merchant_confirmed";
   if (precedence >= BELIEF_PRECEDENCE.directObservation) return "deterministic";
-  if (precedence <= BELIEF_PRECEDENCE.llmInference) return "lower_authority_inference";
+  if (precedence <= BELIEF_PRECEDENCE.llmInference)
+    return "lower_authority_inference";
   return "system_inference";
 }
 
 function safeValue(value, key = null) {
-  return compactKnownStructuredValue(key, value) ?? compactValue(value, null, 0);
+  return (
+    compactKnownStructuredValue(key, value) ?? compactValue(value, null, 0)
+  );
 }
 
 function compactKnownStructuredValue(key, value) {
@@ -311,19 +396,29 @@ function compactValue(value, key, depth) {
   if (value === null || value === undefined) return null;
   if (typeof value === "string") return safeText(value, depth === 0 ? 120 : 70);
   if (typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.slice(0, 5).map((item) => compactValue(item, key, depth + 1));
-  if (typeof value !== "object" || depth >= 2 || isLowSignalValueKey(key)) return null;
+  if (Array.isArray(value))
+    return value.slice(0, 5).map((item) => compactValue(item, key, depth + 1));
+  if (typeof value !== "object" || depth >= 2 || isLowSignalValueKey(key))
+    return null;
   const output = {};
-  for (const [childKey, item] of Object.entries(value).slice(0, depth === 0 ? 10 : 5)) {
+  for (const [childKey, item] of Object.entries(value).slice(
+    0,
+    depth === 0 ? 10 : 5,
+  )) {
     if (isLowSignalValueKey(childKey)) continue;
     const compact = compactValue(item, childKey, depth + 1);
-    if (compact !== undefined && compact !== null && compact !== "") output[childKey] = compact;
+    if (compact !== undefined && compact !== null && compact !== "")
+      output[childKey] = compact;
   }
   return Object.keys(output).length > 0 ? output : null;
 }
 
 function importantCaveat(belief, confidence) {
-  if (Number.isFinite(confidence) && confidence < 0.75 && belief.confidenceReason) {
+  if (
+    Number.isFinite(confidence) &&
+    confidence < 0.75 &&
+    belief.confidenceReason
+  ) {
     return safeText(belief.confidenceReason, 90);
   }
   return null;
@@ -334,7 +429,9 @@ function humanizeBeliefKey(key) {
 }
 
 function isLowSignalValueKey(key) {
-  return /policy|formula|rule|url|source|dependency|included|excluded|handling|provenance|raw/i.test(key ?? "");
+  return /policy|formula|rule|url|source|dependency|included|excluded|handling|provenance|raw/i.test(
+    key ?? "",
+  );
 }
 
 function numberOrNull(value) {

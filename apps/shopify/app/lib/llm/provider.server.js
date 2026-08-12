@@ -167,14 +167,41 @@ export function withFallbackProvider(primary, fallback, logger) {
         toProvider: fallback.provider,
         toModel: fallback.model,
       });
-      const result = await fallbackMethod.call(fallback, request);
-      return {
-        ...result,
-        fallback: {
-          fromProvider: primary.provider,
-          fromModel: primary.model,
-        },
-      };
+      try {
+        const result = await fallbackMethod.call(fallback, request);
+        return {
+          ...result,
+          fallback: {
+            fromProvider: primary.provider,
+            fromModel: primary.model,
+          },
+        };
+      } catch (fallbackError) {
+        logger.warn("LLM fallback provider also failed", {
+          provider: fallback.provider,
+          model: fallback.model,
+          fallbackFromProvider: primary.provider,
+          fallbackFromModel: primary.model,
+          error: safeErrorName(fallbackError),
+          statusCode:
+            /** @type {{ status?: unknown }} */ (fallbackError ?? {}).status ??
+            null,
+          reasonCode:
+            /** @type {{ code?: unknown }} */ (fallbackError ?? {}).code ??
+            null,
+        });
+        if (fallbackError && typeof fallbackError === "object") {
+          Object.assign(fallbackError, {
+            llmFallbackAttempt: {
+              fromProvider: primary.provider,
+              fromModel: primary.model,
+              toProvider: fallback.provider,
+              toModel: fallback.model,
+            },
+          });
+        }
+        throw fallbackError;
+      }
     }
   };
   return /** @type {LlmProvider} */ ({
@@ -240,6 +267,15 @@ export function withUsageRecording(provider, ctx) {
     };
     try {
       const result = await method(request);
+      if (result.fallback) {
+        void recordLlmUsage(ctx.prisma, {
+          ...base,
+          provider: result.fallback.fromProvider,
+          model: result.fallback.fromModel,
+          usage: null,
+          status: "error",
+        });
+      }
       void recordLlmUsage(ctx.prisma, {
         ...base,
         provider: result.provider ?? base.provider,
@@ -250,7 +286,32 @@ export function withUsageRecording(provider, ctx) {
       });
       return result;
     } catch (error) {
-      void recordLlmUsage(ctx.prisma, { ...base, usage: null, status: "error" });
+      const fallbackAttempt =
+        /** @type {{ llmFallbackAttempt?: { fromProvider: string; fromModel: string; toProvider: string; toModel: string } }} */ (
+          error ?? {}
+        ).llmFallbackAttempt;
+      if (fallbackAttempt) {
+        void recordLlmUsage(ctx.prisma, {
+          ...base,
+          provider: fallbackAttempt.fromProvider,
+          model: fallbackAttempt.fromModel,
+          usage: null,
+          status: "error",
+        });
+        void recordLlmUsage(ctx.prisma, {
+          ...base,
+          provider: fallbackAttempt.toProvider,
+          model: fallbackAttempt.toModel,
+          usage: null,
+          status: "error",
+        });
+      } else {
+        void recordLlmUsage(ctx.prisma, {
+          ...base,
+          usage: null,
+          status: "error",
+        });
+      }
       throw error;
     }
   };

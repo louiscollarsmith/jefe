@@ -1,7 +1,8 @@
 // @ts-check
 
-export const STORE_UNDERSTANDING_DERIVATION_VERSION = "store-understanding-v1";
-export const STORE_UNDERSTANDING_INPUT_VERSION = "store-summary-v1";
+export const STORE_UNDERSTANDING_DERIVATION_VERSION =
+  "store-understanding-v2-context";
+export const STORE_UNDERSTANDING_INPUT_VERSION = "store-summary-v2-context";
 
 export const STORE_UNDERSTANDING_RUN_STATUS = {
   queued: "queued",
@@ -24,7 +25,8 @@ const REGISTRY = {
     key: "business.description",
     category: "business",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.string,
-    description: "A concise, cautious description of what the store appears to sell.",
+    description:
+      "A concise, cautious description of what the store appears to sell.",
     minimumEvidence: { products: 3 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -52,8 +54,14 @@ const REGISTRY = {
     key: "business.catalogue_strategy",
     category: "business",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.enum,
-    allowedValues: ["specialist", "broad_assortment", "category_led", "single_product_focus"],
-    description: "Whether the catalogue appears specialist, broad, category-led or single-product-led.",
+    allowedValues: [
+      "specialist",
+      "broad_assortment",
+      "category_led",
+      "single_product_focus",
+    ],
+    description:
+      "Whether the catalogue appears specialist, broad, category-led or single-product-led.",
     minimumEvidence: { products: 3 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -67,7 +75,8 @@ const REGISTRY = {
     key: "business.business_model",
     category: "business",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.string,
-    description: "A cautious apparent business model such as DTC retail, wholesale-led, or mixed.",
+    description:
+      "A cautious apparent business model such as DTC retail, wholesale-led, or mixed.",
     minimumEvidence: { products: 3 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -81,7 +90,8 @@ const REGISTRY = {
     key: "customers.likely_primary_customer_type",
     category: "customers",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.string,
-    description: "A low-authority hypothesis about the likely aggregate customer type.",
+    description:
+      "A low-authority hypothesis about the likely aggregate customer type.",
     minimumEvidence: { products: 5 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -95,7 +105,8 @@ const REGISTRY = {
     key: "customers.purchase_pattern",
     category: "customers",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.string,
-    description: "A cautious interpretation of purchase behaviour from order aggregates.",
+    description:
+      "A cautious interpretation of purchase behaviour from order aggregates.",
     minimumEvidence: { orders: 5 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -109,7 +120,8 @@ const REGISTRY = {
     key: "catalog.assortment_character",
     category: "catalog",
     valueType: STORE_UNDERSTANDING_VALUE_TYPES.string,
-    description: "A concise description of the catalogue's apparent assortment character.",
+    description:
+      "A concise description of the catalogue's apparent assortment character.",
     minimumEvidence: { products: 3 },
     merchantConfirmable: true,
     merchantCorrectable: true,
@@ -151,7 +163,10 @@ export function getStoreUnderstandingDefinition(key) {
  */
 export function validateStoreUnderstandingValue(value, definition) {
   if (containsLikelyCustomerPii(value)) {
-    return { ok: false, error: "Candidate value contains likely customer PII." };
+    return {
+      ok: false,
+      error: "Candidate value contains likely customer PII.",
+    };
   }
 
   const objectValue = asRecord(value);
@@ -171,7 +186,10 @@ export function validateStoreUnderstandingValue(value, definition) {
         : typeof objectValue.text === "string"
           ? objectValue.text
           : "";
-    const option = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+    const option = raw
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
     if (!definition.allowedValues?.includes(option)) {
       return {
         ok: false,
@@ -201,7 +219,9 @@ export function validateStoreUnderstandingValue(value, definition) {
  * @param {any} summary
  */
 export function hasMinimumEvidence(definition, summary) {
-  const productCount = Number(summary?.aggregateMetrics?.catalogue?.productCount ?? 0);
+  const productCount = Number(
+    summary?.aggregateMetrics?.catalogue?.productCount ?? 0,
+  );
   const orderCount = Number(summary?.aggregateMetrics?.orders?.orderCount ?? 0);
   if ((definition.minimumEvidence.products ?? 0) > productCount) return false;
   if ((definition.minimumEvidence.orders ?? 0) > orderCount) return false;
@@ -218,14 +238,13 @@ export function cappedStoreUnderstandingConfidence(
   modelConfidence,
   summary,
 ) {
-  const productCount = Number(summary?.aggregateMetrics?.catalogue?.productCount ?? 0);
+  const productCount = Number(
+    summary?.aggregateMetrics?.catalogue?.productCount ?? 0,
+  );
   const orderCount = Number(summary?.aggregateMetrics?.orders?.orderCount ?? 0);
   let datasetCap = 0.85;
   if (productCount < 5) datasetCap = Math.min(datasetCap, 0.55);
-  if (
-    (definition.minimumEvidence.orders ?? 0) > 0 &&
-    orderCount < 10
-  ) {
+  if ((definition.minimumEvidence.orders ?? 0) > 0 && orderCount < 10) {
     datasetCap = Math.min(datasetCap, 0.55);
   }
   if (orderCount === 0 && definition.category === "customers") {
@@ -233,7 +252,11 @@ export function cappedStoreUnderstandingConfidence(
   }
   return Math.max(
     0,
-    Math.min(Number(modelConfidence) || 0, definition.confidenceCeiling, datasetCap),
+    Math.min(
+      Number(modelConfidence) || 0,
+      definition.confidenceCeiling,
+      datasetCap,
+    ),
   );
 }
 
@@ -242,7 +265,8 @@ export function formatInferenceValue(value) {
   const objectValue = asRecord(value);
   if (!objectValue) return "unclear";
   if (typeof objectValue.text === "string") return objectValue.text;
-  if (typeof objectValue.option === "string") return humanize(objectValue.option);
+  if (typeof objectValue.option === "string")
+    return humanize(objectValue.option);
   if (Array.isArray(objectValue.items)) return objectValue.items.join(", ");
   return JSON.stringify(value);
 }
@@ -255,8 +279,10 @@ function cleanText(value) {
 /** @param {unknown} value */
 function containsLikelyCustomerPii(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text) ||
-    /\+?\d[\d\s().-]{8,}\d/.test(text);
+  return (
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text) ||
+    /\+?\d[\d\s().-]{8,}\d/.test(text)
+  );
 }
 
 /**
@@ -271,7 +297,9 @@ function asRecord(value) {
 
 /** @param {string} value */
 function humanize(value) {
-  return value.replace(/[._-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return value
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /**

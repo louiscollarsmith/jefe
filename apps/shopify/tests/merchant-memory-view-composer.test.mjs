@@ -57,26 +57,18 @@ test("the view surfaces what a merchant needs to talk about", () => {
   assert.match(viewSource, /summary\?\.openQuestions/);
 });
 
-test("the memory-correction surface stays REACHABLE from a live route", () => {
-  // The exact failure mode that orphaned this once: the surface existed but no live route
-  // rendered it, and the source-string tests still passed. So guard the reachability CHAIN —
-  // the live home links to it AND the route renders it — not just that the component exists.
-  const dailyHome = fs.readFileSync(
-    new URL("../app/components/daily-home.tsx", import.meta.url),
-    "utf8",
-  );
+test("the memory-correction surface still renders from its live route", () => {
+  // The home entry point ("See everything Jefe knows →") was removed from the home per Matt
+  // (2026-08-12) — the quiet chat-log home shouldn't carry it. Memory reachability is being
+  // RE-HOMED (settings gear / a chat affordance), tracked with the memory lane; this now
+  // guards that the SURFACE and its route still work, so a new door can point straight at it.
+  // (History: the link once hid inside a null-returning section and stranded the surface —
+  // whatever re-homes it must stay always-rendered, not repeat that.)
   const appIndex = fs.readFileSync(
     new URL("../app/routes/app._index.tsx", import.meta.url),
     "utf8",
   );
-  // The link must live in the ALWAYS-rendered composition (a sibling of StoreConversation in
-  // the Shape B home return), NOT inside a section that returns null when empty. The first
-  // landing put it inside WatchingSection (`if (!items.length) return null`), so on an
-  // all-clear/quiet store the door vanished and the whole surface was unreachable — while a
-  // bare `/view=memory/` string match still passed. StoreConversation always renders (it
-  // falls back to a grounded quiet-day line), so asserting the link sits just after it keeps
-  // the door reachable on a quiet store and guards against that regression.
-  assert.match(dailyHome, /<StoreConversation[\s\S]{0,600}to="\?view=memory"/);
+  assert.match(appIndex, /url\.searchParams\.get\("view"\) === "memory"/); // route still handles ?view=memory
   assert.match(appIndex, /<MerchantMemoryView/); // the route renders the composer surface
 });
 

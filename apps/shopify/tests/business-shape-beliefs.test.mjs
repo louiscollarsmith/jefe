@@ -475,3 +475,39 @@ function promptBeliefScoreFor(key, confidence, isDiscussed) {
     Math.round(confidence * 10)
   );
 }
+
+// --- Channel classification, checked against real channel values ---------------------------
+// Channels actually seen across 207 merchants in the Quiver warehouse: web, pos, tiktok,
+// amazon-uk, shop, hydrogen, headless, reverb, facebook, ebay, faire, b2b, buy-button.
+// The classifier previously binned everything but web/pos/draft into "other", so a merchant
+// selling mostly on Amazon looked identical to one selling from their own site.
+
+test("selling on someone else's marketplace is not the same as selling from your own site", async () => {
+  const own = await derive({ ...baseSpec(), sourceNames: ["web"] });
+  const amazon = await derive({ ...baseSpec(), sourceNames: ["amazon_marketplace", "amazon_marketplace", "web"] });
+
+  assert.equal(own.find((o) => o.key === CHANNEL)?.value?.enum, "online_only");
+  assert.equal(amazon.find((o) => o.key === CHANNEL)?.value?.enum, "marketplace_led");
+});
+
+test("a minority marketplace presence is recorded even though it doesn't decide the label", async () => {
+  // ~17% on eBay: not marketplace-led, but Jefe should know it rather than bin it.
+  const outcomes = await derive({
+    ...baseSpec(),
+    sourceNames: ["web", "web", "web", "web", "web", "ebay"],
+  });
+  const value = outcomes.find((o) => o.key === CHANNEL)?.value ?? {};
+  assert.notEqual(value.enum, "marketplace_led");
+  assert.ok(value.marketplaceShare > 0.1 && value.marketplaceShare < 0.25, `got ${value.marketplaceShare}`);
+});
+
+test("a headless storefront still counts as the merchant's own site", async () => {
+  // hydrogen/headless are Shopify's own custom-storefront runtimes — the merchant owns them.
+  const outcomes = await derive({ ...baseSpec(), sourceNames: ["hydrogen"] });
+  assert.equal(outcomes.find((o) => o.key === CHANNEL)?.value?.enum, "online_only");
+});
+
+test("Shopify's B2B channel reads as wholesale, like draft orders do", async () => {
+  const outcomes = await derive({ ...baseSpec(), sourceNames: ["b2b", "b2b", "web"] });
+  assert.equal(outcomes.find((o) => o.key === CHANNEL)?.value?.enum, "wholesale_led");
+});

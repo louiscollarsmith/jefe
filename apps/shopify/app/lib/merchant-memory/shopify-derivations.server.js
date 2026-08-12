@@ -848,13 +848,19 @@ function channelMix(context, definition) {
   const share = (channel) => (byChannel.get(channel) ?? 0) / classified;
   const online = share("online");
   const pos = share("pos");
-  const draft = share("draft");
+  const marketplace = share("marketplace");
+  const social = share("social");
+  // Shopify's own B2B channel where present, plus manually-created draft orders — how most
+  // merchants without B2B invoice their trade customers. The draft half is a PROXY and the
+  // value says so, so a merchant correcting it can see what to correct.
+  const trade = share("draft") + share("trade");
 
-  // `draft` is the best available read on wholesale/B2B: Shopify has no wholesale source
-  // name, and manually-created draft orders are how most merchants invoice trade customers.
-  // It is a PROXY and the value says so, so a merchant correcting it sees what to correct.
   let shape = "mixed";
-  if (draft >= 0.4) shape = "wholesale_led";
+  if (trade >= 0.4) shape = "wholesale_led";
+  // Same bar as wholesale: it only claims this when it genuinely describes the business.
+  // Rare (4 of 207 Quiver merchants sell ≥20% through marketplaces) but a real and very
+  // different shape when it fires — you don't own the storefront or the customer.
+  else if (marketplace >= 0.4) shape = "marketplace_led";
   else if (online >= 0.95) shape = "online_only";
   else if (pos >= 0.6) shape = "shop_led";
   else if (online >= 0.6 && pos >= 0.1) shape = "online_led_with_shop";
@@ -865,7 +871,11 @@ function channelMix(context, definition) {
       enum: shape,
       onlineShare: roundNumber(online, 4),
       inPersonShare: roundNumber(pos, 4),
-      tradeOrderShare: roundNumber(draft, 4),
+      tradeOrderShare: roundNumber(trade, 4),
+      // Reported even when they don't decide the label — a merchant with 15% on Amazon
+      // isn't "marketplace_led", but Jefe should still know it rather than binning it.
+      marketplaceShare: roundNumber(marketplace, 4),
+      socialShare: roundNumber(social, 4),
       classifiedOrders: classified,
       channelCoverage: roundNumber(coverage, 4),
       tradeShareIsProxy: "draft_orders",
@@ -967,11 +977,21 @@ function purchaseCadence(context, definition) {
     });
   }
 
+  // Cut-offs checked against 203 real merchants (Quiver warehouse, 2 years of repeat gaps,
+  // ≥20 gaps each): median repeat gap runs 4–166 days. The first guess put `infrequent` at
+  // >180d, which NOTHING reached — a dead bucket that looked like a working dimension.
+  // >120d populates it from the real tail.
+  //
+  // ⚠️ Tuned on London delivery clients, which skew to food/drink/fashion and so probably
+  // repeat faster than ecommerce at large. Re-check against Jefe's own merchants before
+  // treating these as settled. A genuinely slow business (furniture, mattresses) usually has
+  // too few repeat gaps to reach the minimum at all and lands in `one_off` above, which is
+  // the right answer for it.
   const median = percentile(gapDays, 0.5);
   let cadence = "occasional";
   if (median <= 21) cadence = "frequent";
   else if (median <= 60) cadence = "regular";
-  else if (median <= 180) cadence = "occasional";
+  else if (median <= 120) cadence = "occasional";
   else cadence = "infrequent";
 
   return derived(context, definition, {
@@ -2425,8 +2445,31 @@ function classifySalesChannel(sourceName) {
   const value = stringValue(sourceName)?.toLowerCase() ?? "";
   if (!value) return null;
   if (value === "pos" || value.includes("point_of_sale") || value.includes("point of sale")) return "pos";
-  if (value === "web" || value === "online_store" || value === "shopify_online_store" || value.includes("online store")) return "online";
+  // Someone else's shopfront. Checked BEFORE `online`: selling on Amazon is not selling on
+  // your own site — you don't own the customer, the pricing pressure is different, and
+  // clearance advice that assumes you control the storefront is wrong. Everything here used
+  // to fall into "other" and vanish. Real channels seen across 207 merchants in the Quiver
+  // warehouse: amazon-uk, ebay, reverb, faire.
+  if (/amazon|ebay|etsy|walmart|reverb|faire|onbuy|notonthehighstreet/.test(value)) return "marketplace";
+  // Social storefronts — discovery-led, and the merchant does own the customer, so they sit
+  // apart from both marketplaces and the merchant's own site. Seen: tiktok, facebook.
+  if (/tiktok|facebook|instagram|pinterest|snapchat/.test(value)) return "social";
+  if (
+    value === "web" ||
+    value === "online_store" ||
+    value === "shopify_online_store" ||
+    value.includes("online store") ||
+    // A headless/custom storefront is still the merchant's own site.
+    value === "hydrogen" ||
+    value === "headless" ||
+    value.includes("buy_button") ||
+    value.includes("buy-button")
+  ) {
+    return "online";
+  }
   if (value.includes("draft")) return "draft";
+  // Shopify's own B2B channel — a real wholesale signal, unlike the draft-order proxy.
+  if (value === "b2b" || value.includes("wholesale")) return "trade";
   return "other";
 }
 

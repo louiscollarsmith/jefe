@@ -1,10 +1,10 @@
 // @ts-check
 
 export const MERCHANT_INSIGHTS_JOB_TYPE = "merchant_insights_generate";
-export const MERCHANT_INSIGHTS_PROMPT_VERSION = "merchant-insights-v6";
+export const MERCHANT_INSIGHTS_PROMPT_VERSION = "merchant-insights-v7-context";
 export const MERCHANT_INSIGHTS_SCHEMA_VERSION = "merchant-insights-schema-v2";
 export const MERCHANT_INSIGHTS_SNAPSHOT_VERSION =
-  "merchant-insights-snapshot-v3";
+  "merchant-insights-snapshot-v4-context";
 
 export const INSIGHT_RUN_STATUS = {
   queued: "queued",

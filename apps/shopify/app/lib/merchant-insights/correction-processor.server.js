@@ -87,7 +87,7 @@ export function buildMerchantInsightCorrectionPrompt(input) {
   return JSON.stringify({
     promptVersion: MERCHANT_INSIGHT_CORRECTION_PROMPT_VERSION,
     insight: input.insight,
-    merchantCorrection: input.correction,
+    merchantCorrection: cleanText(input.correction, 2000, true),
     supportingBeliefs: input.supportingBeliefs,
     merchantWritableBeliefs: input.merchantWritableBeliefs,
     outputGuidance: {

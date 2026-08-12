@@ -129,7 +129,7 @@ test("registry: kimi keyed from KIMI_API_KEY / MOONSHOT_API_KEY; base URL defaul
   );
 });
 
-test("config: a compat key alone enables the app (no groq/gemini needed); registry is threaded", () => {
+test("config: a compat key alone is registered while test execution stays LLM-disabled", () => {
   const saved = { ...process.env };
   try {
     delete process.env.GROQ_API_KEY;
@@ -140,7 +140,11 @@ test("config: a compat key alone enables the app (no groq/gemini needed); regist
     assert.equal(getLlmConfig().enabled, false, "no keys ⇒ disabled");
     process.env.KIMI_API_KEY = "k1";
     const cfg = getLlmConfig();
-    assert.equal(cfg.enabled, true, "a kimi key alone ⇒ enabled");
+    assert.equal(
+      cfg.enabled,
+      false,
+      "test execution keeps LLM calls disabled even with provider keys",
+    );
     assert.equal(cfg.openAiCompatible.kimi.apiKey, "k1");
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
