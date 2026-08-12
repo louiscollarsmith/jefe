@@ -15,6 +15,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root/apps/shopify"
 
+echo "▶ env precheck";    bash "$repo_root/scripts/env-check.sh"
 echo "▶ prisma generate"; npx prisma generate >/dev/null
 echo "▶ typecheck";       npm run typecheck
 echo "▶ lint";            npm run lint
