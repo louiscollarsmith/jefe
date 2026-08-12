@@ -10,8 +10,22 @@
 // Severity: "broken" = the merchant is looking at something Jefe should never say.
 // "poor" = defensible but bad. Scoring counts broken twice.
 
-/** Text Jefe emits when the deterministic interpreter falls through — a dead end, never an answer. */
-const CANNED_NON_ANSWER = "I can use this in the conversation, but I need a little more detail";
+// Text Jefe emits when it gives up — a dead end dressed as a reply, never an answer.
+// One entry per known fallback, because each new chat implementation brings its own and a
+// harness that only knows the old one reports "0 broken" for a chat that answered nothing.
+const CANNED_NON_ANSWERS = [
+  // deterministic memory interpreter (pre-e74ea64 path, still reachable via memory edit)
+  "I can use this in the conversation, but I need a little more detail",
+  // holistic general chat's grounded fallback
+  "couldn’t connect that request to grounded information",
+  "couldn't connect that request to grounded information",
+  "couldn’t find a relevant earlier conversation",
+  "couldn't find a relevant earlier conversation",
+];
+
+/** @param {string} reply */
+const isCannedNonAnswer = (reply) =>
+  CANNED_NON_ANSWERS.some((phrase) => reply.includes(phrase));
 
 const THIRD_PERSON = [
   /\bthe merchant\b/i,
@@ -101,7 +115,7 @@ export function gradeTurn(turn, result) {
     }
   }
 
-  if (reply.includes(CANNED_NON_ANSWER)) {
+  if (isCannedNonAnswer(reply)) {
     findings.push({
       check: "canned_non_answer",
       severity: "broken",
@@ -131,10 +145,9 @@ export function gradeTurn(turn, result) {
   }
 
   if (turn.isQuestion) {
-    const answered =
-      !reply.includes(CANNED_NON_ANSWER) &&
-      operation.operationType !== "no_memory_change" &&
-      reply.length > 40;
+    // NOT keyed on operationType any more: the holistic general chat returns no operation
+    // at all, so an operationType test silently passed every reply it produced.
+    const answered = !isCannedNonAnswer(reply) && reply.length > 40;
     const clarified = CLARIFY_SHAPES.some((pattern) => pattern.test(reply));
     if (!answered && !clarified) {
       findings.push({

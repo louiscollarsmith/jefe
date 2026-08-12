@@ -449,6 +449,26 @@ async function generateGroundedReply(input) {
 }
 
 /** @param {string} message @param {any} context */
+/**
+ * Is this retrieved content something a person could read aloud?
+ *
+ * Deliberately conservative — it only rejects the shapes that are unmistakably serialised
+ * data, because the cost of wrongly rejecting a real sentence is one less grounded reply,
+ * while the cost of accepting JSON is a merchant reading `{"ratio":1,"numerator":436}`.
+ * @param {unknown} content
+ */
+function isReadableProse(content) {
+  const text = typeof content === "string" ? content.trim() : "";
+  if (!text) return false;
+  if (/[{[]\s*["{]/.test(text)) return false; // {"…  [{…  [" …
+  if (/"\s*:\s*/.test(text)) return false; // "key": …
+  return true;
+}
+
+/**
+ * @param {string} message
+ * @param {any} context
+ */
 export function buildGroundedFallbackReply(message, context) {
   const historical = context.queryClass === "historical_recall";
   const groups = historical
@@ -459,7 +479,13 @@ export function buildGroundedFallbackReply(message, context) {
     .flat()
     .filter(
       (item) => normalizeComparableText(item?.content) !== normalizedMessage,
-    );
+    )
+    // Retrieved items are not all prose. Some carry a serialised belief value, and this
+    // reply path interpolates content verbatim — so a merchant asking about growth was
+    // shown `From what I know about your business, Trailing 90d: {"items":[{"name":...`.
+    // Raw JSON is never an answer; skip those and let a readable item (or the plain
+    // admission below) win instead.
+    .filter((item) => isReadableProse(item?.content));
   const item = mostRelevantItem(message, items);
   if (!item) {
     return historical

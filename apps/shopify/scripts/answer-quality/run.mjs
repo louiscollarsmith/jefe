@@ -6,14 +6,15 @@
 //   node scripts/answer-quality/run.mjs --label before
 //   node scripts/answer-quality/run.mjs --label after --baseline reports/before.json
 //
-// It calls `sendConversationMessage` — the same function the Daily Home composer reaches
+// It calls `sendGeneralChatMessage` — the same function the Daily Home composer reaches
 // through `chat.message` — against a locally seeded store whose beliefs were produced by
 // the real derivation pipeline. Nothing is mocked except the clock-independent fixture, so
 // a score movement here is a movement a merchant would feel.
 //
-// Requires a LOCAL database (npm run db:up) and, for the LLM path, the same provider
-// config production uses. With LLM_ENABLED unset it still runs — and grades the
-// deterministic fallback, which is what merchants get whenever Groq blips.
+// Requires a LOCAL database (npm run db:up — the pgvector image; a pre-existing plain
+// postgres container will fail the holistic-memory migration) and, for the LLM path, the
+// same provider config production uses. With LLM_ENABLED=false it still runs, and grades
+// the grounded fallback — which is what merchants get whenever the provider blips.
 
 import { PrismaClient } from "@prisma/client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -24,11 +25,23 @@ import { ARCHETYPES, archetype } from "./fixtures.mjs";
 import { seedArchetype, assertLocalDatabase } from "./seed.mjs";
 import { SCENARIOS, scenario as findScenario } from "./scenarios.mjs";
 import { gradeTurn, comparativeFinding, scoreOf } from "./graders.mjs";
-import { sendConversationMessage } from "../../app/lib/merchant-memory/conversation.server.js";
+// The home composer's `chat.message` intent routes here (app._index.tsx). It used to reach
+// sendConversationMessage; e74ea64 moved it to the holistic-memory general chat, which
+// assembles working/semantic/episodic/action memory and can route to the commerce analyst.
+// The harness follows the merchant, not the old function — pointing it at the previous
+// entry point would grade code no merchant reaches.
+import { sendGeneralChatMessage } from "../../app/lib/merchant-memory/general-chat.server.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORTS = join(HERE, "reports");
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
+
+/** @param {number} ms */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Gap between turns. Tunable with --turnDelayMs; 0 to replay at full speed when the
+// provider is not the thing under test.
+let turnDelayMs = 2500;
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
@@ -57,33 +70,47 @@ function parseArgs(argv) {
  */
 async function runScenario(prisma, store, scenario) {
   // A scenario must not inherit another scenario's thread, or continuity results become
-  // a function of run order.
+  // a function of run order. Episodes and extracted candidates are derived from those
+  // messages, so they go too — a leftover episode is exactly the sort of thing that would
+  // make a continuity check pass without the conversation actually carrying it.
+  await prisma.merchantMemoryCandidate.deleteMany({ where: { merchantId: store.merchantId } });
+  await prisma.merchantMemoryEpisode.deleteMany({ where: { merchantId: store.merchantId } });
   await prisma.merchantMemoryConversation.deleteMany({ where: { merchantId: store.merchantId } });
 
+  let conversationId = null;
   const turns = [];
   for (const turn of scenario.turns) {
     // Per-turn progress. A run is minutes long and provider-dependent; without this a stall
     // is indistinguishable from slow work, which cost a wasted run to learn.
     process.stdout.write(`    · ${scenario.key} turn ${turns.length + 1}/${scenario.turns.length} … `);
+    // Pace the turns. Replaying back-to-back rate-limits the provider (Groq 429s within
+    // milliseconds of each other), which drops the run onto the fallback path and makes the
+    // harness grade the rate limiter rather than the chat — an 82% "failure rate" that no
+    // merchant would ever experience. A real merchant types; this waits.
+    if (turns.length > 0) await sleep(turnDelayMs);
     const startedAt = Date.now();
-    const before = new Date();
     let error = null;
+    let result = null;
     try {
-      await sendConversationMessage(prisma, {
+      // Thread the conversation id through so turn 2 lands in the same conversation as
+      // turn 1 — a scenario that silently started a new thread each turn would score the
+      // continuity checks as passing while testing nothing.
+      result = await sendGeneralChatMessage(prisma, {
         merchantId: store.merchantId,
         shopId: store.shopId,
         message: turn.say,
+        conversationId,
+        surface: "app",
         logger: quiet,
       });
+      if (result?.conversationId) conversationId = result.conversationId;
     } catch (caught) {
       error = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught);
     }
-    const assistant = await prisma.merchantMemoryConversationMessage.findFirst({
-      where: { merchantId: store.merchantId, role: "assistant", createdAt: { gte: before } },
-      orderBy: { createdAt: "desc" },
-    });
-    const reply = assistant?.content ?? "";
-    const operation = /** @type {any} */ (assistant?.structuredOperation) ?? {};
+    // General chat returns its own assistant message rather than leaving the caller to
+    // re-read "the latest reply" — which also removes a race the old read had.
+    const reply = result?.assistantMessage?.content ?? "";
+    const operation = /** @type {any} */ (result?.assistantMessage?.structuredOperation) ?? {};
     const findings = error
       ? [{ check: "threw", severity: /** @type {const} */ ("broken"), detail: error }]
       : gradeTurn(turn, { reply, operation });
@@ -104,6 +131,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const host = assertLocalDatabase(process.env.DATABASE_URL);
   const label = String(args.label ?? "run");
+  if (args.turnDelayMs !== undefined) turnDelayMs = Number(args.turnDelayMs);
   const asOf = new Date(String(args.asOf ?? "2026-08-12T09:00:00Z"));
   const prisma = new PrismaClient();
 
