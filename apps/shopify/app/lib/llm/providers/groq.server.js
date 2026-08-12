@@ -126,7 +126,6 @@ async function generateStructuredJson(input) {
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeout);
 
       if (!response.ok) {
         throw await buildHttpError(response);
@@ -167,7 +166,6 @@ async function generateStructuredJson(input) {
         durationMs,
       };
     } catch (error) {
-      clearTimeout(timeout);
       lastError = error;
       if (attempt >= maxAttempts || !isRetryableError(error)) {
         const durationMs = Date.now() - startedAt;
@@ -193,6 +191,11 @@ async function generateStructuredJson(input) {
         throw error;
       }
       await wait(retryDelayMs(error, attempt));
+    } finally {
+      // Fetch resolves as soon as response headers arrive. Keep the deadline
+      // active while the response body is consumed as well, otherwise a
+      // stalled streaming body can hang forever and prevent provider fallback.
+      clearTimeout(timeout);
     }
   }
 
