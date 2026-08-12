@@ -115,7 +115,7 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
     const data = approvalFetcher.data;
     if (!data?.ok || !data?.handoffUrl) return;
     const handoffUrl = data.handoffUrl;
-    const timer = setTimeout(() => navigate(handoffUrl), 1300);
+    const timer = setTimeout(() => navigate(handoffUrl, { replace: true }), 450);
     return () => clearTimeout(timer);
   }, [approvalFetcher.data, navigate]);
 
@@ -142,16 +142,21 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
     const handoff = experience.handoff;
     if (experience.stage !== "app" || !handoff?.token) return;
     const key = `entered_app:${handoff.id}`;
-    if (recordedMilestones.current.has(key)) return;
-    recordedMilestones.current.add(key);
-    milestoneFetcher.submit(
-      { intent: "onboarding.milestone", type: "entered_app", token: handoff.token },
-      { method: "post" },
-    );
+    if (!recordedMilestones.current.has(key)) {
+      recordedMilestones.current.add(key);
+      milestoneFetcher.submit(
+        { intent: "onboarding.milestone", type: "entered_app", token: handoff.token },
+        { method: "post" },
+      );
+    }
     const current = new URL(globalThis.location.href);
     current.searchParams.delete("handoff");
+    current.searchParams.delete("step");
+    const appUrl = `${current.pathname}${current.search}${current.hash}`;
     globalThis.history.replaceState(globalThis.history.state, "", `${current.pathname}${current.search}${current.hash}`);
-  }, [experience.handoff, experience.stage, milestoneFetcher]);
+    const timer = setTimeout(() => navigate(appUrl, { replace: true }), 700);
+    return () => clearTimeout(timer);
+  }, [experience.handoff, experience.stage, milestoneFetcher, navigate]);
 
   const acknowledgementActive = Boolean(localContext) && !acknowledgementFinished;
   const stage = acknowledgementActive ? "context" : optimisticStage ?? experience.stage;
@@ -448,7 +453,7 @@ function ActionScene({
         <ActionSection label="How we’ll know" copy={recommendation.howWellKnow} />
         <div className="jf-action-divider" />
         {approvedMode ? (
-          <div className="jf-approved"><span aria-hidden="true">✓</span>{approvedMode === "execute" ? "Approved. I’ll take it from here." : "Tracking. I’ll keep an eye on the success signal."}</div>
+          <div className="jf-approved"><span aria-hidden="true">✓</span>{approvedMode === "execute" ? "Approved. Opening Jefe." : "Tracking. Opening Jefe."}</div>
         ) : (
           <InlineStack gap="500" blockAlign="center" wrap>
             <Button variant="primary" onClick={approve}>{recommendation.approvalLabel}</Button>

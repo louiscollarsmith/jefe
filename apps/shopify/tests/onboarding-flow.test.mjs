@@ -79,6 +79,8 @@ test("fast onboarding does not render dev-only stage jump controls", () => {
 test("accepting the plan shows the home loading shell while opening Jefe", () => {
   assert.match(appIndexSource, /import \{ DailyHome, DailyHomeLoading \}/);
   assert.match(appIndexSource, /pendingDestination === "home"[\s\S]*<DailyHomeLoading storeName=\{data\.storeName\} \/>/);
+  assert.match(fastOnboardingSource, /Tracking\. Opening Jefe\./);
+  assert.match(fastOnboardingSource, /current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(appHomeSource, /export function AppHome13aLoading/);
   assert.match(appHomeSource, /Opening Jefe/);
   assert.match(appHomeSource, /Your call/);

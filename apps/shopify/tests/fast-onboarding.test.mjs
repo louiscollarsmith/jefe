@@ -227,7 +227,8 @@ test("bootstrap generation applies the shared semantic safe-copy guard", () => {
 
 test("the UI keeps the exact beats, one dominant result and honest chrome", () => {
   assert.match(componentSource, /setTimeout\(\(\) => setAcknowledgementFinished\(true\), 1700\)/);
-  assert.match(componentSource, /const handoffUrl = data\.handoffUrl;[\s\S]*setTimeout\(\(\) => navigate\(handoffUrl\), 1300\)/);
+  assert.match(componentSource, /const handoffUrl = data\.handoffUrl;[\s\S]*setTimeout\(\(\) => navigate\(handoffUrl, \{ replace: true \}\), 450\)/);
+  assert.match(componentSource, /type: "entered_app"[\s\S]*current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(componentSource, /insight\.evidence\.slice\(0, 3\)/);
   assert.match(componentSource, /Boolean\(experience\.context\)[\s\S]*!experience\.failure/);
   assert.match(componentSource, /I won’t force a recommendation the evidence can’t support/);
