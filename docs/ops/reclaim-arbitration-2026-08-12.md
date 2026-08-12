@@ -204,3 +204,127 @@ not the full backfill, so a large merchant gets findings immediately. Split thre
   not urgent.
 - **Piece 3 (chat 2 + architecture-II):** Insights consume `historyKind` honestly, once
   the storyboard is approved.
+
+## Founder rulings — standing principles (Phase 2, 2026-08-12)
+
+### The door rule (two-way vs one-way)
+The gate's operating test, ruled by Matt and now the fleet default:
+- **Two-way door** (reversible / internal / no external side-effect) → **ship it**, no ask.
+- **One-way door** (public / legal / scopes / auth / flag-flip-to-go-live / architecture /
+  anything touching a real merchant) → **ask Matt first.**
+- **Contracts are two-way UNTIL they shape stored data or merchant-visible behaviour.**
+  Define / publish / iterate freely; the moment a contract writes beliefs or changes what a
+  merchant sees, it's a one-way door.
+- ⚠️ The distinction is *consequence*, not *diff size*. "Reversible in code, irreversible in
+  the merchant's inbox" (win-back, below) is the canonical trap.
+
+### Autonomy: two modes permanently + runtime eligibility
+- **Two merchant-selectable modes, permanently: `approve_execute` and `autonomous`.** No
+  third. Saved across all sessions.
+- **Eligibility is decided by the system at runtime, per-run — NOT a declared field.** The
+  merchant's mode is the ceiling, not the trigger.
+
+### `recommend` retirement — retire the CHOICE, keep the engine OUTCOME
+Against a literal reading of "remove recommend from `ACTION_MODES`", which would regress
+consent on a live-write flag (`CLEARANCE_EXECUTE_ENABLED=true`):
+- Retire `recommend` from the **surface only** — AutonomyPanel picker, the schema comment
+  for *selectable* modes, context-11's merchant-choice list.
+- **KEEP `"recommend"` in `ACTION_MODES`** (`isValidActionMode` true) — else stored recommend
+  rows fall through to `approve_execute` = silent consent promotion to propose-and-execute.
+- **KEEP the fail-closed guards** (wire-clearance:60, clearance-adapter:238,
+  product-status-adapter:126) + executable gates (action-resolution:322,:383) + the immutable
+  `ActionExecution.resolvedMode` ledger.
+- **Principle:** recommend retires as a merchant *choice* but survives as an engine
+  *outcome* — it is the name of the part-9 fallback state (eligibility says "don't execute"
+  → raise it with steps). Removing the engine's handling breaks the part-9 invariant.
+- **Migration of existing recommend rows = Matt's call, sized by a prod count** (`mode='recommend'`).
+  The silent-promotion danger is already neutralised by keeping the value; the count only
+  decides grandfather-vs-migrate. Routed to the data lane.
+
+### Context-specificity: agnostic in reach, specific in judgement
+Matt's standing principle — works for any Shopify merchant (lipstick DTC / gardening POS+DTC
+/ medical sales / Tesla), gives advice that could only apply to *this* one.
+- **Verified gap:** `business.*` has store_name/currency/history/activity/tool_stack/engagement/
+  decline — **nothing describing the nature of the business.** A lipstick DTC brand and a Tesla
+  dealership are structurally identical to the ontology; only the numbers differ. Every
+  recommendation is generic *by construction* — a representation problem, not prompt-tuning.
+- **Belief side — a "business shape" tranche** (memory/ontology lane, contract held here):
+  **dimensional beliefs** — channel mix (DTC/POS/wholesale), cadence, price band, catalogue
+  size, considered-vs-impulse. Inferred from unused signals: product types/vendor, order
+  `sourceName`/channel, shipping countries, price distribution, repeat interval.
+  `systemInference` precedence + merchant correction. This is what the memory surface is *for*
+  — where specificity gets acquired; it gives `beliefConfirmPriority` far better questions.
+- ⛔ **NO vertical enum.** Wrong at the edges immediately (gardening = POS *and* DTC *and*
+  wholesale) and it violates "agnostic". A Tesla dealer and a medical-device seller share
+  "high price band / considered / low frequency" with no shared label — advice keys on the
+  dimension, not the category.
+
+## The action-ontology contract — a well-formed action type
+As the ontology expands from one (clearance) to N, every action type declares these parts;
+runtime eligibility decides per-run whether it fires.
+1. **Trigger** — a belief OR a query-derived condition. (Belief-only is too narrow.)
+2. **Intent** — the LLM action-intent shape → `proposeActionFromIntent`.
+3. **Reversible adapter** — typed, real inverse; writes the `action_executions` /
+   `action_execution_writes` ledger.
+4. **Autonomy policy** — resolved against the **two** modes + runtime eligibility.
+5. **Required scopes** — declared, checked before propose.
+6. **Measurement** — an `outcome` FIELD on the registry entry (NOT a parallel
+   `OUTCOME_REGISTRY`): metric, window, threshold, baseline. One shared executor runs it.
+7. **Verdict** — did it work; consumed by the propose path so the loop *learns*, not just
+   measures (today clearance-hardcoded — the open gap, #20).
+8. **Applicability** — which businesses it suits, **dimensional** (per context-specificity),
+   as a trigger qualifier. Clearance-markdown suits perishable/impulse, not a car dealer.
+9. **Fallback-instruction-path** — if Jefe can't/shouldn't execute, it tells the merchant how
+   to do it themselves. **No action type is ever a dead end.** The discarded
+   `resolveAutonomyMode().reason` + `applyAutonomyPolicy().policyViolations` are the *content*
+   of this raise and must be persisted (today they evaporate in `maybeEmitPlanAction`).
+
+**Targeting separation (ruled):** the trigger belief is *trigger + narrative*; the primitive
+**resolves its own targets by query at execution time** (`dead-stock-clearance` never reads the
+`dead_stock` belief — it queries variant/inventoryLevel/orderLineItem directly, 114/128/132).
+So new actions are NOT blocked on the memory lane for targeting — they need a trigger condition
++ their own resolver.
+
+## Currency contract — base/dominant lens + breakdowns (Matt, refined)
+Supersedes the blunt-refuse stop-gap (`bfc2b4c`, the crude floor).
+- **Backing (222 real merchants):** 0 lack a dominant currency; 56 are ≥95% single-currency yet
+  were being refused. The base/dominant lens never fails to exist.
+- **Contract:** single currency → unchanged; multi-currency money measure → base/dominant total
+  + per-currency breakdown with dominance share (renderer leads "£X, 94% of your orders");
+  `currency` becomes a requestable **dimension** (joins country/channel); refusal survives **only**
+  for an explicitly-requested *converted* cross-currency total, and it **carries the offer**
+  ("…but I can show each currency separately" — part 9).
+- **Extraction (gate condition):** extract `currencyDistribution` into a shared module both layers
+  call — do NOT export `shopBaseCurrency()` (its context arg is the derivation context the analyst
+  can't produce). **Same source must feed `business.primary_currency` AND the analyst**, or the
+  belief's dominant and the analyst's leads-with disagree = the duplication bug in a new coat.
+  Diff routes through the gate.
+- **Measurement:** a labelled breakdown counts as a PASS, not only a refusal.
+- ⏳ **Pending founder decision — FX:** there is **no exchange-rate / conversion data anywhere in
+  the tree.** A converted cross-currency total is impossible today; per-currency breakdowns are the
+  ceiling. "Do we want exchange rates?" (rates provider + rate-date policy) is Matt's product call —
+  surfaced, not decided in a bug fix.
+
+## Fleet infra rulings (2026-08-12)
+- **node_modules-empty hazard (dangerous — induces a wrong fix):** the main checkout's
+  `apps/shopify/node_modules` can be empty; symlinked worktrees resolve to nothing, `npx prisma`
+  pulls 7.9.1 and rejects the correct 6.x schema with `P1012 datasource url`. Reads exactly like a
+  broken `schema.prisma`. **Discriminator:** `npx prisma --version` (6.x → trust the schema; 7.x →
+  your install is gone). **Fix:** `rm -f node_modules && npm ci` per worktree.
+- **Gate throughput at ~15 lanes (ruled, reversible):** shrink the pre-push HOOK to a fast subset
+  (typecheck + lint + changed-file unit tests — no build, no full-DB) so the ref-lock race window
+  drops ~3min→~30s; on a lost race **rebase + fast-check, do NOT re-run the full gate** (re-running
+  is what creates the re-run-till-green habit); mandate `&&` not `;` in every preflight-then-push
+  snippet. The larger "feature branches / merge queue vs direct-to-main" change is a ways-of-working
+  call for Matt.
+- **db-tests flake (observability lane):** connection exhaustion on shared `jefe-shopify-postgres`
+  at 8+ sessions. Cap each run's Prisma `connection_limit` (demand) first, `max_connections=200` in
+  `db:up` (supply) at next quiet recreate, schema-isolation held unless row-contention shows.
+
+## Door-rule worked example — win-back campaign
+The canonical "reversible in code, irreversible in the merchant's inbox": flipping the parked
+win-back campaign is a trivial flag flip, but the live Day-0 goodbye email already promised churned
+merchants *"no emails after this one"* — and they are exactly the campaign's targets. Not fixable
+with new copy; the promise is already sent. Ruling: honest single "why did you go?" + founder booking
+for the already-churned cohort; full campaign for future churn only. One-way risk lives in
+*consequence already incurred*, not in the diff.
