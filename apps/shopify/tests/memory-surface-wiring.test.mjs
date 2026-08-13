@@ -44,6 +44,13 @@ const generalChatSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/general-chat.server.js", import.meta.url),
   "utf8",
 );
+const focusedChatSource = fs.readFileSync(
+  new URL(
+    "../app/lib/merchant-memory/focused-action-chat.server.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
 const commerceAnalystSource = fs.readFileSync(
   new URL("../app/lib/merchant-memory/commerce-analyst.server.js", import.meta.url),
   "utf8",
@@ -144,14 +151,24 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
   assert.match(sectionsSource, /Tell me/);
 });
 
-test("the live DailyHome is the store conversation (Shape B), not the old dashboard shell", () => {
-  // The home IS one selected chat. Derived store updates remain available separately,
-  // while the composer posts `chat.message` into the clearly identified current chat.
-  assert.match(dailyHomeSource, /function StoreConversation/);
+test("the live DailyHome is the focused-action home and chat surface", () => {
+  // The home is action-centric: one durable next move, a chat list, in-progress work,
+  // and action history. Opening a conversation renders the focused chat surface.
+  assert.match(dailyHomeSource, /function FocusedActionsHome/);
+  assert.match(dailyHomeSource, /function FocusedConversation/);
+  assert.match(dailyHomeSource, /YOUR NEXT MOVE/);
+  assert.match(dailyHomeSource, /title="Chats"/);
+  assert.match(dailyHomeSource, /title="In Progress Actions"/);
+  assert.match(dailyHomeSource, /title="Action history"/);
+  assert.match(dailyHomeSource, /focusStripLabelStyle/);
+  assert.match(dailyHomeSource, /focusStripTextStyle/);
+  assert.match(dailyHomeSource, /WORKING ON/);
   assert.match(dailyHomeSource, /value="chat\.message"/);
+  assert.match(dailyHomeSource, /value="chat\.focus\.start"/);
+  assert.match(dailyHomeSource, /value="chat\.focus\.change"/);
+  assert.match(dailyHomeSource, /value="chat\.action\.reference"/);
+  assert.match(dailyHomeSource, /name="focusedActionId"/);
   assert.match(dailyHomeSource, /Talk this through/);
-  assert.match(dailyHomeSource, /<Mono>Current chat<\/Mono>/);
-  assert.match(dailyHomeSource, /Store updates/);
   assert.match(dailyHomeSource, /useNavigation/);
   assert.match(dailyHomeSource, /Thinking/);
   // Watching, Goals, changelog and the metrics dashboard all left the home for their
@@ -163,39 +180,119 @@ test("the live DailyHome is the store conversation (Shape B), not the old dashbo
   assert.doesNotMatch(dailyHomeSource, /What I’ve worked out so far/);
 });
 
-test("a new chat is visually blank and does not mix live store updates into its transcript", () => {
-  assert.match(dailyHomeSource, /const isBlankThread = history\.length === 0/);
-  assert.match(dailyHomeSource, /Fresh chat · no messages yet/);
+test("a new chat is visually blank and action references do not change focus", () => {
+  assert.match(dailyHomeSource, /const isBlankThread = messages\.length === 0/);
+  assert.match(dailyHomeSource, /This chat is empty/);
   assert.match(dailyHomeSource, /Messages from earlier chats stay in Chats/);
-  assert.match(dailyHomeSource, /function StoreUpdatesPopover/);
-  assert.match(dailyHomeSource, /These are separate from the\s+current chat/);
-  assert.match(dailyHomeSource, /!isBlankThread && indexEntries\.length > 0/);
-  assert.match(dailyHomeSource, /Store update index/);
-  assert.match(dailyHomeSource, /Empty chat/);
-  assert.match(dailyHomeSource, /· Current/);
+  assert.match(dailyHomeSource, /Reference an action/);
+  assert.match(dailyHomeSource, /Referenced action:/);
+  assert.match(dailyHomeSource, /read-only context/i);
+  assert.match(appIndexSource, /referenceActionInConversation\(prisma, \{/);
+  assert.match(appIndexSource, /changeConversationFocus\(prisma, \{/);
   assert.doesNotMatch(dailyHomeSource, /In this conversation/);
 });
 
-test("approve and decline decisions are reachable only from the action chat surface", () => {
-  const beforeChat = dailyHomeSource.slice(0, dailyHomeSource.indexOf("function ActionChat"));
-  const chatSource = dailyHomeSource.slice(dailyHomeSource.indexOf("function ActionChat"));
+test("talk-this-through chooser matches the chat reuse flow", () => {
+  assert.match(dailyHomeSource, /function TalkActionChooser/);
+  assert.match(dailyHomeSource, /style=\{talkChooserModalStyle\}/);
+  assert.match(dailyHomeSource, /You already have a chat working on/);
+  assert.match(dailyHomeSource, /Continue one, or start a new chat focused on this action/);
+  assert.match(dailyHomeSource, /style=\{talkChooserCardStyle\}/);
+  assert.match(dailyHomeSource, /messageCountLabel\(chat\.messageCount\)/);
+  assert.match(dailyHomeSource, /style=\{talkChooserDividerStyle\}/);
+  assert.match(dailyHomeSource, /style=\{talkChooserPrimaryButtonStyle\}/);
+  assert.match(dailyHomeSource, /style=\{talkChooserCancelStyle\}/);
+  assert.match(dailyHomeSource, /function messageCountLabel/);
+  assert.match(focusedChatSource, /include: \{ _count: \{ select: \{ messages: true \} \} \}/);
+  assert.match(focusedChatSource, /messageCount: row\._count\?\.messages \?\? 0/);
+  const chooserSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("function TalkActionChooser"),
+    dailyHomeSource.indexOf("function FocusedConversation"),
+  );
+  assert.doesNotMatch(chooserSource, /modalCloseStyle/);
+  assert.doesNotMatch(chooserSource, /aria-label="Close"/);
+});
+
+test("focused chat keeps the composer sticky and scrolls only the transcript", () => {
+  assert.match(dailyHomeSource, /const chatPageStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /height: "100dvh"/);
+  assert.match(dailyHomeSource, /position: "fixed"/);
+  assert.match(dailyHomeSource, /overflow: "hidden"/);
+  assert.match(dailyHomeSource, /const messagesStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /useScrollTranscriptToLatest/);
+  assert.match(dailyHomeSource, /ref=\{transcriptRef\}/);
+  assert.match(dailyHomeSource, /transcript\.scrollTop = transcript\.scrollHeight/);
+  assert.match(dailyHomeSource, /overflowY: "auto"/);
+  assert.match(dailyHomeSource, /padding: "36px 4px 56px 0"/);
+  assert.match(dailyHomeSource, /const chatComposerWrapStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /position: "sticky"/);
+  assert.match(dailyHomeSource, /bottom: 0/);
+  assert.match(dailyHomeSource, /paddingTop: 18/);
+});
+
+test("focused chat title can be renamed inline from the header", () => {
+  assert.match(dailyHomeSource, /function ChatTitleBlock/);
+  assert.match(dailyHomeSource, /function ChatTitleInlineEditor/);
+  assert.match(dailyHomeSource, /useFetcher<ChatRenameActionData>\(\)/);
+  assert.match(dailyHomeSource, /<ChatTitleInlineEditor/);
+  assert.match(dailyHomeSource, /const titleInputActive = titleHovered \|\| titleFocused/);
+  assert.match(dailyHomeSource, /onMouseEnter=\{\(\) => setTitleHovered\(true\)\}/);
+  assert.match(dailyHomeSource, /onMouseLeave=\{\(\) => setTitleHovered\(false\)\}/);
+  assert.match(dailyHomeSource, /onFocus=\{\(\) => setTitleFocused\(true\)\}/);
+  assert.match(dailyHomeSource, /finishInlineTitleEdit\(event\.currentTarget\.value\)/);
+  assert.match(dailyHomeSource, /cancelTitleBlurRef\.current = true/);
+  assert.match(dailyHomeSource, /event\.key === "Enter"/);
+  assert.match(dailyHomeSource, /event\.key === "Escape"/);
+  assert.match(dailyHomeSource, /formData\.set\("intent", "chat\.rename"\)/);
+  assert.match(dailyHomeSource, /formData\.set\("conversationId", conversation\.id\)/);
+  assert.match(dailyHomeSource, /renameFetcher\.submit\(formData, \{ method: "post" \}\)/);
+  assert.match(dailyHomeSource, /aria-label="Chat name"/);
+  assert.match(dailyHomeSource, /function chatTitleInlineInputStyle\(active: boolean\): CSSProperties/);
+  assert.match(dailyHomeSource, /background: active \? COLORS\.card : "transparent"/);
+  assert.match(dailyHomeSource, /border: `1px solid \$\{active \? COLORS\.border : "transparent"\}`/);
+  assert.match(dailyHomeSource, /marginLeft: -14/);
+  assert.match(dailyHomeSource, /padding: "6px 14px"/);
+  assert.match(dailyHomeSource, /width: "calc\(100% \+ 28px\)"/);
+  assert.doesNotMatch(dailyHomeSource, /aria-label="Edit chat name"/);
+  assert.doesNotMatch(dailyHomeSource, /onMouseEnter=\{startInlineTitleEdit\}/);
+  assert.doesNotMatch(dailyHomeSource, /chatTitleEditTriggerStyle/);
+});
+
+test("focused action context is connected to the title row and system focus events use dividers", () => {
+  assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /const focusDetailStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /borderTop: `1px solid \$\{COLORS\.hairline\}`/);
+  assert.match(dailyHomeSource, /flexDirection: "column"/);
+  assert.match(dailyHomeSource, /fontSize: 15/);
+  assert.match(dailyHomeSource, /aria-expanded=\{focusExpanded\}/);
+  assert.match(dailyHomeSource, /focusExpanded \? "▲" : "▼"/);
+  assert.match(dailyHomeSource, /style=\{inlineFormStyle\} onSubmit=\{onCancel\}/);
+  assert.match(dailyHomeSource, /const systemEventLineStyle: CSSProperties = \{/);
+  assert.match(dailyHomeSource, /<span style=\{systemEventLineStyle\} \/>/);
+  assert.match(dailyHomeSource, /<span style=\{systemEventTextStyle\}>\{message\.content\}<\/span>/);
+});
+
+test("approve and defer decisions are reachable only from the focused action chat", () => {
+  const beforeChat = dailyHomeSource.slice(
+    0,
+    dailyHomeSource.indexOf("function FocusedConversation"),
+  );
+  const chatSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("function FocusedConversation"),
+  );
   assert.doesNotMatch(beforeChat, /value="action\.approve"/);
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
   assert.match(chatSource, /value="action\.approve"/);
   assert.match(chatSource, /value="action\.defer"/);
-  assert.match(chatSource, /value="action\.revise_scope"/);
-  assert.match(chatSource, /value="action\.chat\.message"/);
+  assert.match(chatSource, /action\.status !== "proposed"/);
+  assert.match(chatSource, /name="focusedActionId"/);
+  assert.match(chatSource, /value=\{focusedAction\.id\}/);
 });
 
-test("action chat keeps the recommendation subtitle under the move title", () => {
-  const chatSource = dailyHomeSource.slice(dailyHomeSource.indexOf("function ActionChat"));
-  assert.match(chatSource, /const subtitle = informativeSubtitle\(move\.summary, move\.title\)/);
-  assert.match(chatSource, /<h1 style=\{chatTitleStyle\}>\{move\.title\}<\/h1>/);
-  assert.match(chatSource, /subtitle \? <p style=\{chatSubtitleStyle\}>\{subtitle\}<\/p> : null/);
-});
-
-test("action chat submits identifiers only and rebuilds factual context server-side", () => {
-  assert.match(appIndexSource, /sendActionChatMessage\(prisma, \{/);
+test("focused chat submits identifiers only and rebuilds factual context server-side", () => {
+  assert.match(appIndexSource, /sendGeneralChatMessage\(prisma, \{/);
+  assert.match(appIndexSource, /focusedActionId: String\(formData\.get\("focusedActionId"\)/);
+  assert.doesNotMatch(dailyHomeSource, /value="action\.chat\.message"/);
   assert.doesNotMatch(appIndexSource, /formData\.get\("actionTitle"\)/);
   assert.doesNotMatch(appIndexSource, /formData\.get\("actionSummary"\)/);
   assert.doesNotMatch(appIndexSource, /formData\.get\("whyThis"\)/);
@@ -227,22 +324,22 @@ test("action chat quantification uses the governed commerce analyst executor", (
 
 test("chat composers clear immediately while Send keeps a disabled state", () => {
   assert.match(dailyHomeSource, /const \[composerMessage, setComposerMessage\] = useState\(""\)/);
-  // Both composers clear the box and start the felt-latency clock (chat_turn,
-  // vantage "client"). Pinned as a pair because a composer that clears without
-  // marking silently drops its turns out of the latency numbers.
+  // The active focused-chat composer clears the box and starts the felt-latency clock
+  // (chat_turn, vantage "client"). Pinned as a pair because a composer that clears
+  // without marking silently drops its turns out of the latency numbers.
   assert.equal(
     [...dailyHomeSource.matchAll(/markChatTurnSent\(\);\n    setComposerMessage\(""\);/g)].length,
-    2,
+    1,
   );
   assert.equal(
     [...dailyHomeSource.matchAll(/onSubmit=\{handleComposerSubmit\}/g)].length,
-    2,
+    1,
   );
   assert.match(dailyHomeSource, /value=\{composerMessage\}/);
   assert.match(dailyHomeSource, /onChange=\{\(event\) => setComposerMessage\(event\.currentTarget\.value\)\}/);
   assert.equal(
     [...dailyHomeSource.matchAll(/style=\{sendButtonStateStyle\(isThinking\)\}/g)].length,
-    2,
+    1,
   );
   assert.doesNotMatch(dailyHomeSource, /\{isThinking \? "Thinking" : "Send"\}/);
 });

@@ -173,10 +173,10 @@ test("the turn is measured around the whole reply path, both server and client",
   assert.match(chat, /void recordChatTurn\(/);
 
   // Every way a merchant can start a turn must start the clock, or the felt
-  // numbers silently describe only the typed ones.
+  // numbers silently miss part of the conversation.
   const home = read("app/components/daily-home.tsx");
   const marks = home.match(/markChatTurnSent/g) ?? [];
-  assert.ok(marks.length >= 4, `composer, chip, retry and import (got ${marks.length})`);
+  assert.ok(marks.length >= 3, `composer, retry and import (got ${marks.length})`);
   assert.match(home, /<ChatTurnReporter/);
 
   // And it has somewhere to be seen.

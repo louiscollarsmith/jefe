@@ -1,17 +1,28 @@
 // @ts-check
 
-/** @param {any} prisma @param {{ merchantId: string; shopId: string; recommendationId?: string | null; actionRunId?: string | null; take?: number }} input */
+/** @param {any} prisma @param {{ merchantId: string; shopId: string; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; take?: number }} input */
 export async function retrieveActionMemory(prisma, input) {
   const take = input.take ?? 8;
+  const focusedActionId = uuid(input.focusedActionId);
   const exactRunId = uuid(input.actionRunId);
   const recommendationId = uuid(input.recommendationId);
   const [
+    focusedAction,
     recentExecutions,
     recentRecommendations,
     linkedMessages,
     exactExecution,
     exactRecommendation,
   ] = await Promise.all([
+    focusedActionId && prisma.merchantAction?.findFirst
+      ? prisma.merchantAction.findFirst({
+          where: {
+            id: focusedActionId,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+          },
+        })
+      : null,
     prisma.actionExecution?.findMany
       ? prisma.actionExecution.findMany({
           where: {
@@ -81,6 +92,32 @@ export async function retrieveActionMemory(prisma, input) {
   );
   /** @type {any[]} */
   const items = [];
+  if (focusedAction) {
+    items.push({
+      id: `merchant_action:${focusedAction.id}`,
+      memoryType: "action",
+      content: `${focusedAction.title}: ${focusedAction.summary}`,
+      data: {
+        actionId: focusedAction.id,
+        title: focusedAction.title,
+        summary: focusedAction.summary,
+        status: focusedAction.status,
+        sourceRecommendationId: focusedAction.sourceRecommendationId,
+        actionRunId: focusedAction.currentActionRunId,
+        role: "focused_mutation_target",
+      },
+      authority: "merchant_action",
+      confidence: null,
+      temporalStatus: "current",
+      occurredAt: (focusedAction.updatedAt ?? focusedAction.createdAt ?? new Date(0)).toISOString(),
+      scope: { shopId: input.shopId },
+      source: {
+        type: "merchant_action",
+        actionId: focusedAction.id,
+      },
+      score: { exact: 2, recency: 1 },
+    });
+  }
   for (const row of executions) {
     items.push({
       id: `action:${row.runId}`,

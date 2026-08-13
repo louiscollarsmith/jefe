@@ -22,7 +22,7 @@ flowchart TD
   Questions["Open questions"]
   Surfaces["Surfaces<br/>chat, Memory, Goals, Settings, Slack, email"]
   Insights["Insights and recommendations"]
-  Move["Move<br/>merchant-facing unit of work"]
+  Move["Merchant Action / Move<br/>merchant-facing unit of work"]
   Gate{"Safe execution path?"}
   Instruct["Instruct path<br/>tell the merchant how to do it"]
   Capability["Capability<br/>scope, adapter, measurement loop"]
@@ -87,9 +87,11 @@ typed adapters write to Shopify or another external system.
 
 ## Chat And Surfaces
 
-- **Conversation** — Canonical merchant/Jefe message history across app chat, Slack, email, Goals, Plan, Memory editing and action chat.
+- **Conversation** — Canonical merchant/Jefe message history across app chat, Slack, email, Goals, Plan, Memory editing and action discussion.
 - **Current chat** — The selected conversation thread. Its transcript contains only messages that belong to that thread.
-- **Action chat** — A focused thread for talking through one proposed or active move without mixing it into the store-level chat.
+- **Focused action** — The one Merchant Action a conversation is currently working on. It is the only action mutation/update tools may target by default from that chat.
+- **Referenced action** — A Merchant Action added to a conversation as read-only context. Jefe may reason from it, but it does not become the chat's write target.
+- **Action chat** — A conversation whose `focusedActionId` points at one Merchant Action, so the merchant and Jefe can talk through that work without making other referenced actions mutable.
 - **Store updates** — Store-level signals, proposed work and recent action outcomes shown near chat but kept separate from the current transcript.
 - **Heads-up** — A live store signal Jefe thinks is worth knowing, such as inventory pressure or another standing condition.
 
@@ -97,6 +99,7 @@ typed adapters write to Shopify or another external system.
 
 - **Insight** — A grounded observation about the business, shown with supporting evidence.
 - **Recommendation** — Jefe's proposed direction of travel. It can be executable, approval-gated, autonomous, or instruct-only.
+- **Merchant Action** — The durable merchant-facing identity for a piece of work. It can originate from a recommendation, point at the current execution run, hold progress/outcome state, and be the focus of zero or more chats.
 - **Move** — The merchant-facing unit of proposed or active work, usually surfaced as Jefe's next move.
 - **Action** — A concrete change Jefe can carry out or instruct the merchant to carry out.
 - **Action type** — The primitive that names a class of action, such as `price_markdown`, `listing_copy` or `tidy_up`.
@@ -116,7 +119,7 @@ typed adapters write to Shopify or another external system.
 
 ## Ledger And Learning
 
-- **Action execution** — A row recording a proposed, approved, applied, declined, reverted or measured action instance.
+- **Action execution** — A source/execution ledger row recording a proposed, approved, applied, declined, reverted or measured action instance. A Merchant Action may point at its current execution.
 - **Action execution write** — A row recording one external write made by an action execution.
 - **Ledger** — The durable audit trail of proposed actions, approvals, writes, reversals and outcomes.
 - **Outcome** — The measured result of an action, such as units moved, cash recovered or whether a tidy-up landed.

@@ -109,6 +109,7 @@ import {
   rejectAction,
   reviseAction,
 } from "../lib/actions/action-resolution.server";
+import { listMerchantActions } from "../lib/actions/merchant-action.server";
 import {
   getActionMode,
   setActionMode,
@@ -160,7 +161,6 @@ import {
 import {
   CONVERSATION_TOPICS,
   addActionChatNote,
-  getActionChatThread,
   getMerchantMemoryConversationExperience,
   getOpenQuestions,
   sendActionChatMessage,
@@ -173,6 +173,12 @@ import {
   sendGeneralChatMessage,
   startNewGeneralChat,
 } from "../lib/merchant-memory/general-chat.server.js";
+import {
+  changeConversationFocus,
+  listChatsFocusedOnAction,
+  referenceActionInConversation,
+  startFocusedActionChat,
+} from "../lib/merchant-memory/focused-action-chat.server.js";
 import {
   getBeliefDefinition,
   validateConversationalValue,
@@ -618,6 +624,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "chat.new") {
+    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
+    if (focusedActionId) {
+      const result = await startFocusedActionChat(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: focusedActionId,
+        forceNew: true,
+      });
+      if (!result.ok || !result.conversationId) {
+        return {
+          ok: false,
+          error:
+            ("error" in result ? result.error : null) ??
+            "That focused chat could not be started.",
+          intent,
+        };
+      }
+      actionLog.info("merchant started a focused action chat", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        conversationId: result.conversationId,
+        focusedActionId,
+      });
+      return redirect(
+        appPathFromSearch(new URL(request.url).search, {
+          conversation: result.conversationId,
+          talkAction: null,
+        }),
+      );
+    }
     const conversation = await startNewGeneralChat(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -630,6 +666,110 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return redirect(
       appPathFromSearch(new URL(request.url).search, {
         conversation: conversation.id,
+      }),
+    );
+  }
+
+  if (intent === "chat.focus.start") {
+    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
+    const forceNew = formDataHasTruthyValue(formData, "forceNew");
+    const result = focusedActionId
+      ? await startFocusedActionChat(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          actionId: focusedActionId,
+          forceNew,
+        })
+      : { ok: false, error: "That action could not be found." };
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          ("error" in result ? result.error : null) ??
+          "That focused chat could not be started.",
+        intent,
+      };
+    }
+    if (result.chooser) {
+      return redirect(
+        appPathFromSearch(new URL(request.url).search, {
+          talkAction: focusedActionId,
+        }),
+      );
+    }
+    actionLog.info("merchant opened action talk-through", {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      focusedActionId,
+      conversationId: result.conversationId ?? null,
+      forceNew,
+    });
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        conversation: result.conversationId ?? null,
+        talkAction: null,
+      }),
+    );
+  }
+
+  if (intent === "chat.focus.change") {
+    const conversationId = String(formData.get("conversationId") ?? "");
+    const focusedActionId = String(formData.get("focusedActionId") ?? "");
+    const result = await changeConversationFocus(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      actionId: focusedActionId,
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          ("error" in result ? result.error : null) ??
+          "That chat focus could not be changed.",
+        intent,
+      };
+    }
+    actionLog.info("merchant changed chat focused action", {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      focusedActionId,
+    });
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        conversation: result.conversationId,
+      }),
+    );
+  }
+
+  if (intent === "chat.action.reference") {
+    const conversationId = String(formData.get("conversationId") ?? "");
+    const referencedActionId = String(formData.get("referencedActionId") ?? "");
+    const result = await referenceActionInConversation(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      actionId: referencedActionId,
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          ("error" in result ? result.error : null) ??
+          "That action could not be referenced.",
+        intent,
+      };
+    }
+    actionLog.info("merchant referenced action in chat", {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      conversationId,
+      referencedActionId,
+    });
+    return redirect(
+      appPathFromSearch(new URL(request.url).search, {
+        conversation: result.conversationId,
       }),
     );
   }
@@ -648,7 +788,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         shopId: shop.id,
         conversationId,
       });
-      return { ok: false, error: result.error, intent };
+      return { ok: false, error: result.error, intent, conversationId };
     }
     // The title itself is merchant-authored free text — log that a rename happened, never
     // what they typed.
@@ -660,7 +800,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     // Data, not a redirect: the rename posts through a fetcher, so the thread must not
     // navigate and lose the merchant's place in it.
-    return { ok: true, intent, title: result.title };
+    return { ok: true, intent, conversationId, title: result.title };
   }
 
   if (intent === "chat.message") {
@@ -669,6 +809,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shopId: shop.id,
       message: String(formData.get("message") ?? ""),
       conversationId: String(formData.get("conversationId") ?? "") || null,
+      focusedActionId: String(formData.get("focusedActionId") ?? "") || null,
       surface: "app",
       logger: actionLog,
     });
@@ -1506,6 +1647,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }),
       );
       const actionChatId = url.searchParams.get("actionChat");
+      const talkActionId = url.searchParams.get("talkAction");
+      const merchantActionsPromise = listMerchantActions(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        includeInactive: true,
+      });
+      const focusedActionChatsPromise = talkActionId
+        ? listChatsFocusedOnAction(prisma, {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            actionId: talkActionId,
+          })
+        : Promise.resolve([]);
       // 13a home extras: the real in-app chat thread (thin read — NO memory writes
       // on the home), the "New in Jefe" changelog, and the email-brief preference.
       // ensureShopContactEmail best-effort populates Shop.contactEmail from
@@ -1553,6 +1707,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         horizonHeadsUps,
         suggestedAction,
         executedActions,
+        merchantActions,
+        focusedActionChats,
         conversation,
         changelog,
         morningBriefPref,
@@ -1569,6 +1725,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         horizonHeadsUpsPromise,
         suggestedActionPromise,
         executedActionsPromise,
+        merchantActionsPromise,
+        focusedActionChatsPromise,
         conversationPromise,
         changelogPromise,
         morningBriefPrefPromise,
@@ -1577,26 +1735,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
       // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
       const actionModes = Object.fromEntries(liveActionModeEntries);
-      const primaryRecommendationId =
-        suggestedAction?.sourceRecommendation?.id ??
-        plan?.selectedRun?.recommendation?.id ??
-        executedActions.find((action) => action.sourceRecommendation?.id)
-          ?.sourceRecommendation?.id ??
-        null;
-      const primaryActionRunId =
-        suggestedAction?.actionRunId ?? executedActions[0]?.actionRunId ?? null;
-      const actionChatThread = actionChatId
-        ? await getActionChatThread(prisma, {
-            merchantId: merchant.id,
-            shopId: shop.id,
-            recommendationId:
-              actionChatId === primaryRecommendationId ? actionChatId : null,
-            actionRunId:
-              actionChatId === primaryRecommendationId
-                ? primaryActionRunId
-                : actionChatId,
-          })
-        : { topic: null, messages: [] };
       const emailBrief = contactEmail
         ? {
             address: contactEmail,
@@ -1643,7 +1781,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         channels: channelConnections,
         conversation,
         actionChatId,
-        actionChatThread,
+        merchantActions,
+        talkActionId,
+        focusedActionChats,
         changelog,
         emailBrief,
         openQuestions: openQuestions.map((q) => ({
@@ -1890,7 +2030,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // Client-only: true on every fresh document load (the module is freshly evaluated),
 // set false after the stale-zoom guard below runs once. It lets AppIndex tell a FRESH
 // app entry (App Bridge restoring the last URL on re-open, or a refresh) apart from an
-// in-session navigation, so a left-behind ?actionChat can't silently re-open a move chat.
+// in-session navigation, so a left-behind chat/chooser param can't silently re-open work.
 let staleZoomGuardArmed = true;
 
 export default function AppIndex() {
@@ -1929,19 +2069,30 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
 
-  // Opening Jefe always lands on the conversation. The embedded app's URL is persistent
-  // (App Bridge restores the last location on re-open), so a move zoom the merchant left
-  // would re-open on a fresh entry — which Matt hit. On the first mount of a fresh
-  // document load, drop a stale ?actionChat and land on the home; in-session zoom
-  // navigation is untouched (the guard disarms after one run, so later revalidations are
-  // no-ops). A deliberate deep-link into a move can opt back in later.
+  // Opening Jefe always lands on the home. The embedded app's URL is persistent
+  // (App Bridge restores the last location on re-open), so a chat the merchant left
+  // would re-open on a fresh entry. On the first mount of a fresh document load,
+  // drop stale chat/chooser params and land on the home; in-session navigation is
+  // untouched after the guard disarms.
   useEffect(() => {
     if (!staleZoomGuardArmed) return;
     staleZoomGuardArmed = false;
-    if (data.appMode === "daily" && data.actionChatId) {
-      navigate(appPathFromSearch(location.search, { actionChat: null }), {
-        replace: true,
-      });
+    if (data.appMode === "daily") {
+      const params = new URLSearchParams(location.search);
+      if (
+        params.has("actionChat") ||
+        params.has("conversation") ||
+        params.has("talkAction")
+      ) {
+        navigate(
+          appPathFromSearch(location.search, {
+            actionChat: null,
+            conversation: null,
+            talkAction: null,
+          }),
+          { replace: true },
+        );
+      }
     }
   }, [data, navigate, location.search]);
 
@@ -1976,8 +2127,9 @@ export default function AppIndex() {
         actionModes={data.actionModes}
         channels={data.channels}
         conversation={data.conversation}
-        actionChatId={data.actionChatId}
-        actionChatThread={data.actionChatThread}
+        merchantActions={data.merchantActions}
+        talkActionId={data.talkActionId}
+        focusedActionChats={data.focusedActionChats}
         changelog={data.changelog}
         emailBrief={data.emailBrief}
         openQuestions={data.openQuestions}

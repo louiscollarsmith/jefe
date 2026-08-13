@@ -12,6 +12,9 @@ const RECOMMENDATION_ID = "33333333-3333-4333-8333-333333333333";
 const ACTION_RECOMMENDATION_ID = "44444444-4444-4444-8444-444444444444";
 const COUNT_BELIEF_ID = "11111111-1111-4111-8111-111111111111";
 const LOW_COVER_BELIEF_ID = "22222222-2222-4222-8222-222222222222";
+const FOCUSED_ACTION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const REFERENCED_ACTION_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const OTHER_ACTION_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 test("belief expansion carries stockout counts to the structured low-cover list", () => {
   const count = beliefFixture({
@@ -349,6 +352,92 @@ test("a missing shop scope reads nothing rather than every shop the merchant own
   assert.equal(warned[0].merchantId, "m1");
 });
 
+test("question context separates focused, referenced, and other relevant actions", async () => {
+  const focusedAction = merchantActionFixture({
+    id: FOCUSED_ACTION_ID,
+    title: "Clear slow stock",
+    sourceRecommendationId: RECOMMENDATION_ID,
+    currentActionRunId: "run-focus",
+  });
+  const referencedAction = merchantActionFixture({
+    id: REFERENCED_ACTION_ID,
+    title: "Restock Yuzu Tonic",
+    sourceRecommendationId: ACTION_RECOMMENDATION_ID,
+    currentActionRunId: "run-reference",
+  });
+  const otherAction = merchantActionFixture({
+    id: OTHER_ACTION_ID,
+    title: "Restock Cherry Cola",
+    sourceRecommendationId: null,
+    currentActionRunId: "run-other",
+  });
+  const prisma = createContextPrisma({
+    actionRow: actionRowFixture({
+      runId: "run-focus",
+      proposalSummary: {
+        variantCount: 0,
+        sourceRecommendation: {
+          id: RECOMMENDATION_ID,
+          runId: "plan-run-1",
+          title: "Clear slow stock",
+          summary: "Markdown slow-moving products.",
+        },
+      },
+    }),
+    merchantActions: [focusedAction, referencedAction, otherAction],
+    referencedActionEvents: [
+      {
+        id: "event-1",
+        merchantId: "m1",
+        shopId: "s1",
+        conversationId: "c1",
+        eventType: "action_referenced",
+        merchantAction: referencedAction,
+        createdAt: NOW,
+      },
+    ],
+  });
+
+  const context = await getMerchantContextForQuestion(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    conversationId: "c1",
+    focusedActionId: FOCUSED_ACTION_ID,
+    message: "Should the restock work change the markdown?",
+    logger: silentLogger,
+  });
+
+  assert.equal(context.focusedAction.id, FOCUSED_ACTION_ID);
+  assert.equal(
+    context.focusedAction.permissions.mayMutateByDefault,
+    true,
+  );
+  assert.deepEqual(
+    context.referencedActions.map((action) => action.id),
+    [REFERENCED_ACTION_ID],
+  );
+  assert.equal(
+    context.referencedActions[0].permissions.mayMutateByDefault,
+    false,
+  );
+  assert.deepEqual(
+    context.otherRelevantActions.map((action) => action.id),
+    [OTHER_ACTION_ID],
+  );
+  assert.equal(
+    context.otherRelevantActions[0].permissions.mayMutateByDefault,
+    false,
+  );
+  assert.deepEqual(context.mutationPolicy, {
+    defaultMutationTargetActionId: FOCUSED_ACTION_ID,
+    referencedActionsReadOnly: true,
+    note:
+      "Only focusedAction is the default action mutation target. Referenced and other relevant actions are read-only context.",
+  });
+  assert.equal(context.recommendationId, RECOMMENDATION_ID);
+  assert.equal(context.actionRunId, "run-focus");
+});
+
 // Wrap a fixture prisma so each model's `where` is recorded, leaving its behaviour intact.
 function captureWheres(prisma) {
   const belief = [];
@@ -394,6 +483,8 @@ function createContextPrisma({
   recommendation = recommendationFixture(),
   actionRow = actionRowFixture(),
   onRecommendationFind = () => {},
+  merchantActions = [],
+  referencedActionEvents = [],
 } = {}) {
   return {
     merchantPlanRecommendation: {
@@ -422,6 +513,33 @@ function createContextPrisma({
     actionExecution: {
       findFirst: async () => actionRow,
       findMany: async () => [],
+    },
+    merchantAction: {
+      findFirst: async ({ where }) =>
+        merchantActions.find(
+          (action) =>
+            action.id === where.id &&
+            action.merchantId === where.merchantId &&
+            action.shopId === where.shopId,
+        ) ?? null,
+      findMany: async ({ where }) =>
+        merchantActions.filter((action) => {
+          if (action.merchantId !== where.merchantId || action.shopId !== where.shopId) {
+            return false;
+          }
+          if (where.status?.in) return where.status.in.includes(action.status);
+          return true;
+        }),
+    },
+    merchantActionEvent: {
+      findMany: async ({ where }) =>
+        referencedActionEvents.filter(
+          (event) =>
+            event.merchantId === where.merchantId &&
+            event.shopId === where.shopId &&
+            event.conversationId === where.conversationId &&
+            event.eventType === where.eventType,
+        ),
     },
     merchantMemoryBelief: {
       findMany: async ({ where }) => {
@@ -536,6 +654,42 @@ function actionRowFixture(overrides = {}) {
     preview: { variantCount: 0 },
     outcomeStatus: "pending",
     outcome: null,
+    ...overrides,
+  };
+}
+
+function merchantActionFixture(overrides = {}) {
+  return {
+    id: "ma-1",
+    merchantId: "m1",
+    shopId: "s1",
+    title: "Clear slow stock",
+    summary: "Markdown slow-moving products.",
+    status: "proposed",
+    sourceRecommendationId: RECOMMENDATION_ID,
+    currentActionRunId: "run-1",
+    progress: { executionSteps: [] },
+    outcome: {},
+    createdAt: NOW,
+    updatedAt: NOW,
+    sourceRecommendation: {
+      id: RECOMMENDATION_ID,
+      title: "Clear slow stock",
+      summary: "Markdown slow-moving products.",
+      reviewStatus: "proposed",
+      executionSteps: [],
+      successSignal: {},
+    },
+    currentExecution: {
+      runId: overrides.currentActionRunId ?? "run-1",
+      actionType: "price_markdown",
+      actionKind: "dead_stock_clearance",
+      status: "proposed",
+      resolvedMode: "approve",
+      preview: {},
+      proposalSummary: {},
+    },
+    executions: [],
     ...overrides,
   };
 }
