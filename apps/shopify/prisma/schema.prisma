@@ -52,6 +52,7 @@ model Merchant {
   storeUnderstandingRuns        StoreUnderstandingRun[]
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
+  files                         MerchantFile[]
   memoryEpisodes                MerchantMemoryEpisode[]
   memoryCandidates              MerchantMemoryCandidate[]
   memoryContextRetrievalRuns    MerchantContextRetrievalRun[]
@@ -124,6 +125,7 @@ model Shop {
   storeUnderstandingRuns        StoreUnderstandingRun[]
   memoryConversations           MerchantMemoryConversation[]
   memoryConversationMessages    MerchantMemoryConversationMessage[]
+  files                         MerchantFile[]
   memoryEpisodes                MerchantMemoryEpisode[]
   memoryCandidates              MerchantMemoryCandidate[]
   memoryContextRetrievalRuns    MerchantContextRetrievalRun[]
@@ -487,42 +489,42 @@ model Variant {
 }
 
 model Order {
-  id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  merchantId         String          @map("merchant_id") @db.Uuid
-  shopId             String          @map("shop_id") @db.Uuid
-  externalId         String          @map("external_id")
-  orderName          String?         @map("order_name")
-  customerExternalId String?         @map("customer_external_id")
-  financialStatus    String?         @map("financial_status")
-  fulfillmentStatus  String?         @map("fulfillment_status")
-  sourceName         String?         @map("source_name")
-  shippingCountry    String?         @map("shipping_country")
-  currency           String          @default("GBP")
-  subtotalPrice      Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
-  totalPrice         Decimal?        @map("total_price") @db.Decimal(18, 2)
-  totalDiscount      Decimal?        @map("total_discount") @db.Decimal(18, 2)
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId           String          @map("merchant_id") @db.Uuid
+  shopId               String          @map("shop_id") @db.Uuid
+  externalId           String          @map("external_id")
+  orderName            String?         @map("order_name")
+  customerExternalId   String?         @map("customer_external_id")
+  financialStatus      String?         @map("financial_status")
+  fulfillmentStatus    String?         @map("fulfillment_status")
+  sourceName           String?         @map("source_name")
+  shippingCountry      String?         @map("shipping_country")
+  currency             String          @default("GBP")
+  subtotalPrice        Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
+  totalPrice           Decimal?        @map("total_price") @db.Decimal(18, 2)
+  totalDiscount        Decimal?        @map("total_discount") @db.Decimal(18, 2)
   /// Which offer discounted this order, not how much. `discountCodes` is what the customer
   /// typed; `discountApplications` also covers automatic/manual/script discounts nobody
   /// typed. Merchant marketing identifiers, not customer data.
-  discountCodes        Json          @default("[]") @map("discount_codes")
-  discountApplications Json          @default("[]") @map("discount_applications")
+  discountCodes        Json            @default("[]") @map("discount_codes")
+  discountApplications Json            @default("[]") @map("discount_applications")
   /// Where the order came from: first/last touch source, referral code, UTMs and a
   /// query-stripped landing path. Populated only when ORDER_ATTRIBUTION_INGEST_ENABLED is
   /// on. Landing-page query strings are dropped at ingest — they routinely carry personal
   /// data and nothing here needs them.
-  attribution          Json          @default("{}")
-  totalTax           Decimal?        @map("total_tax") @db.Decimal(18, 2)
-  totalShipping      Decimal?        @map("total_shipping") @db.Decimal(18, 2)
-  sourceCreatedAt    DateTime?       @map("source_created_at") @db.Timestamptz(6)
-  sourceUpdatedAt    DateTime?       @map("source_updated_at") @db.Timestamptz(6)
-  processedAt        DateTime?       @map("processed_at") @db.Timestamptz(6)
-  rawPayload         Json            @default("{}") @map("raw_payload")
-  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  merchant           Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  shop               Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  lineItems          OrderLineItem[]
-  refunds            Refund[]
+  attribution          Json            @default("{}")
+  totalTax             Decimal?        @map("total_tax") @db.Decimal(18, 2)
+  totalShipping        Decimal?        @map("total_shipping") @db.Decimal(18, 2)
+  sourceCreatedAt      DateTime?       @map("source_created_at") @db.Timestamptz(6)
+  sourceUpdatedAt      DateTime?       @map("source_updated_at") @db.Timestamptz(6)
+  processedAt          DateTime?       @map("processed_at") @db.Timestamptz(6)
+  rawPayload           Json            @default("{}") @map("raw_payload")
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant             Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                 Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  lineItems            OrderLineItem[]
+  refunds              Refund[]
 
   @@unique([shopId, externalId])
   @@index([merchantId, processedAt])
@@ -895,6 +897,45 @@ model MerchantMemoryConversationMessage {
   @@index([actionRunId])
   @@index([merchantId, shopId, visibility, createdAt], map: "mm_messages_visibility_created_idx")
   @@map("merchant_memory_conversation_messages")
+}
+
+/// A file a merchant chose to KEEP — the Jefe Library. Founder decision, 2026-08-13: merchants
+/// pick per upload whether a file is kept or is one-off analysis work.
+///
+/// ⭐ The bytes live in Postgres on purpose, not in object storage. Deletion is a DELETE, which
+/// makes GDPR erasure trivially correct and verifiable; backups come with the database; there is
+/// no new vendor, region or lifecycle policy to decide. The upload cap is 8MB, which Postgres
+/// handles without complaint. `content` is read ONLY when a merchant downloads the file — every
+/// listing and every prompt uses `extractedText`, so the bytes are never loaded to answer a
+/// question. Moving to S3 later is a migration of this one column, not a rewrite.
+///
+/// ⚠️ `extractedText` is what Jefe actually reasons over, and it is NOT PII-scrubbed (scrubbing
+/// was removed across every surface on 2026-08-13). An invoice kept here holds its customer
+/// names and emails verbatim, at rest, until the merchant deletes it.
+model MerchantFile {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId     String    @map("merchant_id") @db.Uuid
+  shopId         String?   @map("shop_id") @db.Uuid
+  filename       String
+  mimeType       String    @map("mime_type")
+  kind           String
+  byteSize       Int       @map("byte_size")
+  /// The file itself. See the note above on why this is not object storage.
+  content        Bytes
+  /// What Jefe read out of it — the only field any prompt or listing touches.
+  extractedText  String    @map("extracted_text")
+  /// Where it came from, so a library entry can be traced to the turn that created it.
+  source         String    @default("chat")
+  conversationId String?   @map("conversation_id") @db.Uuid
+  /// Bumped whenever Jefe reads it again, so "the invoice I sent last month" is findable.
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop           Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, createdAt])
+  @@index([merchantId, shopId, createdAt])
+  @@map("merchant_files")
 }
 
 /// Rebuildable episodic search document. Conversation messages remain canonical;

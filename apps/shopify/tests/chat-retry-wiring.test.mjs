@@ -39,17 +39,27 @@ test("a retry does not re-render the merchant's text as pending", () => {
 
 test("retry targets the same path the composer posts into", () => {
   // The composer posts chat.message -> sendGeneralChatMessage. Retry MUST follow it.
-  // The window is proximity, not the guarantee — the guarantee is that the branch reaches that
-  // function. Widened on 2026-08-13 when attachment reading was added inside the branch: the
-  // handler legitimately grew past 900 characters.
-  assert.match(appIndex, /intent === "chat\.message"[\s\S]{0,1800}sendGeneralChatMessage/);
-  assert.match(appIndex, /intent === "chat\.retry"[\s\S]{0,900}retryLastGeneralChatReply/);
+  //
+  // Asserted by slicing each branch's BODY rather than by a character window. The window was
+  // widened twice on 2026-08-13 as the handler legitimately grew (attachment reading, then the
+  // keep-file path) — a heuristic that has to be relaxed every time correct code is added is
+  // measuring the wrong thing. The property is "this branch reaches that function", full stop.
+  assert.match(branchBody(appIndex, "chat.message"), /sendGeneralChatMessage/);
+  assert.match(branchBody(appIndex, "chat.retry"), /retryLastGeneralChatReply/);
   // The pre-#81 target answered the memory-topic conversation and would no-op here.
-  assert.doesNotMatch(
-    appIndex,
-    /intent === "chat\.retry"[\s\S]{0,900}retryLastConversationReply/,
-  );
+  assert.doesNotMatch(branchBody(appIndex, "chat.retry"), /retryLastConversationReply/);
 });
+
+/**
+ * The source of one `if (intent === "x")` branch: from its test to the start of the next
+ * intent branch. Growth-proof, and it cannot accidentally match a neighbouring handler.
+ */
+function branchBody(source, intent) {
+  const start = source.indexOf(`intent === "${intent}"`);
+  assert.notEqual(start, -1, `no branch found for ${intent}`);
+  const next = source.indexOf('if (intent === "', start + 1);
+  return source.slice(start, next === -1 ? source.length : next);
+}
 
 // --- the no-op branches, which are what stop a retry doing damage ---
 

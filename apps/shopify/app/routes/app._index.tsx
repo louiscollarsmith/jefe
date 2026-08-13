@@ -65,6 +65,7 @@ import {
 // 8d753b8 by going static; the ~2kB gzip on the onboarding path is a fine trade for a page that
 // always renders.
 import { MerchantMemoryView } from "../components/merchant-memory-view";
+import { MerchantLibraryView } from "../components/merchant-library-view";
 
 import prisma from "../db.server";
 import {
@@ -106,6 +107,11 @@ import {
   oversizedUploadReason,
   readUploadedAttachment,
 } from "../lib/attachments/attachment-message.server.js";
+import {
+  deleteMerchantFile,
+  listMerchantFiles,
+  saveMerchantFile,
+} from "../lib/attachments/merchant-file.server.js";
 import { executeApprovedAction } from "../lib/actions/execute-approved-action.server";
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import {
@@ -819,11 +825,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // The file is read and dropped — see attachment-message.server.js. A file we cannot read is
     // reported back rather than swallowed: silence would look like Jefe ignoring them.
     const typed = String(formData.get("message") ?? "");
+    // The merchant's own call, per upload: keep this in their library, or read it and let it go.
+    // Default is NOT to keep — storing by default would turn every casual screenshot into a
+    // retained record nobody chose to create.
+    const keepFile = formDataHasTruthyValue(formData, "keepAttachment");
     const attachment = await readUploadedAttachment(formData, {
       prisma,
       merchantId: merchant.id,
       shopId: shop.id,
       logger: actionLog,
+      keepBytes: keepFile,
     });
     if (attachment && !attachment.ok) {
       return { ok: false, error: attachment.reason, kind: "attachment", intent };
@@ -833,7 +844,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         merchantId: merchant.id,
         shopId: shop.id,
         withMessage: Boolean(typed.trim()),
+        kept: keepFile,
       });
+      if (keepFile && attachment.bytes) {
+        // Stored, but never at the cost of the reply: a library write that fails must not lose
+        // the merchant their turn, so this is caught rather than allowed to reject the action.
+        await saveMerchantFile(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType ?? "application/octet-stream",
+          kind: attachment.kind ?? "document",
+          bytes: attachment.bytes,
+          extractedText: attachment.text,
+          conversationId: String(formData.get("conversationId") ?? "") || null,
+          logger: actionLog,
+        }).catch((error) => {
+          actionLog.warn("keeping the file failed; the message still sends", {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            error: error instanceof Error ? error.name : "UnknownError",
+          });
+        });
+      }
     }
     const message = attachment
       ? composeAttachmentMessage({
@@ -893,6 +926,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         conversation: result.conversationId,
       }),
     );
+  }
+
+  if (intent === "library.delete") {
+    // Hard delete: a merchant who asks Jefe to forget a document has asked for it to be gone,
+    // and a soft-deleted invoice is still an invoice we are holding.
+    const removed = await deleteMerchantFile(prisma, {
+      merchantId: merchant.id,
+      fileId: String(formData.get("fileId") ?? ""),
+      logger: actionLog,
+    });
+    return { ok: removed, intent, error: removed ? null : "That file is no longer there." };
   }
 
   if (intent === "notification.set") {
@@ -1573,6 +1617,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const previewDaily = url.searchParams.get("home") === "daily";
   const viewMemory = url.searchParams.get("view") === "memory";
+  const viewLibrary = url.searchParams.get("view") === "library";
   const handoffToken = url.searchParams.get("handoff");
   if (handoffToken) {
     const [storeName, fastOnboarding] = await Promise.all([
@@ -1839,6 +1884,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         todayLabel,
         storeTimeZone: homeTimeZone,
         brandLogoUrl,
+      };
+    }
+    if (viewLibrary) {
+      // The Jefe Library — files the merchant chose to keep. `content` is never selected here;
+      // the listing is built entirely from what Jefe read out of each file.
+      const files = await listMerchantFiles(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
+      // The SERVICE's zone, derived exactly as the home derives it — never the viewer's. An
+      // ops reader in Manila and the merchant in London must see the same date on a file.
+      const libraryTimeZone = storeTimeZoneFromPayload(
+        (shop as { rawPayload?: unknown }).rawPayload,
+      );
+      return {
+        appMode: "library" as const,
+        shop: session.shop,
+        merchantName: merchant.name,
+        storeName,
+        files: files.map((file: { createdAt: Date; lastUsedAt: Date | null }) => ({
+          ...file,
+          createdAt: file.createdAt.toISOString(),
+          lastUsedAt: file.lastUsedAt ? file.lastUsedAt.toISOString() : null,
+        })),
+        storeTimeZone: libraryTimeZone,
       };
     }
     // The Merchant Memory view is now editable: load the same conversation
@@ -2177,6 +2247,16 @@ export default function AppIndex() {
         storeTimeZone={data.storeTimeZone}
         horizonHeadsUps={data.horizonHeadsUps}
         brandLogoUrl={data.brandLogoUrl}
+      />
+    );
+  }
+
+  if (data.appMode === "library") {
+    return (
+      <MerchantLibraryView
+        storeName={data.storeName}
+        files={data.files}
+        storeTimeZone={data.storeTimeZone}
       />
     );
   }

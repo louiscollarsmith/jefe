@@ -15,6 +15,7 @@
 
 import {
   MAX_ATTACHMENT_BYTES,
+  attachmentKind,
   attachmentRejectionReason,
 } from "./attachment-limits.js";
 import { readAttachment } from "./read-attachment.server.js";
@@ -72,10 +73,11 @@ export function composeAttachmentMessage(input) {
  *   shopId?: string | null,
  *   client?: { models: { generateContent: Function } },
  *   logger?: Pick<Console, "info" | "warn" | "error">,
+ *   keepBytes?: boolean,
  * }} [options]
  * @returns {Promise<
  *   | null
- *   | { ok: true, text: string, filename: string | null }
+ *   | { ok: true, text: string, filename: string | null, bytes?: Buffer, mimeType?: string, kind?: string }
  *   | { ok: false, reason: string }
  * >} null when the merchant attached nothing at all.
  */
@@ -105,5 +107,18 @@ export async function readUploadedAttachment(formData, options = {}) {
     client: options.client,
     logger: options.logger,
   });
+
+  // ⭐ DERIVE AND DISCARD REMAINS THE DEFAULT. The bytes come back only when the caller asks
+  // for them, which happens exactly when the merchant ticked "keep this file". Anything that
+  // forgets to ask gets words, and the buffer goes out of scope — so the storing path has to
+  // be chosen deliberately rather than being what happens if you do nothing.
+  if (options.keepBytes && result.ok) {
+    return {
+      ...result,
+      bytes: buffer,
+      mimeType: file.type,
+      kind: attachmentKind(file.type, file.name) ?? "document",
+    };
+  }
   return result;
 }

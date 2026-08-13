@@ -27,7 +27,17 @@ test("the home has a way off it", () => {
 test("Merchant Memory is reachable from settings", () => {
   assert.match(settings, /What Jefe knows/);
   assert.match(settings, /memoryHref/);
-  assert.match(settings, /next\.set\("view", "memory"\)/);
+  // The link builder was generalised on 2026-08-13 when the library joined it, so this
+  // asserts the href it PRODUCES rather than the line that used to produce it.
+  assert.match(settings, /homeViewHref\(params, "memory"\)/);
+  assert.match(settings, /next\.set\("view", view\)/);
+});
+
+test("the Jefe Library is reachable from settings", () => {
+  // A view nothing links to is a view no merchant has. ?view=library renders and routes
+  // whether or not anyone can get to it, which is exactly how the memory view was orphaned.
+  assert.match(settings, /Your library/);
+  assert.match(settings, /homeViewHref\(params, "library"\)/);
 });
 
 test("navigation keeps the params embedded Shopify needs", () => {

@@ -103,9 +103,18 @@ const PANELS: PanelDef[] = [
 // The Merchant Memory view lives on the home route behind ?view=memory. Keep the embedded
 // params (host, shop, embedded) and drop only our own ?panel.
 function memoryHref(params: URLSearchParams) {
+  return homeViewHref(params, "memory");
+}
+
+/** The Jefe Library lives on the home route behind ?view=library, same shape. */
+function libraryHref(params: URLSearchParams) {
+  return homeViewHref(params, "library");
+}
+
+function homeViewHref(params: URLSearchParams, view: string) {
   const next = new URLSearchParams(params);
   next.delete("panel");
-  next.set("view", "memory");
+  next.set("view", view);
   return `/app?${next.toString()}`;
 }
 
@@ -151,6 +160,12 @@ export default function SettingsSurface() {
                 still routed, and no merchant can open it. */}
             <Link to={memoryHref(params)} style={navItemStyle}>
               What Jefe knows
+            </Link>
+            {/* Same reasoning as above: the library is a surface, not a settings panel, and
+                this is the only way into it. A view nothing links to is a view no merchant
+                has. */}
+            <Link to={libraryHref(params)} style={navItemStyle}>
+              Your library
             </Link>
           </nav>
 

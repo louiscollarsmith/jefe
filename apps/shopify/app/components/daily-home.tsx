@@ -705,6 +705,7 @@ function FocusedConversation({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [keepFile, setKeepFile] = useState(false);
   // A rejection from the server (an unreadable PDF, a provider that failed) — otherwise the
   // attachment would vanish and Jefe would look like it had ignored them.
   const actionData = useActionData() as
@@ -719,6 +720,7 @@ function FocusedConversation({
   const clearAttachment = () => {
     setAttachedFile(null);
     setAttachmentError(null);
+    setKeepFile(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -750,6 +752,7 @@ function FocusedConversation({
     setComposerMessage("");
     setAttachedFile(null);
     setAttachmentError(null);
+    setKeepFile(false);
     // Deferred deliberately. React Router serialises the form DURING this same submit event, so
     // clearing the input now would send an empty part and silently drop the merchant's file —
     // while never clearing it would re-send that file with their next message.
@@ -864,6 +867,19 @@ function FocusedConversation({
           {attachedFile ? (
             <div style={attachedFileRowStyle}>
               <span style={attachedFileNameStyle}>{attachedFile.name}</span>
+              {/* The merchant's call, per upload. Default OFF: storing by default would turn
+                  every casual screenshot into a retained record nobody chose to create.
+                  ⛔ The label says what it DOES — kept so Jefe can look again — and never
+                  implies privacy, because both answers send the file to a model to be read. */}
+              <label style={keepFileLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={keepFile}
+                  onChange={(event) => setKeepFile(event.currentTarget.checked)}
+                  disabled={isThinking}
+                />
+                Keep this file
+              </label>
               <button
                 type="button"
                 style={attachedFileRemoveStyle}
@@ -897,6 +913,7 @@ function FocusedConversation({
             >
               +
             </button>
+            {keepFile ? <input type="hidden" name="keepAttachment" value="true" /> : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -2845,6 +2862,16 @@ const attachedFileRemoveStyle: CSSProperties = {
   fontSize: 12,
   padding: "2px 6px",
   textDecoration: "underline",
+};
+const keepFileLabelStyle: CSSProperties = {
+  alignItems: "center",
+  color: COLORS.muted,
+  cursor: "pointer",
+  display: "inline-flex",
+  fontFamily: FONT.sans,
+  fontSize: 12,
+  gap: 5,
+  whiteSpace: "nowrap",
 };
 const composerErrorStyle: CSSProperties = {
   color: COLORS.navy,
