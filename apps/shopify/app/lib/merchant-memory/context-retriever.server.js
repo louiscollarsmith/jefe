@@ -391,6 +391,27 @@ async function loadFocusedMerchantAction(prisma, input) {
  * @param {any} action
  */
 function merchantActionContext(action) {
+  const workflowSteps = Array.isArray(action.displaySteps)
+    ? action.displaySteps.map((/** @type {any} */ step, /** @type {number} */ index) => ({
+        orderIndex: index,
+        title:
+          typeof step === "string"
+            ? safeText(step, 180)
+            : safeText(step?.label, 180),
+      })).filter((/** @type {any} */ step) => step.title)
+    : [];
+  const sourceWorkflowSteps = Array.isArray(action.sourceRecommendation?.workflow?.steps)
+    ? action.sourceRecommendation.workflow.steps.map((/** @type {any} */ step) => ({
+        id: identityText(step?.id),
+        orderIndex: numberOrNull(step?.orderIndex),
+        title: safeText(step?.title, 180),
+        description: safeText(step?.description, 300),
+        completionCriteria: safeText(step?.completionCriteria, 240),
+        status: text(step?.status),
+        mode: text(step?.mode),
+        capabilityRef: text(step?.capabilityRef),
+      })).filter((/** @type {any} */ step) => step.title)
+    : [];
   return {
     id: action.id,
     title: action.title,
@@ -399,6 +420,15 @@ function merchantActionContext(action) {
     sourceRecommendationId: action.sourceRecommendationId ?? null,
     actionRunId: action.actionRunId ?? null,
     actionType: action.actionType ?? null,
+    proposedSteps: sourceWorkflowSteps.length ? sourceWorkflowSteps : workflowSteps,
+    sourceRecommendation: action.sourceRecommendation
+      ? {
+          id: action.sourceRecommendation.id ?? null,
+          title: action.sourceRecommendation.title ?? null,
+          summary: action.sourceRecommendation.summary ?? null,
+          workflowStatus: action.sourceRecommendation.workflow?.status ?? null,
+        }
+      : null,
     role: "focused_mutation_target",
     permissions: {
       mayReason: true,

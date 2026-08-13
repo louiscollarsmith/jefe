@@ -13,6 +13,7 @@ import { reviewDueRecommendations } from "../app/lib/onboarding/recommendation-r
 import { reconcileBootstrapRecommendationsAfterFullRefresh } from "../app/lib/onboarding/reconciliation.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
 import {
+  approveOnboardingRecommendation,
   classifyFailure,
   contextFromBelief,
   getFastOnboardingExperience,
@@ -1167,19 +1168,130 @@ test("applied or rejected execution rows never render executable approval wordin
       successSignal: {},
       reviewStatus: "accepted",
       outcomeStatus: "pending",
-      actionExecution: {
-        merchantId: "merchant-1",
-        shopId: "shop-1",
-        sourceRecommendationId: `rec-${status}`,
-        actionType: "price_markdown",
-        resolvedMode: "approve",
-        status,
-        runId: "action-1",
-      },
+      workflows: [
+        {
+          steps: [
+            {
+              actionExecutions: [
+                {
+                  merchantId: "merchant-1",
+                  shopId: "shop-1",
+                  recommendationStepId: `step-${status}`,
+                  actionType: "price_markdown",
+                  resolvedMode: "approve",
+                  status,
+                  runId: "action-1",
+                },
+              ],
+            },
+          ],
+        },
+      ],
     });
     assert.equal(recommendation.executable, false);
     assert.equal(recommendation.approvalLabel, "Track this for me");
   }
+});
+
+test("approving a tracked onboarding recommendation activates its workflow steps", async () => {
+  const calls = [];
+  const recommendation = {
+    id: "rec-1",
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    sourceMode: "full",
+    reviewStatus: "proposed",
+    acceptedAt: null,
+    reviewAt: new Date("2026-08-20T10:00:00.000Z"),
+    workflows: [
+      {
+        steps: [
+          {
+            actionExecutions: [],
+          },
+        ],
+      },
+    ],
+  };
+  const tx = {
+    merchantPlanRecommendation: {
+      updateMany: async (args) => {
+        calls.push(["recommendation.updateMany", args]);
+        return { count: 1 };
+      },
+    },
+    merchantRecommendationWorkflow: {
+      updateMany: async (args) => {
+        calls.push(["workflow.updateMany", args]);
+        return { count: 1 };
+      },
+    },
+    merchantRecommendationStep: {
+      updateMany: async (args) => {
+        calls.push(["step.updateMany", args]);
+        return { count: 2 };
+      },
+    },
+    shop: {
+      findUnique: async () => ({ onboardingMetadata: {} }),
+      update: async (args) => {
+        calls.push(["shop.update", args]);
+        return args.data;
+      },
+    },
+    onboardingHandoff: {
+      create: async (args) => ({ id: "handoff-1", ...args.data }),
+    },
+  };
+  const prisma = {
+    merchantPlanRecommendation: {
+      findFirst: async () => recommendation,
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        id: "review-job",
+        status: "queued",
+        runAfter: new Date("2026-08-21T10:00:00.000Z"),
+        payloadJson: {},
+      }),
+      update: async (args) => {
+        calls.push(["backfillJob.update", args]);
+        return args.data;
+      },
+    },
+    activityEvent: {
+      upsert: async () => ({ id: "activity-1" }),
+      create: async () => ({ id: "activity-1" }),
+    },
+    $transaction: async (callback) => callback(tx),
+  };
+
+  const result = await approveOnboardingRecommendation(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "wine-test.myshopify.com",
+    recommendationId: "rec-1",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.find(([name]) => name === "workflow.updateMany")?.[1], {
+    where: {
+      recommendationId: "rec-1",
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      status: "draft",
+    },
+    data: { status: "active" },
+  });
+  assert.deepEqual(calls.find(([name]) => name === "step.updateMany")?.[1], {
+    where: {
+      recommendationId: "rec-1",
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      status: "draft",
+    },
+    data: { status: "pending" },
+  });
 });
 
 test("full-memory reconciliation re-runs contracts and preserves applied action history", async () => {
@@ -1190,10 +1302,16 @@ test("full-memory reconciliation re-runs contracts and preserves applied action 
   const prisma = {
     merchantPlanRecommendation: {
       findMany: async () => [
-        { id: "supported", reviewStatus: "proposed", supportingBeliefIds: [], run: { result: { contractKey: "stockout_protection" } }, actionExecution: null },
-        { id: "proposed", reviewStatus: "proposed", supportingBeliefIds: [], run: { result: { contractKey: "discount_review" } }, actionExecution: null },
-        { id: "accepted", reviewStatus: "accepted", supportingBeliefIds: [], run: { result: { contractKey: "discount_review" } }, actionExecution: null },
-        { id: "applied", reviewStatus: "accepted", supportingBeliefIds: [], run: { result: { contractKey: "discount_review" } }, actionExecution: { status: "applied" } },
+        { id: "supported", reviewStatus: "proposed", supportingBeliefIds: [], run: { result: { contractKey: "stockout_protection" } }, workflows: [] },
+        { id: "proposed", reviewStatus: "proposed", supportingBeliefIds: [], run: { result: { contractKey: "discount_review" } }, workflows: [] },
+        { id: "accepted", reviewStatus: "accepted", supportingBeliefIds: [], run: { result: { contractKey: "discount_review" } }, workflows: [] },
+        {
+          id: "applied",
+          reviewStatus: "accepted",
+          supportingBeliefIds: [],
+          run: { result: { contractKey: "discount_review" } },
+          workflows: [{ steps: [{ actionExecutions: [{ status: "applied" }] }] }],
+        },
       ],
       update: async (args) => { updates.push(args); return args.data; },
     },

@@ -63,6 +63,18 @@ function makeMockPrisma({ row, offlineToken } = {}) {
         for (const k of Object.keys(select)) out[k] = r[k];
         return out;
       },
+      updateMany: async ({ where, data }) => {
+        const r = rows.get(where.runId);
+        if (
+          !r ||
+          (where.merchantId && r.merchantId !== where.merchantId) ||
+          (where.status && r.status !== where.status)
+        ) {
+          return { count: 0 };
+        }
+        Object.assign(r, data);
+        return { count: 1 };
+      },
       upsert: async ({ where, create, update }) => {
         let r = rows.get(where.runId);
         if (r) Object.assign(r, update);

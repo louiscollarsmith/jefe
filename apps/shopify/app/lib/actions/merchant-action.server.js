@@ -67,7 +67,23 @@ export async function syncMerchantActionsForShop(prisma, input) {
   try {
     const recommendations = await prisma.merchantPlanRecommendation.findMany({
       where: { merchantId: input.merchantId, shopId: input.shopId },
-      include: { actionExecution: true },
+      include: {
+        workflows: {
+          orderBy: { version: "desc" },
+          take: 1,
+          include: {
+            steps: {
+              orderBy: { orderIndex: "asc" },
+              include: {
+                actionExecutions: {
+                  orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+                  take: 1,
+                },
+              },
+            },
+          },
+        },
+      },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: 100,
     });
@@ -79,10 +95,11 @@ export async function syncMerchantActionsForShop(prisma, input) {
         update: merchantActionUpdateFromRecommendation(recommendation),
         select: { id: true },
       });
-      if (recommendation.actionExecution?.runId) {
+      const execution = currentExecutionFromRecommendation(recommendation);
+      if (execution?.runId) {
         await prisma.actionExecution.updateMany({
           where: {
-            runId: recommendation.actionExecution.runId,
+            runId: execution.runId,
             merchantId: input.merchantId,
             shopId: input.shopId,
             merchantActionId: null,
@@ -142,14 +159,12 @@ export async function syncMerchantActionsForShop(prisma, input) {
  * Called when a new ActionExecution is created so fresh proposals immediately
  * have a focusable MerchantAction identity.
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; actionRunId: string; sourceRecommendationId?: string | null; sourceRecommendation?: any | null; execution?: any | null }} input
+ * @param {{ merchantId: string; shopId: string; actionRunId: string; sourceRecommendation?: any | null; execution?: any | null }} input
  */
 export async function ensureMerchantActionForExecution(prisma, input) {
   if (!prisma?.merchantAction?.upsert || !input.actionRunId) return null;
   const sourceRecommendationId =
-    typeof input.sourceRecommendationId === "string" && input.sourceRecommendationId
-      ? input.sourceRecommendationId
-      : typeof input.sourceRecommendation?.id === "string"
+    typeof input.sourceRecommendation?.id === "string"
         ? input.sourceRecommendation.id
         : null;
   let action = null;
@@ -170,10 +185,8 @@ export async function ensureMerchantActionForExecution(prisma, input) {
         id: sourceRecommendationId,
         merchantId: input.merchantId,
         shopId: input.shopId,
-        actionExecution: input.execution ?? {
-          runId: input.actionRunId,
-          status: "proposed",
-        },
+        workflows: input.sourceRecommendation?.workflows ?? [],
+        currentActionRunId: input.actionRunId,
       }),
       update: {
         title: safeText(recommendation?.title, 180) || "Review Jefe's next move",
@@ -224,7 +237,7 @@ export async function listMerchantActions(prisma, input) {
       ...(input.includeInactive ? {} : { status: { in: [...ACTIVE_STATUSES] } }),
     },
     include: {
-      sourceRecommendation: true,
+      sourceRecommendation: recommendationWorkflowInclude(),
       currentExecution: true,
       executions: {
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
@@ -250,7 +263,7 @@ export async function getMerchantAction(prisma, input) {
       shopId: input.shopId,
     },
     include: {
-      sourceRecommendation: true,
+      sourceRecommendation: recommendationWorkflowInclude(),
       currentExecution: true,
       executions: {
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
@@ -301,7 +314,8 @@ export function serializeMerchantAction(row) {
  * @param {any} recommendation
  */
 function merchantActionDataFromRecommendation(recommendation) {
-  const execution = recommendation?.actionExecution ?? null;
+  const execution = currentExecutionFromRecommendation(recommendation);
+  const currentActionRunId = execution?.runId ?? recommendation.currentActionRunId ?? null;
   return {
     merchantId: recommendation.merchantId,
     shopId: recommendation.shopId,
@@ -309,7 +323,7 @@ function merchantActionDataFromRecommendation(recommendation) {
     summary: safeText(recommendation.summary, 700),
     status: deriveMerchantActionStatus({ recommendation, execution }),
     sourceRecommendationId: recommendation.id,
-    currentActionRunId: execution?.runId ?? null,
+    currentActionRunId,
     progress: progressFromRecommendation(recommendation),
     outcome: jsonObject(execution?.outcome ?? recommendation?.outcome),
     createdAt: recommendation.createdAt ?? new Date(),
@@ -321,12 +335,13 @@ function merchantActionDataFromRecommendation(recommendation) {
  * @param {any} recommendation
  */
 function merchantActionUpdateFromRecommendation(recommendation) {
-  const execution = recommendation?.actionExecution ?? null;
+  const execution = currentExecutionFromRecommendation(recommendation);
+  const currentActionRunId = execution?.runId ?? recommendation.currentActionRunId ?? null;
   return {
     title: safeText(recommendation.title, 180) || "Review Jefe's next move",
     summary: safeText(recommendation.summary, 700),
     status: deriveMerchantActionStatus({ recommendation, execution }),
-    currentActionRunId: execution?.runId ?? null,
+    currentActionRunId,
     progress: progressFromRecommendation(recommendation),
     outcome: jsonObject(execution?.outcome ?? recommendation?.outcome),
   };
@@ -364,12 +379,71 @@ function merchantActionDataFromExecution(execution) {
  * @param {any} recommendation
  */
 function progressFromRecommendation(recommendation) {
+  const workflow = workflowFromRecommendation(recommendation);
   return {
-    executionSteps: Array.isArray(recommendation?.executionSteps)
-      ? recommendation.executionSteps
-      : [],
+    workflow: workflowView(workflow),
     successSignal: jsonObject(recommendation?.successSignal),
     reviewStatus: recommendation?.reviewStatus ?? null,
+  };
+}
+
+/** @returns {any} */
+function recommendationWorkflowInclude() {
+  return {
+    include: {
+      workflows: {
+        orderBy: { version: "desc" },
+        take: 1,
+        include: {
+          steps: {
+            orderBy: { orderIndex: "asc" },
+            include: {
+              actionExecutions: {
+                orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+                take: 1,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** @param {any} recommendation */
+function workflowFromRecommendation(recommendation) {
+  return Array.isArray(recommendation?.workflows) ? recommendation.workflows[0] ?? null : null;
+}
+
+/** @param {any} recommendation */
+function currentExecutionFromRecommendation(recommendation) {
+  const workflow = workflowFromRecommendation(recommendation);
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  return steps.map((/** @type {any} */ step) => step.actionExecutions?.[0]).find(Boolean) ?? null;
+}
+
+/** @param {any} workflow */
+function workflowView(workflow) {
+  if (!workflow) return null;
+  return {
+    id: workflow.id ?? null,
+    version: workflow.version ?? null,
+    status: workflow.status ?? null,
+    source: workflow.source ?? null,
+    steps: Array.isArray(workflow.steps)
+      ? workflow.steps.map((/** @type {any} */ step) => ({
+          id: step.id ?? null,
+          orderIndex: Number.isFinite(Number(step.orderIndex)) ? Number(step.orderIndex) : 0,
+          title: safeText(step.title, 120),
+          description: safeText(step.description, 260),
+          completionCriteria: safeText(step.completionCriteria, 220) || null,
+          status: step.status ?? null,
+          mode: step.mode ?? null,
+          capabilityRef: step.capabilityRef ?? null,
+          dependsOnStepIds: Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [],
+          evidenceIds: Array.isArray(step.evidenceIds) ? step.evidenceIds : [],
+        }))
+      : [],
   };
 }
 
@@ -379,16 +453,22 @@ function progressFromRecommendation(recommendation) {
  */
 function displaySteps(progress, source) {
   /** @type {any[]} */
-  const raw = Array.isArray(progress?.executionSteps)
-    ? progress.executionSteps
-    : Array.isArray(source?.executionSteps)
-      ? source.executionSteps
+  const raw = Array.isArray(source?.workflows?.[0]?.steps)
+    ? source.workflows[0].steps
+    : Array.isArray(progress?.workflow?.steps)
+      ? progress.workflow.steps
       : [];
   return raw.slice(0, 4).map((/** @type {any} */ step, index) => ({
+    id: step?.id ?? null,
     label:
-      safeText(step?.title || step?.label || step?.description, 120) ||
+      safeText(step?.title || step?.label || step?.description, 160) ||
       `Step ${index + 1}`,
-    done: index === 0,
+    description: safeText(step?.description, 260) || null,
+    completionCriteria: safeText(step?.completionCriteria, 220) || null,
+    status: safeText(step?.status, 40) || null,
+    mode: safeText(step?.mode, 40) || null,
+    capabilityRef: safeText(step?.capabilityRef, 120) || null,
+    done: step?.status === "completed" || Boolean(step?.done),
   }));
 }
 
@@ -436,6 +516,7 @@ function sourceRecommendationView(source) {
     whyNow: safeText(source.whyNow, 500),
     successSignal: jsonObject(source.successSignal),
     primaryGoalId: source.primaryGoalId ?? null,
+    workflow: workflowView(workflowFromRecommendation(source)),
   };
 }
 

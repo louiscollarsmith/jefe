@@ -39,10 +39,16 @@ export function listExecutableActionTypes() {
 export async function executeApprovedAction(prisma, session, input, deps = {}) {
   const row = await prisma.actionExecution.findUnique({
     where: { runId: input.actionRunId },
-    select: { actionType: true, merchantId: true },
+    select: { actionType: true, merchantId: true, status: true },
   });
   if (!row || row.merchantId !== input.merchantId) {
     return { ok: false, executed: false, reason: "not_found" };
+  }
+  if (row.status === "applied" || row.status === "partially_applied") {
+    return { ok: true, executed: false, reason: "already_applied", status: row.status };
+  }
+  if (row.status !== "proposed" && row.status !== "approved") {
+    return { ok: false, executed: false, reason: `not_executable:${row.status}`, status: row.status };
   }
   const wire = Object.prototype.hasOwnProperty.call(WIRES, row.actionType)
     ? WIRES[/** @type {keyof typeof WIRES} */ (row.actionType)]

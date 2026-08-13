@@ -542,6 +542,44 @@ function normalizeSourceRecommendation(recommendation) {
     expectedBenefit: String(recommendation.expectedBenefit ?? "").trim(),
     supportingBeliefIds: cleanStringList(recommendation.supportingBeliefIds),
     supportingInsightIds: cleanStringList(recommendation.supportingInsightIds),
+    workflow: normalizeSourceWorkflow(recommendation.workflow ?? recommendation.workflows?.[0]),
+  };
+}
+
+/** @param {any} workflow */
+function normalizeSourceWorkflow(workflow) {
+  if (!workflow || typeof workflow !== "object") return null;
+  const rawSteps = Array.isArray(workflow.steps)
+    ? /** @type {any[]} */ (workflow.steps)
+    : [];
+  const steps = rawSteps.length
+    ? rawSteps
+        .flatMap((step) => {
+          if (!step || typeof step !== "object") return [];
+          return [{
+            id: typeof step.id === "string" ? step.id : "",
+            orderIndex: Number.isInteger(step.orderIndex) ? step.orderIndex : 0,
+            title: String(step.title ?? "").trim(),
+            description: String(step.description ?? "").trim(),
+            completionCriteria:
+              typeof step.completionCriteria === "string"
+                ? step.completionCriteria
+                : null,
+            status: typeof step.status === "string" ? step.status : "pending",
+            mode: typeof step.mode === "string" ? step.mode : "merchant_action",
+            capabilityRef:
+              typeof step.capabilityRef === "string" ? step.capabilityRef : null,
+            dependsOnStepIds: cleanStringList(step.dependsOnStepIds),
+            evidenceIds: cleanStringList(step.evidenceIds),
+          }];
+        })
+    : [];
+  return {
+    id: typeof workflow.id === "string" ? workflow.id : "",
+    version: Number.isInteger(workflow.version) ? workflow.version : 1,
+    status: typeof workflow.status === "string" ? workflow.status : "draft",
+    source: typeof workflow.source === "string" ? workflow.source : "plan_generation",
+    steps,
   };
 }
 
@@ -667,7 +705,7 @@ export function buildEligibilityRecord(eligibility, autonomy) {
  * surface flips it on when execution is enabled.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean; sourceRecommendation?: any; sourceRecommendationId?: string | null }} input
+ * @param {{ merchantId: string; shopId: string; intent: any; merchantSetting?: string; confidence?: number; writeEnabled?: boolean; sourceRecommendation?: any; recommendationStepId?: string | null }} input
  */
 export async function proposeActionFromIntent(prisma, input) {
   const validation = validateActionIntent(input.intent);
@@ -679,13 +717,9 @@ export async function proposeActionFromIntent(prisma, input) {
   const primitive = getPrimitive(intent.actionType);
   if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
 
-  if (input.sourceRecommendationId) {
-    const existing = await prisma.actionExecution.findUnique({
-      where: { sourceRecommendationId: input.sourceRecommendationId },
-    });
-    if (existing && existing.merchantId === input.merchantId && existing.shopId === input.shopId) {
-      return existingProposal(primitive, existing, input.writeEnabled === true);
-    }
+  const existing = await findExistingProposal(prisma, input);
+  if (existing) {
+    return existingProposal(primitive, existing, input.writeEnabled === true);
   }
 
   const resolved = await primitive.resolve(prisma, {
@@ -718,33 +752,31 @@ export async function proposeActionFromIntent(prisma, input) {
   const runId = randomUUID();
   let execution;
   try {
-    execution = await prisma.actionExecution.create({
-      data: {
-      runId,
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      sourceRecommendationId: input.sourceRecommendationId ?? null,
-      actionType: intent.actionType,
-      actionKind: primitive.actionKindFor(intent.targetKind),
-      status: "proposed",
-      merchantSetting,
-      resolvedMode: autonomy.mode,
-      eligibility: /** @type {any} */ (buildEligibilityRecord(eligibility, autonomy)),
-      confidence,
-      preview: /** @type {any} */ (preview),
-      proposalSummary: /** @type {any} */ (proposalSummary),
-      // This primitive's OWN caps — persisting DEFAULT_CLEARANCE_CAPS regardless meant the
-      // ledger recorded limits that were never the ones actually enforced.
-      caps: /** @type {any} */ (primitive.caps),
-      },
+      execution = await prisma.actionExecution.create({
+        data: {
+          runId,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          recommendationStepId: input.recommendationStepId ?? null,
+          actionType: intent.actionType,
+          actionKind: primitive.actionKindFor(intent.targetKind),
+          status: "proposed",
+          merchantSetting,
+          resolvedMode: autonomy.mode,
+          eligibility: /** @type {any} */ (buildEligibilityRecord(eligibility, autonomy)),
+          confidence,
+          preview: /** @type {any} */ (preview),
+          proposalSummary: /** @type {any} */ (proposalSummary),
+          // This primitive's OWN caps — persisting DEFAULT_CLEARANCE_CAPS regardless meant the
+          // ledger recorded limits that were never the ones actually enforced.
+          caps: /** @type {any} */ (primitive.caps),
+        },
       select: { id: true, runId: true, resolvedMode: true },
     });
   } catch (error) {
-    if (input.sourceRecommendationId && isUniqueConflict(error)) {
-      const raced = await prisma.actionExecution.findUnique({
-        where: { sourceRecommendationId: input.sourceRecommendationId },
-      });
-      if (raced && raced.merchantId === input.merchantId && raced.shopId === input.shopId) {
+    if (input.recommendationStepId && isUniqueConflict(error)) {
+      const raced = await findExistingProposal(prisma, input);
+      if (raced) {
         return existingProposal(primitive, raced, input.writeEnabled === true);
       }
     }
@@ -755,7 +787,6 @@ export async function proposeActionFromIntent(prisma, input) {
     merchantId: input.merchantId,
     shopId: input.shopId,
     actionRunId: runId,
-    sourceRecommendationId: input.sourceRecommendationId ?? null,
     sourceRecommendation: input.sourceRecommendation ?? null,
     execution: {
       runId,
@@ -781,6 +812,22 @@ export async function proposeActionFromIntent(prisma, input) {
       executable: input.writeEnabled === true && autonomy.mode !== "recommend",
     }),
   };
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; recommendationStepId?: string | null }} input
+ */
+async function findExistingProposal(prisma, input) {
+  if (!input.recommendationStepId || !prisma.actionExecution.findFirst) return null;
+  return prisma.actionExecution.findFirst({
+      where: {
+        recommendationStepId: input.recommendationStepId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      orderBy: { createdAt: "desc" },
+  });
 }
 
 /** @param {any} primitive @param {any} execution @param {boolean} writeEnabled */

@@ -1092,7 +1092,6 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
           whyThisAction: opportunity.whyItMatters,
           whyNow: opportunity.whyItMatters,
           startToday: opportunity.whatIllDo,
-          executionSteps: [{ title: "Track the signal", description: opportunity.whatIllDo }],
           successSignal: { description: opportunity.howWellKnow, timeframe: "14 days" },
           expectedBenefit: opportunity.expectedBenefit,
           supportingBeliefIds: opportunity.supportingBeliefIds,
@@ -1100,7 +1099,6 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
           confidence: opportunity.confidence,
           caveat: opportunity.caveat,
           sourceMode: "bootstrap",
-          actionIntent: opportunity.actionIntent,
           reviewAt,
           outcomeStatus: "pending",
           reviewStatus: "proposed",
@@ -1117,13 +1115,60 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
           supportingInsightIds: [finding.id],
           confidence: opportunity.confidence,
           caveat: opportunity.caveat,
-          actionIntent: opportunity.actionIntent,
           reviewAt,
         },
       });
       recommendationIds.push(recommendation.id);
+      const workflow = await tx.merchantRecommendationWorkflow.upsert({
+        where: {
+          recommendationId_version: {
+            recommendationId: recommendation.id,
+            version: 1,
+          },
+        },
+        create: {
+          recommendationId: recommendation.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          version: 1,
+          status: "active",
+          source: "bootstrap_generation",
+        },
+        update: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          status: "active",
+          source: "bootstrap_generation",
+        },
+      });
+      await tx.merchantRecommendationStep.deleteMany({
+        where: { workflowId: workflow.id, status: { in: ["draft", "pending"] } },
+      });
+      const step = await tx.merchantRecommendationStep.create({
+        data: {
+          workflowId: workflow.id,
+          recommendationId: recommendation.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          orderIndex: 0,
+          title: opportunity.actionIntent ? "Review and approve the Shopify action" : "Track the signal",
+          description: opportunity.whatIllDo,
+          completionCriteria: opportunity.howWellKnow,
+          status: "pending",
+          mode: opportunity.actionIntent ? "execute" : "assist",
+          capabilityRef: opportunity.actionIntent
+            ? `execute:${opportunity.actionIntent.actionType}:${opportunity.actionIntent.targetKind}`
+            : null,
+          dependsOnStepIds: [],
+          evidenceIds: [],
+        },
+      });
       if (opportunity.actionIntent) {
-        actionCandidates.push({ recommendation, intent: opportunity.actionIntent });
+        actionCandidates.push({
+          recommendation: { ...recommendation, workflows: [{ ...workflow, steps: [step] }] },
+          intent: opportunity.actionIntent,
+          recommendationStepId: step.id,
+        });
       }
       await buildPlanEvidenceSnapshot(tx, {
         merchantId: input.merchantId,
@@ -1155,7 +1200,7 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
       intent: candidate.intent,
       writeEnabled: isActionExecuteEnabled(candidate.intent.actionType),
       sourceRecommendation: candidate.recommendation,
-      sourceRecommendationId: candidate.recommendation.id,
+      recommendationStepId: candidate.recommendationStepId,
     });
     input.logger.info("Bootstrap recommendation action resolved", {
       merchantId: input.merchantId,

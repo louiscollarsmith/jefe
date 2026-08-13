@@ -32,6 +32,25 @@ export type MemoryBelief = {
 };
 export type MemoryView = { groups: Array<{ category: string; label: string; beliefs: MemoryBelief[] }> } | null;
 
+export type RecommendationWorkflow = {
+  id: string;
+  version: number;
+  status: string;
+  source: string;
+  steps: Array<{
+    id: string;
+    orderIndex: number;
+    title: string;
+    description: string;
+    completionCriteria: string | null;
+    status: string;
+    mode: "execute" | "assist" | "merchant_action" | "evidence_required" | string;
+    capabilityRef: string | null;
+    dependsOnStepIds: string[];
+    evidenceIds: string[];
+  }>;
+};
+
 export type Recommendation = {
   id?: string;
   runId?: string;
@@ -40,7 +59,7 @@ export type Recommendation = {
   primaryGoalId?: string | null;
   whyThisAction: string;
   whyNow: string;
-  executionSteps: Array<{ title: string; description: string }>;
+  workflow: RecommendationWorkflow | null;
   confidence: string;
   expectedBenefit: string;
   successSignal: { description: string; timeframe: string; target: string | null } | null;
@@ -64,6 +83,7 @@ export type SuggestedAction = {
     whyNow: string;
     successSignal: { description?: string; timeframe?: string; target?: string | null } | null;
     primaryGoalId?: string | null;
+    workflow?: RecommendationWorkflow | null;
   } | null;
   executable: boolean;
   actionRunId?: string;

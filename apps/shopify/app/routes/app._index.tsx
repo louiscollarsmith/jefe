@@ -1848,6 +1848,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
       // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
       const actionModes = Object.fromEntries(liveActionModeEntries);
+      const selectedRecommendationId = plan?.selectedRun?.recommendation?.id ?? null;
+      const visibleSuggestedAction =
+        suggestedAction &&
+        (!selectedRecommendationId ||
+          suggestedAction.sourceRecommendation?.id === selectedRecommendationId)
+          ? suggestedAction
+          : null;
       const emailBrief = contactEmail
         ? {
             address: contactEmail,
@@ -1886,7 +1893,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         memory,
         metrics,
         recommendation: plan?.selectedRun?.recommendation ?? null,
-        suggestedAction,
+        suggestedAction: visibleSuggestedAction,
         executedActions,
         insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
@@ -4196,9 +4203,11 @@ function PlanRecommendationCard({
   updating: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const steps = Array.isArray(recommendation.executionSteps)
-    ? recommendation.executionSteps
-    : [];
+  const steps: Array<{
+    title: string;
+    description: string;
+    mode?: string;
+  }> = recommendation.workflow?.steps ?? [];
   return (
     <div className={`JefePlanCard ${updating ? "is-updating" : ""}`}>
       <BlockStack gap="400">
@@ -4253,6 +4262,11 @@ function PlanRecommendationCard({
                   <Text as="p" tone="subdued">
                     {step.description}
                   </Text>
+                  {step.mode ? (
+                    <Text as="p" tone="subdued" variant="bodySm">
+                      {workflowStepModeLabel(step.mode)}
+                    </Text>
+                  ) : null}
                 </BlockStack>
               </div>
             ))}
@@ -4326,6 +4340,13 @@ function PlanRecommendationCard({
       </BlockStack>
     </div>
   );
+}
+
+function workflowStepModeLabel(mode: string) {
+  if (mode === "execute") return "Jefe can do this";
+  if (mode === "assist") return "Jefe can help";
+  if (mode === "evidence_required") return "Waiting for evidence";
+  return "Needs merchant input";
 }
 
 function InsightStatusScene({

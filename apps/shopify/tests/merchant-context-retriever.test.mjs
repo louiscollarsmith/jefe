@@ -358,6 +358,32 @@ test("question context separates focused, referenced, and other relevant actions
     title: "Clear slow stock",
     sourceRecommendationId: RECOMMENDATION_ID,
     currentActionRunId: "run-focus",
+    sourceRecommendation: {
+      id: RECOMMENDATION_ID,
+      title: "Clear slow stock",
+      summary: "Markdown slow-moving products.",
+      reviewStatus: "proposed",
+      workflows: [
+        {
+          id: "workflow-1",
+          status: "active",
+          steps: [
+            {
+              id: "step-1",
+              orderIndex: 0,
+              title: "Review the markdown preview",
+              description: "Check the products and prices.",
+              completionCriteria: "Preview is understood.",
+              status: "pending",
+              mode: "assist",
+              capabilityRef: "assist:merchant_checklist",
+            },
+          ],
+        },
+      ],
+      successSignal: {},
+    },
+    displaySteps: [{ label: "Review the markdown preview" }],
   });
   const referencedAction = merchantActionFixture({
     id: REFERENCED_ACTION_ID,
@@ -408,6 +434,18 @@ test("question context separates focused, referenced, and other relevant actions
   });
 
   assert.equal(context.focusedAction.id, FOCUSED_ACTION_ID);
+  assert.deepEqual(context.focusedAction.proposedSteps, [
+    {
+      id: "step-1",
+      orderIndex: 0,
+      title: "Review the markdown preview",
+      description: "Check the products and prices.",
+      completionCriteria: "Preview is understood.",
+      status: "pending",
+      mode: "assist",
+      capabilityRef: "assist:merchant_checklist",
+    },
+  ]);
   assert.equal(
     context.focusedAction.permissions.mayMutateByDefault,
     true,
@@ -668,7 +706,7 @@ function merchantActionFixture(overrides = {}) {
     status: "proposed",
     sourceRecommendationId: RECOMMENDATION_ID,
     currentActionRunId: "run-1",
-    progress: { executionSteps: [] },
+    progress: { workflow: null },
     outcome: {},
     createdAt: NOW,
     updatedAt: NOW,
@@ -677,7 +715,7 @@ function merchantActionFixture(overrides = {}) {
       title: "Clear slow stock",
       summary: "Markdown slow-moving products.",
       reviewStatus: "proposed",
-      executionSteps: [],
+      workflows: [],
       successSignal: {},
     },
     currentExecution: {

@@ -7,6 +7,7 @@ import { createMockLlmProvider } from "../app/lib/llm/provider.server.js";
 import { buildMerchantPlanSnapshot } from "../app/lib/merchant-plan/candidates.server.js";
 import { parseAndValidateMerchantPlanOutput } from "../app/lib/merchant-plan/schema.server.js";
 import {
+  acceptMerchantPlanAndCompleteOnboarding,
   ensureMerchantPlanQueued,
   generateMerchantPlan,
   getLatestMerchantPlan,
@@ -298,7 +299,7 @@ test("Plan structured validation rejects unsupported IDs, generic plans and miss
   assert.equal(goalGroundedNumber.ok, true);
 });
 
-test("Plan validation attaches a registry-valid actionIntent, drops unknown, tolerates none", () => {
+test("Plan validation keeps registry-valid workflow capabilities and degrades unknown ones", () => {
   const base = planOutputFixture();
   const clearanceRecommendation = {
     ...base.selectedRecommendation,
@@ -311,16 +312,27 @@ test("Plan validation attaches a registry-valid actionIntent, drops unknown, tol
       "The stock is already unsold, and a small markdown gives a quick read on whether demand returns.",
     startToday:
       "Review the old-stock products Jefe found and approve the capped markdown preview.",
-    executionSteps: [
-      {
-        title: "Review old stock",
-        description: "Check the products with cash tied up before approving the markdown.",
-      },
-      {
-        title: "Approve the markdown",
-        description: "Use the floored clearance preview so prices do not drop below cost.",
-      },
-    ],
+	    workflow: {
+	      steps: [
+	        {
+	          id: "step_1",
+	          title: "Review old stock",
+	          description: "Check the products with cash tied up before approving the markdown.",
+	          completionCriteria: "The products to clear are understood.",
+	          mode: "assist",
+	          capabilityRef: "assist:merchant_checklist",
+	        },
+	        {
+	          id: "step_2",
+	          title: "Approve the markdown",
+	          description: "Use the floored clearance preview so prices do not drop below cost.",
+	          completionCriteria: "The markdown preview is approved for execution.",
+	          mode: "execute",
+	          capabilityRef: "execute:price_markdown:dead_stock",
+	          dependsOnStepIds: ["step_1"],
+	        },
+	      ],
+	    },
     successSignal: {
       description: "Look for old stock moving after the markdown.",
       timeframe: "within two weeks",
@@ -328,65 +340,44 @@ test("Plan validation attaches a registry-valid actionIntent, drops unknown, tol
     expectedBenefit:
       "A clearance can free trapped capital while keeping a cost floor on every product.",
   };
-  // Registry-valid and semantically matched intent → normalized onto the recommendation.
-  const withIntent = parseAndValidateMerchantPlanOutput(
+  const withExecutableStep = parseAndValidateMerchantPlanOutput(
+    {
+      ...base,
+      selectedRecommendation: clearanceRecommendation,
+    },
+    validationContext(),
+  );
+  assert.equal(withExecutableStep.ok, true);
+  assert.equal(withExecutableStep.recommendation.workflow.steps[1].mode, "execute");
+  assert.equal(
+    withExecutableStep.recommendation.workflow.steps[1].capabilityRef,
+    "execute:price_markdown:dead_stock",
+  );
+
+  const unknownStepCapability = parseAndValidateMerchantPlanOutput(
     {
       ...base,
       selectedRecommendation: {
-        ...clearanceRecommendation,
-        actionIntent: {
-          actionType: "price_markdown",
-          targetKind: "dead_stock",
-          markdownPercent: 30,
-          rationale: "Free the trapped cash",
+        ...base.selectedRecommendation,
+        workflow: {
+          steps: [
+            {
+              id: "step_1",
+              title: "Create supplier transfer",
+              description: "Create a supplier transfer when stock is ordered.",
+              completionCriteria: "Inbound stock is tracked.",
+              mode: "execute",
+              capabilityRef: "execute:shopify_transfer:create",
+            },
+          ],
         },
       },
     },
     validationContext(),
   );
-  assert.equal(withIntent.ok, true);
-  assert.equal(withIntent.recommendation.actionIntent.actionType, "price_markdown");
-  assert.equal(withIntent.recommendation.actionIntent.targetKind, "dead_stock");
-  assert.deepEqual(withIntent.recommendation.actionIntent.params, { markdownPercent: 30 });
-
-  // Valid capability but mismatched customer-retention copy → dropped to null; no
-  // customer-looking recommendation should create a dead-stock markdown proposal.
-  const mismatched = parseAndValidateMerchantPlanOutput(
-    {
-      ...base,
-      selectedRecommendation: {
-        ...base.selectedRecommendation,
-        actionIntent: {
-          actionType: "price_markdown",
-          targetKind: "dead_stock",
-          markdownPercent: 30,
-          rationale: "Free the trapped cash",
-        },
-      },
-    },
-    validationContext(),
-  );
-  assert.equal(mismatched.ok, true);
-  assert.equal(mismatched.recommendation.actionIntent, null);
-
-  // Unknown capability → dropped to null; the plan itself still validates (advisory).
-  const bogus = parseAndValidateMerchantPlanOutput(
-    {
-      ...base,
-      selectedRecommendation: {
-        ...base.selectedRecommendation,
-        actionIntent: { actionType: "wire_money", targetKind: "bank" },
-      },
-    },
-    validationContext(),
-  );
-  assert.equal(bogus.ok, true);
-  assert.equal(bogus.recommendation.actionIntent, null);
-
-  // Absent → null; the plan validates.
-  const none = parseAndValidateMerchantPlanOutput(base, validationContext());
-  assert.equal(none.ok, true);
-  assert.equal(none.recommendation.actionIntent, null);
+  assert.equal(unknownStepCapability.ok, true);
+  assert.equal(unknownStepCapability.recommendation.workflow.steps[0].mode, "merchant_action");
+  assert.equal(unknownStepCapability.recommendation.workflow.steps[0].capabilityRef, null);
 });
 
 test("getLatestMerchantPlan reads the latest completed run without a snapshot or queueing", async () => {
@@ -416,7 +407,28 @@ test("getLatestMerchantPlan reads the latest completed run without a snapshot or
             whyThisAction: "Repeat-purchase opportunity.",
             whyNow: "Small enough to start today.",
             startToday: "Draft the first message.",
-            executionSteps: [{ title: "Choose", description: "Pick a segment." }],
+            workflows: [
+              {
+                id: "workflow-1",
+                version: 1,
+                status: "draft",
+                source: "plan_generation",
+                steps: [
+                  {
+                    id: "step-1",
+                    orderIndex: 0,
+                    title: "Choose",
+                    description: "Pick a segment.",
+                    completionCriteria: null,
+                    status: "draft",
+                    mode: "assist",
+                    capabilityRef: "assist:merchant_checklist",
+                    dependsOnStepIds: [],
+                    evidenceIds: [],
+                  },
+                ],
+              },
+            ],
             successSignal: { description: "Replies or purchases.", timeframe: "two weeks" },
             expectedBenefit: "Short feedback loop.",
             supportingBeliefIds: ["belief-1"],
@@ -443,7 +455,17 @@ test("getLatestMerchantPlan reads the latest completed run without a snapshot or
   assert.equal(calls[0].where.merchantId, "merchant-1");
   assert.equal(calls[0].where.shopId, "shop-1");
   assert.equal("snapshotHash" in calls[0].where, false);
-  assert.deepEqual(calls[0].include, { recommendation: true });
+  assert.deepEqual(calls[0].include, {
+    recommendation: {
+      include: {
+        workflows: {
+          orderBy: { version: "desc" },
+          take: 1,
+          include: { steps: { orderBy: { orderIndex: "asc" } } },
+        },
+      },
+    },
+  });
   assert.deepEqual(calls[0].orderBy, { completedAt: "desc" });
   assert.equal(result.selectedRun.id, "plan-run-1");
   assert.equal(
@@ -526,6 +548,10 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
     const recommendations = await prisma.merchantPlanRecommendation.findMany({
       where: { merchantId: merchant.id, shopId: shop.id },
     });
+    const workflow = await prisma.merchantRecommendationWorkflow.findFirst({
+      where: { recommendationId: recommendations[0].id },
+      include: { steps: { orderBy: { orderIndex: "asc" } } },
+    });
     const evidenceSnapshot = await prisma.merchantPlanEvidenceSnapshot.findUnique({
       where: { recommendationId: recommendations[0].id },
     });
@@ -536,6 +562,10 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
 
     assert.equal(result.status, PLAN_RUN_STATUS.completed);
     assert.equal(recommendations.length, 1);
+    assert.ok(workflow);
+    assert.equal(workflow.status, "draft");
+    assert.equal(workflow.steps.length, 2);
+    assert.equal(workflow.steps[0].mode, "assist");
     assert.ok(evidenceSnapshot);
     assert.equal(evidenceSnapshot.snapshotVersion, "plan_evidence_snapshot_v1");
     assert.equal(Array.isArray(evidenceSnapshot.blocksJson), true);
@@ -552,7 +582,7 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
   }
 });
 
-test("Plan generation emits the plan-rec actionIntent → a proposed clearance row (no store write)", async (t) => {
+test("Plan acceptance emits executable workflow steps → proposed clearance row (no store write)", async (t) => {
   if (!databaseUrl) {
     t.skip("DATABASE_URL is required for Merchant Plan persistence tests");
     return;
@@ -613,10 +643,40 @@ test("Plan generation emits the plan-rec actionIntent → a proposed clearance r
       logger: silentLogger,
     });
 
+    const recommendation = await prisma.merchantPlanRecommendation.findFirstOrThrow({
+      where: { merchantId: merchant.id, shopId: shop.id },
+      include: {
+        workflows: {
+          include: { steps: { orderBy: { orderIndex: "asc" } } },
+        },
+      },
+    });
+    assert.equal(
+      await prisma.actionExecution.count({
+        where: { merchantId: merchant.id, shopId: shop.id, status: "proposed" },
+      }),
+      0,
+      "draft workflow generation does not create executable action rows",
+    );
+
+    await acceptMerchantPlanAndCompleteOnboarding(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      recommendationId: recommendation.id,
+    });
+
+    const activeWorkflow = await prisma.merchantRecommendationWorkflow.findFirst({
+      where: { recommendationId: recommendation.id },
+      include: { steps: { orderBy: { orderIndex: "asc" } } },
+    });
+    const executableStep = activeWorkflow.steps.find((step) => step.mode === "execute");
     const proposed = await prisma.actionExecution.findFirst({
       where: { merchantId: merchant.id, shopId: shop.id, status: "proposed" },
     });
-    assert.ok(proposed, "the emit created a proposed action row");
+    assert.equal(activeWorkflow.status, "active");
+    assert.equal(activeWorkflow.steps.every((step) => step.status === "pending"), true);
+    assert.ok(proposed, "accepting the workflow created a proposed action row");
+    assert.equal(proposed.recommendationStepId, executableStep.id);
     assert.equal(proposed.actionType, "price_markdown");
     assert.equal(proposed.actionKind, "dead_stock_clearance");
     assert.equal(proposed.resolvedMode, "approve"); // default dial → propose-first, never auto
@@ -736,7 +796,6 @@ function planOutputFixture({
   insightId = "insight-1",
   goalId = "goal-3",
   supportingGoalId = "goal-6",
-  actionIntent,
 } = {}) {
   return {
     candidates: [
@@ -745,7 +804,6 @@ function planOutputFixture({
       candidateFixture("candidate_3", "Check stock for proven products", beliefId, insightId),
     ],
     selectedRecommendation: {
-      ...(actionIntent ? { actionIntent } : {}),
       candidateId: "candidate_1",
       title: "Send a focused reorder nudge",
       summary:
@@ -758,16 +816,27 @@ function planOutputFixture({
         "It is small enough to begin today and gives useful feedback before larger retention work.",
       startToday:
         "Choose one product group with clear repeat-purchase potential and draft the first customer message.",
-      executionSteps: [
-        {
-          title: "Choose the audience",
-          description: "Use the most relevant repeat-purchase segment already implied by Merchant Memory.",
-        },
-        {
-          title: "Send one message",
-          description: "Write a practical replenishment note with the product group named clearly.",
-        },
-      ],
+	      workflow: {
+	        steps: [
+	          {
+	            id: "step_1",
+	            title: "Choose the audience",
+	            description: "Use the most relevant repeat-purchase segment already implied by Merchant Memory.",
+	            completionCriteria: "The audience is clear enough for a first message.",
+	            mode: "assist",
+	            capabilityRef: "assist:merchant_checklist",
+	          },
+	          {
+	            id: "step_2",
+	            title: "Send one message",
+	            description: "Write a practical replenishment note with the product group named clearly.",
+	            completionCriteria: "The merchant has a message ready to send.",
+	            mode: "assist",
+	            capabilityRef: "assist:supplier_email_draft",
+	            dependsOnStepIds: ["step_1"],
+	          },
+	        ],
+	      },
       successSignal: {
         description: "Look for replies, clicks or purchases from the selected group.",
         timeframe: "within two weeks",
@@ -782,14 +851,7 @@ function planOutputFixture({
 }
 
 function clearancePlanOutputFixture(options = {}) {
-  const output = planOutputFixture({
-    ...options,
-    actionIntent: {
-      actionType: "price_markdown",
-      targetKind: "dead_stock",
-      markdownPercent: 30,
-    },
-  });
+  const output = planOutputFixture(options);
   return {
     ...output,
     candidates: [
@@ -809,16 +871,27 @@ function clearancePlanOutputFixture(options = {}) {
         "The stock is already unsold, and a small markdown gives a quick read on whether demand returns.",
       startToday:
         "Review the old-stock products Jefe found and approve the capped markdown preview.",
-      executionSteps: [
-        {
-          title: "Review old stock",
-          description: "Check the products with cash tied up before approving the markdown.",
-        },
-        {
-          title: "Approve the markdown",
-          description: "Use the floored clearance preview so prices do not drop below cost.",
-        },
-      ],
+	      workflow: {
+	        steps: [
+	          {
+	            id: "step_1",
+	            title: "Review old stock",
+	            description: "Check the products with cash tied up before approving the markdown.",
+	            completionCriteria: "The products to clear are understood.",
+	            mode: "assist",
+	            capabilityRef: "assist:merchant_checklist",
+	          },
+	          {
+	            id: "step_2",
+	            title: "Approve the markdown",
+	            description: "Use the floored clearance preview so prices do not drop below cost.",
+	            completionCriteria: "The markdown preview is approved for execution.",
+	            mode: "execute",
+	            capabilityRef: "execute:price_markdown:dead_stock",
+	            dependsOnStepIds: ["step_1"],
+	          },
+	        ],
+	      },
       successSignal: {
         description: "Look for old stock moving after the markdown.",
         timeframe: "within two weeks",

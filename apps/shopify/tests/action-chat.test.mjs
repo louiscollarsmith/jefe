@@ -157,7 +157,7 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
         whyNow: "Acting now protects sales momentum.",
         successSignal: { description: "Products are replenished.", timeframe: "one week" },
         expectedBenefit: "Prevent avoidable stockouts.",
-        executionSteps: [],
+        workflows: [],
         supportingBeliefIds: [COUNT_BELIEF_ID],
         supportingInsightIds: [],
         run: { snapshotHash: "plan-hash-1" },

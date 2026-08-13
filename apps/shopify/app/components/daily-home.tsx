@@ -32,6 +32,7 @@ import type {
   MemoryView,
   Metrics,
   Recommendation,
+  RecommendationWorkflow,
   SuggestedAction,
 } from "./app-home/data";
 
@@ -137,7 +138,32 @@ type PrimaryMove = {
   approvedAt: string | null;
   baselineSignal: string | null;
   currentSignal: string | null;
+  workflowSteps: WorkflowStep[];
 };
+
+type WorkflowStep = {
+  id: string;
+  title: string;
+  description: string;
+  completionCriteria: string | null;
+  status: string;
+  mode: string;
+  capabilityRef: string | null;
+};
+
+type WorkflowStepDisplay =
+  | string
+  | {
+      id?: string | null;
+      label?: string | null;
+      title?: string | null;
+      description?: string | null;
+      completionCriteria?: string | null;
+      status?: string | null;
+      mode?: string | null;
+      capabilityRef?: string | null;
+      done?: boolean | null;
+    };
 
 type MerchantActionView = {
   id: string;
@@ -152,7 +178,7 @@ type MerchantActionView = {
   executable?: boolean;
   raise?: { reason: string; detail: string | null } | null;
   progress?: Record<string, unknown> | null;
-  displaySteps?: Array<string | { label?: string | null }>;
+  displaySteps?: WorkflowStepDisplay[];
   successText?: string | null;
   baselineSignal?: string | null;
   currentSignal?: string | null;
@@ -389,11 +415,23 @@ function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
     );
   }
 
+  const steps = action.displaySteps?.slice(0, 4) ?? [];
+
   return (
     <section style={spotlightStyle}>
-      <Mono>YOUR NEXT MOVE</Mono>
+      <div style={spotlightTopStyle}>
+        <Mono>YOUR NEXT MOVE</Mono>
+        <WorkflowStatusSummary action={action} stepCount={steps.length} />
+      </div>
       <h2 style={spotlightTitleStyle}>{action.title}</h2>
       {action.summary ? <p style={summaryStyle}>{action.summary}</p> : null}
+      {steps.length > 0 ? (
+        <WorkflowStepList
+          steps={steps}
+          heading="HOW IT WOULD WORK"
+          variant="spotlight"
+        />
+      ) : null}
       <div style={actionButtonRowStyle}>
         <TalkThisThroughButton action={action} primary />
       </div>
@@ -1148,6 +1186,7 @@ function FocusedActionStrip({
   focusExpanded: boolean;
   onToggle: () => void;
 }) {
+  const visibleSteps = focusedAction.displaySteps?.slice(0, 4) ?? [];
   return (
     <section style={focusStripWrapStyle} aria-label="Working on">
       <div style={focusPanelStyle}>
@@ -1165,10 +1204,10 @@ function FocusedActionStrip({
             </span>
           </span>
           <span style={focusStripRightStyle}>
-            <span style={focusStatusStyle(focusedAction.status)}>
-              {focusedAction.statusLabel ||
-                statusLabelForAction(focusedAction.status)}
-            </span>
+            <WorkflowStatusSummary
+              action={focusedAction}
+              stepCount={visibleSteps.length}
+            />
             <span style={focusStripChevronStyle}>
               {focusExpanded ? "▲" : "▼"}
             </span>
@@ -1181,18 +1220,8 @@ function FocusedActionStrip({
                 {compactText(focusedAction.summary, 320)}
               </p>
             ) : null}
-            {focusedAction.displaySteps && focusedAction.displaySteps.length > 0 ? (
-              <div style={stepInlineListStyle}>
-                {focusedAction.displaySteps.slice(0, 3).map((step, index) => (
-                  <span
-                    key={`${displayStepLabel(step, index)}-${index}`}
-                    style={stepInlineItemStyle}
-                  >
-                    <span style={stepGlyphStyle}>{index === 0 ? "✓" : "·"}</span>
-                    {displayStepLabel(step, index)}
-                  </span>
-                ))}
-              </div>
+            {visibleSteps.length > 0 ? (
+              <WorkflowStepList steps={visibleSteps} variant="focus" />
             ) : null}
             {focusedAction.currentSignal || focusedAction.baselineSignal ? (
               <div style={focusSignalStyle}>
@@ -1203,6 +1232,85 @@ function FocusedActionStrip({
         ) : null}
       </div>
     </section>
+  );
+}
+
+function WorkflowStatusSummary({
+  action,
+  stepCount,
+}: {
+  action: MerchantActionView;
+  stepCount: number;
+}) {
+  const label = action.statusLabel || statusLabelForAction(action.status);
+  return (
+    <span style={workflowStatusSummaryStyle(action.status)}>
+      <span>{label}</span>
+      {stepCount > 0 ? <span>·</span> : null}
+      {stepCount > 0 ? (
+        <span>
+          {stepCount} {stepCount === 1 ? "step" : "steps"}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function WorkflowStepList({
+  steps,
+  heading,
+  variant,
+}: {
+  steps: WorkflowStepDisplay[];
+  heading?: string;
+  variant: "spotlight" | "focus";
+}) {
+  return (
+    <div style={workflowBlockStyle(variant)}>
+      {heading ? <Mono>{heading}</Mono> : null}
+      <div style={workflowRowsStyle}>
+        {steps.map((step, index) => (
+          <WorkflowStepRow
+            key={`${displayStepLabel(step, index)}-${index}`}
+            step={step}
+            index={index}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowStepRow({
+  step,
+  index,
+}: {
+  step: WorkflowStepDisplay;
+  index: number;
+}) {
+  const support = workflowStepSupportLabel(step);
+  const description = displayStepDescription(step);
+  const status = displayStepStatus(step);
+  return (
+    <div style={workflowStepRowStyle}>
+      <span style={workflowStepNumberStyle}>{index + 1}.</span>
+      <span style={workflowStepBodyStyle}>
+        <span style={workflowStepTitleLineStyle}>
+          <strong style={workflowStepTitleStyle}>
+            {displayStepLabel(step, index)}
+          </strong>
+          {support ? (
+            <span style={workflowSupportLabelStyle(workflowStepMode(step))}>
+              {support}
+            </span>
+          ) : null}
+        </span>
+        {description ? (
+          <span style={workflowStepDescriptionStyle}>{description}</span>
+        ) : null}
+      </span>
+      <span style={workflowStepStatusStyle}>{status}</span>
+    </div>
   );
 }
 
@@ -1496,19 +1604,62 @@ function compactText(value: string, max: number) {
   return `${trimmed.slice(0, Math.max(0, max - 1)).trim()}…`;
 }
 
-function displayStepLabel(
-  step: string | { label?: string | null },
-  index: number,
-) {
+function displayStepLabel(step: WorkflowStepDisplay, index: number) {
   if (typeof step === "string" && step.trim()) return step.trim();
+  if (typeof step === "object" && step?.title) return String(step.title);
   if (typeof step === "object" && step?.label) return String(step.label);
   return `Step ${index + 1}`;
+}
+
+function displayStepDescription(step: WorkflowStepDisplay) {
+  if (typeof step === "string") return "";
+  return step.description || step.completionCriteria || "";
+}
+
+function displayStepStatus(step: WorkflowStepDisplay) {
+  if (typeof step === "string") return "proposed";
+  const status = step.status || (step.done ? "completed" : "proposed");
+  return status.replace(/_/g, " ");
+}
+
+function workflowStepMode(step: WorkflowStepDisplay) {
+  return typeof step === "string" ? "" : step.mode || "";
+}
+
+function workflowStepSupportLabel(step: WorkflowStepDisplay) {
+  switch (workflowStepMode(step)) {
+    case "execute":
+      return "Jefe can do this";
+    case "assist":
+      return "Jefe can help";
+    case "evidence_required":
+      return "Waiting for evidence";
+    case "merchant_action":
+      return "Needs merchant action";
+    default:
+      return "";
+  }
 }
 
 function merchantActionFromPrimaryMove(
   move: PrimaryMove,
 ): MerchantActionView | null {
   if (move.state === "empty") return null;
+  const displaySteps = move.workflowSteps.length
+    ? move.workflowSteps.map((step) => ({
+        id: step.id,
+        label: step.title,
+        description: step.description,
+        completionCriteria: step.completionCriteria,
+        status: step.status,
+        mode: step.mode,
+        capabilityRef: step.capabilityRef,
+      }))
+    : [
+        move.whyThisAction,
+        move.whyNow,
+        move.successSignal ?? "",
+      ].filter(Boolean);
   return {
     id: "",
     title: move.title,
@@ -1521,11 +1672,7 @@ function merchantActionFromPrimaryMove(
     actionType: move.actionType,
     executable: move.executable,
     raise: move.raise,
-    displaySteps: [
-      move.whyThisAction,
-      move.whyNow,
-      move.successSignal ?? "",
-    ].filter(Boolean),
+    displaySteps,
     baselineSignal: move.baselineSignal,
     currentSignal: move.currentSignal,
   };
@@ -2006,6 +2153,7 @@ function buildPrimaryMove(input: {
       approvedAt: null,
       baselineSignal: null,
       currentSignal: null,
+      workflowSteps: [],
     };
   }
 
@@ -2041,6 +2189,7 @@ function buildPrimaryMove(input: {
       baselineSignal: inProgress.baselineSignal ?? null,
       currentSignal:
         inProgress.currentSignal ?? inProgress.baselineSignal ?? null,
+      workflowSteps: workflowStepsFromSource(source, input.recommendation),
     };
   }
 
@@ -2067,6 +2216,7 @@ function buildPrimaryMove(input: {
     approvedAt: null,
     baselineSignal: baselineFromSuggested(input.suggestedAction),
     currentSignal: baselineFromSuggested(input.suggestedAction),
+    workflowSteps: workflowStepsFromSource(source, input.recommendation),
   };
 }
 
@@ -2081,7 +2231,24 @@ function recommendationSource(recommendation: Recommendation) {
     whyNow: recommendation.whyNow,
     successSignal: recommendation.successSignal,
     primaryGoalId: recommendation.primaryGoalId ?? null,
+    workflow: recommendation.workflow ?? null,
   };
+}
+
+function workflowStepsFromSource(
+  source: { workflow?: RecommendationWorkflow | null } | null | undefined,
+  recommendation: Recommendation,
+): WorkflowStep[] {
+  const steps = source?.workflow?.steps ?? recommendation?.workflow?.steps ?? [];
+  return steps.map((step) => ({
+    id: step.id,
+    title: step.title,
+    description: step.description,
+    completionCriteria: step.completionCriteria ?? null,
+    status: step.status,
+    mode: step.mode,
+    capabilityRef: step.capabilityRef ?? null,
+  }));
 }
 
 function baselineFromSuggested(action: SuggestedAction | null) {
@@ -2259,7 +2426,13 @@ const homeHeroStyle: CSSProperties = {
 };
 const spotlightStyle: CSSProperties = {
   ...cardStyle,
+  gap: 20,
+};
+const spotlightTopStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
   gap: 18,
+  justifyContent: "space-between",
 };
 const spotlightTitleStyle: CSSProperties = {
   color: COLORS.ink,
@@ -2809,10 +2982,11 @@ const focusStripLeftStyle: CSSProperties = {
   minWidth: 0,
 };
 const focusStripTextStyle: CSSProperties = {
+  alignItems: "center",
   display: "flex",
   flex: "1 1 auto",
-  flexDirection: "column",
-  gap: 4,
+  flexWrap: "wrap",
+  gap: "4px 16px",
   minWidth: 0,
 };
 const focusStripRightStyle: CSSProperties = {
@@ -2832,7 +3006,7 @@ const focusStripLabelStyle: CSSProperties = {
 };
 const focusStripTitleStyle: CSSProperties = {
   flex: "1 1 auto",
-  fontSize: 15,
+  fontSize: 16,
   fontWeight: 750,
   lineHeight: 1.25,
   minWidth: 0,
@@ -2846,13 +3020,13 @@ const focusDetailStyle: CSSProperties = {
   borderTop: `1px solid ${COLORS.hairline}`,
   display: "flex",
   flexDirection: "column",
-  gap: 18,
-  padding: "22px 28px 24px",
+  gap: 26,
+  padding: "28px 32px 30px",
 };
 const focusDetailSummaryStyle: CSSProperties = {
   color: COLORS.body,
-  fontSize: 16,
-  lineHeight: 1.5,
+  fontSize: 18,
+  lineHeight: 1.45,
   margin: 0,
 };
 const focusSignalStyle: CSSProperties = {
@@ -2862,17 +3036,92 @@ const focusSignalStyle: CSSProperties = {
   fontWeight: 600,
 };
 
-function focusStatusStyle(status: string): CSSProperties {
+function workflowStatusSummaryStyle(status: string): CSSProperties {
   const active = status === "in_progress" || status === "completed";
   return {
-    color: active ? COLORS.green : COLORS.meta,
+    alignItems: "center",
+    color: active ? COLORS.green : "#9b7411",
+    display: "inline-flex",
     fontFamily: FONT.mono,
     fontSize: 13,
+    gap: 8,
     fontWeight: 700,
     lineHeight: 1.25,
     whiteSpace: "nowrap",
   };
 }
+function workflowBlockStyle(variant: "spotlight" | "focus"): CSSProperties {
+  return {
+    borderTop: variant === "spotlight" ? `1px solid ${COLORS.hairline}` : 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: variant === "spotlight" ? 18 : 0,
+    paddingTop: variant === "spotlight" ? 22 : 0,
+  };
+}
+const workflowRowsStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 24,
+};
+const workflowStepRowStyle: CSSProperties = {
+  alignItems: "start",
+  columnGap: 14,
+  display: "grid",
+  gridTemplateColumns: "28px minmax(0, 1fr) minmax(72px, max-content)",
+};
+const workflowStepNumberStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 15,
+  fontWeight: 700,
+  lineHeight: "28px",
+};
+const workflowStepBodyStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 7,
+  minWidth: 0,
+};
+const workflowStepTitleLineStyle: CSSProperties = {
+  alignItems: "baseline",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px 14px",
+  minWidth: 0,
+};
+const workflowStepTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 16,
+  fontWeight: 800,
+  lineHeight: 1.25,
+};
+function workflowSupportLabelStyle(mode: string): CSSProperties {
+  const evidence = mode === "evidence_required";
+  const merchant = mode === "merchant_action";
+  return {
+    color: evidence ? COLORS.muted : merchant ? "#7b5a07" : COLORS.navy,
+    fontSize: 13,
+    fontWeight: 800,
+    lineHeight: 1.25,
+    whiteSpace: "nowrap",
+  };
+}
+const workflowStepDescriptionStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 15,
+  lineHeight: 1.35,
+};
+const workflowStepStatusStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 700,
+  lineHeight: "28px",
+  textAlign: "right",
+  textTransform: "lowercase",
+  whiteSpace: "nowrap",
+};
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
   display: "flex",

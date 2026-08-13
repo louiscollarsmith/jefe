@@ -98,14 +98,14 @@ test("proposeActionFromIntent rejects an invalid intent before touching the DB",
   assert.equal(created, false); // never proposed a bogus action
 });
 
-test("proposeActionFromIntent reuses the one execution linked to a recommendation", async () => {
+test("proposeActionFromIntent reuses the one execution linked to a workflow step", async () => {
   let creates = 0;
   const existing = {
     id: "exec-existing",
     runId: "run-existing",
     merchantId: "m1",
     shopId: "s1",
-    sourceRecommendationId: "rec-1",
+    recommendationStepId: "step-1",
     actionType: "price_markdown",
     status: "proposed",
     resolvedMode: "approve",
@@ -123,14 +123,14 @@ test("proposeActionFromIntent reuses the one execution linked to a recommendatio
   };
   const prisma = {
     actionExecution: {
-      findUnique: async () => existing,
+      findFirst: async () => existing,
       create: async () => { creates += 1; return {}; },
     },
   };
   const result = await proposeActionFromIntent(prisma, {
     merchantId: "m1",
     shopId: "s1",
-    sourceRecommendationId: "rec-1",
+    recommendationStepId: "step-1",
     intent: { actionType: "price_markdown", targetKind: "dead_stock" },
   });
   assert.equal(result.status, "proposed");
@@ -139,14 +139,14 @@ test("proposeActionFromIntent reuses the one execution linked to a recommendatio
   assert.equal(creates, 0);
 });
 
-test("reusing a terminal recommendation execution preserves its lifecycle and is not executable", async () => {
+test("reusing a terminal workflow-step execution preserves its lifecycle and is not executable", async () => {
   for (const status of ["applied", "rejected", "failed"]) {
     const existing = {
       id: `exec-${status}`,
       runId: `run-${status}`,
       merchantId: "m1",
       shopId: "s1",
-      sourceRecommendationId: "rec-1",
+      recommendationStepId: "step-1",
       actionType: "price_markdown",
       status,
       resolvedMode: "approve",
@@ -154,11 +154,11 @@ test("reusing a terminal recommendation execution preserves its lifecycle and is
       proposalSummary: {},
     };
     const result = await proposeActionFromIntent(
-      { actionExecution: { findUnique: async () => existing } },
+      { actionExecution: { findFirst: async () => existing } },
       {
         merchantId: "m1",
         shopId: "s1",
-        sourceRecommendationId: "rec-1",
+        recommendationStepId: "step-1",
         intent: { actionType: "price_markdown", targetKind: "dead_stock" },
         writeEnabled: true,
       },
@@ -189,6 +189,7 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
     merchantId: "m1",
     shopId: "s1",
     intent: { actionType: "price_markdown", targetKind: "dead_stock", params: { markdownPercent: 30 } },
+    recommendationStepId: "step-1",
     sourceRecommendation: {
       id: "rec-1",
       runId: "plan-run-1",
