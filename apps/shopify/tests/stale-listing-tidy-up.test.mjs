@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildProductStatusPreview } from "../app/lib/actions/product-status-adapter.server.js";
 import {
   MAX_STALE_LISTINGS,
   STALE_LISTING_WINDOW_DAYS,
@@ -231,4 +232,59 @@ test("a shop exactly at the window boundary is not judged", async () => {
     now: NOW,
   });
   assert.equal(result.status, "insufficient_history");
+});
+
+// ── the resolver → preview seam ─────────────────────────────────────────────────────
+// selectStaleListings and buildProductStatusPreview are tested apart, but the shape passed
+// between them is a contract nothing else checks: the proposal emits {productId, title,
+// currentStatus, targetStatus, reason} and the preview reads four of those five. A rename on
+// either side would leave both suites green and produce an EMPTY preview in production —
+// which the wire reports as "empty_preview" and the merchant sees as a tidy-up that silently
+// did nothing.
+test("a proposal flows into a real preview with a correct reversibility plan", async () => {
+  const prisma = {
+    order: { async findFirst() { return { processedAt: new Date(NOW.getTime() - 400 * DAY) }; } },
+    product: {
+      async findMany() {
+        return [
+          { id: "1", externalId: "gid://shopify/Product/1", title: "Sold-out clogs", status: "ACTIVE" },
+          { id: "2", externalId: "gid://shopify/Product/2", title: "Still in stock", status: "ACTIVE" },
+        ];
+      },
+    },
+    variant: {
+      async findMany() {
+        return [{ id: "v1", productId: "1" }, { id: "v2", productId: "2" }];
+      },
+    },
+    inventoryLevel: {
+      async findMany() {
+        return [{ variantId: "v1", available: 0 }, { variantId: "v2", available: 7 }];
+      },
+    },
+    orderLineItem: { async findMany() { return []; } },
+  };
+
+  const proposal = await buildStaleListingTidyUpProposal(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    now: NOW,
+  });
+  const preview = buildProductStatusPreview({ items: proposal.items });
+
+  assert.equal(preview.productCount, 1, "the in-stock product must not reach the preview");
+  assert.deepEqual(preview.changes, [
+    {
+      productId: "gid://shopify/Product/1",
+      title: "Sold-out clogs",
+      fromStatus: "ACTIVE",
+      toStatus: "ARCHIVED",
+    },
+  ]);
+  // Reversibility is what makes this action offerable at all — an empty or partial plan
+  // means an archive the merchant cannot undo.
+  assert.deepEqual(preview.reversibilityPlan, [
+    { productId: "gid://shopify/Product/1", restoreStatus: "ACTIVE" },
+  ]);
+  assert.deepEqual(preview.refused, []);
 });
