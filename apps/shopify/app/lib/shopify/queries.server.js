@@ -345,7 +345,7 @@ export const ORDERS_QUERY = `#graphql
 // only when the requested window is complete, while a low-cover upper bound may
 // be useful from a truncated slice.
 export const BOOTSTRAP_RECENT_ORDERS_QUERY = `#graphql
-  query JefeBootstrapRecentOrders($first: Int!, $after: String, $query: String!) {
+  query JefeBootstrapRecentOrders($first: Int!, $after: String, $query: String!, $lineItemsFirst: Int!) {
     orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT, reverse: true) {
       pageInfo { hasNextPage endCursor }
       edges {
@@ -357,8 +357,8 @@ export const BOOTSTRAP_RECENT_ORDERS_QUERY = `#graphql
           currentTotalDiscountsSet { shopMoney { amount currencyCode } }
           currentTotalTaxSet { shopMoney { amount currencyCode } }
           totalShippingPriceSet { shopMoney { amount currencyCode } }
-          lineItems(first: 100) {
-            pageInfo { hasNextPage }
+          lineItems(first: $lineItemsFirst) {
+            pageInfo { hasNextPage endCursor }
             edges { node {
               id sku title variantTitle quantity
               originalUnitPriceSet { shopMoney { amount currencyCode } }
@@ -374,47 +374,68 @@ export const BOOTSTRAP_RECENT_ORDERS_QUERY = `#graphql
   }
 `;
 
-export const BOOTSTRAP_CATALOG_NODES_QUERY = `#graphql
-  query JefeBootstrapCatalogNodes($ids: [ID!]!) {
-    nodes(ids: $ids) {
-      __typename
-      ... on Product {
-        id title handle status vendor productType descriptionHtml createdAt updatedAt
-        seo { title description }
-        variants(first: 250) {
-          pageInfo { hasNextPage }
+export const BOOTSTRAP_ORDER_LINE_ITEMS_QUERY = `#graphql
+  query JefeBootstrapOrderLineItems($id: ID!, $first: Int!, $after: String) {
+    node(id: $id) {
+      ... on Order {
+        lineItems(first: $first, after: $after) {
+          pageInfo { hasNextPage endCursor }
           edges { node {
-            id sku title price createdAt updatedAt
+            id sku title variantTitle quantity
+            originalUnitPriceSet { shopMoney { amount currencyCode } }
+            discountedTotalSet { shopMoney { amount currencyCode } }
+            discountAllocations { allocatedAmountSet { shopMoney { amount currencyCode } } }
             product { id }
-            inventoryItem {
-              id
-              unitCost { amount }
-              inventoryLevels(first: 250) {
-                pageInfo { hasNextPage }
-                edges { node {
-                  id updatedAt
-                  quantities(names: ["available", "committed", "incoming"]) { name quantity }
-                  location { id name }
-                } }
-              }
-            }
+            variant { id }
           } }
         }
       }
-      ... on ProductVariant {
-        id sku title price createdAt updatedAt
-        product { id }
-        inventoryItem {
-          id
-          unitCost { amount }
-          inventoryLevels(first: 250) {
-            pageInfo { hasNextPage }
-            edges { node {
-              id updatedAt
-              quantities(names: ["available", "committed", "incoming"]) { name quantity }
-              location { id name }
-            } }
-          }
+    }
+  }
+`;
+
+export const BOOTSTRAP_ACTIVE_PRODUCTS_QUERY = `#graphql
+  query JefeBootstrapActiveProducts($first: Int!, $after: String, $query: String!) {
+    products(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id title handle status vendor productType descriptionHtml createdAt updatedAt
+          seo { title description }
+        }
+      }
+    }
+  }
+`;
+
+export const BOOTSTRAP_PRODUCT_VARIANTS_QUERY = `#graphql
+  query JefeBootstrapProductVariants($id: ID!, $first: Int!, $after: String) {
+    node(id: $id) {
+      ... on Product {
+        variants(first: $first, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          edges { node {
+            id sku title price createdAt updatedAt
+            product { id }
+            inventoryItem { id unitCost { amount } }
+          } }
+        }
+      }
+    }
+  }
+`;
+
+export const BOOTSTRAP_INVENTORY_LEVELS_QUERY = `#graphql
+  query JefeBootstrapInventoryLevels($id: ID!, $first: Int!, $after: String) {
+    node(id: $id) {
+      ... on InventoryItem {
+        inventoryLevels(first: $first, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          edges { node {
+            id updatedAt
+            quantities(names: ["available", "committed", "incoming"]) { name quantity }
+            location { id name }
+          } }
         }
       }
     }

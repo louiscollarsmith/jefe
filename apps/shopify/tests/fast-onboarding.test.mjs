@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 
 import {
+  __bootstrapTestHooks,
   buildEvidenceContracts,
   reconcileBootstrapIfFullMemoryReady,
   resolveBootstrapGenerationPhase,
@@ -46,6 +47,9 @@ const workerSource = fs.readFileSync(
 const querySource = fs.readFileSync(
   new URL("../app/lib/shopify/queries.server.js", import.meta.url),
   "utf8",
+);
+const bootstrapQuerySource = querySource.slice(
+  querySource.indexOf("BOOTSTRAP_RECENT_ORDERS_QUERY"),
 );
 const routeSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
@@ -118,9 +122,181 @@ test("all contracts reject a truncated nested line-item connection", () => {
 
 test("bootstrap reads an honest 90-day window and completeness-gates sibling inventory", () => {
   assert.match(bootstrapSource, /BOOTSTRAP_LOOKBACK_DAYS = 90/);
-  assert.match(querySource, /\.\.\. on Product[\s\S]*variants\(first: 250\)[\s\S]*pageInfo \{ hasNextPage \}/);
-  assert.match(bootstrapSource, /product\.variants\?\.pageInfo\?\.hasNextPage !== true/);
-  assert.match(bootstrapSource, /variant\.inventoryItem\?\.inventoryLevels\?\.pageInfo\?\.hasNextPage !== true/);
+  assert.match(bootstrapQuerySource, /BOOTSTRAP_ORDER_LINE_ITEMS_QUERY/);
+  assert.match(bootstrapQuerySource, /BOOTSTRAP_ACTIVE_PRODUCTS_QUERY/);
+  assert.match(bootstrapQuerySource, /BOOTSTRAP_PRODUCT_VARIANTS_QUERY/);
+  assert.match(bootstrapQuerySource, /BOOTSTRAP_INVENTORY_LEVELS_QUERY/);
+  assert.doesNotMatch(bootstrapQuerySource, /lineItems\(first: \d+\)/);
+  assert.doesNotMatch(bootstrapQuerySource, /variants\(first: 250\)/);
+  assert.doesNotMatch(bootstrapQuerySource, /inventoryLevels\(first: 250\)/);
+  assert.match(bootstrapSource, /activeCatalogComplete/);
+  assert.match(bootstrapSource, /lineItemCount/);
+});
+
+test("bootstrap fetches every line item for each selected order", async () => {
+  const calls = [];
+  const client = {
+    request: async (query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes("JefeBootstrapRecentOrders")) {
+        return {
+          orders: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            edges: [{
+              node: {
+                id: "gid://shopify/Order/1",
+                processedAt: "2026-08-01T00:00:00Z",
+                lineItems: {
+                  pageInfo: { hasNextPage: true, endCursor: "line-1" },
+                  edges: [{
+                    node: {
+                      id: "gid://shopify/LineItem/1",
+                      product: { id: "gid://shopify/Product/ordered-first" },
+                      variant: { id: "gid://shopify/ProductVariant/ordered-first" },
+                    },
+                  }],
+                },
+              },
+            }],
+          },
+        };
+      }
+      if (query.includes("JefeBootstrapOrderLineItems")) {
+        return {
+          node: {
+            lineItems: {
+              pageInfo: { hasNextPage: false, endCursor: "line-2" },
+              edges: [{
+                node: {
+                  id: "gid://shopify/LineItem/2",
+                  product: { id: "gid://shopify/Product/ordered-second" },
+                  variant: { id: "gid://shopify/ProductVariant/ordered-second" },
+                },
+              }],
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected query: ${query}`);
+    },
+  };
+
+  const result = await __bootstrapTestHooks.fetchRecentOrders(client, {
+    first: 1,
+    after: null,
+    query: "processed_at:>=2026-05-01",
+  });
+
+  const lineItems = result.orders[0].lineItems.edges.map((edge) => edge.node.id);
+  assert.deepEqual(lineItems, [
+    "gid://shopify/LineItem/1",
+    "gid://shopify/LineItem/2",
+  ]);
+  assert.equal(result.orders[0].lineItems.pageInfo.hasNextPage, false);
+  assert.equal(calls.some((call) => call.query.includes("JefeBootstrapOrderLineItems")), true);
+});
+
+test("bootstrap active catalog fetch includes unsold products and paginates variants and inventory", async () => {
+  const calls = [];
+  const client = {
+    request: async (query, variables) => {
+      calls.push({ query, variables });
+      if (query.includes("JefeBootstrapActiveProducts")) {
+        return {
+          products: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            edges: [{
+              node: {
+                id: "gid://shopify/Product/unsold-active",
+                title: "Unsold active product",
+                status: "ACTIVE",
+              },
+            }],
+          },
+        };
+      }
+      if (query.includes("JefeBootstrapProductVariants")) {
+        if (!variables.after) {
+          return {
+            node: {
+              variants: {
+                pageInfo: { hasNextPage: true, endCursor: "variant-1" },
+                edges: [{
+                  node: {
+                    id: "gid://shopify/ProductVariant/1",
+                    product: { id: "gid://shopify/Product/unsold-active" },
+                    inventoryItem: { id: "gid://shopify/InventoryItem/1", unitCost: { amount: "2.00" } },
+                  },
+                }],
+              },
+            },
+          };
+        }
+        return {
+          node: {
+            variants: {
+              pageInfo: { hasNextPage: false, endCursor: "variant-2" },
+              edges: [{
+                node: {
+                  id: "gid://shopify/ProductVariant/2",
+                  product: { id: "gid://shopify/Product/unsold-active" },
+                  inventoryItem: { id: "gid://shopify/InventoryItem/2", unitCost: { amount: "3.00" } },
+                },
+              }],
+            },
+          },
+        };
+      }
+      if (query.includes("JefeBootstrapInventoryLevels")) {
+        if (variables.id.endsWith("/1") && !variables.after) {
+          return {
+            node: {
+              inventoryLevels: {
+                pageInfo: { hasNextPage: true, endCursor: "level-1" },
+                edges: [{ node: { id: "gid://shopify/InventoryLevel/1", location: { id: "gid://shopify/Location/1" }, quantities: [{ name: "available", quantity: 1 }] } }],
+              },
+            },
+          };
+        }
+        return {
+          node: {
+            inventoryLevels: {
+              pageInfo: { hasNextPage: false, endCursor: "level-end" },
+              edges: [{ node: { id: `gid://shopify/InventoryLevel/${variables.id.endsWith("/1") ? "2" : "3"}`, location: { id: "gid://shopify/Location/1" }, quantities: [{ name: "available", quantity: 2 }] } }],
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected query: ${query}`);
+    },
+  };
+
+  const catalog = await __bootstrapTestHooks.fetchActiveCatalog(client);
+
+  assert.deepEqual(catalog.products.map((product) => product.id), ["gid://shopify/Product/unsold-active"]);
+  assert.deepEqual(catalog.variants.map((variant) => variant.id), [
+    "gid://shopify/ProductVariant/1",
+    "gid://shopify/ProductVariant/2",
+  ]);
+  assert.equal(catalog.inventoryLevelCount, 3);
+  assert.equal(catalog.variants[0].inventoryItem.inventoryLevels.edges.length, 2);
+  assert.equal(catalog.activeCatalogComplete, true);
+  assert.equal(calls.filter((call) => call.query.includes("JefeBootstrapProductVariants")).length, 2);
+  assert.equal(calls.filter((call) => call.query.includes("JefeBootstrapInventoryLevels")).length, 3);
+});
+
+test("active catalog evidence can unlock a catalog-safe bootstrap contract", () => {
+  const contracts = buildEvidenceContracts(
+    [
+      belief("active", "catalog.active_product_count", { count: 3 }),
+      belief("variants", "catalog.total_variant_count", { count: 5 }),
+      belief("out", "catalog.out_of_stock_product_count", { count: 1 }),
+      belief("zero", "catalog.zero_price_variant_count", { count: 0 }),
+      belief("shape", "business.catalogue_shape", { shape: "small_catalogue" }),
+    ],
+    { activeCatalogComplete: true, completeRequestedWindow: false, inventoryComplete: true, lineItemsComplete: true },
+  );
+  assert.deepEqual(contracts.map((contract) => contract.key), ["catalog_health"]);
 });
 
 test("live worker has an independent bootstrap lane", () => {

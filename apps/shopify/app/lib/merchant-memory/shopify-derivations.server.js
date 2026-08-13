@@ -45,7 +45,7 @@ const ALL_CATEGORIES = Array.from(
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; beliefKeys?: string[]; evidenceScope?: { source?: string; orderExternalIds?: string[]; productExternalIds?: string[]; variantExternalIds?: string[]; inventoryComplete?: boolean; lineItemsComplete?: boolean; completeRequestedWindow?: boolean; observedFrom?: string | null; observedTo?: string | null; passCount?: number; truncated?: boolean } }} input
+ * @param {{ merchantId: string; shopId?: string | null; categories?: string[]; beliefKeys?: string[]; evidenceScope?: { source?: string; orderExternalIds?: string[]; productExternalIds?: string[]; variantExternalIds?: string[]; inventoryComplete?: boolean; lineItemsComplete?: boolean; ordersComplete?: boolean; activeCatalogComplete?: boolean; completeRequestedWindow?: boolean; observedFrom?: string | null; observedTo?: string | null; passCount?: number; truncated?: boolean; selectedOrderCount?: number; lineItemCount?: number; activeProductCount?: number; variantCount?: number; inventoryLevelCount?: number } }} input
  */
 export async function deriveMerchantMemoryBeliefs(prisma, input) {
   const categories =
@@ -98,8 +98,15 @@ export async function deriveMerchantMemoryBeliefs(prisma, input) {
                   orderCount: input.evidenceScope.orderExternalIds?.length ?? 0,
                   productCount: input.evidenceScope.productExternalIds?.length ?? 0,
                   variantCount: input.evidenceScope.variantExternalIds?.length ?? 0,
+                  selectedOrderCount: input.evidenceScope.selectedOrderCount ?? input.evidenceScope.orderExternalIds?.length ?? 0,
+                  lineItemCount: input.evidenceScope.lineItemCount ?? 0,
+                  activeProductCount: input.evidenceScope.activeProductCount ?? input.evidenceScope.productExternalIds?.length ?? 0,
+                  activeVariantCount: input.evidenceScope.variantCount ?? input.evidenceScope.variantExternalIds?.length ?? 0,
+                  inventoryLevelCount: input.evidenceScope.inventoryLevelCount ?? 0,
                   inventoryComplete: input.evidenceScope.inventoryComplete === true,
                   lineItemsComplete: input.evidenceScope.lineItemsComplete === true,
+                  ordersComplete: input.evidenceScope.ordersComplete === true,
+                  activeCatalogComplete: input.evidenceScope.activeCatalogComplete === true,
                   confidenceCap: bootstrapConfidenceCap(outcome.definition.key),
                   caveat: bootstrapEvidenceCaveat(outcome.definition.key, input.evidenceScope),
                   supportingRecords: {
@@ -163,6 +170,11 @@ function bootstrapConfidenceCap(key) {
 function bootstrapEvidenceCaveat(key, scope) {
   if (key === "inventory.low_cover_products.trailing_30d" || key === "inventory.at_risk_stockout_count.trailing_30d") {
     return "Recent orders establish a conservative upper bound on days of cover; additional sales can only make the risk more urgent.";
+  }
+  if (String(key).startsWith("catalog.") || key === "business.catalogue_shape") {
+    return scope.activeCatalogComplete
+      ? "This conclusion is limited to the current active Shopify catalog Jefe read during onboarding."
+      : "The active catalog read is incomplete, so this evidence cannot support a catalog-wide conclusion.";
   }
   return scope.completeRequestedWindow
     ? "This conclusion is limited to the complete recent window Jefe read during onboarding."
