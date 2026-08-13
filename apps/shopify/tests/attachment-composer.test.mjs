@@ -165,8 +165,9 @@ test("the composer offers exactly what the server accepts", () => {
   assert.match(source, /name="attachment"/);
   // Multipart only when there is a file — a plain message should not pay for it.
   assert.match(source, /encType=\{attachedFile \? "multipart\/form-data" : undefined\}/);
-  // A file on its own must be sendable.
-  assert.match(source, /required=\{!attachedFile\}/);
+  // A file on its own must be sendable — a fresh upload OR one picked from the library
+  // (the picker landed the same day; see merchant-library.test.mjs).
+  assert.match(source, /required=\{!attachedFile && !pickedFile\}/);
   assert.ok(ATTACHMENT_ACCEPT.includes("application/pdf"));
 });
 

@@ -177,3 +177,48 @@ test("⛔ the copy never promises privacy, because both answers send the file to
     assert.doesNotMatch(rendered, /stays private|never leaves|only you can see|nobody else/i, name);
   }
 });
+
+// --- drawing from the library again (Matt's actual ask: "we store and can draw from again") ---
+
+test("a saved file can be pulled back into a chat turn", () => {
+  const route = fs.readFileSync(new URL("../app/routes/app._index.tsx", import.meta.url), "utf8");
+  // Storage without recall is only "not deleted". The reference path must resolve the file
+  // scoped to its owner, and compose it into the SAME shape a fresh upload produces — so the
+  // model cannot tell a file sent last month from one sent a second ago.
+  assert.match(route, /libraryFileId/);
+  assert.match(route, /getMerchantFileText\(prisma, \{[\s\S]{0,200}touch: true/);
+  assert.match(route, /extract: libraryFile\.extractedText/);
+  // No dead ends: a file that has since been deleted says so rather than sending a bare message.
+  assert.match(route, /no longer in your library/);
+});
+
+test("the composer offers the merchant's kept files", () => {
+  const composer = fs.readFileSync(
+    new URL("../app/components/daily-home.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(composer, /OR USE A FILE YOU ALREADY SENT ME/);
+  assert.match(composer, /name="libraryFileId"/);
+  // A picked file is a complete message on its own, exactly like a fresh upload.
+  assert.match(composer, /required=\{!attachedFile && !pickedFile\}/);
+});
+
+test("⛔ the download route resolves ownership from the session, never from the URL", () => {
+  const route = fs.readFileSync(
+    new URL("../app/routes/app.library.$fileId.download.tsx", import.meta.url),
+    "utf8",
+  );
+  const code = route
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+  // merchant.id comes from authenticateAppRequest + ensureShopifyTenant, and the id from params
+  // is only ever the fileId. A file id belonging to another store must return nothing.
+  assert.match(code, /merchantId: merchant\.id/);
+  assert.match(code, /fileId: String\(params\.fileId/);
+  assert.doesNotMatch(code, /merchantId: (String\(params|params)/);
+  // A merchant-supplied file rendered inline on our origin is a stored-XSS primitive.
+  assert.match(code, /attachment; filename=/);
+  assert.doesNotMatch(code, /inline;/);
+  assert.match(code, /no-store/);
+});

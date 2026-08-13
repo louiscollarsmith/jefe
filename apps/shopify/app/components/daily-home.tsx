@@ -181,6 +181,8 @@ export function DailyHome(props: {
   channels?: ChannelConn[];
   conversation?: ChatThread | null;
   merchantActions?: MerchantActionView[];
+  /** Files the merchant kept, so a chat can reuse one without re-uploading it. */
+  libraryFiles?: LibraryPick[];
   talkActionId?: string | null;
   focusedActionChats?: FocusedActionChatChoice[];
   changelog?: Array<{
@@ -228,6 +230,7 @@ export function DailyHome(props: {
         conversation={props.conversation ?? null}
         focusedAction={focusedAction}
         merchantActions={merchantActions}
+        libraryFiles={props.libraryFiles ?? []}
         currentSearch={location.search}
         todayLabel={props.todayLabel}
       />
@@ -653,12 +656,14 @@ function FocusedConversation({
   conversation,
   focusedAction,
   merchantActions,
+  libraryFiles,
   currentSearch,
   todayLabel,
 }: {
   conversation: ChatThread | null;
   focusedAction: MerchantActionView | null;
   merchantActions: MerchantActionView[];
+  libraryFiles: LibraryPick[];
   currentSearch: string;
   todayLabel?: string;
 }) {
@@ -706,6 +711,9 @@ function FocusedConversation({
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [keepFile, setKeepFile] = useState(false);
+  // A file the merchant already sent Jefe, pulled back into this turn. This is the "draw from
+  // again" half of the library — without it, keeping a file only means it is not deleted.
+  const [pickedFile, setPickedFile] = useState<LibraryPick | null>(null);
   // A rejection from the server (an unreadable PDF, a provider that failed) — otherwise the
   // attachment would vanish and Jefe would look like it had ignored them.
   const actionData = useActionData() as
@@ -753,6 +761,7 @@ function FocusedConversation({
     setAttachedFile(null);
     setAttachmentError(null);
     setKeepFile(false);
+    setPickedFile(null);
     // Deferred deliberately. React Router serialises the form DURING this same submit event, so
     // clearing the input now would send an empty part and silently drop the merchant's file —
     // while never clearing it would re-send that file with their next message.
@@ -857,11 +866,44 @@ function FocusedConversation({
                   setPendingFocus(action);
                 }}
               />
+              {libraryFiles.length > 0 ? (
+                <div style={libraryPickSectionStyle}>
+                  <Mono>OR USE A FILE YOU ALREADY SENT ME</Mono>
+                  <div style={libraryPickListStyle}>
+                    {libraryFiles.map((file) => (
+                      <button
+                        key={file.id}
+                        type="button"
+                        style={libraryPickButtonStyle}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setPickedFile(file);
+                        }}
+                      >
+                        {file.filename}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
           {composerError ? (
             <div style={composerErrorStyle} role="status">
               {composerError}
+            </div>
+          ) : null}
+          {pickedFile && !attachedFile ? (
+            <div style={attachedFileRowStyle}>
+              <span style={attachedFileNameStyle}>From your library: {pickedFile.filename}</span>
+              <button
+                type="button"
+                style={attachedFileRemoveStyle}
+                onClick={() => setPickedFile(null)}
+                disabled={isThinking}
+              >
+                Remove
+              </button>
             </div>
           ) : null}
           {attachedFile ? (
@@ -914,6 +956,10 @@ function FocusedConversation({
               +
             </button>
             {keepFile ? <input type="hidden" name="keepAttachment" value="true" /> : null}
+            {/* A fresh upload wins if somehow both are set — the merchant just chose it. */}
+            {pickedFile && !attachedFile ? (
+              <input type="hidden" name="libraryFileId" value={pickedFile.id} />
+            ) : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -957,7 +1003,7 @@ function FocusedConversation({
             <input
               name="message"
               // A file on its own is a complete message — "here, look at this".
-              required={!attachedFile}
+              required={!attachedFile && !pickedFile}
               autoComplete="off"
               aria-label="Message Jefe"
               placeholder={
@@ -1562,6 +1608,8 @@ function MessageRow({ from, children }: { from: string; children: ReactNode }) {
     </div>
   );
 }
+
+export type LibraryPick = { id: string; filename: string; kind: string };
 
 export function DailyHomeLoading({ storeName }: { storeName: string }) {
   return (
@@ -2862,6 +2910,31 @@ const attachedFileRemoveStyle: CSSProperties = {
   fontSize: 12,
   padding: "2px 6px",
   textDecoration: "underline",
+};
+const libraryPickSectionStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.border}`,
+  marginTop: 12,
+  paddingTop: 12,
+};
+const libraryPickListStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  marginTop: 8,
+};
+const libraryPickButtonStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  color: COLORS.navy,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 12,
+  maxWidth: "100%",
+  overflow: "hidden",
+  padding: "5px 12px",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 const keepFileLabelStyle: CSSProperties = {
   alignItems: "center",

@@ -109,6 +109,8 @@ import {
 } from "../lib/attachments/attachment-message.server.js";
 import {
   deleteMerchantFile,
+  getMerchantFileText,
+  listMerchantFilePicks,
   listMerchantFiles,
   saveMerchantFile,
 } from "../lib/attachments/merchant-file.server.js";
@@ -868,13 +870,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
     }
+    // "Use the cost sheet I sent you" — a file already in the library, pulled back into this
+    // turn. Same composed shape as a fresh upload, so the model sees no difference between a
+    // file sent now and one sent last month. `touch` records the use, which is what makes
+    // "the invoice I sent last month" findable later.
+    const libraryFileId = String(formData.get("libraryFileId") ?? "");
+    const libraryFile = libraryFileId
+      ? await getMerchantFileText(prisma, {
+          merchantId: merchant.id,
+          fileId: libraryFileId,
+          touch: true,
+        })
+      : null;
+    if (libraryFileId && !libraryFile) {
+      return { ok: false, error: "That file is no longer in your library.", kind: "attachment", intent };
+    }
+
     const message = attachment
       ? composeAttachmentMessage({
           message: typed,
           filename: attachment.filename,
           extract: attachment.text,
         })
-      : typed;
+      : libraryFile
+        ? composeAttachmentMessage({
+            message: typed,
+            filename: libraryFile.filename,
+            extract: libraryFile.extractedText,
+          })
+        : typed;
     const result = await sendGeneralChatMessage(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -1731,6 +1755,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
       const actionChatId = url.searchParams.get("actionChat");
       const talkActionId = url.searchParams.get("talkAction");
+      const libraryFilesPromise = listMerchantFilePicks(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+      });
       const merchantActionsPromise = listMerchantActions(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
@@ -1791,6 +1819,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         suggestedAction,
         executedActions,
         merchantActions,
+        libraryFiles,
         focusedActionChats,
         conversation,
         changelog,
@@ -1809,6 +1838,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         suggestedActionPromise,
         executedActionsPromise,
         merchantActionsPromise,
+        libraryFilesPromise,
         focusedActionChatsPromise,
         conversationPromise,
         changelogPromise,
@@ -1865,6 +1895,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         conversation,
         actionChatId,
         merchantActions,
+        libraryFiles,
         talkActionId,
         focusedActionChats,
         changelog,
@@ -2236,6 +2267,7 @@ export default function AppIndex() {
         channels={data.channels}
         conversation={data.conversation}
         merchantActions={data.merchantActions}
+        libraryFiles={data.libraryFiles}
         talkActionId={data.talkActionId}
         focusedActionChats={data.focusedActionChats}
         changelog={data.changelog}

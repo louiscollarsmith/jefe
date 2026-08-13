@@ -92,6 +92,23 @@ export async function listMerchantFiles(prisma, input) {
 }
 
 /**
+ * The short list the chat composer needs to offer "use a file I already sent you" — id, name
+ * and kind, nothing else. Loaded on every home render, so it stays deliberately tiny: no
+ * extract, no bytes, and a hard cap.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string, shopId?: string | null, limit?: number }} input
+ */
+export async function listMerchantFilePicks(prisma, input) {
+  return prisma.merchantFile.findMany({
+    where: { merchantId: input.merchantId, ...(input.shopId ? { shopId: input.shopId } : {}) },
+    orderBy: { createdAt: "desc" },
+    take: Math.min(Number(input.limit) || 20, 20),
+    select: { id: true, filename: true, kind: true },
+  });
+}
+
+/**
  * Read one file's TEXT back, scoped to its owner.
  *
  * ⚠️ `merchantId` is in the where clause, not checked after the fact. A library is the first

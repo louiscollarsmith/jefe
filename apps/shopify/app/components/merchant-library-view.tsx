@@ -84,6 +84,16 @@ export function MerchantLibraryView({
                 <p style={extractStyle}>{firstLines(file.extractedText)}</p>
                 <div style={itemFootStyle}>
                   <span style={kindStyle}>{describeKind(file.kind)}</span>
+                  <div style={itemActionsStyle}>
+                    {/* Their own file back. `reloadDocument` because this is a byte response,
+                        not a route the client router can render. */}
+                    <Link
+                      to={`/app/library/${file.id}/download`}
+                      reloadDocument
+                      style={downloadStyle}
+                    >
+                      Download
+                    </Link>
                   <Form method="post" replace>
                     <input type="hidden" name="intent" value="library.delete" />
                     <input type="hidden" name="fileId" value={file.id} />
@@ -95,6 +105,7 @@ export function MerchantLibraryView({
                       {deletingId === file.id ? "Removing…" : "Remove"}
                     </button>
                   </Form>
+                  </div>
                 </div>
               </li>
             ))}
@@ -231,6 +242,17 @@ const kindStyle: CSSProperties = {
   fontSize: 11,
   letterSpacing: "0.06em",
   textTransform: "uppercase",
+};
+const itemActionsStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  gap: 14,
+};
+const downloadStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  textDecoration: "underline",
 };
 const deleteStyle: CSSProperties = {
   background: "transparent",
