@@ -227,8 +227,11 @@ test("action chat quantification uses the governed commerce analyst executor", (
 
 test("chat composers clear immediately while Send keeps a disabled state", () => {
   assert.match(dailyHomeSource, /const \[composerMessage, setComposerMessage\] = useState\(""\)/);
+  // Both composers clear the box and start the felt-latency clock (chat_turn,
+  // vantage "client"). Pinned as a pair because a composer that clears without
+  // marking silently drops its turns out of the latency numbers.
   assert.equal(
-    [...dailyHomeSource.matchAll(/const handleComposerSubmit = \(\) => setComposerMessage\(""\)/g)].length,
+    [...dailyHomeSource.matchAll(/markChatTurnSent\(\);\n    setComposerMessage\(""\);/g)].length,
     2,
   );
   assert.equal(

@@ -132,6 +132,40 @@ by state and up to five recent failed episode IDs/reason codes. It never exposes
 conversation text, embedding values or prompt content; lexical retrieval remains
 available when embedding health is degraded.
 
+## Chat reply latency — how long a merchant waits
+
+Model-call latency was the only timing we had (`llm_usage_event.latency_ms`, one
+row per call), and it cannot answer "how long did that reply take": one turn is
+several model calls plus retrieval plus two writes, so the calls both understate
+the wait and can't explain it. A turn is measured directly, from two vantage
+points, in `app/lib/observability/chat-turn-latency.server.js`:
+
+| vantage | measured | where |
+| --- | --- | --- |
+| `server` | Jefe's own share, split into `intakeMs` / `decisionMs` / `retrievalMs` / `generationMs` / `persistMs` | around `sendGeneralChatMessage` |
+| `client` | Send → reply on screen, including the round trip and the home re-render | `ChatTurnReporter` → `POST /api/chat-turn` |
+
+Both write a PII-free `chat_turn` activity event (durations only, never message
+text) and sample an in-process ring. Read them:
+
+- **`/health` → `chatTurns`** — live p50/p95/p99 for this instance, no query on
+  the health path. Answers "is Jefe slow right now".
+- **Ops panel → "Chat reply latency · 7d"** — durable percentiles for both
+  vantages plus the average server split. Answers "is Jefe getting slower, and
+  where does the time go".
+
+Read the two together: identical server timings with a worse felt number means
+the cost moved into the navigation, not into Jefe thinking. The server share also
+lands in the assistant message's own `metadata_json.latency`, beside the reply it
+describes — `totalMsAtReply` there stops short of that write, because a row
+cannot time its own insert.
+
+⚠️ **A fallback turn under-reports in the LLM ledger.** When the primary provider
+fails and the fallback answers, `llm_usage_event.latency_ms` records only the
+fallback call — the time burned failing over sits in the error row, which has no
+latency. The `chat_turn` numbers are unaffected (they wrap the whole path), so
+prefer them for anything about what a merchant waited.
+
 ## Correlation IDs
 
 `app/lib/observability/context.server.js` provides an `AsyncLocalStorage`-based

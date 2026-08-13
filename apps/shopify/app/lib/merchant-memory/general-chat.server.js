@@ -4,6 +4,10 @@ import { Type } from "@google/genai";
 import { createLlmProvider } from "../llm/provider.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import {
+  recordChatTurn,
+  startChatTurn,
+} from "../observability/chat-turn-latency.server.js";
+import {
   appendConversationMessage,
   createMerchantConversation,
   enqueueCoalescingMemoryJob,
@@ -109,6 +113,10 @@ export async function sendGeneralChatMessage(prisma, input) {
   const content = String(input.message ?? "").trim();
   if (!content) return { ok: false, error: "Message is required." };
   const surface = input.surface ?? "app";
+  // The wait a merchant is actually sitting through, phase by phase. Started before
+  // any work so nothing on the reply path is outside the number, and only recorded
+  // when a reply is produced — a turn that failed is an error, not a slow turn.
+  const turn = startChatTurn();
   const conversation = await getOrCreateMerchantConversation(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -175,6 +183,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       citedContextIds: [],
     };
   }
+  turn.mark("intakeMs");
   const promptMessage = sanitizeMemoryText(content);
   const provider =
     input.llmProvider ??
@@ -229,6 +238,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       });
     }
   }
+  turn.mark("decisionMs");
   const actionChat = Boolean(input.actionRunId || input.recommendationId);
   const [context, actionEvidence] = await Promise.all([
     retrieveMerchantContext(prisma, {
@@ -273,6 +283,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       },
     });
   }
+  turn.mark("retrievalMs");
   const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
   let generated;
   if (decision.action === "acknowledge_memory") {
@@ -311,6 +322,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
       : grounded;
   }
+  turn.mark("generationMs");
   const assistant = await appendConversationMessage(prisma, {
     conversation,
     conversationId: conversation.id,
@@ -324,8 +336,29 @@ export async function sendGeneralChatMessage(prisma, input) {
     metadata: {
       citedContextIds: generated.citedContextIds,
       retrievalRunId: context.diagnosticId,
+      // The wait this reply cost, stored beside the reply it describes. Durations
+      // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
+      // stops short of this write because a row cannot time its own insert — the
+      // `chat_turn` event carries the total that includes it.
+      latency: {
+        vantage: "server",
+        ...turn.phases(),
+        totalMsAtReply: turn.totalMs(),
+      },
     },
     safeSummary: "Jefe answered from bounded Merchant Memory context.",
+  });
+  turn.mark("persistMs");
+  // Fire-and-forget: the merchant's reply is ready and must not wait on telemetry.
+  void recordChatTurn(prisma, {
+    vantage: "server",
+    totalMs: turn.totalMs(),
+    phases: turn.phases(),
+    surface,
+    path: decision.action,
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    logger: input.logger ?? log,
   });
   return {
     ok: true,

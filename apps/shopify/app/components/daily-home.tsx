@@ -15,6 +15,7 @@ import {
   Text,
 } from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
+import { ChatTurnReporter, markChatTurnSent } from "./chat-turn-reporter";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
   ActionChatThread,
@@ -246,7 +247,12 @@ function StoreConversation({
   const [composerMessage, setComposerMessage] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  const handleComposerSubmit = () => setComposerMessage("");
+  // Clearing the box and starting the felt-latency clock are the same moment: the
+  // merchant has just pressed Send and is now waiting.
+  const handleComposerSubmit = () => {
+    markChatTurnSent();
+    setComposerMessage("");
+  };
 
   const history = conversation?.messages ?? [];
   const activeConversation = conversation?.conversation ?? null;
@@ -278,6 +284,10 @@ function StoreConversation({
 
   return (
     <section style={conversationStyle}>
+      <ChatTurnReporter
+        lastMessageId={lastMessage?.id ?? null}
+        lastMessageRole={lastMessage?.role ?? null}
+      />
       <div style={threadControlsStyle}>
         <InlineStack
           align="space-between"
@@ -596,7 +606,10 @@ function ReplyFailedRow({ conversationId }: { conversationId: string | null }) {
       <span style={smallMarkStyle}>J</span>
       <div style={replyFailedBubbleStyle}>
         <span>I couldn&apos;t get to that one just now — your message is saved.</span>
-        <Form method="post">
+        {/* A retry is a wait too — the merchant is sitting through this one having
+            already sat through a failure, so it is the last turn we'd want missing
+            from the numbers. */}
+        <Form method="post" onSubmit={markChatTurnSent}>
           <input type="hidden" name="intent" value="chat.retry" />
           {conversationId ? (
             <input type="hidden" name="conversationId" value={conversationId} />
@@ -856,7 +869,14 @@ function ActionChat({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const handleComposerSubmit = () => setComposerMessage("");
+  // Same contract as the store chat: clear the box and start the felt-latency clock.
+  const handleComposerSubmit = () => {
+    markChatTurnSent();
+    setComposerMessage("");
+  };
+  // The REAL last message, which is null on a blank thread — the synthetic opening
+  // line below is Jefe's copy, not a reply, and must never close a turn.
+  const lastRealMessage = thread.messages[thread.messages.length - 1] ?? null;
   const messages = thread.messages.length
     ? thread.messages
     : [
@@ -871,6 +891,10 @@ function ActionChat({
   return (
     <main style={pageStyle}>
       <div style={chatShellStyle}>
+        <ChatTurnReporter
+          lastMessageId={lastRealMessage?.id ?? null}
+          lastMessageRole={lastRealMessage?.role ?? null}
+        />
         <div style={chatTopStyle}>
           <Link to={backTo} style={backLinkStyle}>
             ← Back
@@ -1075,7 +1099,7 @@ function StorePrompt({
   conversationId?: string | null;
 }) {
   return (
-    <Form method="post">
+    <Form method="post" onSubmit={markChatTurnSent}>
       <input type="hidden" name="intent" value="chat.message" />
       <input type="hidden" name="conversationId" value={conversationId ?? ""} />
       <input type="hidden" name="message" value={message} />

@@ -308,6 +308,43 @@ async function queryOverview() {
        GROUP BY 1`)
   ).rows;
 
+  // How long merchants wait for a chat reply, from BOTH vantage points — the
+  // server's own share and what the browser actually felt (Send → reply on
+  // screen). Two rows, because a gap between them is the finding: the same
+  // server timings with a worse felt number means the cost moved into the round
+  // trip and the home re-render, not into Jefe thinking. Per-LLM-call latency
+  // (llm_usage_event) can't answer this — one turn is several calls plus
+  // retrieval plus two writes.
+  const chatTurnLatency = (
+    await pool.query(`
+      SELECT properties->>'vantage' vantage,
+             count(*)::int n,
+             percentile_cont(0.5)  WITHIN GROUP (ORDER BY (properties->>'totalMs')::float) p50,
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY (properties->>'totalMs')::float) p95,
+             max((properties->>'totalMs')::float) worst
+        FROM activity_events
+       WHERE type = 'chat_turn'
+         AND properties->>'totalMs' ~ '^[0-9.]+$'
+         AND created_at >= now() - interval '7 days'
+       GROUP BY 1`)
+  ).rows;
+
+  // Where the server's share of a turn goes, averaged over the same window. This
+  // is the "why is it slow" row: generation dominating is a model problem,
+  // retrieval dominating is ours.
+  const chatTurnPhases = (
+    await pool.query(`
+      SELECT round(avg((properties->>'decisionMs')::float))::int   decision_ms,
+             round(avg((properties->>'retrievalMs')::float))::int  retrieval_ms,
+             round(avg((properties->>'generationMs')::float))::int generation_ms,
+             count(*)::int n
+        FROM activity_events
+       WHERE type = 'chat_turn'
+         AND properties->>'vantage' = 'server'
+         AND properties->>'generationMs' ~ '^[0-9.]+$'
+         AND created_at >= now() - interval '7 days'`)
+  ).rows[0];
+
   // Live merchant triage: existing read-only ledgers, aggregated so the first
   // screen says whether the live estate needs attention before opening a shop.
   const liveTriage = (
@@ -500,7 +537,7 @@ async function queryOverview() {
        LIMIT 12`)
   ).rows;
 
-  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, emailHealth, webVitalsBfs, costTrend, activityTrend, liveTriage, liveTriageRows };
+  return { ...shops, ...active, ...reliability, ...cost, ...latency, churn, churnReasons, costByFeature, marginList, emailHealth, webVitalsBfs, chatTurnLatency, chatTurnPhases, costTrend, activityTrend, liveTriage, liveTriageRows };
 }
 
 function overviewIssueSummary(row) {
@@ -695,7 +732,31 @@ function renderOverview(o) {
         })
         .join("")
     : `<tr><td class="muted">No Web Vitals yet — accumulating.</td><td></td></tr>`;
+  // Chat reply latency · 7d. "Felt" is the merchant's own clock (Send → reply on
+  // screen) and is the number that matters; "server" is our share of it, shown
+  // beside it so the gap is visible rather than inferred.
+  const turnByVantage = new Map(
+    (o.chatTurnLatency || []).map((r) => [String(r.vantage), r]),
+  );
+  const chatTurnRows =
+    (o.chatTurnLatency || []).length
+      ? [
+          ["client", "Felt (Send → on screen)"],
+          ["server", "Server share"],
+        ]
+          .map(([vantage, label]) => {
+            const r = turnByVantage.get(vantage);
+            if (!r)
+              return `<tr><td>${label}</td><td class="muted">no samples yet</td></tr>`;
+            return `<tr><td>${label}</td><td>p50 ${fmtMs(Number(r.p50))} · p95 ${fmtMs(Number(r.p95))} · worst ${fmtMs(Number(r.worst))} <span class="muted">n=${r.n}</span></td></tr>`;
+          })
+          .join("") +
+        (Number(o.chatTurnPhases?.n || 0) > 0
+          ? `<tr><td class="muted">server split (avg)</td><td class="muted">decide ${fmtMs(o.chatTurnPhases.decision_ms)} · retrieve ${fmtMs(o.chatTurnPhases.retrieval_ms)} · generate ${fmtMs(o.chatTurnPhases.generation_ms)}</td></tr>`
+          : "")
+      : `<tr><td class="muted">No chat turns yet — accumulating.</td><td></td></tr>`;
   const breakdown = `<div class="panels">
+      <div class="panel"><div class="ph">Chat reply latency · 7d</div><table class="mini"><tbody>${chatTurnRows}</tbody></table></div>
       <div class="panel"><div class="ph">LLM cost by feature · 7d</div><table class="mini"><tbody>${featureRows}</tbody></table></div>
       <div class="panel"><div class="ph">Why they left · latest per shop</div><table class="mini"><tbody>${reasonRows}</tbody></table></div>
       <div class="panel"><div class="ph">Win-back email · 7d</div><table class="mini"><tbody>${emailRows}</tbody></table></div>
