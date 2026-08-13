@@ -38,6 +38,8 @@ test("only formats a model can actually read are accepted", () => {
   assert.equal(isReadableAttachment("IMAGE/PNG"), true, "case should not decide this");
   // Refused rather than guessed at — a .mov sent to a vision model burns a request and fails.
   assert.equal(isReadableAttachment("video/quicktime"), false);
+  // Text formats joined the allow-list on 2026-08-13 — a CSV is read by decoding, not by a model.
+  assert.equal(isReadableAttachment("text/csv"), true);
   assert.equal(isReadableAttachment("application/zip"), false);
   assert.equal(isReadableAttachment(undefined), false);
 });
@@ -46,7 +48,7 @@ test("a bad upload is refused before any provider round-trip", () => {
   // Cheap failures should stay cheap.
   assert.match(
     attachmentRejectionReason({ mimeType: "video/mp4", byteLength: 10 }),
-    /photos and PDFs/,
+    /can't watch video/i,
   );
   assert.match(
     attachmentRejectionReason({ mimeType: "image/png", byteLength: MAX_ATTACHMENT_BYTES + 1 }),

@@ -109,6 +109,42 @@ is pushed; 1–2 lines; the headline is the achievement in a merchant's terms;
 footer then a `---------` separator; group by achievement rather than one post
 per commit; never automate the words.
 
+### ⛔ DO NOT POST IT YOURSELF. The app posts it. (Matt, 2026-08-13)
+
+*"we're currently doubling up on updates here"* — because the changelog watcher
+already posts to #jefe-slack and an agent was hand-posting the same entry.
+**Write the changelog entry; do not send the Slack message.**
+
+`app/services/changelog/changelog-watcher.server.js` runs on the worker tick,
+reads `apps/shopify/CHANGELOG.md`, and posts each new bullet it has not seen
+before, keyed by a content hash so a restart never re-announces.
+
+⭐ **This does not break "never automate the words."** The words are still
+written by a model with full context — in `CHANGELOG.md`. Only the *transport*
+is automated. The retired 2026-07-01 formatter generated prose from commit
+subjects; this one carries prose you wrote.
+
+⭐ **It also cannot post early.** The watcher reads the `CHANGELOG.md` inside its
+own deploy, so it physically cannot see an entry until that entry is running in
+production. "Post when live" is now structural rather than a discipline you have
+to remember.
+
+So the discipline moves one file upstream:
+
+- ⛔ **The FIRST SENTENCE of the bullet is the Slack post.** `summarizeForSlack`
+  takes the first sentence boundary after 60 characters and caps at 320. Write
+  that sentence so it stands alone as the entry — achievement, merchant's terms,
+  present tense. Everything after it is for whoever opens the changelog.
+- The footer (`_live · <sha>_`) and the `---------` separator are added by the
+  watcher from the running deploy's `APP_VERSION`. Don't write them into the
+  bullet.
+- One bullet per achievement, as before — the watcher posts per bullet, so four
+  bullets is four posts.
+
+**The only time you post by hand** is when something needs saying that is not a
+changelog entry: an incident, a heads-up, an answer in a thread. Those are
+messages, not entries.
+
 ## Quality Bar
 
 A change is not done unless it is scoped, typed, testable, observable (structured logging with credential masking — PII scrubbing was removed on 2026-08-13, so keeping personal data out of log context is now a call-site discipline; plus error capture and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.

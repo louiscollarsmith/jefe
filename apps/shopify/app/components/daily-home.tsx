@@ -908,8 +908,8 @@ function FocusedConversation({
             />
             <button
               type="button"
-              aria-label="Send Jefe a photo or PDF"
-              title="Send Jefe a photo or PDF"
+              aria-label="Send Jefe a photo, PDF or CSV"
+              title="Send Jefe a photo, PDF or CSV"
               style={attachButtonStyle(Boolean(attachedFile))}
               onClick={() => fileInputRef.current?.click()}
               disabled={isThinking}

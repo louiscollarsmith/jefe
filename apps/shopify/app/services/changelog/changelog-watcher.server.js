@@ -169,10 +169,17 @@ export function loadChangelogMarkdown() {
 /**
  * Format a single entry as a Slack message body (`{text}` webhook payload).
  * @param {ChangelogEntry} entry
+ * @param {{ version?: string | null }} [options]
  * @returns {string}
  */
-export function formatEntryForSlack(entry) {
-  return `:memo: *Jefe changelog · ${entry.section}*\n${summarizeForSlack(entry.body)}`;
+export function formatEntryForSlack(entry, options = {}) {
+  // The SHA of the code that is RUNNING, not of some branch — this watcher reads the
+  // CHANGELOG.md inside its own deploy, so by the time it can see an entry, that entry is live.
+  // That is the whole reason the post can honestly say "live". (Matt, 2026-08-12: always
+  // reference the commit — a changelog you cannot tie to a diff is a story, not a record.)
+  const sha = String(options.version ?? "").trim().slice(0, 7);
+  const footer = sha ? `\n_live · ${sha}_` : "";
+  return `:memo: *Jefe changelog · ${entry.section}*\n${summarizeForSlack(entry.body)}${footer}\n---------`;
 }
 
 /**
@@ -180,13 +187,14 @@ export function formatEntryForSlack(entry) {
  * @param {string} webhookUrl
  * @param {ChangelogEntry} entry
  * @param {typeof fetch} fetchImpl
+ * @param {string | null} [version]
  * @returns {Promise<boolean>}
  */
-async function postEntryToSlack(webhookUrl, entry, fetchImpl) {
+async function postEntryToSlack(webhookUrl, entry, fetchImpl, version) {
   const res = await fetchImpl(webhookUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: formatEntryForSlack(entry) }),
+    body: JSON.stringify({ text: formatEntryForSlack(entry, { version }) }),
   });
   return res.ok;
 }
@@ -202,6 +210,7 @@ async function postEntryToSlack(webhookUrl, entry, fetchImpl) {
  *   force?: boolean;
  *   markdown?: string;
  *   webhookUrl?: string;
+ *   version?: string | null;
  * }} [opts]
  * @returns {Promise<{ status: string; seeded?: number; announced?: number } | null>}
  */
@@ -268,7 +277,12 @@ export async function maybePostChangelog(prisma, opts = {}) {
       let posted = false;
       if (webhookUrl && fetchImpl) {
         try {
-          posted = await postEntryToSlack(webhookUrl, entry, fetchImpl);
+          posted = await postEntryToSlack(
+            webhookUrl,
+            entry,
+            fetchImpl,
+            opts.version ?? process.env.APP_VERSION ?? process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+          );
         } catch (error) {
           logger.warn?.("changelog watcher: Slack post failed", {
             err: error,

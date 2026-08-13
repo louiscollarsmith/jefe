@@ -21,8 +21,11 @@ import { GoogleGenAI } from "@google/genai";
 
 import {
   ATTACHMENT_ACCEPT,
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
   MAX_ATTACHMENT_BYTES,
-  READABLE_MIME_TYPES,
+  TEXT_MIME_TYPES,
+  attachmentKind,
   attachmentRejectionReason,
   isReadableAttachment,
 } from "./attachment-limits.js";
@@ -36,11 +39,21 @@ import { recordLlmUsage } from "../llm/usage-recorder.server.js";
 // definition. Re-exported here because this module was the original home of both.
 export {
   ATTACHMENT_ACCEPT,
+  DOCUMENT_MIME_TYPES,
+  IMAGE_MIME_TYPES,
   MAX_ATTACHMENT_BYTES,
-  READABLE_MIME_TYPES,
+  TEXT_MIME_TYPES,
+  attachmentKind,
   attachmentRejectionReason,
   isReadableAttachment,
 };
+
+/**
+ * How much of a text file is worth carrying. A cost export can be 20k rows; the useful signal
+ * is in the columns and the first few hundred lines, and the rest is tokens forever.
+ * Bigger than the vision budget because a CSV IS the data — there is no description step.
+ */
+const MAX_TEXT_CHARS = 12000;
 
 /** How much extracted text is worth keeping. A wall of OCR helps nobody and costs tokens forever. */
 const MAX_EXTRACT_CHARS = 4000;
@@ -79,6 +92,13 @@ export async function readAttachment(input) {
     filename: input?.filename,
   });
   if (rejection) return { ok: false, reason: rejection };
+
+  // A CSV, TSV or text file is already the answer. Decoding it is exact, free and instant, and
+  // a model cannot hallucinate a cost that is sitting in row 40 — so text never goes to a
+  // provider to be READ. (The chat turn still reasons over it, as it would over typed text.)
+  if (attachmentKind(input?.mimeType, input?.filename) === "text") {
+    return readTextAttachment(input);
+  }
 
   const config = getLlmConfig();
   const injected = Boolean(input.client);
@@ -156,6 +176,58 @@ export async function readAttachment(input) {
   }
 
   return { ok: true, text, filename: safeFilename(input.filename) };
+}
+
+/**
+ * Decode a text file and keep as much of it as is worth carrying.
+ *
+ * ⚠️ Truncation is STATED, never silent. A merchant who sends a 20,000-row cost export and gets
+ * advice based on the first 300 needs to know that — otherwise Jefe confidently answers "your
+ * worst margin is X" having never seen most of the file.
+ *
+ * @param {{ base64: string, mimeType: string, filename?: string | null }} input
+ * @returns {{ ok: true, text: string, filename: string | null } | { ok: false, reason: string }}
+ */
+function readTextAttachment(input) {
+  let decoded = "";
+  try {
+    decoded = Buffer.from(input.base64, "base64").toString("utf8");
+  } catch {
+    return { ok: false, reason: "I couldn't make that file out — is it definitely a text file?" };
+  }
+  // A binary file mislabelled as text arrives as replacement characters; describing it as data
+  // would be worse than saying so.
+  // A binary file mislabelled as text (a .xls renamed to .csv) either carries NUL bytes or
+  // decodes to a wall of U+FFFD. Both are refused with a way forward rather than described as
+  // data. The U+FFFD case is COUNTED, not "contains one": a real export can carry a stray bad
+  // byte, and refusing a merchant's cost file over one character would be its own failure.
+  const replacementCount = (decoded.match(/\uFFFD/g) ?? []).length;
+  if (decoded.includes("\u0000") || (replacementCount > 20 && replacementCount > decoded.length * 0.01)) {
+    return {
+      ok: false,
+      reason: "That looked like a text file but isn't one I can read — if it's a spreadsheet, save it as CSV.",
+    };
+  }
+  const trimmed = decoded.trim();
+  if (!trimmed) {
+    return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  let text = trimmed;
+  if (text.length > MAX_TEXT_CHARS) {
+    const kept = [];
+    let used = 0;
+    for (const line of lines) {
+      if (used + line.length + 1 > MAX_TEXT_CHARS) break;
+      kept.push(line);
+      used += line.length + 1;
+    }
+    // Whole lines only — half a CSV row reads as a corrupt value rather than a cut-off file.
+    text = `${kept.join("\n")}\n… showing the first ${kept.length} of ${lines.length} lines.`;
+  }
+
+  return { ok: true, text: sanitizeMemoryText(text), filename: safeFilename(input.filename) };
 }
 
 /**

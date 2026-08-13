@@ -135,7 +135,9 @@ test("a file type we cannot read is refused without spending a request", async (
     },
   );
   assert.equal(result.ok, false);
-  assert.match(result.reason, /photos and PDFs/);
+  // Video now gets its own sentence (see the video test below); what this one pins is that the
+  // refusal happened before any provider request.
+  assert.match(result.reason, /can't watch video/i);
   assert.equal(called, false);
 });
 
@@ -182,4 +184,83 @@ test("the route reads the upload and reports a rejection rather than swallowing 
     route.indexOf("oversizedUploadReason(request)") < route.indexOf("await request.formData()"),
     "the size guard must run before the body is buffered",
   );
+});
+
+// --- text formats (CSV/TSV/plain), added 2026-08-13 ---
+//
+// Matt asked whether it could be "a csv or xls or a video". CSV is the one that matters most:
+// a cost-per-item export is the input margin work is blocked without, and it needs no model to
+// read — decoding is exact where describing can hallucinate.
+
+import {
+  attachmentKind,
+  attachmentRejectionReason as rejectionReason,
+} from "../app/lib/attachments/attachment-limits.js";
+import { readAttachment } from "../app/lib/attachments/read-attachment.server.js";
+
+const csv = (body) => ({
+  base64: Buffer.from(body, "utf8").toString("base64"),
+  mimeType: "text/csv",
+  filename: "costs.csv",
+});
+
+test("a CSV is read without spending a provider request", async () => {
+  let called = false;
+  const result = await readAttachment({
+    ...csv("sku,cost,price\nTIN-01,1.20,3.50\nTIN-02,0.90,2.75"),
+    client: {
+      models: {
+        generateContent: async () => {
+          called = true;
+          return { text: "never" };
+        },
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(called, false, "decoding beats describing — no model call for text");
+  // The numbers survive EXACTLY. This is the whole reason text does not go to a vision model.
+  assert.match(result.text, /TIN-01,1\.20,3\.50/);
+});
+
+test("a Windows CSV reported as an Excel MIME type is still read", () => {
+  // Windows Chrome reports a plain .csv as application/vnd.ms-excel. Deciding on the MIME type
+  // alone would tell the merchant to save it as the thing it already is.
+  assert.equal(attachmentKind("application/vnd.ms-excel", "costs.csv"), "text");
+  assert.equal(rejectionReason({ mimeType: "application/vnd.ms-excel", filename: "costs.csv", byteLength: 100 }), null);
+});
+
+test("a real spreadsheet is refused with a way forward, not a dead end", () => {
+  const reason = rejectionReason({
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    filename: "costs.xlsx",
+    byteLength: 5000,
+  });
+  assert.match(reason, /save it as CSV/i);
+});
+
+test("video is refused with something the merchant can actually do", () => {
+  const reason = rejectionReason({ mimeType: "video/mp4", filename: "clip.mp4", byteLength: 5000 });
+  assert.match(reason, /photo of the same thing|tell me what's in it/i);
+});
+
+test("truncation of a long file is stated, never silent", async () => {
+  const rows = Array.from({ length: 4000 }, (_, i) => `SKU-${i},1.${i % 100},9.99`).join("\n");
+  const result = await readAttachment(csv(`sku,cost,price\n${rows}`));
+  assert.equal(result.ok, true);
+  // Jefe must not answer "your worst margin is X" having silently seen a fraction of the file.
+  assert.match(result.text, /showing the first \d+ of \d+ lines/);
+  // Whole lines only — half a row reads as a corrupt value rather than a cut-off file.
+  const body = result.text.split("\n").filter((l) => !l.startsWith("…"));
+  assert.ok(body.every((l) => l.split(",").length === 3), "no half-written row");
+});
+
+test("a binary file renamed to .csv is refused rather than described as data", async () => {
+  const result = await readAttachment({
+    base64: Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]).toString("base64"),
+    mimeType: "text/csv",
+    filename: "costs.csv",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /save it as CSV|can't read/i);
 });
