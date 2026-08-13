@@ -172,6 +172,7 @@ test("commerce analyst enforces shop scope before reading commerce rows", async 
 test("commerce analyst detects replenishment and quantitative commerce questions", () => {
   assert.equal(shouldAttemptCommerceAnalysis("How much should I purchase of each?"), true);
   assert.equal(shouldAttemptCommerceAnalysis("Can you quantify the predicted loss of revenue?"), true);
+  assert.equal(shouldAttemptCommerceAnalysis("Which acquisition channels are working?"), true);
   assert.equal(shouldAttemptCommerceAnalysis("Why did you recommend this move?"), false);
 });
 
@@ -278,3 +279,115 @@ test("a revenue question is totalled in base currency even when customers paid i
   assert.doesNotMatch(reply, /unavailable/i);
   assert.doesNotMatch(reply, /not added together/i);
 });
+
+test("product revenue questions force product-level ranking even when the planner asks for only a total", async () => {
+  const { prisma, actionContext } = createTwoProductAnalystFixture();
+  const provider = {
+    provider: "mock",
+    model: "mock-commerce-analyst",
+    enabled: true,
+    generateStructuredJson: async (request) => {
+      if (request.prompt.includes("commerceAnalystToolCatalog")) {
+        return {
+          json: {
+            toolCalls: [{
+              id: "revenue",
+              kind: "commerce_calculation",
+              request: { id: "revenue", kind: "aggregate", measure: "revenue", window: { days: 30, label: "trailing_30d" } },
+            }],
+          },
+          usage: {},
+        };
+      }
+      return {
+        json: { reply: "I don't have product-level revenue data, only total revenue." },
+        usage: {},
+      };
+    },
+  };
+
+  const answer = await answerCommerceQuestion(prisma, {
+    merchantId: "m1",
+    shopId: "s1",
+    message: "Which products drove revenue last month?",
+    actionContext,
+    provider,
+    logger: silentLogger,
+    now: new Date("2026-08-11T12:00:00.000Z"),
+  });
+
+  assert.equal(answer.source, "fallback");
+  assert.match(answer.reply, /Picnic Xinomavro/);
+  assert.match(answer.reply, /Pear Skin Sipon/);
+  assert.doesNotMatch(answer.reply, /don't have product-level/i);
+  const productRanking = answer.analysisPacket.results.find((item) => item.id === "sales_by_product");
+  assert.ok(productRanking);
+  assert.equal(productRanking.measure, "line_revenue");
+  assert.deepEqual(productRanking.rows.map((row) => row.label), ["Picnic Xinomavro", "Pear Skin Sipon"]);
+  assert.deepEqual(
+    answer.analysisPacket.toolCalls.map((call) => call.resultId).filter(Boolean),
+    ["sales_by_product", "revenue"],
+  );
+});
+
+test("commerce analyst treats not-ingested Shopify evidence as unknown, not false", async () => {
+  const prompts = [];
+  const provider = {
+    provider: "mock",
+    model: "mock-commerce-analyst",
+    enabled: true,
+    generateStructuredJson: async (request) => {
+      prompts.push(request);
+      if (request.prompt.includes("commerceAnalystToolCatalog")) {
+        return {
+          json: {
+            toolCalls: [
+              {
+                id: "acquisition_quality",
+                kind: "shopify_query",
+                toolName: "shopify_analyse_acquisition_quality",
+                input: { window: { days: 90 } },
+              },
+            ],
+          },
+          usage: {},
+        };
+      }
+      return { json: {}, usage: {} };
+    },
+  };
+
+  const answer = await answerCommerceQuestion(createAttributionGapPrisma(), {
+    merchantId: "m1",
+    shopId: "s1",
+    message: "Which acquisition channels are working?",
+    provider,
+    logger: silentLogger,
+    now: new Date("2026-08-13T09:00:00.000Z"),
+  });
+
+  assert.match(prompts[0].prompt, /shopifyIntelligenceCatalog/);
+  assert.match(prompts[1].prompt, /NOT_INGESTED/);
+  assert.match(String(answer.reply), /NOT_INGESTED|not ingested|not asked/i);
+  assert.doesNotMatch(String(answer.reply), /100% direct/i);
+  assert.equal(answer.analysisPacket.dataQuality.evidenceAvailability.NOT_INGESTED > 0, true);
+});
+
+function createAttributionGapPrisma() {
+  const now = new Date("2026-08-13T09:00:00.000Z");
+  const orders = Array.from({ length: 12 }, (_, index) => ({
+    id: `o${index}`,
+    merchantId: "m1",
+    shopId: "s1",
+    totalPrice: 50,
+    totalDiscount: 0,
+    processedAt: new Date(now.getTime() - (index + 1) * 86400000),
+    financialStatus: "paid",
+    fulfillmentStatus: "fulfilled",
+    sourceName: "web",
+    attribution: {},
+  }));
+  return {
+    order: { findMany: async () => orders },
+  };
+}

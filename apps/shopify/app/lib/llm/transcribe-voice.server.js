@@ -22,7 +22,7 @@ export function getVoiceTranscribeModel(env = process.env) {
   return (
     env.VOICE_TRANSCRIBE_MODEL ||
     env.LLM_FALLBACK_MODEL ||
-    getLlmConfig().fallbackModel ||
+    getLlmConfig({ env }).fallbackModel ||
     DEFAULT_LLM_FALLBACK_MODEL
   );
 }

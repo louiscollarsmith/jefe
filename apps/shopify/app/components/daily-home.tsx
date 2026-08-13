@@ -236,6 +236,8 @@ function StoreConversation({
 }) {
   const navigation = useNavigation();
   const navigate = useNavigate();
+  usePreserveChatScrollDuringIntent(navigation, "chat.message");
+  usePreserveChatScrollDuringIntent(navigation, "chat.retry");
   const pendingIntent = navigation.formData?.get("intent");
   const isSending =
     navigation.state !== "idle" && pendingIntent === "chat.message";
@@ -436,6 +438,7 @@ function StoreConversation({
         </div>
         <Form
           method="post"
+          preventScrollReset
           style={composerStyle}
           onSubmit={handleComposerSubmit}
         >
@@ -748,7 +751,7 @@ function ReplyFailedRow({ conversationId }: { conversationId: string | null }) {
         {/* A retry is a wait too — the merchant is sitting through this one having
             already sat through a failure, so it is the last turn we'd want missing
             from the numbers. */}
-        <Form method="post" onSubmit={markChatTurnSent}>
+        <Form method="post" preventScrollReset onSubmit={markChatTurnSent}>
           <input type="hidden" name="intent" value="chat.retry" />
           {conversationId ? (
             <input type="hidden" name="conversationId" value={conversationId} />
@@ -1000,6 +1003,7 @@ function ActionChat({
   todayLabel?: string;
 }) {
   const navigation = useNavigation();
+  usePreserveChatScrollDuringIntent(navigation, "action.chat.message");
   const pendingIntent = navigation.formData?.get("intent");
   const isThinking =
     navigation.state !== "idle" && pendingIntent === "action.chat.message";
@@ -1130,6 +1134,7 @@ function ActionChat({
           </div>
           <Form
             method="post"
+            preventScrollReset
             style={composerStyle}
             onSubmit={handleComposerSubmit}
           >
@@ -1196,6 +1201,86 @@ function ActionChat({
   );
 }
 
+function usePreserveChatScrollDuringIntent(
+  navigation: ReturnType<typeof useNavigation>,
+  intent: string,
+) {
+  const preservingRef = useRef(false);
+  const snapshotRef = useRef({ y: 0, nearBottom: false });
+  const restoreHandlesRef = useRef<{ frames: number[]; timeouts: number[] }>({
+    frames: [],
+    timeouts: [],
+  });
+  const pendingIntent =
+    typeof navigation.formData?.get("intent") === "string"
+      ? String(navigation.formData.get("intent"))
+      : "";
+  const active = navigation.state !== "idle" && pendingIntent === intent;
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    const capture = () => {
+      snapshotRef.current = {
+        y: window.scrollY,
+        nearBottom: distanceFromDocumentBottom() < 160,
+      };
+    };
+
+    if (active) {
+      preservingRef.current = true;
+      capture();
+      window.addEventListener("scroll", capture, { passive: true });
+      return () => window.removeEventListener("scroll", capture);
+    }
+
+    if (!preservingRef.current) return undefined;
+    preservingRef.current = false;
+    const snapshot = snapshotRef.current;
+    clearScrollRestoreHandles(restoreHandlesRef.current);
+    const restore = () => restoreChatScroll(snapshot);
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(restore);
+      restoreHandlesRef.current.frames.push(secondFrame);
+    });
+    restoreHandlesRef.current.frames.push(firstFrame);
+    restoreHandlesRef.current.timeouts.push(
+      window.setTimeout(restore, 50),
+      window.setTimeout(restore, 150),
+    );
+
+    return undefined;
+  }, [active]);
+}
+
+function restoreChatScroll(snapshot: { y: number; nearBottom: boolean }) {
+  if (snapshot.nearBottom) {
+    window.scrollTo({ top: document.documentElement.scrollHeight });
+  } else {
+    window.scrollTo({ top: snapshot.y });
+  }
+}
+
+function clearScrollRestoreHandles(handles: {
+  frames: number[];
+  timeouts: number[];
+}) {
+  for (const frame of handles.frames) window.cancelAnimationFrame(frame);
+  for (const timeout of handles.timeouts) window.clearTimeout(timeout);
+  handles.frames = [];
+  handles.timeouts = [];
+}
+
+function distanceFromDocumentBottom() {
+  const scrollHeight = Math.max(
+    document.documentElement.scrollHeight,
+    document.body?.scrollHeight ?? 0,
+  );
+  return Math.max(0, scrollHeight - (window.scrollY + window.innerHeight));
+}
+
 // What a merchant sees when Jefe is NOT going to do this one itself.
 //
 // This replaces "This move is advisory until a typed action preview is available." — our
@@ -1223,7 +1308,7 @@ function InstructPath({ move }: { move: PrimaryMove }) {
 
 function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
   return (
-    <Form method="post">
+    <Form method="post" preventScrollReset>
       <input type="hidden" name="intent" value="action.chat.message" />
       <MoveHiddenFields move={move} />
       <input type="hidden" name="message" value={message} />
@@ -1240,7 +1325,7 @@ function StorePrompt({
   conversationId?: string | null;
 }) {
   return (
-    <Form method="post" onSubmit={markChatTurnSent}>
+    <Form method="post" preventScrollReset onSubmit={markChatTurnSent}>
       <input type="hidden" name="intent" value="chat.message" />
       <input type="hidden" name="conversationId" value={conversationId ?? ""} />
       <input type="hidden" name="message" value={message} />
