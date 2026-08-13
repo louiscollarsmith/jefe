@@ -8,6 +8,32 @@ discount *codes*, a sales-channel belief that bins every marketplace, no marketi
 attribution at all. This is the systematic version, so the next gap is a decision rather
 than a surprise.
 
+## ⛔ Read `shopify-intelligence-coverage.md` first — this is not the headline metric
+
+**Superseded as the coverage number (Louis, 2026-08-13, `76af862`).** That document measures
+coverage against *the Shopify evidence Jefe's intelligence actually needs* — 96.8% of P0,
+100% of P1 — and is generated from
+`apps/shopify/app/lib/shopify/intelligence-coverage.server.js`, so it cannot drift from the
+code the way a hand-written map can. **It is the number to quote and the one to act on.**
+
+Both documents are true and they are not in tension; they have different denominators:
+
+| | This document | `shopify-intelligence-coverage.md` |
+|---|---|---|
+| Denominator | Everything the Admin API exposes | The evidence Jefe's intelligence needs |
+| Says | ~92% of query roots are never touched | 96.8% of P0 evidence is accessible |
+| Good for | **Discovery** — finding capability nobody knew we had | **Decisions** — is Jefe missing anything that matters |
+
+"92% of the API is unread" sounds alarming and mostly is not: the unread 92% is checkout
+branding, metaobject admin, delivery profiles and marketing-activity CRUD, none of which a
+merchant-memory product wants. That framing found three real gaps and then kept pointing at
+noise, which is exactly when a metric should be retired from the headline. It also carried
+no notion of MIRROR vs ON_DEMAND — some evidence never needs ingesting at all, and a map
+that counts unqueried fields as missing cannot express that.
+
+**Keep using this document for one thing:** re-running the introspection diff when someone
+asks "what else could we know?". It is a discovery instrument, not a scorecard.
+
 ## How this was produced
 
 Full introspection against `https://shopify.dev/admin-graphql-direct-proxy/2026-07`
@@ -29,14 +55,30 @@ with this many concurrent lanes, a day-old checkout is a different codebase.
 
 ## Headline
 
-| | Available | Jefe uses | |
+Re-run against `origin/main` at `2757072` (2026-08-13, after Louis's intelligence-tools
+layer). The first column of numbers is where this document started that morning; the second
+is where main stands now.
+
+| | Available | Jefe used (first pass) | Jefe uses now |
 |---|---|---|---|
-| Top-level query roots | 268 | ~14 | **~95% of the API surface is never touched** |
-| `Order` fields | 127 | 27 | |
-| `Customer` fields | 39 | 7 | |
-| `Product` fields | 63 | 14 | |
-| `ProductVariant` fields | 41 | 9 | |
-| `Shop` fields | 57 | 11 | |
+| Top-level query roots | 268 | ~14 | **21** |
+| `Order` fields | 127 | 27 | **35** |
+| `Customer` fields | 39 | 7 | **8** |
+| `Product` fields | 63 | 14 | **16** |
+| `ProductVariant` fields | 41 | 9 | **11** |
+| `InventoryItem` fields | 20 | 8 | **9** |
+| `Shop` fields | 57 | 11 | **12** |
+
+New roots since the first pass: `app`, `collections`, `customer`, `inventoryLevel`,
+`order`, `page`, `refund` — almost all from the ON_DEMAND intelligence tools rather than
+from mirroring. `collections` closes a gap this document called out: Jefe now has some
+notion of how a merchant organises their own catalogue.
+
+Still unread and worth knowing about: `publications` / `channels` (channel identity is
+still regex over `sourceName`), `segments` / `customerSegmentMembers` (Shopify computes
+cohorts natively; Jefe now derives its own in `customers.cohort_mix`), and
+`Customer.numberOfOrders` / `amountSpent` — deliberately, since Jefe derives those from its
+own order history rather than trusting a counter it cannot audit.
 
 We query: `orders`, `ordersCount`, `products`, `productVariant(s)`,
 `productVariantsCount`, `inventoryItem(s)`, `customers`, `customersCount`, `location`,
