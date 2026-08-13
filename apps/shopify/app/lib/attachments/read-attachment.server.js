@@ -29,6 +29,12 @@ import {
   attachmentRejectionReason,
   isReadableAttachment,
 } from "./attachment-limits.js";
+import {
+  extractDocxText,
+  extractPdfText,
+  extractSpreadsheetText,
+  hasUsableText,
+} from "./extract-document-text.server.js";
 import { getLlmConfig } from "../llm/config.server.js";
 import { assertExternalLlmCallAllowed } from "../llm/external-call-guard.server.js";
 import { sanitizeMemoryText } from "../merchant-memory/episodic-memory.server.js";
@@ -93,11 +99,50 @@ export async function readAttachment(input) {
   });
   if (rejection) return { ok: false, reason: rejection };
 
-  // A CSV, TSV or text file is already the answer. Decoding it is exact, free and instant, and
-  // a model cannot hallucinate a cost that is sitting in row 40 — so text never goes to a
-  // provider to be READ. (The chat turn still reasons over it, as it would over typed text.)
-  if (attachmentKind(input?.mimeType, input?.filename) === "text") {
-    return readTextAttachment(input);
+  // ⭐ DECODE, DON'T DESCRIBE. Anything that already contains its own words — a CSV, a
+  // spreadsheet, a Word doc, a PDF with a text layer — is extracted exactly. That is instant,
+  // free, and a model cannot hallucinate a cost that is sitting in row 40. The vision model is
+  // the FALLBACK, for things that are genuinely pictures.
+  const kind = attachmentKind(input?.mimeType, input?.filename);
+  if (kind === "text") return finishWithText(decodeUtf8(input.base64), input);
+
+  if (kind === "spreadsheet" || kind === "word" || kind === "document") {
+    try {
+      const buffer = Buffer.from(input.base64, "base64");
+      const extracted =
+        kind === "spreadsheet"
+          ? await extractSpreadsheetText(buffer)
+          : kind === "word"
+            ? await extractDocxText(buffer)
+            : await extractPdfText(buffer);
+      if (kind !== "document" || hasUsableText(extracted)) {
+        return finishWithText({ ok: true, text: extracted }, input);
+      }
+      // A scanned PDF extracts to nothing — that is exactly the case a vision model earns its
+      // request on, so fall through rather than telling the merchant their invoice was empty.
+      input.logger?.info?.("PDF has no text layer; falling back to vision", {
+        merchantId: input.merchantId ?? null,
+        shopId: input.shopId ?? null,
+      });
+    } catch (error) {
+      input.logger?.warn?.("Document could not be parsed", {
+        merchantId: input.merchantId ?? null,
+        shopId: input.shopId ?? null,
+        kind,
+        error: error instanceof Error ? error.name : "UnknownError",
+      });
+      if (kind !== "document") {
+        // A corrupt or password-protected file. No dead ends — name a way forward.
+        return {
+          ok: false,
+          reason:
+            kind === "spreadsheet"
+              ? "I couldn't open that spreadsheet — if it's password-protected, save a copy as CSV and I'll read it."
+              : "I couldn't open that document — a PDF or plain text version would work.",
+        };
+      }
+      // A PDF that fails to parse might still be readable as a picture.
+    }
   }
 
   const config = getLlmConfig();
@@ -179,36 +224,47 @@ export async function readAttachment(input) {
 }
 
 /**
- * Decode a text file and keep as much of it as is worth carrying.
+ * Decode raw bytes as UTF-8, refusing anything that is plainly not text.
+ *
+ * @param {string} base64
+ * @returns {{ ok: true, text: string } | { ok: false, reason: string }}
+ */
+function decodeUtf8(base64) {
+  let decoded = "";
+  try {
+    decoded = Buffer.from(base64, "base64").toString("utf8");
+  } catch {
+    return { ok: false, reason: "I couldn't make that file out — is it definitely a text file?" };
+  }
+  // A binary file mislabelled as text (a .xls renamed to .csv) either carries NUL bytes or
+  // decodes to a wall of U+FFFD. The U+FFFD case is COUNTED, not "contains one": a real export
+  // can carry a stray bad byte, and refusing a merchant's cost file over one character would be
+  // its own failure.
+  const replacementCount = (decoded.match(/\uFFFD/g) ?? []).length;
+  if (decoded.includes("\u0000") || (replacementCount > 20 && replacementCount > decoded.length * 0.01)) {
+    return {
+      ok: false,
+      reason: "That looked like a text file but isn't one I can read — if it's a spreadsheet, save it as .xlsx or CSV.",
+    };
+  }
+  return { ok: true, text: decoded };
+}
+
+/**
+ * Trim, cap and return extracted text — the single exit for every non-vision format, so a CSV,
+ * a spreadsheet, a Word doc and a text-layer PDF are all treated identically from here.
  *
  * ⚠️ Truncation is STATED, never silent. A merchant who sends a 20,000-row cost export and gets
  * advice based on the first 300 needs to know that — otherwise Jefe confidently answers "your
  * worst margin is X" having never seen most of the file.
  *
- * @param {{ base64: string, mimeType: string, filename?: string | null }} input
+ * @param {{ ok: true, text: string } | { ok: false, reason: string }} decoded
+ * @param {{ filename?: string | null }} input
  * @returns {{ ok: true, text: string, filename: string | null } | { ok: false, reason: string }}
  */
-function readTextAttachment(input) {
-  let decoded = "";
-  try {
-    decoded = Buffer.from(input.base64, "base64").toString("utf8");
-  } catch {
-    return { ok: false, reason: "I couldn't make that file out — is it definitely a text file?" };
-  }
-  // A binary file mislabelled as text arrives as replacement characters; describing it as data
-  // would be worse than saying so.
-  // A binary file mislabelled as text (a .xls renamed to .csv) either carries NUL bytes or
-  // decodes to a wall of U+FFFD. Both are refused with a way forward rather than described as
-  // data. The U+FFFD case is COUNTED, not "contains one": a real export can carry a stray bad
-  // byte, and refusing a merchant's cost file over one character would be its own failure.
-  const replacementCount = (decoded.match(/\uFFFD/g) ?? []).length;
-  if (decoded.includes("\u0000") || (replacementCount > 20 && replacementCount > decoded.length * 0.01)) {
-    return {
-      ok: false,
-      reason: "That looked like a text file but isn't one I can read — if it's a spreadsheet, save it as CSV.",
-    };
-  }
-  const trimmed = decoded.trim();
+function finishWithText(decoded, input) {
+  if (!decoded.ok) return decoded;
+  const trimmed = String(decoded.text ?? "").trim();
   if (!trimmed) {
     return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
   }
@@ -227,7 +283,7 @@ function readTextAttachment(input) {
     text = `${kept.join("\n")}\n… showing the first ${kept.length} of ${lines.length} lines.`;
   }
 
-  return { ok: true, text: sanitizeMemoryText(text), filename: safeFilename(input.filename) };
+  return { ok: true, text: sanitizeMemoryText(text), filename: safeFilename(input?.filename) };
 }
 
 /**

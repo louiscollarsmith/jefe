@@ -230,13 +230,28 @@ test("a Windows CSV reported as an Excel MIME type is still read", () => {
   assert.equal(rejectionReason({ mimeType: "application/vnd.ms-excel", filename: "costs.csv", byteLength: 100 }), null);
 });
 
-test("a real spreadsheet is refused with a way forward, not a dead end", () => {
+test("a modern .xlsx is accepted — it is parsed, not refused", () => {
+  // This test used to assert the opposite. .xlsx became readable on 2026-08-13; see
+  // document-extraction.test.mjs for the round-trip through a real workbook.
+  assert.equal(
+    rejectionReason({
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      filename: "costs.xlsx",
+      byteLength: 5000,
+    }),
+    null,
+  );
+});
+
+test("a LEGACY .xls is refused with a way forward, not a dead end", () => {
+  // Deliberately unsupported: the only npm library that reads binary BIFF carries an unfixed
+  // advisory. Ten seconds of the merchant's time beats a permanent dependency.
   const reason = rejectionReason({
-    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    filename: "costs.xlsx",
+    mimeType: "application/vnd.ms-excel",
+    filename: "costs.xls",
     byteLength: 5000,
   });
-  assert.match(reason, /save it as CSV/i);
+  assert.match(reason, /re-save it as \.xlsx or CSV/i);
 });
 
 test("video is refused with something the merchant can actually do", () => {
@@ -262,5 +277,5 @@ test("a binary file renamed to .csv is refused rather than described as data", a
     filename: "costs.csv",
   });
   assert.equal(result.ok, false);
-  assert.match(result.reason, /save it as CSV|can't read/i);
+  assert.match(result.reason, /save it as \.xlsx or CSV/i);
 });
