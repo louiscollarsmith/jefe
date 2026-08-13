@@ -60,8 +60,17 @@ Demand · `products.no_sale_active_product_count.trailing_90d` ·
 
 Customers · `customers.repeat_customer_rate.all_time` ·
 `customers.top_customer_revenue_share.all_time` · `business.days_since_last_order`
-— **all scalar. There is no per-customer cohort belief at all**, which is why the
-`write_customers` candidates are the ones with a real missing link.
+— ~~all scalar. There is no per-customer cohort belief at all~~
+
+✅ **SUPERSEDED 2026-08-13** (`f6ecd45`): `customers.cohort_mix.all_stored_history`
+lands the cohort belief — one-time / returning (2–3) / loyal (4+), with customer
+**and** revenue share per bucket, plus lapsed customers and revenue at stake.
+
+⛔ **And it needed no new scope or ingestion**, which invalidates this section's
+conclusion rather than just updating it. `CustomerIdentity` already derives
+`orderCount`, `totalSpend`, `firstSeenOrderAt` and `lastOrderAt` from our own order
+history — the cohorts were in the database and the belief simply didn't exist. See
+§5 candidate C.
 
 ### Tier 3 — descriptive (~108)
 
@@ -175,7 +184,7 @@ candidate B is the position most likely to move.
 |---|---|---|---|---|---|
 | **A** | `product_status_change` — archive stock that clearance didn't move | `write_products` *(already exercised)* | `dead_stock` ✅ targetable | ✅ ACTIVE↔ARCHIVED | registry entry · resolver · wire layer · outcome. **Adapter + client + tests already built** |
 | **B** | `inventory_correction` — reset negative stock to 0 | **`write_inventory`** ← closes a scope | `negative_inventory_*` (scalar; primitive re-queries) | ✅ CAS restore | belief targeting · adapter · client · registry · resolver · wire · outcome |
-| **C** | `customer_segment_maintain` — create/maintain native Shopify Segments (lapsed high-value, at-risk, first-time) | **`write_customers`** ← closes a scope | **none — no per-customer cohort belief exists** | ✅ `segmentUpdate`/delete | **a belief first** · adapter · client · registry · resolver · wire · outcome |
+| **C** | `customer_segment_maintain` — create/maintain native Shopify Segments (lapsed high-value, at-risk, first-time) | **`write_customers`** ← closes a scope | ✅ `customers.cohort_mix.all_stored_history` (2026-08-13) | ✅ `segmentUpdate`/delete | ~~a belief first~~ · adapter · client · registry · resolver · wire · outcome |
 | **D** | `compare_at_price_set` — strike-through pricing alongside a markdown | `write_products` | rides on `dead_stock` | ✅ | small; makes the live action actually convert |
 | **E** | `product_content_fill` — set missing product type | `write_products` | hygiene scan ✅ | ✅ | productType safe; **description is LLM-generated merchant-visible copy = different risk class** |
 | **F** | `product_tag_change` — tag clearance/bestseller/low-cover for the merchant's other tools | `write_products` | many | ✅ | low value alone, high composability |
@@ -187,8 +196,45 @@ candidate B is the position most likely to move.
 provides `compareQuantity`/`changeFromQuantity` (compare-and-swap) and an `@idempotent`
 key — required as of API 2026-04. Those map **1:1** onto the adapter contract the
 clearance primitive already implements (compare-and-set, idempotent per-target ledger
-writes). It is the most faithful possible second write primitive. `Segment` is the
-higher prize but needs a belief that does not exist, in a lane that is booked.
+writes). It is the most faithful possible second write primitive. ~~`Segment` is the
+higher prize but needs a belief that does not exist, in a lane that is booked.~~
+
+✅ **C IS UNBLOCKED (2026-08-13).** `customers.cohort_mix.all_stored_history` landed
+in `f6ecd45`, so the reason C ranked below B no longer holds.
+
+⛔ **This section framed the belief as blocked behind `write_customers`, and that was
+wrong.** The two are independent, and conflating them nearly cost a scope conversation
+nobody needed to have: *reading* cohorts needs `read_customers`, which has been granted
+all along; `write_customers` is needed only to CREATE or maintain a Shopify Segment.
+All the belief value — "loyal are 12% of customers and 40% of revenue" — was available
+on read scopes. Keep the two questions apart when ranking anything else here: "can Jefe
+know this?" and "can Jefe write this?" have different answers and different costs.
+
+⚠️ **`business.acquisition_mix.trailing_90d` is REGISTERED BUT INERT — do not build an
+acquisition action on it yet.** It landed 2026-08-13 and is gated on
+`ORDER_ATTRIBUTION_INGEST_ENABLED`, which is **not set in production** (pending
+Shopify's protected-customer-data approval — founder's call). Verified in
+`queries.server.js:133` and the belief's own caveat: the journey fields are only
+*requested* when that flag is on. So an action reasoning about where customers come
+from will find the belief present in the registry and permanently silent.
+
+⛔ **And the flag has a TIME COST, not just an on/off state.** Orders ingested while it
+is off carry no journey data, and that is indistinguishable from "arrived from nowhere"
+— so flipping it later does **not** backfill. Attribution only accrues forward from the
+flip, and the belief deliberately returns silence rather than reporting a healthy store
+as 100% direct. Every day the flag stays off is a day of orders permanently unattributed,
+which makes this different from the other execute flags, where flipping late costs
+nothing but time.
+
+⚠️ **Before building on the belief: `lapsedSharePercent` can be ABSENT, not zero.**
+Verified in `shopify-derivations.server.js` — when a store has fewer than 5 repeat
+customers there is no rhythm to be overdue against, so the recency fields are simply
+not set and `recencyBasis` reads `unavailable_too_few_repeat_customers`. A resolver
+that branches on `lapsedSharePercent` must handle `undefined`, because "we cannot tell
+yet" and "nobody has lapsed" are opposite situations and must not collapse into the
+same action. Lapsed is also store-relative (2× that store's own median repeat gap),
+never a fixed 90 days — a furniture buyer is not lapsed at a gap that would be alarming
+for a coffee subscriber.
 
 **Not candidates:** any action that emails a customer — chat 6 has published *"He never
 emails your customers"* as a live trust promise (§4); reorder/purchase-order (Shopify has no PO write under the granted
@@ -329,8 +375,14 @@ be undone by the retirement it handed on.
 ## 7. Recommended first two
 
 **1 · `product_status_change` — the freebie, and the forcing function.**
-Adapter, Shopify client and both test files already exist and are unregistered — chat 10
-already flagged it "doubly inert". Zero new scope, zero new consent, reuses the generic
+✅ **DONE — shipped and LIVE 2026-08-13** as the **`tidy_up`** action type (archive live
+products with no stock left that have sold nothing in 180 days), driving this adapter.
+Registered, bound, wired and `PRODUCT_STATUS_EXECUTE_ENABLED=true` in production. Note
+the name: it is keyed `tidy_up` (the merchant-facing family in Settings → Autonomy), not
+`product_status_change` — the adapter keeps the old name, the action type does not.
+
+~~Adapter, Shopify client and both test files already exist and are unregistered — chat 10
+already flagged it "doubly inert".~~ Zero new scope, zero new consent, reuses the generic
 ledger with no migration. Its real value isn't the feature; it is that being the second
 primitive forces every hardcode in §6 into the open and converts the spine from
 one-action to N-action for the cost of one small action. Nothing else buys that as
@@ -349,13 +401,21 @@ responsibility, not a memory-lane dependency.
 Jefe's segmentation usable in the merchant's existing email tool without Jefe ever
 contacting a customer or holding a plaintext address — which fits, because
 `CustomerIdentity` only stores `emailHash`/`maskedEmail`, so Jefe *cannot* build a
-recipient list even if it wanted to. It defines rules; Shopify evaluates them. Blocked
-on a per-customer cohort belief that does not exist.
+recipient list even if it wanted to. It defines rules; Shopify evaluates them. ~~Blocked
+on a per-customer cohort belief that does not exist.~~
+
+✅ **NO LONGER BLOCKED (2026-08-13).** The cohort belief landed in `f6ecd45`, built
+entirely from data we already hold. What remains for C is the ordinary primitive work —
+adapter, client, registry entry, resolver, wire, outcome — plus the one genuine founder
+decision: exercising `write_customers` for the first time. **Re-rank it against
+`inventory_correction` before picking the next action**; the reason it sat third is gone.
 
 ## 8. Founder decisions needed (one-way doors)
 
-1. **Register `product_status_change`?** Becomes a contract the roster, ledger,
-   measurement and autonomy dial all key on. No new scope. *Recommended: yes.*
+1. ✅ **RESOLVED 2026-08-13 — yes.** Registered as **`tidy_up`** and taken live by Matt
+   (`PRODUCT_STATUS_EXECUTE_ENABLED=true`). Verify with `/health` → `checks.actions`,
+   which now reports one boolean per registered action type — a set Railway variable is
+   not proof the serving process has it.
 2. **Build `inventory_correction` against `write_inventory`?** No *new* scope — it
    exercises one already requested — but it is the first time Jefe writes something
    other than a price. *Recommended: yes.*
