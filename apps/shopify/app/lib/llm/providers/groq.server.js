@@ -4,6 +4,7 @@ import {
   LlmInputLimitError,
   LlmOutputValidationError,
   LlmProviderHttpError,
+  LlmProviderInputLimitError,
   estimateTokens,
 } from "../errors.server.js";
 import { assertExternalLlmCallAllowed } from "../external-call-guard.server.js";
@@ -95,9 +96,22 @@ async function generateStructuredJson(input) {
   const estimatedInputTokens = estimateTokens(promptText);
   const maxInputTokens =
     input.request.maxInputTokens ?? input.config.maxInputTokens;
+  const providerMaxInputTokens =
+    input.config.providerInputLimits?.groq ?? maxInputTokens;
   if (estimatedInputTokens > maxInputTokens) {
     throw new LlmInputLimitError(
       `Estimated ${estimatedInputTokens} input tokens exceeds ${maxInputTokens}.`,
+    );
+  }
+  if (estimatedInputTokens > providerMaxInputTokens) {
+    throw new LlmProviderInputLimitError(
+      `Estimated ${estimatedInputTokens} input tokens exceeds Groq provider cap ${providerMaxInputTokens}.`,
+      {
+        provider: "groq",
+        model: input.config.model,
+        estimatedInputTokens,
+        maxInputTokens: providerMaxInputTokens,
+      },
     );
   }
 
@@ -172,6 +186,7 @@ async function generateStructuredJson(input) {
         durationMs,
         usage,
         maxInputTokens,
+        providerMaxInputTokens,
         maxOutputTokens:
           maxOutputTokens,
       });
@@ -205,6 +220,7 @@ async function generateStructuredJson(input) {
             totalTokens: null,
           },
           maxInputTokens,
+          providerMaxInputTokens,
           maxOutputTokens,
           error: safeErrorName(error),
           statusCode:
@@ -229,6 +245,7 @@ async function generateStructuredJson(input) {
             totalTokens: null,
           },
           maxInputTokens,
+          providerMaxInputTokens,
           maxOutputTokens:
             maxOutputTokens,
           error: safeErrorName(error),

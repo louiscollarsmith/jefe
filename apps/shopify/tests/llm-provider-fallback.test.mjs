@@ -20,7 +20,9 @@ import {
 import {
   LlmOutputValidationError,
   LlmProviderHttpError,
+  LlmProviderInputLimitError,
 } from "../app/lib/llm/errors.server.js";
+import { getLlmConfig } from "../app/lib/llm/config.server.js";
 
 const logger = {
   info() {},
@@ -64,6 +66,35 @@ test("createLlmProvider uses Gemini fallback when Groq key is absent", () => {
   });
   assert.equal(provider.provider, "gemini");
   assert.equal(provider.model, "gemini-3.5-flash-lite");
+});
+
+test("getLlmConfig routes chat to Groq and memory-grade work to Gemini", () => {
+  const env = {
+    LLM_ENABLED: "true",
+    GROQ_API_KEY: "groq-key",
+    GEMINI_API_KEY: "gemini-key",
+    LLM_PROVIDER: "gemini",
+    LLM_MODEL: "gemini-3.5-flash-lite",
+    LLM_FALLBACK_PROVIDER: "gemini",
+    LLM_FALLBACK_MODEL: "gemini-3.1-flash-lite",
+    LLM_CHAT_PROVIDER: "groq",
+    LLM_CHAT_MODEL: "openai/gpt-oss-120b",
+    LLM_CHAT_FALLBACK_PROVIDER: "gemini",
+    LLM_CHAT_FALLBACK_MODEL: "gemini-3.5-flash-lite",
+  };
+  const chat = getLlmConfig({ feature: "general_chat", env });
+  assert.equal(chat.slice, "chat");
+  assert.equal(chat.provider, "groq");
+  assert.equal(chat.model, "openai/gpt-oss-120b");
+  assert.equal(chat.fallbackProvider, "gemini");
+  assert.equal(chat.fallbackModel, "gemini-3.5-flash-lite");
+
+  const memory = getLlmConfig({ feature: "onboarding_bootstrap", env });
+  assert.equal(memory.slice, "memory");
+  assert.equal(memory.provider, "gemini");
+  assert.equal(memory.model, "gemini-3.5-flash-lite");
+  assert.equal(memory.fallbackProvider, "gemini");
+  assert.equal(memory.fallbackModel, "gemini-3.1-flash-lite");
 });
 
 test("Groq provider sends JSON schema requests and maps usage", async () => {
@@ -361,6 +392,65 @@ test("withFallbackProvider falls back on rate limits and preserves final model",
   assert.equal(typeof result.fallback.failedAfterMs, "number");
 });
 
+test("withFallbackProvider falls back on provider request-size 413s", async () => {
+  const primary = fakeProvider("groq", "openai/gpt-oss-120b", async () => {
+    throw Object.assign(new Error("Groq request failed with HTTP 413."), {
+      status: 413,
+    });
+  });
+  const fallback = fakeProvider("gemini", "gemini-3.5-flash-lite", async () => ({
+    provider: "gemini",
+    model: "gemini-3.5-flash-lite",
+    json: { reply: "from fallback" },
+    usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+    attempts: 1,
+    durationMs: 10,
+  }));
+
+  const provider = withFallbackProvider(primary, fallback, logger);
+  const result = await provider.generateStructuredJson({ prompt: "same input" });
+  assert.equal(result.provider, "gemini");
+  assert.equal(result.model, "gemini-3.5-flash-lite");
+  assert.deepEqual(result.json, { reply: "from fallback" });
+  assert.equal(result.fallback.fromProvider, "groq");
+  assert.equal(result.fallback.fromModel, "openai/gpt-oss-120b");
+});
+
+test("withFallbackProvider skips Groq before fetch when the prompt exceeds Groq's configured cap", async () => {
+  let groqCalls = 0;
+  const primary = createGroqProvider({
+    config: baseConfig({
+      maxInputTokens: 1000,
+      providerInputLimits: { groq: 10, gemini: 1000 },
+    }),
+    logger,
+    fetchImpl: async () => {
+      groqCalls += 1;
+      throw new Error("Groq should not be called");
+    },
+  });
+  const fallback = fakeProvider("gemini", "gemini-3.5-flash-lite", async () => ({
+    provider: "gemini",
+    model: "gemini-3.5-flash-lite",
+    json: { reply: "from fallback" },
+    usage: { inputTokens: 80, outputTokens: 2, totalTokens: 82 },
+    attempts: 1,
+    durationMs: 10,
+  }));
+
+  const provider = withFallbackProvider(primary, fallback, logger);
+  const result = await provider.generateStructuredJson({
+    systemPrompt: "system",
+    prompt: "x".repeat(320),
+    schema: { type: "OBJECT", properties: { reply: { type: "STRING" } } },
+    maxInputTokens: 1000,
+  });
+
+  assert.equal(groqCalls, 0);
+  assert.equal(result.provider, "gemini");
+  assert.equal(result.fallback.fromProvider, "groq");
+});
+
 test("withFallbackProvider does not hide structured-output validation errors", async () => {
   const primary = fakeProvider("groq", "openai/gpt-oss-120b", async () => {
     throw new LlmOutputValidationError("bad json");
@@ -392,6 +482,7 @@ test("isLlmFallbackError: auth/retired/request-size/rate-limit/5xx degrade to fa
   // Deterministic client-side failures do NOT fall back (a different provider
   // won't fix bad output or an oversized prompt).
   assert.equal(isLlmFallbackError(new LlmOutputValidationError()), false);
+  assert.equal(isLlmFallbackError(new LlmProviderInputLimitError()), true);
   assert.equal(isLlmFallbackError(withStatus(400)), false);
   // A network-ish failure with no status still falls back (message match).
   assert.equal(isLlmFallbackError(new Error("fetch failed")), true);
@@ -405,10 +496,11 @@ test("fallback records the failed primary and bills the provider that answered",
     llmUsageEvent: { create: async ({ data }) => rows.push(data) },
   };
   const primary = fakeProvider("groq", "openai/gpt-oss-120b", async () => {
-    // A 401 (bad/expired Groq key) — previously bypassed the fallback entirely;
-    // now it degrades to Gemini instead of hard-failing with Gemini idle.
-    throw Object.assign(new Error("Groq request failed with HTTP 401."), {
-      status: 401,
+    // A 413 (provider request-envelope limit) must behave like any other
+    // fallbackable provider failure: record Groq's failed attempt, then pass the
+    // same request through Gemini and bill the provider that answered.
+    throw Object.assign(new Error("Groq request failed with HTTP 413."), {
+      status: 413,
     });
   });
   const fallback = fakeProvider("gemini", "gemini-3.1-flash-lite", async () => ({

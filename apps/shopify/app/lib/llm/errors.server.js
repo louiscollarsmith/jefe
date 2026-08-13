@@ -14,6 +14,21 @@ export class LlmInputLimitError extends Error {
   }
 }
 
+export class LlmProviderInputLimitError extends LlmInputLimitError {
+  /**
+   * @param {string} message
+   * @param {{ provider?: string; model?: string; estimatedInputTokens?: number; maxInputTokens?: number }} [metadata]
+   */
+  constructor(message = "LLM provider input token limit exceeded.", metadata = {}) {
+    super(message);
+    this.name = "LlmProviderInputLimitError";
+    this.provider = metadata.provider ?? null;
+    this.model = metadata.model ?? null;
+    this.estimatedInputTokens = metadata.estimatedInputTokens ?? null;
+    this.maxInputTokens = metadata.maxInputTokens ?? null;
+  }
+}
+
 export class LlmOutputValidationError extends Error {
   constructor(message = "LLM returned invalid structured output.") {
     super(message);

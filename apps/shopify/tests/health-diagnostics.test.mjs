@@ -46,6 +46,10 @@ test("buildDependencyHealth reflects env flags, no network calls", () => {
     LLM_MODEL: "openai/gpt-oss-120b",
     LLM_FALLBACK_PROVIDER: "gemini",
     LLM_FALLBACK_MODEL: "gemini-3.5-flash-lite",
+    LLM_CHAT_PROVIDER: "groq",
+    LLM_CHAT_MODEL: "openai/gpt-oss-120b",
+    LLM_CHAT_FALLBACK_PROVIDER: "gemini",
+    LLM_CHAT_FALLBACK_MODEL: "gemini-3.5-flash-lite",
   });
   assert.equal(on.email.configured, true);
   assert.equal(on.slack.configured, true);
@@ -54,12 +58,17 @@ test("buildDependencyHealth reflects env flags, no network calls", () => {
   assert.equal(on.llm.model, "openai/gpt-oss-120b");
   assert.equal(on.llm.fallbackProvider, "gemini");
   assert.equal(on.llm.fallbackModel, "gemini-3.5-flash-lite");
+  assert.equal(on.llm.chatProvider, "groq");
+  assert.equal(on.llm.chatModel, "openai/gpt-oss-120b");
+  assert.equal(on.llm.chatFallbackProvider, "gemini");
+  assert.equal(on.llm.chatFallbackModel, "gemini-3.5-flash-lite");
 
   const off = buildDependencyHealth({});
   assert.equal(off.email.configured, false);
   assert.equal(off.slack.configured, false);
   assert.equal(off.llm.enabled, false);
-  assert.equal(off.llm.provider, "groq");
+  assert.equal(off.llm.provider, "gemini");
+  assert.equal(off.llm.chatProvider, "groq");
 });
 
 test("buildDependencyHealth surfaces which provider keys are present (silent-substitution guard)", () => {

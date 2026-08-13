@@ -1,6 +1,10 @@
 // @ts-check
 
 import {
+  DEFAULT_LLM_CHAT_FALLBACK_MODEL,
+  DEFAULT_LLM_CHAT_FALLBACK_PROVIDER,
+  DEFAULT_LLM_CHAT_MODEL,
+  DEFAULT_LLM_CHAT_PROVIDER,
   DEFAULT_LLM_FALLBACK_MODEL,
   DEFAULT_LLM_FALLBACK_PROVIDER,
   DEFAULT_LLM_MODEL,
@@ -178,12 +182,20 @@ export async function getBootstrapJobHealth(prisma, options = {}) {
  * Non-gating: informational, never fails the check.
  *
  * @param {Record<string, string | undefined>} [env]
- * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string; groqConfigured: boolean; geminiConfigured: boolean; providerKeyPresent: boolean } }}
+ * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string; chatProvider: string; chatModel: string; chatFallbackProvider: string; chatFallbackModel: string; groqConfigured: boolean; geminiConfigured: boolean; providerKeyPresent: boolean; chatProviderKeyPresent: boolean } }}
  */
 export function buildDependencyHealth(env = process.env) {
   const provider = env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER;
+  const chatProvider = env.LLM_CHAT_PROVIDER || DEFAULT_LLM_CHAT_PROVIDER;
   const groqConfigured = Boolean(env.GROQ_API_KEY);
   const geminiConfigured = Boolean(env.GEMINI_API_KEY);
+  /** @param {string} selectedProvider */
+  const keyPresent = (selectedProvider) =>
+    selectedProvider === "groq"
+      ? groqConfigured
+      : selectedProvider === "gemini"
+        ? geminiConfigured
+        : false;
   return {
     email: { configured: env.ENABLE_EMAIL === "true" },
     slack: { configured: Boolean(env.ALERT_WEBHOOK_URL) },
@@ -195,6 +207,12 @@ export function buildDependencyHealth(env = process.env) {
       model: env.LLM_MODEL || DEFAULT_LLM_MODEL,
       fallbackProvider: env.LLM_FALLBACK_PROVIDER || DEFAULT_LLM_FALLBACK_PROVIDER,
       fallbackModel: env.LLM_FALLBACK_MODEL || DEFAULT_LLM_FALLBACK_MODEL,
+      chatProvider,
+      chatModel: env.LLM_CHAT_MODEL || DEFAULT_LLM_CHAT_MODEL,
+      chatFallbackProvider:
+        env.LLM_CHAT_FALLBACK_PROVIDER || DEFAULT_LLM_CHAT_FALLBACK_PROVIDER,
+      chatFallbackModel:
+        env.LLM_CHAT_FALLBACK_MODEL || DEFAULT_LLM_CHAT_FALLBACK_MODEL,
       // Reality vs intent: `provider` above is what we INTEND to use, but the
       // provider layer silently substitutes the fallback if the selected
       // provider's key is missing. Surfacing which keys are actually present (and
@@ -203,12 +221,8 @@ export function buildDependencyHealth(env = process.env) {
       // serving. `providerKeyPresent: false` with `enabled: true` = substitution.
       groqConfigured,
       geminiConfigured,
-      providerKeyPresent:
-        provider === "groq"
-          ? groqConfigured
-          : provider === "gemini"
-            ? geminiConfigured
-            : false,
+      providerKeyPresent: keyPresent(provider),
+      chatProviderKeyPresent: keyPresent(chatProvider),
     },
   };
 }

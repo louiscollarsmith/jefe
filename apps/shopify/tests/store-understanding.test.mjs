@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PrismaClient } from "@prisma/client";
+import { getLlmConfig } from "../app/lib/llm/config.server.js";
 import { createMockLlmProvider } from "../app/lib/llm/provider.server.js";
 import {
   correctBelief,
@@ -290,6 +291,69 @@ test("Store Understanding summary excludes customer PII and bounds catalogue inp
     assert.equal(serialized.includes("@example.com"), false);
     assert.equal(serialized.includes("maskedEmail"), false);
     assert.equal(summary.privacy.excludesCustomerNamesEmailsPhonesAddresses, true);
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Store Understanding Test Merchant ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("Store Understanding uses the memory-grade model input budget", async (t) => {
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for Store Understanding tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  let capturedRequest = null;
+
+  try {
+    const { merchant, shop } = await createStoreUnderstandingFixture(prisma, suffix);
+    await runStoreUnderstandingPass(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      force: true,
+      llmProvider: {
+        provider: "mock",
+        model: "mock-store-understanding",
+        enabled: true,
+        async generateStructuredOperation() {
+          throw new Error("unexpected operation request");
+        },
+        async generateStructuredJson(request) {
+          capturedRequest = request;
+          return {
+            provider: "mock",
+            model: "mock-store-understanding",
+            json: storeUnderstandingOutput({
+              candidates: [
+                {
+                  beliefKey: "business.description",
+                  value: { text: "a specialist candle store" },
+                  confidence: 0.7,
+                },
+              ],
+            }),
+            usage: {
+              inputTokens: 10,
+              outputTokens: 20,
+              totalTokens: 30,
+              estimatedInputTokens: 10,
+            },
+            attempts: 1,
+            durationMs: 0,
+          };
+        },
+      },
+      logger: silentLogger,
+    });
+
+    assert.equal(
+      capturedRequest.maxInputTokens,
+      getLlmConfig({ feature: "store_understanding" }).maxInputTokens,
+    );
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Store Understanding Test Merchant ${suffix}` },

@@ -430,7 +430,7 @@ test("bootstrap-insufficient onboarding waits while full learning is still activ
   assert.equal(experience.failure, null);
 });
 
-test("ready bootstrap with only a superseded recommendation is a terminal view-model fallback after full learning", async () => {
+test("ready bootstrap with only a superseded recommendation keeps onboarding polling after full learning", async () => {
   const prisma = {
     shop: {
       findUniqueOrThrow: async () => ({
@@ -494,8 +494,7 @@ test("ready bootstrap with only a superseded recommendation is a terminal view-m
 
   assert.equal(experience.stage, "context");
   assert.equal(experience.recommendation, null);
-  assert.equal(experience.failure.type, "insufficient");
-  assert.match(experience.failure.message, /no longer supports/i);
+  assert.equal(experience.failure, null);
 });
 
 test("first-run onboarding surfaces a full-memory recommendation when bootstrap has none", async () => {
@@ -931,6 +930,50 @@ test("invalid model output is a retryable generation failure", () => {
   assert.equal(failure.type, "retryable");
   assert.match(failure.message, /retry/i);
   assert.match(bootstrapSource, /invalid_model_output/);
+});
+
+test("thin first-read evidence keeps onboarding polling instead of showing a no-insight dead end", () => {
+  assert.equal(
+    classifyFailure(
+      { status: "complete", metadata: { phase: "insufficient_evidence" } },
+      { status: "succeeded" },
+      {
+        contextAnswered: true,
+        hasSurfaceableRecommendation: false,
+        fullLearningState: "complete",
+      },
+    ),
+    null,
+  );
+  assert.equal(
+    classifyFailure(
+      { status: "complete", metadata: { phase: "ready" } },
+      { status: "succeeded" },
+      {
+        contextAnswered: true,
+        hasSurfaceableRecommendation: false,
+        inAppHandoff: false,
+        fullLearningState: "complete",
+      },
+    ),
+    null,
+  );
+  assert.doesNotMatch(serviceSource, /first recommendation strong enough to act on/);
+  assert.doesNotMatch(serviceSource, /no longer supports that first recommendation/);
+});
+
+test("disabled AI is retryable, not an insufficient-data verdict", () => {
+  const failure = classifyFailure(
+    { status: "complete", metadata: { phase: "model_disabled" } },
+    { status: "succeeded" },
+    {
+      contextAnswered: true,
+      hasSurfaceableRecommendation: false,
+      fullLearningState: "complete",
+    },
+  );
+  assert.equal(failure.type, "retryable");
+  assert.doesNotMatch(failure.message, /available Shopify history|strong enough/i);
 });
 
 test("applied or rejected execution rows never render executable approval wording", () => {

@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 import {
   LlmInputLimitError,
   LlmOutputValidationError,
+  LlmProviderInputLimitError,
   estimateTokens,
 } from "../errors.server.js";
 import { assertExternalLlmCallAllowed } from "../external-call-guard.server.js";
@@ -78,9 +79,22 @@ async function generateStructuredJson(input) {
   const estimatedInputTokens = estimateTokens(promptText);
   const maxInputTokens =
     input.request.maxInputTokens ?? input.config.maxInputTokens;
+  const providerMaxInputTokens =
+    input.config.providerInputLimits?.gemini ?? maxInputTokens;
   if (estimatedInputTokens > maxInputTokens) {
     throw new LlmInputLimitError(
       `Estimated ${estimatedInputTokens} input tokens exceeds ${maxInputTokens}.`,
+    );
+  }
+  if (estimatedInputTokens > providerMaxInputTokens) {
+    throw new LlmProviderInputLimitError(
+      `Estimated ${estimatedInputTokens} input tokens exceeds Gemini provider cap ${providerMaxInputTokens}.`,
+      {
+        provider: "gemini",
+        model: input.config.model,
+        estimatedInputTokens,
+        maxInputTokens: providerMaxInputTokens,
+      },
     );
   }
 
@@ -139,6 +153,7 @@ async function generateStructuredJson(input) {
         durationMs,
         usage,
         maxInputTokens,
+        providerMaxInputTokens,
         maxOutputTokens:
           input.request.maxOutputTokens ?? input.config.maxOutputTokens,
       });
@@ -169,6 +184,7 @@ async function generateStructuredJson(input) {
             totalTokens: null,
           },
           maxInputTokens,
+          providerMaxInputTokens,
           maxOutputTokens:
             input.request.maxOutputTokens ?? input.config.maxOutputTokens,
           error: safeErrorName(error),
