@@ -132,6 +132,36 @@ test("an implausible turn is dropped, not clamped", () => {
   assert.match(beacon, /status: 401/);
 });
 
+test("the clock starts when the merchant acts — enter or yes", () => {
+  const reporter = read("app/components/chat-turn-reporter.tsx");
+  // Both merchant-initiated waits are marked, and kept apart as kinds: an approval
+  // that goes and changes the store is not the same wait as a chat reply, and one
+  // p50 over both would describe neither.
+  assert.match(reporter, /export function markChatTurnSent/);
+  assert.match(reporter, /export function markApprovalSent/);
+  assert.match(reporter, /kind: mark\.kind/);
+  // A message waits for the reply to exist; an approval settles when the
+  // navigation does, because it has no message to wait for.
+  assert.match(reporter, /mark\.kind === "message" && lastMessageRole !== "assistant"/);
+  assert.match(reporter, /navigation\.state === "idle"/);
+  // Peek-then-clear: a mark must survive renders that are not its own result.
+  assert.match(reporter, /Peek rather than take/);
+
+  const home = read("app/components/daily-home.tsx");
+  assert.match(home, /onSubmit=\{markApprovalSent\}/, "Approve must start the clock");
+  assert.match(home, /value="action\.approve"/);
+
+  // The beacon does not take the client's word for the category.
+  const beacon = read("app/routes/api.chat-turn.tsx");
+  assert.match(beacon, /kind = body\?\.kind === "approval" \? "approval" : "message"/);
+
+  // And the panel reads them separately.
+  const ops = read("../ops/server.mjs");
+  assert.match(ops, /client:message/);
+  assert.match(ops, /client:approval/);
+  assert.match(ops, /GROUP BY 1, 2/);
+});
+
 test("the turn is measured around the whole reply path, both server and client", () => {
   const chat = read("app/lib/merchant-memory/general-chat.server.js");
   // Timer starts before any work and every phase boundary is marked.

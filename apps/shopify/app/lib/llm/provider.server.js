@@ -144,10 +144,15 @@ export function withFallbackProvider(primary, fallback, logger) {
     if (!primaryMethod) {
       throw new Error(`LLM provider does not support ${methodName}.`);
     }
+    // The clock starts when the caller asked, not when the provider that happened
+    // to answer started. A failover that burns 8s on the primary and 2s on the
+    // fallback cost the merchant 10s, and the ledger used to record 2.
+    const askedAt = Date.now();
     try {
       return await primaryMethod.call(primary, request);
     } catch (error) {
       if (!isLlmFallbackError(error)) throw error;
+      const primaryFailedAfterMs = Date.now() - askedAt;
       const fallbackMethod = /** @type {any} */ (fallback[methodName]);
       if (!fallbackMethod) throw error;
       logger.warn("LLM primary provider failed; using fallback", {
@@ -171,9 +176,15 @@ export function withFallbackProvider(primary, fallback, logger) {
         const result = await fallbackMethod.call(fallback, request);
         return {
           ...result,
+          // Overwritten deliberately: the fallback provider reports only its own
+          // call, which is not what anybody waited for.
+          durationMs: Date.now() - askedAt,
           fallback: {
             fromProvider: primary.provider,
             fromModel: primary.model,
+            // What the failed attempt cost, so the error row carries a duration
+            // instead of a null and the wasted time stays visible.
+            failedAfterMs: primaryFailedAfterMs,
           },
         };
       } catch (fallbackError) {
@@ -197,6 +208,10 @@ export function withFallbackProvider(primary, fallback, logger) {
               fromModel: primary.model,
               toProvider: fallback.provider,
               toModel: fallback.model,
+              failedAfterMs: primaryFailedAfterMs,
+              // Both providers failed: the merchant waited for the whole thing and
+              // got nothing, which is the most expensive case to leave untimed.
+              totalMs: Date.now() - askedAt,
             },
           });
         }
@@ -265,6 +280,10 @@ export function withUsageRecording(provider, ctx) {
       provider: provider.provider,
       model: provider.model,
     };
+    // Timed from the ask, so a row can never be latency-less. A failed call still
+    // costs a merchant their wait — recording that as null made the expensive
+    // cases the invisible ones.
+    const askedAt = Date.now();
     try {
       const result = await method(request);
       if (result.fallback) {
@@ -273,6 +292,7 @@ export function withUsageRecording(provider, ctx) {
           provider: result.fallback.fromProvider,
           model: result.fallback.fromModel,
           usage: null,
+          latencyMs: result.fallback.failedAfterMs ?? null,
           status: "error",
         });
       }
@@ -287,15 +307,18 @@ export function withUsageRecording(provider, ctx) {
       return result;
     } catch (error) {
       const fallbackAttempt =
-        /** @type {{ llmFallbackAttempt?: { fromProvider: string; fromModel: string; toProvider: string; toModel: string } }} */ (
+        /** @type {{ llmFallbackAttempt?: { fromProvider: string; fromModel: string; toProvider: string; toModel: string; failedAfterMs?: number; totalMs?: number } }} */ (
           error ?? {}
         ).llmFallbackAttempt;
+      const elapsedMs = Date.now() - askedAt;
       if (fallbackAttempt) {
+        const primaryMs = fallbackAttempt.failedAfterMs ?? null;
         void recordLlmUsage(ctx.prisma, {
           ...base,
           provider: fallbackAttempt.fromProvider,
           model: fallbackAttempt.fromModel,
           usage: null,
+          latencyMs: primaryMs,
           status: "error",
         });
         void recordLlmUsage(ctx.prisma, {
@@ -303,12 +326,19 @@ export function withUsageRecording(provider, ctx) {
           provider: fallbackAttempt.toProvider,
           model: fallbackAttempt.toModel,
           usage: null,
+          // The fallback's own share is what remains after the primary gave up, so
+          // the two rows sum to the wait rather than double-counting it.
+          latencyMs:
+            primaryMs == null
+              ? elapsedMs
+              : Math.max(0, (fallbackAttempt.totalMs ?? elapsedMs) - primaryMs),
           status: "error",
         });
       } else {
         void recordLlmUsage(ctx.prisma, {
           ...base,
           usage: null,
+          latencyMs: elapsedMs,
           status: "error",
         });
       }

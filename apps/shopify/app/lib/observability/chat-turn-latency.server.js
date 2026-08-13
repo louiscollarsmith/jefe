@@ -126,6 +126,7 @@ export function getChatTurnPercentiles() {
  * @param {{
  *   vantage: "server" | "client";
  *   totalMs: number;
+ *   kind?: string | null;
  *   phases?: Record<string, number>;
  *   surface?: string | null;
  *   path?: string | null;
@@ -141,8 +142,13 @@ export async function recordChatTurn(prisma, input) {
   if (!Number.isFinite(totalMs) || totalMs < 0) return false;
   recordChatTurnSample(input.vantage, totalMs);
   const phases = input.phases ?? {};
+  // What the merchant did to start the clock. "message" is pressing enter on a
+  // message; "approval" is saying yes to a move and waiting for the outcome. Kept
+  // as a dimension rather than a separate event type so one query covers both.
+  const kind = input.kind ?? "message";
   (input.logger ?? log).info("chat turn answered", {
     vantage: input.vantage,
+    kind,
     totalMs,
     ...phases,
     surface: input.surface ?? null,
@@ -156,12 +162,13 @@ export async function recordChatTurn(prisma, input) {
     topic: "performance",
     // Durations only — a turn event carries no merchant words, and the summary
     // is read by humans scanning the ops event stream.
-    summary: `Chat reply in ${formatSeconds(totalMs)} (${input.vantage})`,
+    summary: `${kind === "approval" ? "Approval outcome" : "Chat reply"} in ${formatSeconds(totalMs)} (${input.vantage})`,
     merchantId: input.merchantId ?? undefined,
     shopId: input.shopId ?? undefined,
     shopDomain: input.shopDomain ?? undefined,
     properties: {
       vantage: input.vantage,
+      kind,
       totalMs,
       surface: input.surface ?? null,
       path: input.path ?? null,

@@ -132,39 +132,54 @@ by state and up to five recent failed episode IDs/reason codes. It never exposes
 conversation text, embedding values or prompt content; lexical retrieval remains
 available when embedding health is degraded.
 
-## Chat reply latency — how long a merchant waits
+## Merchant wait — the clock starts when they say yes or press enter
 
-Model-call latency was the only timing we had (`llm_usage_event.latency_ms`, one
-row per call), and it cannot answer "how long did that reply take": one turn is
-several model calls plus retrieval plus two writes, so the calls both understate
-the wait and can't explain it. A turn is measured directly, from two vantage
-points, in `app/lib/observability/chat-turn-latency.server.js`:
+**Every timing here is anchored on the merchant's own action, never on the
+internal boundary that happens to be convenient.** Model-call latency
+(`llm_usage_event.latency_ms`, one row per call) cannot answer "how long did that
+take": one turn is several model calls plus retrieval plus two writes, so the
+calls both understate the wait and can't explain it.
+
+`app/lib/observability/chat-turn-latency.server.js` measures a whole turn from
+two vantage points, and keeps two kinds of wait apart:
 
 | vantage | measured | where |
 | --- | --- | --- |
 | `server` | Jefe's own share, split into `intakeMs` / `decisionMs` / `retrievalMs` / `generationMs` / `persistMs` | around `sendGeneralChatMessage` |
-| `client` | Send → reply on screen, including the round trip and the home re-render | `ChatTurnReporter` → `POST /api/chat-turn` |
+| `client` | the merchant's action → result on screen, including the round trip and the re-render | `ChatTurnReporter` → `POST /api/chat-turn` |
+
+| kind | starts | stops |
+| --- | --- | --- |
+| `message` | enter on a message (composer, suggestion chip, Try again) | Jefe's reply is last in the thread |
+| `approval` | yes to a proposed move | the navigation settles on the outcome |
 
 Both write a PII-free `chat_turn` activity event (durations only, never message
 text) and sample an in-process ring. Read them:
 
 - **`/health` → `chatTurns`** — live p50/p95/p99 for this instance, no query on
   the health path. Answers "is Jefe slow right now".
-- **Ops panel → "Chat reply latency · 7d"** — durable percentiles for both
-  vantages plus the average server split. Answers "is Jefe getting slower, and
-  where does the time go".
+- **Ops panel → "Merchant wait · 7d"** — durable percentiles per vantage and kind,
+  plus the average server split. Answers "is Jefe getting slower, and where does
+  the time go".
 
-Read the two together: identical server timings with a worse felt number means
-the cost moved into the navigation, not into Jefe thinking. The server share also
-lands in the assistant message's own `metadata_json.latency`, beside the reply it
-describes — `totalMsAtReply` there stops short of that write, because a row
-cannot time its own insert.
+Read the vantages together: identical server timings with a worse felt number
+means the cost moved into the navigation, not into Jefe thinking. The server share
+also lands in the assistant message's own `metadata_json.latency`, beside the
+reply it describes — `totalMsAtReply` there stops short of that write, because a
+row cannot time its own insert.
 
-⚠️ **A fallback turn under-reports in the LLM ledger.** When the primary provider
-fails and the fallback answers, `llm_usage_event.latency_ms` records only the
-fallback call — the time burned failing over sits in the error row, which has no
-latency. The `chat_turn` numbers are unaffected (they wrap the whole path), so
-prefer them for anything about what a merchant waited.
+**In the LLM ledger, the same rule holds from the ask.** `withUsageRecording`
+times from the moment the caller asked, so:
+
+- a failover records the **whole** wait on the row that answered, not just the
+  call that happened to succeed;
+- the failed primary attempt carries its own `latency_ms` (`failedAfterMs`)
+  instead of a null, so the time burned failing over stays visible;
+- when both providers fail, the two error rows sum to the wait rather than
+  double-counting it, and an ordinary failed call is recorded with what it cost.
+
+⚠️ Rows written before 2026-08-13 have `latency_ms = NULL` on every error and
+under-report failovers — treat older percentiles as a floor.
 
 ## Correlation IDs
 

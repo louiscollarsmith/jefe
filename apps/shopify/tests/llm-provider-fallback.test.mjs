@@ -244,10 +244,11 @@ test("Groq body-read timeout reaches the configured fallback", async () => {
   });
 
   assert.equal(result.provider, "gemini");
-  assert.deepEqual(result.fallback, {
-    fromProvider: "groq",
-    fromModel: "openai/gpt-oss-120b",
-  });
+  assert.equal(result.fallback.fromProvider, "groq");
+  assert.equal(result.fallback.fromModel, "openai/gpt-oss-120b");
+  // How long the primary burned before giving up — recorded so the failover's
+  // wasted time is visible instead of sitting in a latency-less error row.
+  assert.equal(typeof result.fallback.failedAfterMs, "number");
 });
 
 test("Groq 429 immediately uses Gemini and suppresses further Groq calls until reset", async () => {
@@ -353,10 +354,11 @@ test("withFallbackProvider falls back on rate limits and preserves final model",
   assert.equal(result.provider, "gemini");
   assert.equal(result.model, "gemini-3.5-flash-lite");
   assert.deepEqual(result.json, { reply: "from fallback" });
-  assert.deepEqual(result.fallback, {
-    fromProvider: "groq",
-    fromModel: "openai/gpt-oss-120b",
-  });
+  assert.equal(result.fallback.fromProvider, "groq");
+  assert.equal(result.fallback.fromModel, "openai/gpt-oss-120b");
+  // How long the primary burned before giving up — recorded so the failover's
+  // wasted time is visible instead of sitting in a latency-less error row.
+  assert.equal(typeof result.fallback.failedAfterMs, "number");
 });
 
 test("withFallbackProvider does not hide structured-output validation errors", async () => {
@@ -425,10 +427,11 @@ test("fallback records the failed primary and bills the provider that answered",
   const result = await composed.generateStructuredJson({});
 
   assert.equal(result.provider, "gemini");
-  assert.deepEqual(result.fallback, {
-    fromProvider: "groq",
-    fromModel: "openai/gpt-oss-120b",
-  });
+  assert.equal(result.fallback.fromProvider, "groq");
+  assert.equal(result.fallback.fromModel, "openai/gpt-oss-120b");
+  // How long the primary burned before giving up — recorded so the failover's
+  // wasted time is visible instead of sitting in a latency-less error row.
+  assert.equal(typeof result.fallback.failedAfterMs, "number");
 
   // The ledger row attributes the ANSWERING (fallback) provider + model — so a
   // Groq-outage day bills at the Gemini rate, not undercounted as Groq. (record
@@ -505,6 +508,66 @@ test("toGroqJsonSchema converts Gemini-style nullable types", () => {
       },
     },
   );
+});
+
+// The ledger's clock starts when the CALLER asked, not when the provider that
+// happened to answer started. A failover that burns time on the primary and then
+// succeeds on the fallback used to record only the fallback's own call, so the
+// slowest turns — the ones a merchant actually noticed — under-reported, and the
+// primary's wasted time sat in a row with a null latency.
+test("a failover records the whole wait, split across the two rows", async () => {
+  const slowFail = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    throw new LlmProviderHttpError("rate limited", { status: 429 });
+  };
+  const primary = fakeProvider("groq", "openai/gpt-oss-120b", slowFail);
+  const fallback = fakeProvider("gemini", "gemini-3.5-flash-lite", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return { json: { ok: true }, usage: { inputTokens: 1, outputTokens: 1 }, attempts: 1, durationMs: 30 };
+  });
+
+  const rows = [];
+  const prisma = { llmUsageEvent: { create: async (args) => rows.push(args.data) } };
+  const provider = withUsageRecording(
+    withFallbackProvider(primary, fallback, logger),
+    { prisma, feature: "conversation" },
+  );
+
+  const result = await provider.generateStructuredJson({ prompt: "x", systemPrompt: "y", schema: {} });
+  // Let the fire-and-forget ledger writes land.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // The successful row covers the failover, not just the call that answered.
+  assert.ok(result.durationMs >= 90, `expected the whole wait, got ${result.durationMs}ms`);
+  assert.equal(result.fallback.fromProvider, "groq");
+  assert.ok(result.fallback.failedAfterMs >= 60);
+
+  const errorRow = rows.find((r) => r.status === "error");
+  const okRow = rows.find((r) => r.status === "ok");
+  assert.ok(errorRow, "the failed primary attempt is still recorded");
+  // The point of the fix: this used to be null, so the wasted time was invisible.
+  assert.ok(errorRow.latencyMs >= 60, `primary wait must be recorded, got ${errorRow.latencyMs}`);
+  assert.equal(errorRow.provider, "groq");
+  assert.ok(okRow.latencyMs >= 90, `merchant wait must be recorded, got ${okRow.latencyMs}`);
+});
+
+test("a call that fails outright still records what it cost", async () => {
+  const primary = fakeProvider("groq", "openai/gpt-oss-120b", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    throw new LlmOutputValidationError("bad json");
+  });
+  const rows = [];
+  const prisma = { llmUsageEvent: { create: async (args) => rows.push(args.data) } };
+  const provider = withUsageRecording(primary, { prisma, feature: "conversation" });
+
+  await assert.rejects(
+    provider.generateStructuredJson({ prompt: "x", systemPrompt: "y", schema: {} }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "error");
+  assert.ok(rows[0].latencyMs >= 40, `a failed call still cost a wait, got ${rows[0].latencyMs}`);
 });
 
 function fakeProvider(provider, model, generateStructuredJson) {

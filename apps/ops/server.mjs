@@ -318,6 +318,7 @@ async function queryOverview() {
   const chatTurnLatency = (
     await pool.query(`
       SELECT properties->>'vantage' vantage,
+             coalesce(properties->>'kind', 'message') kind,
              count(*)::int n,
              percentile_cont(0.5)  WITHIN GROUP (ORDER BY (properties->>'totalMs')::float) p50,
              percentile_cont(0.95) WITHIN GROUP (ORDER BY (properties->>'totalMs')::float) p95,
@@ -326,7 +327,7 @@ async function queryOverview() {
        WHERE type = 'chat_turn'
          AND properties->>'totalMs' ~ '^[0-9.]+$'
          AND created_at >= now() - interval '7 days'
-       GROUP BY 1`)
+       GROUP BY 1, 2`)
   ).rows;
 
   // Where the server's share of a turn goes, averaged over the same window. This
@@ -736,16 +737,17 @@ function renderOverview(o) {
   // screen) and is the number that matters; "server" is our share of it, shown
   // beside it so the gap is visible rather than inferred.
   const turnByVantage = new Map(
-    (o.chatTurnLatency || []).map((r) => [String(r.vantage), r]),
+    (o.chatTurnLatency || []).map((r) => [`${r.vantage}:${r.kind}`, r]),
   );
   const chatTurnRows =
     (o.chatTurnLatency || []).length
       ? [
-          ["client", "Felt (Send → on screen)"],
-          ["server", "Server share"],
+          ["client:message", "Felt · enter → reply"],
+          ["client:approval", "Felt · yes → outcome"],
+          ["server:message", "Server share"],
         ]
-          .map(([vantage, label]) => {
-            const r = turnByVantage.get(vantage);
+          .map(([key, label]) => {
+            const r = turnByVantage.get(key);
             if (!r)
               return `<tr><td>${label}</td><td class="muted">no samples yet</td></tr>`;
             return `<tr><td>${label}</td><td>p50 ${fmtMs(Number(r.p50))} · p95 ${fmtMs(Number(r.p95))} · worst ${fmtMs(Number(r.worst))} <span class="muted">n=${r.n}</span></td></tr>`;
@@ -756,7 +758,7 @@ function renderOverview(o) {
           : "")
       : `<tr><td class="muted">No chat turns yet — accumulating.</td><td></td></tr>`;
   const breakdown = `<div class="panels">
-      <div class="panel"><div class="ph">Chat reply latency · 7d</div><table class="mini"><tbody>${chatTurnRows}</tbody></table></div>
+      <div class="panel"><div class="ph">Merchant wait · 7d</div><table class="mini"><tbody>${chatTurnRows}</tbody></table></div>
       <div class="panel"><div class="ph">LLM cost by feature · 7d</div><table class="mini"><tbody>${featureRows}</tbody></table></div>
       <div class="panel"><div class="ph">Why they left · latest per shop</div><table class="mini"><tbody>${reasonRows}</tbody></table></div>
       <div class="panel"><div class="ph">Win-back email · 7d</div><table class="mini"><tbody>${emailRows}</tbody></table></div>

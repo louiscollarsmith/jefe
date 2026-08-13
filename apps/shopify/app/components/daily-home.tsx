@@ -16,7 +16,11 @@ import {
   Text,
 } from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
-import { ChatTurnReporter, markChatTurnSent } from "./chat-turn-reporter";
+import {
+  ChatTurnReporter,
+  markApprovalSent,
+  markChatTurnSent,
+} from "./chat-turn-reporter";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
   ActionChatThread,
@@ -1154,7 +1158,9 @@ function ActionChat({
           </Form>
           <div style={decisionRowStyle}>
             {move.actionRunId && move.executable ? (
-              <Form method="post">
+              // Saying yes starts a wait too — Jefe goes and changes the store, and
+              // the merchant sits there until the outcome comes back.
+              <Form method="post" onSubmit={markApprovalSent}>
                 <input type="hidden" name="intent" value="action.approve" />
                 <input
                   type="hidden"

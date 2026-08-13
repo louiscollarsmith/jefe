@@ -33,9 +33,16 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   let totalMs: number;
+  let kind: string;
   try {
-    const body = (await request.json()) as { totalMs?: unknown };
+    const body = (await request.json()) as {
+      totalMs?: unknown;
+      kind?: unknown;
+    };
     totalMs = Number(body?.totalMs);
+    // Allowlisted, not passed through: `kind` becomes a grouping key in the ops
+    // panel, and an open one lets a client invent categories.
+    kind = body?.kind === "approval" ? "approval" : "message";
   } catch {
     return new Response("Bad request", { status: 400 });
   }
@@ -47,6 +54,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
   await recordChatTurn(prisma, {
     vantage: "client",
+    kind,
     totalMs,
     surface: "app",
     shopDomain,
