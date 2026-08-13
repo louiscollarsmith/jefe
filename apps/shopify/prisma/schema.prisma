@@ -63,6 +63,8 @@ model Merchant {
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
+  merchantActions               MerchantAction[]
+  merchantActionEvents          MerchantActionEvent[]
   onboardingHandoffs            OnboardingHandoff[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
@@ -133,6 +135,8 @@ model Shop {
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
+  merchantActions               MerchantAction[]
+  merchantActionEvents          MerchantActionEvent[]
   onboardingHandoffs            OnboardingHandoff[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
@@ -825,6 +829,7 @@ model MerchantMemoryConversation {
   id               String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   merchantId       String                              @map("merchant_id") @db.Uuid
   shopId           String?                             @map("shop_id") @db.Uuid
+  focusedActionId  String?                             @map("focused_action_id") @db.Uuid
   topic            String                              @default("memory")
   conversationType String                              @default("legacy") @map("conversation_type")
   surface          String                              @default("app")
@@ -838,13 +843,16 @@ model MerchantMemoryConversation {
   updatedAt        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
   merchant         Merchant                            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   shop             Shop?                               @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  focusedAction    MerchantAction?                     @relation(fields: [focusedActionId], references: [id], onDelete: SetNull)
   messages         MerchantMemoryConversationMessage[]
   episodes         MerchantMemoryEpisode[]
+  actionEvents     MerchantActionEvent[]
 
   @@unique([merchantId, shopId, surface, externalThreadId], map: "mm_conversations_external_thread_key")
   @@index([merchantId, status, updatedAt])
   @@index([merchantId, shopId, conversationType, surface, lastMessageAt], map: "mm_conversations_type_surface_last_message_idx")
   @@index([merchantId, shopId, topic, status, updatedAt], map: "merchant_memory_conversations_merchant_id_shop_id_topic_status_")
+  @@index([merchantId, shopId, focusedActionId, updatedAt], map: "mm_conversations_focused_action_idx")
   @@index([shopId, status])
   @@map("merchant_memory_conversations")
 }
@@ -876,6 +884,7 @@ model MerchantMemoryConversationMessage {
   openQuestion          MerchantMemoryOpenQuestion?   @relation(fields: [relatedOpenQuestionId], references: [id], onDelete: SetNull)
   memoryCandidates      MerchantMemoryCandidate[]
   contextRetrievalRuns  MerchantContextRetrievalRun[]
+  actionEvents          MerchantActionEvent[]
 
   @@unique([merchantId, surface, externalMessageId], map: "mm_messages_external_id_key")
   @@index([conversationId, createdAt])
@@ -1216,6 +1225,7 @@ model MerchantPlanRecommendation {
   shop                 Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   evidenceSnapshot     MerchantPlanEvidenceSnapshot?
   actionExecution      ActionExecution?
+  merchantAction       MerchantAction?
 
   @@index([merchantId, reviewStatus, createdAt])
   @@index([shopId, reviewStatus, createdAt])
@@ -1244,6 +1254,59 @@ model MerchantPlanEvidenceSnapshot {
   @@index([shopId, createdAt])
   @@index([runId])
   @@map("merchant_plan_evidence_snapshots")
+}
+
+/// Product-level action identity. Recommendations and action executions keep their
+/// existing jobs; this row is the durable piece of work chats can focus on over time.
+model MerchantAction {
+  id                     String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId             String                       @map("merchant_id") @db.Uuid
+  shopId                 String                       @map("shop_id") @db.Uuid
+  title                  String
+  summary                String                       @default("")
+  status                 String                       @default("proposed")
+  sourceRecommendationId String?                      @unique @map("source_recommendation_id") @db.Uuid
+  currentActionRunId     String?                      @map("current_action_run_id") @db.Uuid
+  progress               Json                         @default("{}") @map("progress_json")
+  outcome                Json                         @default("{}") @map("outcome_json")
+  createdAt              DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant               Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                   Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  sourceRecommendation   MerchantPlanRecommendation?  @relation(fields: [sourceRecommendationId], references: [id], onDelete: SetNull)
+  currentExecution       ActionExecution?             @relation("MerchantActionCurrentExecution", fields: [currentActionRunId], references: [runId], onDelete: SetNull)
+  executions             ActionExecution[]            @relation("MerchantActionExecutions")
+  focusedConversations   MerchantMemoryConversation[]
+  events                 MerchantActionEvent[]        @relation("MerchantActionEvents")
+
+  @@index([merchantId, shopId, status, updatedAt], map: "merchant_actions_status_updated_idx")
+  @@index([shopId, status])
+  @@index([currentActionRunId])
+  @@map("merchant_actions")
+}
+
+/// Structured history of action focus/reference changes in conversations. Message
+/// text renders the event for humans; this table is the application source of truth.
+model MerchantActionEvent {
+  id               String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId       String                             @map("merchant_id") @db.Uuid
+  shopId           String                             @map("shop_id") @db.Uuid
+  merchantActionId String                             @map("merchant_action_id") @db.Uuid
+  conversationId   String?                            @map("conversation_id") @db.Uuid
+  messageId        String?                            @map("message_id") @db.Uuid
+  eventType        String                             @map("event_type")
+  metadata         Json                               @default("{}") @map("metadata_json")
+  createdAt        DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant         Merchant                           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  merchantAction   MerchantAction                     @relation("MerchantActionEvents", fields: [merchantActionId], references: [id], onDelete: Cascade)
+  conversation     MerchantMemoryConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message          MerchantMemoryConversationMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, shopId, eventType, createdAt], map: "merchant_action_events_type_created_idx")
+  @@index([merchantActionId, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("merchant_action_events")
 }
 
 /// Append-only activity/event log for the internal observability panel. Every
@@ -1325,6 +1388,7 @@ model ActionExecution {
   runId                  String                      @unique @map("run_id") @db.Uuid
   merchantId             String                      @map("merchant_id") @db.Uuid
   shopId                 String                      @map("shop_id") @db.Uuid
+  merchantActionId       String?                     @map("merchant_action_id") @db.Uuid
   sourceRecommendationId String?                     @unique @map("source_recommendation_id") @db.Uuid
   actionType             String                      @map("action_type") // the primitive, e.g. "price_markdown"
   actionKind             String?                     @map("action_kind") // advice context, e.g. "dead_stock_clearance"
@@ -1347,10 +1411,13 @@ model ActionExecution {
   createdAt              DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
   writes                 ActionExecutionWrite[]
+  merchantAction         MerchantAction?             @relation("MerchantActionExecutions", fields: [merchantActionId], references: [id], onDelete: SetNull)
+  currentForActions      MerchantAction[]            @relation("MerchantActionCurrentExecution")
   sourceRecommendation   MerchantPlanRecommendation? @relation(fields: [sourceRecommendationId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, actionType, status])
   @@index([shopId, outcomeStatus])
+  @@index([merchantActionId])
   @@map("action_executions")
 }
 

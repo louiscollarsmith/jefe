@@ -23,18 +23,22 @@ import {
   computeListingCopyAutoEligibility,
 } from "./listing-copy-adapter.server.js";
 import { buildStaleListingTidyUpProposal } from "./stale-listing-tidy-up.server.js";
+import { buildActionRaise } from "./action-raise.server.js";
 import {
   DEFAULT_PRODUCT_STATUS_CAPS,
   buildProductStatusPreview,
   computeProductStatusAutoEligibility,
 } from "./product-status-adapter.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
+import { ensureMerchantActionForExecution } from "./merchant-action.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
   buildClearancePreview,
   computeClearanceAutoEligibility,
   resolveAutonomyMode,
 } from "./clearance-adapter.server.js";
+
+export { buildActionRaise };
 
 /**
  * Close the learn loop: adapt the default clearance markdown from the merchant's
@@ -747,6 +751,24 @@ export async function proposeActionFromIntent(prisma, input) {
     throw error;
   }
 
+  await ensureMerchantActionForExecution(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionRunId: runId,
+    sourceRecommendationId: input.sourceRecommendationId ?? null,
+    sourceRecommendation: input.sourceRecommendation ?? null,
+    execution: {
+      runId,
+      actionType: intent.actionType,
+      actionKind: primitive.actionKindFor(intent.targetKind),
+      status: "proposed",
+      resolvedMode: autonomy.mode,
+      proposalSummary,
+      preview,
+      outcomeStatus: "pending",
+    },
+  });
+
   return {
     status: "proposed",
     execution,
@@ -862,49 +884,6 @@ export async function getActiveSuggestedAction(prisma, input) {
     sourceRecommendation: normalizeSourceRecommendation(summary.sourceRecommendation),
     raise: buildActionRaise(row.eligibility),
   };
-}
-
-/**
- * Turn the stored eligibility record into the sentence a merchant reads when Jefe is NOT
- * going to do this one itself.
- *
- * Deterministic and in code, not in a prompt: this is Jefe explaining its own limits, and it
- * must say the same thing every time for the same state.
- *
- * Returns null when there is nothing specific to say — the surface then keeps its own general
- * line rather than inventing a reason. Never fabricates a cause it does not have.
- *
- * @param {any} eligibility
- * @returns {{ reason: string; detail: string | null } | null}
- */
-export function buildActionRaise(eligibility) {
-  if (!eligibility || typeof eligibility !== "object") return null;
-  const violations = Array.isArray(eligibility.policyViolations)
-    ? eligibility.policyViolations.filter((/** @type {any} */ v) => typeof v === "string" && v)
-    : [];
-
-  // A cap the MERCHANT set is the most useful thing to say, because it is the one thing they
-  // can change — and saying which cap matters more than saying that one exists.
-  if (violations.length) {
-    return {
-      reason: "This is bigger than the limit you set for me, so I've left it with you.",
-      detail: violations.join("; "),
-    };
-  }
-  if (eligibility.degradedFromAutonomous === true) {
-    return {
-      reason:
-        "You've asked me to run things like this on my own, and I couldn't be confident enough on this one — so it's yours to call.",
-      detail: null,
-    };
-  }
-  if (eligibility.reversible === false) {
-    return {
-      reason: "I can't undo this one cleanly, so I won't do it without you.",
-      detail: null,
-    };
-  }
-  return null;
 }
 
 /**

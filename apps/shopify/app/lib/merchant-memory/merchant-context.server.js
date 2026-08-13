@@ -38,7 +38,7 @@ export class MerchantContextScopeError extends Error {
  * The only broad Merchant Memory read contract. It composes small retrievers and
  * always returns a bounded packet with source-level provenance.
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; task: string; query?: string | null; queryMessageId?: string | null; conversationId?: string | null; recommendationId?: string | null; actionRunId?: string | null; tokenBudget?: number; now?: Date; historicalMode?: boolean; embeddingProvider?: typeof import("./embedding.server.js").embedMerchantMemoryText }} input
+ * @param {{ merchantId: string; shopId: string; task: string; query?: string | null; queryMessageId?: string | null; conversationId?: string | null; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; tokenBudget?: number; now?: Date; historicalMode?: boolean; embeddingProvider?: typeof import("./embedding.server.js").embedMerchantMemoryText }} input
  * @returns {Promise<any>}
  */
 export async function retrieveMerchantContext(prisma, input) {
@@ -82,6 +82,7 @@ export async function retrieveMerchantContext(prisma, input) {
         : Promise.resolve([]),
       retrieveActionMemory(prisma, {
         ...common,
+        focusedActionId: input.focusedActionId,
         recommendationId: input.recommendationId,
         actionRunId: input.actionRunId,
         take: 8,

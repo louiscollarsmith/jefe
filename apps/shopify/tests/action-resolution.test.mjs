@@ -35,8 +35,17 @@ function mockExecPrisma(row) {
 
 // A tiny prisma stub: canned reads for buildDeadStockClearanceProposal's 3 queries
 // + a capturing actionExecution.create. No DB needed — proves the full orchestration.
-function mockPrisma({ variants = [], inventory = [], soldLineItems = [], actionMode = null, policy = null, onCreate }) {
-  return {
+function mockPrisma({
+  variants = [],
+  inventory = [],
+  soldLineItems = [],
+  actionMode = null,
+  policy = null,
+  onCreate,
+  onMerchantActionUpsert,
+  onMerchantActionLink,
+}) {
+  const prisma = {
     variant: { findMany: async () => variants },
     inventoryLevel: { findMany: async () => inventory },
     orderLineItem: { findMany: async () => soldLineItems },
@@ -46,8 +55,21 @@ function mockPrisma({ variants = [], inventory = [], soldLineItems = [], actionM
         onCreate?.(data);
         return { id: "exec-1", runId: data.runId, resolvedMode: data.resolvedMode };
       },
+      updateMany: async (args) => {
+        onMerchantActionLink?.(args);
+        return { count: 1 };
+      },
     },
   };
+  if (onMerchantActionUpsert) {
+    prisma.merchantAction = {
+      upsert: async (args) => {
+        onMerchantActionUpsert(args);
+        return { id: "ma-1" };
+      },
+    };
+  }
+  return prisma;
 }
 
 test("toSuggestedAction shapes render-ready structured data (money in keyNumbers, advisory)", () => {
@@ -148,11 +170,19 @@ test("reusing a terminal recommendation execution preserves its lifecycle and is
 
 test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row + SuggestedAction", async () => {
   let row = null;
+  let merchantActionUpsert = null;
+  let merchantActionLink = null;
   const prisma = mockPrisma({
     variants: [{ id: "v1", productId: "p1", price: 200, unitCost: 80, product: { title: "Parka" } }],
     inventory: [{ variantId: "v1", available: 10 }],
     soldLineItems: [], // no sales in window -> dead stock
     onCreate: (data) => { row = data; },
+    onMerchantActionUpsert: (args) => {
+      merchantActionUpsert = args;
+    },
+    onMerchantActionLink: (args) => {
+      merchantActionLink = args;
+    },
   });
 
   const res = await proposeActionFromIntent(prisma, {
@@ -193,6 +223,12 @@ test("proposeActionFromIntent: intent -> deterministic proposal -> proposed row 
   assert.equal(res.suggestedAction.executable, false);
   assert.equal(res.suggestedAction.actionRunId, row.runId);
   assert.equal(res.suggestedAction.keyNumbers.find((n) => n.label === "Projected recovery").value, 1400);
+  // The product-level MerchantAction identity is created without replacing the
+  // recommendation or execution ledgers, then linked back to the execution row.
+  assert.deepEqual(merchantActionUpsert.where, { sourceRecommendationId: "rec-1" });
+  assert.equal(merchantActionUpsert.create.currentActionRunId, row.runId);
+  assert.equal(merchantActionUpsert.create.status, "proposed");
+  assert.deepEqual(merchantActionLink.data, { merchantActionId: "ma-1" });
 });
 
 test("proposeActionFromIntent: maxProducts scopes the proposal before preview", async () => {

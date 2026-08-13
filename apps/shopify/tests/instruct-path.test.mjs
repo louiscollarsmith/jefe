@@ -35,7 +35,8 @@ test("the internal 'advisory until a typed action preview' line is no longer ren
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join("\n");
   assert.doesNotMatch(code, /typed action preview/);
-  assert.match(code, /InstructPath/);
+  assert.match(code, /FocusedActionDecisionRow/);
+  assert.match(code, /action\.raise\?\.reason/);
 });
 
 test("a non-executable move still says something the merchant can act on", () => {

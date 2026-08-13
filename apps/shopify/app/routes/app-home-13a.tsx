@@ -1,4 +1,4 @@
-import { useLocation, type MetaFunction } from "react-router";
+import { type MetaFunction } from "react-router";
 import { DailyHome } from "../components/daily-home";
 import { SAMPLE_APP_HOME } from "../components/app-home/sample";
 import { R } from "../components/app-home/register";
@@ -24,9 +24,37 @@ export async function action() {
   return null;
 }
 
+const PREVIEW_ACTIONS = [
+  {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    title: "Secure Stock on Fast-Selling Drinks",
+    summary:
+      "Review products currently facing low stock cover and initiate replenishment orders to prevent stockouts on popular specialist beverages.",
+    status: "proposed",
+    statusLabel: "Proposed",
+    sourceRecommendationId: "33333333-3333-4333-8333-333333333333",
+    actionRunId: "11111111-1111-4111-8111-111111111111",
+    actionType: "stock_replenishment",
+    executable: false,
+    displaySteps: [
+      { label: "Check the two products with lowest stock cover." },
+      { label: "Confirm supplier lead time before any reorder." },
+    ],
+    baselineSignal: "2 products",
+  },
+  {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    title: "Archive dead listings",
+    summary: "Remove live products with no stock and no recent sales from the storefront.",
+    status: "in_progress",
+    statusLabel: "In progress",
+    actionRunId: "22222222-2222-4222-8222-222222222222",
+    actionType: "tidy_up",
+    executable: true,
+  },
+];
+
 export default function AppHome13aPreview() {
-  const location = useLocation();
-  const actionChatId = new URLSearchParams(location.search).get("actionChat");
   return (
     <div style={{ minHeight: "100vh", background: "#e8e4dd" }}>
       <div
@@ -58,12 +86,31 @@ export default function AppHome13aPreview() {
           {...SAMPLE_APP_HOME}
           insights={[]}
           channels={[]}
-          actionChatId={actionChatId}
-          actionChatThread={{
-            topic: actionChatId ? `action:${actionChatId}` : null,
+          merchantActions={PREVIEW_ACTIONS}
+          conversation={{
+            conversation: null,
+            conversations: [
+              {
+                id: "preview-chat-1",
+                conversationType: "general",
+                surface: "app",
+                title: "Reorder timing",
+                lastMessageAt: "2026-08-13T09:20:00.000Z",
+                createdAt: "2026-08-13T09:10:00.000Z",
+                focusedActionId: PREVIEW_ACTIONS[0].id,
+                focusedAction: {
+                  id: PREVIEW_ACTIONS[0].id,
+                  title: PREVIEW_ACTIONS[0].title,
+                  summary: PREVIEW_ACTIONS[0].summary,
+                  status: PREVIEW_ACTIONS[0].status,
+                  sourceRecommendationId:
+                    PREVIEW_ACTIONS[0].sourceRecommendationId,
+                  actionRunId: PREVIEW_ACTIONS[0].actionRunId,
+                },
+              },
+            ],
             messages: [],
           }}
-          conversation={{ conversation: null, conversations: [], messages: [] }}
         />
       </div>
     </div>

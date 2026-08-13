@@ -7,6 +7,10 @@ import {
   executeCommerceCalculations,
   heuristicCommerceCalculationRequests,
 } from "./commerce-calculations.server.js";
+import {
+  getMerchantAction,
+  listMerchantActions,
+} from "../actions/merchant-action.server.js";
 
 export { retrieveMerchantContext } from "./merchant-context.server.js";
 
@@ -166,7 +170,7 @@ export async function buildPlanEvidenceSnapshot(prisma, input) {
 /**
  * Build the bounded context packet that action chat sends to the LLM.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; conversationId?: string | null; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function getMerchantContextForQuestion(prisma, input) {
   const log =
@@ -189,9 +193,16 @@ export async function getMerchantContextForQuestion(prisma, input) {
       },
     );
   }
-  const actionRow = await loadActionExecution(prisma, input);
+  const focusedAction = await loadFocusedMerchantAction(prisma, input);
+  const scopedInput = {
+    ...input,
+    recommendationId:
+      input.recommendationId ?? focusedAction?.sourceRecommendationId ?? null,
+    actionRunId: input.actionRunId ?? focusedAction?.actionRunId ?? null,
+  };
+  const actionRow = await loadActionExecution(prisma, scopedInput);
   const actionSourceRecommendation = sourceRecommendationFromAction(actionRow);
-  const suppliedRawRecommendationId = identityText(input.recommendationId);
+  const suppliedRawRecommendationId = identityText(scopedInput.recommendationId);
   const suppliedRecommendationId = uuidString(suppliedRawRecommendationId);
   const actionRecommendationId = uuidString(
     identityText(actionSourceRecommendation?.id),
@@ -201,7 +212,7 @@ export async function getMerchantContextForQuestion(prisma, input) {
     log.warn("action chat ignored malformed recommendation id", {
       merchantId: input.merchantId,
       shopId: input.shopId ?? actionRow?.shopId ?? null,
-      actionRunId: actionRow?.runId ?? input.actionRunId ?? null,
+      actionRunId: actionRow?.runId ?? scopedInput.actionRunId ?? null,
     });
   }
   let canonicalRecommendationId =
@@ -227,7 +238,7 @@ export async function getMerchantContextForQuestion(prisma, input) {
   }
 
   const recommendation = await loadPlanRecommendation(prisma, {
-    ...input,
+    ...scopedInput,
     recommendationId: canonicalRecommendationId,
   });
   let scopedActionRow = actionRow;
@@ -281,7 +292,27 @@ export async function getMerchantContextForQuestion(prisma, input) {
     ...(Array.isArray(planSnapshot?.blocksJson) ? planSnapshot.blocksJson : []),
     ...currentBlocks,
   ]);
+  const referencedActions = await loadReferencedActionsForContext(prisma, {
+    ...scopedInput,
+    focusedActionId: focusedAction?.id ?? input.focusedActionId ?? null,
+  });
+  const otherRelevantActions = await loadOtherRelevantActionsForContext(prisma, {
+    ...scopedInput,
+    focusedActionId: focusedAction?.id ?? input.focusedActionId ?? null,
+    referencedActionIds: referencedActions.map((action) => action.id),
+  });
   const context = {
+    focusedAction: focusedAction ? merchantActionContext(focusedAction) : null,
+    referencedActions,
+    otherRelevantActions,
+    mutationPolicy: {
+      defaultMutationTargetActionId: focusedAction?.id ?? null,
+      referencedActionsReadOnly: true,
+      note:
+        focusedAction
+          ? "Only focusedAction is the default action mutation target. Referenced and other relevant actions are read-only context."
+          : "No focused action is selected. Do not mutate an action by default.",
+    },
     recommendationId:
       uuidString(recommendation?.id) ||
       uuidString(fallbackRecommendation?.id) ||
@@ -289,7 +320,7 @@ export async function getMerchantContextForQuestion(prisma, input) {
       null,
     actionRunId:
       scopedActionRow?.runId ??
-      (actionRow ? null : (input.actionRunId ?? null)),
+      (actionRow ? null : (scopedInput.actionRunId ?? null)),
     planEvidenceAtRecommendationTime: planSnapshot
       ? {
           snapshotId: planSnapshot.id,
@@ -329,6 +360,9 @@ export async function getMerchantContextForQuestion(prisma, input) {
     shopId: input.shopId ?? null,
     recommendationId: context.recommendationId,
     actionRunId: context.actionRunId,
+    focusedActionId: context.focusedAction?.id ?? null,
+    referencedActionCount: referencedActions.length,
+    otherRelevantActionCount: otherRelevantActions.length,
     snapshotStatus: context.retrieval.snapshotStatus,
     planBlockCount: context.retrieval.planBlockCount,
     currentBlockCount: context.retrieval.currentBlockCount,
@@ -336,6 +370,182 @@ export async function getMerchantContextForQuestion(prisma, input) {
     warningCount: warnings.length,
   });
   return context;
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId?: string | null; focusedActionId?: string | null }} input
+ */
+async function loadFocusedMerchantAction(prisma, input) {
+  const shopId = shopScope(input.shopId);
+  const actionId = uuidString(input.focusedActionId);
+  if (!shopId || !actionId) return null;
+  return getMerchantAction(prisma, {
+    merchantId: input.merchantId,
+    shopId,
+    actionId,
+  });
+}
+
+/**
+ * @param {any} action
+ */
+function merchantActionContext(action) {
+  return {
+    id: action.id,
+    title: action.title,
+    summary: action.summary,
+    status: action.status,
+    sourceRecommendationId: action.sourceRecommendationId ?? null,
+    actionRunId: action.actionRunId ?? null,
+    actionType: action.actionType ?? null,
+    role: "focused_mutation_target",
+    permissions: {
+      mayReason: true,
+      mayExplain: true,
+      mayProposeChanges: true,
+      mayMutateByDefault: true,
+    },
+  };
+}
+
+/**
+ * @param {any} action
+ */
+function referencedActionContext(action) {
+  return {
+    id: action.id,
+    title: action.title,
+    summary: action.summary,
+    status: action.status,
+    sourceRecommendationId: action.sourceRecommendationId ?? null,
+    actionRunId: action.actionRunId ?? null,
+    actionType: action.actionType ?? null,
+    role: "read_only_reference",
+    permissions: {
+      mayReason: true,
+      mayExplain: true,
+      mayProposeChanges: false,
+      mayMutateByDefault: false,
+    },
+  };
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId?: string | null; conversationId?: string | null; focusedActionId?: string | null }} input
+ */
+async function loadReferencedActionsForContext(prisma, input) {
+  const shopId = shopScope(input.shopId);
+  if (!shopId || !input.conversationId || !prisma.merchantActionEvent?.findMany)
+    return [];
+  const rows = await prisma.merchantActionEvent.findMany({
+    where: {
+      merchantId: input.merchantId,
+      shopId,
+      conversationId: input.conversationId,
+      eventType: "action_referenced",
+    },
+    include: { merchantAction: true },
+    orderBy: { createdAt: "desc" },
+    take: 8,
+  });
+  const seen = new Set([input.focusedActionId].filter(Boolean));
+  const actions = [];
+  for (const row of rows) {
+    const action = row.merchantAction;
+    if (!action?.id || seen.has(action.id)) continue;
+    seen.add(action.id);
+    actions.push(
+      referencedActionContext({
+        id: action.id,
+        title: action.title,
+        summary: action.summary,
+        status: action.status,
+        sourceRecommendationId: action.sourceRecommendationId,
+        actionRunId: action.currentActionRunId,
+      }),
+    );
+  }
+  return actions;
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId?: string | null; focusedActionId?: string | null; referencedActionIds?: string[]; message?: string | null }} input
+ */
+async function loadOtherRelevantActionsForContext(prisma, input) {
+  const shopId = shopScope(input.shopId);
+  if (!shopId) return [];
+  const excluded = new Set([
+    input.focusedActionId,
+    ...(input.referencedActionIds ?? []),
+  ].filter(Boolean));
+  const actions = await listMerchantActions(prisma, {
+    merchantId: input.merchantId,
+    shopId,
+    includeInactive: true,
+    sync: false,
+  });
+  const terms = meaningfulTerms(input.message ?? "");
+  return actions
+    .filter((/** @type {any} */ action) => action.id && !excluded.has(action.id))
+    .map((/** @type {any} */ action) => ({
+      action,
+      score: overlapScore(terms, `${action.title} ${action.summary}`),
+    }))
+    .filter((/** @type {{ score: number }} */ item) => item.score > 0 || terms.size === 0)
+    .sort(
+      (
+        /** @type {{ score: number; action: any }} */ left,
+        /** @type {{ score: number; action: any }} */ right,
+      ) =>
+        right.score - left.score ||
+        Date.parse(right.action.updatedAt ?? "") -
+          Date.parse(left.action.updatedAt ?? ""),
+    )
+    .slice(0, 3)
+    .map((/** @type {{ action: any }} */ item) =>
+      referencedActionContext(item.action),
+    );
+}
+
+/**
+ * @param {Set<string>} terms
+ * @param {string} text
+ */
+function overlapScore(terms, text) {
+  if (terms.size === 0) return 0;
+  const source = meaningfulTerms(text);
+  return [...terms].filter((term) => source.has(term)).length / terms.size;
+}
+
+/**
+ * @param {string} value
+ */
+function meaningfulTerms(value) {
+  const stop = new Set([
+    "about",
+    "action",
+    "already",
+    "bring",
+    "could",
+    "does",
+    "from",
+    "into",
+    "jefe",
+    "take",
+    "that",
+    "this",
+    "what",
+    "with",
+  ]);
+  return new Set(
+    String(value ?? "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter((term) => term.length > 2 && !stop.has(term)) ?? [],
+  );
 }
 
 /**

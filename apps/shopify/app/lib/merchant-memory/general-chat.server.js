@@ -19,6 +19,7 @@ import { processPassiveMemoryMessage } from "./passive-memory.server.js";
 import { retrieveMerchantContext } from "./merchant-context.server.js";
 import { getMerchantContextForQuestion } from "./context-retriever.server.js";
 import { answerCommerceQuestion } from "./commerce-analyst.server.js";
+import { getMerchantAction } from "../actions/merchant-action.server.js";
 
 const GENERAL_CHAT_REPLY_SCHEMA = {
   type: Type.OBJECT,
@@ -106,7 +107,7 @@ export async function retryLastGeneralChatReply(prisma, input) {
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; reuseMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; reuseMessageId?: string | null; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  * @returns {Promise<any>}
  */
 export async function sendGeneralChatMessage(prisma, input) {
@@ -117,7 +118,7 @@ export async function sendGeneralChatMessage(prisma, input) {
   // any work so nothing on the reply path is outside the number, and only recorded
   // when a reply is produced — a turn that failed is an error, not a slow turn.
   const turn = startChatTurn();
-  const conversation = await getOrCreateMerchantConversation(prisma, {
+  let conversation = await getOrCreateMerchantConversation(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     conversationId: input.conversationId,
@@ -130,15 +131,39 @@ export async function sendGeneralChatMessage(prisma, input) {
         ? `action:${input.recommendationId ?? input.actionRunId}`
         : "general",
   });
-  if (input.actionRunId || input.recommendationId) {
-    await prisma.merchantMemoryConversation.update({
+  const focusedAction = await resolveFocusedAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.focusedActionId ?? conversation.focusedActionId ?? null,
+  });
+  const actionRunId = input.actionRunId ?? focusedAction?.actionRunId ?? null;
+  const recommendationId =
+    input.recommendationId ?? focusedAction?.sourceRecommendationId ?? null;
+  if (focusedAction && conversation.focusedActionId !== focusedAction.id) {
+    conversation = await prisma.merchantMemoryConversation.update({
+      where: { id: conversation.id },
+      data: {
+        focusedActionId: focusedAction.id,
+        context: {
+          ...(conversation.context ?? {}),
+          focusedActionId: focusedAction.id,
+          currentActionRunId: focusedAction.actionRunId ?? null,
+          actionRunId: focusedAction.actionRunId ?? null,
+          recommendationId: focusedAction.sourceRecommendationId ?? null,
+        },
+      },
+    });
+  }
+  if (actionRunId || recommendationId || focusedAction) {
+    conversation = await prisma.merchantMemoryConversation.update({
       where: { id: conversation.id },
       data: {
         context: {
           ...(conversation.context ?? {}),
-          currentActionRunId: input.actionRunId ?? null,
-          actionRunId: input.actionRunId ?? null,
-          recommendationId: input.recommendationId ?? null,
+          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+          currentActionRunId: actionRunId ?? null,
+          actionRunId: actionRunId ?? null,
+          recommendationId: recommendationId ?? null,
         },
       },
     });
@@ -164,9 +189,12 @@ export async function sendGeneralChatMessage(prisma, input) {
         content,
         surface,
         externalMessageId: input.externalMessageId,
-        recommendationId: input.recommendationId,
-        actionRunId: input.actionRunId,
-        metadata: input.metadata,
+        recommendationId,
+        actionRunId,
+        metadata: {
+          ...(input.metadata ?? {}),
+          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+        },
         safeSummary: content.length > 240 ? `${content.slice(0, 237)}...` : content,
         enqueue: false,
       });
@@ -239,7 +267,7 @@ export async function sendGeneralChatMessage(prisma, input) {
     }
   }
   turn.mark("decisionMs");
-  const actionChat = Boolean(input.actionRunId || input.recommendationId);
+  const actionChat = Boolean(actionRunId || recommendationId || focusedAction);
   const [context, actionEvidence] = await Promise.all([
     retrieveMerchantContext(prisma, {
       merchantId: input.merchantId,
@@ -248,8 +276,9 @@ export async function sendGeneralChatMessage(prisma, input) {
       query: content,
       queryMessageId: persisted.message.id,
       conversationId: conversation.id,
-      recommendationId: input.recommendationId,
-      actionRunId: input.actionRunId,
+      focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+      recommendationId,
+      actionRunId,
       tokenBudget: 6000,
       historicalMode: decision.action === "historical_recall",
     }),
@@ -257,8 +286,10 @@ export async function sendGeneralChatMessage(prisma, input) {
       ? getMerchantContextForQuestion(prisma, {
           merchantId: input.merchantId,
           shopId: input.shopId,
-          recommendationId: input.recommendationId,
-          actionRunId: input.actionRunId,
+          conversationId: conversation.id,
+          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+          recommendationId,
+          actionRunId,
           message: content,
           logger: input.logger ?? log,
         })
@@ -273,9 +304,10 @@ export async function sendGeneralChatMessage(prisma, input) {
       data: {
         context: {
           ...(conversation.context ?? {}),
-          currentActionRunId: input.actionRunId ?? null,
-          actionRunId: input.actionRunId ?? null,
-          recommendationId: input.recommendationId ?? null,
+          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+          currentActionRunId: actionRunId ?? null,
+          actionRunId: actionRunId ?? null,
+          recommendationId: recommendationId ?? null,
           planEvidenceSnapshotId:
             actionEvidence.planEvidenceAtRecommendationTime?.snapshotId ?? null,
           contextRetrievedAt: new Date().toISOString(),
@@ -331,11 +363,12 @@ export async function sendGeneralChatMessage(prisma, input) {
     role: "assistant",
     content: generated.reply,
     surface,
-    recommendationId: input.recommendationId,
-    actionRunId: input.actionRunId,
+    recommendationId,
+    actionRunId,
     metadata: {
       citedContextIds: generated.citedContextIds,
       retrievalRunId: context.diagnosticId,
+      focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
       // The wait this reply cost, stored beside the reply it describes. Durations
       // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
       // stops short of this write because a row cannot time its own insert — the
@@ -439,6 +472,25 @@ function lowercaseFirst(value) {
   return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
 }
 
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId?: string | null }} input
+ */
+async function resolveFocusedAction(prisma, input) {
+  if (!input.actionId) return null;
+  try {
+    return await getMerchantAction(prisma, input);
+  } catch (error) {
+    log.warn("Focused action could not be resolved for chat", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return null;
+  }
+}
+
 /** The longest title we store. Matches `conversationTitleFromMessage`'s cap so a merchant-typed
  * name and an auto-derived one can never render at different lengths. */
 export const CHAT_TITLE_MAX_LENGTH = 72;
@@ -481,6 +533,7 @@ export async function renameGeneralChat(prisma, input) {
       surface: "app",
       OR: [
         { conversationType: "general" },
+        { conversationType: "action" },
         { conversationType: "legacy", topic: "memory" },
       ],
     },
@@ -519,8 +572,13 @@ export async function getDailyChatExperience(prisma, input) {
       surface: "app",
       OR: [
         { conversationType: "general" },
+        { conversationType: "action" },
         { conversationType: "legacy", topic: "memory" },
       ],
+    },
+    include: {
+      focusedAction: true,
+      _count: { select: { messages: true } },
     },
     orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
     take: input.historyTake ?? 30,
@@ -530,7 +588,7 @@ export async function getDailyChatExperience(prisma, input) {
         (/** @type {any} */ conversation) =>
           conversation.id === input.conversationId,
       ) ?? null)
-    : (history[0] ?? null);
+    : null;
   if (input.conversationId && !active) {
     active = await prisma.merchantMemoryConversation.findFirst({
       where: {
@@ -540,13 +598,25 @@ export async function getDailyChatExperience(prisma, input) {
         surface: "app",
         OR: [
           { conversationType: "general" },
+          { conversationType: "action" },
           { conversationType: "legacy", topic: "memory" },
         ],
       },
+      include: {
+        focusedAction: true,
+        _count: { select: { messages: true } },
+      },
     });
-    if (!active) active = history[0] ?? null;
   }
-  if (!active) return { conversation: null, conversations: [], messages: [] };
+  if (!active) {
+    return {
+      conversation: null,
+      conversations: history.map((/** @type {any} */ item) =>
+        serializeConversation(item),
+      ),
+      messages: [],
+    };
+  }
   const messages = await prisma.merchantMemoryConversationMessage.findMany({
     where: {
       conversationId: active.id,
@@ -584,6 +654,8 @@ async function generateGroundedReply(input) {
         "Current authoritative semantic memory outranks older episodes.",
         "Historical items are labelled and must never be described as current.",
         "Never claim you performed an action unless an action-ledger item says so.",
+        "If the packet contains actionEvidence.focusedAction, describe it as WORKING ON: it is the only default action mutation target.",
+        "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
         "If context is insufficient, say what is missing naturally; never discuss memory implementation.",
       ].join("\n"),
@@ -752,6 +824,18 @@ function serializeConversation(row) {
       (row.conversationType === "legacy"
         ? "Earlier conversation"
         : "New conversation"),
+    focusedActionId: row.focusedActionId ?? null,
+    focusedAction: row.focusedAction
+      ? {
+          id: row.focusedAction.id,
+          title: row.focusedAction.title,
+          summary: row.focusedAction.summary,
+          status: row.focusedAction.status,
+          sourceRecommendationId: row.focusedAction.sourceRecommendationId ?? null,
+          actionRunId: row.focusedAction.currentActionRunId ?? null,
+        }
+      : null,
+    messageCount: row._count?.messages ?? null,
     lastMessageAt: (row.lastMessageAt ?? row.updatedAt).toISOString(),
     createdAt: row.createdAt.toISOString(),
   };
@@ -765,5 +849,6 @@ function serializeMessage(row) {
     content: row.content,
     createdAt: row.createdAt.toISOString(),
     visibility: row.visibility,
+    metadata: row.metadata ?? {},
   };
 }

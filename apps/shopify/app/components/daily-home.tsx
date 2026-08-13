@@ -3,16 +3,12 @@ import {
   Link,
   useFetcher,
   useLocation,
-  useNavigate,
   useNavigation,
 } from "react-router";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
-  ActionList,
   Button,
-  InlineStack,
-  Popover,
   Text,
 } from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
@@ -23,7 +19,6 @@ import {
 } from "./chat-turn-reporter";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
-  ActionChatThread,
   ExecutedAction,
   Goal,
   Insight,
@@ -72,11 +67,33 @@ type ChatConversation = {
   title: string;
   lastMessageAt: string;
   createdAt: string;
+  messageCount?: number | null;
+  focusedActionId?: string | null;
+  focusedAction?: {
+    id: string;
+    title: string;
+    summary?: string | null;
+    status?: string | null;
+    sourceRecommendationId?: string | null;
+    actionRunId?: string | null;
+  } | null;
 };
 type ChatThread = {
   conversation: ChatConversation | null;
   conversations: ChatConversation[];
-  messages: Array<{ id: string; role: string; content: string }>;
+  messages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  }>;
+};
+type ChatRenameActionData = {
+  ok?: boolean;
+  intent?: string;
+  conversationId?: string;
+  title?: string | null;
+  error?: string;
 };
 type ChannelConn = {
   provider: string;
@@ -116,11 +133,33 @@ type PrimaryMove = {
   currentSignal: string | null;
 };
 
-type IndexEntry = {
+type MerchantActionView = {
   id: string;
-  label: string;
-  kind: string;
-  dateLabel: string;
+  title: string;
+  summary?: string | null;
+  status: string;
+  statusLabel?: string | null;
+  statusTone?: string | null;
+  sourceRecommendationId?: string | null;
+  actionRunId?: string | null;
+  actionType?: string | null;
+  executable?: boolean;
+  raise?: { reason: string; detail: string | null } | null;
+  progress?: Record<string, unknown> | null;
+  displaySteps?: Array<string | { label?: string | null }>;
+  successText?: string | null;
+  baselineSignal?: string | null;
+  currentSignal?: string | null;
+  updatedAt?: string | null;
+  createdAt?: string | null;
+};
+
+type FocusedActionChatChoice = {
+  id: string;
+  title: string;
+  messageCount?: number | null;
+  lastMessageAt?: string | null;
+  createdAt?: string | null;
 };
 
 export function DailyHome(props: {
@@ -136,8 +175,9 @@ export function DailyHome(props: {
   actionModes?: Record<string, string>;
   channels?: ChannelConn[];
   conversation?: ChatThread | null;
-  actionChatId?: string | null;
-  actionChatThread?: ActionChatThread | null;
+  merchantActions?: MerchantActionView[];
+  talkActionId?: string | null;
+  focusedActionChats?: FocusedActionChatChoice[];
   changelog?: Array<{
     id: string;
     date: string;
@@ -156,36 +196,38 @@ export function DailyHome(props: {
 }) {
   const location = useLocation();
   const suggestedAction = props.suggestedAction ?? null;
-  const actions = props.executedActions ?? [];
+  const executedActions = props.executedActions ?? [];
   const primaryMove = buildPrimaryMove({
     recommendation: props.recommendation,
     suggestedAction,
-    actions,
+    actions: executedActions,
     goals: props.goals,
     storeTimeZone: props.storeTimeZone,
   });
-  const chatOpen = Boolean(props.actionChatId);
+  const fallbackAction = merchantActionFromPrimaryMove(primaryMove);
+  const merchantActions =
+    props.merchantActions && props.merchantActions.length > 0
+      ? props.merchantActions
+      : fallbackAction
+        ? [fallbackAction]
+        : [];
+  const activeConversation = props.conversation?.conversation ?? null;
+  const openConversationId = new URLSearchParams(location.search).get(
+    "conversation",
+  );
+  const focusedAction = actionForConversation(activeConversation, merchantActions);
 
-  if (chatOpen) {
+  if (openConversationId || activeConversation) {
     return (
-      <ActionChat
-        move={primaryMove}
-        thread={props.actionChatThread ?? { topic: null, messages: [] }}
-        backTo={searchWith(location.search, { actionChat: null })}
+      <FocusedConversation
+        conversation={props.conversation ?? null}
+        focusedAction={focusedAction}
+        merchantActions={merchantActions}
+        currentSearch={location.search}
         todayLabel={props.todayLabel}
       />
     );
   }
-
-  // The home is the store-level conversation. Only canonical conversation messages
-  // appear in its transcript; live store signals, action outcomes and the proposed
-  // move stay reachable through Store updates without masquerading as chat history.
-  const outcomes = actions.filter(
-    (action) => action.actionRunId !== primaryMove.actionRunId,
-  );
-  // The frame for every recommendation: one quiet line, not a section (the reviewer's
-  // single keep-from-the-strip). Null when Jefe has no goal yet — never fabricated.
-  const goalLine = firstGoalLine(props.goals);
 
   return (
     <main style={pageStyle}>
@@ -193,15 +235,13 @@ export function DailyHome(props: {
         <Header
           storeName={props.storeName}
           todayLabel={props.todayLabel}
-          goalLine={goalLine}
           brandLogoUrl={props.brandLogoUrl}
         />
-        <StoreConversation
-          conversation={props.conversation ?? null}
-          move={primaryMove}
-          outcomes={outcomes}
-          headsUps={props.horizonHeadsUps ?? []}
-          quietLine={buildQuietLine(props.horizonWatching, props.insights)}
+        <FocusedActionsHome
+          conversations={props.conversation?.conversations ?? []}
+          merchantActions={merchantActions}
+          talkActionId={props.talkActionId ?? null}
+          focusedActionChats={props.focusedActionChats ?? []}
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
         />
@@ -213,37 +253,416 @@ export function DailyHome(props: {
   );
 }
 
-// The store-level conversation. The transcript is only the selected conversation's
-// real messages, so a newly created chat is visibly and genuinely blank. Derived
-// signals and proposed work live in the separate Store updates popover. The composer
-// posts `chat.message`; the per-move zoom posts `action.chat.message`.
-function StoreConversation({
-  conversation,
-  move,
-  outcomes,
-  headsUps,
-  quietLine,
+function FocusedActionsHome({
+  conversations,
+  merchantActions,
+  talkActionId,
+  focusedActionChats,
   currentSearch,
   storeTimeZone,
 }: {
-  conversation: ChatThread | null;
-  move: PrimaryMove;
-  outcomes: ExecutedAction[];
-  headsUps: HeadsUp[];
-  quietLine: string;
+  conversations: ChatConversation[];
+  merchantActions: MerchantActionView[];
+  talkActionId: string | null;
+  focusedActionChats: FocusedActionChatChoice[];
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
+  const nextAction = pickNextAction(merchantActions);
+  const inProgress = merchantActions.filter(isWorkingAction);
+  const history = merchantActions.filter(isHistoricalAction);
+  const talkAction = talkActionId
+    ? merchantActions.find((action) => action.id === talkActionId) ?? null
+    : null;
+
+  return (
+    <>
+      <section style={homeHeroStyle} aria-label="Your next move">
+        <h1 style={headlineStyle}>
+          Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
+        </h1>
+        <ActionSpotlight action={nextAction} />
+      </section>
+
+      <HomeSection
+        title="Chats"
+        action={
+          <Form method="post" style={inlineFormStyle}>
+            <input type="hidden" name="intent" value="chat.new" />
+            <button type="submit" style={pillButtonStyle}>
+              + New chat
+            </button>
+          </Form>
+        }
+      >
+        {conversations.length > 0 ? (
+          <div style={chatListStyle}>
+            {conversations.slice(0, 8).map((conversation) => (
+              <Link
+                key={conversation.id}
+                to={searchWith(currentSearch, {
+                  conversation: conversation.id,
+                  talkAction: null,
+                })}
+                style={chatListItemStyle}
+              >
+                <span style={chatListBodyStyle}>
+                  <span style={chatListTitleStyle}>
+                    {conversationTitle(conversation)}
+                  </span>
+                  <span style={chatListMetaLineStyle}>
+                    {conversation.focusedAction ? (
+                      <span style={chatFocusMetaStyle}>
+                        <span style={boltStyle}>⚡</span>
+                        <strong style={chatFocusLeadStyle}>Working on</strong>
+                        {conversation.focusedAction.title}
+                      </span>
+                    ) : null}
+                    <span>{messageCountLabel(conversation.messageCount)}</span>
+                  </span>
+                </span>
+                <span style={chatListDateStyle}>
+                  {formatConversationDate(
+                    conversation.lastMessageAt,
+                    storeTimeZone,
+                  )}
+                </span>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <EmptySection
+            title="No chats yet"
+            body="Start with a blank chat, or talk through the next action when Jefe has one."
+          />
+        )}
+      </HomeSection>
+
+      <ActionShelf
+        title="In Progress Actions"
+        emptyTitle="Nothing in progress"
+        emptyBody="When an action is approved or being executed, it will stay here until Jefe can report the outcome."
+        actions={inProgress}
+        currentSearch={currentSearch}
+        variant="progress"
+      />
+
+      <ActionShelf
+        title="Action history"
+        emptyTitle="No action history yet"
+        emptyBody="Completed, declined, deferred and superseded actions will appear here."
+        actions={history}
+        currentSearch={currentSearch}
+        variant="history"
+      />
+
+      <TalkActionChooser
+        action={talkAction}
+        chats={focusedActionChats}
+        currentSearch={currentSearch}
+        storeTimeZone={storeTimeZone}
+      />
+    </>
+  );
+}
+
+function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
+  if (!action) {
+    return (
+      <section style={spotlightStyle}>
+        <Mono>YOUR NEXT MOVE</Mono>
+        <h2 style={spotlightTitleStyle}>Jefe does not have a next move yet.</h2>
+        <p style={summaryStyle}>
+          When there is a grounded action to review or execute, it will appear
+          here with its own durable chat thread.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section style={spotlightStyle}>
+      <Mono>YOUR NEXT MOVE</Mono>
+      <h2 style={spotlightTitleStyle}>{action.title}</h2>
+      {action.summary ? <p style={summaryStyle}>{action.summary}</p> : null}
+      <div style={actionButtonRowStyle}>
+        <TalkThisThroughButton action={action} primary />
+      </div>
+    </section>
+  );
+}
+
+function ActionShelf({
+  title,
+  emptyTitle,
+  emptyBody,
+  actions,
+  currentSearch,
+  variant,
+}: {
+  title: string;
+  emptyTitle: string;
+  emptyBody: string;
+  actions: MerchantActionView[];
+  currentSearch: string;
+  variant: "progress" | "history";
+}) {
+  return (
+    <HomeSection title={title}>
+      {actions.length > 0 ? (
+        <div style={actionListStyle}>
+          {actions.slice(0, 6).map((action) => (
+            variant === "history" ? (
+              <ActionHistoryRow
+                key={action.id || action.title}
+                action={action}
+                currentSearch={currentSearch}
+              />
+            ) : (
+              <ActionProgressRow
+                key={action.id || action.title}
+                action={action}
+              />
+            )
+          ))}
+        </div>
+      ) : (
+        <EmptySection title={emptyTitle} body={emptyBody} />
+      )}
+    </HomeSection>
+  );
+}
+
+function ActionProgressRow({ action }: { action: MerchantActionView }) {
+  return (
+    <article style={progressRowStyle}>
+      <div style={progressRowHeaderStyle}>
+        <span style={progressRowTitleStyle}>{action.title}</span>
+        <StatusPill tone="green">
+          {action.statusLabel || statusLabelForAction(action.status)}
+        </StatusPill>
+      </div>
+      {action.summary ? (
+        <p style={actionCardSummaryStyle}>{compactText(action.summary, 180)}</p>
+      ) : null}
+      {action.displaySteps && action.displaySteps.length > 0 ? (
+        <div style={stepInlineListStyle}>
+          {action.displaySteps.slice(0, 3).map((step, index) => (
+            <span
+              key={`${displayStepLabel(step, index)}-${index}`}
+              style={stepInlineItemStyle}
+            >
+              <span style={stepGlyphStyle}>{index === 0 ? "✓" : "·"}</span>
+              {displayStepLabel(step, index)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div style={progressRowFooterStyle}>
+        <div style={signalLineStyle}>
+          {action.baselineSignal ? <span>{action.baselineSignal}</span> : null}
+          {action.baselineSignal && action.currentSignal ? <span>→</span> : null}
+          {action.currentSignal ? <strong>{action.currentSignal}</strong> : null}
+        </div>
+        <TalkThisThroughButton action={action} linkLike />
+      </div>
+    </article>
+  );
+}
+
+function ActionHistoryRow({
+  action,
+  currentSearch,
+}: {
+  action: MerchantActionView;
+  currentSearch: string;
+}) {
+  return (
+    <Link
+      to={searchWith(currentSearch, {
+        talkAction: action.id || null,
+      })}
+      style={historyRowStyle}
+    >
+      <span style={chatListBodyStyle}>
+        <span style={chatListTitleStyle}>{action.title}</span>
+        <span style={historyOutcomeStyle}>
+          {action.summary || statusLabelForAction(action.status)}
+        </span>
+      </span>
+      <span style={historyStatusGroupStyle}>
+        <span style={chatListDateStyle}>
+          {formatConversationDate(action.updatedAt ?? action.createdAt ?? "")}
+        </span>
+        <span style={historyStatusStyle}>
+          {statusLabelForAction(action.status)}
+        </span>
+      </span>
+    </Link>
+  );
+}
+function HomeSection({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section style={homeSectionStyle}>
+      <div style={homeSectionHeaderStyle}>
+        <h2 style={sectionTitleStyle}>{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function EmptySection({ title, body }: { title: string; body: string }) {
+  return (
+    <div style={emptySectionStyle}>
+      <Text as="h3" variant="headingSm">
+        {title}
+      </Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        {body}
+      </Text>
+    </div>
+  );
+}
+
+function TalkThisThroughButton({
+  action,
+  primary = false,
+  linkLike = false,
+}: {
+  action: MerchantActionView;
+  primary?: boolean;
+  linkLike?: boolean;
+}) {
+  return (
+    <Form method="post" style={inlineFormStyle}>
+      <input type="hidden" name="intent" value="chat.focus.start" />
+      <input type="hidden" name="focusedActionId" value={action.id} />
+      <button
+        type="submit"
+        style={linkLike ? textButtonStyle : primary ? primaryButtonStyle : quietPillButtonStyle}
+        disabled={!action.id}
+      >
+        Talk this through{primary || linkLike ? " →" : ""}
+      </button>
+    </Form>
+  );
+}
+
+function TalkActionChooser({
+  action,
+  chats,
+  currentSearch,
+  storeTimeZone,
+}: {
+  action: MerchantActionView | null;
+  chats: FocusedActionChatChoice[];
+  currentSearch: string;
+  storeTimeZone?: string | null;
+}) {
+  if (!action) return null;
+  return (
+    <div style={modalBackdropStyle} role="presentation">
+      <section
+        style={talkChooserModalStyle}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="talk-action-title"
+      >
+        <Mono>TALK THIS THROUGH</Mono>
+        <p id="talk-action-title" style={talkChooserLeadStyle}>
+          {chats.length > 0 ? (
+            <>
+              You already have a chat working on{" "}
+              <strong style={talkChooserStrongStyle}>{action.title}</strong>.
+              Continue one, or start a new chat focused on this action.
+            </>
+          ) : (
+            <>
+              Start a new chat focused on{" "}
+              <strong style={talkChooserStrongStyle}>{action.title}</strong>.
+            </>
+          )}
+        </p>
+        {chats.length > 0 ? (
+          <div style={talkChooserListStyle}>
+            {chats.map((chat) => (
+              <Link
+                key={chat.id}
+                to={searchWith(currentSearch, {
+                  conversation: chat.id,
+                  talkAction: null,
+                })}
+                style={talkChooserCardStyle}
+              >
+                <span style={talkChooserCardTitleStyle}>{chat.title}</span>
+                <span style={talkChooserCardMetaStyle}>
+                  {messageCountLabel(chat.messageCount)}
+                  {" · "}
+                  {formatConversationDate(
+                    chat.lastMessageAt ?? chat.createdAt ?? "",
+                    storeTimeZone,
+                  )}
+                </span>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <EmptySection
+            title="No chats for this action yet"
+            body="Start a new focused chat to talk through this action."
+          />
+        )}
+        <div style={talkChooserDividerStyle} />
+        <div style={talkChooserActionsStyle}>
+          <Form method="post" style={inlineFormStyle}>
+            <input type="hidden" name="intent" value="chat.focus.start" />
+            <input type="hidden" name="focusedActionId" value={action.id} />
+            <input type="hidden" name="forceNew" value="true" />
+            <button type="submit" style={talkChooserPrimaryButtonStyle}>
+              Start a new chat
+            </button>
+          </Form>
+          <Link
+            to={searchWith(currentSearch, { talkAction: null })}
+            style={talkChooserCancelStyle}
+          >
+            Cancel
+          </Link>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FocusedConversation({
+  conversation,
+  focusedAction,
+  merchantActions,
+  currentSearch,
+  todayLabel,
+}: {
+  conversation: ChatThread | null;
+  focusedAction: MerchantActionView | null;
+  merchantActions: MerchantActionView[];
+  currentSearch: string;
+  todayLabel?: string;
+}) {
   const navigation = useNavigation();
-  const navigate = useNavigate();
   usePreserveChatScrollDuringIntent(navigation, "chat.message");
   usePreserveChatScrollDuringIntent(navigation, "chat.retry");
   const pendingIntent = navigation.formData?.get("intent");
   const isSending =
     navigation.state !== "idle" && pendingIntent === "chat.message";
-  // A retry is Jefe having another go at a message already in the thread, so it shows the
-  // same "Thinking" line — but it must NOT re-render the merchant's text as pending, or
-  // their message would appear twice while it runs.
   const isRetrying =
     navigation.state !== "idle" && pendingIntent === "chat.retry";
   const isThinking = isSending || isRetrying;
@@ -252,357 +671,665 @@ function StoreConversation({
       ? String(navigation.formData.get("message")).trim()
       : "";
   const [composerMessage, setComposerMessage] = useState("");
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [updatesOpen, setUpdatesOpen] = useState(false);
-  // Clearing the box and starting the felt-latency clock are the same moment: the
-  // merchant has just pressed Send and is now waiting.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [focusExpanded, setFocusExpanded] = useState(false);
+  const [pendingFocus, setPendingFocus] = useState<MerchantActionView | null>(
+    null,
+  );
+  const activeConversation = conversation?.conversation ?? null;
+  const messages = conversation?.messages ?? [];
+  const lastMessage = messages[messages.length - 1];
+  const awaitingReply =
+    !isThinking &&
+    !pendingMessage &&
+    (lastMessage?.role === "merchant" || lastMessage?.role === "user");
+  const isBlankThread = messages.length === 0;
+  const transcriptRef = useScrollTranscriptToLatest(
+    activeConversation?.id ?? null,
+    messages.length,
+  );
   const handleComposerSubmit = () => {
     markChatTurnSent();
     setComposerMessage("");
   };
 
-  const history = conversation?.messages ?? [];
-  const activeConversation = conversation?.conversation ?? null;
-  // A reply that never arrived, detected from the THREAD rather than from the failed
-  // request. The merchant's turn is stored before Jefe is asked, so a thread whose last
-  // message is theirs means Jefe owes them an answer — and that stays true after a reload,
-  // in a new tab, and after the route error boundary's own "Try again". Keying this off the
-  // action result alone would lose the retry the moment the page reloaded, which is exactly
-  // the "nothing to retry" gap.
-  const lastMessage = history[history.length - 1];
-  const awaitingReply =
-    !isThinking &&
-    !pendingMessage &&
-    (lastMessage?.role === "merchant" || lastMessage?.role === "user");
-  const isBlankThread = history.length === 0;
-  // Budget: at most 2 proactive heads-ups — the chat is a conversation, not a
-  // notification feed. These are Horizon's top-ranked standing conditions; dedup is
-  // inherent because they're re-derived from state each load, never stored.
-  const shownHeadsUps = headsUps.slice(0, 2);
-  const displayedTitle = conversationTitle(activeConversation);
-  const messageLabel = isBlankThread
-    ? "Fresh chat · no messages yet"
-    : `${history.length} message${history.length === 1 ? "" : "s"}`;
-  const indexEntries = buildConversationIndex(
-    outcomes,
-    move,
-    storeTimeZone,
-  );
+  if (!activeConversation) {
+    return (
+      <main style={chatPageStyle}>
+        <div style={chatShellStyle}>
+          <div style={chatTopStyle}>
+            <Link
+              to={searchWith(currentSearch, { conversation: null })}
+              style={backLinkStyle}
+            >
+              ← Back
+            </Link>
+            <DateLabel>{todayLabel ?? ""}</DateLabel>
+          </div>
+          <EmptySection
+            title="That chat is not available"
+            body="Go back to the home screen and open an active chat."
+          />
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <section style={conversationStyle}>
-      <ChatTurnReporter
-        lastMessageId={lastMessage?.id ?? null}
-        lastMessageRole={lastMessage?.role ?? null}
-      />
-      <div style={threadControlsStyle}>
-        <InlineStack
-          align="space-between"
-          blockAlign="start"
-          gap="300"
-          wrap
-        >
-          <div style={threadIdentityStyle}>
-            <Mono>Current chat</Mono>
-            <ChatTitle
-              conversation={activeConversation}
-              displayedTitle={displayedTitle}
-            />
-            <Text as="p" variant="bodySm" tone="subdued">
-              {messageLabel}
-            </Text>
-          </div>
-          <InlineStack gap="200" wrap={false}>
-            <Popover
-              active={updatesOpen}
-              onClose={() => setUpdatesOpen(false)}
-              activator={
-                <Button
-                  disclosure
-                  onClick={() => {
-                    setHistoryOpen(false);
-                    setUpdatesOpen((open) => !open);
-                  }}
-                >
-                  Store updates
-                </Button>
-              }
-              preferredAlignment="right"
-            >
-              <StoreUpdatesPopover
-                move={move}
-                outcomes={outcomes}
-                headsUps={shownHeadsUps}
-                quietLine={quietLine}
-                currentSearch={currentSearch}
-                onNavigate={() => setUpdatesOpen(false)}
-              />
-            </Popover>
-            <Popover
-              active={historyOpen}
-              onClose={() => setHistoryOpen(false)}
-              activator={
-                <Button
-                  disclosure
-                  onClick={() => {
-                    setUpdatesOpen(false);
-                    setHistoryOpen((open) => !open);
-                  }}
-                >
-                  Chats
-                </Button>
-              }
-              preferredAlignment="right"
-            >
-              <ActionList
-                actionRole="menuitem"
-                items={
-                  (conversation?.conversations.length ?? 0) > 0
-                    ? (conversation?.conversations ?? []).map((item) => ({
-                        content: conversationHistoryTitle(
-                          item,
-                          activeConversation?.id ?? null,
-                        ),
-                        active: item.id === activeConversation?.id,
-                        helpText: formatConversationDate(
-                          item.lastMessageAt,
-                          storeTimeZone,
-                        ),
-                        onAction: () => {
-                          setHistoryOpen(false);
-                          navigate(
-                            searchWith(currentSearch, {
-                              conversation: item.id,
-                            }),
-                          );
-                        },
-                      }))
-                    : [{ content: "No earlier chats yet", disabled: true }]
-                }
-              />
-            </Popover>
-            <Form method="post">
-              <input type="hidden" name="intent" value="chat.new" />
-              <Button
-                submit
-                disabled={
-                  navigation.state !== "idle" ||
-                  Boolean(activeConversation && isBlankThread)
-                }
-              >
-                New chat
-              </Button>
-            </Form>
-          </InlineStack>
-        </InlineStack>
-      </div>
-      {!isBlankThread && indexEntries.length > 0 ? (
-        <ConversationIndex entries={indexEntries} />
-      ) : null}
-      <div style={messagesStyle}>
-        {outcomes.map((action) => (
-          <ConversationMomentAnchor
-            key={action.actionRunId}
-            anchorId={`moment-${action.actionRunId}`}
-          />
-        ))}
-        {move.state !== "empty" ? (
-          <ConversationMomentAnchor
-            anchorId={`moment-${move.recommendationId ?? move.actionRunId ?? "move"}`}
-          />
-        ) : null}
-        {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
-        {history.map((message) => (
-          <MessageRow key={message.id} from={message.role}>
-            {message.content}
-          </MessageRow>
-        ))}
-        {pendingMessage ? (
-          <MessageRow from="merchant">{pendingMessage}</MessageRow>
-        ) : null}
-        {isThinking ? (
-          <div style={messageRowStyle} aria-live="polite">
-            <span style={smallMarkStyle}>J</span>
-            <div style={thinkingStyle}>Thinking</div>
-          </div>
-        ) : null}
-        {awaitingReply ? (
-          <ReplyFailedRow conversationId={activeConversation?.id ?? null} />
-        ) : null}
-      </div>
-      <div style={chatComposerWrapStyle}>
-        <div style={chipsStyle}>
-          <StorePrompt message="What changed this week?" conversationId={activeConversation?.id ?? null} />
-          <StorePrompt message="Anything I should worry about?" conversationId={activeConversation?.id ?? null} />
-          <StorePrompt message="How are my goals looking?" conversationId={activeConversation?.id ?? null} />
-        </div>
-        <Form
-          method="post"
-          preventScrollReset
-          style={composerStyle}
-          onSubmit={handleComposerSubmit}
-        >
-          <input type="hidden" name="intent" value="chat.message" />
-          <input
-            type="hidden"
-            name="conversationId"
-            value={conversation?.conversation?.id ?? ""}
-          />
-          <input
-            name="message"
-            required
-            autoComplete="off"
-            aria-label="Message Jefe"
-            placeholder="Ask Jefe anything, or tell me what changed…"
-            value={composerMessage}
-            onChange={(event) => setComposerMessage(event.currentTarget.value)}
-            style={composerInputStyle}
-            disabled={isThinking}
-          />
-          <button
-            type="submit"
-            style={sendButtonStateStyle(isThinking)}
-            disabled={isThinking}
+    <main style={chatPageStyle}>
+      <div style={chatShellStyle}>
+        <ChatTurnReporter
+          lastMessageId={lastMessage?.id ?? null}
+          lastMessageRole={lastMessage?.role ?? null}
+        />
+        <div style={chatTopStyle}>
+          <Link
+            to={searchWith(currentSearch, { conversation: null })}
+            style={backLinkStyle}
           >
-            Send
-          </button>
-        </Form>
+            ← Back
+          </Link>
+          <DateLabel>{todayLabel ?? ""}</DateLabel>
+        </div>
+
+        <ChatTitleBlock conversation={activeConversation} />
+
+        {focusedAction ? (
+          <FocusedActionStrip
+            focusedAction={focusedAction}
+            focusExpanded={focusExpanded}
+            onToggle={() => setFocusExpanded(!focusExpanded)}
+          />
+        ) : null}
+
+        <div ref={transcriptRef} style={messagesStyle}>
+          {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
+          {messages.map((message) => (
+            <FocusedMessageRow key={message.id} message={message} />
+          ))}
+          {pendingMessage ? (
+            <MessageRow from="merchant">{pendingMessage}</MessageRow>
+          ) : null}
+          {isThinking ? (
+            <div style={messageRowStyle} aria-live="polite">
+              <span style={smallMarkStyle}>J</span>
+              <div style={thinkingStyle}>Thinking</div>
+            </div>
+          ) : null}
+          {awaitingReply ? (
+            <ReplyFailedRow conversationId={activeConversation.id} />
+          ) : null}
+        </div>
+
+        <div style={chatComposerWrapStyle}>
+          {menuOpen ? (
+            <div style={attachMenuPanelStyle}>
+              <div style={attachMenuHeaderStyle}>
+                <Mono>BRING AN ACTION INTO THIS CHAT</Mono>
+                <button
+                  type="button"
+                  style={attachMenuCloseStyle}
+                  onClick={() => setMenuOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              <ActionAttachmentMenu
+                conversationId={activeConversation.id}
+                currentFocusedActionId={focusedAction?.id ?? null}
+                actions={merchantActions}
+                onRequestFocusChange={(action) => {
+                  setMenuOpen(false);
+                  setPendingFocus(action);
+                }}
+              />
+            </div>
+          ) : null}
+          <Form
+            method="post"
+            preventScrollReset
+            style={composerStyle}
+            onSubmit={handleComposerSubmit}
+          >
+            <input type="hidden" name="intent" value="chat.message" />
+            <input
+              type="hidden"
+              name="conversationId"
+              value={activeConversation.id}
+            />
+            <button
+              type="button"
+              aria-label="Bring in an action"
+              style={attachButtonStyle(menuOpen)}
+              onClick={() => setMenuOpen(!menuOpen)}
+              disabled={isThinking}
+            >
+              +
+            </button>
+            {focusedAction?.id ? (
+              <input
+                type="hidden"
+                name="focusedActionId"
+                value={focusedAction.id}
+              />
+            ) : null}
+            <input
+              name="message"
+              required
+              autoComplete="off"
+              aria-label="Message Jefe"
+              placeholder={
+                focusedAction
+                  ? "Ask about this action, or tell me what to change..."
+                  : "Ask Jefe anything, or pick an action to work on..."
+              }
+              value={composerMessage}
+              onChange={(event) => setComposerMessage(event.currentTarget.value)}
+              style={composerInputStyle}
+              disabled={isThinking}
+            />
+            <button
+              type="submit"
+              style={sendButtonStateStyle(isThinking)}
+              disabled={isThinking}
+            >
+              Send
+            </button>
+          </Form>
+          <FocusedActionDecisionRow action={focusedAction} />
+        </div>
+
+        <FocusChangeConfirm
+          conversationId={activeConversation.id}
+          action={pendingFocus}
+          onCancel={() => setPendingFocus(null)}
+        />
+      </div>
+    </main>
+  );
+}
+
+function ChatTitleBlock({
+  conversation,
+}: {
+  conversation: ChatConversation;
+}) {
+  const renameFetcher = useFetcher<ChatRenameActionData>();
+  const renameData = renameFetcher.data;
+  const saving = renameFetcher.state !== "idle";
+  const fetchedTitle =
+    renameData?.intent === "chat.rename" &&
+    renameData.ok &&
+    renameData.conversationId === conversation.id
+      ? renameData.title
+      : undefined;
+  const displayTitle =
+    fetchedTitle === undefined
+      ? conversationTitle(conversation)
+      : fetchedTitle || "New chat";
+
+  const finishTitleEdit = (nextTitle: string) => {
+    if (nextTitle.trim() === displayTitle.trim()) return;
+    const formData = new FormData();
+    formData.set("intent", "chat.rename");
+    formData.set("conversationId", conversation.id);
+    formData.set("title", nextTitle);
+    renameFetcher.submit(formData, { method: "post" });
+  };
+
+  return (
+    <section style={chatTitleBlockStyle}>
+      <Mono>CHAT</Mono>
+      <ChatTitleInlineEditor
+        key={`${conversation.id}:${displayTitle}`}
+        title={displayTitle}
+        saving={saving}
+        onCommit={finishTitleEdit}
+      />
+    </section>
+  );
+}
+
+function ChatTitleInlineEditor({
+  title,
+  saving,
+  onCommit,
+}: {
+  title: string;
+  saving: boolean;
+  onCommit: (title: string) => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(title);
+  const cancelTitleBlurRef = useRef(false);
+  const [titleHovered, setTitleHovered] = useState(false);
+  const [titleFocused, setTitleFocused] = useState(false);
+  const titleInputActive = titleHovered || titleFocused;
+  const cancelInlineTitleEdit = () => {
+    cancelTitleBlurRef.current = true;
+    setDraftTitle(title);
+  };
+  const finishInlineTitleEdit = (nextTitle: string) => {
+    if (cancelTitleBlurRef.current) {
+      cancelTitleBlurRef.current = false;
+      return;
+    }
+    onCommit(nextTitle);
+  };
+
+  return (
+    <input
+      name="title"
+      value={draftTitle}
+      onChange={(event) => setDraftTitle(event.currentTarget.value)}
+      onMouseEnter={() => setTitleHovered(true)}
+      onMouseLeave={() => setTitleHovered(false)}
+      onFocus={() => setTitleFocused(true)}
+      onBlur={(event) => {
+        setTitleFocused(false);
+        finishInlineTitleEdit(event.currentTarget.value);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cancelInlineTitleEdit();
+          event.currentTarget.blur();
+        }
+      }}
+      disabled={saving}
+      aria-label="Chat name"
+      autoComplete="off"
+      style={chatTitleInlineInputStyle(titleInputActive)}
+    />
+  );
+}
+
+function FocusedActionStrip({
+  focusedAction,
+  focusExpanded,
+  onToggle,
+}: {
+  focusedAction: MerchantActionView;
+  focusExpanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <section style={focusStripWrapStyle} aria-label="Working on">
+      <div style={focusPanelStyle}>
+        <button
+          type="button"
+          style={focusStripButtonStyle}
+          onClick={onToggle}
+          aria-expanded={focusExpanded}
+        >
+          <span style={focusStripLeftStyle}>
+            <span style={boltStyle}>⚡</span>
+            <span style={focusStripTextStyle}>
+              <span style={focusStripLabelStyle}>WORKING ON</span>
+              <span style={focusStripTitleStyle}>{focusedAction.title}</span>
+            </span>
+          </span>
+          <span style={focusStripRightStyle}>
+            <span style={focusStatusStyle(focusedAction.status)}>
+              {focusedAction.statusLabel ||
+                statusLabelForAction(focusedAction.status)}
+            </span>
+            <span style={focusStripChevronStyle}>
+              {focusExpanded ? "▲" : "▼"}
+            </span>
+          </span>
+        </button>
+        {focusExpanded ? (
+          <div style={focusDetailStyle}>
+            {focusedAction.summary ? (
+              <p style={focusDetailSummaryStyle}>
+                {compactText(focusedAction.summary, 320)}
+              </p>
+            ) : null}
+            {focusedAction.displaySteps && focusedAction.displaySteps.length > 0 ? (
+              <div style={stepInlineListStyle}>
+                {focusedAction.displaySteps.slice(0, 3).map((step, index) => (
+                  <span
+                    key={`${displayStepLabel(step, index)}-${index}`}
+                    style={stepInlineItemStyle}
+                  >
+                    <span style={stepGlyphStyle}>{index === 0 ? "✓" : "·"}</span>
+                    {displayStepLabel(step, index)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {focusedAction.currentSignal || focusedAction.baselineSignal ? (
+              <div style={focusSignalStyle}>
+                {focusedAction.currentSignal || focusedAction.baselineSignal}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );
 }
 
-// Titles Jefe generated as a stand-in, never something the merchant typed. Seeding the edit
-// box with one of these would make "rename" mean "edit Jefe's guess", so the box opens empty
-// and the guess sits behind it as the placeholder.
-const PLACEHOLDER_TITLES = new Set(["New conversation", "Earlier conversation"]);
-
-// The chat's name, renameable in place. A thread is named from the merchant's first message,
-// which is a fair guess and often wrong — "hey jefe how're you" is not what that chat was
-// about. Renaming posts `chat.rename` through a FETCHER, not a Form: a navigation here would
-// scroll the merchant out of the thread they're reading. Submitting an empty box clears the
-// name and hands the thread back to the auto-title (server-side; see renameGeneralChat).
-function ChatTitle({
-  conversation,
-  displayedTitle,
+function ActionAttachmentMenu({
+  conversationId,
+  currentFocusedActionId,
+  actions,
+  onRequestFocusChange,
 }: {
-  conversation: ChatConversation | null;
-  displayedTitle: string;
+  conversationId: string;
+  currentFocusedActionId: string | null;
+  actions: MerchantActionView[];
+  onRequestFocusChange: (action: MerchantActionView) => void;
 }) {
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; title?: string | null }>();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const storedTitle = conversation?.title ?? null;
-  const isPlaceholder = !storedTitle || PLACEHOLDER_TITLES.has(storedTitle);
-  const saving = fetcher.state !== "idle";
-  // While the save is in flight the merchant should see the name they just typed, not the
-  // old one — the loader revalidation that makes it real lands a moment later.
-  const pendingTitle =
-    saving && typeof fetcher.formData?.get("title") === "string"
-      ? String(fetcher.formData.get("title")).trim()
-      : null;
-  const shownTitle = pendingTitle || displayedTitle;
-
-  // Focusing an input is a DOM call, not state — the one thing an effect is actually for.
-  useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
-
-  // The editor closes on SUBMIT, not on success. Waiting for the response would mean
-  // setState inside an effect (cascading renders, and the lint rule that catches them);
-  // closing optimistically is also the better read — the new name appears the instant the
-  // merchant presses Save, because `pendingTitle` renders it while the save is in flight.
-  // A failure is reported beside the title with the draft still held, so "Try again"
-  // reopens the box with their words in it rather than an empty one.
-  const failed = fetcher.state === "idle" && fetcher.data?.ok === false;
-
-  if (!conversation) {
-    return (
-      <Text as="h2" variant="headingSm" truncate>
-        {displayedTitle}
-      </Text>
-    );
-  }
-
-  if (!editing) {
-    const openEditor = (keepDraft: boolean) => {
-      if (!keepDraft) setDraft(isPlaceholder ? "" : String(storedTitle));
-      setEditing(true);
-    };
-    return (
-      <div style={chatTitleRowStyle}>
-        <Text as="h2" variant="headingSm" truncate>
-          {shownTitle}
+  const available = actions.filter((action) => action.id);
+  const workActions = available.filter(
+    (action) => action.id !== currentFocusedActionId,
+  );
+  const referenceActions = available.filter(
+    (action) => action.id !== currentFocusedActionId,
+  );
+  return (
+    <div style={actionMenuStyle}>
+      <div style={actionMenuGroupStyle}>
+        <Text as="h3" variant="headingSm">
+          Work on an action
         </Text>
-        {failed ? (
-          <button
-            type="button"
-            onClick={() => openEditor(true)}
-            style={chatTitleEditButtonStyle}
-          >
-            <Text as="span" variant="bodySm" tone="critical">
-              {fetcher.data?.error ?? "That name could not be saved."} Try again
-            </Text>
-          </button>
+        <Text as="p" variant="bodySm" tone="subdued">
+          Make one action the focus of this chat. Jefe can update that action by
+          default.
+        </Text>
+        {workActions.length > 0 ? (
+          workActions.slice(0, 8).map((action) =>
+            currentFocusedActionId ? (
+              <button
+                key={action.id}
+                type="button"
+                style={actionMenuButtonStyle}
+                onClick={() => onRequestFocusChange(action)}
+              >
+                <span>{action.title}</span>
+                <small>{statusLabelForAction(action.status)}</small>
+              </button>
+            ) : (
+              <Form key={action.id} method="post" style={inlineFormStyle}>
+                <input type="hidden" name="intent" value="chat.focus.change" />
+                <input
+                  type="hidden"
+                  name="conversationId"
+                  value={conversationId}
+                />
+                <input
+                  type="hidden"
+                  name="focusedActionId"
+                  value={action.id}
+                />
+                <button type="submit" style={actionMenuButtonStyle}>
+                  <span>{action.title}</span>
+                  <small>{statusLabelForAction(action.status)}</small>
+                </button>
+              </Form>
+            ),
+          )
         ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            No other actions are available.
+          </Text>
+        )}
+      </div>
+      <div style={actionMenuGroupStyle}>
+        <Text as="h3" variant="headingSm">
+          Reference an action
+        </Text>
+        <Text as="p" variant="bodySm" tone="subdued">
+          Add read-only context without changing what this chat is working on.
+        </Text>
+        {referenceActions.length > 0 ? (
+          referenceActions.slice(0, 8).map((action) => (
+            <Form key={action.id} method="post" style={inlineFormStyle}>
+              <input type="hidden" name="intent" value="chat.action.reference" />
+              <input
+                type="hidden"
+                name="conversationId"
+                value={conversationId}
+              />
+              <input
+                type="hidden"
+                name="referencedActionId"
+                value={action.id}
+              />
+              <button type="submit" style={actionMenuButtonStyle}>
+                <span>{action.title}</span>
+                <small>Read-only context</small>
+              </button>
+            </Form>
+          ))
+        ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            No other actions are available.
+          </Text>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FocusChangeConfirm({
+  conversationId,
+  action,
+  onCancel,
+}: {
+  conversationId: string;
+  action: MerchantActionView | null;
+  onCancel: () => void;
+}) {
+  if (!action) return null;
+  return (
+    <div style={modalBackdropStyle} role="presentation">
+      <section
+        style={chooserModalStyle}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="focus-change-title"
+      >
+        <div style={modalHeaderStyle}>
+          <div>
+            <Mono>CHANGE FOCUS</Mono>
+            <h2 id="focus-change-title" style={modalTitleStyle}>
+              Work on {action.title}?
+            </h2>
+          </div>
           <button
             type="button"
-            onClick={() => openEditor(false)}
-            style={chatTitleEditButtonStyle}
-            aria-label={`Rename this chat (currently ${shownTitle})`}
-            title="Rename this chat"
+            style={modalCloseButtonStyle}
+            onClick={onCancel}
+            aria-label="Cancel focus change"
           >
-            Rename
+            ×
           </button>
-        )}
+        </div>
+        <p style={summaryStyle}>
+          Jefe will treat this as the only action this chat can update by
+          default. Other referenced actions stay read-only context.
+        </p>
+        <div style={modalActionsStyle}>
+          <Form method="post" style={inlineFormStyle} onSubmit={onCancel}>
+            <input type="hidden" name="intent" value="chat.focus.change" />
+            <input type="hidden" name="conversationId" value={conversationId} />
+            <input type="hidden" name="focusedActionId" value={action.id} />
+            <Button submit variant="primary">
+              Switch action
+            </Button>
+          </Form>
+          <Button onClick={onCancel}>Cancel</Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FocusedMessageRow({
+  message,
+}: {
+  message: {
+    id: string;
+    role: string;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+  };
+}) {
+  if (message.role === "system") {
+    return (
+      <div style={systemEventStyle}>
+        <span style={systemEventLineStyle} />
+        <span style={systemEventTextStyle}>{message.content}</span>
+        <span style={systemEventLineStyle} />
       </div>
     );
   }
+  if (message.role === "reference") {
+    return (
+      <div style={referenceEventStyle}>
+        <span style={referenceEventIconStyle}>↗</span>
+        <span>Referenced action: {message.content}</span>
+      </div>
+    );
+  }
+  return <MessageRow from={message.role}>{message.content}</MessageRow>;
+}
 
+function FocusedActionDecisionRow({
+  action,
+}: {
+  action: MerchantActionView | null;
+}) {
+  if (!action?.actionRunId || action.status !== "proposed") return null;
   return (
-    <fetcher.Form
-      method="post"
-      action="/app?index"
-      style={chatTitleFormStyle}
-      onSubmit={() => setEditing(false)}
-    >
-      <input type="hidden" name="intent" value="chat.rename" />
-      <input type="hidden" name="conversationId" value={conversation.id} />
-      <input
-        ref={inputRef}
-        name="title"
-        value={draft}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            setEditing(false);
-          }
-        }}
-        // Matches CHAT_TITLE_MAX_LENGTH; the server re-clamps, this just stops the
-        // merchant typing past it with no feedback.
-        maxLength={72}
-        placeholder={isPlaceholder ? "Name this chat" : String(storedTitle)}
-        aria-label="Chat name"
-        autoComplete="off"
-        disabled={saving}
-        style={chatTitleInputStyle}
-      />
-      <button type="submit" style={chatTitleSaveStyle} disabled={saving}>
-        {saving ? "Saving" : "Save"}
-      </button>
-      <button
-        type="button"
-        onClick={() => setEditing(false)}
-        style={chatTitleCancelStyle}
-        disabled={saving}
-      >
-        Cancel
-      </button>
-    </fetcher.Form>
+    <div style={decisionRowStyle}>
+      {action.executable ? (
+        <Form method="post" onSubmit={markApprovalSent}>
+          <input type="hidden" name="intent" value="action.approve" />
+          <input type="hidden" name="actionRunId" value={action.actionRunId} />
+          <button type="submit" style={approveButtonStyle}>
+            Approve
+          </button>
+        </Form>
+      ) : null}
+      <Form method="post">
+        <input type="hidden" name="intent" value="action.defer" />
+        <input type="hidden" name="actionRunId" value={action.actionRunId} />
+        <input type="hidden" name="reason" value="defer" />
+        <button type="submit" style={quietDecisionButtonStyle}>
+          Not right now
+        </button>
+      </Form>
+      {!action.executable ? (
+        <div style={instructPathStyle}>
+          <span style={instructLeadStyle}>
+            {action.raise?.reason ??
+              "This one's yours to make - I can't do it for you yet."}
+          </span>
+          <span style={instructDetailStyle}>
+            {action.raise?.detail ?? "This action type is not live for execution yet."}
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
+}
+
+function actionForConversation(
+  conversation: ChatConversation | null,
+  actions: MerchantActionView[],
+) {
+  const focusedActionId = conversation?.focusedActionId ?? conversation?.focusedAction?.id;
+  if (!focusedActionId) return null;
+  return (
+    actions.find((action) => action.id === focusedActionId) ??
+    (conversation?.focusedAction
+      ? {
+          id: conversation.focusedAction.id,
+          title: conversation.focusedAction.title,
+          summary: conversation.focusedAction.summary ?? null,
+          status: conversation.focusedAction.status ?? "proposed",
+          sourceRecommendationId:
+            conversation.focusedAction.sourceRecommendationId ?? null,
+          actionRunId: conversation.focusedAction.actionRunId ?? null,
+        }
+      : null)
+  );
+}
+
+function pickNextAction(actions: MerchantActionView[]) {
+  return (
+    actions.find((action) => action.status === "proposed") ??
+    actions.find((action) => action.status === "accepted") ??
+    actions.find((action) => action.status === "in_progress") ??
+    null
+  );
+}
+
+function isWorkingAction(action: MerchantActionView) {
+  return action.status === "accepted" || action.status === "in_progress";
+}
+
+function isHistoricalAction(action: MerchantActionView) {
+  return ["completed", "deferred", "declined", "superseded"].includes(
+    action.status,
+  );
+}
+
+function statusLabelForAction(status: string) {
+  if (status === "in_progress") return "In progress";
+  return status
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function compactText(value: string, max: number) {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+function displayStepLabel(
+  step: string | { label?: string | null },
+  index: number,
+) {
+  if (typeof step === "string" && step.trim()) return step.trim();
+  if (typeof step === "object" && step?.label) return String(step.label);
+  return `Step ${index + 1}`;
+}
+
+function merchantActionFromPrimaryMove(
+  move: PrimaryMove,
+): MerchantActionView | null {
+  if (move.state === "empty") return null;
+  return {
+    id: "",
+    title: move.title,
+    summary: move.summary,
+    status: move.state === "in_progress" ? "in_progress" : "proposed",
+    statusLabel: move.statusLabel,
+    statusTone: move.statusTone,
+    sourceRecommendationId: move.recommendationId,
+    actionRunId: move.actionRunId,
+    actionType: move.actionType,
+    executable: move.executable,
+    raise: move.raise,
+    displaySteps: [
+      move.whyThisAction,
+      move.whyNow,
+      move.successSignal ?? "",
+    ].filter(Boolean),
+    baselineSignal: move.baselineSignal,
+    currentSignal: move.currentSignal,
+  };
 }
 
 function conversationTitle(conversation: ChatConversation | null) {
@@ -611,15 +1338,10 @@ function conversationTitle(conversation: ChatConversation | null) {
   return conversation.title;
 }
 
-function conversationHistoryTitle(
-  conversation: ChatConversation,
-  activeId: string | null,
-) {
-  const title =
-    conversation.title === "New conversation"
-      ? "Empty chat"
-      : conversation.title;
-  return conversation.id === activeId ? `${title} · Current` : title;
+function messageCountLabel(count: number | null | undefined) {
+  const safeCount = Number.isFinite(Number(count)) ? Number(count) : 0;
+  if (safeCount <= 0) return "No messages";
+  return `${safeCount} message${safeCount === 1 ? "" : "s"}`;
 }
 
 function formatConversationDate(value: string, timeZone?: string | null) {
@@ -629,8 +1351,6 @@ function formatConversationDate(value: string, timeZone?: string | null) {
     : new Intl.DateTimeFormat("en-GB", {
         day: "numeric",
         month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
         timeZone: timeZone ?? "Europe/London",
       }).format(date);
 }
@@ -648,89 +1368,6 @@ function EmptyChat() {
       </Text>
     </div>
   );
-}
-
-function StoreUpdatesPopover({
-  move,
-  outcomes,
-  headsUps,
-  quietLine,
-  currentSearch,
-  onNavigate,
-}: {
-  move: PrimaryMove;
-  outcomes: ExecutedAction[];
-  headsUps: HeadsUp[];
-  quietLine: string;
-  currentSearch: string;
-  onNavigate: () => void;
-}) {
-  const recentOutcomes = outcomes.slice(0, 2);
-  const hasUpdates =
-    move.state !== "empty" || headsUps.length > 0 || recentOutcomes.length > 0;
-  const chatTarget = move.recommendationId ?? move.actionRunId ?? "move";
-  const moveSubtitle = informativeSubtitle(move.summary, move.title);
-
-  return (
-    <div style={updatesPopoverStyle}>
-      <div style={updatesPopoverHeaderStyle}>
-        <Text as="h3" variant="headingSm">
-          Store updates
-        </Text>
-        <Text as="p" variant="bodySm" tone="subdued">
-          Live store signals and proposed work. These are separate from the
-          current chat.
-        </Text>
-      </div>
-      {headsUps.map((headsUp) => (
-        <div key={headsUp.id} style={updateItemStyle}>
-          <Mono>Worth knowing</Mono>
-          <Text as="p" variant="bodySm">
-            {headsUp.text}
-          </Text>
-        </div>
-      ))}
-      {recentOutcomes.map((action) => (
-        <div key={action.actionRunId} style={updateItemStyle}>
-          <Mono>Recent action</Mono>
-          <Text as="p" variant="bodySm">
-            {outcomeMessageText(action)}
-          </Text>
-        </div>
-      ))}
-      {move.state !== "empty" ? (
-        <div style={updateItemStyle}>
-          <Mono>{move.state === "in_progress" ? "In progress" : "Next move"}</Mono>
-          <Text as="h4" variant="headingSm">
-            {move.title}
-          </Text>
-          {moveSubtitle ? (
-            <Text as="p" variant="bodySm" tone="subdued">
-              {moveSubtitle}
-            </Text>
-          ) : null}
-          <Link
-            to={searchWith(currentSearch, { actionChat: chatTarget })}
-            style={updateActionLinkStyle}
-            onClick={onNavigate}
-          >
-            Talk this through →
-          </Link>
-        </div>
-      ) : null}
-      {!hasUpdates ? (
-        <div style={updateItemStyle}>
-          <Text as="p" variant="bodySm">
-            {quietLine}
-          </Text>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ConversationMomentAnchor({ anchorId }: { anchorId: string }) {
-  return <span id={anchorId} aria-hidden="true" style={momentAnchorStyle} />;
 }
 
 // Jefe failing to answer, said in the thread rather than on an error page. This renders in
@@ -782,122 +1419,6 @@ function MessageRow({ from, children }: { from: string; children: ReactNode }) {
   );
 }
 
-function buildConversationIndex(
-  outcomes: ExecutedAction[],
-  move: PrimaryMove,
-  storeTimeZone?: string | null,
-): IndexEntry[] {
-  const entries: IndexEntry[] = outcomes.map((action) => {
-    let kind: string;
-    let when: string | null;
-    if (action.status === "rejected") {
-      kind = "Declined";
-      when = action.rejectedAt ?? null;
-    } else if (action.status === "reverted") {
-      kind = "Reverted";
-      when = action.revertedAt ?? null;
-    } else if (action.outcome.measured) {
-      kind = "Reported back";
-      when = action.appliedAt ?? null;
-    } else {
-      kind = "Done";
-      when = action.appliedAt ?? null;
-    }
-    return {
-      id: `moment-${action.actionRunId}`,
-      label: action.sourceRecommendation?.title || action.headline,
-      kind,
-      dateLabel: formatShortDate(when, storeTimeZone),
-    };
-  });
-  if (move.state !== "empty") {
-    entries.push({
-      id: `moment-${move.recommendationId ?? move.actionRunId ?? "move"}`,
-      label: move.title,
-      kind: move.state === "in_progress" ? "In progress" : "Move proposed",
-      dateLabel: "",
-    });
-  }
-  return entries;
-}
-
-function scrollToMoment(id: string) {
-  const el = typeof document === "undefined" ? null : document.getElementById(id);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function ConversationIndex({ entries }: { entries: IndexEntry[] }) {
-  return (
-    <nav
-      className="jefe-home-index"
-      aria-label="Store update index"
-      style={indexRailStyle}
-    >
-      <span style={indexHeadingStyle}>Store updates</span>
-      <div style={indexListStyle}>
-        {entries.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            style={indexEntryStyle}
-            onClick={() => scrollToMoment(entry.id)}
-          >
-            <span style={indexEntryLabelStyle}>{entry.label}</span>
-            <span style={indexEntryMetaStyle}>
-              {entry.dateLabel ? `${entry.kind} · ${entry.dateLabel}` : entry.kind}
-            </span>
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
-// Jefe reporting back on a move already made — honest copy from the same fields the
-// old Action history / Also-in-progress cards used, now rendered in Store updates.
-function outcomeMessageText(action: ExecutedAction): string {
-  const name = action.sourceRecommendation?.title || action.headline;
-  if (action.status === "rejected") {
-    return (
-      action.declineLearning ??
-      `You passed on “${name}” — I've noted it wasn't right for now.`
-    );
-  }
-  if (action.status === "reverted") {
-    return `I reverted “${name}”.`;
-  }
-  if (action.outcome.measured) {
-    return action.outcome.summary ?? `“${name}” is done.`;
-  }
-  return `“${name}” is applied — I'm tracking how it lands and will report back here.`;
-}
-
-// The quiet-day line: grounded in a real thing Jefe is watching (or last noticed),
-// never fabricated. Falls back to an honest generic when there's nothing to surface.
-function buildQuietLine(
-  horizonWatching: HorizonWatch[],
-  insights: Insight[],
-): string {
-  const watch = (horizonWatching || []).find((item) => item.title);
-  if (watch) {
-    return watch.reason
-      ? `Nothing needs a decision from you right now. I'm keeping an eye on ${watch.title} — ${watch.reason}`
-      : `Nothing needs a decision from you right now. I'm keeping an eye on ${watch.title}.`;
-  }
-  const insight = (insights || []).find((item) => item.title);
-  if (insight) {
-    return `Nothing needs a decision from you right now. The most recent thing I noticed: ${insight.title}.`;
-  }
-  return "Nothing needs a decision from you right now — I'll surface your next move here the moment I have one.";
-}
-
-// One quiet header line naming the goal Jefe is working towards — the frame for every
-// recommendation. Null (renders nothing) when there's no goal yet; never fabricated.
-function firstGoalLine(goals: Goal[] | undefined): string | null {
-  const goal = (goals || []).find((item) => item.title && item.title.trim());
-  return goal ? goal.title.trim() : null;
-}
-
 export function DailyHomeLoading({ storeName }: { storeName: string }) {
   return (
     <main style={pageStyle}>
@@ -944,12 +1465,10 @@ export function DailyHomeLoading({ storeName }: { storeName: string }) {
 function Header({
   storeName,
   todayLabel,
-  goalLine,
   brandLogoUrl,
 }: {
   storeName: string;
   todayLabel?: string;
-  goalLine?: string | null;
   brandLogoUrl?: string | null;
 }) {
   return (
@@ -957,9 +1476,10 @@ function Header({
       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <StoreMark storeName={storeName} logoUrl={brandLogoUrl} />
-          <strong style={{ fontSize: 16 }}>{storeName || "Jefe Store"}</strong>
+          <strong style={{ fontSize: 14, color: COLORS.body }}>
+            {storeName || "Jefe Store"}
+          </strong>
         </div>
-        {goalLine ? <span style={goalLineStyle}>Working towards {goalLine}</span> : null}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <DateLabel>{todayLabel ?? ""}</DateLabel>
@@ -988,216 +1508,6 @@ function StoreMark({ storeName, logoUrl }: { storeName: string; logoUrl?: string
     <span style={markStyle} aria-hidden="true">
       {initial}
     </span>
-  );
-}
-
-function ActionChat({
-  move,
-  thread,
-  backTo,
-  todayLabel,
-}: {
-  move: PrimaryMove;
-  thread: ActionChatThread;
-  backTo: string;
-  todayLabel?: string;
-}) {
-  const navigation = useNavigation();
-  usePreserveChatScrollDuringIntent(navigation, "action.chat.message");
-  const pendingIntent = navigation.formData?.get("intent");
-  const isThinking =
-    navigation.state !== "idle" && pendingIntent === "action.chat.message";
-  const pendingMessage =
-    isThinking && typeof navigation.formData?.get("message") === "string"
-      ? String(navigation.formData.get("message")).trim()
-      : "";
-  const [composerMessage, setComposerMessage] = useState("");
-  // Same contract as the store chat: clear the box and start the felt-latency clock.
-  const handleComposerSubmit = () => {
-    markChatTurnSent();
-    setComposerMessage("");
-  };
-  // The REAL last message, which is null on a blank thread — the synthetic opening
-  // line below is Jefe's copy, not a reply, and must never close a turn.
-  const lastRealMessage = thread.messages[thread.messages.length - 1] ?? null;
-  const messages = thread.messages.length
-    ? thread.messages
-    : [
-        {
-          id: "opening",
-          role: "assistant",
-          content:
-            "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you are ready.",
-        },
-      ];
-  const subtitle = informativeSubtitle(move.summary, move.title);
-  return (
-    <main style={pageStyle}>
-      <div style={chatShellStyle}>
-        <ChatTurnReporter
-          lastMessageId={lastRealMessage?.id ?? null}
-          lastMessageRole={lastRealMessage?.role ?? null}
-        />
-        <div style={chatTopStyle}>
-          <Link to={backTo} style={backLinkStyle}>
-            ← Back
-          </Link>
-          <DateLabel>{todayLabel ?? ""}</DateLabel>
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            marginTop: 20,
-          }}
-        >
-          <Mono>ABOUT THIS MOVE</Mono>
-          <StatusPill tone={move.statusTone}>{move.statusLabel}</StatusPill>
-        </div>
-        <h1 style={chatTitleStyle}>{move.title}</h1>
-        {subtitle ? <p style={chatSubtitleStyle}>{subtitle}</p> : null}
-        <div style={{ ...chatDividerStyle, marginTop: 20 }} />
-        <div style={messagesStyle}>
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              style={{
-                ...messageRowStyle,
-                justifyContent:
-                  message.role === "merchant" ? "flex-end" : "flex-start",
-              }}
-            >
-              {message.role !== "merchant" ? (
-                <span style={smallMarkStyle}>J</span>
-              ) : null}
-              <div
-                style={
-                  message.role === "merchant"
-                    ? merchantBubbleStyle
-                    : assistantBubbleStyle
-                }
-              >
-                {message.content}
-              </div>
-            </div>
-          ))}
-          {pendingMessage ? (
-            <div style={{ ...messageRowStyle, justifyContent: "flex-end" }}>
-              <div style={merchantBubbleStyle}>{pendingMessage}</div>
-            </div>
-          ) : null}
-          {isThinking ? (
-            <div style={messageRowStyle} aria-live="polite">
-              <span style={smallMarkStyle}>J</span>
-              <div style={thinkingStyle}>Thinking</div>
-            </div>
-          ) : null}
-        </div>
-        <div style={chatComposerWrapStyle}>
-          <div style={chipsStyle}>
-            <ChatPrompt message="Why this one?" move={move} />
-            <ChatPrompt message="What exactly would you order?" move={move} />
-            {move.actionRunId ? (
-              <Form method="post">
-                <input
-                  type="hidden"
-                  name="intent"
-                  value="action.revise_scope"
-                />
-                <input
-                  type="hidden"
-                  name="actionRunId"
-                  value={move.actionRunId}
-                />
-                <input
-                  type="hidden"
-                  name="recommendationId"
-                  value={move.recommendationId ?? ""}
-                />
-                <input type="hidden" name="maxProducts" value="1" />
-                <ChipButton>Can we do just one product?</ChipButton>
-              </Form>
-            ) : null}
-            {move.actionRunId ? (
-              <Form method="post">
-                <input type="hidden" name="intent" value="action.defer" />
-                <input
-                  type="hidden"
-                  name="actionRunId"
-                  value={move.actionRunId}
-                />
-                <input type="hidden" name="reason" value="defer" />
-                <ChipButton>Maybe later</ChipButton>
-              </Form>
-            ) : null}
-          </div>
-          <Form
-            method="post"
-            preventScrollReset
-            style={composerStyle}
-            onSubmit={handleComposerSubmit}
-          >
-            <input type="hidden" name="intent" value="action.chat.message" />
-            <MoveHiddenFields move={move} />
-            <input
-              name="message"
-              required
-              autoComplete="off"
-              aria-label="Ask about this move"
-              placeholder="Ask about this move, or tell me what to change..."
-              value={composerMessage}
-              onChange={(event) =>
-                setComposerMessage(event.currentTarget.value)
-              }
-              style={composerInputStyle}
-              disabled={isThinking}
-            />
-            <button
-              type="submit"
-              style={sendButtonStateStyle(isThinking)}
-              disabled={isThinking}
-            >
-              Send
-            </button>
-          </Form>
-          <div style={decisionRowStyle}>
-            {move.actionRunId && move.executable ? (
-              // Saying yes starts a wait too — Jefe goes and changes the store, and
-              // the merchant sits there until the outcome comes back.
-              <Form method="post" onSubmit={markApprovalSent}>
-                <input type="hidden" name="intent" value="action.approve" />
-                <input
-                  type="hidden"
-                  name="actionRunId"
-                  value={move.actionRunId}
-                />
-                <button type="submit" style={approveButtonStyle}>
-                  Approve
-                </button>
-              </Form>
-            ) : null}
-            {move.actionRunId ? (
-              <Form method="post">
-                <input type="hidden" name="intent" value="action.defer" />
-                <input
-                  type="hidden"
-                  name="actionRunId"
-                  value={move.actionRunId}
-                />
-                <input type="hidden" name="reason" value="defer" />
-                <button type="submit" style={quietDecisionButtonStyle}>
-                  Not right now
-                </button>
-              </Form>
-            ) : null}
-            {!move.actionRunId || !move.executable ? (
-              <InstructPath move={move} />
-            ) : null}
-          </div>
-        </div>
-      </div>
-    </main>
   );
 }
 
@@ -1255,6 +1565,38 @@ function usePreserveChatScrollDuringIntent(
   }, [active]);
 }
 
+function useScrollTranscriptToLatest(
+  conversationId: string | null,
+  messageCount: number,
+) {
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const lastConversationIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!conversationId) return undefined;
+    const isOpeningConversation =
+      lastConversationIdRef.current !== conversationId;
+    lastConversationIdRef.current = conversationId;
+    if (!isOpeningConversation) return undefined;
+    const transcript = transcriptRef.current;
+    if (!transcript) return undefined;
+
+    const scrollToLatest = () => {
+      transcript.scrollTop = transcript.scrollHeight;
+    };
+    scrollToLatest();
+    if (typeof window === "undefined") return undefined;
+    const frame = window.requestAnimationFrame(scrollToLatest);
+    const timeout = window.setTimeout(scrollToLatest, 80);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [conversationId, messageCount]);
+
+  return transcriptRef;
+}
+
 function restoreChatScroll(snapshot: { y: number; nearBottom: boolean }) {
   if (snapshot.nearBottom) {
     window.scrollTo({ top: document.documentElement.scrollHeight });
@@ -1279,80 +1621,6 @@ function distanceFromDocumentBottom() {
     document.body?.scrollHeight ?? 0,
   );
   return Math.max(0, scrollHeight - (window.scrollY + window.innerHeight));
-}
-
-// What a merchant sees when Jefe is NOT going to do this one itself.
-//
-// This replaces "This move is advisory until a typed action preview is available." — our
-// vocabulary, framed as an absence, offering nothing to do. It sat on the branch that most
-// recommendations land in, because Jefe has one adapter and can talk about far more than it
-// can execute. So the most common outcome read as a failed action rather than as advice.
-//
-// The no-dead-ends invariant says every recommendation either executes, asks for approval, or
-// INSTRUCTS. This is the instruct path: say plainly that it's the merchant's to make, and give
-// the real reason when we have one. `raise` comes from the stored eligibility record — a cap
-// they set, a confidence Jefe couldn't reach — and is null when there is nothing specific to
-// say, in which case we say the general thing rather than invent a cause.
-function InstructPath({ move }: { move: PrimaryMove }) {
-  return (
-    <div style={instructPathStyle}>
-      <span style={instructLeadStyle}>
-        {move.raise?.reason ?? "This one's yours to make — I can't do it for you yet."}
-      </span>
-      {move.raise?.detail ? (
-        <span style={instructDetailStyle}>{move.raise.detail}</span>
-      ) : null}
-    </div>
-  );
-}
-
-function ChatPrompt({ message, move }: { message: string; move: PrimaryMove }) {
-  return (
-    <Form method="post" preventScrollReset>
-      <input type="hidden" name="intent" value="action.chat.message" />
-      <MoveHiddenFields move={move} />
-      <input type="hidden" name="message" value={message} />
-      <ChipButton>{message}</ChipButton>
-    </Form>
-  );
-}
-
-function StorePrompt({
-  message,
-  conversationId,
-}: {
-  message: string;
-  conversationId?: string | null;
-}) {
-  return (
-    <Form method="post" preventScrollReset onSubmit={markChatTurnSent}>
-      <input type="hidden" name="intent" value="chat.message" />
-      <input type="hidden" name="conversationId" value={conversationId ?? ""} />
-      <input type="hidden" name="message" value={message} />
-      <ChipButton>{message}</ChipButton>
-    </Form>
-  );
-}
-
-function MoveHiddenFields({ move }: { move: PrimaryMove }) {
-  return (
-    <>
-      <input type="hidden" name="actionRunId" value={move.actionRunId ?? ""} />
-      <input
-        type="hidden"
-        name="recommendationId"
-        value={move.recommendationId ?? ""}
-      />
-    </>
-  );
-}
-
-function ChipButton({ children }: { children: ReactNode }) {
-  return (
-    <button type="submit" style={chipStyle}>
-      {children}
-    </button>
-  );
 }
 
 function StatusPill({
@@ -1536,15 +1804,6 @@ function successSignalText(signal: SuccessSignalLike) {
   return [description, target, timeframe].filter(Boolean).join(" · ") || null;
 }
 
-function informativeSubtitle(summary: string, title: string) {
-  const cleanSummary = summary.replace(/\s+/g, " ").trim();
-  const cleanTitle = title.replace(/\s+/g, " ").trim();
-  if (!cleanSummary) return null;
-  if (cleanSummary.toLocaleLowerCase() === cleanTitle.toLocaleLowerCase())
-    return null;
-  return cleanSummary;
-}
-
 function goalTitle(goalId: string | null, goals: Goal[]) {
   if (!goalId) return null;
   return goals.find((goal) => goal.id === goalId)?.title ?? null;
@@ -1582,17 +1841,31 @@ const pageStyle: CSSProperties = {
   fontFamily: FONT.sans,
   padding: "48px 24px 96px",
 };
+const chatPageStyle: CSSProperties = {
+  ...pageStyle,
+  boxSizing: "border-box",
+  height: "100dvh",
+  inset: 0,
+  maxHeight: "100dvh",
+  minHeight: 0,
+  overscrollBehavior: "none",
+  overflow: "hidden",
+  padding: "32px 24px",
+  position: "fixed",
+  width: "100%",
+};
 const shellStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 40,
+  gap: 36,
   maxWidth: 760,
   margin: "0 auto",
   width: "100%",
 };
 const chatShellStyle: CSSProperties = {
   maxWidth: 760,
-  minHeight: "calc(100vh - 96px)",
+  height: "100%",
+  minHeight: 0,
   margin: "0 auto",
   display: "flex",
   flexDirection: "column",
@@ -1638,7 +1911,7 @@ const monoStyle: CSSProperties = {
   fontFamily: FONT.mono,
   fontSize: 11,
   fontWeight: 600,
-  letterSpacing: "0.14em",
+  letterSpacing: 0,
   textTransform: "uppercase",
 };
 const dateStyle: CSSProperties = {
@@ -1648,12 +1921,6 @@ const dateStyle: CSSProperties = {
   fontWeight: 500,
   letterSpacing: 0,
   whiteSpace: "nowrap",
-};
-const goalLineStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 12.5,
-  fontWeight: 600,
-  letterSpacing: "0.01em",
 };
 const headlineStyle: CSSProperties = {
   fontFamily: FONT.serif,
@@ -1676,6 +1943,469 @@ const cardStyle: CSSProperties = {
   flexDirection: "column",
   gap: 22,
   padding: "clamp(24px, 3.5vw, 40px)",
+};
+const homeHeroStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 22,
+};
+const spotlightStyle: CSSProperties = {
+  ...cardStyle,
+  gap: 18,
+};
+const spotlightTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.serif,
+  fontSize: 30,
+  fontWeight: 500,
+  lineHeight: 1.2,
+  margin: 0,
+};
+const actionButtonRowStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 10,
+};
+const homeSectionStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+};
+const homeSectionHeaderStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+};
+const sectionTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.serif,
+  fontSize: 24,
+  fontWeight: 500,
+  lineHeight: 1.25,
+  margin: 0,
+};
+const chatListStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 0,
+};
+const chatListItemStyle: CSSProperties = {
+  alignItems: "flex-start",
+  borderBottom: `1px solid ${COLORS.hairline}`,
+  color: COLORS.ink,
+  display: "flex",
+  gap: 16,
+  justifyContent: "space-between",
+  padding: "14px 0",
+  textDecoration: "none",
+};
+const chatListBodyStyle: CSSProperties = {
+  display: "flex",
+  flex: "1 1 auto",
+  flexDirection: "column",
+  gap: 5,
+  minWidth: 0,
+};
+const chatListTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 14.5,
+  fontWeight: 750,
+  lineHeight: 1.3,
+};
+const chatListMetaLineStyle: CSSProperties = {
+  alignItems: "center",
+  color: COLORS.muted,
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: 12.5,
+  gap: "6px 12px",
+  lineHeight: 1.35,
+};
+const chatFocusMetaStyle: CSSProperties = {
+  alignItems: "center",
+  color: COLORS.meta,
+  display: "inline-flex",
+  gap: 5,
+  minWidth: 0,
+};
+const chatFocusLeadStyle: CSSProperties = {
+  color: COLORS.body,
+  fontWeight: 700,
+};
+const boltStyle: CSSProperties = {
+  color: "#c49a1a",
+  fontWeight: 800,
+};
+const chatListDateStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 11,
+  lineHeight: 1.4,
+  whiteSpace: "nowrap",
+};
+const actionListStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+};
+const progressRowStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.hairline}`,
+  borderRadius: 10,
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+  padding: "18px 20px",
+};
+const progressRowHeaderStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  gap: 10,
+  justifyContent: "space-between",
+};
+const progressRowTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 15,
+  fontWeight: 750,
+  lineHeight: 1.25,
+};
+const actionCardSummaryStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 13.5,
+  lineHeight: 1.45,
+  margin: 0,
+};
+const stepInlineListStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px 18px",
+};
+const stepInlineItemStyle: CSSProperties = {
+  alignItems: "center",
+  color: COLORS.body,
+  display: "inline-flex",
+  fontSize: 13,
+  gap: 7,
+  lineHeight: 1.35,
+};
+const stepGlyphStyle: CSSProperties = {
+  color: COLORS.green,
+  fontWeight: 800,
+};
+const progressRowFooterStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 14,
+  justifyContent: "space-between",
+};
+const signalLineStyle: CSSProperties = {
+  alignItems: "center",
+  color: COLORS.meta,
+  display: "flex",
+  flexWrap: "wrap",
+  fontSize: 12.5,
+  gap: 8,
+};
+const historyRowStyle: CSSProperties = {
+  ...chatListItemStyle,
+};
+const historyOutcomeStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 13,
+  lineHeight: 1.45,
+};
+const historyStatusGroupStyle: CSSProperties = {
+  alignItems: "flex-end",
+  display: "flex",
+  flexDirection: "column",
+  flex: "0 0 auto",
+  gap: 5,
+};
+const historyStatusStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 11,
+  fontWeight: 700,
+  lineHeight: 1.25,
+  textTransform: "uppercase",
+};
+const emptySectionStyle: CSSProperties = {
+  background: "rgba(255, 253, 250, 0.64)",
+  border: `1px dashed ${COLORS.border}`,
+  borderRadius: 8,
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+  padding: "18px 16px",
+};
+const inlineFormStyle: CSSProperties = {
+  display: "inline-flex",
+};
+const pillButtonStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  color: COLORS.navy,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  fontWeight: 750,
+  lineHeight: 1.2,
+  padding: "8px 16px",
+  whiteSpace: "nowrap",
+};
+const primaryButtonStyle: CSSProperties = {
+  background: COLORS.navy,
+  border: 0,
+  borderRadius: 9,
+  color: "#fff",
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 14,
+  fontWeight: 750,
+  lineHeight: 1.2,
+  padding: "12px 20px",
+};
+const quietPillButtonStyle: CSSProperties = {
+  ...pillButtonStyle,
+};
+const textButtonStyle: CSSProperties = {
+  background: "transparent",
+  border: 0,
+  color: COLORS.navy,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  fontWeight: 750,
+  padding: 0,
+};
+const modalBackdropStyle: CSSProperties = {
+  alignItems: "center",
+  background: "rgba(31, 41, 51, 0.28)",
+  display: "flex",
+  inset: 0,
+  justifyContent: "center",
+  padding: 20,
+  position: "fixed",
+  zIndex: 40,
+};
+const chooserModalStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  boxShadow: "0 28px 80px rgba(31, 41, 51, 0.22)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 18,
+  maxHeight: "min(680px, calc(100vh - 40px))",
+  maxWidth: 560,
+  overflowY: "auto",
+  padding: 24,
+  width: "100%",
+};
+const talkChooserModalStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 16,
+  boxShadow: "0 24px 60px rgba(39, 55, 77, 0.18)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 18,
+  maxHeight: "min(620px, calc(100vh - 40px))",
+  maxWidth: 480,
+  overflowY: "auto",
+  padding: 28,
+  width: "100%",
+};
+const talkChooserLeadStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 15,
+  lineHeight: 1.5,
+  margin: 0,
+};
+const talkChooserStrongStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontWeight: 700,
+};
+const talkChooserListStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+};
+const talkChooserCardStyle: CSSProperties = {
+  background: "#f8f5f0",
+  border: "1px solid #e2dbd2",
+  borderRadius: 10,
+  color: COLORS.ink,
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  padding: "13px 15px",
+  textDecoration: "none",
+};
+const talkChooserCardTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 14.5,
+  fontWeight: 700,
+  lineHeight: 1.25,
+};
+const talkChooserCardMetaStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 12.5,
+  fontWeight: 400,
+  lineHeight: 1.25,
+};
+const talkChooserDividerStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+  height: 1,
+  width: "100%",
+};
+const talkChooserActionsStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 12,
+  paddingTop: 0,
+};
+const talkChooserPrimaryButtonStyle: CSSProperties = {
+  ...primaryButtonStyle,
+  borderRadius: 8,
+  fontSize: 13.5,
+  padding: "11px 20px",
+};
+const talkChooserCancelStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 13.5,
+  fontWeight: 600,
+  lineHeight: 1.2,
+  padding: "11px 4px",
+  textDecoration: "none",
+};
+const modalHeaderStyle: CSSProperties = {
+  alignItems: "flex-start",
+  display: "flex",
+  gap: 16,
+  justifyContent: "space-between",
+};
+const modalTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.serif,
+  fontSize: 24,
+  fontWeight: 500,
+  lineHeight: 1.25,
+  margin: "6px 0 0",
+};
+const modalCloseButtonStyle: CSSProperties = {
+  background: "none",
+  border: 0,
+  color: COLORS.muted,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 28,
+  lineHeight: 1,
+  padding: 0,
+};
+const modalActionsStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 12,
+};
+const actionMenuStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+};
+const actionMenuGroupStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 9,
+};
+const actionMenuButtonStyle: CSSProperties = {
+  background: "rgba(251, 250, 247, 0.78)",
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  color: COLORS.ink,
+  cursor: "pointer",
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: FONT.sans,
+  gap: 4,
+  padding: "10px 12px",
+  textAlign: "left",
+  width: "100%",
+};
+const attachMenuPanelStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 12,
+  boxShadow: "0 18px 44px rgba(39,55,77,0.10)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+  marginBottom: 12,
+  maxHeight: "min(420px, 45vh)",
+  overflowY: "auto",
+  padding: 16,
+};
+const attachMenuHeaderStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+};
+const attachMenuCloseStyle: CSSProperties = {
+  background: "transparent",
+  border: 0,
+  color: COLORS.meta,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  fontWeight: 700,
+  padding: 0,
+};
+const systemEventStyle: CSSProperties = {
+  alignItems: "center",
+  alignSelf: "center",
+  display: "flex",
+  gap: 18,
+  justifyContent: "center",
+  padding: "22px 0 18px",
+  width: "100%",
+};
+const systemEventLineStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
+  flex: "1 1 auto",
+  minWidth: 32,
+};
+const systemEventTextStyle: CSSProperties = {
+  color: COLORS.meta,
+  flex: "0 1 auto",
+  fontFamily: FONT.mono,
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: 1.35,
+  textAlign: "center",
+};
+const referenceEventStyle: CSSProperties = {
+  alignItems: "center",
+  alignSelf: "flex-start",
+  border: `1px dashed ${COLORS.border}`,
+  borderRadius: 10,
+  color: COLORS.body,
+  display: "inline-flex",
+  fontSize: 13,
+  fontWeight: 700,
+  gap: 8,
+  padding: "8px 12px",
+};
+const referenceEventIconStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontSize: 14,
 };
 const summaryStyle: CSSProperties = {
   color: COLORS.body,
@@ -1706,28 +2436,144 @@ const backLinkStyle: CSSProperties = {
   fontWeight: 700,
   textDecoration: "none",
 };
-const chatTitleStyle: CSSProperties = {
-  fontFamily: FONT.serif,
-  fontSize: 26,
-  lineHeight: 1.28,
-  margin: "14px 0 0",
-  fontWeight: 500,
+function chatTitleInlineInputStyle(active: boolean): CSSProperties {
+  return {
+    background: active ? COLORS.card : "transparent",
+    border: `1px solid ${active ? COLORS.border : "transparent"}`,
+    borderRadius: 10,
+    boxSizing: "border-box",
+    color: COLORS.ink,
+    display: "block",
+    fontFamily: FONT.serif,
+    fontSize: 26,
+    fontWeight: 500,
+    lineHeight: 1.28,
+    marginLeft: -14,
+    minWidth: 0,
+    outline: "none",
+    padding: "6px 14px",
+    width: "calc(100% + 28px)",
+  };
+}
+const chatTitleBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  padding: "26px 0 10px",
 };
-const chatSubtitleStyle: CSSProperties = {
-  ...summaryStyle,
-  fontSize: 15.5,
-  marginTop: 10,
+const focusStripWrapStyle: CSSProperties = {
+  background: COLORS.page,
+  display: "flex",
+  flexDirection: "column",
+  flex: "0 0 auto",
+  padding: "12px 0",
+  zIndex: 12,
 };
-const chatDividerStyle: CSSProperties = {
+const focusPanelStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+};
+const focusStripButtonStyle: CSSProperties = {
+  alignItems: "center",
+  background: "transparent",
+  border: 0,
+  borderRadius: 0,
+  color: COLORS.ink,
+  cursor: "pointer",
+  display: "flex",
+  fontFamily: FONT.sans,
+  gap: 16,
+  justifyContent: "space-between",
+  outline: "none",
+  padding: "18px 20px",
+  textAlign: "left",
+  width: "100%",
+};
+const focusStripLeftStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flex: "1 1 auto",
+  gap: 12,
+  minWidth: 0,
+};
+const focusStripTextStyle: CSSProperties = {
+  display: "flex",
+  flex: "1 1 auto",
+  flexDirection: "column",
+  gap: 4,
+  minWidth: 0,
+};
+const focusStripRightStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flex: "0 0 auto",
+  gap: 14,
+};
+const focusStripLabelStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 700,
+  lineHeight: 1.25,
+  textTransform: "uppercase",
+  whiteSpace: "nowrap",
+};
+const focusStripTitleStyle: CSSProperties = {
+  flex: "1 1 auto",
+  fontSize: 15,
+  fontWeight: 750,
+  lineHeight: 1.25,
+  minWidth: 0,
+};
+const focusStripChevronStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 12,
+  lineHeight: 1,
+};
+const focusDetailStyle: CSSProperties = {
   borderTop: `1px solid ${COLORS.hairline}`,
+  display: "flex",
+  flexDirection: "column",
+  gap: 18,
+  padding: "22px 28px 24px",
 };
+const focusDetailSummaryStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 16,
+  lineHeight: 1.5,
+  margin: 0,
+};
+const focusSignalStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 600,
+};
+
+function focusStatusStyle(status: string): CSSProperties {
+  const active = status === "in_progress" || status === "completed";
+  return {
+    color: active ? COLORS.green : COLORS.meta,
+    fontFamily: FONT.mono,
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.25,
+    whiteSpace: "nowrap",
+  };
+}
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
   display: "flex",
   flexDirection: "column",
   gap: 14,
-  minHeight: 320,
-  padding: "28px 0",
+  minHeight: 0,
+  overflowY: "auto",
+  overscrollBehavior: "contain",
+  padding: "36px 4px 56px 0",
 };
 const messageRowStyle: CSSProperties = {
   display: "flex",
@@ -1801,128 +2647,11 @@ const thinkingStyle: CSSProperties = {
 };
 const chatComposerWrapStyle: CSSProperties = {
   flex: "none",
-  paddingTop: 16,
-};
-const conversationStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-};
-const momentAnchorStyle: CSSProperties = {
-  display: "block",
-  height: 0,
-  overflow: "hidden",
-};
-const indexRailStyle: CSSProperties = {
-  borderBottom: `1px solid ${COLORS.hairline}`,
-  display: "flex",
-  flexDirection: "column",
-  gap: 10,
-  padding: "14px 16px",
-};
-const indexHeadingStyle: CSSProperties = {
-  ...monoStyle,
-  fontSize: 10,
-};
-const indexListStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 8,
-};
-const indexEntryStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 10,
-  color: COLORS.body,
-  cursor: "pointer",
-  display: "flex",
-  flexDirection: "column",
-  fontFamily: FONT.sans,
-  gap: 2,
-  maxWidth: 220,
-  padding: "8px 10px",
-  textAlign: "left",
-};
-const indexEntryLabelStyle: CSSProperties = {
-  fontSize: 13,
-  fontWeight: 700,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-const indexEntryMetaStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 11,
-  fontWeight: 600,
-};
-
-const threadControlsStyle: CSSProperties = {
-  background: "rgba(255, 253, 250, 0.72)",
-  borderBottom: `1px solid ${COLORS.hairline}`,
-  borderTop: `1px solid ${COLORS.hairline}`,
-  padding: "18px 16px",
-};
-const threadIdentityStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  minWidth: 180,
-};
-const chatTitleRowStyle: CSSProperties = {
-  alignItems: "baseline",
-  display: "flex",
-  gap: 8,
-  minWidth: 0,
-};
-// Quiet by design: renaming is housekeeping, so the affordance sits beside the name without
-// competing with the thread's real controls (Store updates / Chats / New chat).
-const chatTitleEditButtonStyle: CSSProperties = {
-  background: "none",
-  border: "none",
-  color: COLORS.muted,
-  cursor: "pointer",
-  flex: "none",
-  fontFamily: "inherit",
-  fontSize: 11.5,
-  padding: 0,
-  textDecoration: "underline",
-};
-const chatTitleFormStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 6,
-};
-const chatTitleInputStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 6,
-  color: COLORS.ink,
-  fontFamily: "inherit",
-  fontSize: 13.5,
-  fontWeight: 600,
-  minWidth: 0,
-  padding: "4px 8px",
-  width: 200,
-};
-const chatTitleSaveStyle: CSSProperties = {
-  background: COLORS.navy,
-  border: `1px solid ${COLORS.navy}`,
-  borderRadius: 6,
-  color: COLORS.card,
-  cursor: "pointer",
-  fontFamily: "inherit",
-  fontSize: 12,
-  fontWeight: 600,
-  padding: "4px 10px",
-};
-const chatTitleCancelStyle: CSSProperties = {
-  background: "none",
-  border: "none",
-  color: COLORS.muted,
-  cursor: "pointer",
-  fontFamily: "inherit",
-  fontSize: 12,
-  padding: "4px 2px",
+  background: COLORS.page,
+  bottom: 0,
+  paddingTop: 18,
+  position: "sticky",
+  zIndex: 14,
 };
 const emptyChatStyle: CSSProperties = {
   alignItems: "center",
@@ -1942,52 +2671,6 @@ const emptyChatMarkStyle: CSSProperties = {
   marginBottom: 4,
   width: 38,
 };
-const updatesPopoverStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  maxHeight: 480,
-  maxWidth: 380,
-  minWidth: 320,
-  overflowY: "auto",
-  padding: 16,
-};
-const updatesPopoverHeaderStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 5,
-  padding: "2px 4px 14px",
-};
-const updateItemStyle: CSSProperties = {
-  borderTop: `1px solid ${COLORS.hairline}`,
-  display: "flex",
-  flexDirection: "column",
-  gap: 7,
-  padding: "14px 4px",
-};
-const updateActionLinkStyle: CSSProperties = {
-  color: COLORS.navy,
-  fontSize: 13.5,
-  fontWeight: 700,
-  marginTop: 3,
-  textDecoration: "none",
-};
-const chipsStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 7,
-  marginBottom: 14,
-};
-const chipStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 999,
-  color: COLORS.body,
-  cursor: "pointer",
-  fontFamily: FONT.sans,
-  fontSize: 13,
-  fontWeight: 700,
-  padding: "8px 10px",
-};
 const composerStyle: CSSProperties = {
   alignItems: "center",
   background: COLORS.card,
@@ -1998,6 +2681,26 @@ const composerStyle: CSSProperties = {
   padding: "8px 8px 8px 16px",
   boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
 };
+function attachButtonStyle(active: boolean): CSSProperties {
+  return {
+    alignItems: "center",
+    background: active ? COLORS.navy : "transparent",
+    border: `1px solid ${active ? COLORS.navy : COLORS.border}`,
+    borderRadius: 999,
+    color: active ? "#fff" : COLORS.navy,
+    cursor: "pointer",
+    display: "inline-flex",
+    flex: "0 0 auto",
+    fontFamily: FONT.sans,
+    fontSize: 20,
+    fontWeight: 500,
+    height: 34,
+    justifyContent: "center",
+    lineHeight: 1,
+    padding: 0,
+    width: 34,
+  };
+}
 const composerInputStyle: CSSProperties = {
   background: "transparent",
   border: 0,
