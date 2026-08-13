@@ -22,6 +22,12 @@ import {
   buildListingCopyPreview,
   computeListingCopyAutoEligibility,
 } from "./listing-copy-adapter.server.js";
+import { buildStaleListingTidyUpProposal } from "./stale-listing-tidy-up.server.js";
+import {
+  DEFAULT_PRODUCT_STATUS_CAPS,
+  buildProductStatusPreview,
+  computeProductStatusAutoEligibility,
+} from "./product-status-adapter.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
@@ -264,6 +270,98 @@ function listingCopyScopeNudge({ summary }) {
   };
 }
 
+/**
+ * Find live products that nobody can buy — no stock left anywhere, nothing sold for months —
+ * and propose archiving them. Returns null (→ "no_opportunity") when there is nothing stale,
+ * AND on a store whose own order history is shorter than the window, where "hasn't sold in
+ * 180 days" is a fact about Jefe's arrival rather than about the product.
+ * @param {any} prisma
+ * @param {{ merchantId: string, shopId: string, intent?: any }} input
+ */
+async function resolveTidyUp(prisma, { merchantId, shopId, intent }) {
+  // Defensive like resolveListingCopy: this resolver runs inside getScopeGatedOpportunity's
+  // loop over every proposable type, so a narrow test double must get "no opportunity"
+  // rather than take down the nudge for unrelated actions.
+  if (!prisma?.product?.findMany || !prisma?.order?.findFirst) return null;
+  const requestedMax = Number(intent?.params?.maxProducts);
+  const proposal = await buildStaleListingTidyUpProposal(prisma, {
+    merchantId,
+    shopId,
+    options: {
+      maxProducts: Number.isInteger(requestedMax) && requestedMax > 0 ? requestedMax : undefined,
+    },
+  });
+  if (proposal.status !== "proposed") return null;
+
+  const preview = buildProductStatusPreview({ items: proposal.items });
+  if (preview.productCount < 1) return null;
+
+  return {
+    preview,
+    summary: {
+      productCount: preview.productCount,
+      windowDays: proposal.windowDays,
+      // The per-product "why", so the merchant can check each one rather than trust a count.
+      reasons: proposal.items.map((/** @type {any} */ item) => ({
+        productId: item.productId,
+        title: item.title,
+        because: `no stock left and nothing sold in ${proposal.windowDays} days`,
+      })),
+    },
+    magnitude: { productCount: preview.productCount },
+  };
+}
+
+/** @param {{ summary: any, preview: any, runId: string, executable: boolean }} input */
+function tidyUpProposeCard({ summary, preview, runId, executable }) {
+  const n = preview.productCount;
+  return {
+    actionRunId: runId,
+    actionType: "tidy_up",
+    headline: `${n} live product${n === 1 ? "" : "s"} ${n === 1 ? "has" : "have"} nothing left to sell — Jefe can take ${n === 1 ? "it" : "them"} off the storefront.`,
+    keyNumbers: [{ label: "Products", value: n }],
+    topItems: (summary.reasons ?? []).slice(0, 5).map((/** @type {any} */ r) => ({
+      title: r.title ?? r.productId,
+      detail: r.because,
+    })),
+    executable,
+  };
+}
+
+/** @param {{ summary: any; preview: any; currency: string }} input */
+function tidyUpReadCard({ summary, preview }) {
+  const n = Number(summary?.productCount ?? preview?.productCount ?? 0);
+  if (!(n > 0)) return null;
+  return {
+    headline: `${n} live product${n === 1 ? "" : "s"} ${n === 1 ? "has" : "have"} nothing left to sell — Jefe can take ${n === 1 ? "it" : "them"} off the storefront.`,
+    keyNumbers: [{ label: "Products", value: n }],
+    topItems: (summary?.reasons ?? []).slice(0, 5).map((/** @type {any} */ r) => ({
+      title: r.title ?? r.productId,
+      detail: r.because,
+    })),
+  };
+}
+
+/** @param {string} status @param {number} count */
+function tidyUpExecutedHeadline(status, count) {
+  const noun = `${count} product${count === 1 ? "" : "s"}`;
+  // "Put back" and "Left" mirror the listing-copy wording — the merchant should be able to
+  // read any executed row the same way regardless of which primitive produced it.
+  if (status === "reverted") return `Put ${noun} back on the storefront`;
+  if (status === "rejected") return `Left ${noun} on the storefront`;
+  return `Took ${noun} off the storefront`;
+}
+
+/** @param {{ summary: any, currency: string, missingScopes: string[] }} input */
+function tidyUpScopeNudge({ summary }) {
+  const n = Number(summary?.productCount) || 0;
+  if (n < 1) return null;
+  return {
+    productCount: n,
+    headline: `${n} live product${n === 1 ? "" : "s"} on your storefront ${n === 1 ? "has" : "have"} nothing left to sell — grant "Edit products" access to let Jefe tidy ${n === 1 ? "it" : "them"} away.`,
+  };
+}
+
 // ⚠️ The @type below MUST be its own comment block, separate from the @typedef above.
 // Putting both in one block makes the typedef reference itself (TS2456) and leaves
 // PRIMITIVES untyped — which then cascades into an implicitly-any arrow parameter and a
@@ -289,6 +387,16 @@ const PRIMITIVES = {
     readCard: clearanceReadCard,
     executedHeadline: clearanceExecutedHeadline,
     scopeNudge: clearanceScopeNudge,
+  },
+  tidy_up: {
+    resolve: resolveTidyUp,
+    caps: DEFAULT_PRODUCT_STATUS_CAPS,
+    computeEligibility: computeProductStatusAutoEligibility,
+    actionKindFor: (targetKind) => (targetKind === "stale_listing" ? "archive_product" : targetKind),
+    card: tidyUpProposeCard,
+    readCard: tidyUpReadCard,
+    executedHeadline: tidyUpExecutedHeadline,
+    scopeNudge: tidyUpScopeNudge,
   },
 };
 

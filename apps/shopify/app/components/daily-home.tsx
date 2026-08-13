@@ -498,14 +498,18 @@ function ChatTitle({
       : null;
   const shownTitle = pendingTitle || displayedTitle;
 
+  // Focusing an input is a DOM call, not state — the one thing an effect is actually for.
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
-  // Close the editor once the save lands. Left open on failure so the merchant keeps what
-  // they typed and can try again.
-  useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.ok) setEditing(false);
-  }, [fetcher.state, fetcher.data]);
+
+  // The editor closes on SUBMIT, not on success. Waiting for the response would mean
+  // setState inside an effect (cascading renders, and the lint rule that catches them);
+  // closing optimistically is also the better read — the new name appears the instant the
+  // merchant presses Save, because `pendingTitle` renders it while the save is in flight.
+  // A failure is reported beside the title with the draft still held, so "Try again"
+  // reopens the box with their words in it rather than an empty one.
+  const failed = fetcher.state === "idle" && fetcher.data?.ok === false;
 
   if (!conversation) {
     return (
@@ -516,23 +520,36 @@ function ChatTitle({
   }
 
   if (!editing) {
+    const openEditor = (keepDraft: boolean) => {
+      if (!keepDraft) setDraft(isPlaceholder ? "" : String(storedTitle));
+      setEditing(true);
+    };
     return (
       <div style={chatTitleRowStyle}>
         <Text as="h2" variant="headingSm" truncate>
           {shownTitle}
         </Text>
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(isPlaceholder ? "" : String(storedTitle));
-            setEditing(true);
-          }}
-          style={chatTitleEditButtonStyle}
-          aria-label={`Rename this chat (currently ${shownTitle})`}
-          title="Rename this chat"
-        >
-          Rename
-        </button>
+        {failed ? (
+          <button
+            type="button"
+            onClick={() => openEditor(true)}
+            style={chatTitleEditButtonStyle}
+          >
+            <Text as="span" variant="bodySm" tone="critical">
+              {fetcher.data?.error ?? "That name could not be saved."} Try again
+            </Text>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => openEditor(false)}
+            style={chatTitleEditButtonStyle}
+            aria-label={`Rename this chat (currently ${shownTitle})`}
+            title="Rename this chat"
+          >
+            Rename
+          </button>
+        )}
       </div>
     );
   }
@@ -542,7 +559,7 @@ function ChatTitle({
       method="post"
       action="/app?index"
       style={chatTitleFormStyle}
-      onSubmit={() => setEditing(true)}
+      onSubmit={() => setEditing(false)}
     >
       <input type="hidden" name="intent" value="chat.rename" />
       <input type="hidden" name="conversationId" value={conversation.id} />
@@ -577,11 +594,6 @@ function ChatTitle({
       >
         Cancel
       </button>
-      {fetcher.state === "idle" && fetcher.data && fetcher.data.ok === false ? (
-        <Text as="span" variant="bodySm" tone="critical">
-          {fetcher.data.error ?? "That name could not be saved."}
-        </Text>
-      ) : null}
     </fetcher.Form>
   );
 }

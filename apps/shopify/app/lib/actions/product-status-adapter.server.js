@@ -61,7 +61,9 @@ export function buildProductStatusPreview(proposal) {
   };
 }
 
-/** Blocks (never trims) an over-cap run. */
+/** Blocks (never trims) an over-cap run.
+ * @param {ReturnType<typeof buildProductStatusPreview>} preview
+ * @param {typeof DEFAULT_PRODUCT_STATUS_CAPS} [caps] */
 export function enforceBlastRadiusCap(preview, caps = DEFAULT_PRODUCT_STATUS_CAPS) {
   const violations = [];
   if (preview.productCount > caps.maxProducts) {
@@ -70,7 +72,10 @@ export function enforceBlastRadiusCap(preview, caps = DEFAULT_PRODUCT_STATUS_CAP
   return { withinCap: violations.length === 0, violations };
 }
 
-/** reversible ∧ within-cap ∧ confident — computed here, never trusted from upstream. */
+/** reversible ∧ within-cap ∧ confident — computed here, never trusted from upstream.
+ * @param {ReturnType<typeof buildProductStatusPreview>} preview
+ * @param {unknown} confidence
+ * @param {typeof DEFAULT_PRODUCT_STATUS_CAPS} [caps] */
 export function computeProductStatusAutoEligibility(preview, confidence, caps = DEFAULT_PRODUCT_STATUS_CAPS) {
   const reversible = preview.productCount > 0 && preview.reversibilityPlan.length === preview.productCount;
   const cap = enforceBlastRadiusCap(preview, caps);
@@ -88,7 +93,9 @@ export function computeProductStatusAutoEligibility(preview, confidence, caps = 
   };
 }
 
-/** Best-effort restore of already-applied changes (the auto-revert-on-partial-failure path). */
+/** Best-effort restore of already-applied changes (the auto-revert-on-partial-failure path).
+ * @param {{ updateProductStatus: (productId: string, status: string) => Promise<unknown> }} shopifyClient
+ * @param {Array<{ productId: string, restoreStatus: string }>} plan */
 async function restoreApplied(shopifyClient, plan) {
   const restored = [];
   const failed = [];

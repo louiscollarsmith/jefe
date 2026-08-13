@@ -14,9 +14,20 @@ function prismaWith(row) {
 }
 const session = { shop: "mock.myshopify.com" };
 
-test("both executable action types are wired", () => {
+test("every executable action type is wired", () => {
   const types = listExecutableActionTypes().sort();
-  assert.deepEqual(types, ["listing_copy", "price_markdown"]);
+  assert.deepEqual(types, ["listing_copy", "price_markdown", "tidy_up"]);
+});
+
+test("a tidy-up approval reaches its own wire, not clearance's", async () => {
+  const result = await executeApprovedAction(
+    prismaWith({ actionType: "tidy_up", merchantId: "m1" }),
+    session,
+    { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
+    { loadOfflineToken: async () => "tok", createGqlClient: () => ({ async request() { return {}; } }) },
+  );
+  assert.notEqual(result.reason, "wrong_primitive:tidy_up");
+  assert.notEqual(result.reason, "no_wire:tidy_up");
 });
 
 test("a listing-copy approval does not get handed to the clearance wire", async () => {

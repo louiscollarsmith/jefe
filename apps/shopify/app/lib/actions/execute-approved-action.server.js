@@ -13,11 +13,13 @@
 
 import { wireClearanceExecution } from "./wire-clearance-execution.server.js";
 import { wireListingCopyExecution } from "./wire-listing-copy-execution.server.js";
+import { wireTidyUpExecution } from "./wire-tidy-up-execution.server.js";
 
 /** actionType → its approve→execute entry point. */
 const WIRES = {
   price_markdown: wireClearanceExecution,
   listing_copy: wireListingCopyExecution,
+  tidy_up: wireTidyUpExecution,
 };
 
 /** The action types an approval can actually execute. */

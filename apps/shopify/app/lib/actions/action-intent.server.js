@@ -157,6 +157,54 @@ export const ACTION_REGISTRY = {
       verdict: { goodAtOrAbove: 40, underperformedAtOrBelow: 0 },
     },
   },
+  // Settings → Autonomy has shown "Tidy-ups" as SOON since the roster landed. As with
+  // listing_copy, the badge is driven by registered + execute-flag-on, so this entry alone
+  // changes NOTHING a merchant sees: `PRODUCT_STATUS_EXECUTE_ENABLED` is unset everywhere,
+  // which keeps the row on SOON and the write path closed. Flipping it is the founder's call.
+  //
+  // ⚠️ Shares `PRODUCT_STATUS_EXECUTE_ENABLED` with the product-status adapter it drives,
+  // deliberately. One adapter, one go-live switch: a second flag name for the same write path
+  // is how a "disabled" feature turns out to have been enabled through the other door.
+  //
+  // ⚠️ SCOPED TO ARCHIVING UNBUYABLE PRODUCTS, deliberately. The Autonomy row's old subtitle
+  // read "missing types, broken links, unclaimed refunds", and none of those three is this:
+  //   - missing types is `listing_copy`, already registered and live-flagged;
+  //   - broken links needs redirect data we do not ingest and a scope we were not granted;
+  //   - refund writes are IRREVERSIBLE (`refundCreate`), a different risk class entirely
+  //     (action-ontology-audit-2026-08-12.md §4) and a founder call, not a build task.
+  // The subtitle was changed to describe what this actually does. Widening the family is
+  // adding target kinds here, each with its own resolver — never loosening this one.
+  tidy_up: {
+    label: "Tidy up the storefront",
+    description:
+      "Archive live products that have no stock left anywhere and have sold nothing for months, so the storefront only shows what a customer can actually buy. Reversible to ACTIVE.",
+    targetKinds: ["stale_listing"],
+    reversible: true,
+    primitive: "product-status-adapter",
+    executeFlag: "PRODUCT_STATUS_EXECUTE_ENABLED",
+    requiredScopes: ["write_products"],
+    applicability: {
+      // Needs real inventory to reason about: the whole judgement is "there is none left".
+      suits: ["tracked_stock"],
+      // ⛔ A made-to-order maker holds no stock BY DESIGN. Every one of their products looks
+      // exactly like a stale listing to a stock-based test, and archiving their catalogue
+      // would be the single worst thing Jefe could do to them. The resolver's own
+      // known-levels guard already refuses an untracked catalogue; this says the same thing
+      // one layer up, so the action is never even proposed to that shape of business.
+      unsuitedWhen: ["made_to_order"],
+    },
+    outcome: {
+      // What this action promises is a tidier storefront, so the metric is how much of the
+      // live catalogue is actually buyable. It does NOT promise sales, and must not be
+      // scored as though it did.
+      metric: "buyableActiveProductPercent",
+      windowDays: 1,
+      baseline: 0,
+      // ⚠️ Proposed defaults, never measured — no tidy-up run has happened. Same warning as
+      // the other two entries: a starting point to be replaced by real runs, not a finding.
+      verdict: { goodAtOrAbove: 95, underperformedAtOrBelow: 50 },
+    },
+  },
 };
 
 /**

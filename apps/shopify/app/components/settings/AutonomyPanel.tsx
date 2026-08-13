@@ -44,7 +44,13 @@ const MODE_OPTIONS = ACTION_MODES.map((value) => ({ value, ...MODE_META[value] }
 // (engine truth), never this list. Pricing detail is the real guardrail ("never below what
 // it cost you" — clearance floors at unit cost), not a margin % (copy per chat 11).
 const ACTION_ROSTER: Array<{ actionType: string; label: string; detail: string; blockedReason?: string }> = [
-  { actionType: "tidy_up", label: "Tidy-ups", detail: "Missing types, broken links, unclaimed refunds" },
+  // ⚠️ Detail changed from "Missing types, broken links, unclaimed refunds" — that line
+  // described three things Jefe does not do here. Missing types is the Listing copy row
+  // below; broken links needs redirect data we don't ingest and a scope we weren't granted;
+  // refund writes are irreversible and a founder call (action-ontology-audit §4). The row
+  // now says what `tidy_up` actually executes: archiving live products with nothing left to
+  // sell. Adding target kinds widens it later — the line moves with the action, not ahead.
+  { actionType: "tidy_up", label: "Tidy-ups", detail: "Hides live products with nothing left to sell" },
   { actionType: "listing_copy", label: "Listing copy", detail: "Descriptions, titles, product types" },
   { actionType: "price_markdown", label: "Pricing", detail: "Never below what it cost you" },
   { actionType: "reordering", label: "Reordering", detail: "Blocked until Jefe knows your supplier lead times", blockedReason: "Tell me who supplies you" },
