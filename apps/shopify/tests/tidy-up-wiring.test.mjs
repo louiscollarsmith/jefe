@@ -169,3 +169,26 @@ test("an already-applied run is not applied twice", async () => {
   assert.equal(result.executed, false);
   assert.equal(result.reason, "already_applied");
 });
+
+test("the health payload can answer 'is tidy_up live on this instance?'", () => {
+  // Every go-live before this was a variable flip nobody could confirm from outside: the
+  // running process reads its own env and nothing surfaced the answer, so "live" was
+  // verified by deploying and hoping. /health → checks.actions is that missing signal, and
+  // it is built from listActionTypes (engine truth), never from the raw env.
+  const actionsFor = (env) =>
+    listActionTypes(env).reduce((acc, a) => {
+      acc[a.actionType] = a.live;
+      return acc;
+    }, {});
+
+  const off = actionsFor({ CLEARANCE_EXECUTE_ENABLED: "true" });
+  assert.equal(off.tidy_up, false);
+  assert.equal(off.price_markdown, true);
+
+  const on = actionsFor({ CLEARANCE_EXECUTE_ENABLED: "true", PRODUCT_STATUS_EXECUTE_ENABLED: "true" });
+  assert.equal(on.tidy_up, true);
+
+  // Every registered type is reported — a live action missing from the payload would make
+  // the signal quietly useless for exactly the action someone is trying to verify.
+  assert.deepEqual(Object.keys(on).sort(), Object.keys(ACTION_REGISTRY).sort());
+});

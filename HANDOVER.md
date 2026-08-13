@@ -8,7 +8,7 @@ Jefe builds and maintains Merchant Memory: a structured understanding of how eac
 
 Merchant Memory stores observed commerce facts, merchant-confirmed facts, model inferences, uncertainties, goals, constraints, operating preferences, corrections and history. The product goal is that the merchant can look at Jefe's understanding and say: "Yes. That's exactly how my business works."
 
-Jefe is not an analytics dashboard or a generic chatbot, and **an LLM never writes directly to Shopify or any external system** — that guardrail is permanent. Shopify data and merchant input build memory; Jefe uses that memory to explain what it has learned, propose a plan, and — through a **typed, previewed, reversible adapter** — take approved actions on the store. The first action (dead-stock clearance) is **built and wired but dark behind a flag** (`CLEARANCE_EXECUTE_ENABLED`); execution goes live per-merchant, per-action-type when the founder flips it.
+Jefe is not an analytics dashboard or a generic chatbot, and **an LLM never writes directly to Shopify or any external system** — that guardrail is permanent. Shopify data and merchant input build memory; Jefe uses that memory to explain what it has learned, propose a plan, and — through a **typed, previewed, reversible adapter** — take approved actions on the store. **Three actions are live in production**: dead-stock clearance (`price_markdown`, since 2026-07-31), product types (`listing_copy`), and storefront tidy-ups (`tidy_up` — archive live products with no stock and no sales in 180 days, since 2026-08-13). Each has its own go-live flag; unsetting one reverts that action to the dark path (records the approval, writes nothing). The dial defaults to Approve, so nothing acts without the merchant saying yes.
 
 ## Current Product Flow
 
@@ -90,6 +90,12 @@ Shopify app runtime:
 - `SESSION_SECRET`
 - `ENABLE_DEV_TOOLS`
 - `CLEARANCE_EXECUTE_ENABLED` (the first action's go-live flag — **`true` in production since 2026-07-31**; unset reverts to the dark path: records approval, writes nothing)
+- `LISTING_COPY_EXECUTE_ENABLED` (product types — **`true` in production**)
+- `PRODUCT_STATUS_EXECUTE_ENABLED` (storefront tidy-ups — **`true` in production since 2026-08-13**. ⚠️ Shared with the product-status adapter, whose only caller today is `wireTidyUpExecution`; bind a second product-status action and this flag turns that on too.)
+
+⚠️ To check which of these actually reached the running process, read `/health` →
+`checks.actions` — one boolean per registered action type. Do not infer "live" from
+the variable being set in Railway; a variable is set, a process is serving.
 - `ENABLE_SHOPIFY_BACKFILL_LOOP`
 - `SHOPIFY_BACKFILL_INITIAL_DELAY_MS`
 

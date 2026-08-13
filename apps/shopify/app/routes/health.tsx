@@ -15,6 +15,7 @@ import { getWebhookHealth } from "../lib/observability/webhook-health.server";
 import { getLlmProviderHealth } from "../lib/observability/llm-provider-health.server";
 import { getInboundEmailHealth } from "../lib/email/inbound/health.server.js";
 import { getEpisodicEmbeddingConfig } from "../lib/llm/config.server.js";
+import { listActionTypes } from "../lib/actions/action-intent.server.js";
 import {
   getEmbeddingHealth,
   getEpisodeIndexHealth,
@@ -51,6 +52,19 @@ export const loader = async () => {
         index: episodeIndex,
       },
       ...buildDependencyHealth(process.env),
+      // Which actions can actually WRITE to a store on this instance. Every go-live so far
+      // has been a variable flip with no way to confirm it landed: the running process reads
+      // its own env, and nothing outside could see the answer, so "is it live?" was verified
+      // by deploying and hoping. This is engine truth (listActionTypes → registered + its
+      // execute flag exactly "true"), never the raw env — no secret is exposed, only the
+      // booleans an operator needs to trust a changelog entry that says "live".
+      actions: listActionTypes(process.env).reduce(
+        (acc: Record<string, boolean>, action) => {
+          acc[action.actionType] = action.live;
+          return acc;
+        },
+        {},
+      ),
     },
     latency: getLatencyPercentiles(),
     // How long merchants are waiting for a chat reply on THIS instance, server-side

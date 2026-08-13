@@ -157,9 +157,16 @@ export const ACTION_REGISTRY = {
       verdict: { goodAtOrAbove: 40, underperformedAtOrBelow: 0 },
     },
   },
-  // Settings → Autonomy has shown "Tidy-ups" as SOON since the roster landed. The badge is
-  // driven by registered + execute-flag-on, so with `PRODUCT_STATUS_EXECUTE_ENABLED` unset the
-  // row stays on SOON and the write path stays closed. Flipping it is the founder's call.
+  // ✅ LIVE in production since 2026-08-13 (`PRODUCT_STATUS_EXECUTE_ENABLED=true`, founder's
+  // call): the Settings "Tidy-ups" dial is real and an approved tidy-up archives products for
+  // the merchant. Unsetting the flag reverts to the dark path — the approval is recorded and
+  // nothing is written. Default dial is `approve_execute`, so nothing archives without the
+  // merchant approving it; `autonomous` is theirs to choose per action type.
+  //
+  // ⚠️ This flag is SHARED with the product-status adapter it drives (one adapter, one
+  // switch). Verified at go-live that `applyProductStatusChange` is reachable ONLY through
+  // `wireTidyUpExecution` — so today it turns on tidy-ups and nothing else. If a second
+  // product-status action is ever bound, that stops being true and this flag turns it on too.
   //
   // ⚠️ Registering DOES change one merchant-visible thing, and it is not the dial: membership
   // of this registry is what `listActionCapabilities()` advertises to the plan model, and

@@ -6,11 +6,17 @@
 // per-target ledger writes, compare-and-set, auto-revert on partial failure, un-gated revert),
 // reusing the generic `action_executions` / `action_execution_writes` ledger with NO migration.
 //
-// Built DARK behind `PRODUCT_STATUS_EXECUTE_ENABLED` (default off) and UNWIRED to any surface —
-// nothing calls `applyProductStatusChange` yet. It exists to (a) give the merchant a second real
-// action and (b) make the shared adapter shape concrete (two primitives → the interface). The
-// safe "flag off = no-op" entry lives in the wire layer (as with clearance); the adapter itself
-// hard-throws when disabled, so a mis-call can never write.
+// ✅ LIVE in production since 2026-08-13 behind `PRODUCT_STATUS_EXECUTE_ENABLED=true`. It is
+// reached by exactly ONE caller — `wireTidyUpExecution` (the `tidy_up` action type) — so that
+// flag turns on tidy-ups and nothing else today. Bind a second product-status action and the
+// same flag turns that on too; check before you do.
+//
+// The safe "flag off = no-op" entry lives in the wire layer (as with clearance); the adapter
+// itself hard-throws when disabled, so a mis-call can never write.
+//
+// ⚠️ THIS ADAPTER SIGNALS FAILURE BY RETURN VALUE (`{ ok: false, ... }`), unlike the clearance
+// and listing-copy adapters, which THROW. A caller that treats the return as success will
+// report an auto-reverted run to the merchant as done. Guards still throw.
 //
 // Reference + recipe: docs/action-layer-implementation.md. Contract: context/11_actions_and_autonomy.md.
 
