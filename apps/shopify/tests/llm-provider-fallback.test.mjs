@@ -567,7 +567,18 @@ test("a call that fails outright still records what it cost", async () => {
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].status, "error");
-  assert.ok(rows[0].latencyMs >= 40, `a failed call still cost a wait, got ${rows[0].latencyMs}`);
+  // ⚠️ Tolerance is deliberate — do NOT tighten this back to `>= 40`.
+  // The wait above is `setTimeout(40)` but the recorder measures with `Date.now()` deltas
+  // (provider.server.js), and those two clocks are not guaranteed to agree: setTimeout can
+  // satisfy its own deadline while the Date.now() delta reads 39. That is a real flake, not
+  // a hypothetical — it failed the shared preflight gate at 39ms on 2026-08-13, and it is
+  // likeliest under the load of a full run, which is exactly when it blocks every lane.
+  // What this test is actually for is that a FAILED call still records the time it cost
+  // rather than 0 or null; a few ms of slack costs that nothing.
+  assert.ok(
+    rows[0].latencyMs >= 30,
+    `a failed call still cost a wait, got ${rows[0].latencyMs}`,
+  );
 });
 
 function fakeProvider(provider, model, generateStructuredJson) {
