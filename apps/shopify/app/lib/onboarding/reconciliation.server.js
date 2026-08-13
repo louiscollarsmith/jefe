@@ -14,7 +14,22 @@ export async function reconcileBootstrapRecommendationsAfterFullRefresh(prisma, 
   const recommendations = await prisma.merchantPlanRecommendation.findMany({
     where: { merchantId: input.merchantId, shopId: input.shopId, sourceMode: "bootstrap" },
     include: {
-      actionExecution: { select: { status: true } },
+      workflows: {
+        orderBy: { version: "desc" },
+        take: 1,
+        include: {
+          steps: {
+            orderBy: { orderIndex: "asc" },
+            include: {
+              actionExecutions: {
+                orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+                take: 1,
+                select: { status: true },
+              },
+            },
+          },
+        },
+      },
       run: { select: { result: true } },
     },
   });
@@ -41,8 +56,9 @@ export async function reconcileBootstrapRecommendationsAfterFullRefresh(prisma, 
     const contractKey = stringValue(result.contractKey);
     const supported = Boolean(contractKey && eligibleContracts.has(contractKey));
     if (supported) continue;
+    const execution = currentExecutionFromRecommendation(recommendation);
     const applied = ["applied", "partially_applied", "reverted"].includes(
-      recommendation.actionExecution?.status ?? "",
+      execution?.status ?? "",
     );
     if (applied) continue;
     if (recommendation.reviewStatus === "accepted") {
@@ -67,6 +83,15 @@ export async function reconcileBootstrapRecommendationsAfterFullRefresh(prisma, 
     needsReview,
   });
   return { recommendations: recommendations.length, superseded, needsReview };
+}
+
+/** @param {any} recommendation */
+function currentExecutionFromRecommendation(recommendation) {
+  const workflow = Array.isArray(recommendation?.workflows)
+    ? recommendation.workflows[0] ?? null
+    : null;
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  return steps.map((/** @type {any} */ step) => step.actionExecutions?.[0]).find(Boolean) ?? null;
 }
 
 /** @param {unknown} value @returns {Record<string, any>} */

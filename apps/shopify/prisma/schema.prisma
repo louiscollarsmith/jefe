@@ -63,6 +63,8 @@ model Merchant {
   merchantGoalHorizons          MerchantGoalHorizon[]
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
+  merchantRecommendationWorkflows MerchantRecommendationWorkflow[]
+  merchantRecommendationSteps   MerchantRecommendationStep[]
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   merchantActions               MerchantAction[]
   merchantActionEvents          MerchantActionEvent[]
@@ -136,6 +138,8 @@ model Shop {
   merchantGoalHorizons          MerchantGoalHorizon[]
   merchantPlanRuns              MerchantPlanRun[]
   merchantPlanRecommendations   MerchantPlanRecommendation[]
+  merchantRecommendationWorkflows MerchantRecommendationWorkflow[]
+  merchantRecommendationSteps   MerchantRecommendationStep[]
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   merchantActions               MerchantAction[]
   merchantActionEvents          MerchantActionEvent[]
@@ -1241,7 +1245,6 @@ model MerchantPlanRecommendation {
   whyThisAction        String                        @map("why_this_action")
   whyNow               String                        @map("why_now")
   startToday           String                        @map("start_today")
-  executionSteps       Json                          @default("[]") @map("execution_steps_json")
   successSignal        Json                          @default("{}") @map("success_signal_json")
   expectedBenefit      String                        @map("expected_benefit")
   supportingBeliefIds  String[]                      @default([]) @map("supporting_belief_ids")
@@ -1250,7 +1253,6 @@ model MerchantPlanRecommendation {
   assumption           String?
   caveat               String?
   sourceMode           String                        @default("full") @map("source_mode")
-  actionIntent         Json?                         @map("action_intent_json")
   reviewAt             DateTime?                     @map("review_at") @db.Timestamptz(6)
   outcomeStatus        String                        @default("pending") @map("outcome_status")
   outcomeMeasuredAt    DateTime?                     @map("outcome_measured_at") @db.Timestamptz(6)
@@ -1265,13 +1267,67 @@ model MerchantPlanRecommendation {
   merchant             Merchant                      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   shop                 Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   evidenceSnapshot     MerchantPlanEvidenceSnapshot?
-  actionExecution      ActionExecution?
   merchantAction       MerchantAction?
+  workflows            MerchantRecommendationWorkflow[]
+  workflowSteps        MerchantRecommendationStep[]
 
   @@index([merchantId, reviewStatus, createdAt])
   @@index([shopId, reviewStatus, createdAt])
   @@index([primaryGoalId])
   @@map("merchant_plan_recommendations")
+}
+
+model MerchantRecommendationWorkflow {
+  id               String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recommendationId String                       @map("recommendation_id") @db.Uuid
+  merchantId       String                       @map("merchant_id") @db.Uuid
+  shopId           String                       @map("shop_id") @db.Uuid
+  version          Int                          @default(1)
+  status           String                       @default("draft") // draft|active|superseded|completed
+  source           String                       @default("plan_generation")
+  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  recommendation   MerchantPlanRecommendation   @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  merchant         Merchant                     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  steps            MerchantRecommendationStep[]
+
+  @@unique([recommendationId, version])
+  @@index([recommendationId, status])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status, createdAt])
+  @@map("merchant_recommendation_workflows")
+}
+
+model MerchantRecommendationStep {
+  id                 String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflowId         String                         @map("workflow_id") @db.Uuid
+  recommendationId   String                         @map("recommendation_id") @db.Uuid
+  merchantId         String                         @map("merchant_id") @db.Uuid
+  shopId             String                         @map("shop_id") @db.Uuid
+  orderIndex         Int                            @map("order_index")
+  title              String
+  description        String
+  completionCriteria String?                        @map("completion_criteria")
+  status             String                         @default("draft") // draft|pending|in_progress|blocked|completed|skipped|superseded
+  mode               String                         // execute|assist|merchant_action|evidence_required
+  capabilityRef      String?                        @map("capability_ref")
+  dependsOnStepIds   String[]                       @default([]) @map("depends_on_step_ids")
+  evidenceIds        String[]                       @default([]) @map("evidence_ids")
+  createdAt          DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  workflow           MerchantRecommendationWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  recommendation     MerchantPlanRecommendation     @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  merchant           Merchant                       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop               Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  actionExecutions   ActionExecution[]
+
+  @@unique([workflowId, orderIndex])
+  @@index([recommendationId, status])
+  @@index([merchantId, status, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([capabilityRef])
+  @@map("merchant_recommendation_steps")
 }
 
 model MerchantPlanEvidenceSnapshot {
@@ -1430,7 +1486,7 @@ model ActionExecution {
   merchantId             String                      @map("merchant_id") @db.Uuid
   shopId                 String                      @map("shop_id") @db.Uuid
   merchantActionId       String?                     @map("merchant_action_id") @db.Uuid
-  sourceRecommendationId String?                     @unique @map("source_recommendation_id") @db.Uuid
+  recommendationStepId   String?                     @map("recommendation_step_id") @db.Uuid
   actionType             String                      @map("action_type") // the primitive, e.g. "price_markdown"
   actionKind             String?                     @map("action_kind") // advice context, e.g. "dead_stock_clearance"
   status                 String                      @default("proposed") // proposed|approved|applied|partially_applied|reverted|failed|superseded
@@ -1454,9 +1510,10 @@ model ActionExecution {
   writes                 ActionExecutionWrite[]
   merchantAction         MerchantAction?             @relation("MerchantActionExecutions", fields: [merchantActionId], references: [id], onDelete: SetNull)
   currentForActions      MerchantAction[]            @relation("MerchantActionCurrentExecution")
-  sourceRecommendation   MerchantPlanRecommendation? @relation(fields: [sourceRecommendationId], references: [id], onDelete: SetNull)
+  recommendationStep     MerchantRecommendationStep?  @relation(fields: [recommendationStepId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, actionType, status])
+  @@index([recommendationStepId])
   @@index([shopId, outcomeStatus])
   @@index([merchantActionId])
   @@map("action_executions")

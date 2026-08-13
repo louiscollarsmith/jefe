@@ -98,7 +98,9 @@ typed adapters write to Shopify or another external system.
 ## Recommendations And Actions
 
 - **Insight** — A grounded observation about the business, shown with supporting evidence.
-- **Recommendation** — Jefe's proposed direction of travel. It can be executable, approval-gated, autonomous, or instruct-only.
+- **Recommendation** — Jefe's proposed business move, now shaped as a route to completion rather than only a single action.
+- **Recommendation workflow** — The ordered steps Jefe proposes for completing one recommendation.
+- **Recommendation step** — One unit of work inside a recommendation workflow; Jefe may execute it, assist it, ask for evidence, or leave it as a merchant action.
 - **Merchant Action** — The durable merchant-facing identity for a piece of work. It can originate from a recommendation, point at the current execution run, hold progress/outcome state, and be the focus of zero or more chats.
 - **Move** — The merchant-facing unit of proposed or active work, usually surfaced as Jefe's next move.
 - **Action** — A concrete change Jefe can carry out or instruct the merchant to carry out.
@@ -119,7 +121,7 @@ typed adapters write to Shopify or another external system.
 
 ## Ledger And Learning
 
-- **Action execution** — A source/execution ledger row recording a proposed, approved, applied, declined, reverted or measured action instance. A Merchant Action may point at its current execution.
+- **Action execution** — A step-linked ledger row recording a proposed, approved, applied, declined, reverted or measured action instance. Executions belong to workflow steps; a Merchant Action may point at its current execution for the merchant-facing surface.
 - **Action execution write** — A row recording one external write made by an action execution.
 - **Ledger** — The durable audit trail of proposed actions, approvals, writes, reversals and outcomes.
 - **Outcome** — The measured result of an action, such as units moved, cash recovered or whether a tidy-up landed.

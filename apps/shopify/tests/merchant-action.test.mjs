@@ -44,18 +44,6 @@ test("deriveMerchantActionStatus keeps the new lifecycle separate from source st
 test("ensureMerchantActionForExecution upserts by source recommendation and links the execution", async () => {
   const calls = [];
   const prisma = {
-    merchantPlanRecommendation: {
-      findFirst: async () => ({
-        id: "rec-1",
-        merchantId: MERCHANT,
-        shopId: SHOP,
-        title: "Clear slow stock",
-        summary: "Markdown slow-moving products.",
-        reviewStatus: "proposed",
-        executionSteps: [{ title: "Preview changes" }],
-        successSignal: { description: "Recover trapped capital" },
-      }),
-    },
     merchantAction: {
       upsert: async (args) => {
         calls.push(["upsert", args]);
@@ -74,7 +62,7 @@ test("ensureMerchantActionForExecution upserts by source recommendation and link
     merchantId: MERCHANT,
     shopId: SHOP,
     actionRunId: "run-1",
-    sourceRecommendationId: "rec-1",
+    sourceRecommendation: recommendationFixture(),
     execution: {
       runId: "run-1",
       actionType: "price_markdown",
@@ -136,18 +124,11 @@ function actionRow(overrides = {}) {
     status: "proposed",
     sourceRecommendationId: "rec-1",
     currentActionRunId: "run-1",
-    progress: { executionSteps: [{ title: "Preview changes" }] },
+    progress: { workflow: workflowFixture() },
     outcome: {},
     createdAt: NOW,
     updatedAt: NOW,
-    sourceRecommendation: {
-      id: "rec-1",
-      title: "Clear slow stock",
-      summary: "Markdown slow-moving products.",
-      reviewStatus: "proposed",
-      executionSteps: [{ title: "Preview changes" }],
-      successSignal: {},
-    },
+    sourceRecommendation: recommendationFixture(),
     currentExecution: {
       runId: "run-1",
       actionType: "price_markdown",
@@ -159,5 +140,42 @@ function actionRow(overrides = {}) {
     },
     executions: [],
     ...overrides,
+  };
+}
+
+function recommendationFixture() {
+  return {
+    id: "rec-1",
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    title: "Clear slow stock",
+    summary: "Markdown slow-moving products.",
+    reviewStatus: "proposed",
+    successSignal: {},
+    workflows: [workflowFixture()],
+  };
+}
+
+function workflowFixture() {
+  return {
+    id: "workflow-1",
+    version: 1,
+    status: "active",
+    source: "plan_generation",
+    steps: [
+      {
+        id: "step-1",
+        orderIndex: 0,
+        title: "Preview changes",
+        description: "Review the markdown preview.",
+        completionCriteria: "The preview is ready.",
+        status: "pending",
+        mode: "execute",
+        capabilityRef: "execute:price_markdown:dead_stock",
+        dependsOnStepIds: [],
+        evidenceIds: [],
+        actionExecutions: [],
+      },
+    ],
   };
 }

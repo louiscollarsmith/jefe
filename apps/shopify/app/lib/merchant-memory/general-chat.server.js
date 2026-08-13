@@ -27,10 +27,31 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
   properties: {
     reply: { type: Type.STRING },
     citedContextIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+    workflowStepUpdates: {
+      type: Type.ARRAY,
+      nullable: true,
+      items: {
+        type: Type.OBJECT,
+        required: ["stepId", "status", "reason"],
+        properties: {
+          stepId: { type: Type.STRING },
+          status: { type: Type.STRING },
+          reason: { type: Type.STRING },
+        },
+      },
+    },
   },
 };
 
 const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
+const DEFAULT_RESTOCK_COVER_DAYS = 120;
+const WORKFLOW_STEP_UPDATE_STATUSES = new Set([
+  "pending",
+  "in_progress",
+  "blocked",
+  "completed",
+  "skipped",
+]);
 
 const log = baseLogger.child({ component: "merchant-general-chat" });
 
@@ -317,7 +338,7 @@ export async function sendGeneralChatMessage(prisma, input) {
   }
   turn.mark("retrievalMs");
   const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
-  /** @type {{ reply: string, citedContextIds: any[], chart?: any }} */
+  /** @type {{ reply: string, citedContextIds: any[], chart?: any, workflowStepUpdates?: any[] }} */
   let generated;
   if (decision.action === "acknowledge_memory") {
     generated = {
@@ -359,6 +380,16 @@ export async function sendGeneralChatMessage(prisma, input) {
       : grounded;
   }
   turn.mark("generationMs");
+  const workflowStepUpdateResult = await applyWorkflowStepUpdatesFromReply(
+    prisma,
+    {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionEvidence,
+      updates: generated.workflowStepUpdates ?? [],
+      logger: input.logger ?? log,
+    },
+  );
   const assistant = await appendConversationMessage(prisma, {
     conversation,
     conversationId: conversation.id,
@@ -376,6 +407,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       ...(generated.chart ? { chart: generated.chart } : {}),
       retrievalRunId: context.diagnosticId,
       focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+      workflowStepUpdates: workflowStepUpdateResult.applied,
       // The wait this reply cost, stored beside the reply it describes. Durations
       // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
       // stops short of this write because a row cannot time its own insert — the
@@ -649,6 +681,7 @@ async function generateGroundedReply(input) {
   const allowedIds = new Set(
     input.context.provenance.map((/** @type {any} */ item) => item.id),
   );
+  const currentAction = buildCurrentActionInput(input.context);
   const fallback = buildGroundedFallbackReply(input.message, input.context);
   if (!input.provider?.enabled || !input.provider.generateStructuredJson) {
     return { reply: fallback, citedContextIds: [] };
@@ -662,12 +695,21 @@ async function generateGroundedReply(input) {
         "Historical items are labelled and must never be described as current.",
         "Never claim you performed an action unless an action-ledger item says so.",
         "If the packet contains actionEvidence.focusedAction, describe it as WORKING ON: it is the only default action mutation target.",
+        "If the merchant asks what 'this', 'this one', or 'the steps' are in a focused-action chat, answer from actionEvidence.focusedAction first, especially focusedAction.proposedSteps.",
+        "The prompt also includes currentAction as a top-level copy of the focused action. When the merchant asks about the action or a step, use currentAction before generic memory.",
+        "If the merchant asks for help with an assist step, produce the requested artifact or next useful draft. Do not merely restate the recommendation.",
+        "Act like the merchant's eCommerce manager: when evidence supports a recommendation, choose a sensible default and ask for approval or correction. Do not make the merchant design the workflow from scratch.",
+        "Use currentAction.operationalContext when present. It contains code-prepared facts, primitives, formulas and defaults that you may apply; the merchant's latest message determines which of those are relevant.",
+        "When using an operational primitive, show the specific assumption or formula briefly and ask for approval or correction, not for the merchant to do the work.",
+        "You may return workflowStepUpdates only for steps listed in currentAction.operationalContext.workflowSteps. Use this when the merchant clearly confirms progress such as a step being complete, blocked, skipped or in progress.",
+        "workflowStepUpdates.status must be one of pending, in_progress, blocked, completed or skipped. The app validates and applies updates; you must still explain what changed in reply.",
         "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
         "If context is insufficient, say what is missing naturally; never discuss memory implementation.",
       ].join("\n"),
       prompt: JSON.stringify({
         merchantMessage: input.message,
+        currentAction,
         merchantContext: input.context,
       }),
       schema: GENERAL_CHAT_REPLY_SCHEMA,
@@ -688,7 +730,13 @@ async function generateGroundedReply(input) {
     if (!reply || !numbersAreGrounded(reply, input.context)) {
       return { reply: fallback, citedContextIds: [] };
     }
-    return { reply, citedContextIds };
+    return {
+      reply,
+      citedContextIds,
+      workflowStepUpdates: Array.isArray(result.json?.workflowStepUpdates)
+        ? result.json.workflowStepUpdates
+        : [],
+    };
   } catch (error) {
     input.logger.warn(
       "General chat generation unavailable; using grounded fallback",
@@ -751,6 +799,184 @@ export function buildGroundedFallbackReply(message, context) {
     return `From our earlier conversation: ${content}`;
   }
   return `From what I know about your business, ${content}`;
+}
+
+/** @param {any} context */
+export function buildCurrentActionInput(context) {
+  const focusedAction =
+    context?.actionEvidence?.focusedAction ?? context?.focusedAction ?? null;
+  if (!focusedAction) return null;
+  const lowCoverItems = lowCoverItemsFromContext(context);
+  const quantityPlanningItems = lowCoverItems.map((item) => ({
+    ...item,
+    recommendedUnitsAtDefaultCover:
+      recommendedPurchaseUnits(item, DEFAULT_RESTOCK_COVER_DAYS),
+  }));
+  return {
+    ...focusedAction,
+    operationalContext: {
+      role: "default_mutation_target",
+      workflowSteps: Array.isArray(focusedAction.proposedSteps)
+        ? focusedAction.proposedSteps
+        : [],
+      evidence: {
+        lowCoverProducts: quantityPlanningItems,
+      },
+      primitives: [
+        {
+          ref: "restock_quantity_from_stock_cover",
+          purpose:
+            "Estimate purchase units for a restock/replenishment workflow step from current stock cover evidence.",
+          defaultTargetCoverDays: DEFAULT_RESTOCK_COVER_DAYS,
+          alternativeTargetCoverDays: [
+            {
+              days: 90,
+              meaning: "leaner cash-light reorder",
+            },
+            {
+              days: 180,
+              meaning: "more conservative reorder for long lead times",
+            },
+          ],
+          formula:
+            "recommendedPurchaseUnits = ceil(max(0, dailyVelocity * targetCoverDays - available))",
+          inputs:
+            "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+          output:
+            "Mention recommended units as a recommendation for approval/correction, not as a completed order.",
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionEvidence: any; updates: any; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function applyWorkflowStepUpdatesFromReply(prisma, input) {
+  if (!prisma?.merchantRecommendationStep?.updateMany) {
+    return { applied: [] };
+  }
+  const focusedAction = input.actionEvidence?.focusedAction;
+  const allowedSteps = Array.isArray(focusedAction?.proposedSteps)
+    ? focusedAction.proposedSteps
+    : [];
+  if (!focusedAction || allowedSteps.length === 0 || !Array.isArray(input.updates)) {
+    return { applied: [] };
+  }
+  const allowedStepIds = new Set(
+    allowedSteps
+      .map((/** @type {any} */ step) => uuidString(step?.id))
+      .filter(Boolean),
+  );
+  const applied = [];
+  for (const update of input.updates.slice(0, 5)) {
+    const stepId = uuidString(update?.stepId);
+    const status = typeof update?.status === "string" ? update.status.trim() : "";
+    if (!stepId || !allowedStepIds.has(stepId)) continue;
+    if (!WORKFLOW_STEP_UPDATE_STATUSES.has(status)) continue;
+    const result = await prisma.merchantRecommendationStep.updateMany({
+      where: {
+        id: stepId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      data: {
+        status,
+      },
+    });
+    if (Number(result?.count ?? 0) > 0) {
+      applied.push({
+        stepId,
+        status,
+        reason: safeReplyText(update?.reason, ""),
+      });
+    }
+  }
+  if (applied.length > 0) {
+    input.logger.info("workflow step updates applied from action chat", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      focusedActionId: focusedAction.id ?? null,
+      updateCount: applied.length,
+      statuses: applied.map((item) => item.status),
+    });
+  }
+  return { applied };
+}
+
+/** @param {any} context */
+function lowCoverItemsFromContext(context) {
+  const blocks = [
+    ...(Array.isArray(context?.actionEvidence?.planEvidenceAtRecommendationTime?.blocks)
+      ? context.actionEvidence.planEvidenceAtRecommendationTime.blocks
+      : []),
+    ...(Array.isArray(context?.actionEvidence?.currentSystemContext?.blocks)
+      ? context.actionEvidence.currentSystemContext.blocks
+      : []),
+  ];
+  const items = [];
+  for (const block of blocks) {
+    if (
+      block?.kind !== "structured_evidence" ||
+      block?.data?.key !== "inventory.low_cover_products.trailing_30d" ||
+      !Array.isArray(block.data.items)
+    ) {
+      continue;
+    }
+    for (const item of block.data.items) {
+      const title = safeReplyText(item?.title, "");
+      if (!title) continue;
+      items.push({
+        title,
+        available: finiteNumberOrNull(item?.available),
+        dailyVelocity: finiteNumberOrNull(item?.dailyVelocity),
+        daysOfCover: finiteNumberOrNull(item?.daysOfCover),
+      });
+    }
+  }
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = normalizeComparableText(item.title);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 6);
+}
+
+/**
+ * @param {{ available: number | null; dailyVelocity: number | null }} item
+ * @param {number} targetCoverDays
+ */
+function recommendedPurchaseUnits(item, targetCoverDays) {
+  if (item.available === null || item.dailyVelocity === null) return null;
+  return Math.max(0, Math.ceil(item.dailyVelocity * targetCoverDays - item.available));
+}
+
+/** @param {unknown} value */
+function uuidString(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
+    ? trimmed
+    : "";
+}
+
+/** @param {unknown} value */
+function finiteNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} fallback
+ */
+function safeReplyText(value, fallback) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  return text.replace(/\s+/g, " ").slice(0, 320);
 }
 
 /** @param {string} query @param {any[]} items */

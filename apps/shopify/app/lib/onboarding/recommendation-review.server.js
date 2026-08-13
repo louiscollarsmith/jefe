@@ -18,13 +18,13 @@ export async function reviewDueRecommendations(prisma, input) {
       reviewStatus: "accepted",
       outcomeStatus: { in: ["pending", "insufficient"] },
       reviewAt: { lte: now },
-      actionExecution: null,
     },
+    include: recommendationWorkflowInclude(),
     orderBy: [{ reviewAt: "asc" }, { createdAt: "asc" }],
   });
 
   const results = [];
-  for (const recommendation of due) {
+  for (const recommendation of due.filter((item) => !currentExecutionFromRecommendation(item))) {
     // The initial bootstrap recommendations intentionally have no typed
     // baseline/current evaluator yet. Re-observing a cited belief is not a
     // success measurement, so fail closed and schedule another deterministic
@@ -58,10 +58,9 @@ export async function reviewDueRecommendations(prisma, input) {
       reviewStatus: "accepted",
       outcomeStatus: { in: ["pending", "insufficient"] },
       reviewAt: { gt: now },
-      actionExecution: null,
     },
+    include: recommendationWorkflowInclude(),
     orderBy: { reviewAt: "asc" },
-    select: { reviewAt: true },
   });
   input.logger?.info("Tracked recommendation review completed", {
     merchantId: input.merchantId,
@@ -78,9 +77,41 @@ export async function reviewDueRecommendations(prisma, input) {
 
 /** @param {any} recommendation */
 function contractKeyFromRecommendation(recommendation) {
-  const intent = recommendation.actionIntent;
-  if (intent && typeof intent === "object" && !Array.isArray(intent)) {
-    return typeof intent.contractKey === "string" ? intent.contractKey : null;
-  }
-  return null;
+  const workflow = Array.isArray(recommendation?.workflows)
+    ? recommendation.workflows[0] ?? null
+    : null;
+  const step = Array.isArray(workflow?.steps)
+    ? workflow.steps.find((/** @type {any} */ candidate) => candidate.capabilityRef)
+    : null;
+  return typeof step?.capabilityRef === "string" ? step.capabilityRef : null;
+}
+
+/** @returns {any} */
+function recommendationWorkflowInclude() {
+  return {
+    workflows: {
+      orderBy: { version: "desc" },
+      take: 1,
+      include: {
+        steps: {
+          orderBy: { orderIndex: "asc" },
+          include: {
+            actionExecutions: {
+              orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+              take: 1,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** @param {any} recommendation */
+function currentExecutionFromRecommendation(recommendation) {
+  const workflow = Array.isArray(recommendation?.workflows)
+    ? recommendation.workflows[0] ?? null
+    : null;
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  return steps.map((/** @type {any} */ step) => step.actionExecutions?.[0]).find(Boolean) ?? null;
 }

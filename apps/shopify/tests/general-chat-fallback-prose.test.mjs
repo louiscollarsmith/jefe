@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildGroundedFallbackReply } from "../app/lib/merchant-memory/general-chat.server.js";
+import {
+  applyWorkflowStepUpdatesFromReply,
+  buildCurrentActionInput,
+  buildGroundedFallbackReply,
+} from "../app/lib/merchant-memory/general-chat.server.js";
 
 // The grounded fallback interpolates a retrieved item's content straight into the reply.
 // Not every retrieved item is prose — some carry a serialised belief value — so a merchant
@@ -19,6 +23,14 @@ const ctx = (semantic) => ({
   episodicMemory: [],
   actionMemory: [],
 });
+
+const actionCtx = (focusedAction, extraActionEvidence = {}) => ({
+  ...ctx([{ content: "12-month goal: scale direct-to-consumer beverage sales" }]),
+  actionEvidence: { focusedAction, ...extraActionEvidence },
+});
+const STEP_ONE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const STEP_TWO_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const OTHER_STEP_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 test("a serialised belief value is never read out to the merchant", () => {
   const reply = buildGroundedFallbackReply("how is growth?", ctx([
@@ -66,4 +78,211 @@ test("key/value fragments are rejected too, not just full objects", () => {
 test("an empty context still produces the plain admission", () => {
   const reply = buildGroundedFallbackReply("how is growth?", ctx([]));
   assert.match(reply, /couldn’t connect|couldn't connect/);
+});
+
+test("current action input gives the model workflow evidence and quantity primitives", () => {
+  const currentAction = buildCurrentActionInput(
+    actionCtx(
+      {
+        title: "Restock Low-Cover Specialist Wines",
+        summary:
+          "Initiate supplier orders for at-risk products facing stockouts to protect upcoming specialist wine sales.",
+        proposedSteps: [
+          {
+            id: STEP_ONE_ID,
+            title: "Draft supplier restock communication",
+            description:
+              "Prepare an email or message to suppliers for the at-risk wines.",
+            status: "pending",
+            mode: "assist",
+            capabilityRef: "assist:supplier_email_draft",
+          },
+        ],
+      },
+      {
+        currentSystemContext: {
+          blocks: [
+            {
+              kind: "structured_evidence",
+              data: {
+                key: "inventory.low_cover_products.trailing_30d",
+                items: [
+                  {
+                    title: "Morgon Cote du Py",
+                    available: 3,
+                    dailyVelocity: 0.2,
+                    daysOfCover: 15,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ),
+  );
+
+  assert.equal(currentAction.title, "Restock Low-Cover Specialist Wines");
+  assert.equal(
+    currentAction.operationalContext.workflowSteps[0].capabilityRef,
+    "assist:supplier_email_draft",
+  );
+  assert.deepEqual(currentAction.operationalContext.evidence.lowCoverProducts, [
+    {
+      title: "Morgon Cote du Py",
+      available: 3,
+      dailyVelocity: 0.2,
+      daysOfCover: 15,
+      recommendedUnitsAtDefaultCover: 21,
+    },
+  ]);
+  assert.deepEqual(currentAction.operationalContext.primitives, [
+    {
+      ref: "restock_quantity_from_stock_cover",
+      purpose:
+        "Estimate purchase units for a restock/replenishment workflow step from current stock cover evidence.",
+      defaultTargetCoverDays: 120,
+      alternativeTargetCoverDays: [
+        {
+          days: 90,
+          meaning: "leaner cash-light reorder",
+        },
+        {
+          days: 180,
+          meaning: "more conservative reorder for long lead times",
+        },
+      ],
+      formula:
+        "recommendedPurchaseUnits = ceil(max(0, dailyVelocity * targetCoverDays - available))",
+      inputs:
+        "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+      output:
+        "Mention recommended units as a recommendation for approval/correction, not as a completed order.",
+    },
+  ]);
+});
+
+test("current action input keeps stock-cover evidence generic for model interpretation", () => {
+  const currentAction = buildCurrentActionInput(
+    actionCtx(
+      {
+        title: "Restock Low-Cover Specialist Wines",
+        summary:
+          "Initiate supplier orders for at-risk products facing stockouts to protect upcoming specialist wine sales.",
+        proposedSteps: [
+          {
+            id: STEP_ONE_ID,
+            title: "Draft supplier restock communication",
+            description:
+              "Prepare an email or message to suppliers for the at-risk wines.",
+            status: "pending",
+            mode: "assist",
+            capabilityRef: "assist:supplier_email_draft",
+          },
+        ],
+      },
+      {
+        currentSystemContext: {
+          blocks: [
+            {
+              kind: "structured_evidence",
+              data: {
+                key: "inventory.low_cover_products.trailing_30d",
+                items: [
+                  {
+                    title: "Pear Skin Sipon",
+                    available: 0,
+                    dailyVelocity: 0.1,
+                    daysOfCover: 0,
+                  },
+                  {
+                    title: "Picnic Xinomavro",
+                    available: 0,
+                    dailyVelocity: 0.1,
+                    daysOfCover: 0,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ),
+  );
+
+  assert.deepEqual(
+    currentAction.operationalContext.evidence.lowCoverProducts.map((item) => ({
+      title: item.title,
+      recommendedUnitsAtDefaultCover: item.recommendedUnitsAtDefaultCover,
+    })),
+    [
+      { title: "Pear Skin Sipon", recommendedUnitsAtDefaultCover: 12 },
+      { title: "Picnic Xinomavro", recommendedUnitsAtDefaultCover: 12 },
+    ],
+  );
+  assert.equal(
+    currentAction.operationalContext.primitives[0].inputs,
+    "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+  );
+});
+
+test("workflow step updates from the model are scoped to focused action steps", async () => {
+  const updates = [];
+  const prisma = {
+    merchantRecommendationStep: {
+      updateMany: async (args) => {
+        updates.push(args);
+        return { count: args.where.id === STEP_ONE_ID ? 1 : 0 };
+      },
+    },
+  };
+
+  const result = await applyWorkflowStepUpdatesFromReply(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    logger: { info() {}, warn() {}, error() {} },
+    actionEvidence: {
+      focusedAction: {
+        id: "action-1",
+        proposedSteps: [
+          { id: STEP_ONE_ID, title: "Draft supplier restock communication" },
+        ],
+      },
+    },
+    updates: [
+      {
+        stepId: STEP_ONE_ID,
+        status: "completed",
+        reason: "Merchant said step 1 complete.",
+      },
+      {
+        stepId: OTHER_STEP_ID,
+        status: "completed",
+        reason: "Should be ignored.",
+      },
+      {
+        stepId: STEP_ONE_ID,
+        status: "superseded",
+        reason: "Unsafe lifecycle transition from chat.",
+      },
+    ],
+  });
+
+  assert.deepEqual(result.applied, [
+    {
+      stepId: STEP_ONE_ID,
+      status: "completed",
+      reason: "Merchant said step 1 complete.",
+    },
+  ]);
+  assert.deepEqual(updates, [
+    {
+      where: {
+        id: STEP_ONE_ID,
+        merchantId: "merchant-1",
+        shopId: "shop-1",
+      },
+      data: { status: "completed" },
+    },
+  ]);
 });

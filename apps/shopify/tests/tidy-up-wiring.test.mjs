@@ -77,6 +77,18 @@ function prismaWith(row, updates = []) {
     actionExecution: {
       async findUnique() { return row; },
       async update(args) { updates.push(args); return { ...row, ...args.data }; },
+      async updateMany(args) {
+        if (
+          (args.where.runId && row.runId !== args.where.runId) ||
+          (args.where.merchantId && row.merchantId !== args.where.merchantId) ||
+          (args.where.status && row.status !== args.where.status)
+        ) {
+          return { count: 0 };
+        }
+        updates.push(args);
+        Object.assign(row, args.data);
+        return { count: 1 };
+      },
     },
   };
 }

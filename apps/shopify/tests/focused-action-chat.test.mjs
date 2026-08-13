@@ -140,7 +140,7 @@ function actionRow(overrides = {}) {
       title: overrides.title ?? "Clear slow stock",
       summary: overrides.summary ?? "Markdown slow-moving stock.",
       reviewStatus: "proposed",
-      executionSteps: [],
+      workflows: [],
       successSignal: {},
     },
     currentExecution: {

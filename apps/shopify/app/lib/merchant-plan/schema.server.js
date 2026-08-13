@@ -2,8 +2,8 @@
 
 import { Type } from "@google/genai";
 import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
-import { validateActionIntent } from "../actions/action-intent.server.js";
 import { PLAN_CONFIDENCE } from "./constants.server.js";
+import { resolveWorkflowStepCapability } from "./step-capabilities.server.js";
 
 export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
   type: Type.OBJECT,
@@ -58,7 +58,7 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         "whyThisAction",
         "whyNow",
         "startToday",
-        "executionSteps",
+        "workflow",
         "successSignal",
         "expectedBenefit",
         "supportingBeliefIds",
@@ -77,14 +77,32 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         whyThisAction: { type: Type.STRING },
         whyNow: { type: Type.STRING },
         startToday: { type: Type.STRING },
-        executionSteps: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            required: ["title", "description"],
-            properties: {
-              title: { type: Type.STRING },
-              description: { type: Type.STRING },
+        workflow: {
+          type: Type.OBJECT,
+          required: ["steps"],
+          properties: {
+            steps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                required: ["id", "title", "description", "completionCriteria", "mode"],
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  completionCriteria: { type: Type.STRING },
+                  mode: {
+                    type: Type.STRING,
+                    enum: ["execute", "assist", "merchant_action", "evidence_required"],
+                  },
+                  capabilityRef: { type: Type.STRING, nullable: true },
+                  dependsOnStepIds: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    nullable: true,
+                  },
+                },
+              },
             },
           },
         },
@@ -109,21 +127,6 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         confidence: { type: Type.STRING, enum: PLAN_CONFIDENCE },
         assumption: { type: Type.STRING, nullable: true },
         caveat: { type: Type.STRING, nullable: true },
-        // OPTIONAL: the typed action Jefe can carry out for this recommendation, from
-        // the Action Capability Registry. Emitted ONLY when supplied memory directly
-        // supports a registered capability; omitted otherwise. The magnitude is
-        // advisory — the primitive computes the safe (floored, capped) parameters.
-        actionIntent: {
-          type: Type.OBJECT,
-          nullable: true,
-          required: ["actionType", "targetKind"],
-          properties: {
-            actionType: { type: Type.STRING },
-            targetKind: { type: Type.STRING },
-            markdownPercent: { type: Type.NUMBER, nullable: true },
-            rationale: { type: Type.STRING, nullable: true },
-          },
-        },
       },
     },
   },
@@ -217,9 +220,7 @@ function normalizeCandidate(value, context) {
 function normalizeRecommendation(value, context) {
   const item = asRecord(value);
   if (!item) return invalid("selectedRecommendation must be an object.");
-  const executionSteps = Array.isArray(item.executionSteps)
-    ? item.executionSteps.map(normalizeStep).filter(Boolean).slice(0, 5)
-    : [];
+  const workflowSteps = normalizeWorkflowSteps(item.workflow);
   const successSignal = normalizeSuccessSignal(item.successSignal);
   const recommendation = {
     candidateId: cleanText(item.candidateId, 50),
@@ -230,7 +231,7 @@ function normalizeRecommendation(value, context) {
     whyThisAction: cleanText(item.whyThisAction, 420),
     whyNow: cleanText(item.whyNow, 320),
     startToday: cleanText(item.startToday, 320),
-    executionSteps,
+    workflow: { steps: workflowSteps },
     successSignal,
     expectedBenefit: cleanText(item.expectedBenefit, 320),
     supportingBeliefIds: uniqueStrings(item.supportingBeliefIds),
@@ -238,10 +239,7 @@ function normalizeRecommendation(value, context) {
     confidence: typeof item.confidence === "string" ? item.confidence : "",
     assumption: cleanText(item.assumption, 220, true),
     caveat: cleanText(item.caveat, 220, true),
-    // Advisory + best-effort: null when absent/malformed/unknown/mismatched (never fails the plan).
-    actionIntent: null,
   };
-  recommendation.actionIntent = normalizeActionIntent(item.actionIntent, recommendation);
   for (const field of [
     "candidateId",
     "title",
@@ -260,8 +258,8 @@ function normalizeRecommendation(value, context) {
   for (const goalId of recommendation.supportingGoalIds) {
     if (!context.allowedGoalIds.has(goalId)) return invalid("Recommendation cited a supporting goal that was not supplied to the model.");
   }
-  if (recommendation.executionSteps.length === 0) {
-    return invalid("Recommendation needs execution steps.");
+  if (recommendation.workflow.steps.length === 0) {
+    return invalid("Recommendation needs workflow steps.");
   }
   if (!recommendation.successSignal) return invalid("Recommendation needs a success signal.");
   if (recommendation.supportingBeliefIds.length === 0) {
@@ -283,65 +281,44 @@ function normalizeRecommendation(value, context) {
   return { ok: true, recommendation };
 }
 
-/**
- * Normalize an OPTIONAL LLM-emitted action-intent against the Action Capability
- * Registry. Advisory + best-effort: a missing, malformed, or unknown intent returns
- * null and the plan still stands — the recommendation prose is the product, and the
- * typed primitive re-validates + floors the parameters before anything is proposed.
- * The LLM's magnitude (markdownPercent) is a suggestion the primitive is free to floor.
- * @param {unknown} value
- */
-function normalizeActionIntent(value, recommendation) {
-  const item = asRecord(value);
-  if (!item) return null;
-  const markdownPercent = Number(item.markdownPercent);
-  const candidate = {
-    actionType: cleanText(item.actionType, 50),
-    targetKind: cleanText(item.targetKind, 50),
-    params: Number.isFinite(markdownPercent) ? { markdownPercent } : undefined,
-    rationale: cleanText(item.rationale, 220, true) ?? undefined,
-  };
-  const validation = validateActionIntent(candidate);
-  if (!validation.ok) return null;
-  return actionIntentMatchesRecommendation(validation.intent, recommendation)
-    ? validation.intent
-    : null;
-}
-
-function actionIntentMatchesRecommendation(intent, recommendation) {
-  if (intent.actionType !== "price_markdown" || intent.targetKind !== "dead_stock") {
-    return true;
+function normalizeWorkflowSteps(workflow) {
+  const source = asRecord(workflow);
+  const rawSteps = Array.isArray(source?.steps) ? source.steps : [];
+  const normalized = [];
+  const seenIds = new Set();
+  for (const rawStep of rawSteps) {
+    const step = normalizeStep(rawStep, normalized.length);
+    if (!step) continue;
+    if (seenIds.has(step.id)) step.id = `step_${normalized.length + 1}`;
+    seenIds.add(step.id);
+    normalized.push(step);
+    if (normalized.length >= 8) break;
   }
-  const text = normalizeText([
-    recommendation.title,
-    recommendation.summary,
-    recommendation.whyThisAction,
-    recommendation.whyNow,
-    recommendation.startToday,
-    recommendation.expectedBenefit,
-    ...(recommendation.executionSteps ?? []).flatMap((step) => [
-      step.title,
-      step.description,
-    ]),
-  ].filter(Boolean).join(" "));
-
-  const mentionsClearance =
-    /\b(clearance|markdown|mark down|marked down|discount|reduce prices?|lower prices?)\b/.test(text);
-  const mentionsDeadStock =
-    /\b(dead stock|old stock|stale stock|slow moving|slow mover|unsold|hasn t sold|haven t sold|cash tied up|trapped capital)\b/.test(text);
-  const mentionsStockWithClearanceVerb =
-    /\bstock\b/.test(text) &&
-    /\b(clear|clear out|free|recover|release|move)\b/.test(text);
-
-  return mentionsClearance || mentionsDeadStock || mentionsStockWithClearanceVerb;
+  return normalized;
 }
 
-function normalizeStep(value) {
+function normalizeStep(value, index = 0) {
   const item = asRecord(value);
   if (!item) return null;
   const title = cleanText(item.title, 90);
   const description = cleanText(item.description, 220);
-  return title && description ? { title, description } : null;
+  const capability = resolveWorkflowStepCapability(
+    item.capabilityRef,
+    item.mode,
+  );
+  const id = cleanText(item.id, 50, true);
+  const dependsOnStepIds = uniqueStrings(item.dependsOnStepIds).slice(0, 5);
+  return title && description
+    ? {
+        id: id || `step_${index + 1}`,
+        title,
+        description,
+        completionCriteria: cleanText(item.completionCriteria, 220, true),
+        mode: capability.mode,
+        capabilityRef: capability.capabilityRef,
+        dependsOnStepIds,
+      }
+    : null;
 }
 
 function normalizeSuccessSignal(value) {
@@ -387,9 +364,10 @@ function numericClaimsAreGrounded(recommendation, context) {
     recommendation.whyNow,
     recommendation.expectedBenefit,
     recommendation.startToday,
-    ...recommendation.executionSteps.flatMap((step) => [
+    ...recommendation.workflow.steps.flatMap((step) => [
       step.title,
       step.description,
+      step.completionCriteria,
     ]),
     recommendation.successSignal?.description,
     recommendation.successSignal?.target,

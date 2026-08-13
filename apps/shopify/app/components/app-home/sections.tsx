@@ -395,9 +395,9 @@ function RecommendationRow({ rec, last }: { rec: NonNullable<Recommendation>; la
         {open ? (
           <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 7 }}>
             {rec.whyNow ? <div style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink2 }}><strong style={{ fontWeight: 600 }}>Why now:</strong> {rec.whyNow}</div> : null}
-            {rec.executionSteps?.length ? (
+            {rec.workflow?.steps?.length ? (
               <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 3 }}>
-                {rec.executionSteps.map((s, i) => (
+                {rec.workflow.steps.map((s, i) => (
                   <li key={i} style={{ fontFamily: R.sans, fontSize: 12.5, lineHeight: 1.5, color: R.ink2 }}><strong style={{ fontWeight: 600 }}>{s.title}</strong>{s.description ? ` — ${s.description}` : ""}</li>
                 ))}
               </ol>

@@ -60,7 +60,7 @@ export async function getFastOnboardingExperience(prisma, input) {
       include: {
         run: { select: { insightRunId: true, result: true } },
         evidenceSnapshot: true,
-        actionExecution: true,
+        ...recommendationWorkflowInclude(),
       },
     }),
     prisma.shopBackfillStatus.findMany({
@@ -271,23 +271,25 @@ export async function approveOnboardingRecommendation(prisma, input) {
   if (!recommendation) return { ok: false, error: "That recommendation is no longer available." };
   if (
     isRunnableOnboardingExecution(
-      recommendation.actionExecution,
+      currentExecutionFromRecommendation(recommendation),
       input.merchantId,
       input.shopId,
-      recommendation.id,
     )
   ) {
+    const execution = currentExecutionFromRecommendation(recommendation);
     return {
       ok: true,
       mode: "execute",
-      actionRunId: recommendation.actionExecution.runId,
+      actionRunId: execution.runId,
       recommendationId: recommendation.id,
     };
   }
   const acceptedAt = recommendation.acceptedAt ?? new Date();
   const reviewAt = recommendation.reviewAt ?? new Date(Date.now() + 14 * 86400000);
-  await prisma.merchantPlanRecommendation.update({
-    where: { id: recommendation.id },
+  await acceptRecommendationWorkflow(prisma, {
+    recommendationId: recommendation.id,
+    merchantId: input.merchantId,
+    shopId: input.shopId,
     data: { reviewStatus: "accepted", acceptedAt, reviewAt, outcomeStatus: "pending" },
   });
   await ensureRecommendationReviewQueued(prisma, {
@@ -300,8 +302,10 @@ export async function approveOnboardingRecommendation(prisma, input) {
 }
 
 export async function completeExecutedRecommendationHandoff(prisma, input) {
-  await prisma.merchantPlanRecommendation.updateMany({
-    where: { id: input.recommendationId, merchantId: input.merchantId, shopId: input.shopId },
+  await acceptRecommendationWorkflow(prisma, {
+    recommendationId: input.recommendationId,
+    merchantId: input.merchantId,
+    shopId: input.shopId,
     data: { reviewStatus: "accepted", acceptedAt: new Date() },
   });
   return completeRecommendationHandoff(prisma, input, input.recommendationId, "approved_execution");
@@ -447,7 +451,7 @@ async function ownedRecommendation(prisma, input, includeExecution = false) {
       shopId: input.shopId,
       sourceMode: { in: ["bootstrap", "full"] },
     },
-    include: includeExecution ? { actionExecution: true } : undefined,
+    include: includeExecution ? recommendationWorkflowInclude() : undefined,
   });
 }
 
@@ -469,11 +473,11 @@ function selectRecommendation(recommendations, inApp) {
 export function shapeRecommendation(row) {
   const success = jsonObject(row.successSignal);
   const executable = isRunnableOnboardingExecution(
-    row.actionExecution,
+    currentExecutionFromRecommendation(row),
     row.merchantId,
     row.shopId,
-    row.id,
   );
+  const execution = currentExecutionFromRecommendation(row);
   return {
     id: row.id,
     runId: row.runId,
@@ -487,8 +491,8 @@ export function shapeRecommendation(row) {
     status: row.reviewStatus,
     outcomeStatus: row.outcomeStatus,
     executable,
-    actionRunId: row.actionExecution?.runId ?? null,
-    executionStatus: row.actionExecution?.status ?? null,
+    actionRunId: execution?.runId ?? null,
+    executionStatus: execution?.status ?? null,
     approvalLabel: executable ? "Approve — I’ll handle it" : "Track this for me",
     sourceMode: row.sourceMode,
   };
@@ -643,18 +647,80 @@ function isRunnableOnboardingExecution(
   execution,
   merchantId,
   shopId,
-  recommendationId,
 ) {
   return Boolean(
     execution &&
       execution.merchantId === merchantId &&
       execution.shopId === shopId &&
-      execution.sourceRecommendationId === recommendationId &&
       ["proposed", "approved"].includes(execution.status) &&
       execution.actionType === "price_markdown" &&
       isActionExecuteEnabled(execution.actionType) &&
       execution.resolvedMode !== "recommend",
   );
+}
+
+function recommendationWorkflowInclude() {
+  return {
+    workflows: {
+      orderBy: { version: "desc" },
+      take: 1,
+      include: {
+        steps: {
+          orderBy: { orderIndex: "asc" },
+          include: {
+            actionExecutions: {
+              orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+              take: 1,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function currentExecutionFromRecommendation(recommendation) {
+  const workflow = Array.isArray(recommendation?.workflows)
+    ? recommendation.workflows[0] ?? null
+    : null;
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  return steps.map((step) => step.actionExecutions?.[0]).find(Boolean) ?? null;
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ recommendationId: string; merchantId: string; shopId: string; data: Record<string, any> }} input
+ */
+async function acceptRecommendationWorkflow(prisma, input) {
+  const run = async (tx) => {
+    await tx.merchantPlanRecommendation.updateMany({
+      where: {
+        id: input.recommendationId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      data: input.data,
+    });
+    await tx.merchantRecommendationWorkflow.updateMany({
+      where: {
+        recommendationId: input.recommendationId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: "draft",
+      },
+      data: { status: "active" },
+    });
+    await tx.merchantRecommendationStep.updateMany({
+      where: {
+        recommendationId: input.recommendationId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: "draft",
+      },
+      data: { status: "pending" },
+    });
+  };
+  return prisma.$transaction ? prisma.$transaction(run) : run(prisma);
 }
 
 function bootstrapEpoch(status, job) {

@@ -30,6 +30,18 @@ function makePrisma(row) {
     actionExecution: {
       async findUnique() { return row; },
       async update({ data }) { updates.push(data); Object.assign(row, data); return row; },
+      async updateMany({ where, data }) {
+        if (
+          (where.runId && row.runId !== where.runId) ||
+          (where.merchantId && row.merchantId !== where.merchantId) ||
+          (where.status && row.status !== where.status)
+        ) {
+          return { count: 0 };
+        }
+        updates.push({ where, data });
+        Object.assign(row, data);
+        return { count: 1 };
+      },
       async upsert({ create }) { return { id: "exec-1", ...create }; },
     },
     actionExecutionWrite: {

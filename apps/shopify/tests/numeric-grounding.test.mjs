@@ -221,12 +221,18 @@ test("(e) plan validation allows 100% only for cited bounded coverage metrics", 
         "Cost coverage is at 0%, so adding costs creates the baseline for profit visibility.",
       whyNow: "This is the foundation for margin decisions.",
       startToday: "Start with the active variants that are missing cost data.",
-      executionSteps: [
-        {
-          title: "Gather costs",
-          description: "Collect unit costs for the active variants.",
-        },
-      ],
+      workflow: {
+        steps: [
+          {
+            id: "step_1",
+            title: "Gather costs",
+            description: "Collect unit costs for the active variants.",
+            completionCriteria: "The missing costs are ready to enter.",
+            mode: "merchant_action",
+            capabilityRef: null,
+          },
+        ],
+      },
       successSignal: {
         description: "Cost coverage moves from 0% toward 100%.",
         timeframe: "As costs are entered.",

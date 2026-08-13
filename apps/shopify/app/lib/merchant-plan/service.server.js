@@ -13,6 +13,7 @@ import { enqueueBackfillJob } from "../../services/shopify-backfill-status.serve
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
 import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
+import { logger as baseLogger } from "../observability/logger.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
 import {
   MERCHANT_PLAN_JOB_TYPE,
@@ -87,7 +88,7 @@ export async function ensureMerchantPlanQueued(prisma, input) {
 export async function getMerchantPlanExperience(prisma, input) {
   const snapshot = await buildMerchantPlanSnapshot(prisma, input);
   const [currentRun, previousCompletedRun, activeJob] = await Promise.all([
-    prisma.merchantPlanRun.findUnique({
+      prisma.merchantPlanRun.findUnique({
       where: {
         shopId_snapshotHash_promptVersion_schemaVersion: {
           shopId: input.shopId,
@@ -96,7 +97,7 @@ export async function getMerchantPlanExperience(prisma, input) {
           schemaVersion: MERCHANT_PLAN_SCHEMA_VERSION,
         },
       },
-      include: { recommendation: true },
+      include: recommendationInclude(),
     }),
     prisma.merchantPlanRun.findFirst({
       where: {
@@ -105,7 +106,7 @@ export async function getMerchantPlanExperience(prisma, input) {
         status: PLAN_RUN_STATUS.completed,
         snapshotHash: { not: snapshot.snapshotHash },
       },
-      include: { recommendation: true },
+      include: recommendationInclude(),
       orderBy: { completedAt: "desc" },
     }),
     prisma.backfillJob.findUnique({
@@ -164,7 +165,7 @@ export async function getLatestMerchantPlan(prisma, input) {
       // rather than the merchant's — surface them on the home too.
       sourceMode: { in: ["full", "proactive"] },
     },
-    include: { recommendation: true },
+    include: recommendationInclude(),
     orderBy: { completedAt: "desc" },
   });
   return { selectedRun: serializeRun(latestCompletedRun) };
@@ -261,7 +262,6 @@ export async function generateMerchantPlan(prisma, input) {
           whyThisAction: recommendation.whyThisAction,
           whyNow: recommendation.whyNow,
           startToday: recommendation.startToday,
-          executionSteps: recommendation.executionSteps,
           successSignal: recommendation.successSignal,
           expectedBenefit: recommendation.expectedBenefit,
           supportingBeliefIds: recommendation.supportingBeliefIds,
@@ -269,7 +269,6 @@ export async function generateMerchantPlan(prisma, input) {
           confidence: recommendation.confidence,
           assumption: recommendation.assumption,
           caveat: recommendation.caveat,
-          actionIntent: recommendation.actionIntent,
           reviewStatus: PLAN_REVIEW_STATUS.proposed,
         },
         update: {
@@ -280,7 +279,6 @@ export async function generateMerchantPlan(prisma, input) {
           whyThisAction: recommendation.whyThisAction,
           whyNow: recommendation.whyNow,
           startToday: recommendation.startToday,
-          executionSteps: recommendation.executionSteps,
           successSignal: recommendation.successSignal,
           expectedBenefit: recommendation.expectedBenefit,
           supportingBeliefIds: recommendation.supportingBeliefIds,
@@ -288,8 +286,13 @@ export async function generateMerchantPlan(prisma, input) {
           confidence: recommendation.confidence,
           assumption: recommendation.assumption,
           caveat: recommendation.caveat,
-          actionIntent: recommendation.actionIntent,
         },
+      });
+      await persistRecommendationWorkflow(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        recommendation: persistedRecommendation,
+        workflow: recommendation.workflow,
       });
       await buildPlanEvidenceSnapshot(tx, {
         merchantId: input.merchantId,
@@ -334,20 +337,6 @@ export async function generateMerchantPlan(prisma, input) {
       });
     });
 
-    // Emit any action-intent the plan-rec carried into the typed action lane — Jefe
-    // deciding, FROM MEMORY, to offer a concrete move (dead-stock clearance is the first
-    // through it). The primitive re-resolves the intent against live memory and computes
-    // floored/capped params, so it proposes only a real, safe opportunity — and writes
-    // nothing external (execution stays behind CLEARANCE_EXECUTE_ENABLED). Best-effort +
-    // OUTSIDE the plan transaction: a failure here never fails plan generation.
-    await maybeEmitPlanAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      intent: recommendation.actionIntent,
-      sourceRecommendation: persistedRecommendation,
-      logger,
-    });
-
     logger.info("Merchant Plan generated", {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -371,15 +360,15 @@ export async function generateMerchantPlan(prisma, input) {
 }
 
 /**
- * Hand a plan-rec's optional action-intent to the typed action lane. The intent is
+ * Hand an accepted workflow step's action-intent to the typed action lane. The intent is
  * advisory (the LLM picked the verb); proposeActionFromIntent re-resolves it against
  * live memory and computes floored + capped parameters, creating a `proposed` row only
  * when there is a real, safe opportunity. Nothing external is written — execution stays
- * behind CLEARANCE_EXECUTE_ENABLED. Best-effort: never throws into plan generation.
+ * behind each action's execute flag. Best-effort: never throws into Plan acceptance.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; intent: any; sourceRecommendation?: any; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; intent: any; sourceRecommendation?: any; recommendationStepId?: string | null; logger: Pick<Console, "info" | "warn" | "error"> }} input
  */
-async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceRecommendation, logger }) {
+async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceRecommendation, recommendationStepId, logger }) {
   if (!intent) return;
   try {
     const result = await proposeActionFromIntent(prisma, {
@@ -391,12 +380,13 @@ async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceR
       // because CLEARANCE_EXECUTE_ENABLED is true in production. Fail-closed on unknown types.
       writeEnabled: isActionExecuteEnabled(intent?.actionType),
       sourceRecommendation,
-      sourceRecommendationId: sourceRecommendation?.id ?? null,
+      recommendationStepId: recommendationStepId ?? null,
     });
     logger.info("Plan emitted an action-intent", {
       merchantId,
       shopId,
       actionType: intent.actionType,
+      recommendationStepId: recommendationStepId ?? null,
       status: result.status,
       runId: result.execution?.runId ?? null,
     });
@@ -405,6 +395,7 @@ async function maybeEmitPlanAction(prisma, { merchantId, shopId, intent, sourceR
       merchantId,
       shopId,
       actionType: intent?.actionType ?? null,
+      recommendationStepId: recommendationStepId ?? null,
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -588,12 +579,30 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
       shopId: input.shopId,
     },
   });
-  const recommendation = await prisma.merchantPlanRecommendation.update({
-    where: { id: existing.id },
-    data: {
-      reviewStatus: PLAN_REVIEW_STATUS.accepted,
-      acceptedAt: now,
-    },
+  const recommendation = await prisma.$transaction(async (tx) => {
+    const updated = await tx.merchantPlanRecommendation.update({
+      where: { id: existing.id },
+      data: {
+        reviewStatus: PLAN_REVIEW_STATUS.accepted,
+        acceptedAt: now,
+      },
+      include: recommendationInclude().recommendation.include,
+    });
+    await tx.merchantRecommendationWorkflow.updateMany({
+      where: { recommendationId: existing.id, status: "draft" },
+      data: { status: "active" },
+    });
+    await tx.merchantRecommendationStep.updateMany({
+      where: { recommendationId: existing.id, status: "draft" },
+      data: { status: "pending" },
+    });
+    await emitExecutableWorkflowSteps(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      recommendation: updated,
+      logger: baseLogger.child({ component: "merchant-plan-workflow" }),
+    });
+    return updated;
   });
   await recordEvidence(prisma, {
     merchantId: input.merchantId,
@@ -690,7 +699,22 @@ function serializeRun(run) {
   };
 }
 
+function recommendationInclude() {
+  return {
+    recommendation: {
+      include: {
+        workflows: {
+          orderBy: { version: "desc" },
+          take: 1,
+          include: { steps: { orderBy: { orderIndex: "asc" } } },
+        },
+      },
+    },
+  };
+}
+
 function serializeRecommendation(recommendation) {
+  const workflow = serializeWorkflow(recommendation.workflows?.[0] ?? null);
   return {
     id: recommendation.id,
     title: recommendation.title,
@@ -700,9 +724,7 @@ function serializeRecommendation(recommendation) {
     whyThisAction: recommendation.whyThisAction,
     whyNow: recommendation.whyNow,
     startToday: recommendation.startToday,
-    executionSteps: Array.isArray(recommendation.executionSteps)
-      ? recommendation.executionSteps
-      : [],
+    workflow,
     successSignal:
       recommendation.successSignal &&
       typeof recommendation.successSignal === "object" &&
@@ -718,6 +740,103 @@ function serializeRecommendation(recommendation) {
     reviewStatus: recommendation.reviewStatus,
     acceptedAt: recommendation.acceptedAt?.toISOString?.() ?? null,
     rejectedAt: recommendation.rejectedAt?.toISOString?.() ?? null,
+  };
+}
+
+function serializeWorkflow(workflow) {
+  if (!workflow) return null;
+  return {
+    id: workflow.id,
+    version: workflow.version,
+    status: workflow.status,
+    source: workflow.source,
+    steps: (workflow.steps ?? []).map((step) => ({
+      id: step.id,
+      orderIndex: step.orderIndex,
+      title: step.title,
+      description: step.description,
+      completionCriteria: step.completionCriteria,
+      status: step.status,
+      mode: step.mode,
+      capabilityRef: step.capabilityRef,
+      dependsOnStepIds: step.dependsOnStepIds ?? [],
+      evidenceIds: step.evidenceIds ?? [],
+    })),
+  };
+}
+
+async function persistRecommendationWorkflow(tx, { merchantId, shopId, recommendation, workflow }) {
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  const persistedWorkflow = await tx.merchantRecommendationWorkflow.upsert({
+    where: {
+      recommendationId_version: {
+        recommendationId: recommendation.id,
+        version: 1,
+      },
+    },
+    create: {
+      recommendationId: recommendation.id,
+      merchantId,
+      shopId,
+      version: 1,
+      status: "draft",
+      source: "plan_generation",
+    },
+    update: {
+      merchantId,
+      shopId,
+      status: "draft",
+      source: "plan_generation",
+    },
+  });
+  await tx.merchantRecommendationStep.deleteMany({
+    where: { workflowId: persistedWorkflow.id, status: "draft" },
+  });
+  if (steps.length === 0) return persistedWorkflow;
+  await tx.merchantRecommendationStep.createMany({
+    data: steps.map((step, index) => ({
+      workflowId: persistedWorkflow.id,
+      recommendationId: recommendation.id,
+      merchantId,
+      shopId,
+      orderIndex: index,
+      title: step.title,
+      description: step.description,
+      completionCriteria: step.completionCriteria ?? null,
+      status: "draft",
+      mode: step.mode,
+      capabilityRef: step.capabilityRef ?? null,
+      dependsOnStepIds: step.dependsOnStepIds ?? [],
+      evidenceIds: [],
+    })),
+  });
+  return persistedWorkflow;
+}
+
+async function emitExecutableWorkflowSteps(tx, { merchantId, shopId, recommendation, logger }) {
+  const workflow = recommendation.workflows?.[0] ?? null;
+  const steps = workflow?.steps ?? [];
+  for (const step of steps) {
+    if (step.mode !== "execute" || !step.capabilityRef) continue;
+    const intent = actionIntentFromCapabilityRef(step.capabilityRef);
+    if (!intent) continue;
+    await maybeEmitPlanAction(tx, {
+      merchantId,
+      shopId,
+      intent,
+      sourceRecommendation: recommendation,
+      recommendationStepId: step.id,
+      logger,
+    });
+  }
+}
+
+function actionIntentFromCapabilityRef(ref) {
+  const parts = String(ref ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== "execute") return null;
+  return {
+    actionType: parts[1],
+    targetKind: parts[2],
   };
 }
 

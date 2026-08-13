@@ -81,10 +81,22 @@ export async function wireListingCopyExecution(prisma, session, input, deps = {}
     return { ok: false, executed: false, reason: `not_executable:${row.status}`, status: row.status };
   }
   if (row.status === "proposed") {
-    await prisma.actionExecution.update({
-      where: { runId: actionRunId },
+    const claimed = await prisma.actionExecution.updateMany({
+      where: { runId: actionRunId, merchantId, status: "proposed" },
       data: { status: "approved", approvedBy, approvedAt: new Date() },
     });
+    if (claimed.count !== 1) {
+      const fresh = await prisma.actionExecution.findUnique({
+        where: { runId: actionRunId },
+        select: { status: true },
+      });
+      return {
+        ok: false,
+        executed: false,
+        reason: `approval_race:${fresh?.status ?? "missing"}`,
+        status: fresh?.status,
+      };
+    }
   }
 
   if (!isListingCopyExecuteEnabled()) {

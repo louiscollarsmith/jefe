@@ -21,7 +21,7 @@ test("every executable action type is wired", () => {
 
 test("a tidy-up approval reaches its own wire, not clearance's", async () => {
   const result = await executeApprovedAction(
-    prismaWith({ actionType: "tidy_up", merchantId: "m1" }),
+    prismaWith({ actionType: "tidy_up", merchantId: "m1", status: "proposed" }),
     session,
     { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
     { loadOfflineToken: async () => "tok", createGqlClient: () => ({ async request() { return {}; } }) },
@@ -34,7 +34,7 @@ test("a listing-copy approval does not get handed to the clearance wire", async 
   // The regression this module exists to prevent: before it, this returned
   // "wrong_primitive:listing_copy" from the clearance wire and the merchant's tap was a no-op.
   const result = await executeApprovedAction(
-    prismaWith({ actionType: "listing_copy", merchantId: "m1" }),
+    prismaWith({ actionType: "listing_copy", merchantId: "m1", status: "proposed" }),
     session,
     { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
     { loadOfflineToken: async () => "tok", createGqlClient: () => ({ async request() { return {}; } }) },
@@ -44,7 +44,7 @@ test("a listing-copy approval does not get handed to the clearance wire", async 
 
 test("an unknown action type executes nothing rather than falling back to clearance", async () => {
   const result = await executeApprovedAction(
-    prismaWith({ actionType: "some_future_action", merchantId: "m1" }),
+    prismaWith({ actionType: "some_future_action", merchantId: "m1", status: "proposed" }),
     session,
     { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
   );
@@ -55,9 +55,20 @@ test("an unknown action type executes nothing rather than falling back to cleara
 
 test("another merchant's run is refused before any wire is reached", async () => {
   const result = await executeApprovedAction(
-    prismaWith({ actionType: "price_markdown", merchantId: "someone-else" }),
+    prismaWith({ actionType: "price_markdown", merchantId: "someone-else", status: "proposed" }),
     session,
     { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
   );
   assert.equal(result.reason, "not_found");
+});
+
+test("a stale non-executable run is refused before any wire is reached", async () => {
+  const result = await executeApprovedAction(
+    prismaWith({ actionType: "price_markdown", merchantId: "m1", status: "superseded" }),
+    session,
+    { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.executed, false);
+  assert.equal(result.reason, "not_executable:superseded");
 });

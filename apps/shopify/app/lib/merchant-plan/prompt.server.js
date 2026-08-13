@@ -1,6 +1,6 @@
 // @ts-check
 
-import { listActionCapabilities } from "../actions/action-intent.server.js";
+import { listStepCapabilities } from "./step-capabilities.server.js";
 import {
   MERCHANT_PLAN_PROMPT_VERSION,
   MERCHANT_PLAN_SCHEMA_VERSION,
@@ -13,7 +13,7 @@ You are given a bounded, privacy-safe snapshot of Merchant Memory, current onboa
 
 Choose exactly one recommendation. It must primarily advance the three-month goal, remain compatible with the six- and twelve-month goals, be grounded in supplied beliefs and insights, be specific to this merchant, be realistic to begin today, explain the mechanism, and include a practical success signal.
 
-This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. The recommendation may include a short sequence of steps only when all steps belong to one coherent action.
+This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. The recommendation must include a short workflow: multiple steps are welcome only when they move one coherent recommendation to completion.
 
 Use Merchant Memory only. Do not recalculate raw Shopify data. Do not invent numbers, customer groups, products, constraints, causality, targets, risks or guarantees. Merchant-confirmed and merchant-corrected beliefs have highest authority for merchant-defined matters. Deterministic beliefs have higher authority than lower-authority inferences for objective data.
 
@@ -31,7 +31,7 @@ Avoid invented measurement targets. Do not use generic completion numbers such a
 
 Do not recommend something already accepted, rejected, completed or stated as unsuitable in previousRecommendations or merchantContext.
 
-When — and only when — the selected recommendation maps to one of Jefe's registered executable capabilities (actionCapabilities) AND the supplied memory directly supports acting now, also emit an actionIntent naming that capability, so Jefe can offer to carry it out. Choose actionType and targetKind from actionCapabilities only; any magnitude you give (for example markdownPercent) is advisory — Jefe computes the safe, floored, capped parameters itself and never applies your number directly. If no registered capability cleanly fits, omit actionIntent. Never invent a capability, and never let the availability of an action change which recommendation you choose — pick the best recommendation first, then attach an actionIntent only if one genuinely fits.
+For each workflow step, choose the closest support path from stepCapabilities. Use mode "execute" only when a supplied executable capability cleanly fits and memory supports acting now. Otherwise choose "assist", "evidence_required", or "merchant_action" so Jefe still helps the merchant move the work forward. Never invent a capability, and never let available capabilities change which recommendation you choose — pick the best recommendation first, then choose the honest support path per step.
 
 Return only the required structured output. Copy all cited IDs exactly from allowedGoalIds, allowedSupportingBeliefIds and allowedSupportingInsightIds. Do not expose internal keys, raw confidence decimals, chain-of-thought or database language in merchant-facing fields.`;
 }
@@ -52,9 +52,10 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
     allowedGoalIds: snapshot.goals.map((goal) => goal.id),
     allowedSupportingBeliefIds: snapshot.beliefs.map((belief) => belief.id),
     allowedSupportingInsightIds: snapshot.insights.map((insight) => insight.id),
-    // The typed actions Jefe can execute — the ONLY vocabulary an emitted actionIntent
-    // may draw from. Empty-safe: no capabilities → never emit an actionIntent.
-    actionCapabilities: listActionCapabilities(),
+    // The ways Jefe can help one workflow step: typed executable capabilities plus
+    // honest assist/evidence/merchant-action paths. Empty executable coverage still
+    // leaves assist paths, so the model should never dead-end.
+    stepCapabilities: listStepCapabilities(),
     outputContract: {
       candidates: [
         {
@@ -79,12 +80,19 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
         whyThisAction: "evidence-backed reason this is the best first move",
         whyNow: "why this should be started before other plausible actions",
         startToday: "specific first thing the merchant can do today",
-        executionSteps: [
-          {
-            title: "short step title",
-            description: "plain-English execution detail",
-          },
-        ],
+        workflow: {
+          steps: [
+            {
+              id: "short stable step id such as step_1",
+              title: "short step title",
+              description: "plain-English execution detail",
+              completionCriteria: "what must be true for this step to be complete",
+              mode: "execute | assist | merchant_action | evidence_required",
+              capabilityRef: "one of stepCapabilities[].ref when a listed capability fits; otherwise omit",
+              dependsOnStepIds: ["optional earlier workflow step ids"],
+            },
+          ],
+        },
         successSignal: {
           description: "observable signal that the action worked",
           timeframe: "practical timeframe",
@@ -96,12 +104,6 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
         confidence: "strong | reasonable | emerging",
         assumption: "optional important assumption",
         caveat: "optional caveat or uncertainty",
-        actionIntent: {
-          actionType: "one of actionCapabilities[].actionType — only when memory supports acting now; else omit the whole actionIntent",
-          targetKind: "one of that capability's targetKinds",
-          markdownPercent: "optional advisory magnitude; Jefe floors + caps it (never applied directly)",
-          rationale: "optional one-line why, for the merchant",
-        },
       },
     },
     fieldLegend: {
@@ -115,8 +117,8 @@ export function buildMerchantPlanPrompt(snapshot, options = {}) {
         "safe summaries of merchant coaching, planning documents, corrections and Plan refinements",
       previousRecommendations:
         "prior Plan recommendations; avoid rejected, accepted or completed actions",
-      actionCapabilities:
-        "the typed actions Jefe can execute; the only source for actionIntent.actionType/targetKind — emit an actionIntent only when memory directly supports one",
+      stepCapabilities:
+        "the ways Jefe can help each step; executable refs are the only source for execute steps, while assist/evidence/merchant_action refs keep non-integrated work useful",
     },
     snapshot,
   });
