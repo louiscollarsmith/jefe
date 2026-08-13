@@ -3,6 +3,68 @@
 Jefe's shared product and system vocabulary. Keep this current when adding or
 renaming product, memory, action, surface or operations entities.
 
+## Relationship Map
+
+Read this as the spine of the product: commerce data and merchant input become
+Merchant Memory; Merchant Memory drives recommendations; recommendations either
+execute through safe adapters or become clear instructions; outcomes flow back
+into Memory.
+
+```mermaid
+flowchart TD
+  Merchant["Merchant<br/>principal, goals, corrections, approvals, autonomy"]
+  Shop["Shop<br/>connected Shopify store"]
+  Commerce["Commerce sources<br/>orders, products, inventory, refunds"]
+  Raw["Raw events and source records"]
+  Facts["Deterministic facts and features"]
+  Evidence["Evidence<br/>provenance, source support, confidence"]
+  Memory["Merchant Memory<br/>facts, beliefs, questions, constraints, history"]
+  Questions["Open questions"]
+  Surfaces["Surfaces<br/>chat, Memory, Goals, Settings, Slack, email"]
+  Insights["Insights and recommendations"]
+  Move["Move<br/>merchant-facing unit of work"]
+  Gate{"Safe execution path?"}
+  Instruct["Instruct path<br/>tell the merchant how to do it"]
+  Capability["Capability<br/>scope, adapter, measurement loop"]
+  Preview["Preview<br/>deterministic dry-run"]
+  Permission{"Mode for this action?"}
+  Approval["Approval<br/>merchant says yes"]
+  Autonomous["Autonomous<br/>Jefe acts without asking first"]
+  Adapter["Typed adapter<br/>idempotent, capped, reversible write"]
+  Ledger["Ledger<br/>executions, writes, reversals, outcomes"]
+  Outcome["Outcome<br/>measured result"]
+
+  Merchant --> Shop
+  Shop --> Commerce
+  Commerce --> Raw
+  Raw --> Facts
+  Facts --> Evidence
+  Evidence --> Memory
+  Merchant -->|"confirms, corrects, teaches"| Memory
+  Memory --> Questions
+  Questions --> Surfaces
+  Surfaces -->|"answers and corrections"| Memory
+  Memory --> Insights
+  Insights --> Move
+  Move --> Gate
+  Gate -->|"no"| Instruct
+  Gate -->|"yes"| Capability
+  Capability --> Preview
+  Preview --> Permission
+  Permission -->|"approve"| Approval
+  Permission -->|"autonomous"| Autonomous
+  Approval --> Adapter
+  Autonomous --> Adapter
+  Adapter --> Ledger
+  Instruct --> Ledger
+  Ledger --> Outcome
+  Outcome --> Evidence
+```
+
+The hard boundary is at the write path: LLMs may interpret evidence and propose
+work, but only deterministic application code persists Memory changes, and only
+typed adapters write to Shopify or another external system.
+
 ## Core
 
 - **Jefe** — The ecommerce manager that builds Merchant Memory, recommends work, and acts through safe execution primitives.
