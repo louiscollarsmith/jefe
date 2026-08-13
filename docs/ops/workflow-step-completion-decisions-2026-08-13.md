@@ -73,6 +73,54 @@ not a sprint task, and a founder call. Outbound send carries none of that.
   step that EXECUTES must bind to a registered adapter. That seam is where a generated step
   could otherwise acquire write powers, so it should be explicit in the model.
 
+## ⚠️ Appended after reading #91 — half of the above was written blind
+
+The open proposals were reasoned off the code as it stood at midday. **#91 "Implement
+focused merchant actions"** (`49a4a50`, 16:17) landed before this doc and was not read
+first. Correcting that here rather than leaving the section quietly stale.
+
+### What #91 built
+
+A durable `MerchantAction` above the existing three entities: one per source recommendation
+(unique), `currentActionRunId` → the live execution, `ActionExecution.merchantActionId` back
+-referencing so an action can span MANY executions over time, plus `progressJson`,
+`outcomeJson`, a `merchant_action_events` log tied to conversation and message id, and
+`MerchantMemoryConversation.focusedActionId` so a chat can be focused on one action.
+
+That is a better answer than the original proposal's: an action now has identity
+independent of whichever execution is current, so "one current move" no longer requires
+destroying old rows to express.
+
+### ⛔ The lifecycle problem is NOT solved — it moved
+
+`deriveMerchantActionStatus` computes the action's status **from** the recommendation's
+`reviewStatus` and the execution's `status`. It is a PROJECTION, not an independent source
+of truth, and it reaches `superseded` only when the underlying recommendation or execution
+is already marked superseded.
+
+Nothing marks them. So #91 built the projection that would display supersession correctly
+the moment something writes it, and inherits the staleness wholesale until then.
+
+**Consequence for whoever implements the supersede rule:** write it at
+**recommendation/execution level**, which is what the projection reads. Writing
+`merchant_actions.status` directly fights the derivation and drifts the moment either
+underlying row changes.
+
+`executeApprovedAction` still selects `{actionType, merchantId}` and reads no status —
+re-confirmed on `origin/main` after #91. The status-guard gap is untouched and still open.
+
+### Consequence for the step model
+
+`progressJson` plus `merchant_action_events` is already most of the substrate for workflow
+steps — they have a home and an audit trail. The proposal above is closer to half-built
+than greenfield.
+
+### Smaller note
+
+`syncMerchantActionsForShop` is explicitly best-effort and called on read paths "without
+risking a failed page". A read that mutates races itself under concurrent page loads.
+Defensive rather than wrong, but worth knowing before more is hung off it.
+
 ## Why this matters to Merchant Memory
 
 Completed steps are evidence available nowhere else. "This merchant takes eleven days to

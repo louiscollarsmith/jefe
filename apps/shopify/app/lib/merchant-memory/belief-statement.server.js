@@ -330,8 +330,123 @@ function formatNoSaleProducts(value) {
   return `${plural(count, "live product")} ${verb} sold anything in 90 days.`;
 }
 
+/**
+ * business.discount_code_mix.trailing_90d → WHICH offer is doing the discounting.
+ * Value: { offers:[{label,kind,orderSharePercent}], typedCodeOrderSharePercent,
+ * automaticOrderSharePercent, distinctOffers }.
+ *
+ * The distinction worth a sentence is typed vs automatic. A code someone entered is a
+ * campaign that worked; an automatic discount is a price cut running whether anyone
+ * noticed. discount_depth already states the money, so this states the cause.
+ * @param {any} value
+ */
+function formatDiscountCodeMix(value) {
+  const offers = Array.isArray(value?.offers) ? value.offers : [];
+  const top = offers[0];
+  if (!top?.label) return null;
+  const share = pct(top.orderSharePercent);
+  let s = share
+    ? `Most of your discounting runs through ${top.label} — ${share}% of your discounted orders`
+    : `Most of your discounting runs through ${top.label}`;
+  const automatic = Number(value?.automaticOrderSharePercent);
+  // Only worth raising when a meaningful slice is applying without anyone choosing it.
+  if (Number.isFinite(automatic) && automatic >= 20) {
+    s += `, and ${pct(automatic)}% of them discount automatically rather than because someone entered a code`;
+  }
+  return `${s}.`;
+}
+
+/**
+ * customers.cohort_mix.all_stored_history → who the repeat business actually is.
+ * Value: { oneTimeSharePercent, returningSharePercent, loyalSharePercent,
+ * loyalRevenueSharePercent, lapsedSharePercent?, lapsedRevenueAtStake?, recencyBasis }.
+ *
+ * ⚠️ The lapsed half is stated ONLY when the belief established a rhythm. Where
+ * recencyBasis is unavailable_too_few_repeat_customers there is no lapsed number, and
+ * inventing "nobody has lapsed" from its absence is the exact error the belief refuses
+ * to make.
+ * @param {any} value
+ */
+function formatCohortMix(value) {
+  const oneTime = pct(value?.oneTimeSharePercent);
+  const loyal = Number(value?.loyalSharePercent);
+  if (!oneTime) return null;
+  let s = `${oneTime}% of your customers have bought once and not come back`;
+  const loyalRevenue = Number(value?.loyalRevenueSharePercent);
+  // The pairing is the insight: a small group carrying a disproportionate share.
+  if (Number.isFinite(loyal) && loyal > 0 && Number.isFinite(loyalRevenue) && loyalRevenue > loyal) {
+    s += ` — while the ${pct(loyal)}% who've bought four times or more bring ${pct(loyalRevenue)}% of your revenue`;
+  }
+  s += ".";
+  if (value?.recencyBasis === "store_observed_repeat_gap") {
+    const lapsed = Number(value?.lapsedSharePercent);
+    const atStake = money(value?.currency, value?.lapsedRevenueAtStake);
+    if (Number.isFinite(lapsed) && lapsed > 0) {
+      s += ` ${pct(lapsed)}% have gone quiet for longer than they usually leave it`;
+      s += atStake ? `, worth ${atStake} of past spend.` : ".";
+    }
+  }
+  return s;
+}
+
+/**
+ * business.acquisition_mix.trailing_90d → where orders come from, by first touch.
+ * Value: { paidSharePercent, searchSharePercent, socialSharePercent, emailSharePercent,
+ * referralSharePercent, directSharePercent, touch }.
+ * @param {any} value
+ */
+function formatAcquisitionMix(value) {
+  const named = [
+    ["paid ads", value?.paidSharePercent],
+    ["search", value?.searchSharePercent],
+    ["social", value?.socialSharePercent],
+    ["email", value?.emailSharePercent],
+    ["referrals", value?.referralSharePercent],
+    ["people coming direct", value?.directSharePercent],
+  ]
+    .map(([label, share]) => ({ label, share: Number(share) }))
+    .filter((entry) => Number.isFinite(entry.share) && entry.share >= 10)
+    .sort((a, b) => b.share - a.share)
+    .slice(0, 3);
+  if (named.length === 0) return null;
+  const parts = named.map((entry) => `${pct(entry.share)}% ${entry.label}`);
+  const last = parts.pop();
+  const list = parts.length > 0 ? `${parts.join(", ")} and ${last}` : last;
+  return `Of the orders where I can see how the customer first found you: ${list}.`;
+}
+
+/**
+ * business.channel_quality.all_stored_history → which channels bring customers who return.
+ * Value: { channels:[{channel,customers,repeatRatePercent,averageLifetimeSpend}], basis }.
+ *
+ * ⛔ COMPARATIVE ONLY. The repeat rates are floors truncated by how recently attribution
+ * started, so this states the COMPARISON between two channels and never a bare rate a
+ * merchant could read as their repeat rate. If the two ends are indistinguishable there is
+ * nothing worth saying, so it says nothing.
+ * @param {any} value
+ */
+function formatChannelQuality(value) {
+  const channels = Array.isArray(value?.channels) ? value.channels : [];
+  if (channels.length < 2) return null;
+  const ranked = [...channels]
+    .filter((c) => Number.isFinite(Number(c?.repeatRatePercent)))
+    .sort((a, b) => Number(b.repeatRatePercent) - Number(a.repeatRatePercent));
+  if (ranked.length < 2) return null;
+  const best = ranked[0];
+  const worst = ranked[ranked.length - 1];
+  const gap = Number(best.repeatRatePercent) - Number(worst.repeatRatePercent);
+  // A few points apart is noise on a truncated window; only speak when the gap is real.
+  if (!(gap >= 15)) return null;
+  const label = (/** @type {any} */ c) => String(c.channel ?? "").replace(/_/g, " ");
+  return `Customers who first found you through ${label(best)} come back more often than the ones from ${label(worst)} — worth knowing before you decide where the next spend goes. It's early, so compare the two rather than reading either as your repeat rate.`;
+}
+
 /** @type {Record<string, (value: any) => string | null>} */
 const FORMATTERS = {
+  "business.discount_code_mix.trailing_90d": formatDiscountCodeMix,
+  "customers.cohort_mix.all_stored_history": formatCohortMix,
+  "business.acquisition_mix.trailing_90d": formatAcquisitionMix,
+  "business.channel_quality.all_stored_history": formatChannelQuality,
   "products.dead_stock.trailing_90d": formatDeadStock,
   "products.top_product_revenue_share.trailing_90d": formatTopProductShare,
   "products.top_returned_products.trailing_180d": formatTopReturned,
