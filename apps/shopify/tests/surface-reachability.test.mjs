@@ -25,7 +25,7 @@ test("the home has a way off it", () => {
 });
 
 test("Merchant Memory is reachable from settings", () => {
-  assert.match(settings, /Everything Jefe knows/);
+  assert.match(settings, /What Jefe knows/);
   assert.match(settings, /memoryHref/);
   assert.match(settings, /next\.set\("view", "memory"\)/);
 });
@@ -42,8 +42,8 @@ test("navigation keeps the params embedded Shopify needs", () => {
 
 test("the home carries no memory footer link", () => {
   // Removed on Matt's call in 63d0337, then silently resurrected by a rebase in #81 (holistic
-  // memory retrieval) — he asked for it gone twice. The gear → Settings → "Everything Jefe
-  // knows" door above is the reachability guarantee, so this is safe to pin: the chat log home
+  // memory retrieval) — he asked for it gone twice. The gear → Settings → "What Jefe knows"
+  // door above is the reachability guarantee, so this is safe to pin: the chat log home
   // carries no Memory link of its own, and a future rebase that drags it back fails here
   // instead of shipping.
   assert.doesNotMatch(dailyHome, /See everything Jefe knows/);
@@ -66,7 +66,7 @@ test("the Memory entry is not wired into the founder-ordered panel list", () => 
     settings.indexOf("];", panelsStart) + 2,
   );
   assert.ok(panelsBlock.length > 0, "PANELS block should be findable");
-  assert.doesNotMatch(panelsBlock, /view=memory|Everything Jefe knows/);
+  assert.doesNotMatch(panelsBlock, /view=memory|What Jefe knows/);
   const firstPanel = panelsBlock.slice(panelsBlock.indexOf("{ id:"));
   assert.match(firstPanel.slice(0, 40), /id: "autonomy"/);
 });

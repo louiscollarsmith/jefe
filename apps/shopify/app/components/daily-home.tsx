@@ -206,7 +206,7 @@ export function DailyHome(props: {
           storeTimeZone={props.storeTimeZone}
         />
         {/* No footer link. Merchant Memory is reached from the shell gear →
-            Settings → "Everything Jefe knows" (see surface-reachability tests);
+            Settings → "What Jefe knows" (see surface-reachability tests);
             the chat log itself stays clean. */}
       </div>
     </main>

@@ -1,35 +1,11 @@
-import { useState } from "react";
-import { Form, Link, useLocation } from "react-router";
-import {
-  BlockStack,
-  Box,
-  Button,
-  Card,
-  InlineStack,
-  Text,
-  TextField,
-} from "@shopify/polaris";
+import type { CSSProperties } from "react";
+import { useMemo, useState } from "react";
+import { Link, useLocation } from "react-router";
 
-// The reachable Merchant Memory surface (?view=memory) — the merchant's window into what Jefe
-// has worked out about their business, and the one place they can put it right. After the
-// action-chat home redesign this is the ONLY place Merchant Memory is reachable.
-//
-// Design (Matt's direct feedback, 2026-08-12): SHORT, beautiful, and easy to INTERACT with — it
-// was reading as a read-only data dump. So:
-//   • it opens with the invitation — a prominent "Talk to Jefe" composer with real example
-//     prompts — so the obvious thing to do is talk to it, not just read it;
-//   • what Jefe believes is grouped by PROVENANCE, not category — "What you've told me" vs "What
-//     Jefe's worked out" — because a merchant trusts and corrects those differently, and the set
-//     is about to span a third source (beliefs pulled from connected tools like Meta/Google). The
-//     group header carries provenance so each row stays clean;
-//   • the worked-out list is capped (most-worth-checking first, confirmPriority) with a "show all",
-//     so it's never a wall.
-// Correction commits ONLY through the composer (Matt's rule — no per-belief action buttons):
-// memory.message → sendConversationMessage (confirm / correct / answer / teach / forget — forget
-// shows what it'll drop, asks first, and is undoable). Presentation-only: the loader shapes each
-// belief; this component renders it.
-
-const WORKED_OUT_CAP = 6;
+// The reachable Merchant Memory surface (?view=memory) is the merchant's window into what
+// Jefe believes about their business. It deliberately mirrors /app/settings sizing and
+// navigation because Settings is the way into this screen, while keeping ?view=memory as
+// the stable route.
 
 type MemoryBelief = {
   id: string;
@@ -41,8 +17,6 @@ type MemoryBelief = {
   evidenceSummary: string | null;
   statusLabel: string;
   statusTone: "success" | "attention" | "info";
-  // Rich fields getMerchantMemoryView computes — plain-English statement in Jefe's voice, a
-  // provenance line, authorship (merchant-told vs Jefe-derived), and a confirm-priority.
   statement?: string | null;
   sourceLine?: string | null;
   authorship?: "merchant" | "jefe" | null;
@@ -50,43 +24,147 @@ type MemoryBelief = {
   confirmPriority?: number;
 };
 
-type MemoryData = {
-  groups: Array<{
-    category: string;
-    label: string;
-    beliefs: MemoryBelief[];
-  }>;
+type MemoryGroup = {
+  category: string;
+  label: string;
+  beliefs: MemoryBelief[];
 };
 
-type OpenQuestion = { id: string; question: string; reason: string | null };
+type MemoryData = {
+  groups: MemoryGroup[];
+};
 
 type MemoryConversation = {
   messages: Array<{ id: string; role: string; content: string }>;
-  summary?: { openQuestions?: OpenQuestion[] | null } | null;
+  summary?: { openQuestions?: Array<{ id: string; question: string; reason: string | null }> | null } | null;
 };
 
-function BeliefRow({ belief }: { belief: MemoryBelief }) {
+type VisibleBelief = MemoryBelief & {
+  displayName: string;
+  displayValue: string;
+  searchableText: string;
+};
+
+type VisibleGroup = {
+  category: string;
+  label: string;
+  beliefs: VisibleBelief[];
+};
+
+function settingsHref(search: string, panel: string) {
+  const params = new URLSearchParams(search);
+  params.delete("view");
+  params.set("panel", panel);
+  return `/app/settings?${params.toString()}`;
+}
+
+function homeHref(search: string) {
+  const params = new URLSearchParams(search);
+  params.delete("view");
+  params.delete("panel");
+  const qs = params.toString();
+  return `/app${qs ? `?${qs}` : ""}`;
+}
+
+function displayNameFor(belief: MemoryBelief) {
+  return (belief.statement || belief.title || belief.key).trim();
+}
+
+function displayValueFor(belief: MemoryBelief) {
+  const value = (belief.value || "").trim();
+  if (value && value !== displayNameFor(belief)) return value;
+  if (belief.authorship === "merchant") return "Told";
+  if (belief.confirmState === "unsure") return "Inferred";
+  return belief.statusLabel || "";
+}
+
+function sourceFor(belief: MemoryBelief) {
+  if (belief.sourceLine) return belief.sourceLine;
+  if (belief.evidenceSummary) return belief.evidenceSummary;
+  if (belief.authorship === "merchant") return "you told Jefe";
+  return "from your store data";
+}
+
+function searchText(group: MemoryGroup, belief: MemoryBelief) {
+  return [
+    group.label,
+    group.category,
+    belief.key,
+    belief.title,
+    belief.statement,
+    belief.value,
+    belief.sourceLine,
+    belief.evidenceSummary,
+    belief.statusLabel,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function countBeliefs(groups: Array<{ beliefs: unknown[] }>) {
+  return groups.reduce((count, group) => count + group.beliefs.length, 0);
+}
+
+function latestRecheckLabel(groups: MemoryGroup[]) {
+  const lines = groups.flatMap((group) =>
+    group.beliefs
+      .map((belief) => belief.sourceLine)
+      .filter((line): line is string => Boolean(line)),
+  );
+  const lineWithRecheck = lines.find((line) => line.includes("rechecked "));
+  if (!lineWithRecheck) return null;
+  const match = lineWithRecheck.match(/rechecked\s+(.+)$/);
+  return match?.[1] ?? null;
+}
+
+function isLongDisplayValue(value: string) {
+  const trimmed = value.trim();
+  return trimmed.length > 24 || (trimmed.length > 18 && /[./_-]/.test(trimmed));
+}
+
+function BeliefRow({
+  belief,
+  expanded,
+  onToggle,
+}: {
+  belief: VisibleBelief;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const hasLongValue = isLongDisplayValue(belief.displayValue);
   return (
-    <Box paddingBlockEnd="150" borderBlockEndWidth="025" borderColor="border">
-      <BlockStack gap="050">
-        <Text as="p" fontWeight="semibold">
-          {belief.statement || belief.title}
-        </Text>
-        {belief.sourceLine ? (
-          <Text as="p" variant="bodySm" tone="subdued">
-            {belief.sourceLine}
-          </Text>
-        ) : null}
-      </BlockStack>
-    </Box>
+    <div style={beliefShellStyle}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        style={hasLongValue ? beliefButtonLongValueStyle : beliefButtonStyle}
+      >
+        <span style={beliefTextStyle}>
+          <span style={beliefNameStyle}>{belief.displayName}</span>
+          <span style={beliefMetaStyle}>{sourceFor(belief)}</span>
+          {hasLongValue ? (
+            <span style={beliefLongValueStyle}>{belief.displayValue}</span>
+          ) : null}
+        </span>
+        {hasLongValue ? null : <span style={beliefValueStyle}>{belief.displayValue}</span>}
+        <span aria-hidden="true" style={caretStyle}>
+          {expanded ? "▲" : "▼"}
+        </span>
+      </button>
+      {expanded ? (
+        <div style={beliefDetailStyle}>
+          {belief.evidenceSummary || belief.sourceLine || sourceFor(belief)}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 export function MerchantMemoryView({
   storeName,
-  merchantName,
   memory,
-  conversation,
 }: {
   storeName: string;
   merchantName: string;
@@ -94,168 +172,348 @@ export function MerchantMemoryView({
   conversation: MemoryConversation | null;
 }) {
   const location = useLocation();
-  // Back to the conversation. Strip only `view` — shop/host/embedded params must survive
-  // or an embedded app loses its session.
-  const backToHome = (() => {
-    const params = new URLSearchParams(location.search);
-    params.delete("view");
-    const qs = params.toString();
-    return qs ? `?${qs}` : "?";
-  })();
-  const [message, setMessage] = useState("");
-  const [showAllWorkedOut, setShowAllWorkedOut] = useState(false);
-  const messages = (conversation?.messages ?? []).slice(-4);
-  const openQuestions = conversation?.summary?.openQuestions ?? [];
+  const [query, setQuery] = useState("");
+  const [expandedBeliefId, setExpandedBeliefId] = useState<string | null>(null);
 
-  // Grouped by PROVENANCE (what the merchant told Jefe vs what he worked out), each ordered
-  // most-worth-checking first (confirmPriority = impact × uncertainty).
-  // Our ingestion diagnostics (orphan line items, link and timestamp coverage) are not facts
-  // about the merchant's business and must never render here. That used to be enforced by a
-  // `category !== "data"` filter on this line, as a stopgap while a real audience field was
-  // built. It exists now, so the loader's single gate (`isMerchantVisibleBeliefKey`, keyed on
-  // `audience === "merchant"`) is the only rule — a second one here could only ever drift
-  // from it, and while they disagreed the truth was in neither.
-  const all = memory.groups
-    .flatMap((group) => group.beliefs)
-    .sort((a, b) => (b.confirmPriority ?? 0) - (a.confirmPriority ?? 0));
-  const toldByMerchant = all.filter((belief) => belief.authorship === "merchant");
-  const workedOut = all.filter((belief) => belief.authorship !== "merchant");
-  const workedOutVisible = showAllWorkedOut
-    ? workedOut
-    : workedOut.slice(0, WORKED_OUT_CAP);
-  const workedOutHidden = workedOut.length - workedOutVisible.length;
+  const totalCount = countBeliefs(memory.groups);
+  const q = query.trim().toLowerCase();
+  const visibleGroups = useMemo<VisibleGroup[]>(() => {
+    return memory.groups
+      .map((group) => {
+        const beliefs = group.beliefs
+          .map((belief) => ({
+            ...belief,
+            displayName: displayNameFor(belief),
+            displayValue: displayValueFor(belief),
+            searchableText: searchText(group, belief),
+          }))
+          .filter((belief) => !q || belief.searchableText.includes(q));
+        return { category: group.category, label: group.label, beliefs };
+      })
+      .filter((group) => group.beliefs.length > 0);
+  }, [memory.groups, q]);
+  const shownCount = countBeliefs(visibleGroups);
+  const rechecked = latestRecheckLabel(memory.groups);
+  const shownLabel = q ? `${shownCount} of ${totalCount} shown` : `${totalCount} things`;
 
   return (
-    <main className="JefeMemoryView">
-      <BlockStack gap="500">
-        <Link to={backToHome}>← Back to Jefe</Link>
+    <main style={pageStyle} className="JefeMemoryView">
+      <div style={shellStyle}>
+        <Link to={homeHref(location.search)} style={backLinkStyle}>
+          ← Home
+        </Link>
+        <h1 style={titleStyle}>Settings</h1>
 
-        <BlockStack gap="100">
-          <Text as="p" tone="subdued">
-            {merchantName}
-          </Text>
-          <Text as="h1" variant="headingXl">
-            What Jefe knows about {storeName}
-          </Text>
-          <Text as="p" tone="subdued">
-            This shapes every suggestion he makes. Talk to him below — put something right, add
-            what he&apos;s missing, or ask why he thinks something.
-          </Text>
-        </BlockStack>
+        <div style={rowStyle}>
+          <nav style={navStyle} aria-label="Settings sections">
+            <Link to={settingsHref(location.search, "autonomy")} style={navItemStyle}>
+              Autonomy
+            </Link>
+            <Link to={settingsHref(location.search, "integrations")} style={navItemStyle}>
+              Integrations
+            </Link>
+            <Link to={settingsHref(location.search, "channels")} style={navItemStyle}>
+              Channels
+            </Link>
+            <Link to={settingsHref(location.search, "settings")} style={navItemStyle}>
+              Notifications
+            </Link>
+            <Link
+              to={`${location.pathname}${location.search}`}
+              aria-current="page"
+              style={{ ...navItemStyle, ...navItemActiveStyle }}
+            >
+              What Jefe knows
+            </Link>
+          </nav>
 
-        {/* The invitation to interact — a prominent composer with real example prompts. */}
-        <Card>
-          <BlockStack gap="200">
-            <Text as="h2" variant="headingSm">
-              Talk to Jefe
-            </Text>
-            <Form method="post">
-              <input type="hidden" name="intent" value="memory.message" />
-              <BlockStack gap="150">
-                <TextField
-                  label="Talk to Jefe"
-                  labelHidden
-                  name="message"
-                  value={message}
-                  onChange={setMessage}
-                  placeholder="e.g. “most of my sales are wholesale” · “why do you think that?” · “forget that”"
-                  multiline={2}
-                  autoComplete="off"
-                />
-                <InlineStack align="end">
-                  <Button submit variant="primary" disabled={!message.trim()}>
-                    Send
-                  </Button>
-                </InlineStack>
-              </BlockStack>
-            </Form>
-            {messages.length > 0 ? (
-              <BlockStack gap="100">
-                {messages.map((item) => (
-                  <Text
-                    key={item.id}
-                    as="p"
-                    variant="bodySm"
-                    tone={item.role === "assistant" ? "subdued" : undefined}
-                  >
-                    {(item.role === "assistant" ? "Jefe: " : "You: ") + item.content}
-                  </Text>
+          <section style={panelStyle} aria-live="polite">
+            <div style={panelHeaderStyle}>
+              <h2 style={panelTitleStyle}>What Jefe knows</h2>
+              <p style={panelBlurbStyle}>
+                Everything Jefe has worked out about {storeName}, plus what you&apos;ve told him.
+              </p>
+            </div>
+
+            <div style={toolbarStyle}>
+              <input
+                aria-label="Search what Jefe knows"
+                placeholder="Search what Jefe knows"
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.currentTarget.value);
+                  setExpandedBeliefId(null);
+                }}
+                style={searchStyle}
+              />
+              <span style={countStyle}>
+                {shownLabel}
+                {rechecked ? ` · rechecked ${rechecked}` : ""}
+              </span>
+            </div>
+
+            {totalCount === 0 ? (
+              <div style={emptyStyle}>
+                Jefe is still reading your store. What he works out shows up here.
+              </div>
+            ) : visibleGroups.length === 0 ? (
+              <div style={emptyStyle}>Nothing matches that. Try a different word.</div>
+            ) : (
+              <div style={groupsStyle}>
+                {visibleGroups.map((group) => (
+                  <div key={group.category} style={groupStyle}>
+                    <div style={groupHeaderStyle}>
+                      <span style={groupNameStyle}>{group.label}</span>
+                      <span style={groupCountStyle}>{group.beliefs.length}</span>
+                    </div>
+                    {group.beliefs.map((belief) => (
+                      <BeliefRow
+                        key={belief.id}
+                        belief={belief}
+                        expanded={expandedBeliefId === belief.id}
+                        onToggle={() =>
+                          setExpandedBeliefId((current) =>
+                            current === belief.id ? null : belief.id,
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
                 ))}
-              </BlockStack>
-            ) : null}
-          </BlockStack>
-        </Card>
+              </div>
+            )}
 
-        {openQuestions.length > 0 ? (
-          <BlockStack gap="150">
-            <Text as="h2" variant="headingSm">
-              A few things only you can tell me
-            </Text>
-            {openQuestions.map((question) => (
-              <Box
-                key={question.id}
-                paddingBlockEnd="150"
-                borderBlockEndWidth="025"
-                borderColor="border"
-              >
-                <BlockStack gap="050">
-                  <Text as="p" fontWeight="semibold">
-                    {question.question}
-                  </Text>
-                  {question.reason ? (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      {question.reason}
-                    </Text>
-                  ) : null}
-                </BlockStack>
-              </Box>
-            ))}
-          </BlockStack>
-        ) : null}
-
-        {all.length === 0 ? (
-          <Card>
-            <Text as="p">
-              Jefe is still reading your store. What he works out shows up here for you to
-              check — and anything you tell him above lands here too.
-            </Text>
-          </Card>
-        ) : (
-          <>
-            <BlockStack gap="150">
-              <Text as="h2" variant="headingSm">
-                What you&apos;ve told me
-              </Text>
-              {toldByMerchant.length > 0 ? (
-                toldByMerchant.map((belief) => (
-                  <BeliefRow key={belief.id} belief={belief} />
-                ))
-              ) : (
-                <Text as="p" tone="subdued">
-                  Nothing yet — anything you tell Jefe above shows up here, and it outranks
-                  anything he&apos;s only worked out.
-                </Text>
-              )}
-            </BlockStack>
-
-            {workedOut.length > 0 ? (
-              <BlockStack gap="150">
-                <Text as="h2" variant="headingSm">
-                  What Jefe&apos;s worked out
-                </Text>
-                {workedOutVisible.map((belief) => (
-                  <BeliefRow key={belief.id} belief={belief} />
-                ))}
-                {workedOutHidden > 0 ? (
-                  <Button variant="plain" onClick={() => setShowAllWorkedOut(true)}>
-                    {`Show all ${workedOut.length}`}
-                  </Button>
-                ) : null}
-              </BlockStack>
-            ) : null}
-          </>
-        )}
-      </BlockStack>
+            <div style={footerStyle}>Jefe rechecks these against your store data every day.</div>
+          </section>
+        </div>
+      </div>
     </main>
   );
 }
+
+const COLORS = {
+  page: "#fbfaf7",
+  card: "#fffdfa",
+  border: "#d8d0c8",
+  hairline: "#ede7de",
+  ink: "#1f2933",
+  body: "#4d463f",
+  muted: "#6d7175",
+  faint: "#8a8177",
+  navy: "#1f3a63",
+  soft: "#fbfaf7",
+};
+
+const SANS = "'Schibsted Grotesk', system-ui, -apple-system, sans-serif";
+
+const pageStyle: CSSProperties = {
+  minHeight: "100vh",
+  background: COLORS.page,
+  color: COLORS.ink,
+  fontFamily: SANS,
+  padding: "48px 24px 96px",
+};
+const shellStyle: CSSProperties = {
+  maxWidth: 1180,
+  margin: "0 auto",
+  width: "100%",
+  display: "flex",
+  flexDirection: "column",
+  gap: 28,
+};
+const backLinkStyle: CSSProperties = {
+  alignSelf: "flex-start",
+  color: COLORS.muted,
+  fontSize: 13,
+  fontWeight: 600,
+  textDecoration: "none",
+};
+const titleStyle: CSSProperties = {
+  margin: 0,
+  color: COLORS.ink,
+  fontSize: 26,
+  fontWeight: 700,
+};
+const rowStyle: CSSProperties = {
+  display: "flex",
+  gap: 24,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
+};
+const navStyle: CSSProperties = {
+  flex: "0 0 232px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+};
+const navItemStyle: CSSProperties = {
+  display: "block",
+  padding: "9px 12px",
+  borderRadius: 8,
+  color: COLORS.body,
+  fontSize: 14,
+  fontWeight: 500,
+  textDecoration: "none",
+  borderLeft: "2px solid transparent",
+};
+const navItemActiveStyle: CSSProperties = {
+  background: COLORS.card,
+  borderLeft: `2px solid ${COLORS.navy}`,
+  color: COLORS.ink,
+  fontWeight: 600,
+};
+const panelStyle: CSSProperties = {
+  flex: "1 1 420px",
+  minWidth: 0,
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 14,
+  padding: "22px 24px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+};
+const panelHeaderStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
+const panelTitleStyle: CSSProperties = {
+  margin: 0,
+  color: COLORS.ink,
+  fontSize: 17,
+  fontWeight: 700,
+  letterSpacing: 0,
+};
+const panelBlurbStyle: CSSProperties = {
+  margin: 0,
+  maxWidth: "64ch",
+  color: COLORS.muted,
+  fontSize: 13.5,
+  lineHeight: 1.5,
+};
+const toolbarStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+};
+const searchStyle: CSSProperties = {
+  flex: "1 1 220px",
+  maxWidth: 300,
+  height: 34,
+  boxSizing: "border-box",
+  padding: "0 12px",
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 9,
+  background: "#ffffff",
+  color: COLORS.ink,
+  fontFamily: SANS,
+  fontSize: 13,
+};
+const countStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 13,
+  fontVariantNumeric: "tabular-nums",
+};
+const groupsStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 22 };
+const groupStyle: CSSProperties = { display: "flex", flexDirection: "column" };
+const groupHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  paddingBottom: 8,
+};
+const groupNameStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 12,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+};
+const groupCountStyle: CSSProperties = {
+  color: COLORS.faint,
+  fontSize: 12,
+  fontVariantNumeric: "tabular-nums",
+};
+const beliefShellStyle: CSSProperties = { borderTop: `1px solid ${COLORS.hairline}` };
+const beliefButtonStyle: CSSProperties = {
+  width: "100%",
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) minmax(72px, 116px) 18px",
+  alignItems: "center",
+  gap: 12,
+  padding: "13px 6px 13px 0",
+  border: 0,
+  borderRadius: 8,
+  background: "transparent",
+  cursor: "pointer",
+  textAlign: "left",
+  fontFamily: SANS,
+};
+const beliefButtonLongValueStyle: CSSProperties = {
+  ...beliefButtonStyle,
+  gridTemplateColumns: "minmax(0, 1fr) 18px",
+  alignItems: "start",
+  padding: "13px 8px 15px 0",
+};
+const beliefTextStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  minWidth: 0,
+};
+const beliefNameStyle: CSSProperties = {
+  minWidth: 0,
+  color: COLORS.ink,
+  fontSize: 14,
+  fontWeight: 700,
+  overflowWrap: "anywhere",
+};
+const beliefMetaStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 12.5,
+  overflowWrap: "anywhere",
+};
+const beliefValueStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 14,
+  fontWeight: 700,
+  textAlign: "right",
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+const beliefLongValueStyle: CSSProperties = {
+  marginTop: 8,
+  maxWidth: "76ch",
+  color: COLORS.body,
+  fontSize: 14,
+  fontWeight: 500,
+  lineHeight: 1.5,
+  overflowWrap: "break-word",
+};
+const caretStyle: CSSProperties = {
+  color: COLORS.faint,
+  fontSize: 10,
+  textAlign: "center",
+};
+const beliefDetailStyle: CSSProperties = {
+  margin: "0 0 14px",
+  padding: "12px 14px",
+  borderRadius: 10,
+  background: COLORS.soft,
+  color: COLORS.body,
+  fontSize: 13,
+  lineHeight: 1.55,
+};
+const emptyStyle: CSSProperties = {
+  padding: "28px 0 32px",
+  color: COLORS.muted,
+  fontSize: 14,
+  textAlign: "center",
+};
+const footerStyle: CSSProperties = {
+  padding: "14px 0 16px",
+  borderTop: `1px solid ${COLORS.hairline}`,
+  color: COLORS.muted,
+  fontSize: 13,
+};
