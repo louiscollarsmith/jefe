@@ -26,7 +26,11 @@ import {
   labelForBeliefKey,
   validateConversationalValue,
 } from "./conversational-belief-registry.server.js";
-import { isBusinessShapeBeliefKey } from "./deterministic-belief-registry.server.js";
+import {
+  DETERMINISTIC_BELIEF_REGISTRY,
+  isBusinessShapeBeliefKey,
+  retrievalTermsForBeliefKey,
+} from "./deterministic-belief-registry.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
 import { getLlmConfig } from "../llm/config.server.js";
 import {
@@ -1704,6 +1708,45 @@ function serializePromptBelief(belief) {
 }
 
 /**
+ * How many belief keys contain each token, computed once from the registry.
+ *
+ * A key token is only evidence of relevance in proportion to how RARE it is. "clearance"
+ * appears in a couple of keys and means the merchant is talking about clearance;
+ * "order" appears in 39 of 143 and means nothing at all. Scoring both at +50 handed a
+ * quarter of the registry the same boost for the word "orders", leaving confidence (~+9)
+ * to break a 39-way tie for 40 slots — retrieval in name only.
+ *
+ * Derived rather than hand-listed on purpose: a stoplist written today is wrong by the
+ * fiftieth new belief, and nothing would tell us.
+ */
+const KEY_TOKEN_BELIEF_COUNTS = (() => {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const definition of DETERMINISTIC_BELIEF_REGISTRY) {
+    const tokens = new Set(
+      String(definition.key ?? "")
+        .split(/[._]/)
+        .filter((token) => token.length > 3),
+    );
+    for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  return counts;
+})();
+
+const REGISTRY_SIZE = Math.max(1, DETERMINISTIC_BELIEF_REGISTRY.length);
+
+/**
+ * Points for matching one key token, scaled by how much that token narrows the field.
+ * @param {string} token
+ */
+function keyTokenPoints(token) {
+  const share = (KEY_TOKEN_BELIEF_COUNTS.get(token) ?? 1) / REGISTRY_SIZE;
+  if (share <= 0.05) return 50; // distinctive — this token nearly identifies the belief
+  if (share <= 0.15) return 30; // narrows usefully
+  return 10; // structural naming ("order", "business", "trailing") — barely a signal
+}
+
+/**
  * Relevance score for keeping a belief in the budgeted prompt: the belief the
  * merchant is discussing wins hardest, then merchant-owned and high-confidence
  * ones. Ensures the belief actually under discussion survives the cut.
@@ -1714,8 +1757,19 @@ function promptBeliefScore(belief, messageLower, discussedKeys) {
   const key = String(belief.key ?? "");
   if (discussedKeys.has(key)) score += 100;
   const label = labelForBeliefKey(key).toLowerCase();
+  // Merchant vocabulary beats our variable names. A merchant asks "where are my orders
+  // coming from" or "are the ads working" — never "acquisition" — so a belief indexed only
+  // by its key is indexed under the one word its audience will never type. Curated terms
+  // therefore outrank every key-token match, and sit just below the belief under discussion.
+  const retrievalTerms = retrievalTermsForBeliefKey(key);
+  if (retrievalTerms.some((term) => messageLower.includes(term))) score += 60;
   const keyTokens = key.split(/[._]/).filter((token) => token.length > 3);
-  if (keyTokens.some((token) => messageLower.includes(token))) score += 50;
+  // Best single token, not the sum: a key with four structural words should not out-score a
+  // key with one distinctive one.
+  const tokenPoints = keyTokens
+    .filter((token) => messageLower.includes(token))
+    .map(keyTokenPoints);
+  if (tokenPoints.length > 0) score += Math.max(...tokenPoints);
   if (label.length > 3 && messageLower.includes(label)) score += 40;
   if (belief.status === "merchant_corrected") score += 30;
   else if (belief.status === "merchant_confirmed") score += 20;

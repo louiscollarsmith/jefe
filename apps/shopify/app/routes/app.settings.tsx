@@ -150,7 +150,7 @@ export default function SettingsSurface() {
                 the gear became the way in. Without this the surface still renders and is
                 still routed, and no merchant can open it. */}
             <Link to={memoryHref(params)} style={navItemStyle}>
-              Everything Jefe knows
+              What Jefe knows
             </Link>
           </nav>
 
@@ -235,11 +235,11 @@ const COLORS = {
 const SANS = "'Schibsted Grotesk', system-ui, -apple-system, sans-serif";
 
 const pageStyle: CSSProperties = { minHeight: "100vh", background: COLORS.page, color: COLORS.ink, fontFamily: SANS, padding: "48px 24px 96px" };
-const shellStyle: CSSProperties = { maxWidth: 900, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: 28 };
+const shellStyle: CSSProperties = { maxWidth: 1180, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: 28 };
 const backLinkStyle: CSSProperties = { alignSelf: "flex-start", fontSize: 13, fontWeight: 600, color: COLORS.muted, textDecoration: "none" };
 const titleStyle: CSSProperties = { margin: 0, fontSize: 26, fontWeight: 700, color: COLORS.ink };
-const rowStyle: CSSProperties = { display: "flex", gap: 28, alignItems: "flex-start", flexWrap: "wrap" };
-const navStyle: CSSProperties = { flex: "0 0 200px", display: "flex", flexDirection: "column", gap: 2 };
+const rowStyle: CSSProperties = { display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" };
+const navStyle: CSSProperties = { flex: "0 0 232px", display: "flex", flexDirection: "column", gap: 2 };
 const navItemStyle: CSSProperties = { display: "block", padding: "9px 12px", borderRadius: 8, fontSize: 14, fontWeight: 500, color: COLORS.body, textDecoration: "none", borderLeft: "2px solid transparent" };
 const navItemActiveStyle: CSSProperties = { background: COLORS.card, borderLeft: `2px solid ${COLORS.navy}`, color: COLORS.ink, fontWeight: 600 };
 const panelStyle: CSSProperties = { flex: "1 1 420px", minWidth: 0, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "22px 24px", display: "flex", flexDirection: "column", gap: 10 };
