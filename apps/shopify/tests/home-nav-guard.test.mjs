@@ -36,6 +36,17 @@ test("home-chat polish: single 'Thinking' indicator + wired prompt chips", () =>
   assert.match(dailyHomeSource, /<StorePrompt message=/);
 });
 
+test("chat replies preserve the reader's scroll position instead of jumping to the top", () => {
+  assert.match(dailyHomeSource, /function usePreserveChatScrollDuringIntent/);
+  assert.match(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "chat\.message"\)/);
+  assert.match(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "chat\.retry"\)/);
+  assert.match(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "action\.chat\.message"\)/);
+  assert.match(dailyHomeSource, /distanceFromDocumentBottom\(\) < 160/);
+  assert.match(dailyHomeSource, /window\.scrollTo\(\{ top: snapshot\.y \}\)/);
+  assert.match(dailyHomeSource, /preventScrollReset/);
+  assert.doesNotMatch(dailyHomeSource, /window\.scrollTo\(\{ top: 0/);
+});
+
 test("the conversation index lists moments and scrolls the thread to them (not a thread swap)", () => {
   // A left-rail index built from real moments (executed/reported/declined actions + the
   // current move), each carrying the DOM id of its message so the rail can scroll to it.

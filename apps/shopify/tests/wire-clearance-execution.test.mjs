@@ -121,6 +121,17 @@ async function withExecuteEnabled(fn) {
   }
 }
 
+async function withExecuteDisabled(fn) {
+  const prev = process.env.CLEARANCE_EXECUTE_ENABLED;
+  delete process.env.CLEARANCE_EXECUTE_ENABLED;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
+    else process.env.CLEARANCE_EXECUTE_ENABLED = prev;
+  }
+}
+
 const session = { shop: SHOP };
 
 test("unknown run → not_found, no side effects", async () => {
@@ -151,18 +162,20 @@ test("empty preview is refused", async () => {
 });
 
 test("flag OFF: records approval but writes nothing", async () => {
-  const prisma = makeMockPrisma({ row: makeRow(), offlineToken: "tok" });
-  const prices = new Map([["gid://v/1", 10]]);
-  const res = await wireClearanceExecution(
-    prisma,
-    session,
-    { merchantId: "m-1", actionRunId: "run-1", mode: "approve" },
-    { createGqlClient: makeGqlDep(prices) },
-  );
-  assert.equal(res.executed, false);
-  assert.equal(res.reason, "execution_disabled");
-  assert.equal(prisma._rows.get("run-1").status, "approved"); // approval recorded
-  assert.equal(prices.get("gid://v/1"), 10); // unchanged
+  await withExecuteDisabled(async () => {
+    const prisma = makeMockPrisma({ row: makeRow(), offlineToken: "tok" });
+    const prices = new Map([["gid://v/1", 10]]);
+    const res = await wireClearanceExecution(
+      prisma,
+      session,
+      { merchantId: "m-1", actionRunId: "run-1", mode: "approve" },
+      { createGqlClient: makeGqlDep(prices) },
+    );
+    assert.equal(res.executed, false);
+    assert.equal(res.reason, "execution_disabled");
+    assert.equal(prisma._rows.get("run-1").status, "approved"); // approval recorded
+    assert.equal(prices.get("gid://v/1"), 10); // unchanged
+  });
 });
 
 test("flag ON + approve: executes the markdown", async () => {

@@ -97,6 +97,17 @@ async function withExecuteEnabled(fn) {
   }
 }
 
+async function withExecuteDisabled(fn) {
+  const prev = process.env.CLEARANCE_EXECUTE_ENABLED;
+  delete process.env.CLEARANCE_EXECUTE_ENABLED;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
+    else process.env.CLEARANCE_EXECUTE_ENABLED = prev;
+  }
+}
+
 test("buildClearancePreview: markdowns only, floor-at-gate refuses below-cost + missing-floor", () => {
   const preview = buildClearancePreview({
     items: [
@@ -158,12 +169,14 @@ test("applyClearance refuses in 'recommend' mode (advisory never executes)", asy
 });
 
 test("applyClearance refuses when disabled (no write path by default)", async () => {
-  assert.equal(isClearanceExecuteEnabled(), false);
-  const preview = buildClearancePreview(sampleProposal);
-  await assert.rejects(
-    () => applyClearance({ prisma: makeMockPrisma(), shopifyClient: makeMockClient(), execution: execCtx() }, preview),
-    /disabled/,
-  );
+  await withExecuteDisabled(async () => {
+    assert.equal(isClearanceExecuteEnabled(), false);
+    const preview = buildClearancePreview(sampleProposal);
+    await assert.rejects(
+      () => applyClearance({ prisma: makeMockPrisma(), shopifyClient: makeMockClient(), execution: execCtx() }, preview),
+      /disabled/,
+    );
+  });
 });
 
 test("applyClearance: enabled requires injected prisma + read/write client; over-cap blocks before any write", async () => {
@@ -272,17 +285,12 @@ test("revertClearance restores prices from the plan, skipping malformed entries"
 });
 
 test("revert is NOT gated on the enable flag (undo must not be trappable)", async () => {
-  const prev = process.env.CLEARANCE_EXECUTE_ENABLED;
-  try {
-    delete process.env.CLEARANCE_EXECUTE_ENABLED;
+  await withExecuteDisabled(async () => {
     assert.equal(isClearanceExecuteEnabled(), false);
     const client = makeMockClient();
     const result = await revertClearance(client, [{ variantId: "v1", restorePrice: 100 }]);
     assert.equal(result.restoredCount, 1);
-  } finally {
-    if (prev === undefined) delete process.env.CLEARANCE_EXECUTE_ENABLED;
-    else process.env.CLEARANCE_EXECUTE_ENABLED = prev;
-  }
+  });
 });
 
 test("apply -> revert round-trips the store back to original prices", async () => {
