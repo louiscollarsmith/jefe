@@ -32,6 +32,28 @@ import {
 
 const STALE_INVENTORY_HOURS = 72;
 const LARGE_BASKET_ITEM_THRESHOLD = 4;
+/**
+ * Fields loaded from `customer_identities` for every derivation.
+ *
+ * ⛔ EXPORTED so a test can assert it covers what the beliefs actually read. This list
+ * silently omitted `firstSeenOrderAt` and `lastOrderAt` while `customers.cohort_mix` read
+ * both, so in production the entire recency half of that belief — lapsed customers, the
+ * store's repeat rhythm, revenue at stake — was permanently `undefined` and reported
+ * itself as "too few repeat customers to tell". It derived, it published, its tests were
+ * green, and the number was never computed.
+ *
+ * The test fixtures hid it: a mock returning a full identity row is RICHER than the real
+ * query, so every belief looked fine against data production never supplies. When adding a
+ * field to a belief, add it here, or the belief reads undefined in production only.
+ */
+export const CUSTOMER_IDENTITY_SELECT = {
+  orderCount: true,
+  totalSpend: true,
+  firstSeenOrderAt: true,
+  lastOrderAt: true,
+  rawPayload: true,
+};
+
 const DERIVATION_OUTCOME = {
   calculated: "CALCULATED",
   insufficientData: "INSUFFICIENT_DATA",
@@ -296,7 +318,7 @@ async function loadDerivationContext(prisma, input) {
       }),
       input.evidenceScope ? Promise.resolve([]) : prisma.customerIdentity.findMany({
         where,
-        select: { orderCount: true, totalSpend: true, rawPayload: true },
+        select: CUSTOMER_IDENTITY_SELECT,
       }),
       prisma.inventoryLevel.findMany({
         where: scopedInventoryWhere,

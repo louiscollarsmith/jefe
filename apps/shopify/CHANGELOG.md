@@ -2,6 +2,10 @@
 
 ## 2026-08-13
 
+### Fixed
+
+- **The half of Jefe's customer read that spots people going quiet was dead on arrival — today, hours after it shipped.** It could tell you how your customers split between one-off, returning and loyal, but the other half — who has gone quiet, how long your customers normally leave between orders, and what that lapsed spend is worth — always came back as "not enough repeat customers to tell", for every store, no matter how many repeat customers they had. Jefe was reading two dates it had never actually loaded from the database, so they were simply blank. Nothing errored and every test passed, because the tests handed it complete customer records while the real thing fetched three fields. Now it loads what it reads, and a test asserts that against the real query rather than against a convenient fake, so the next belief that quietly depends on an unloaded field fails loudly instead of reporting "can't tell" forever. `app/lib/merchant-memory/shopify-derivations.server.js`, `tests/customer-cohort-mix.test.mjs`.
+
 ### Added
 
 - **Fast onboarding now reads complete order lines and the active catalogue before making its first call.** The first read still stays bounded to a recent order window, but Jefe now paginates every line item on each selected order instead of accepting Shopify's first page as the whole basket. It also reads the full active catalogue — active products, all their variants, and all inventory levels — before choosing the first insight, so products with no recent sales can still shape the opening recommendation. Draft and archived products stay in the background backfill, and dead-stock/no-sales conclusions still wait for full-history evidence. `app/lib/onboarding/bootstrap.server.js`, `app/lib/shopify/queries.server.js`, `app/lib/merchant-memory/constants.server.js`, `app/lib/merchant-memory/shopify-derivations.server.js`, `tests/fast-onboarding.test.mjs`.

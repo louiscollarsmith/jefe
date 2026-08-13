@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveMerchantMemoryBeliefs } from "../app/lib/merchant-memory/shopify-derivations.server.js";
+import {
+  deriveMerchantMemoryBeliefs,
+  CUSTOMER_IDENTITY_SELECT,
+} from "../app/lib/merchant-memory/shopify-derivations.server.js";
 
 // `repeat_customer_rate` says 30% of customers came back. It cannot say whether that is
 // twelve people buying every fortnight or three hundred people buying twice — and those
@@ -66,6 +69,38 @@ test("with too few repeat customers Jefe withholds the recency split and says wh
   assert.equal(belief.value.lapsedCustomers, undefined);
   // The count half is still useful and still there.
   assert.ok(belief.value.oneTimeSharePercent > 90);
+});
+
+test("every field this belief reads is actually loaded from the database", () => {
+  // ⛔ THE BUG THIS FILE SHIPPED WITH. The derivation context selected only orderCount,
+  // totalSpend and rawPayload, while this belief reads firstSeenOrderAt and lastOrderAt —
+  // so in production the whole recency half was undefined and the belief reported "too few
+  // repeat customers to tell", forever. Every test above still passed, because a mock
+  // returning a full identity row is RICHER than the real query.
+  //
+  // Fixtures cannot catch that class of bug, so this asserts against the real select.
+  for (const field of ["orderCount", "totalSpend", "firstSeenOrderAt", "lastOrderAt"]) {
+    assert.equal(
+      CUSTOMER_IDENTITY_SELECT[field],
+      true,
+      `customerCohortMix reads identity.${field}, but the derivation context does not select it — it will be undefined in production`,
+    );
+  }
+});
+
+test("the fixture is not richer than production: recency computes from selected fields only", async () => {
+  // Build identities carrying ONLY what the real query returns, so this fails the moment
+  // the belief starts depending on a field the select omits.
+  const selected = Object.keys(CUSTOMER_IDENTITY_SELECT);
+  const full = identities({ oneTime: 20, returning: 0, loyal: 30, spendPerOrder: 40, gapDays: 14, lastOrderDaysAgo: 100 });
+  const trimmed = full.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([k]) => selected.includes(k))),
+  );
+
+  const belief = await deriveOne(trimmed);
+  assert.equal(belief?.status, "CALCULATED");
+  assert.equal(belief.value.recencyBasis, "store_observed_repeat_gap");
+  assert.ok(belief.value.lapsedSharePercent > 0, "recency died once the fixture matched production");
 });
 
 test("a customer base too small to describe is skipped, not guessed at", async () => {
