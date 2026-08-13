@@ -5661,6 +5661,86 @@ const BUSINESS_SHAPE_BELIEF_KEYS = new Set(
 );
 
 /**
+ * What a merchant would actually SAY when they want this belief.
+ *
+ * ⛔ The problem this exists to fix. Prompt retrieval ranked beliefs by matching the
+ * merchant's message against the belief KEY — an engineering identifier. So
+ * `business.acquisition_mix` was indexed under "acquisition", a word no merchant has ever
+ * typed, while the questions it answers ("where are my orders coming from", "are the ads
+ * working") matched nothing. The belief derived, tested green, and never reached the model.
+ *
+ * Terms are matched as plain substrings against the lowercased message, so keep them
+ * lowercase and keep them SHORT — "ad spend" matches "our ad spend is up", but "is the ad
+ * spend working" matches almost nothing. Prefer several small phrases to one long one.
+ *
+ * ⚠️ Only worth adding where the key is jargon or ambiguous. A belief whose key already
+ * contains the word merchants use needs nothing here, and padding every entry would dilute
+ * a +60 signal into another +50-for-everything.
+ *
+ * @type {Record<string, string[]>}
+ */
+const BELIEF_RETRIEVAL_TERMS = {
+  // Nobody says "acquisition". They say where people came from, or they name the channel.
+  "business.acquisition_mix.trailing_90d": [
+    "coming from",
+    "come from",
+    "came from",
+    "traffic",
+    "ad spend",
+    "ads",
+    "advertising",
+    "marketing",
+    "google",
+    "instagram",
+    "facebook",
+    "tiktok",
+    "social",
+    "email",
+    "seo",
+    "organic",
+    "paid",
+    "campaign",
+    "channel",
+  ],
+  // "cohort" is our word. Merchants say loyal, regulars, repeat, churn, one-off.
+  "customers.cohort_mix.all_stored_history": [
+    "loyal",
+    "regulars",
+    "repeat",
+    "returning",
+    "come back",
+    "coming back",
+    "came back",
+    "churn",
+    "lapsed",
+    "one-off",
+    "one time",
+    "retention",
+    "best customers",
+  ],
+  // The key says "discount", which merchants do say — but not when they say "promo",
+  // "code", "sale" or name the offer.
+  "business.discount_code_mix.trailing_90d": [
+    "promo",
+    "voucher",
+    "coupon",
+    "offer",
+    "sale",
+    "markdown",
+    "welcome10",
+    "free shipping",
+  ],
+};
+
+/**
+ * @param {string} key
+ * @returns {string[]}
+ */
+export function retrievalTermsForBeliefKey(key) {
+  return BELIEF_RETRIEVAL_TERMS[key] ?? [];
+}
+
+/**
  * Shape beliefs FRAME an answer rather than being the subject of one. A merchant asking
  * about stock needs the stock numbers — but the answer should differ depending on whether
  * they are a one-product maker or a 5,000-SKU retailer, and that context is relevant to
