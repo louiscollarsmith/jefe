@@ -96,7 +96,11 @@ export async function buildMerchantInsightSnapshot(prisma, input) {
     privacy: {
       source: "merchant_memory_beliefs",
       excludesRawShopifyRecords: true,
-      excludesCustomerNamesEmailsPhonesAddresses: true,
+      // PII scrubbing was removed on 2026-08-13 (founder's call), so this packet no longer
+      // excludes customer identifiers. Left declared and FALSE rather than deleted: the model
+      // and any reader were being told the data was clean, and a stale `true` here is a lie in
+      // the payload rather than a merely out-of-date comment.
+      excludesCustomerNamesEmailsPhonesAddresses: false,
       excludesCredentialsAndTokens: true,
     },
     beliefCount: candidates.length,

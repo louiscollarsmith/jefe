@@ -44,7 +44,9 @@ test("track redacts sensitive properties before persisting", async () => {
   const props = prisma.created[0].properties;
   assert.equal(props.channel, "slack");
   assert.equal(props.accessToken, "[redacted]");
-  assert.equal(props.contact, "[redacted-email]");
+  // PII scrubbing removed 2026-08-13 (founder's call). NOTE: this log feeds the ops panel
+  // at admin.mynamejefe.com, which is cross-merchant and currently has no login.
+  assert.equal(props.contact, "a@b.com");
 });
 
 test("track never throws and returns false on a DB error", async () => {

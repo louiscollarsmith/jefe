@@ -13,8 +13,9 @@ import { sendConversationMessage } from "../app/lib/merchant-memory/conversation
 //     conversation. Confirmed empty on a production conversation row. This pointer feeds
 //     the deterministic path ("that's right", "forget that"), which the prompt thread does
 //     not cover.
-//  2. Thread content is REDACTED before it crosses the AI boundary. The code routes it
-//     through safePromptText; nothing asserted it, so a refactor could drop it silently.
+//  2. Thread content is NO LONGER redacted before it crosses the AI boundary. PII scrubbing
+//     was removed on 2026-08-13 by founder decision; this test is inverted rather than
+//     deleted so the change stays legible and restoring it is one edit.
 
 const BELIEFS = [
   {
@@ -191,6 +192,10 @@ test("thread content is redacted before it reaches the model", async () => {
   });
 
   const thread = JSON.stringify(prompt.recentThread);
-  assert.doesNotMatch(thread, /07700 900123/, "phone numbers must not cross the AI boundary");
-  assert.doesNotMatch(thread, /jane\.fairfax@example\.com/, "emails must not cross either");
+  // ⛔ PII scrubbing REMOVED 2026-08-13 (founder's call): thread content now crosses the AI
+  // boundary verbatim. This test previously caught a real regression when redaction went
+  // missing by accident — it is inverted rather than deleted so that history stays legible
+  // and restoring the guarantee is one edit.
+  assert.match(thread, /07700 900123/);
+  assert.match(thread, /jane\.fairfax@example\.com/);
 });

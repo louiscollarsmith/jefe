@@ -17,7 +17,6 @@
  */
 
 const REDACTED = "[redacted]";
-const REDACTED_EMAIL = "[redacted-email]";
 const REDACTED_SECRET = "[redacted-secret]";
 
 /** Max recursion depth before we stop descending and mark the value. */
@@ -31,17 +30,23 @@ const DEFAULT_MAX_STRING = 2000;
  * value is redacted regardless of type. Keep this list broad — a false positive
  * only hides a field from logs; a false negative can leak a secret.
  */
+// ⛔ CONTACT-PII KEYS REMOVED 2026-08-13 (founder's call): phone, telephone, mobile and
+// msisdn keys are no longer masked, matching the removal of email/phone value scrubbing.
+//
+// What REMAINS masked, and why it was not part of "remove the PII scrubber":
+//   - credentials (password, token, api key, cookie, private key, hmac…) — a leaked token is
+//     account takeover, not a privacy question;
+//   - ssn, card number, cvv, security code — financial-fraud class rather than ordinary
+//     contact data, and Jefe should never see them in the first place, so masking them costs
+//     nothing and removing them would be a different decision from the one that was made.
 const SENSITIVE_KEY_PATTERN =
-  /(pass(word|phrase)?|secret|token|api[-_]?key|apikey|authorization|(^|[-_])auth([-_]|$)|cookie|session[-_]?secret|credential|access[-_]?token|refresh[-_]?token|client[-_]?secret|private[-_]?key|signing|hmac|encryption|ssn|card[-_]?number|cvv|security[-_]?code|phone[-_]?number|(^|[-_])phone([-_]|$)|mobile[-_]?number|telephone|msisdn)/i;
+  /(pass(word|phrase)?|secret|token|api[-_]?key|apikey|authorization|(^|[-_])auth([-_]|$)|cookie|session[-_]?secret|credential|access[-_]?token|refresh[-_]?token|client[-_]?secret|private[-_]?key|signing|hmac|encryption|ssn|card[-_]?number|cvv|security[-_]?code)/i;
 
 /**
  * Matches email-shaped substrings inside free-text values. Not RFC-perfect on
  * purpose: the goal is to catch the common shapes customer emails take, not to
  * validate addresses.
  */
-const EMAIL_VALUE_PATTERN =
-  /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
-
 /**
  * High-confidence secret shapes that can end up inside free-text values —
  * error messages ("Shopify rejected token shpat_…"), URLs, or stringified
@@ -70,8 +75,13 @@ export function isSensitiveKey(key) {
  * @returns {string}
  */
 function scrubString(value, maxString) {
+  // ⛔ EMAIL MASKING REMOVED — founder's call (Matt, 2026-08-13). Addresses now appear
+  // verbatim in logs, Sentry and the activity event log behind admin.mynamejefe.com.
+  //
+  // SECRETS AND BEARER TOKENS ARE STILL MASKED, deliberately: an API key or `shpat_` token in
+  // a log is account takeover, not a privacy question, and removing the PII scrubber was not
+  // a request to publish our credentials. Same for the sensitive-KEY masking below.
   const scrubbed = value
-    .replace(EMAIL_VALUE_PATTERN, REDACTED_EMAIL)
     .replace(SECRET_VALUE_PATTERN, REDACTED_SECRET)
     .replace(BEARER_VALUE_PATTERN, (_m, scheme) => `${scheme} ${REDACTED_SECRET}`);
   if (scrubbed.length > maxString) {

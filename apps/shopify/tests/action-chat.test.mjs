@@ -277,10 +277,15 @@ test("sendActionChatMessage creates an action topic and never uses the memory to
   assert.match(prompts[0].prompt, /Cherry Cola/);
   assert.match(prompts[0].prompt, /planEvidenceAtRecommendationTime/);
   assert.match(prompts[0].prompt, /currentSystemContext/);
-  assert.doesNotMatch(prompts[0].prompt, /owner@example\.com/);
-  assert.doesNotMatch(prompts[0].prompt, /7700 900123/);
+  // ⛔ PII scrubbing removed 2026-08-13 (founder's call): customer name, email and phone now
+  // reach the provider prompt verbatim. Inverted rather than deleted so restoring the
+  // guarantee is one edit and the history stays legible.
+  assert.match(prompts[0].prompt, /owner@example\.com/);
+  assert.match(prompts[0].prompt, /7700 900123/);
+  assert.match(prompts[0].prompt, /Jane Smith/);
+  // Shopify ACCESS TOKENS are still masked — deliberately not part of that change, because a
+  // leaked token is account takeover rather than a privacy question.
   assert.equal(prompts[0].prompt.includes(fakeShopifyToken), false);
-  assert.doesNotMatch(prompts[0].prompt, /Jane Smith/);
   assert.equal(updates[0].data.context.actionRunId, "run-1");
   assert.equal(updates.at(-1).data.context.planEvidenceSnapshotId, "snapshot-1");
 });

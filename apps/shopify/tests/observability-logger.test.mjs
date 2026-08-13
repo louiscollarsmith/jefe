@@ -53,12 +53,14 @@ test("redacts sensitive context before writing", () => {
     note: "x@y.io ok",
   });
   const [record] = records();
-  // Credential + phone keys are redacted wholesale.
+  // Credential keys are still redacted wholesale; contact-PII keys are not, since
+  // 2026-08-13 (founder's call).
   assert.equal(record.accessToken, "[redacted]");
-  assert.equal(record.phoneNumber, "[redacted]");
+  assert.equal(record.phoneNumber, "+15551234567", "contact PII is no longer masked");
   // Email-shaped values are scrubbed wherever they appear (key name or free text).
-  assert.equal(record.email, "[redacted-email]");
-  assert.equal(record.note, "[redacted-email] ok");
+  // PII scrubbing removed 2026-08-13; SECRETS below are still masked, deliberately.
+  assert.equal(record.email, "a@b.com");
+  assert.equal(record.note, "x@y.io ok");
 });
 
 test("serialises an Error passed as the context", () => {

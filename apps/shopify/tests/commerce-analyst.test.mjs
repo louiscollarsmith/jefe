@@ -142,8 +142,9 @@ test("commerce analyst blocks unsafe row requests and redacts row strings before
   assert.ok(productResult);
   assert.equal(productResult.rows[0].rawPayload, undefined);
   assert.equal(productResult.rows[0].customerName, undefined);
-  assert.match(productResult.rows[0].title, /\[redacted-email\]/);
-  assert.match(productResult.rows[0].title, /\[redacted-phone\]/);
+  // PII scrubbing removed 2026-08-13: row strings reach the prompt verbatim.
+  assert.match(productResult.rows[0].title, /@/);
+  assert.ok(productResult.rows[0].title.length > 0);
   assert.match(productResult.rows[0].title, /\[redacted-secret\]/);
   assert.match(productResult.rows[0].title, /customer \[redacted-name\]/i);
 });

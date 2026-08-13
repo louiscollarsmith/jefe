@@ -29,13 +29,19 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 
-test("memory text is sanitised and query intent distinguishes current from explicit history", () => {
+test("memory text passes through and query intent distinguishes current from explicit history", () => {
+  // ⛔ PII scrubbing REMOVED 2026-08-13 (founder's call). sanitizeMemoryText no longer masks
+  // emails, phone numbers, payment identifiers or customer names — they reach prompts, stored
+  // threads and the activity log verbatim. These assertions pin that, so re-enabling scrubbing
+  // is a deliberate change rather than a silent one.
   const clean = sanitizeMemoryText(
     "Email jane@example.com or +44 7700 900123; card number 4242 4242 4242 4242.",
   );
-  assert.equal(clean.includes("jane@example.com"), false);
-  assert.equal(clean.includes("7700 900123"), false);
-  assert.equal(clean.includes("4242 4242"), false);
+  assert.equal(clean.includes("jane@example.com"), true);
+  assert.equal(clean.includes("7700 900123"), true);
+  assert.equal(clean.includes("4242 4242"), true);
+  // Shopify credentials are STILL masked — deliberately not part of the change.
+  assert.equal(sanitizeMemoryText("token shpat_abc123").includes("shpat_abc123"), false);
   assert.equal(
     classifyHistoricalRecall("Didn't we discuss France before?"),
     true,

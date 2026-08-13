@@ -39,10 +39,11 @@ test("scrubs email-shaped substrings inside free-text values", () => {
     note: "customer alice@example.com asked about refund",
     body: "contact: bob.smith+tag@shop.co.uk and carol@x.io",
   });
-  assert.equal(out.note, "customer [redacted-email] asked about refund");
-  assert.ok(!out.body.includes("@shop.co.uk"));
-  assert.ok(!out.body.includes("carol@x.io"));
-  assert.equal((out.body.match(/\[redacted-email\]/g) || []).length, 2);
+  // PII scrubbing removed 2026-08-13 (founder's call): addresses pass through verbatim.
+  assert.equal(out.note, "customer alice@example.com asked about refund");
+  assert.ok(out.body.includes("@shop.co.uk"));
+  assert.ok(out.body.includes("carol@x.io"));
+  assert.equal((out.body.match(/@/g) || []).length, 2, "addresses are no longer masked");
 });
 
 test("handles circular references without throwing", () => {
@@ -86,9 +87,9 @@ test("isSensitiveKey matches common credential shapes", () => {
 test("serialises a bare Error (message/stack are non-enumerable) instead of {}", () => {
   const out = redact(new Error("auth failed for alice@example.com"));
   assert.equal(out.name, "Error");
-  assert.equal(out.message, "auth failed for [redacted-email]");
+  assert.equal(out.message, "auth failed for alice@example.com");
   assert.equal(typeof out.stack, "string");
-  assert.ok(out.stack.includes("[redacted-email]"));
+  assert.ok(out.stack.includes("alice@example.com"));
 });
 
 test("serialises Errors nested below the top level (not just err/error keys)", () => {
@@ -98,7 +99,7 @@ test("serialises Errors nested below the top level (not just err/error keys)", (
   });
   // Without the Error branch these would each collapse to {}.
   assert.equal(out.result.err.name, "Error");
-  assert.equal(out.result.err.message, "boom [redacted-email]");
+  assert.equal(out.result.err.message, "boom carol@x.io");
   assert.equal(out.attempts[0].error.name, "TypeError");
   assert.equal(out.attempts[0].error.message, "bad");
 });

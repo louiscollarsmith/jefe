@@ -288,6 +288,10 @@ test("Store Understanding summary excludes customer PII and bounds catalogue inp
     const serialized = JSON.stringify(summary);
 
     assert.equal(summary.catalogueSamples.length, 50);
+    // Still clean after PII scrubbing was removed (2026-08-13) — and clean STRUCTURALLY:
+    // this summary never queries customer records, so there is nothing to leak regardless of
+    // whether a scrubber runs. That is why the privacy flag stays true here while the
+    // conversation-context packets set it false.
     assert.equal(serialized.includes("@example.com"), false);
     assert.equal(serialized.includes("maskedEmail"), false);
     assert.equal(summary.privacy.excludesCustomerNamesEmailsPhonesAddresses, true);

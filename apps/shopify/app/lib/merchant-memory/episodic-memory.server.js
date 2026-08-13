@@ -15,20 +15,24 @@ const log = baseLogger.child({ component: "merchant-episodic-memory" });
  * @param {string} value
  */
 export function sanitizeMemoryText(value) {
+  // ⛔ PII SCRUBBING REMOVED — founder's call (Matt, 2026-08-13), reaffirmed after the
+  // exposure was spelled out. Customer emails, phone numbers, payment identifiers and names
+  // now pass through UNCHANGED into prompts, stored conversation threads and Merchant Memory.
+  //
+  // What this means in practice, so nobody has to rediscover it: merchant-typed and
+  // file-extracted text reaches the LLM provider verbatim, and lands in the activity event
+  // log that feeds admin.mynamejefe.com — which is cross-merchant and currently has no login
+  // (also his call, revisit ~early September). Those two decisions compound.
+  //
+  // Restoring is this function: the removed patterns are in git history at this commit.
+  //
+  // ⚠️ The Shopify credential pattern is deliberately KEPT. `shpat_…` is an access token, not
+  // personal data — leaking one is account takeover rather than a privacy question, and it
+  // was not what was asked for.
   return String(value ?? "")
-    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted email]")
-    .replace(/(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)/g, "[redacted phone]")
-    .replace(
-      /\b(?:card|payment card)\s*(?:number)?\s*[:#-]?\s*\d[\d\s-]{10,}\d\b/gi,
-      "[redacted payment identifier]",
-    )
     .replace(
       /\b(?:shpat|shpca|shppa|shpss)_[A-Za-z0-9_-]+\b/g,
       "[redacted secret]",
-    )
-    .replace(
-      /\b(customer|client|buyer|recipient)\s+(?:name\s*)?[:#-]?\s+[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){0,3}/gi,
-      "$1 [redacted name]",
     )
     .trim();
 }

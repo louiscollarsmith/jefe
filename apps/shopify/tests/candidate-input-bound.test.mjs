@@ -223,6 +223,11 @@ test("insight snapshot selection is deterministic for a given belief set", async
   assert.deepEqual(first.beliefIds, second.beliefIds);
 });
 
+// ⚠️ These hashes moved on 2026-08-13. The context packet's `limits` block declared
+// `excludesCustomerNamesEmailsPhonesAddresses: true`, which stopped being true when PII
+// scrubbing was removed; correcting it to `false` changed the snapshot and therefore the
+// hash. That is the pin doing its job. Consequence to be aware of: a changed context hash
+// forces insights and goals to REGENERATE rather than reuse a cached run.
 test("small insight snapshot keeps the v4 context hash", async () => {
   const snapshot = await buildMerchantInsightSnapshot(
     insightsPrismaFor(goldenBeliefs()),
@@ -235,7 +240,7 @@ test("small insight snapshot keeps the v4 context hash", async () => {
   // context adapter. No per-run diagnostic identifiers enter this hash.
   assert.equal(
     snapshot.snapshotHash,
-    "0d488846c4104ea4706f1a5e617dc4a93cb56b862f08b993a02218fbcc6da67e",
+    "b0170085129e14ebfd33fa5b7a9d78aa792331748efd56bca83557e7b9456bbe",
   );
 });
 
@@ -317,11 +322,11 @@ test("small goal snapshot keeps the v2 context hash", async () => {
   assert.equal(snapshot.beliefIds.includes("b-5"), false);
   assert.equal(
     snapshot.snapshotHash,
-    "fd380fe32046ea20d9a90bf495724e5164e59d53978948b121300875d49a4120",
+    "9e0df62bc667162a5016a96752fd51667e89f5e466b4ba8278be2ab2a990c1d8",
   );
   assert.equal(
     snapshot.snapshot.memorySnapshotHash,
-    "0678332561859836a3c2b040d4b0f92f607a61b8764a16b42817720ab8f20ed4",
+    "6a1f191b5551d978f416bdf23737ed9326bd82e05ab7b5902a1736fcba17b681",
   );
 });
 

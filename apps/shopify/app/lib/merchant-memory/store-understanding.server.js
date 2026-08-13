@@ -460,6 +460,11 @@ export async function buildStoreUnderstandingSummary(prisma, input) {
         }
       : null,
     privacy: {
+      // STILL TRUE after PII scrubbing was removed (2026-08-13), and true STRUCTURALLY rather
+      // than by scrubbing: this summary is built from catalogue and commerce aggregates and
+      // never queries customer records, so there is no customer identifier to leak. Verified
+      // by store-understanding.test.mjs, which asserts no address appears in the serialised
+      // packet with scrubbing off.
       excludesCustomerNamesEmailsPhonesAddresses: true,
       excludesRawOrderPayloads: true,
       boundedCatalogueSampleSize: MAX_PRODUCTS,

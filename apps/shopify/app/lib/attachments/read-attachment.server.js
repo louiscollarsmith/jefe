@@ -13,8 +13,9 @@
 //
 // ⚠️ What comes back is UNTRUSTED MERCHANT-SUPPLIED CONTENT that has been through a model.
 // An invoice carries customer names, addresses and card fragments; a screenshot can carry an
-// entire inbox. It is redacted here, before it reaches a caller, because the caller's job is
-// to store it and storing it is exactly what we must not do unredacted.
+// entire inbox — and since 2026-08-13 that content is NOT scrubbed before it is stored or
+// prompted with (founder's call, applied across every surface). The prompt below still asks
+// the model to omit personal details, but asking is a preference, not a guarantee.
 
 import { GoogleGenAI } from "@google/genai";
 
@@ -170,13 +171,9 @@ export async function readAttachment(input) {
     return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
   }
 
-  // The prompt ASKS the model to leave PII out; this makes sure of it. An instruction is a
-  // preference, redaction is a guarantee, and this text is about to be stored in a thread.
-  //
-  // sanitizeMemoryText is the SAME redactor the conversation and working-memory paths use —
-  // email, phone, card, Shopify secrets, customer names. Reusing it keeps one definition of
-  // "safe to store"; a bespoke one here would be a fifth variant free to disagree with the
-  // others, which is exactly how redaction went missing on the chat path earlier today.
+  // Still routed through sanitizeMemoryText so there is ONE definition of "safe to store"
+  // rather than a bespoke variant here. Since 2026-08-13 that function masks Shopify
+  // credentials only — personal data passes through, by founder decision.
   const text = sanitizeMemoryText(raw).slice(0, MAX_EXTRACT_CHARS).trim();
   if (!text) {
     return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };

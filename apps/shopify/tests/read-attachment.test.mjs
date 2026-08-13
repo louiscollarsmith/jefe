@@ -12,10 +12,11 @@ import {
 // Matt's voice-note ruling (2026-07-31): take the bytes, keep the words, never persist the
 // file — the app has no blob store and acquiring one is a founder decision.
 //
-// The properties worth pinning are the safety ones. What comes back is merchant-supplied
-// content that has been through a model and is about to be written into a conversation
-// thread, so it must be redacted BEFORE a caller can store it, and a file we cannot read must
-// produce a sentence rather than silence.
+// The properties worth pinning are the safety ones: type and size are checked before any
+// provider round-trip, the bytes are never returned, a hostile filename cannot smuggle
+// anything into the thread, and a file we cannot read produces a sentence rather than silence.
+//
+// ⛔ PII is NOT scrubbed — removed across all surfaces on 2026-08-13 by founder decision.
 
 /** A stub model. Returns whatever text the test wants, and records what it was sent. */
 function stubClient(text, capture = {}) {
@@ -82,9 +83,11 @@ test("the file reaches the model as inline data, and the bytes are not returned"
   assert.equal(capture.request.contents[0].parts[0].inlineData.mimeType, "image/jpeg");
 });
 
-test("customer details are redacted before a caller can store them", async () => {
-  // An invoice carries names, emails and phone numbers. The prompt ASKS the model to leave
-  // them out; asking is a preference, and this text is about to be written into a thread.
+test("customer details pass through — PII scrubbing was removed by founder decision", async () => {
+  // ⛔ 2026-08-13: the PII scrubber was removed across all surfaces on Matt's instruction,
+  // after the exposure (open cross-merchant ops panel, Sentry, logs) was spelled out. An
+  // invoice's names, emails and phone numbers now reach the thread verbatim. The prompt still
+  // ASKS the model to omit them, which is a preference rather than a guarantee.
   const result = await readAttachment({
     ...IMAGE,
     client: stubClient(
@@ -92,8 +95,8 @@ test("customer details are redacted before a caller can store them", async () =>
     ),
   });
   assert.equal(result.ok, true);
-  assert.doesNotMatch(result.text, /jane\.fairfax@example\.com/);
-  assert.doesNotMatch(result.text, /07700 900123/);
+  assert.match(result.text, /jane\.fairfax@example\.com/);
+  assert.match(result.text, /07700 900123/);
   // The commercially useful part survives.
   assert.match(result.text, /412/);
 });
