@@ -3,7 +3,7 @@
 import { ShopifyAdminGraphqlClient } from "../../shopify/admin-graphql.server.js";
 import {
   INVENTORY_ITEMS_QUERY,
-  ORDERS_QUERY,
+  buildOrdersQuery,
   PRODUCTS_QUERY,
 } from "../../shopify/queries.server.js";
 import { edgesToNodes, jsonObject, parseDate } from "./normalize.server.js";
@@ -159,7 +159,7 @@ export async function runShopifyBackfill(prisma, input) {
   if (domains.has("orders")) {
     await backfillConnection({
       client,
-      query: ORDERS_QUERY,
+      query: buildOrdersQuery(),
       pageSize,
       connectionName: "orders",
       variables: {

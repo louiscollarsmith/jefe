@@ -147,6 +147,19 @@ export async function upsertShopifyOrder(prisma, input) {
     order.total_shipping_price_set?.shop_money;
   const customer = jsonObject(order.customer);
   const discountIdentity = extractDiscountIdentity(order);
+  const attribution = extractOrderAttribution(order);
+  // Same discipline as unitCost above, and for the same reason: a source that never carried
+  // the field must not be able to erase what another source already established.
+  // `customerJourneySummary` is GraphQL-only and behind a flag, so EVERY webhook update
+  // would otherwise blank a backfilled journey. Discount identity is guarded on field
+  // PRESENCE rather than emptiness — an order genuinely carrying no discount must still be
+  // able to write [] over a stale value.
+  const attributionProvided = Object.keys(attribution).length > 0;
+  const discountFieldsProvided =
+    "discountCodes" in order ||
+    "discount_codes" in order ||
+    "discountApplications" in order ||
+    "discount_applications" in order;
 
   const savedOrder = await prisma.order.upsert({
     where: { shopId_externalId: { shopId: input.shopId, externalId } },
@@ -182,6 +195,7 @@ export async function upsertShopifyOrder(prisma, input) {
       ),
       discountCodes: discountIdentity.codes,
       discountApplications: discountIdentity.applications,
+      attribution,
       totalTax: moneyAmount(
         order.currentTotalTaxSet?.shopMoney ?? order.total_tax,
       ),
@@ -218,8 +232,13 @@ export async function upsertShopifyOrder(prisma, input) {
       totalDiscount: moneyAmount(
         order.currentTotalDiscountsSet?.shopMoney ?? order.total_discounts,
       ),
-      discountCodes: discountIdentity.codes,
-      discountApplications: discountIdentity.applications,
+      ...(discountFieldsProvided
+        ? {
+            discountCodes: discountIdentity.codes,
+            discountApplications: discountIdentity.applications,
+          }
+        : {}),
+      ...(attributionProvided ? { attribution } : {}),
       totalTax: moneyAmount(
         order.currentTotalTaxSet?.shopMoney ?? order.total_tax,
       ),
@@ -476,6 +495,75 @@ function extractRefunds(order) {
   const payload = jsonObject(order);
   if (Array.isArray(payload.refunds)) return payload.refunds;
   return [];
+}
+
+/**
+ * A landing page reduced to host + path.
+ *
+ * ⛔ The query string is DROPPED, deliberately and irreversibly at ingest. Landing URLs
+ * routinely carry personal data — an email in a newsletter link, a token, a name in a
+ * gift-message param — and none of it is needed to know that someone arrived from a
+ * campaign. Storing the full URL would quietly turn an attribution column into a PII
+ * column that nothing downstream expects to redact.
+ *
+ * @param {unknown} value
+ */
+function landingPath(value) {
+  const raw = stringValue(value);
+  if (raw == null) return null;
+  try {
+    const url = new URL(raw);
+    return `${url.host}${url.pathname}`.replace(/\/$/, "");
+  } catch {
+    // Not a parseable URL. Keep the path-looking part and nothing after a `?`.
+    return raw.split("?")[0].slice(0, 200);
+  }
+}
+
+/**
+ * Where an order came from, normalised from Shopify's `customerJourneySummary`.
+ *
+ * Returns `{}` when the journey is absent — which is the normal case, because the fields
+ * are only requested when `ORDER_ATTRIBUTION_INGEST_ENABLED` is on. An empty object
+ * therefore means "never asked", NOT "arrived from nowhere", and every belief reading this
+ * has to gate on coverage rather than treat absence as a finding.
+ *
+ * @param {unknown} order
+ * @returns {{ firstVisit?: ReturnType<typeof attributionVisit>; lastVisit?: ReturnType<typeof attributionVisit>; daysToConversion?: number; customerOrderIndex?: number }}
+ */
+export function extractOrderAttribution(order) {
+  const payload = jsonObject(order);
+  const journey = jsonObject(
+    payload.customerJourneySummary ?? payload.customer_journey_summary,
+  );
+  if (Object.keys(journey).length === 0) return {};
+
+  const first = attributionVisit(journey.firstVisit ?? journey.first_visit);
+  const last = attributionVisit(journey.lastVisit ?? journey.last_visit);
+  const daysToConversion = numberValue(journey.daysToConversion ?? journey.days_to_conversion);
+  const orderIndex = numberValue(journey.customerOrderIndex ?? journey.customer_order_index);
+  return {
+    ...(first ? { firstVisit: first } : {}),
+    ...(last ? { lastVisit: last } : {}),
+    ...(daysToConversion != null ? { daysToConversion } : {}),
+    ...(orderIndex != null ? { customerOrderIndex: orderIndex } : {}),
+  };
+}
+
+/** @param {unknown} visit */
+function attributionVisit(visit) {
+  const node = jsonObject(visit);
+  if (Object.keys(node).length === 0) return null;
+  const utm = jsonObject(node.utmParameters ?? node.utm_parameters);
+  return {
+    source: stringValue(node.source),
+    referralCode: stringValue(node.referralCode ?? node.referral_code),
+    landingPath: landingPath(node.landingPage ?? node.landing_page),
+    occurredAt: stringValue(node.occurredAt ?? node.occurred_at),
+    utmSource: stringValue(utm.source),
+    utmMedium: stringValue(utm.medium),
+    utmCampaign: stringValue(utm.campaign),
+  };
 }
 
 /**

@@ -257,6 +257,7 @@ async function loadDerivationContext(prisma, input) {
           shippingCountry: true,
           discountCodes: true,
           discountApplications: true,
+          attribution: true,
         },
       }),
       prisma.orderLineItem.findMany({
@@ -516,6 +517,8 @@ function deriveDefinition(context, definition) {
         return discountDepth(context, definition, 90);
       case "business.discount_code_mix.trailing_90d":
         return discountCodeMix(context, definition, 90);
+      case "business.acquisition_mix.trailing_90d":
+        return acquisitionMix(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -2868,6 +2871,113 @@ function discountDepth(context, definition, days) {
     confidenceReason: "Total discounts divided by gross (pre-discount) revenue over the window, plus the share of orders carrying any discount.",
     summary: `Share of pre-discount revenue given away in discounts in the trailing ${days} days.`,
     sampleSize: orders.length,
+  });
+}
+
+/**
+ * How a visit is classified into an acquisition channel.
+ *
+ * UTM medium is checked FIRST and wins outright, because it is what the merchant declared
+ * about their own campaign. Inferring "google = search" over an explicit `utm_medium=cpc`
+ * would file paid traffic as organic — the single most expensive mistake available here,
+ * since it makes ad spend look free.
+ *
+ * @param {Record<string, unknown>} visit
+ */
+function classifyAcquisitionSource(visit) {
+  const medium = stringValue(visit?.utmMedium)?.toLowerCase() ?? "";
+  if (/cpc|ppc|paid|display|retargeting/.test(medium)) return "paid";
+  if (medium === "email" || medium === "newsletter") return "email";
+  if (/social/.test(medium)) return "social";
+  if (medium === "organic") return "search";
+  if (medium === "referral") return "referral";
+
+  const source = stringValue(visit?.source)?.toLowerCase() ?? "";
+  // Shopify writes an explicit "an unknown source" string for direct arrivals; an empty
+  // source means the same thing.
+  if (source === "" || source.includes("unknown")) return "direct";
+  if (/adwords|googleads|doubleclick|gclid/.test(source)) return "paid";
+  if (/klaviyo|mailchimp|campaign-monitor|sendgrid|omnisend/.test(source)) return "email";
+  if (/facebook|instagram|tiktok|pinterest|twitter|x\.com|youtube|linkedin|snapchat|reddit/.test(source)) return "social";
+  if (/google|bing|duckduckgo|yahoo|ecosia|baidu/.test(source)) return "search";
+  return "referral";
+}
+
+/**
+ * Where the merchant's orders actually come from — paid, organic search, social, email,
+ * referral or direct.
+ *
+ * Jefe could describe what a store sold in enormous detail and never why anyone turned up,
+ * so "is the ad spend working" and "how much of this is just repeat direct traffic" were
+ * not questions it could engage with at all.
+ *
+ * ⚠️ Reads FIRST touch, not last. Last-click flatters whatever sits closest to the
+ * checkout — usually direct and email — and would tell a merchant their ads do nothing
+ * while the ads are what introduced the customer. Last touch is stored too, and a
+ * follow-up belief can compare them; this one answers "where do customers come from".
+ *
+ * ⛔ Coverage-gated hard, because the absent state here is especially misleading: the
+ * journey fields are only requested when ORDER_ATTRIBUTION_INGEST_ENABLED is on, so every
+ * order predating that flag carries {} — which is indistinguishable from "arrived from
+ * nowhere". Ungated, this belief would report a healthy store as 100% direct.
+ */
+function acquisitionMix(context, definition, days) {
+  const orders = ordersInWindow(context, days);
+  if (orders.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 orders in the window are required to read an acquisition mix.", { orders: orders.length });
+  }
+
+  const byChannel = new Map();
+  const bySource = new Map();
+  let attributed = 0;
+  for (const order of orders) {
+    const attribution = jsonObject(order.attribution);
+    const firstVisit = jsonObject(attribution.firstVisit);
+    if (Object.keys(attribution).length === 0) continue;
+    attributed += 1;
+    const channel = classifyAcquisitionSource(firstVisit);
+    byChannel.set(channel, (byChannel.get(channel) ?? 0) + 1);
+    // The raw source is kept alongside the bucket so a merchant can see the evidence rather
+    // than only Jefe's classification of it, and correct the premise if it is wrong.
+    const raw = stringValue(firstVisit.source) ?? "(direct)";
+    bySource.set(raw, (bySource.get(raw) ?? 0) + 1);
+  }
+
+  const coverage = attributed / orders.length;
+  if (attributed < 10 || coverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Too few orders record where the customer came from (attribution ingest may be off, or these orders predate it).", {
+      attributionCoverage: roundNumber(coverage, 4),
+      attributedOrders: attributed,
+      orders: orders.length,
+    });
+  }
+
+  const shareOf = (channel) => roundNumber(((byChannel.get(channel) ?? 0) / attributed) * 100, 2);
+  const topSources = Array.from(bySource.entries())
+    .map(([source, count]) => ({ source, orders: count, sharePercent: roundNumber((count / attributed) * 100, 2) }))
+    .sort((a, b) => b.orders - a.orders)
+    .slice(0, 10);
+
+  return derived(context, definition, {
+    value: {
+      paidSharePercent: shareOf("paid"),
+      searchSharePercent: shareOf("search"),
+      socialSharePercent: shareOf("social"),
+      emailSharePercent: shareOf("email"),
+      referralSharePercent: shareOf("referral"),
+      directSharePercent: shareOf("direct"),
+      topSources,
+      attributedOrders: attributed,
+      attributionCoverage: roundNumber(coverage, 4),
+      touch: "first",
+      window: `trailing_${days}d`,
+      thresholdVersion: "acquisition-mix-v1",
+    },
+    confidence: coverageConfidence(0.8, coverage),
+    confidenceReason: "Share of orders per first-touch acquisition channel over the window, classified from declared UTM medium where present and the referring source otherwise.",
+    summary: `Where orders came from in the trailing ${days} days, by first touch.`,
+    sampleSize: orders.length,
+    coverageMetrics: { attributionCoverage: roundNumber(coverage, 4) },
   });
 }
 

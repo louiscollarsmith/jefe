@@ -502,6 +502,11 @@ model Order {
   /// typed. Merchant marketing identifiers, not customer data.
   discountCodes        Json          @default("[]") @map("discount_codes")
   discountApplications Json          @default("[]") @map("discount_applications")
+  /// Where the order came from: first/last touch source, referral code, UTMs and a
+  /// query-stripped landing path. Populated only when ORDER_ATTRIBUTION_INGEST_ENABLED is
+  /// on. Landing-page query strings are dropped at ingest — they routinely carry personal
+  /// data and nothing here needs them.
+  attribution          Json          @default("{}")
   totalTax           Decimal?        @map("total_tax") @db.Decimal(18, 2)
   totalShipping      Decimal?        @map("total_shipping") @db.Decimal(18, 2)
   sourceCreatedAt    DateTime?       @map("source_created_at") @db.Timestamptz(6)

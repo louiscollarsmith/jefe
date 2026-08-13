@@ -118,6 +118,68 @@ export const INVENTORY_ITEMS_QUERY = `#graphql
   }
 `;
 
+/**
+ * Where an order came from — first/last touch, referral code, landing page and UTMs.
+ *
+ * ⛔ DEFAULT OFF, and the flag guards the QUERY, not just the storage. `read_orders` (which
+ * we already hold) is enough for the scope check, but customer journey data is customer
+ * behavioural data and sits behind Shopify's protected-customer-data approval at the app
+ * level. Requesting a field the app isn't approved for fails the WHOLE request — which
+ * would take down order backfill for every store, not just attribution. So when the flag is
+ * off the query is byte-identical to what it has always been, and the blast radius of
+ * turning it on is one env var away from being turned back off.
+ */
+export function isOrderAttributionIngestEnabled() {
+  return process.env.ORDER_ATTRIBUTION_INGEST_ENABLED === "true";
+}
+
+const ORDER_ATTRIBUTION_FIELDS = `
+          customerJourneySummary {
+            customerOrderIndex
+            daysToConversion
+            firstVisit {
+              source
+              referralCode
+              landingPage
+              occurredAt
+              utmParameters {
+                source
+                medium
+                campaign
+              }
+            }
+            lastVisit {
+              source
+              referralCode
+              landingPage
+              occurredAt
+              utmParameters {
+                source
+                medium
+                campaign
+              }
+            }
+          }`;
+
+/**
+ * The orders backfill query. A function rather than a constant because the attribution
+ * block is conditional — see `isOrderAttributionIngestEnabled`. Read at call time, not at
+ * module load, so a test can flip the flag without re-importing the module.
+ */
+export function buildOrdersQuery() {
+  if (!isOrderAttributionIngestEnabled()) return ORDERS_QUERY;
+  const anchor = "\n          email\n";
+  // Splicing on a whitespace-exact anchor is brittle, and the brittle failure mode here is
+  // the bad one: a silent no-op that leaves the flag on, the query unchanged, and every
+  // attribution belief permanently starved with nothing to point at. Fail loudly instead.
+  if (!ORDERS_QUERY.includes(anchor)) {
+    throw new Error(
+      "buildOrdersQuery: order-attribution anchor not found in ORDERS_QUERY — the query was reformatted and attribution would silently never be requested.",
+    );
+  }
+  return ORDERS_QUERY.replace(anchor, `\n${ORDER_ATTRIBUTION_FIELDS}${anchor}`);
+}
+
 export const ORDERS_QUERY = `#graphql
   query JefeOrdersBackfill($first: Int!, $after: String, $query: String!) {
     orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {

@@ -4924,6 +4924,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.acquisition_mix.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "orders grouped by FIRST-touch acquisition channel (paid / search / social / email / referral / direct) from customerJourneySummary.firstVisit, classified by declared UTM medium where present and referring source otherwise; carries the raw top sources",
+    "minimumData": "At least 10 orders in the window with where-from recorded on at least 70% of them",
+    "confidenceRule": "0.8 scaled by attribution coverage",
+    "legacyConfidenceRule": "0.8 scaled by attribution coverage",
+    "confidenceTemplate": "coverage_based_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.8 scaled by coverage"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Where orders come from, by FIRST touch — last-click flatters whatever sits nearest the checkout and would tell a merchant their ads do nothing when the ads are what introduced the customer. A declared utm_medium always outranks an inferred source, so paid traffic is never filed as organic. Requires ORDER_ATTRIBUTION_INGEST_ENABLED; orders predating it carry no journey, which is indistinguishable from 'arrived from nowhere', so thin coverage returns silence rather than reporting a healthy store as 100% direct.",
+    "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/objects/CustomerJourneySummary"
+  },
+  {
     "key": "business.discount_code_mix.trailing_90d",
     "category": "business",
     "valueType": "structured",
