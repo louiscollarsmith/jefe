@@ -157,10 +157,18 @@ export const ACTION_REGISTRY = {
       verdict: { goodAtOrAbove: 40, underperformedAtOrBelow: 0 },
     },
   },
-  // Settings → Autonomy has shown "Tidy-ups" as SOON since the roster landed. As with
-  // listing_copy, the badge is driven by registered + execute-flag-on, so this entry alone
-  // changes NOTHING a merchant sees: `PRODUCT_STATUS_EXECUTE_ENABLED` is unset everywhere,
-  // which keeps the row on SOON and the write path closed. Flipping it is the founder's call.
+  // Settings → Autonomy has shown "Tidy-ups" as SOON since the roster landed. The badge is
+  // driven by registered + execute-flag-on, so with `PRODUCT_STATUS_EXECUTE_ENABLED` unset the
+  // row stays on SOON and the write path stays closed. Flipping it is the founder's call.
+  //
+  // ⚠️ Registering DOES change one merchant-visible thing, and it is not the dial: membership
+  // of this registry is what `listActionCapabilities()` advertises to the plan model, and
+  // membership of the BINDING table is what makes a proposal resolvable. So from the moment
+  // this entry lands, Jefe can propose a tidy-up — as advice, with `executable: false` and no
+  // Approve button, routed to the instruct path (no dead ends). That is the intended
+  // behaviour, not a leak: nothing is written, and the proposal is only ever built from the
+  // three guards in stale-listing-tidy-up.server.js. Worth stating because "dark behind a
+  // flag" is easy to read as "invisible", and here it means "cannot write", not "cannot speak".
   //
   // ⚠️ Shares `PRODUCT_STATUS_EXECUTE_ENABLED` with the product-status adapter it drives,
   // deliberately. One adapter, one go-live switch: a second flag name for the same write path

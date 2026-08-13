@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ACTION_REGISTRY, listActionTypes } from "../app/lib/actions/action-intent.server.js";
+import {
+  ACTION_REGISTRY,
+  listActionCapabilities,
+  listActionTypes,
+} from "../app/lib/actions/action-intent.server.js";
 import { listResolvableActionTypes } from "../app/lib/actions/action-resolution.server.js";
 import { listExecutableActionTypes } from "../app/lib/actions/execute-approved-action.server.js";
 import { wireTidyUpExecution } from "../app/lib/actions/wire-tidy-up-execution.server.js";
@@ -36,6 +40,22 @@ test("⛔ tidy_up is DARK until the flag is exactly 'true'", () => {
   assert.equal(liveWith({ PRODUCT_STATUS_EXECUTE_ENABLED: "1" }), false);
   assert.equal(liveWith({ PRODUCT_STATUS_EXECUTE_ENABLED: "TRUE" }), false);
   assert.equal(liveWith({ PRODUCT_STATUS_EXECUTE_ENABLED: "true" }), true);
+});
+
+test("dark means CANNOT WRITE, not CANNOT SPEAK", () => {
+  // Registering an action type does two separate things, and conflating them is how "it's
+  // behind a flag" gets read as "nothing happens". With the flag off:
+  //   - the dial stays SOON and no store write is possible (asserted above), AND
+  //   - the model is still told the capability exists, so Jefe can PROPOSE it as advice.
+  // The second half is deliberate — the no-dead-ends rule means Jefe should say a tidy-up is
+  // worth doing even when it can only tell the merchant how to do it themselves.
+  const advertised = listActionCapabilities().map((c) => c.actionType);
+  assert.ok(
+    advertised.includes("tidy_up"),
+    "tidy_up must reach the model even while its write flag is off",
+  );
+  const capability = listActionCapabilities().find((c) => c.actionType === "tidy_up");
+  assert.deepEqual(capability.targetKinds, ["stale_listing"]);
 });
 
 test("⛔ tidy_up is not suited to a made-to-order business", () => {
