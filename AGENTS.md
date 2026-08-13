@@ -113,6 +113,7 @@ For UI work, state:
 ## Before Finishing
 
 - Update `apps/shopify/CHANGELOG.md` using today's UK/London date.
+- Keep `apps/shopify/GLOSSARY.md` current when adding or renaming product, memory, action, surface or operations entities. Update it in the same change as the entity it describes. When glossary entries are added or materially changed and the change is live and verified, post the additions to **#jefe-slack** with the same timing, short-SHA footer and separator discipline as changelog updates.
 - Use merchant/operator-facing language.
 - Confirm new server code is observable: it logs through the structured logger, captures/propagates errors to the central hooks, and (for any new endpoint, service or dependency) has a health or self-check. See `apps/shopify/docs/observability.md`.
 - Run `bash scripts/preflight.sh` (prisma generate, typecheck, lint, tests, build) only for the integration gate: before pushing/merging — and **again after any rebase**. For local visual checks, keep the dev server running and report any focused checks instead of the full suite. Push only if green.
