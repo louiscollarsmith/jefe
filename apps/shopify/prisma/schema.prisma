@@ -497,6 +497,11 @@ model Order {
   subtotalPrice      Decimal?        @map("subtotal_price") @db.Decimal(18, 2)
   totalPrice         Decimal?        @map("total_price") @db.Decimal(18, 2)
   totalDiscount      Decimal?        @map("total_discount") @db.Decimal(18, 2)
+  /// Which offer discounted this order, not how much. `discountCodes` is what the customer
+  /// typed; `discountApplications` also covers automatic/manual/script discounts nobody
+  /// typed. Merchant marketing identifiers, not customer data.
+  discountCodes        Json          @default("[]") @map("discount_codes")
+  discountApplications Json          @default("[]") @map("discount_applications")
   totalTax           Decimal?        @map("total_tax") @db.Decimal(18, 2)
   totalShipping      Decimal?        @map("total_shipping") @db.Decimal(18, 2)
   sourceCreatedAt    DateTime?       @map("source_created_at") @db.Timestamptz(6)

@@ -4893,6 +4893,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.discount_code_mix.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "discounted orders grouped by named offer (code, or title for automatic/manual/script discounts) within window; plus the share of identified discounted orders where the customer typed a code",
+    "minimumData": "At least 5 priced orders and 5 discounted orders in the window, with discount identity known on at least 70% of discounted orders",
+    "confidenceRule": "0.85 scaled by discount-identity coverage",
+    "legacyConfidenceRule": "0.85 scaled by discount-identity coverage",
+    "confidenceTemplate": "coverage_based_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 scaled by coverage"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "WHICH offers discount orders, and whether customers typed them or they applied automatically — the companion to discount_depth, which only knows how much. A code a customer chose to enter is a campaign with a response rate; an automatic site-wide discount is a price cut running whether anyone noticed. Orders ingested before discount identity was captured carry no offer, which at the column level looks like 'no discount' — so coverage is measured against orders known to be discounted, and thin coverage returns silence rather than a false 'runs no campaigns'.",
+    "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/objects/DiscountCodeApplication"
+  },
+  {
     "key": "products.top_returned_products.trailing_180d",
     "category": "products",
     "valueType": "structured",

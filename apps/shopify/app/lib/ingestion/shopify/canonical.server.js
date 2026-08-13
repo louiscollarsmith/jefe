@@ -146,6 +146,7 @@ export async function upsertShopifyOrder(prisma, input) {
     order.totalShippingPriceSet?.shopMoney ??
     order.total_shipping_price_set?.shop_money;
   const customer = jsonObject(order.customer);
+  const discountIdentity = extractDiscountIdentity(order);
 
   const savedOrder = await prisma.order.upsert({
     where: { shopId_externalId: { shopId: input.shopId, externalId } },
@@ -179,6 +180,8 @@ export async function upsertShopifyOrder(prisma, input) {
       totalDiscount: moneyAmount(
         order.currentTotalDiscountsSet?.shopMoney ?? order.total_discounts,
       ),
+      discountCodes: discountIdentity.codes,
+      discountApplications: discountIdentity.applications,
       totalTax: moneyAmount(
         order.currentTotalTaxSet?.shopMoney ?? order.total_tax,
       ),
@@ -215,6 +218,8 @@ export async function upsertShopifyOrder(prisma, input) {
       totalDiscount: moneyAmount(
         order.currentTotalDiscountsSet?.shopMoney ?? order.total_discounts,
       ),
+      discountCodes: discountIdentity.codes,
+      discountApplications: discountIdentity.applications,
       totalTax: moneyAmount(
         order.currentTotalTaxSet?.shopMoney ?? order.total_tax,
       ),
@@ -471,6 +476,90 @@ function extractRefunds(order) {
   const payload = jsonObject(order);
   if (Array.isArray(payload.refunds)) return payload.refunds;
   return [];
+}
+
+/**
+ * Normalised discount IDENTITY for an order — which offer discounted it, not how much.
+ *
+ * Two transports deliver different shapes and a belief should never have to know which
+ * one it got. GraphQL gives `discountCodes` (plain strings) plus `discountApplications`, a
+ * union where a code discount names itself with `code` and automatic/manual/script
+ * discounts name themselves with `title`. REST/webhooks give `discount_codes`
+ * (`[{code, amount, type}]`) and `discount_applications`. Both flatten to one array of
+ * `{ label, kind, allocationMethod, targetType }`.
+ *
+ * `label` is the merchant-facing identity of the offer — a code string, or a title for
+ * discounts a customer never typed. `kind` records which of those it was, so a belief can
+ * distinguish "customers are redeeming SUMMER20" from "everything is 10% off
+ * automatically", which look identical in the money and mean opposite things.
+ *
+ * Discount codes are merchant marketing identifiers, not customer data — nothing here is
+ * PII and nothing needs redaction.
+ *
+ * @param {unknown} order
+ * @returns {{ codes: string[], applications: Array<{ label: string; kind: string; allocationMethod: string | null; targetType: string | null }> }}
+ */
+export function extractDiscountIdentity(order) {
+  const payload = jsonObject(order);
+
+  // Three shapes reach here: REST's plain array, GraphQL `edges { node }`, and GraphQL
+  // `nodes` — which is what our own order query asks for. `edgesToNodes` only understands
+  // `edges`, so a `nodes` selection would silently normalise to nothing: no error, no
+  // discount identity, and a belief that quietly concludes the store runs no campaigns.
+  const rawApplications = Array.isArray(payload.discount_applications)
+    ? payload.discount_applications
+    : Array.isArray(jsonObject(payload.discountApplications).nodes)
+      ? jsonObject(payload.discountApplications).nodes
+      : edgesToNodes(payload.discountApplications);
+
+  /** @type {Array<{ label: string; kind: string; allocationMethod: string | null; targetType: string | null }>} */
+  const applications = [];
+  for (const entry of rawApplications) {
+    const application = jsonObject(entry);
+    // GraphQL code discounts carry `code`; automatic/manual/script carry `title`. REST uses
+    // `code`/`title` on the same object, so one lookup order serves both.
+    const label =
+      stringValue(application.code) ?? stringValue(application.title) ?? null;
+    const declaredType = stringValue(application.type);
+    const kind = stringValue(application.code)
+      ? "code"
+      : (declaredType?.toLowerCase() ?? "automatic");
+    if (label == null) continue;
+    applications.push({
+      label,
+      kind: String(kind),
+      allocationMethod:
+        stringValue(application.allocationMethod) ??
+        stringValue(application.allocation_method),
+      targetType:
+        stringValue(application.targetType) ??
+        stringValue(application.target_type),
+    });
+  }
+
+  // `discountCodes` is authoritative for what the customer actually typed, so it is read
+  // directly rather than inferred from the applications union. REST nests them as objects.
+  const rawCodes = Array.isArray(payload.discountCodes)
+    ? payload.discountCodes
+    : Array.isArray(payload.discount_codes)
+      ? payload.discount_codes
+      : [];
+  /** @type {string[]} */
+  const codes = [];
+  for (const entry of rawCodes) {
+    const code =
+      typeof entry === "string" ? entry : stringValue(jsonObject(entry).code);
+    if (code != null && !codes.includes(code)) codes.push(code);
+  }
+  // A code present in the applications union but absent from `discountCodes` still counts —
+  // it is the same redemption seen from the other side.
+  for (const application of applications) {
+    if (application.kind === "code" && !codes.includes(application.label)) {
+      codes.push(String(application.label));
+    }
+  }
+
+  return { codes, applications };
 }
 
 /** @param {unknown} value */

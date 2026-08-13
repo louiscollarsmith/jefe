@@ -255,6 +255,8 @@ async function loadDerivationContext(prisma, input) {
           financialStatus: true,
           sourceName: true,
           shippingCountry: true,
+          discountCodes: true,
+          discountApplications: true,
         },
       }),
       prisma.orderLineItem.findMany({
@@ -512,6 +514,8 @@ function deriveDefinition(context, definition) {
         return marginByRegion(context, definition, 90);
       case "business.discount_depth.trailing_90d":
         return discountDepth(context, definition, 90);
+      case "business.discount_code_mix.trailing_90d":
+        return discountCodeMix(context, definition, 90);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -2764,6 +2768,111 @@ function discountDepth(context, definition, days) {
   });
 }
 
+/**
+ * WHICH offers are doing the discounting — the companion to `discountDepth`, which only
+ * ever knew how much.
+ *
+ * The distinction that matters is typed vs automatic. A customer entering SUMMER20 chose
+ * to respond to an offer; an automatic site-wide 10% is a price cut the merchant is
+ * running whether anyone noticed or not. Both look identical in `total_discount` and mean
+ * opposite things — the first is a campaign with a response rate, the second is margin
+ * leaving quietly. A permanent "welcome" code that fires on nearly every order is the
+ * clearest case: nominally a promotion, actually the price.
+ *
+ * ⚠️ Coverage-gated, and the gate is load-bearing here in a way it isn't elsewhere. Orders
+ * ingested before the discount-identity migration carry `[]` because the field was never
+ * requested, which at the column level is indistinguishable from "this order had no
+ * discount". Reading a code mix across those would confidently report that a store runs no
+ * campaigns. So coverage is measured against orders KNOWN to be discounted
+ * (`totalDiscount > 0`), not against all orders, and thin coverage returns silence.
+ */
+function discountCodeMix(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  if (orders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 priced orders in the window are required.", { orders: orders.length });
+  }
+  const currency = shopBaseCurrency(context);
+  if (!currency.ok) {
+    return skipped(definition, "insufficient_data", "No priced orders yet to report a currency in.", { currencies: currency.currencies.length });
+  }
+
+  const discountedOrders = orders.filter((order) => decimalNumber(order.totalDiscount) > 0);
+  if (discountedOrders.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 discounted orders in the window are required to read a code mix.", { discountedOrders: discountedOrders.length });
+  }
+
+  // An order counts as "identified" if we know which offer discounted it. Anything else is
+  // a pre-migration row whose identity was never requested.
+  let identified = 0;
+  let typedCodeOrders = 0;
+  const byLabel = new Map();
+  for (const order of discountedOrders) {
+    const applications = jsonArray(order.discountApplications);
+    const codes = jsonArray(order.discountCodes);
+    if (applications.length === 0 && codes.length === 0) continue;
+    identified += 1;
+    const discount = decimalNumber(order.totalDiscount);
+    const labels = applications.length > 0
+      ? applications.map((entry) => ({
+          label: stringValue(entry?.label),
+          kind: stringValue(entry?.kind) ?? "automatic",
+        }))
+      : codes.map((code) => ({ label: stringValue(code), kind: "code" }));
+    if (labels.some((entry) => entry.kind === "code")) typedCodeOrders += 1;
+    // One order can carry several offers; the discount is not split between them because we
+    // cannot know the split from the order total. Attributing the full amount to each would
+    // double-count revenue, so `orders` is the honest denominator and money is reported as
+    // the discount on orders where the offer appeared.
+    for (const entry of labels) {
+      if (entry.label == null) continue;
+      const current = byLabel.get(entry.label) ?? { label: entry.label, kind: entry.kind, orders: 0, discountOnOrders: 0 };
+      current.orders += 1;
+      current.discountOnOrders += discount;
+      byLabel.set(entry.label, current);
+    }
+  }
+
+  const coverage = identified / discountedOrders.length;
+  if (identified < 5 || coverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Too few discounted orders record which offer discounted them (a re-backfill fills this in).", {
+      discountIdentityCoverage: roundNumber(coverage, 4),
+      identifiedOrders: identified,
+      discountedOrders: discountedOrders.length,
+    });
+  }
+
+  const offers = Array.from(byLabel.values())
+    .map((entry) => ({
+      label: entry.label,
+      kind: entry.kind,
+      orders: entry.orders,
+      orderSharePercent: roundNumber((entry.orders / identified) * 100, 2),
+      discountOnOrders: roundMoney(entry.discountOnOrders),
+    }))
+    .sort((a, b) => b.orders - a.orders)
+    .slice(0, 10);
+
+  const typedShare = typedCodeOrders / identified;
+  return derived(context, definition, {
+    value: {
+      offers,
+      distinctOffers: byLabel.size,
+      typedCodeOrderSharePercent: roundNumber(typedShare * 100, 2),
+      automaticOrderSharePercent: roundNumber((1 - typedShare) * 100, 2),
+      identifiedOrders: identified,
+      discountedOrders: discountedOrders.length,
+      discountIdentityCoverage: roundNumber(coverage, 4),
+      currency: currency.currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: coverageConfidence(0.85, coverage),
+    confidenceReason: "Share of discounted orders per named offer over the window, split by whether the customer typed a code or the discount applied automatically.",
+    summary: `Which offers are discounting orders in the trailing ${days} days, and whether customers typed them.`,
+    sampleSize: discountedOrders.length,
+    coverageMetrics: { discountIdentityCoverage: roundNumber(coverage, 4) },
+  });
+}
+
 // Product performance — trailing-window sales derived from line items joined to
 // priced orders. Bounded aggregates (concentration, bestsellers, dead stock),
 // never one belief per SKU, so belief counts and generator inputs stay bounded.
@@ -3778,6 +3887,12 @@ function stringValue(value) {
 
 function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+// Prisma Json columns arrive as unknown. A non-array (null, {}, a string from a bad write)
+// reads as "nothing recorded" rather than throwing mid-derivation.
+function jsonArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function groupBy(rows, keyFn) {

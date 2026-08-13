@@ -139,6 +139,29 @@ export const ORDERS_QUERY = `#graphql
           currencyCode
           tags
           sourceName
+          # Discount IDENTITY, not just amount. totalDiscount tells us a store gives away
+          # 14% of gross; only the code tells us WHICH offer did it, which is the difference
+          # between a number and an explanation. discountApplications is a union — code,
+          # automatic, manual and script discounts each name themselves differently.
+          discountCodes
+          discountApplications(first: 10) {
+            nodes {
+              allocationMethod
+              targetType
+              ... on DiscountCodeApplication {
+                code
+              }
+              ... on AutomaticDiscountApplication {
+                title
+              }
+              ... on ManualDiscountApplication {
+                title
+              }
+              ... on ScriptDiscountApplication {
+                title
+              }
+            }
+          }
           email
           billingAddress {
             country
