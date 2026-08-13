@@ -19,23 +19,28 @@
 
 import { GoogleGenAI } from "@google/genai";
 
+import {
+  ATTACHMENT_ACCEPT,
+  MAX_ATTACHMENT_BYTES,
+  READABLE_MIME_TYPES,
+  attachmentRejectionReason,
+  isReadableAttachment,
+} from "./attachment-limits.js";
 import { getLlmConfig } from "../llm/config.server.js";
 import { assertExternalLlmCallAllowed } from "../llm/external-call-guard.server.js";
 import { sanitizeMemoryText } from "../merchant-memory/episodic-memory.server.js";
 import { recordLlmUsage } from "../llm/usage-recorder.server.js";
 
-/** Formats a vision model can actually read. Anything else is refused rather than guessed at. */
-export const READABLE_MIME_TYPES = Object.freeze([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-  "application/pdf",
-]);
-
-/** Keeps a single inline request within the provider's limits, and keeps a bad upload cheap. */
-export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+// The allow-list and the size cap live in a browser-safe module so the composer can refuse a
+// file before uploading it and the server can refuse the same file on arrival, from one
+// definition. Re-exported here because this module was the original home of both.
+export {
+  ATTACHMENT_ACCEPT,
+  MAX_ATTACHMENT_BYTES,
+  READABLE_MIME_TYPES,
+  attachmentRejectionReason,
+  isReadableAttachment,
+};
 
 /** How much extracted text is worth keeping. A wall of OCR helps nobody and costs tokens forever. */
 const MAX_EXTRACT_CHARS = 4000;
@@ -50,35 +55,6 @@ const READ_PROMPT = [
   "Do NOT include customer names, email addresses, phone numbers, or card details in your answer.",
   "Return prose, no preamble, no markdown headings.",
 ].join(" ");
-
-/**
- * @param {unknown} mimeType
- * @returns {boolean}
- */
-export function isReadableAttachment(mimeType) {
-  return typeof mimeType === "string" && READABLE_MIME_TYPES.includes(mimeType.toLowerCase());
-}
-
-/**
- * Refuse before spending anything — a bad upload should cost a validation branch, not a
- * provider round-trip. Returns a merchant-facing reason, or null when the file is fine.
- *
- * @param {{ mimeType?: unknown; byteLength?: unknown; filename?: unknown }} input
- * @returns {string | null}
- */
-export function attachmentRejectionReason(input) {
-  if (!isReadableAttachment(input?.mimeType)) {
-    return "I can read photos and PDFs — that one's a file type I can't open.";
-  }
-  const bytes = Number(input?.byteLength);
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "That file came through empty — worth trying again.";
-  }
-  if (bytes > MAX_ATTACHMENT_BYTES) {
-    return "That file's too big for me to read — under 8MB and I'll manage it.";
-  }
-  return null;
-}
 
 /**
  * Read an attachment and return what it says. Never returns the file, and never stores it.
@@ -182,13 +158,21 @@ export async function readAttachment(input) {
   return { ok: true, text, filename: safeFilename(input.filename) };
 }
 
-/** Base64 is 4 characters per 3 bytes; near enough to refuse an oversized upload early. */
+/**
+ * Base64 is 4 characters per 3 bytes; near enough to refuse an oversized upload early.
+ * @param {unknown} base64
+ * @returns {number}
+ */
 function approximateBytes(base64) {
   if (typeof base64 !== "string" || !base64) return 0;
   return Math.floor((base64.length * 3) / 4);
 }
 
-/** A filename is merchant-supplied text that gets rendered — keep it short and boring. */
+/**
+ * A filename is merchant-supplied text that gets rendered — keep it short and boring.
+ * @param {unknown} value
+ * @returns {string | null}
+ */
 function safeFilename(value) {
   if (typeof value !== "string") return null;
   const cleaned = value.replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").trim();

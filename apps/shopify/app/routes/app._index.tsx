@@ -101,6 +101,11 @@ import {
   retryFastOnboarding,
   skipFastOnboarding,
 } from "../lib/onboarding/fast-onboarding.server.js";
+import {
+  composeAttachmentMessage,
+  oversizedUploadReason,
+  readUploadedAttachment,
+} from "../lib/attachments/attachment-message.server.js";
 import { executeApprovedAction } from "../lib/actions/execute-approved-action.server";
 import { loadFreshOfflineToken } from "../lib/shopify/offline-token.server";
 import {
@@ -301,6 +306,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     scopes: splitScopes(session.scope),
     rawPayload: { source: "jefe_onboarding_action" },
   });
+  // Checked from Content-Length, BEFORE the body is buffered — otherwise an oversized upload is
+  // pulled into memory and only then found to be too big.
+  const oversized = oversizedUploadReason(request);
+  if (oversized) {
+    return { ok: false, error: oversized, kind: "attachment", intent: "chat.message" };
+  }
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
 
@@ -804,10 +815,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "chat.message") {
+    // A merchant can send a photo of a shelf or a supplier invoice with (or instead of) words.
+    // The file is read and dropped — see attachment-message.server.js. A file we cannot read is
+    // reported back rather than swallowed: silence would look like Jefe ignoring them.
+    const typed = String(formData.get("message") ?? "");
+    const attachment = await readUploadedAttachment(formData, {
+      prisma,
+      merchantId: merchant.id,
+      shopId: shop.id,
+      logger: actionLog,
+    });
+    if (attachment && !attachment.ok) {
+      return { ok: false, error: attachment.reason, kind: "attachment", intent };
+    }
+    if (attachment) {
+      actionLog.info("merchant sent Jefe a file", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        withMessage: Boolean(typed.trim()),
+      });
+    }
+    const message = attachment
+      ? composeAttachmentMessage({
+          message: typed,
+          filename: attachment.filename,
+          extract: attachment.text,
+        })
+      : typed;
     const result = await sendGeneralChatMessage(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
-      message: String(formData.get("message") ?? ""),
+      message,
       conversationId: String(formData.get("conversationId") ?? "") || null,
       focusedActionId: String(formData.get("focusedActionId") ?? "") || null,
       surface: "app",

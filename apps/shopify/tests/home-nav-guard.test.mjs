@@ -37,7 +37,15 @@ test("focused-chat polish: single 'Thinking' indicator + wired action menu", () 
   // The Send button is a plain disabled state — the thinking ROW is the only indicator,
   // so the merchant never sees "Thinking" twice at once.
   assert.doesNotMatch(dailyHomeSource, /\{isThinking \? "Thinking" : "Send"\}/);
-  assert.match(dailyHomeSource, /<div style=\{thinkingStyle\}>Thinking<\/div>/);
+  // ONE thinking row, whatever it says. Since 2026-08-13 it reads "Reading your file" while an
+  // attachment is being read, so this asserts the count rather than the literal — the property
+  // was never the word, it was that the merchant does not see two indicators at once.
+  assert.equal(
+    (dailyHomeSource.match(/style=\{thinkingStyle\}/g) ?? []).length,
+    1,
+    "exactly one thinking indicator",
+  );
+  assert.match(dailyHomeSource, /pendingAttachmentName \? "Reading your file" : "Thinking"/);
   // The plus menu is the way actions enter a chat: one action can become focus,
   // while other actions are added as read-only references.
   assert.match(dailyHomeSource, /function ActionAttachmentMenu/);

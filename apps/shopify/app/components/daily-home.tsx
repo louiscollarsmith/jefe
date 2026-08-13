@@ -1,12 +1,13 @@
 import {
   Form,
   Link,
+  useActionData,
   useFetcher,
   useLocation,
   useNavigation,
 } from "react-router";
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import {
   Button,
   Text,
@@ -17,6 +18,10 @@ import {
   markApprovalSent,
   markChatTurnSent,
 } from "./chat-turn-reporter";
+import {
+  ATTACHMENT_ACCEPT,
+  attachmentRejectionReason,
+} from "../lib/attachments/attachment-limits.js";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
   ExecutedAction,
@@ -670,6 +675,12 @@ function FocusedConversation({
     isSending && typeof navigation.formData?.get("message") === "string"
       ? String(navigation.formData.get("message")).trim()
       : "";
+  // An upload is slow enough that the merchant needs to see their file was taken.
+  const pendingUpload = isSending ? navigation.formData?.get("attachment") : null;
+  const pendingAttachmentName =
+    pendingUpload && typeof pendingUpload !== "string" && pendingUpload.size
+      ? pendingUpload.name
+      : null;
   const [composerMessage, setComposerMessage] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [focusExpanded, setFocusExpanded] = useState(false);
@@ -688,9 +699,63 @@ function FocusedConversation({
     activeConversation?.id ?? null,
     messages.length,
   );
+  // A merchant sending Jefe a photo of a shelf or a supplier invoice. The file is read and
+  // dropped (derive-and-discard, per the voice-note precedent) — nothing is stored, so this is a
+  // way of TELLING Jefe something, not a file library.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  // A rejection from the server (an unreadable PDF, a provider that failed) — otherwise the
+  // attachment would vanish and Jefe would look like it had ignored them.
+  const actionData = useActionData() as
+    | { ok?: boolean; error?: string; kind?: string; intent?: string }
+    | undefined;
+  const serverAttachmentError =
+    actionData?.ok === false && actionData?.kind === "attachment"
+      ? (actionData.error ?? null)
+      : null;
+  const composerError = attachmentError ?? serverAttachmentError;
+
+  const clearAttachment = () => {
+    setAttachedFile(null);
+    setAttachmentError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleFileChosen = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0] ?? null;
+    if (!file) {
+      clearAttachment();
+      return;
+    }
+    // Refused here as well as on the server, from the same rule set — a file the server would
+    // bounce should never cost the merchant an upload.
+    const reason = attachmentRejectionReason({
+      mimeType: file.type,
+      byteLength: file.size,
+      filename: file.name,
+    });
+    if (reason) {
+      setAttachedFile(null);
+      setAttachmentError(reason);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setAttachedFile(file);
+    setAttachmentError(null);
+  };
+
   const handleComposerSubmit = () => {
     markChatTurnSent();
     setComposerMessage("");
+    setAttachedFile(null);
+    setAttachmentError(null);
+    // Deferred deliberately. React Router serialises the form DURING this same submit event, so
+    // clearing the input now would send an empty part and silently drop the merchant's file —
+    // while never clearing it would re-send that file with their next message.
+    setTimeout(() => {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }, 0);
   };
 
   if (!activeConversation) {
@@ -750,10 +815,16 @@ function FocusedConversation({
           {pendingMessage ? (
             <MessageRow from="merchant">{pendingMessage}</MessageRow>
           ) : null}
+          {pendingAttachmentName ? (
+            <MessageRow from="merchant">{`[Attached: ${pendingAttachmentName}]`}</MessageRow>
+          ) : null}
           {isThinking ? (
             <div style={messageRowStyle} aria-live="polite">
               <span style={smallMarkStyle}>J</span>
-              <div style={thinkingStyle}>Thinking</div>
+              {/* Reading a file takes visibly longer than answering — say which wait it is. */}
+              <div style={thinkingStyle}>
+                {pendingAttachmentName ? "Reading your file" : "Thinking"}
+              </div>
             </div>
           ) : null}
           {awaitingReply ? (
@@ -785,9 +856,29 @@ function FocusedConversation({
               />
             </div>
           ) : null}
+          {composerError ? (
+            <div style={composerErrorStyle} role="status">
+              {composerError}
+            </div>
+          ) : null}
+          {attachedFile ? (
+            <div style={attachedFileRowStyle}>
+              <span style={attachedFileNameStyle}>{attachedFile.name}</span>
+              <button
+                type="button"
+                style={attachedFileRemoveStyle}
+                onClick={clearAttachment}
+                disabled={isThinking}
+              >
+                Remove
+              </button>
+            </div>
+          ) : null}
           <Form
             method="post"
             preventScrollReset
+            // Only when there is a file: a plain message has no reason to pay for multipart.
+            encType={attachedFile ? "multipart/form-data" : undefined}
             style={composerStyle}
             onSubmit={handleComposerSubmit}
           >
@@ -806,6 +897,39 @@ function FocusedConversation({
             >
               +
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              name="attachment"
+              accept={ATTACHMENT_ACCEPT}
+              onChange={handleFileChosen}
+              style={hiddenFileInputStyle}
+              tabIndex={-1}
+            />
+            <button
+              type="button"
+              aria-label="Send Jefe a photo or PDF"
+              title="Send Jefe a photo or PDF"
+              style={attachButtonStyle(Boolean(attachedFile))}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isThinking}
+            >
+              {/* Inline rather than a glyph: a paperclip emoji keeps its own colour and would
+                  stay yellow on the navy active state. currentColor follows the button. */}
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             {focusedAction?.id ? (
               <input
                 type="hidden"
@@ -815,13 +939,16 @@ function FocusedConversation({
             ) : null}
             <input
               name="message"
-              required
+              // A file on its own is a complete message — "here, look at this".
+              required={!attachedFile}
               autoComplete="off"
               aria-label="Message Jefe"
               placeholder={
-                focusedAction
-                  ? "Ask about this action, or tell me what to change..."
-                  : "Ask Jefe anything, or pick an action to work on..."
+                attachedFile
+                  ? "Say something about this file, or just send it..."
+                  : focusedAction
+                    ? "Ask about this action, or tell me what to change..."
+                    : "Ask Jefe anything, or pick an action to work on..."
               }
               value={composerMessage}
               onChange={(event) => setComposerMessage(event.currentTarget.value)}
@@ -2680,6 +2807,50 @@ const composerStyle: CSSProperties = {
   gap: 10,
   padding: "8px 8px 8px 16px",
   boxShadow: "0 14px 36px rgba(39,55,77,0.06)",
+};
+// Kept in the form (not display:none) so the browser still submits it and the click-through
+// from the paperclip button works. Visually hidden, never focusable — the button is the control.
+const hiddenFileInputStyle: CSSProperties = {
+  height: 0,
+  opacity: 0,
+  position: "absolute",
+  pointerEvents: "none",
+  width: 0,
+};
+const attachedFileRowStyle: CSSProperties = {
+  alignItems: "center",
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  display: "inline-flex",
+  gap: 10,
+  marginBottom: 8,
+  maxWidth: "100%",
+  padding: "6px 8px 6px 14px",
+};
+const attachedFileNameStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+const attachedFileRemoveStyle: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: COLORS.muted,
+  cursor: "pointer",
+  fontFamily: FONT.sans,
+  fontSize: 12,
+  padding: "2px 6px",
+  textDecoration: "underline",
+};
+const composerErrorStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontFamily: FONT.sans,
+  fontSize: 13,
+  marginBottom: 8,
 };
 function attachButtonStyle(active: boolean): CSSProperties {
   return {

@@ -39,7 +39,10 @@ test("a retry does not re-render the merchant's text as pending", () => {
 
 test("retry targets the same path the composer posts into", () => {
   // The composer posts chat.message -> sendGeneralChatMessage. Retry MUST follow it.
-  assert.match(appIndex, /intent === "chat\.message"[\s\S]{0,900}sendGeneralChatMessage/);
+  // The window is proximity, not the guarantee — the guarantee is that the branch reaches that
+  // function. Widened on 2026-08-13 when attachment reading was added inside the branch: the
+  // handler legitimately grew past 900 characters.
+  assert.match(appIndex, /intent === "chat\.message"[\s\S]{0,1800}sendGeneralChatMessage/);
   assert.match(appIndex, /intent === "chat\.retry"[\s\S]{0,900}retryLastGeneralChatReply/);
   // The pre-#81 target answered the memory-topic conversation and would no-op here.
   assert.doesNotMatch(

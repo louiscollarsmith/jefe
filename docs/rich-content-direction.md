@@ -90,8 +90,10 @@ merchant can choose "keep", blob storage, retention and a deletion path all have
 1. **Wire the chart path** (Jefe → merchant). No storage, no consent question. Wants
    `MessageRow` to render a part rather than a string, and the analyst to emit a spec when a
    question is better answered with a picture. Do this when nobody is mid-demo on the home.
-2. **Derive-and-discard inbound** for images and documents, following the voice precedent.
-   Size caps, type allow-list, redaction on the extracted text before it is stored.
+2. ~~**Derive-and-discard inbound** for images and documents~~ — **DONE 2026-08-13.** Size caps
+   and a type allow-list, shared by the composer and the server. ⛔ No redaction on the extracted
+   text: PII scrubbing was removed across every surface that day, so an invoice's names, emails
+   and phone numbers now land in the thread verbatim.
 3. **The file library + the save/discard toggle.** Storage vendor, merchant-scoped listing,
    retrieval, deletion, retention — and copy that promises what we actually do. This is the
    real feature Matt described; steps 1 and 2 are worth shipping without waiting for it.
