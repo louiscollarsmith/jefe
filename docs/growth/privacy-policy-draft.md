@@ -27,6 +27,13 @@ Jefe ("Jefe", "we", "us") is an AI eCommerce manager for Shopify stores, operate
 
 **About your use of Jefe:** account identifiers, the memory you confirm/correct, settings, and technical logs (which carry identifiers/metadata, not customer PII).
 
+> ⛔ ⟦REVIEW — BLOCKS PUBLICATION. This paragraph is no longer accurate.⟧ PII scrubbing was
+> removed across every surface on **2026-08-13** (founder's call). The logger masks credentials
+> only, so customer names, emails and phone numbers can now reach technical logs, Sentry and the
+> ops activity log verbatim. "not customer PII" is therefore a promise the system no longer keeps.
+> Either restore scrubbing on the logging path or reword this before the policy is published —
+> **a privacy policy is enforceable in a way an internal doc is not.** Same issue at §5 (Sentry).
+
 We request **only the Shopify scopes needed** to provide the service. ⟦REVIEW: keep scopes minimised — see App Store scope-trim note.⟧
 
 ## 3. Why we process it (purpose & legal basis)
@@ -49,7 +56,7 @@ We share data only with vendors that help us run the service, under contract:
 | Railway | Application hosting | region |
 | Neon | Database (Postgres) | EU region? |
 | Resend | Transactional email | EU region (eu-west-1) |
-| Sentry | Error monitoring (redacted) | confirm no PII in events |
+| Sentry | Error monitoring (credentials masked; **customer PII no longer scrubbed** since 2026-08-13) | ⛔ "no PII in events" is no longer true — see the §2 review note |
 | Slack | Merchant comms channel (if you connect it) | optional |
 | Shopify | The platform your store runs on | — |
 

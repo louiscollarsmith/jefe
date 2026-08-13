@@ -75,7 +75,7 @@ test("discount analysis reports thin identity coverage as insufficient evidence"
   assert.match(result.caveats.join(" "), /Do not conclude the merchant runs no campaigns/);
 });
 
-test("product metadata is PII-filtered and marks richer Shopify metadata as contextual", async () => {
+test("product metadata passes PII through and marks richer Shopify metadata as contextual", async () => {
   const result = await executeShopifyIntelligenceTool(createPrisma(), {
     merchantId: "m1",
     shopId: "s1",
@@ -87,8 +87,11 @@ test("product metadata is PII-filtered and marks richer Shopify metadata as cont
 
   const text = JSON.stringify(result);
   assert.equal(result.ok, true);
-  assert.equal(result.rows[0].title.includes("[redacted-email]"), true);
-  assert.doesNotMatch(text, /owner@example\.com/);
+  // ⛔ PII scrubbing REMOVED 2026-08-13 (founder's call). Tool results used to rewrite
+  // email-shaped strings to [redacted-email] before the model saw them; they no longer do.
+  // Inverted rather than deleted so restoring the guarantee is one edit.
+  assert.equal(result.rows[0].title.includes("[redacted-email]"), false);
+  assert.match(text, /owner@example\.com/);
   assert.ok(result.evidenceAvailability.some((item) => item.id === "products.metafields" && item.state === "UNKNOWN"));
 });
 

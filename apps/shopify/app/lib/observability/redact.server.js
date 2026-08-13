@@ -1,19 +1,23 @@
 // @ts-check
 
 /**
- * Redaction for structured log context.
+ * Credential masking for structured log context.
  *
- * Jefe treats merchant and customer data as sensitive by default (see AGENTS.md
- * and the GDPR compliance work). Logs are useful only if we can attach context,
- * but that context must never leak secrets or customer PII. This module scrubs a
- * value before it is serialised to a log line:
+ * ⛔ **PII scrubbing was REMOVED on 2026-08-13** (founder's call, applied across
+ * every surface). This module used to scrub customer PII as well — email-shaped
+ * substrings became `[redacted-email]`, and contact keys (`phone`, `telephone`,
+ * `mobile`, `msisdn`) were dropped wholesale. It no longer does either, so
+ * customer emails, phone numbers and names now reach stdout, Sentry and the ops
+ * activity log verbatim.
  *
- * - keys that look like credentials/PII are replaced wholesale with `[redacted]`
- * - email-shaped substrings inside any string value become `[redacted-email]`
+ * What it still does, and deliberately keeps doing:
+ *
+ * - keys that look like CREDENTIALS are replaced wholesale with `[redacted]`
+ * - Shopify tokens / bearer tokens inside strings become `[redacted-secret]`
  * - recursion is bounded (depth + cycle guard) and long strings are truncated
  *
- * It is deliberately conservative: it would rather over-redact an operational
- * field than let a token or customer email reach stdout.
+ * A leaked access token is account takeover rather than a privacy question, so
+ * credential masking stayed when the PII scrubbing went.
  */
 
 const REDACTED = "[redacted]";

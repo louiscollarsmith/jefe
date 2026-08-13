@@ -777,24 +777,26 @@ function strongestAvailability(explicit, states) {
   return AVAILABILITY_STATE.known;
 }
 
+// ⛔ PII scrubbing REMOVED 2026-08-13 (founder's call, applied across every surface). This used
+// to drop customer-shaped keys and rewrite email/phone-shaped strings to [redacted-*] on every
+// tool result before it reached the model. Customer details in these results now pass through
+// verbatim. Credential masking is kept: a leaked bearer token is account takeover, not a privacy
+// question, and that was not what was asked for.
 function sanitizeRecord(value) {
   if (Array.isArray(value)) return value.map(sanitizeRecord);
   if (!value || typeof value !== "object") {
-    return typeof value === "string" ? redactString(value) : value;
+    return typeof value === "string" ? maskCredentials(value) : value;
   }
   const output = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (/raw|payload|token|secret|email|phone|address|note|name$/i.test(key) && /customer|first|last|full|email|phone|address|note|raw|payload|token|secret/i.test(key)) continue;
+    if (/token|secret/i.test(key)) continue;
     output[key] = sanitizeRecord(entry);
   }
   return output;
 }
 
-function redactString(value) {
-  return String(value)
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
-    .replace(/\+?\d[\d\s().-]{7,}\d/g, "[redacted-phone]")
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted-secret]");
+function maskCredentials(value) {
+  return String(value).replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted-secret]");
 }
 
 function landingPath(value) {

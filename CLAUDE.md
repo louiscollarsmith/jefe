@@ -111,7 +111,7 @@ per commit; never automate the words.
 
 ## Quality Bar
 
-A change is not done unless it is scoped, typed, testable, observable (structured logging with redaction, error capture, and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
+A change is not done unless it is scoped, typed, testable, observable (structured logging with credential masking — PII scrubbing was removed on 2026-08-13, so keeping personal data out of log context is now a call-site discipline; plus error capture and a health signal for any new service or dependency — see `apps/shopify/docs/observability.md`), safe around merchant/customer data, documented enough for the next agent, and reflected in `apps/shopify/CHANGELOG.md` when it changes product, operator, security, data or workflow behaviour.
 
 ## Product Truth
 
