@@ -373,6 +373,37 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/latest/objects/Customer"
   },
   {
+    "key": "customers.cohort_mix.all_stored_history",
+    "category": "customers",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "known hashed customer identities bucketed by observed order count (1 / 2-3 / 4+), with customer and revenue share per bucket; plus, where at least 5 repeat customers establish a rhythm, customers whose last order is older than twice the store's median repeat gap",
+    "minimumData": "At least 10 known customers; the recency split additionally needs at least 5 repeat customers",
+    "confidenceRule": "0.85; rises with sample size",
+    "legacyConfidenceRule": "0.85; rises with sample size",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.85; rises with sample size"
+    },
+    "confidenceComponents": [
+      { "template": "ratio_sample_coverage_v1", "params": { "suppress_below_denominator": 10 } },
+      { "template": "coverage_based_v1", "params": {} }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage", "low_sample", "partial_history"],
+    "refreshCadence": "Backfill + relevant webhooks",
+    "dependencies": ["orders", "customer_identities"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "How the customer base splits between one-time, returning and loyal buyers, and what each is worth. repeat_customer_rate says 30% came back; it cannot say whether that is a few people buying constantly or a broad base buying twice, which want opposite things done about them. Recency is measured against THIS store's own median repeat gap, never a fixed window — a fixed 90 days marks a furniture buyer lapsed at a normal gap and misses a coffee subscriber who vanished. Where too few repeat customers exist to establish a rhythm the recency split is withheld and says so, so 'no lapsed customers' is never confused with 'we could not tell'. Aggregate counts, shares and money only — never an identity.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
     "key": "customers.repeat_customer_rate.all_time",
     "category": "customers",
     "valueType": "percentage",

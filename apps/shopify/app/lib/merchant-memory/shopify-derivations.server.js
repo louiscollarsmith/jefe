@@ -590,6 +590,8 @@ function deriveDefinition(context, definition) {
         return countOutcome(context, definition, context.customerIdentities.length, "Stored hashed customer identities.");
       case "customers.repeat_customer_rate.all_time":
         return repeatCustomerRate(context, definition);
+      case "customers.cohort_mix.all_stored_history":
+        return customerCohortMix(context, definition);
       case "customers.repeat_revenue_share.all_time":
         return repeatRevenueShare(context, definition);
       case "customers.average_lifetime_spend.all_time":
@@ -1525,6 +1527,107 @@ function repeatCustomerRate(context, definition) {
   if (context.customerIdentities.length < 10) return skipped(definition, "insufficient_data", "At least 10 known customers are required for repeat customer rate.", { customerIdentities: context.customerIdentities.length });
   const repeatCustomers = context.customerIdentities.filter((identity) => identity.orderCount >= 2).length;
   return shareOutcome(context, definition, repeatCustomers, context.customerIdentities.length, "Known hashed customer identities with at least two observed orders divided by known identities.", { confidence: sampleConfidence(0.85, context.customerIdentities.length, 10, 100), supportingValues: { window: "all_stored_history" } });
+}
+
+/**
+ * The customer base split into cohorts a merchant can actually act on, rather than a
+ * single "repeat rate" number. `repeat_customer_rate` says 30% came back; it cannot say
+ * whether that is a handful of people buying constantly or a broad base buying twice, and
+ * those want opposite things done about them.
+ *
+ * Two axes, both read off the hashed identities Jefe already derives from its own order
+ * history — no new Shopify data and no new scopes. PII-safe by construction: this returns
+ * counts, shares and aggregate money, never an identity.
+ *
+ * ⚠️ Recency is deliberately store-relative. A fixed "lapsed after 90 days" would mark a
+ * furniture buyer lapsed at a perfectly normal gap and miss a coffee subscriber who
+ * vanished a month ago — misjudging precisely the businesses the shape beliefs exist to
+ * tell apart. So "lapsed" means overdue against THIS store's own observed rhythm, and when
+ * there aren't enough repeat customers to establish a rhythm, the recency split is
+ * withheld while the count cohorts are still reported. Partial silence beats a fixed-window
+ * guess dressed as a finding.
+ */
+function customerCohortMix(context, definition) {
+  const identities = context.customerIdentities;
+  if (identities.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 known customers are required to describe a customer base.", { customerIdentities: identities.length });
+  }
+
+  const cohorts = { one_time: { customers: 0, spend: 0 }, returning: { customers: 0, spend: 0 }, loyal: { customers: 0, spend: 0 } };
+  let totalSpend = 0;
+  /** @type {number[]} */
+  const gapsDays = [];
+  for (const identity of identities) {
+    const orderCount = Number(identity.orderCount ?? 0);
+    const spend = Number(identity.totalSpend ?? 0);
+    totalSpend += spend;
+    const bucket = orderCount >= 4 ? "loyal" : orderCount >= 2 ? "returning" : "one_time";
+    cohorts[bucket].customers += 1;
+    cohorts[bucket].spend += spend;
+
+    // Average gap between this customer's own orders. Only repeat buyers have one, and it
+    // is what the store's rhythm is built from.
+    const first = identity.firstSeenOrderAt ? new Date(identity.firstSeenOrderAt).getTime() : null;
+    const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
+    if (orderCount >= 2 && first != null && last != null && last > first) {
+      gapsDays.push((last - first) / 86400000 / (orderCount - 1));
+    }
+  }
+
+  const customerCount = identities.length;
+  const shareOf = (bucket) => roundNumber((cohorts[bucket].customers / customerCount) * 100, 2);
+  const spendShareOf = (bucket) => (totalSpend > 0 ? roundNumber((cohorts[bucket].spend / totalSpend) * 100, 2) : null);
+
+  const value = {
+    customers: customerCount,
+    oneTimeSharePercent: shareOf("one_time"),
+    returningSharePercent: shareOf("returning"),
+    loyalSharePercent: shareOf("loyal"),
+    oneTimeRevenueSharePercent: spendShareOf("one_time"),
+    returningRevenueSharePercent: spendShareOf("returning"),
+    loyalRevenueSharePercent: spendShareOf("loyal"),
+    loyalCustomers: cohorts.loyal.customers,
+    window: "all_stored_history",
+    thresholdVersion: "customer-cohort-v1",
+  };
+
+  // MIN_REPEATERS_FOR_RHYTHM: below this the median gap is one or two people's habits, not
+  // the store's, and a lapsed count built on it would be noise with a number attached.
+  const MIN_REPEATERS_FOR_RHYTHM = 5;
+  if (gapsDays.length >= MIN_REPEATERS_FOR_RHYTHM) {
+    const typicalGapDays = percentile([...gapsDays].sort((a, b) => a - b), 0.5);
+    // Twice the typical gap: one missed cycle is ordinary life, two is a pattern breaking.
+    const lapsedAfterDays = typicalGapDays * 2;
+    const cutoff = context.now.getTime() - lapsedAfterDays * 86400000;
+    let lapsed = 0;
+    let lapsedSpend = 0;
+    for (const identity of identities) {
+      const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
+      if (last != null && last < cutoff) {
+        lapsed += 1;
+        lapsedSpend += Number(identity.totalSpend ?? 0);
+      }
+    }
+    value.typicalRepeatGapDays = roundNumber(typicalGapDays, 1);
+    value.lapsedAfterDays = roundNumber(lapsedAfterDays, 1);
+    value.lapsedCustomers = lapsed;
+    value.lapsedSharePercent = roundNumber((lapsed / customerCount) * 100, 2);
+    value.lapsedRevenueAtStake = roundMoney(lapsedSpend);
+    value.recencyBasis = "store_observed_repeat_gap";
+  } else {
+    // Named explicitly so a reader can tell "this store has no lapsed customers" apart from
+    // "we could not work out what lapsed means here".
+    value.recencyBasis = "unavailable_too_few_repeat_customers";
+    value.repeatCustomersWithRhythm = gapsDays.length;
+  }
+
+  return derived(context, definition, {
+    value,
+    confidence: sampleConfidence(0.85, customerCount, 10, 200),
+    confidenceReason: "Known hashed customer identities grouped by observed order count, with recency measured against the store's own median repeat gap where one can be established.",
+    summary: "How the customer base splits between one-time, returning and loyal buyers.",
+    sampleSize: customerCount,
+  });
 }
 
 const MIN_CUSTOMERS_FOR_SPEND_BELIEFS = 10;
