@@ -2,25 +2,27 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-// After the action-chat home redesign orphaned the per-belief Memory controls, the reachable
-// ?view=memory surface must let a merchant correct memory ENTIRELY through the free-text composer
-// (founder's call: "make it work, but within the free text composer"). Matt's follow-up: keep it
-// SHORT and easy to INTERRUPT — a "Not right?" next to each belief that PREFILLS the composer (so
-// correction is local) but never commits (commit is still the composer). Source-level guards, so
-// a redesign can't quietly regress it: the composer is the single COMMIT path (memory.message,
-// no per-belief commit intents), the belief list is capped (not a wall), and the view surfaces
-// what the merchant needs — statement, provenance, priority order, and the open questions.
+// The reachable ?view=memory surface is now an inspect-only settings screen: search, category
+// groups, and compact expandable belief rows. Correction remains server-supported through
+// memory.message elsewhere, but this screen intentionally carries no composer and no committing
+// per-belief controls.
 
 const viewSource = fs.readFileSync(
   new URL("../app/components/merchant-memory-view.tsx", import.meta.url),
   "utf8",
 );
+const appIndexSource = fs.readFileSync(
+  new URL("../app/routes/app._index.tsx", import.meta.url),
+  "utf8",
+);
+const globalCssSource = fs.readFileSync(
+  new URL("../app/styles/jefe.css", import.meta.url),
+  "utf8",
+);
 
-test("the composer is the single commit path — no per-belief action controls", () => {
-  assert.match(viewSource, /name="intent" value="memory\.message"/);
-  // Correction is conversational: NO dedicated confirm/correct/forget/answer commit intents, and
-  // no per-belief action controls — the composer is the one place anything commits.
+test("the view is inspect-only — no memory commit controls", () => {
   for (const intent of [
+    "memory.message",
     "memory.confirm",
     "memory.correct",
     "memory.forget",
@@ -33,28 +35,33 @@ test("the composer is the single commit path — no per-belief action controls",
   }
 });
 
-test("beliefs are grouped by provenance, and the worked-out list is capped (not a wall)", () => {
-  // Matt: shorter + composed. Grouped by what the merchant TOLD Jefe vs what he WORKED OUT
-  // (provenance, not category — and future-proof for a third 'connected tools' source).
-  assert.match(viewSource, /What you&apos;ve told me/);
-  assert.match(viewSource, /What Jefe&apos;s worked out/);
-  assert.match(viewSource, /authorship === "merchant"/);
-  // The worked-out list is capped, most-worth-checking first (confirmPriority), with a show-all.
-  assert.match(viewSource, /const WORKED_OUT_CAP = \d+/);
-  assert.match(
-    viewSource,
-    /showAllWorkedOut\s*\?\s*workedOut\s*:\s*workedOut\.slice\(0, WORKED_OUT_CAP\)/,
-  );
-  assert.match(viewSource, /Show all/);
+test("beliefs are grouped by category, searchable, and not capped", () => {
+  assert.match(viewSource, /memory\.groups/);
+  assert.match(viewSource, /group\.label/);
+  assert.match(viewSource, /Search what Jefe knows/);
+  assert.match(viewSource, /searchableText/);
+  assert.doesNotMatch(viewSource, /WORKED_OUT_CAP/);
+  assert.doesNotMatch(viewSource, /Show all/);
+  assert.doesNotMatch(appIndexSource, /scoped\.slice\(0,\s*80\)/);
 });
 
 test("the view surfaces what a merchant needs to talk about", () => {
-  // Plain-English statement (title as fallback), provenance, and confirm-priority ordering.
+  // Plain-English statement (title as fallback), provenance/evidence, and expandable rows.
   assert.match(viewSource, /belief\.statement/);
   assert.match(viewSource, /belief\.sourceLine/);
-  assert.match(viewSource, /confirmPriority/);
-  // The open questions only the merchant can answer, from the conversation summary.
-  assert.match(viewSource, /summary\?\.openQuestions/);
+  assert.match(viewSource, /belief\.evidenceSummary/);
+  assert.match(viewSource, /expandedBeliefId/);
+  assert.match(viewSource, /isLongDisplayValue/);
+  assert.match(viewSource, /trimmed\.length > 24/);
+  assert.match(viewSource, /beliefLongValueStyle/);
+  assert.match(viewSource, /whiteSpace: "nowrap"/);
+  assert.doesNotMatch(viewSource, /That&apos;s wrong/);
+  assert.doesNotMatch(viewSource, /Ask why/);
+  assert.doesNotMatch(viewSource, /prefillComposer/);
+});
+
+test("merchant visibility is still owned by the loader gate", () => {
+  assert.match(appIndexSource, /isMerchantVisibleBeliefKey\(belief\.key\)/);
 });
 
 test("the memory-correction surface still renders from its live route", () => {
@@ -64,12 +71,8 @@ test("the memory-correction surface still renders from its live route", () => {
   // guards that the SURFACE and its route still work, so a new door can point straight at it.
   // (History: the link once hid inside a null-returning section and stranded the surface —
   // whatever re-homes it must stay always-rendered, not repeat that.)
-  const appIndex = fs.readFileSync(
-    new URL("../app/routes/app._index.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(appIndex, /url\.searchParams\.get\("view"\) === "memory"/); // route still handles ?view=memory
-  assert.match(appIndex, /<MerchantMemoryView/); // the route renders the composer surface
+  assert.match(appIndexSource, /url\.searchParams\.get\("view"\) === "memory"/); // route still handles ?view=memory
+  assert.match(appIndexSource, /<MerchantMemoryView/); // the route renders the composer surface
 });
 
 test("the memory view renders directly, not behind a lazy + null-Suspense boundary (blank-page guard)", () => {
@@ -79,11 +82,12 @@ test("the memory view renders directly, not behind a lazy + null-Suspense bounda
   // trips React #421 (boundary discard), the null fallback leaves a blank page — which is exactly
   // what shipped and what Matt hit in prod. So assert the render is a DIRECT static import, never
   // lazy, and never wrapped in a null-fallback Suspense (mirrors DailyHome's 8d753b8 fix).
-  const appIndex = fs.readFileSync(
-    new URL("../app/routes/app._index.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(appIndex, /import \{ MerchantMemoryView \} from/); // static import
-  assert.doesNotMatch(appIndex, /MerchantMemoryView = lazy\(/); // never lazy again
-  assert.doesNotMatch(appIndex, /<Suspense fallback=\{null\}>\s*<MerchantMemoryView/);
+  assert.match(appIndexSource, /import \{ MerchantMemoryView \} from/); // static import
+  assert.doesNotMatch(appIndexSource, /MerchantMemoryView = lazy\(/); // never lazy again
+  assert.doesNotMatch(appIndexSource, /<Suspense fallback=\{null\}>\s*<MerchantMemoryView/);
+});
+
+test("the memory route has no extra global wrapper around the settings shell", () => {
+  assert.doesNotMatch(globalCssSource, /\.JefeMemoryView\s*\{[^}]*max-width/s);
+  assert.doesNotMatch(globalCssSource, /\.JefeMemoryView\s*\{[^}]*padding/s);
 });

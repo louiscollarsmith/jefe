@@ -5021,7 +5021,7 @@ async function getMerchantMemoryView({
       confirmPriority: number;
     }>
   >();
-  for (const belief of scoped.slice(0, 80)) {
+  for (const belief of scoped) {
     const definition = getBeliefDefinition(belief.key);
     const category = belief.category ?? "other";
     const rows = groups.get(category) ?? [];

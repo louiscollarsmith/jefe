@@ -377,22 +377,18 @@ test("embedded route components do not render document structure or invalid nest
   }
 });
 
-test("Merchant Memory view wires the correct-anything path + per-belief correctable", () => {
+test("Merchant Memory route keeps correction handler server-side while the view stays inspect-only", () => {
   // Thin wiring (chat-7-blessed intent-in-index): memory.message dispatches to the
   // shared conversation service; each belief carries `correctable` from its
-  // definition (for the phase-2 quick actions). ?view=memory is the interim
-  // reachability hook until Memory becomes a first-class Daily Home destination.
+  // definition. ?view=memory remains the inspectable Memory route, but the current
+  // screen is search + list only.
   assert.match(appIndexSource, /intent === "memory\.message"/);
   assert.match(appIndexSource, /sendConversationMessage\(prisma/);
   assert.match(
     appIndexSource,
     /correctable: Boolean\(definition\?\.merchantCorrectable\)/,
   );
-  // The correct-anything Form (which emits memory.message) now lives in the
-  // extracted MerchantMemoryView component; the intent HANDLER + dispatch stay
-  // in the route action (verified above), so this is the intent-in-index wiring
-  // split cleanly across the route and its lazy-loaded view.
-  assert.match(merchantMemoryViewSource, /value="memory\.message"/);
+  assert.doesNotMatch(merchantMemoryViewSource, /value="memory\.message"/);
   assert.match(appIndexSource, /url\.searchParams\.get\("view"\) === "memory"/);
 });
 
