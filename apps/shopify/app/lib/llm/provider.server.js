@@ -4,6 +4,7 @@ import { getLlmConfig } from "./config.server.js";
 import {
   LlmDisabledError,
   LlmInputLimitError,
+  LlmProviderInputLimitError,
   LlmOutputValidationError,
 } from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
@@ -21,7 +22,8 @@ import { recordLlmFallback } from "../observability/llm-provider-health.server.j
  * @param {{ config?: ReturnType<typeof getLlmConfig>; logger?: Pick<Console, "info" | "warn" | "error">; usage?: LlmUsageContext }} [input]
  */
 export function createLlmProvider(input = {}) {
-  const config = input.config ?? getLlmConfig();
+  const config =
+    input.config ?? getLlmConfig({ feature: input.usage?.feature ?? null });
   if (!config.enabled) {
     return createDisabledProvider(config);
   }
@@ -235,6 +237,7 @@ export function withFallbackProvider(primary, fallback, logger) {
  */
 export function isLlmFallbackError(error) {
   if (error instanceof LlmOutputValidationError) return false;
+  if (error instanceof LlmProviderInputLimitError) return true;
   if (error instanceof LlmInputLimitError) return false;
   if (error instanceof DOMException && error.name === "AbortError") return true;
   const status = Number(

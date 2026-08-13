@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DEFAULT_LLM_FALLBACK_MODEL } from "../app/lib/llm/config.server.js";
 import { getVoiceTranscribeModel, extractTranscript } from "../app/lib/llm/transcribe-voice.server.js";
 import { isVoiceFeedbackEnabled, processVoiceFeedback } from "../app/lib/feedback/voice-feedback.server.js";
 
@@ -17,7 +18,7 @@ test("isVoiceFeedbackEnabled reads the flag (default off)", () => {
 });
 
 test("getVoiceTranscribeModel: default falls back to Gemini; override wins", () => {
-  assert.equal(getVoiceTranscribeModel({}), "gemini-3.5-flash-lite");
+  assert.equal(getVoiceTranscribeModel({}), DEFAULT_LLM_FALLBACK_MODEL);
   assert.equal(
     getVoiceTranscribeModel({ LLM_FALLBACK_MODEL: "gemini-audio" }),
     "gemini-audio",

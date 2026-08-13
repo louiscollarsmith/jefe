@@ -1,6 +1,7 @@
 // @ts-check
 
 import { createHash } from "node:crypto";
+import { getLlmConfig } from "../llm/config.server.js";
 import { createLlmProvider } from "../llm/provider.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import {
@@ -95,6 +96,7 @@ export async function runStoreUnderstandingPass(prisma, input) {
       shopId: input.shopId ?? null,
       feature: "store_understanding",
     });
+  const llmConfig = getLlmConfig({ feature: "store_understanding" });
   const run = await prisma.storeUnderstandingRun.create({
     data: {
       merchantId: input.merchantId,
@@ -130,7 +132,7 @@ export async function runStoreUnderstandingPass(prisma, input) {
       systemPrompt: buildStoreUnderstandingSystemPrompt(),
       prompt: buildStoreUnderstandingPrompt(summary),
       schema: STORE_UNDERSTANDING_OUTPUT_SCHEMA,
-      maxInputTokens: 6000,
+      maxInputTokens: llmConfig.maxInputTokens,
       maxOutputTokens: 3200,
       timeoutMs: 10_000,
     });

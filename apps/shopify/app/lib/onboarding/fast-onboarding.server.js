@@ -603,14 +603,17 @@ export function classifyFailure(status, job, experience = {}) {
       };
     }
     if (["insufficient_evidence", "model_disabled"].includes(phase)) {
-      if (experience.fullLearningState === "learning") return null;
-      return {
-        type: "insufficient",
-        message:
-          phase === "model_disabled"
-            ? "I can’t generate the first recommendation while AI generation is disabled."
-            : "I’ve read the available Shopify history, but I still don’t have a first recommendation strong enough to act on.",
-      };
+      if (phase === "model_disabled") {
+        return {
+          type: "retryable",
+          message: "I can’t generate the first recommendation while AI generation is disabled. Turn AI generation back on and I can retry from the same durable evidence.",
+        };
+      }
+      // Recommendation rows can land just after the bootstrap phase flips. Treat
+      // thin evidence as "keep checking" in onboarding rather than a terminal
+      // merchant-facing dead end; a manual refresh should never be required to
+      // reveal an insight that already exists.
+      return null;
     }
     if (
       phase === "ready" &&
@@ -618,12 +621,7 @@ export function classifyFailure(status, job, experience = {}) {
       experience.hasSurfaceableRecommendation === false &&
       experience.inAppHandoff !== true
     ) {
-      if (experience.fullLearningState === "learning") return null;
-      return {
-        type: "insufficient",
-        message:
-          "The completed store read no longer supports that first recommendation strongly enough.",
-      };
+      return null;
     }
     return null;
   }

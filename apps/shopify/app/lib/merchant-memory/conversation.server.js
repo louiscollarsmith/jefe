@@ -1837,7 +1837,7 @@ function buildMerchantMemoryLlmPrompt(input) {
   // context, open questions, the supported-belief registry, policy), so the whole
   // prompt stays under the provider's input-token limit however rich the memory.
   const overheadChars = JSON.stringify(prompt).length;
-  const maxPromptChars = getLlmConfig().maxInputTokens * CHARS_PER_TOKEN;
+  const maxPromptChars = getLlmConfig({ feature: "conversation" }).maxInputTokens * CHARS_PER_TOKEN;
   prompt.activeBeliefs = selectPromptBeliefs(
     input,
     maxPromptChars - overheadChars,
