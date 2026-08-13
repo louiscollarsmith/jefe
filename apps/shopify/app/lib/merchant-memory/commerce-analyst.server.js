@@ -1,6 +1,8 @@
 // @ts-check
 
 import { Type } from "@google/genai";
+
+import { chartValuesAreGrounded, normaliseChartSpec } from "../charts/chart-layout.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { redact } from "../observability/redact.server.js";
 import {
@@ -93,6 +95,30 @@ const ANALYST_REPLY_SCHEMA = {
   properties: {
     reply: { type: Type.STRING },
     confidence: { type: Type.NUMBER, nullable: true },
+    // Optional. Some answers are distributions, spreads or trends — bad sentences and good
+    // pictures. The words must stand alone regardless: the chart is never the answer, and a
+    // merchant reading in an email client that strips it must lose nothing.
+    chart: {
+      type: Type.OBJECT,
+      nullable: true,
+      properties: {
+        kind: { type: Type.STRING },
+        title: { type: Type.STRING, nullable: true },
+        unit: { type: Type.STRING, nullable: true },
+        currency: { type: Type.STRING, nullable: true },
+        points: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            required: ["label", "value"],
+            properties: {
+              label: { type: Type.STRING },
+              value: { type: Type.NUMBER },
+            },
+          },
+        },
+      },
+    },
   },
 };
 
@@ -200,7 +226,7 @@ export async function answerCommerceQuestion(prisma, input) {
     (!input.requested &&
       !shouldAttemptCommerceAnalysis(input.message, input.actionContext))
   ) {
-    return { source: "commerce_analyst", reply: null, analysisPacket: null };
+    return { source: "commerce_analyst", reply: null, chart: null, analysisPacket: null };
   }
 
   const log = input.logger ?? baseLogger.child({ component: "commerce-analyst" });
@@ -225,7 +251,7 @@ export async function answerCommerceQuestion(prisma, input) {
   const fallbackReply = buildCommerceAnalystFallbackReply(input.message, analysisPacket);
   const provider = input.provider;
   if (!provider?.enabled || !provider.generateStructuredJson) {
-    return { source: "fallback", reply: fallbackReply, analysisPacket };
+    return { source: "fallback", reply: fallbackReply, chart: null, analysisPacket };
   }
 
   try {
@@ -243,16 +269,30 @@ export async function answerCommerceQuestion(prisma, input) {
     const reply = parseReply(result.json);
     if (!reply) return { source: "fallback", reply: fallbackReply, analysisPacket };
     if (!replySatisfiesQuantitativeContract(input.message, reply, analysisPacket)) {
-      return { source: "fallback", reply: fallbackReply, analysisPacket };
+      return { source: "fallback", reply: fallbackReply, chart: null, analysisPacket };
     }
-    return { source: "llm", reply, analysisPacket };
+    // ⛔ A chart is dropped unless every number it draws is already in the computed packet.
+    // An honest paragraph beside a flattering picture is worse than no picture: a chart reads
+    // as computed fact and nobody cross-checks the axes against the words.
+    const rawChart = /** @type {any} */ (result.json)?.chart ?? null;
+    let chart = null;
+    if (rawChart) {
+      if (chartValuesAreGrounded(rawChart, analysisPacket)) {
+        chart = normaliseChartSpec(rawChart);
+      } else {
+        log.warn("analyst chart dropped: values are not in the computed analysis", {
+          points: Array.isArray(rawChart?.points) ? rawChart.points.length : 0,
+        });
+      }
+    }
+    return { source: "llm", reply, chart, analysisPacket };
   } catch (error) {
     log.warn("commerce analyst reply unavailable; using fallback", {
       provider: provider.provider,
       model: provider.model,
       error: error instanceof Error ? error.name : "UnknownError",
     });
-    return { source: "fallback", reply: fallbackReply, analysisPacket };
+    return { source: "fallback", reply: fallbackReply, chart: null, analysisPacket };
   }
 }
 
@@ -699,6 +739,12 @@ function buildCommerceAnalystReplySystemPrompt() {
     "If assumptions were needed, state them plainly and keep the answer opinionated.",
     "Do not invent supplier facts, case packs, MOQs, customer data, product names, dates, external writes or standing business rules.",
     "Keep replies concise, natural and specific. No markdown tables.",
+    // A chart is offered, never required — and the words must survive without it.
+    "You may add an optional chart when the answer is a distribution, a spread, a ranking or a trend over time — things that read badly as a list of numbers in a sentence.",
+    "Do NOT chart a single number, a yes/no answer, or anything you would say in one clause.",
+    "Every value you chart MUST already appear in the analyst packet. Never compute, estimate, round beyond display, or invent a number for the chart; a chart with a number the packet does not contain will be discarded.",
+    "The reply must be complete on its own. Never write 'as shown below' or refer to the chart as if the reader can see it — some readers cannot.",
+    "Use kind 'bar' for comparisons and rankings, 'line' for movement over time. Set unit to currency, percent or count, and give currency as an ISO code when unit is currency.",
   ].join("\n");
 }
 

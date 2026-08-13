@@ -7,6 +7,10 @@
 // spread. Saying those one number at a time is worse than useless; drawing them is the
 // natural form.
 //
+// ⚠️ Deliberately NOT a `.server` module: it is pure maths with no imports, so the chat bubble
+// renders it directly and no loader has to carry geometry around. Keep it dependency-free —
+// the moment it imports a server module it stops being drawable where messages are drawn.
+//
 // This module turns a chart SPEC into geometry — positions, sizes, ticks, formatted labels —
 // and stops there. No React, no SVG strings, no DOM. That split is deliberate:
 //   - it is testable in plain node, so the maths is pinned rather than eyeballed;
@@ -82,7 +86,7 @@ export function normaliseChartSpec(spec) {
   // One point is a number, not a chart. Two is the minimum that shows a relationship.
   if (points.length < 2) return null;
   // All-zero data draws a flat line that implies a measurement rather than an absence.
-  if (points.every((p) => p.value === 0)) return null;
+  if (points.every((/** @type {{ value: number }} */ p) => p.value === 0)) return null;
   return {
     kind,
     title: typeof spec.title === "string" && spec.title.trim() ? spec.title.trim() : undefined,
@@ -157,4 +161,62 @@ export function layoutChart(rawSpec) {
     baselineY,
     ticks,
   };
+}
+
+/**
+ * ⛔ THE GUARD THAT MATTERS. Every number a chart draws must already exist in the analysis it
+ * came from. A model that writes an honest sentence and then draws a flattering picture beside
+ * it is worse than one that draws nothing: a chart reads as computed fact, and nobody
+ * cross-checks the axes against the paragraph.
+ *
+ * Values are matched with a relative tolerance because a model legitimately rounds 1234.56 to
+ * 1235 when charting. Anything it could not have got from the data fails.
+ *
+ * @param {any} spec
+ * @param {unknown} analysis the computed packet the reply was written from
+ * @returns {boolean}
+ */
+export function chartValuesAreGrounded(spec, analysis) {
+  const normalised = normaliseChartSpec(spec);
+  if (!normalised) return false;
+  const known = collectNumbers(analysis, new Set(), 0);
+  if (known.size === 0) return false;
+  const pool = [...known];
+  return normalised.points.every((/** @type {{ value: number }} */ point) =>
+    pool.some((candidate) => closeEnough(candidate, point.value)),
+  );
+}
+
+/** @param {number} a @param {number} b */
+function closeEnough(a, b) {
+  if (a === b) return true;
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1);
+  // 1% covers rounding for display; it does not cover a number that was made up.
+  return Math.abs(a - b) / scale <= 0.01;
+}
+
+/**
+ * Every finite number anywhere in the packet. Depth-bounded so a cyclic or absurdly nested
+ * payload cannot hang the reply path.
+ * @param {unknown} value @param {Set<number>} into @param {number} depth
+ */
+function collectNumbers(value, into, depth) {
+  if (depth > 8 || into.size > 5000) return into;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    into.add(value);
+    return into;
+  }
+  // Numbers arrive as strings often enough ("1234.56") that ignoring them would fail honest charts.
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
+    into.add(Number(value));
+    return into;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectNumbers(entry, into, depth + 1);
+    return into;
+  }
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) collectNumbers(entry, into, depth + 1);
+  }
+  return into;
 }

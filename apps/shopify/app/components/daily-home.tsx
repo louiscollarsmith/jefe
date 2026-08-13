@@ -22,6 +22,7 @@ import {
   ATTACHMENT_ACCEPT,
   attachmentRejectionReason,
 } from "../lib/attachments/attachment-limits.js";
+import { layoutChart } from "../lib/charts/chart-layout.js";
 import { formatDateInZone } from "../lib/home/home-dates.js";
 import type {
   ExecutedAction,
@@ -1389,7 +1390,15 @@ function FocusedMessageRow({
       </div>
     );
   }
-  return <MessageRow from={message.role}>{message.content}</MessageRow>;
+  // The words are the answer; the chart, when there is one, sits under them. Order matters:
+  // a reader who stops at the paragraph has the whole answer.
+  const chartSpec = (message.metadata as { chart?: unknown } | null | undefined)?.chart;
+  return (
+    <MessageRow from={message.role}>
+      {message.content}
+      {chartSpec ? <ReplyChart spec={chartSpec} /> : null}
+    </MessageRow>
+  );
 }
 
 function FocusedActionDecisionRow({
@@ -1590,6 +1599,113 @@ function ReplyFailedRow({ conversationId }: { conversationId: string | null }) {
       </div>
     </div>
   );
+}
+
+
+/**
+ * A chart Jefe drew, inside the reply that explains it.
+ *
+ * ⭐ Inline SVG, no client JS and no charting dependency: it renders in the first paint, works
+ * in an embedded iframe, and cannot fail separately from the message it belongs to.
+ *
+ * ⛔ It is NEVER the answer. The reply text says everything on its own — the analyst is told not
+ * to write "as shown below" — so a reader who cannot see this (an email client, a screen
+ * reader, a failed render) loses nothing. Numbers here are already validated against the
+ * computed analysis; see chartValuesAreGrounded.
+ */
+function ReplyChart({ spec }: { spec: unknown }) {
+  const chart = layoutChart(spec);
+  // A chart of no data is a lie with axes on it — layoutChart returns null and we draw nothing.
+  if (!chart) return null;
+
+  return (
+    <figure style={chartFigureStyle}>
+      {chart.title ? <figcaption style={chartTitleStyle}>{chart.title}</figcaption> : null}
+      <svg
+        viewBox={`0 0 ${chart.width} ${chart.height}`}
+        width="100%"
+        role="img"
+        aria-label={chartAltText(chart)}
+        style={chartSvgStyle}
+      >
+        {chart.ticks.map((tick, index) => (
+          <g key={`t${index}`}>
+            <line
+              x1={44}
+              x2={chart.width - 12}
+              y1={tick.y}
+              y2={tick.y}
+              stroke={COLORS.border}
+              strokeWidth={1}
+            />
+            <text x={40} y={tick.y + 3} textAnchor="end" style={chartTickTextStyle}>
+              {tick.value}
+            </text>
+          </g>
+        ))}
+        <line
+          x1={44}
+          x2={chart.width - 12}
+          y1={chart.baselineY}
+          y2={chart.baselineY}
+          stroke={COLORS.muted}
+          strokeWidth={1}
+        />
+        {chart.kind === "bar"
+          ? chart.bars.map((bar, index) => (
+              <g key={`b${index}`}>
+                <rect
+                  x={bar.x}
+                  y={bar.y}
+                  width={bar.width}
+                  height={bar.height}
+                  fill={COLORS.navy}
+                  rx={2}
+                />
+                <text
+                  x={bar.x + bar.width / 2}
+                  y={chart.height - 10}
+                  textAnchor="middle"
+                  style={chartTickTextStyle}
+                >
+                  {bar.label}
+                </text>
+              </g>
+            ))
+          : (
+              <>
+                <polyline
+                  fill="none"
+                  stroke={COLORS.navy}
+                  strokeWidth={2}
+                  points={chart.points.map((p) => `${p.x},${p.y}`).join(" ")}
+                />
+                {chart.points.map((point, index) => (
+                  <g key={`p${index}`}>
+                    <circle cx={point.x} cy={point.y} r={3} fill={COLORS.navy} />
+                    <text
+                      x={point.x}
+                      y={chart.height - 10}
+                      textAnchor="middle"
+                      style={chartTickTextStyle}
+                    >
+                      {point.label}
+                    </text>
+                  </g>
+                ))}
+              </>
+            )}
+      </svg>
+    </figure>
+  );
+}
+
+/** Screen readers get the numbers, not "chart". */
+function chartAltText(chart: ReturnType<typeof layoutChart>): string {
+  if (!chart) return "";
+  const items = chart.kind === "bar" ? chart.bars : chart.points;
+  const described = items.map((item) => `${item.label} ${item.value}`).join(", ");
+  return chart.title ? `${chart.title}: ${described}` : described;
 }
 
 function MessageRow({ from, children }: { from: string; children: ReactNode }) {
@@ -2862,6 +2978,24 @@ const emptyChatMarkStyle: CSSProperties = {
   height: 38,
   marginBottom: 4,
   width: 38,
+};
+const chartFigureStyle: CSSProperties = {
+  margin: "10px 0 2px",
+  maxWidth: "100%",
+};
+const chartTitleStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontFamily: FONT.mono,
+  fontSize: 11,
+  letterSpacing: "0.06em",
+  marginBottom: 6,
+  textTransform: "uppercase",
+};
+const chartSvgStyle: CSSProperties = { display: "block", height: "auto", maxWidth: "100%" };
+const chartTickTextStyle: CSSProperties = {
+  fill: COLORS.muted,
+  fontFamily: FONT.mono,
+  fontSize: 9,
 };
 const composerStyle: CSSProperties = {
   alignItems: "center",

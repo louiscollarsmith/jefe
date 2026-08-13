@@ -317,6 +317,7 @@ export async function sendGeneralChatMessage(prisma, input) {
   }
   turn.mark("retrievalMs");
   const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
+  /** @type {{ reply: string, citedContextIds: any[], chart?: any }} */
   let generated;
   if (decision.action === "acknowledge_memory") {
     generated = {
@@ -342,6 +343,9 @@ export async function sendGeneralChatMessage(prisma, input) {
     generated = {
       reply: [memoryReply, commerce.reply].filter(Boolean).join("\n\n"),
       citedContextIds: [],
+      // Already validated against the computed packet by the analyst — a chart whose numbers
+      // are not in the analysis never reaches here.
+      chart: commerce.chart ?? null,
     };
   } else {
     const grounded = await generateGroundedReply({
@@ -367,6 +371,9 @@ export async function sendGeneralChatMessage(prisma, input) {
     actionRunId,
     metadata: {
       citedContextIds: generated.citedContextIds,
+      // Rides in metadata rather than in a column: it is presentation for one message, and the
+      // reply text is the answer with or without it.
+      ...(generated.chart ? { chart: generated.chart } : {}),
       retrievalRunId: context.diagnosticId,
       focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
       // The wait this reply cost, stored beside the reply it describes. Durations

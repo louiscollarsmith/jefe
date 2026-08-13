@@ -5,7 +5,7 @@ import {
   formatChartValue,
   layoutChart,
   normaliseChartSpec,
-} from "../app/lib/charts/chart-layout.server.js";
+} from "../app/lib/charts/chart-layout.js";
 
 // Jefe holds plenty of things that are bad sentences and good pictures — order-value
 // percentiles, revenue across windows, price bands. This is the deterministic half of
