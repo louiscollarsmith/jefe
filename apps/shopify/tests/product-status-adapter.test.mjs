@@ -90,17 +90,31 @@ async function withExecuteEnabled(fn) {
   }
 }
 
+async function withExecuteDisabled(fn) {
+  const prev = process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
+  delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
+  try { return await fn(); }
+  finally {
+    if (prev === undefined) delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
+    else process.env.PRODUCT_STATUS_EXECUTE_ENABLED = prev;
+  }
+}
+
 // ---- pure functions ----
 
 test("flag is exact-string, default off", () => {
   const prev = process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
-  delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
-  assert.equal(isProductStatusExecuteEnabled(), false);
-  process.env.PRODUCT_STATUS_EXECUTE_ENABLED = "1";
-  assert.equal(isProductStatusExecuteEnabled(), false);
-  process.env.PRODUCT_STATUS_EXECUTE_ENABLED = "true";
-  assert.equal(isProductStatusExecuteEnabled(), true);
-  if (prev === undefined) delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED; else process.env.PRODUCT_STATUS_EXECUTE_ENABLED = prev;
+  try {
+    delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
+    assert.equal(isProductStatusExecuteEnabled(), false);
+    process.env.PRODUCT_STATUS_EXECUTE_ENABLED = "1";
+    assert.equal(isProductStatusExecuteEnabled(), false);
+    process.env.PRODUCT_STATUS_EXECUTE_ENABLED = "true";
+    assert.equal(isProductStatusExecuteEnabled(), true);
+  } finally {
+    if (prev === undefined) delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
+    else process.env.PRODUCT_STATUS_EXECUTE_ENABLED = prev;
+  }
 });
 
 test("preview refuses no-ops + invalid statuses + missing ids; plans reversibility", () => {
@@ -135,10 +149,12 @@ test("auto-eligibility = reversible ∧ within-cap ∧ confident", () => {
 // ---- apply: guards ----
 
 test("disabled: apply throws (flag off is the default)", async () => {
-  await assert.rejects(
-    () => applyProductStatusChange({ prisma: makeMockPrisma(), shopifyClient: makeMockClient(), execution: execCtx() }, archiveTwo()),
-    /disabled/,
-  );
+  await withExecuteDisabled(async () => {
+    await assert.rejects(
+      () => applyProductStatusChange({ prisma: makeMockPrisma(), shopifyClient: makeMockClient(), execution: execCtx() }, archiveTwo()),
+      /disabled/,
+    );
+  });
 });
 
 test("recommend mode refuses to execute", async () => {
@@ -243,14 +259,10 @@ test("revert restores prior status + skips malformed plan entries", async () => 
 });
 
 test("revert works even with the execute flag unset (undo is never trappable)", async () => {
-  const prev = process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
-  delete process.env.PRODUCT_STATUS_EXECUTE_ENABLED;
-  try {
+  await withExecuteDisabled(async () => {
     const client = makeMockClient({ p1: "ARCHIVED" });
     const r = await revertProductStatusChange(client, [{ productId: "p1", restoreStatus: "ACTIVE" }]);
     assert.equal(r.restoredCount, 1);
     assert.equal(client.statuses.get("p1"), "ACTIVE");
-  } finally {
-    if (prev !== undefined) process.env.PRODUCT_STATUS_EXECUTE_ENABLED = prev;
-  }
+  });
 });

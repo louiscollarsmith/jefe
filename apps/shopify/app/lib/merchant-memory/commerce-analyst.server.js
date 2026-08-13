@@ -10,6 +10,11 @@ import {
   heuristicCommerceCalculationRequests,
   shouldPlanCommerceCalculations,
 } from "./commerce-calculations.server.js";
+import {
+  executeShopifyIntelligenceTool,
+  shopifyIntelligenceToolCatalogForPrompt,
+} from "../shopify/intelligence-tools.server.js";
+import { shopifyIntelligenceAvailabilityLegend } from "../shopify/intelligence-coverage.server.js";
 
 export const COMMERCE_ANALYST_CATALOG_VERSION = "commerce_analyst_v1";
 
@@ -57,8 +62,12 @@ const ANALYST_PLAN_SCHEMA = {
               comparison: { type: Type.OBJECT, nullable: true },
               topN: { type: Type.NUMBER, nullable: true },
               horizonDays: { type: Type.NUMBER, nullable: true },
+              toolName: { type: Type.STRING, nullable: true },
+              input: { type: Type.OBJECT, nullable: true },
             },
           },
+          toolName: { type: Type.STRING, nullable: true },
+          input: { type: Type.OBJECT, nullable: true },
           filters: { type: Type.OBJECT, nullable: true },
           window: { type: Type.OBJECT, nullable: true },
           fields: {
@@ -261,6 +270,9 @@ export function shouldAttemptCommerceAnalysis(message, actionContext = null) {
   if (/\b(supplier|lead time|lead times|moq|case pack|incoming|available)\b/i.test(value)) {
     return true;
   }
+  if (/\b(acquisition|channel|channels|source|traffic|campaign|discount|returns?|refunds?|fulfilment|fulfillment|retention|repeat|customers?|cohort|worked|working)\b/i.test(value)) {
+    return true;
+  }
   return Boolean(actionContext?.actionRunId && /\b(next|do|doing|done)\b/i.test(value) && /stock|replenish|inventory/i.test(JSON.stringify(actionContext)));
 }
 
@@ -277,6 +289,11 @@ export function commerceAnalystToolCatalogForPrompt() {
         kind: "commerce_calculation",
         description: "Run tenant-scoped aggregate, ranking, timeseries, comparison, ratio or impact calculations.",
         commerceCalculationCatalog: commerceCalculationCatalogForPrompt(),
+      },
+      {
+        kind: "shopify_query",
+        description: "Run bounded Shopify intelligence retrieval or analysis tools when the mirrored commerce data may be incomplete or a current Shopify context read materially improves the answer.",
+        shopifyIntelligenceCatalog: shopifyIntelligenceToolCatalogForPrompt(),
       },
       {
         kind: "fetch_rows",
@@ -323,7 +340,7 @@ async function planCommerceAnalystToolCalls(input) {
       maxOutputTokens: 900,
     });
     const planned = parseAnalystPlan(result.json);
-    return planned.length ? planned : fallback;
+    return enforceRequiredHeuristicToolCalls(planned.length ? planned : fallback, fallback, input.message);
   } catch (error) {
     input.logger?.warn?.("commerce analyst planner unavailable; using heuristic plan", {
       provider: provider.provider,
@@ -432,6 +449,31 @@ export async function executeCommerceAnalystToolCalls(prisma, input) {
       continue;
     }
 
+    if (call.kind === "shopify_query") {
+      const result = await executeShopifyIntelligenceTool(prisma, {
+        merchantId: input.merchantId,
+        shopId: safeText(input.shopId, 120),
+        toolName: call.toolName,
+        input: call.input,
+        logger: log,
+        now,
+      });
+      const sanitized = sanitizeAnalystResult(result);
+      if (sanitized.ok) results.push(sanitized);
+      else results.push(rejectedResult(call.id, sanitized.error ?? "Shopify intelligence tool was rejected."));
+      rowsReturned += Array.isArray(sanitized.rows) ? sanitized.rows.length : 0;
+      toolCalls.push({
+        id: call.id,
+        kind: "shopify_query",
+        toolName: call.toolName,
+        status: sanitized.ok ? "ok" : "rejected",
+        availabilityState: sanitized.availabilityState,
+        rowCount: Array.isArray(sanitized.rows) ? sanitized.rows.length : 0,
+        evidenceAvailability: sanitized.evidenceAvailability ?? [],
+      });
+      continue;
+    }
+
     if (call.kind === "derive") {
       const result = executeDerive(call, {
         results,
@@ -489,12 +531,31 @@ function analysisPacket(input) {
       rowsReturned: input.rowsReturned,
       okResultCount: input.results.filter((result) => result.ok).length,
       rejectedResultCount: input.results.filter((result) => !result.ok).length,
+      evidenceAvailability: summarizeEvidenceAvailability(input.results),
     },
     caveats: [
       "Read-only analysis over available synced commerce data.",
+      "Availability states are binding: UNKNOWN, NOT_INGESTED, INSUFFICIENT_EVIDENCE and UNAVAILABLE must never be treated as false, zero or did-not-happen.",
       "No customer identity fields, raw payloads, credentials or external writes are available to the analyst.",
     ],
   });
+}
+
+/** @param {AnyRecord[]} results */
+function summarizeEvidenceAvailability(results) {
+  /** @type {Record<string, number>} */
+  const states = {};
+  for (const result of results) {
+    if (result?.availabilityState) {
+      states[result.availabilityState] = (states[result.availabilityState] ?? 0) + 1;
+    }
+    for (const item of Array.isArray(result?.evidenceAvailability) ? result.evidenceAvailability : []) {
+      const state = safeText(item?.state, 80);
+      if (!state) continue;
+      states[state] = (states[state] ?? 0) + 1;
+    }
+  }
+  return states;
 }
 
 /** @param {{ message: string; actionContext?: any; now?: Date }} input */
@@ -541,12 +602,73 @@ function heuristicCommerceAnalystToolCalls(input) {
   }));
 }
 
+/**
+ * The LLM planner may choose a coarse total for "which products drove revenue".
+ * Keep that answer path deterministic: product-driver questions always carry a
+ * product-level line-revenue ranking when the heuristic planner knows how to make one.
+ * @param {AnyRecord[]} planned
+ * @param {AnyRecord[]} fallback
+ * @param {string} message
+ */
+function enforceRequiredHeuristicToolCalls(planned, fallback, message) {
+  if (!isProductRevenueBreakdownQuestion(message)) return planned.slice(0, MAX_TOOL_CALLS);
+  if (planned.some(isProductRevenueBreakdownToolCall)) return planned.slice(0, MAX_TOOL_CALLS);
+  const required = fallback.find(isProductRevenueBreakdownToolCall);
+  if (!required) return planned.slice(0, MAX_TOOL_CALLS);
+  return uniqueToolCalls([required, ...planned]).slice(0, MAX_TOOL_CALLS);
+}
+
+/** @param {string} message */
+function isProductRevenueBreakdownQuestion(message) {
+  const value = String(message ?? "");
+  return (
+    /\b(products?|skus?|items?)\b/i.test(value) &&
+    /\b(which|top|rank|driv(?:e|es|ing|en)|biggest|best|main)\b/i.test(value) &&
+    /\b(revenue|sales|sold|turnover)\b/i.test(value)
+  );
+}
+
+/** @param {AnyRecord} call */
+function isProductRevenueBreakdownToolCall(call) {
+  const record = asRecord(call) ?? {};
+  const request = asRecord(record.request ?? record.calculation ?? record.commerceCalculation) ?? record;
+  const dimensions = Array.isArray(request.dimensions) ? request.dimensions.map((item) => safeText(item, 80)) : [];
+  return (
+    (safeText(request.kind, 80) === "ranking" || safeText(record.kind, 80) === "ranking") &&
+    ["revenue", "line_revenue", "units_sold"].includes(safeText(request.measure, 80)) &&
+    dimensions.includes("product")
+  );
+}
+
+/** @param {AnyRecord[]} calls */
+function uniqueToolCalls(calls) {
+  const seen = new Set();
+  const output = [];
+  for (const call of calls) {
+    const record = asRecord(call) ?? {};
+    const request = asRecord(record.request ?? record.calculation ?? record.commerceCalculation) ?? record;
+    const key = [
+      safeText(record.kind, 80),
+      safeText(record.toolName, 120),
+      safeText(request.kind, 80),
+      safeText(request.measure, 80),
+      Array.isArray(request.dimensions) ? request.dimensions.map((item) => safeText(item, 80)).join("|") : "",
+    ].join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(call);
+  }
+  return output;
+}
+
 function buildCommerceAnalystPlannerSystemPrompt() {
   return [
     "You plan read-only commerce analysis for Jefe action chat.",
     "Return at most 6 toolCalls. Use only the supplied commerceAnalystToolCatalog.",
     "The app executes every request; never request SQL, arbitrary database access, customer data, credentials, raw payloads or external writes.",
     "Prefer aggregated calculations first. Fetch rows only when bounded non-PII commerce rows are needed to answer the merchant.",
+    "Use Shopify intelligence analysis tools for broad why/which/working questions where missing mirrored fields could change the answer.",
+    "Treat evidence states as binding: NOT_INGESTED means Jefe has not asked, UNKNOWN means unresolved, INSUFFICIENT_EVIDENCE means too thin, and UNAVAILABLE means unavailable in V1. None of these means false or zero.",
     "Use filters.scope=current_move when the question is about this recommendation/action.",
     "For purchase, order, reorder, restock or replenishment quantities, request stock_cover_days by product for scope=current_move, then derive recommended_purchase_units with formula ceil(max(0, dailyUnits * targetCoverDays - availableUnits)).",
     "If data is enough for a quantitative recommendation, plan the calculation instead of saying the recommendation is unavailable.",
@@ -561,6 +683,7 @@ function buildCommerceAnalystPlannerPrompt(input) {
     currentMoveScope: calculationScopeFromActionContext(input.actionContext),
     contextSummary: compactContextForPlanner(input.actionContext),
     commerceAnalystToolCatalog: commerceAnalystToolCatalogForPrompt(),
+    evidenceAvailabilityStates: shopifyIntelligenceAvailabilityLegend(),
     responseContract: {
       toolCalls: "Array of allowed analyst tool calls. Empty array only when no commerce data or calculation can help.",
     },
@@ -572,6 +695,7 @@ function buildCommerceAnalystReplySystemPrompt() {
     "You are Jefe, an AI eCommerce manager, answering inside a chat scoped to one proposed action.",
     "Use only the supplied action context, recent thread and commerce analyst packet.",
     "When the packet contains enough data for a quantitative recommendation, give the recommendation and the numbers behind it. Do not say you lack a recommendation in that case.",
+    "Respect evidence availability states exactly: say unknown/not ingested/insufficient/unavailable when the packet says so, and never convert missing evidence into a negative claim.",
     "If assumptions were needed, state them plainly and keep the answer opinionated.",
     "Do not invent supplier facts, case packs, MOQs, customer data, product names, dates, external writes or standing business rules.",
     "Keep replies concise, natural and specific. No markdown tables.",
@@ -627,6 +751,9 @@ function normalizeToolCall(raw, context) {
   if (CALCULATION_KINDS.has(rawKind)) {
     return normalizeCommerceCalculationCall({ id, kind: "commerce_calculation", request: record });
   }
+  if (rawKind === "shopify_query" || rawKind === "shopify_intelligence" || rawKind.startsWith("shopify_")) {
+    return normalizeShopifyQueryCall(record);
+  }
   if (rawKind === "commerce_calculation" || rawKind === "calculation") {
     return normalizeCommerceCalculationCall(record);
   }
@@ -641,6 +768,10 @@ function normalizeToolCall(raw, context) {
 
 /** @param {AnyRecord} record */
 function containsUnsafeRequest(record) {
+  const kind = safeText(record?.kind, 80);
+  if (kind === "shopify_query" || kind === "shopify_intelligence" || kind.startsWith("shopify_")) {
+    return containsUnsafeShopifyRequest(record);
+  }
   const text = JSON.stringify(record).slice(0, 5000);
   if (/"?(customer|customers|customerIdentity|customer_identities|session|sessions|rawPayload|raw_payload|token|secret|email|phone|address)"?\s*:/i.test(text)) {
     return true;
@@ -648,6 +779,16 @@ function containsUnsafeRequest(record) {
   if (/\b(select|insert|update|delete|drop|alter|truncate)\s+.+\b(from|into|table|where)\b/i.test(text)) {
     return true;
   }
+  return false;
+}
+
+/** @param {AnyRecord} record */
+function containsUnsafeShopifyRequest(record) {
+  const text = JSON.stringify(record).slice(0, 5000);
+  if (/"?(query|mutation|rawPayload|raw_payload|session|sessions|token|secret|email|phone|address|note)"?\s*:/i.test(text)) {
+    return true;
+  }
+  if (/\b(query|mutation)\s+[A-Za-z]/i.test(text)) return true;
   return false;
 }
 
@@ -667,6 +808,30 @@ function normalizeCommerceCalculationCall(record) {
         ...request,
         id,
       },
+    },
+  };
+}
+
+/**
+ * @param {AnyRecord} record
+ * @returns {NormalizedToolCall}
+ */
+function normalizeShopifyQueryCall(record) {
+  const request = asRecord(record.request ?? record.input ?? record.shopifyQuery) ?? {};
+  const toolName = safeId(record.toolName ?? record.tool ?? request.toolName ?? record.kind);
+  const id = safeId(record.id) || toolName || "shopify_query";
+  const rawInput = asRecord(record.input ?? request.input ?? request) ?? {};
+  return {
+    ok: true,
+    call: {
+      id,
+      kind: "shopify_query",
+      toolName,
+      input: sanitizeRecord({
+        ...rawInput,
+        window: normalizeWindow(rawInput.window ?? record.window, new Date()),
+        limit: clampInteger(rawInput.limit ?? rawInput.topN ?? record.limit, 1, MAX_ROWS_PER_CALL, MAX_ROWS_PER_CALL),
+      }),
     },
   };
 }
@@ -1238,10 +1403,38 @@ function buildCommerceAnalystFallbackReply(message, packet) {
   if (lines.length) {
     return `Here is what I can calculate from Jefe's current commerce data:\n\n${lines.map((line) => `- ${line}`).join("\n")}`;
   }
+  const availability = availabilityFallbackLines(packet);
+  if (availability.length) {
+    return [
+      "I cannot answer that as a fact from the evidence Jefe has right now.",
+      ...availability,
+      "I will not treat missing Shopify evidence as zero or as proof it did not happen.",
+    ].join("\n\n");
+  }
   if (packet.rejectedResults?.length && shouldAttemptCommerceAnalysis(message)) {
     return "I could not run a safe commerce calculation for that exact question yet. I can still use the action context above, but I will not guess missing numbers.";
   }
   return null;
+}
+
+/** @param {AnyRecord} packet */
+function availabilityFallbackLines(packet) {
+  const items = [];
+  for (const result of Array.isArray(packet?.results) ? packet.results : []) {
+    if (result.availabilityState && result.availabilityState !== "KNOWN") {
+      items.push(`${safeText(result.id, 120) || "Shopify evidence"} is ${result.availabilityState}.`);
+    }
+    for (const evidence of Array.isArray(result.evidenceAvailability) ? result.evidenceAvailability : []) {
+      if (!evidence?.state || evidence.state === "KNOWN") continue;
+      items.push(`${safeText(evidence.id, 160)} is ${evidence.state}.`);
+    }
+  }
+  for (const result of Array.isArray(packet?.rejectedResults) ? packet.rejectedResults : []) {
+    if (result.availabilityState && result.availabilityState !== "KNOWN") {
+      items.push(`${safeText(result.id, 120) || "Shopify evidence"} is ${result.availabilityState}.`);
+    }
+  }
+  return uniqueStrings(items).slice(0, 4);
 }
 
 /** @param {AnyRecord} packet */
@@ -1303,9 +1496,24 @@ function labelForResult(result) {
 
 /** @param {string} message @param {string} reply @param {AnyRecord} packet */
 function replySatisfiesQuantitativeContract(message, reply, packet) {
-  if (!isReplenishmentQuantityQuestion(message) || !recommendedPurchaseResult(packet)) return true;
-  if (!/\d/.test(reply)) return false;
-  return !/\b(do not have|don't have|cannot recommend|can't recommend|no specific|not available|missing)\b/i.test(reply);
+  if (isReplenishmentQuantityQuestion(message) && recommendedPurchaseResult(packet)) {
+    if (!/\d/.test(reply)) return false;
+    return !/\b(do not have|don't have|cannot recommend|can't recommend|no specific|not available|missing)\b/i.test(reply);
+  }
+  if (isProductRevenueBreakdownQuestion(message) && productRevenueBreakdownResult(packet)) {
+    if (!/\d/.test(reply)) return false;
+    return !/\b(do not have|don't have|cannot tell|can't tell|can't say|without breaking it down|without product-level|no product-level|not available|missing)\b/i.test(reply);
+  }
+  return true;
+}
+
+/** @param {AnyRecord} packet */
+function productRevenueBreakdownResult(packet) {
+  return packet?.results?.find((/** @type {AnyRecord} */ result) =>
+    ["line_revenue", "revenue", "units_sold"].includes(result.measure) &&
+    Array.isArray(result.rows) &&
+    result.rows.some((/** @type {AnyRecord} */ row) => row.dimensions?.product || row.title || row.label),
+  );
 }
 
 /**
