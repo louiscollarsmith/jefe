@@ -13,27 +13,34 @@ than a surprise.
 Full introspection against `https://shopify.dev/admin-graphql-direct-proxy/2026-07`
 (unauthenticated, HTTP 200 — no token needed to introspect). 3,552 types, 2,035 objects,
 268 top-level query roots. Diffed against every GraphQL document in `apps/shopify/app`
-(13 documents, extracted mechanically, not by reading).
+(21 documents, extracted mechanically, not by reading).
 
 ⚠️ **The diff over-counts our usage.** A field counts as "used" if its name appears as a
-token anywhere in our documents, so `node`, `nodes` and `return` register as used roots
-when they aren't. Treat every "used" number below as a ceiling. The gaps are therefore
-*at least* as large as stated.
+token anywhere in our documents, so `node`, `nodes`, `event` and `return` register as used
+roots when they aren't. Treat every "used" number below as a ceiling. The gaps are
+therefore *at least* as large as stated.
+
+⛔ **Corrected 2026-08-13, after first publish.** The first version of this document was
+diffed against a checkout **179 commits behind `origin/main`**, and wrongly reported the
+sales-channel classifier as still binning marketplaces — it had already been fixed on main.
+Numbers below are re-derived against real `origin/main`. If you extend this analysis,
+run it in a worktree off fresh `origin/main`, not the primary working directory: on a repo
+with this many concurrent lanes, a day-old checkout is a different codebase.
 
 ## Headline
 
 | | Available | Jefe uses | |
 |---|---|---|---|
-| Top-level query roots | 268 | ~13 | **95% of the API surface is never touched** |
+| Top-level query roots | 268 | ~14 | **~95% of the API surface is never touched** |
 | `Order` fields | 127 | 27 | |
-| `Customer` fields | 39 | 6 | |
-| `Product` fields | 63 | 13 | |
+| `Customer` fields | 39 | 7 | |
+| `Product` fields | 63 | 14 | |
 | `ProductVariant` fields | 41 | 9 | |
-| `Shop` fields | 57 | 10 | |
+| `Shop` fields | 57 | 11 | |
 
-We query: `orders`, `ordersCount`, `products`, `productsCount`, `product`,
-`productVariant(s)`, `inventoryItem(s)`, `customers`, `location`, `shop`,
-`metafieldDefinitions`.
+We query: `orders`, `ordersCount`, `products`, `productVariant(s)`,
+`productVariantsCount`, `inventoryItem(s)`, `customers`, `customersCount`, `location`,
+`shop`, `metafieldDefinitions`.
 
 The shape of the gap is consistent: we ingest **transactions and stock** thoroughly and
 know almost nothing about **why the transaction happened** — where the customer came from,
@@ -72,23 +79,22 @@ code cannibalising full-price sales, does one bring back repeat buyers, is a per
 
 **Scope:** `read_orders` / `read_discounts`. No new customer-data approval.
 
-### 3. Selling channels — a classifier that destroys the answer (18 unused roots)
+### 3. Selling channels — ✅ already fixed on main (18 unused roots remain)
 
-`classifySalesChannel` ([shopify-derivations.server.js:1821](../../apps/shopify/app/lib/merchant-memory/shopify-derivations.server.js))
-buckets `sourceName` into `pos` / `online` / `draft` / `other`. Amazon, eBay, Faire, Etsy,
-TikTok and Instagram all land in `other`.
+**This section's original claim was wrong and is retained corrected rather than deleted.**
+`classifySalesChannel` on current main already returns `marketplace` (amazon, ebay, etsy,
+walmart, reverb, faire, onbuy, notonthehighstreet), `social` (tiktok, facebook, instagram,
+pinterest, snapchat) and `trade` (Shopify B2B) alongside `pos` / `online` / `draft`. The
+`channelMix` shape belief consumes the same classifier so the two cannot disagree, reports
+`marketplaceShare` even when it doesn't decide the label, and marks the trade share as a
+draft-order proxy. The "marketplace channels being binned" finding from the 207-merchant
+Quiver validation has been actioned.
 
-This is the "marketplace channels being binned" finding from the 207-merchant Quiver
-validation. A merchant doing 40% of revenue through Faire reads as *"60% online store, 40%
-other"* — the single most interesting fact about that business, deleted by a classifier
-that only ever wanted to answer "online vs in-store".
-
-Two fixes, and the second is the right one:
-- **Cheap:** widen the classifier to preserve named marketplaces. No new data — the
-  `sourceName` string is already on disk and already backfilled. Makes a live belief stop
-  lying, today.
-- **Correct:** read `publications` / `channels` properly rather than pattern-matching a
-  free-text string.
+What remains open is the deeper version: all 18 channel/publication roots
+(`publications`, `channels`, `markets`, `sellingPlanGroups`) are still unread, so channel
+identity is inferred by pattern-matching a free-text `sourceName` rather than read from
+the platform. That is a correctness ceiling, not a live defect — a new marketplace nobody
+has added to the regex silently becomes `other`. Worth doing, but it is no longer urgent.
 
 ### 4. Customer depth — 6 of 39 fields, and it blocks another lane (15 unused roots)
 
@@ -112,14 +118,15 @@ nothing about real settlement or fees.
 
 ## Recommended build order
 
-1. **Widen the sales-channel classifier.** Hours, not days. No new data, no scope, no
-   approval. Stops a live belief from lying. Best first build for the successor —
-   smaller than brand_voice and no LLM departure.
-2. **Discount code identity.** Query + canonical + a `discount_code` dimension. Turns an
-   existing belief from a number into an explanation.
+1. **Discount code identity.** Query + canonical + a `discount_code` dimension. Turns an
+   existing belief from a number into an explanation. No new scope.
+2. **Customer cohort fields / native segments.** Unblocks the actions lane's candidate C,
+   and probably on read scopes alone.
 3. **Order attribution.** Bigger: new columns, new derivations, a new belief family.
-   Gated on the protected-customer-data answer above.
-4. **Customer cohort fields / native segments.** Unblocks the actions lane.
+   Scope is already held (`read_orders`); gated only on the protected-customer-data
+   approval question above, which is a founder call.
+4. **Read channels/publications properly** rather than regex over `sourceName`. Raises a
+   correctness ceiling; not urgent since the classifier fix landed.
 
 ## Landmines
 
