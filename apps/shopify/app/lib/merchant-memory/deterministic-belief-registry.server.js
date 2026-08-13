@@ -4924,6 +4924,34 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
   },
   {
+    "key": "business.channel_quality.all_stored_history",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "customers grouped by the acquisition channel of their FIRST order, compared on repeat rate, orders per customer and average lifetime spend; customers whose first order is under 30 days old are excluded, and at least two channels must clear 5 customers each",
+    "minimumData": "At least 20 customers whose first order is more than 30 days old, where-from known on at least 70% of them, and two or more channels with 5+ such customers",
+    "confidenceRule": "0.75 scaled by attribution coverage",
+    "legacyConfidenceRule": "0.75 scaled by attribution coverage",
+    "confidenceTemplate": "coverage_based_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.75 scaled by coverage"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage", "low_sample", "partial_history"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "Which channels bring customers who come back — the join acquisition_mix and cohort_mix cannot make alone. ⛔ COMPARATIVE ONLY. Attribution exists solely for customers acquired since ingest was enabled, so every one of them is recent and most have not yet had time to return: the repeat rates are FLOORS truncated by the observation window, never this store's repeat rate. The comparison between channels is valid because all channels are equally recent and equally truncated; the absolute numbers are not. Customers whose first order is under 30 days old are excluded so the busiest current channel is not penalised, and two channels must clear 5 customers each because a comparison needs two sides.",
+    "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/objects/CustomerJourneySummary"
+  },
+  {
     "key": "business.acquisition_mix.trailing_90d",
     "category": "business",
     "valueType": "structured",
@@ -5701,6 +5729,28 @@ const BELIEF_RETRIEVAL_TERMS = {
     "paid",
     "campaign",
     "channel",
+  ],
+  // The question behind this one is "where should I spend?" — nobody phrases it as
+  // "channel quality". Shares vocabulary with acquisition_mix on purpose: both are
+  // relevant when a merchant asks about ads, and letting them compete is correct.
+  "business.channel_quality.all_stored_history": [
+    "worth it",
+    "worth the money",
+    "best channel",
+    "where should i spend",
+    "ad spend",
+    "ads",
+    "roi",
+    "return on",
+    "wasting",
+    "which channel",
+    "quality",
+    "instagram",
+    "google",
+    "facebook",
+    "tiktok",
+    "paid",
+    "marketing",
   ],
   // "cohort" is our word. Merchants say loyal, regulars, repeat, churn, one-off.
   "customers.cohort_mix.all_stored_history": [

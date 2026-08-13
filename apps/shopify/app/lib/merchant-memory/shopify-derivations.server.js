@@ -553,6 +553,8 @@ function deriveDefinition(context, definition) {
         return discountCodeMix(context, definition, 90);
       case "business.acquisition_mix.trailing_90d":
         return acquisitionMix(context, definition, 90);
+      case "business.channel_quality.all_stored_history":
+        return channelQuality(context, definition);
       case "products.top_returned_products.trailing_180d":
         return topReturnedProducts(context, definition, 180);
       case "products.product_momentum.trailing_60d":
@@ -3011,6 +3013,129 @@ function acquisitionMix(context, definition, days) {
     confidenceReason: "Share of orders per first-touch acquisition channel over the window, classified from declared UTM medium where present and the referring source otherwise.",
     summary: `Where orders came from in the trailing ${days} days, by first touch.`,
     sampleSize: orders.length,
+    coverageMetrics: { attributionCoverage: roundNumber(coverage, 4) },
+  });
+}
+
+/**
+ * Which acquisition channels bring back customers who are worth having — not just
+ * customers.
+ *
+ * `acquisition_mix` says where orders come from. `cohort_mix` says who comes back. Neither
+ * can say whether the channel delivering the most customers delivers the ones who stay,
+ * which is the question that decides where money goes.
+ *
+ * Joined on the merchant's own orders rather than through the hashed identities: a
+ * customer's FIRST order carries the journey that introduced them, and that order's channel
+ * is the channel that acquired them. Guest checkouts (no customer id) are excluded rather
+ * than lumped together.
+ *
+ * ⛔ COMPARATIVE ONLY, and the value says so. Attribution exists only for orders ingested
+ * after `ORDER_ATTRIBUTION_INGEST_ENABLED` was turned on, so every attributed customer is
+ * recent by construction and most have not yet had time to come back. The absolute repeat
+ * rates here are FLOORS, not estimates — reading "8% repeat" as this store's repeat rate
+ * would be badly wrong. What is valid is the comparison between channels, because they are
+ * all equally recent and equally truncated.
+ *
+ * Two gates protect that: customers whose first order is younger than
+ * CHANNEL_QUALITY_MATURITY_DAYS are excluded entirely (they have had no chance to return
+ * and would drag whichever channel is currently busiest), and at least two channels must
+ * clear a minimum before anything is reported — a comparison with one side is not a
+ * comparison.
+ */
+const CHANNEL_QUALITY_MATURITY_DAYS = 30;
+const CHANNEL_QUALITY_MIN_PER_CHANNEL = 5;
+const CHANNEL_QUALITY_MIN_CUSTOMERS = 20;
+
+function channelQuality(context, definition) {
+  const cutoff = context.now.getTime() - CHANNEL_QUALITY_MATURITY_DAYS * 86400000;
+
+  // Group the store's orders by customer. Guests carry no id and cannot be followed.
+  const byCustomer = new Map();
+  for (const order of context.orders) {
+    const customerId = stringValue(order.customerExternalId);
+    if (customerId == null) continue;
+    const at = order.processedAt ? new Date(order.processedAt).getTime() : null;
+    if (at == null) continue;
+    const current = byCustomer.get(customerId);
+    if (current == null) {
+      byCustomer.set(customerId, { firstOrder: order, firstAt: at, orders: 1, spend: decimalNumber(order.totalPrice) });
+      continue;
+    }
+    current.orders += 1;
+    current.spend += decimalNumber(order.totalPrice);
+    if (at < current.firstAt) {
+      current.firstAt = at;
+      current.firstOrder = order;
+    }
+  }
+
+  const mature = Array.from(byCustomer.values()).filter((customer) => customer.firstAt <= cutoff);
+  if (mature.length < CHANNEL_QUALITY_MIN_CUSTOMERS) {
+    return skipped(definition, "insufficient_data", `At least ${CHANNEL_QUALITY_MIN_CUSTOMERS} customers whose first order is more than ${CHANNEL_QUALITY_MATURITY_DAYS} days old are required.`, { matureCustomers: mature.length });
+  }
+
+  const byChannel = new Map();
+  let attributed = 0;
+  for (const customer of mature) {
+    const attribution = jsonObject(customer.firstOrder.attribution);
+    if (Object.keys(attribution).length === 0) continue;
+    attributed += 1;
+    const channel = classifyAcquisitionSource(jsonObject(attribution.firstVisit));
+    const bucket = byChannel.get(channel) ?? { channel, customers: 0, repeat: 0, spend: 0, orders: 0 };
+    bucket.customers += 1;
+    bucket.orders += customer.orders;
+    bucket.spend += customer.spend;
+    if (customer.orders >= 2) bucket.repeat += 1;
+    byChannel.set(channel, bucket);
+  }
+
+  const coverage = attributed / mature.length;
+  if (attributed < CHANNEL_QUALITY_MIN_CUSTOMERS || coverage < 0.7) {
+    return skipped(definition, "blocked_by_data_quality", "Too few established customers record where they first came from (attribution ingest may be off, or these customers predate it).", {
+      attributionCoverage: roundNumber(coverage, 4),
+      attributedCustomers: attributed,
+      matureCustomers: mature.length,
+    });
+  }
+
+  const channels = Array.from(byChannel.values())
+    .filter((bucket) => bucket.customers >= CHANNEL_QUALITY_MIN_PER_CHANNEL)
+    .map((bucket) => ({
+      channel: bucket.channel,
+      customers: bucket.customers,
+      repeatRatePercent: roundNumber((bucket.repeat / bucket.customers) * 100, 2),
+      ordersPerCustomer: roundNumber(bucket.orders / bucket.customers, 2),
+      averageLifetimeSpend: roundMoney(bucket.spend / bucket.customers),
+    }))
+    .sort((a, b) => b.customers - a.customers);
+
+  if (channels.length < 2) {
+    return skipped(definition, "insufficient_data", `At least two channels with ${CHANNEL_QUALITY_MIN_PER_CHANNEL}+ established customers each are required — a comparison needs two sides.`, {
+      channelsWithEnoughCustomers: channels.length,
+      attributedCustomers: attributed,
+    });
+  }
+
+  const currency = shopBaseCurrency(context);
+  return derived(context, definition, {
+    value: {
+      channels,
+      // Named so nothing downstream can quote a repeat rate as this store's repeat rate.
+      basis: "comparative_between_channels_only",
+      repeatRatesAre: "floors_truncated_by_observation_window",
+      maturityDays: CHANNEL_QUALITY_MATURITY_DAYS,
+      attributedCustomers: attributed,
+      matureCustomers: mature.length,
+      attributionCoverage: roundNumber(coverage, 4),
+      currency: currency.ok ? currency.currency : null,
+      window: "all_stored_history",
+      thresholdVersion: "channel-quality-v1",
+    },
+    confidence: coverageConfidence(0.75, coverage),
+    confidenceReason: "Customers grouped by the acquisition channel of their first order, compared on repeat rate and lifetime spend; comparative only, since attribution exists for recent customers whose repeat behaviour is still truncated.",
+    summary: "Which acquisition channels bring customers who come back, compared against each other.",
+    sampleSize: attributed,
     coverageMetrics: { attributionCoverage: roundNumber(coverage, 4) },
   });
 }
