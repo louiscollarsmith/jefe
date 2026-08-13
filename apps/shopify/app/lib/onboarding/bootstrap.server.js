@@ -3,7 +3,10 @@
 import crypto from "node:crypto";
 import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 import {
-  BOOTSTRAP_CATALOG_NODES_QUERY,
+  BOOTSTRAP_ACTIVE_PRODUCTS_QUERY,
+  BOOTSTRAP_INVENTORY_LEVELS_QUERY,
+  BOOTSTRAP_ORDER_LINE_ITEMS_QUERY,
+  BOOTSTRAP_PRODUCT_VARIANTS_QUERY,
   BOOTSTRAP_RECENT_ORDERS_QUERY,
 } from "../shopify/queries.server.js";
 import { edgesToNodes, jsonObject, parseDate } from "../ingestion/shopify/normalize.server.js";
@@ -39,10 +42,23 @@ import { trackOnce } from "../../services/analytics/event-log.server.js";
 export const BOOTSTRAP_INITIAL_ORDER_LIMIT = 50;
 export const BOOTSTRAP_SECOND_PASS_LIMIT = 100;
 export const BOOTSTRAP_LOOKBACK_DAYS = 90;
+export const BOOTSTRAP_CONNECTION_PAGE_SIZE = 250;
 export const BOOTSTRAP_PROMPT_VERSION = "bootstrap-v1";
 export const BOOTSTRAP_SCHEMA_VERSION = "bootstrap-v1";
 export const BOOTSTRAP_SNAPSHOT_VERSION = "bootstrap-v1";
 
+const ACTIVE_CATALOG_KEYS = [
+  "catalog.active_product_count",
+  "catalog.total_variant_count",
+  "catalog.out_of_stock_product_count",
+  "catalog.median_variant_price",
+  "catalog.minimum_variant_price",
+  "catalog.maximum_variant_price",
+  "catalog.zero_price_variant_count",
+  "catalog.variants_per_product_average",
+  "catalog.variants_per_product_median",
+  "business.catalogue_shape",
+];
 const STOCKOUT_KEYS = [
   "inventory.at_risk_stockout_count.trailing_30d",
   "inventory.low_cover_products.trailing_30d",
@@ -107,13 +123,17 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
     passCount,
     orderCount: orders.length,
   });
-  let productIds = productIdsFromOrders(orders);
-  let referencedVariantIds = variantIdsFromOrders(orders);
-  let catalog = await fetchCatalog(client, productIds, referencedVariantIds);
+  const catalog = await fetchActiveCatalog(client);
+  let orderProductIds = productIdsFromOrders(orders);
+  let orderVariantIds = variantIdsFromOrders(orders);
+  let productIds = productIdsFromCatalog(catalog);
   let variantIds = variantIdsFromCatalog(catalog);
   await persistBootstrapSlice(prisma, input, { orders, ...catalog });
 
-  let scope = evidenceScope(orders, productIds, variantIds, catalog, !hasNextPage, passCount);
+  let scope = evidenceScope(orders, productIds, variantIds, catalog, !hasNextPage, passCount, {
+    orderProductIds,
+    orderVariantIds,
+  });
   let memory = await refreshBootstrapMemory(prisma, input, scope);
   let contracts = buildEvidenceContracts(memory.beliefs, scope);
 
@@ -132,30 +152,28 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
     endCursor = second.endCursor;
     const secondProductIds = productIdsFromOrders(second.orders);
     const secondVariantIds = variantIdsFromOrders(second.orders);
-    const unseenProductIds = secondProductIds.filter((id) => !productIds.includes(id));
-    const unseenVariantIds = secondVariantIds.filter((id) => !referencedVariantIds.includes(id));
-    const secondCatalog = await fetchCatalog(client, unseenProductIds, unseenVariantIds);
     await persistBootstrapSlice(prisma, input, {
       orders: second.orders,
-      ...secondCatalog,
+      products: [],
+      variants: [],
     });
     orders = dedupeById([...orders, ...second.orders]);
-    productIds = [...new Set([...productIds, ...secondProductIds])];
-    referencedVariantIds = [...new Set([...referencedVariantIds, ...secondVariantIds])];
-    catalog = {
-      products: dedupeById([...catalog.products, ...secondCatalog.products]),
-      variants: dedupeById([...catalog.variants, ...secondCatalog.variants]),
-    };
-    variantIds = variantIdsFromCatalog(catalog);
-    scope = evidenceScope(orders, productIds, variantIds, catalog, !hasNextPage, passCount);
+    orderProductIds = [...new Set([...orderProductIds, ...secondProductIds])];
+    orderVariantIds = [...new Set([...orderVariantIds, ...secondVariantIds])];
+    scope = evidenceScope(orders, productIds, variantIds, catalog, !hasNextPage, passCount, {
+      orderProductIds,
+      orderVariantIds,
+    });
     memory = await refreshBootstrapMemory(prisma, input, scope);
     contracts = buildEvidenceContracts(memory.beliefs, scope);
   }
 
+  const bootstrapMetadata = scopeMetadata(scope);
   await setPhase(prisma, input, "evidence_ready", {
     passCount,
     orderCount: orders.length,
     productCount: productIds.length,
+    ...bootstrapMetadata,
     observedFrom: scope.observedFrom,
     observedTo: scope.observedTo,
     completeRequestedWindow: scope.completeRequestedWindow,
@@ -178,6 +196,9 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
     orderCount: orders.length,
     productCount: productIds.length,
     variantCount: variantIds.length,
+    lineItemCount: bootstrapMetadata.lineItemCount,
+    inventoryLevelCount: bootstrapMetadata.inventoryLevelCount,
+    activeCatalogComplete: scope.activeCatalogComplete,
     beliefCount: memory.beliefs.length,
     eligibleContractCount: contracts.length,
     passCount,
@@ -195,11 +216,14 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
       orderCount: orders.length,
       productCount: productIds.length,
       variantCount: variantIds.length,
+      lineItemCount: bootstrapMetadata.lineItemCount,
+      inventoryLevelCount: bootstrapMetadata.inventoryLevelCount,
       observedFrom: scope.observedFrom,
       observedTo: scope.observedTo,
       passCount,
       truncated: scope.truncated,
       lineItemsComplete: scope.lineItemsComplete,
+      activeCatalogComplete: scope.activeCatalogComplete,
       eligibleContractCount: contracts.length,
       onboardingEpoch: input.onboardingEpoch ?? null,
     },
@@ -217,9 +241,19 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
       completeRequestedWindow: scope.completeRequestedWindow,
       inventoryComplete: scope.inventoryComplete,
       lineItemsComplete: scope.lineItemsComplete,
+      ordersComplete: scope.ordersComplete,
+      activeCatalogComplete: scope.activeCatalogComplete,
       truncated: scope.truncated,
       eligibleContracts: [],
-      evidenceSize: { orders: orders.length, products: productIds.length, variants: variantIds.length, beliefs: memory.beliefs.length },
+      evidenceSize: {
+        orders: orders.length,
+        products: productIds.length,
+        variants: variantIds.length,
+        lineItems: bootstrapMetadata.lineItemCount,
+        inventoryLevels: bootstrapMetadata.inventoryLevelCount,
+        beliefs: memory.beliefs.length,
+      },
+      ...bootstrapMetadata,
       selectedContract: null,
       insightRunId: null,
       insightRunIds: [],
@@ -251,9 +285,19 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
       completeRequestedWindow: scope.completeRequestedWindow,
       inventoryComplete: scope.inventoryComplete,
       lineItemsComplete: scope.lineItemsComplete,
+      ordersComplete: scope.ordersComplete,
+      activeCatalogComplete: scope.activeCatalogComplete,
       truncated: scope.truncated,
       eligibleContracts: contracts.map((candidate) => candidate.key),
-      evidenceSize: { orders: orders.length, products: productIds.length, variants: variantIds.length, beliefs: memory.beliefs.length },
+      evidenceSize: {
+        orders: orders.length,
+        products: productIds.length,
+        variants: variantIds.length,
+        lineItems: bootstrapMetadata.lineItemCount,
+        inventoryLevels: bootstrapMetadata.inventoryLevelCount,
+        beliefs: memory.beliefs.length,
+      },
+      ...bootstrapMetadata,
       selectedContract: null,
       insightRunId: null,
       insightRunIds: [],
@@ -297,9 +341,19 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
     completeRequestedWindow: scope.completeRequestedWindow,
     inventoryComplete: scope.inventoryComplete,
     lineItemsComplete: scope.lineItemsComplete,
+    ordersComplete: scope.ordersComplete,
+    activeCatalogComplete: scope.activeCatalogComplete,
     truncated: scope.truncated,
     eligibleContracts: contracts.map((contract) => contract.key),
-    evidenceSize: { orders: orders.length, products: productIds.length, variants: variantIds.length, beliefs: memory.beliefs.length },
+    evidenceSize: {
+      orders: orders.length,
+      products: productIds.length,
+      variants: variantIds.length,
+      lineItems: bootstrapMetadata.lineItemCount,
+      inventoryLevels: bootstrapMetadata.inventoryLevelCount,
+      beliefs: memory.beliefs.length,
+    },
+    ...bootstrapMetadata,
     selectedContract: generated.selectedContract ?? null,
     insightRunId: generated.insightRunId ?? null,
     insightRunIds: generated.insightRunId ? [generated.insightRunId] : [],
@@ -346,13 +400,18 @@ export async function generateBootstrapAlternative(prisma, input) {
     variantExternalIds: stringArray(result.referencedVariantIds),
     inventoryComplete: result.inventoryComplete === true,
     lineItemsComplete: result.lineItemsComplete === true,
+    ordersComplete: result.ordersComplete === true,
+    activeCatalogComplete: result.activeCatalogComplete === true,
+    lineItemCount: Number(result.lineItemCount) || 0,
+    activeProductCount: Number(result.activeProductCount) || 0,
+    inventoryLevelCount: Number(result.inventoryLevelCount) || 0,
     completeRequestedWindow: result.completeRequestedWindow === true,
     observedFrom: stringValue(result.observedFrom),
     observedTo: stringValue(result.observedTo),
     passCount: Number(result.passCount) || 1,
     truncated: result.truncated === true,
   };
-  const beliefKeys = [...new Set([...STOCKOUT_KEYS, ...COMPLETE_WINDOW_KEYS])];
+  const beliefKeys = [...new Set([...ACTIVE_CATALOG_KEYS, ...STOCKOUT_KEYS, ...COMPLETE_WINDOW_KEYS])];
   const beliefs = await prisma.merchantMemoryBelief.findMany({
     where: {
       merchantId: input.merchantId,
@@ -507,32 +566,146 @@ export async function reconcileBootstrapIfFullMemoryReady(prisma, input) {
 }
 
 async function fetchRecentOrders(client, input) {
-  const data = /** @type {any} */ (await client.request(BOOTSTRAP_RECENT_ORDERS_QUERY, input));
+  const data = /** @type {any} */ (
+    await client.request(BOOTSTRAP_RECENT_ORDERS_QUERY, {
+      ...input,
+      lineItemsFirst: BOOTSTRAP_CONNECTION_PAGE_SIZE,
+    })
+  );
   const connection = data?.orders;
+  const orders = [];
+  for (const order of edgesToNodes(connection).map(jsonObject)) {
+    orders.push(await completeOrderLineItems(client, order));
+  }
   return {
-    orders: edgesToNodes(connection).map(jsonObject),
+    orders,
     hasNextPage: Boolean(connection?.pageInfo?.hasNextPage),
     endCursor: stringValue(connection?.pageInfo?.endCursor),
   };
 }
 
-async function fetchCatalog(client, productIds, variantIds) {
+async function completeOrderLineItems(client, order) {
+  const orderId = stringValue(order.id);
+  const initialConnection = jsonObject(order.lineItems);
+  const edges = Array.isArray(initialConnection.edges)
+    ? [...initialConnection.edges]
+    : [];
+  let hasNextPage = Boolean(initialConnection.pageInfo?.hasNextPage);
+  let after = stringValue(initialConnection.pageInfo?.endCursor);
+  while (orderId && hasNextPage) {
+    const data = /** @type {any} */ (
+      await client.request(BOOTSTRAP_ORDER_LINE_ITEMS_QUERY, {
+        id: orderId,
+        first: BOOTSTRAP_CONNECTION_PAGE_SIZE,
+        after,
+      })
+    );
+    const connection = data?.node?.lineItems;
+    edges.push(...(Array.isArray(connection?.edges) ? connection.edges : []));
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    after = stringValue(connection?.pageInfo?.endCursor);
+  }
+  return {
+    ...order,
+    lineItems: {
+      ...initialConnection,
+      edges,
+      pageInfo: { hasNextPage: false, endCursor: after },
+    },
+  };
+}
+
+async function fetchActiveCatalog(client) {
   const products = [];
   const variants = [];
-  const ids = [...new Set([...productIds, ...variantIds])];
-  for (let index = 0; index < ids.length; index += 100) {
-    const data = /** @type {any} */ (await client.request(BOOTSTRAP_CATALOG_NODES_QUERY, {
-      ids: ids.slice(index, index + 100),
-    }));
-    for (const node of Array.isArray(data?.nodes) ? data.nodes.filter(Boolean).map(jsonObject) : []) {
-      if (node.__typename === "Product") {
-        products.push(node);
-        variants.push(...edgesToNodes(node.variants).map(jsonObject));
+  let inventoryLevelCount = 0;
+  let after = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const data = /** @type {any} */ (
+      await client.request(BOOTSTRAP_ACTIVE_PRODUCTS_QUERY, {
+        first: BOOTSTRAP_CONNECTION_PAGE_SIZE,
+        after,
+        query: "status:active",
+      })
+    );
+    const connection = data?.products;
+    for (const product of edgesToNodes(connection).map(jsonObject)) {
+      products.push(product);
+    }
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    after = stringValue(connection?.pageInfo?.endCursor);
+  }
+
+  for (const product of products) {
+    const productId = stringValue(product.id);
+    if (!productId) continue;
+    const productVariants = await fetchProductVariants(client, productId);
+    for (const variant of productVariants) {
+      const inventoryItem = jsonObject(variant.inventoryItem);
+      const inventoryItemId = stringValue(inventoryItem.id);
+      if (inventoryItemId) {
+        const inventoryLevels = await fetchInventoryLevels(client, inventoryItemId);
+        inventoryLevelCount += edgesToNodes(inventoryLevels).length;
+        variant.inventoryItem = {
+          ...inventoryItem,
+          inventoryLevels,
+        };
       }
-      if (node.__typename === "ProductVariant") variants.push(node);
+      variants.push(variant);
     }
   }
-  return { products: dedupeById(products), variants: dedupeById(variants) };
+
+  return {
+    products: dedupeById(products),
+    variants: dedupeById(variants),
+    inventoryLevelCount,
+    activeCatalogComplete: true,
+  };
+}
+
+async function fetchProductVariants(client, productId) {
+  const variants = [];
+  let after = null;
+  let hasNextPage = true;
+  while (hasNextPage) {
+    const data = /** @type {any} */ (
+      await client.request(BOOTSTRAP_PRODUCT_VARIANTS_QUERY, {
+        id: productId,
+        first: BOOTSTRAP_CONNECTION_PAGE_SIZE,
+        after,
+      })
+    );
+    const connection = data?.node?.variants;
+    variants.push(...edgesToNodes(connection).map(jsonObject));
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    after = stringValue(connection?.pageInfo?.endCursor);
+  }
+  return variants;
+}
+
+async function fetchInventoryLevels(client, inventoryItemId) {
+  const edges = [];
+  let after = null;
+  let hasNextPage = true;
+  while (hasNextPage) {
+    const data = /** @type {any} */ (
+      await client.request(BOOTSTRAP_INVENTORY_LEVELS_QUERY, {
+        id: inventoryItemId,
+        first: BOOTSTRAP_CONNECTION_PAGE_SIZE,
+        after,
+      })
+    );
+    const connection = data?.node?.inventoryLevels;
+    edges.push(...(Array.isArray(connection?.edges) ? connection.edges : []));
+    hasNextPage = Boolean(connection?.pageInfo?.hasNextPage);
+    after = stringValue(connection?.pageInfo?.endCursor);
+  }
+  return {
+    edges,
+    pageInfo: { hasNextPage: false, endCursor: after },
+  };
 }
 
 async function persistBootstrapSlice(prisma, input, slice) {
@@ -626,6 +799,7 @@ async function persistBootstrapSlice(prisma, input, slice) {
 
 async function refreshBootstrapMemory(prisma, input, scope) {
   const beliefKeys = [
+    ...(scope.activeCatalogComplete ? ACTIVE_CATALOG_KEYS : []),
     ...STOCKOUT_KEYS,
     ...(scope.completeRequestedWindow ? COMPLETE_WINDOW_KEYS : []),
   ];
@@ -674,6 +848,28 @@ export function buildEvidenceContracts(beliefs, scope) {
       byKey.get("data.inventory_freshness_hours_p90"),
       byKey.get("data.line_item_variant_link_coverage"),
     ], 100));
+  }
+  if (scope.activeCatalogComplete === true) {
+    const outOfStock = byKey.get("catalog.out_of_stock_product_count");
+    const zeroPrice = byKey.get("catalog.zero_price_variant_count");
+    const catalogueShape = byKey.get("business.catalogue_shape");
+    const medianPrice = byKey.get("catalog.median_variant_price");
+    const activeProducts = byKey.get("catalog.active_product_count");
+    const totalVariants = byKey.get("catalog.total_variant_count");
+    const hasOperationalSignal =
+      countValue(outOfStock) > 0 ||
+      countValue(zeroPrice) > 0 ||
+      Boolean(catalogueShape);
+    if (hasOperationalSignal) {
+      contracts.push(contract("catalog_health", [
+        outOfStock,
+        zeroPrice,
+        catalogueShape,
+        medianPrice,
+        activeProducts,
+        totalVariants,
+      ], 80));
+    }
   }
   if (scope.completeRequestedWindow && scope.lineItemsComplete === true) {
     const pricedOrderCoverage = ratioValue(byKey.get("data.priced_order_coverage"));
@@ -1023,27 +1219,29 @@ async function setPhase(prisma, input, phase, metadata = {}, status = "running")
   });
 }
 
-function evidenceScope(orders, productIds, variantIds, catalog, completeRequestedWindow, passCount) {
+function evidenceScope(orders, productIds, variantIds, catalog, completeRequestedWindow, passCount, references = {}) {
   const timestamps = orders.map((order) => parseDate(order.processedAt ?? order.createdAt)).filter(Boolean).sort((a, b) => a.getTime() - b.getTime());
+  const lineItemCount = orders.reduce((sum, order) => sum + edgesToNodes(order.lineItems).length, 0);
+  const activeCatalogComplete = catalog.activeCatalogComplete === true;
+  const lineItemsComplete = orders.every(
+    (order) => order.lineItems?.pageInfo?.hasNextPage !== true,
+  );
   return {
     source: "bootstrap",
     orderExternalIds: orders.map((order) => stringValue(order.id)).filter(Boolean),
     productExternalIds: productIds,
     variantExternalIds: variantIds,
-    inventoryComplete:
-      catalog.products.length === productIds.length &&
-      catalog.products.every(
-        (product) => product.variants?.pageInfo?.hasNextPage !== true,
-      ) &&
-      catalog.variants.length === variantIds.length &&
-      catalog.variants.every(
-        (variant) =>
-          Boolean(variant.inventoryItem?.id) &&
-          variant.inventoryItem?.inventoryLevels?.pageInfo?.hasNextPage !== true,
-      ),
-    lineItemsComplete: orders.every(
-      (order) => order.lineItems?.pageInfo?.hasNextPage !== true,
-    ),
+    orderProductExternalIds: references.orderProductIds ?? [],
+    orderVariantExternalIds: references.orderVariantIds ?? [],
+    inventoryComplete: activeCatalogComplete,
+    lineItemsComplete,
+    ordersComplete: lineItemsComplete,
+    activeCatalogComplete,
+    selectedOrderCount: orders.length,
+    lineItemCount,
+    activeProductCount: productIds.length,
+    variantCount: variantIds.length,
+    inventoryLevelCount: catalog.inventoryLevelCount ?? 0,
     completeRequestedWindow,
     observedFrom: timestamps[0]?.toISOString() ?? null,
     observedTo: timestamps[timestamps.length - 1]?.toISOString() ?? null,
@@ -1052,9 +1250,27 @@ function evidenceScope(orders, productIds, variantIds, catalog, completeRequeste
   };
 }
 
+function scopeMetadata(scope) {
+  return {
+    selectedOrderCount: scope.selectedOrderCount ?? 0,
+    lineItemCount: scope.lineItemCount ?? 0,
+    activeProductCount: scope.activeProductCount ?? 0,
+    variantCount: scope.variantCount ?? 0,
+    inventoryLevelCount: scope.inventoryLevelCount ?? 0,
+    ordersComplete: scope.ordersComplete === true,
+    activeCatalogComplete: scope.activeCatalogComplete === true,
+  };
+}
+
 function variantIdsFromCatalog(catalog) {
   return catalog.variants
     .map((variant) => stringValue(variant.id))
+    .filter(Boolean);
+}
+
+function productIdsFromCatalog(catalog) {
+  return catalog.products
+    .map((product) => stringValue(product.id))
     .filter(Boolean);
 }
 
@@ -1077,6 +1293,11 @@ function numberValue(belief) {
   return Number.isFinite(raw) ? raw : null;
 }
 
+function countValue(belief) {
+  const raw = Number(belief?.value?.count);
+  return Number.isFinite(raw) ? raw : 0;
+}
+
 function percentageValue(belief) {
   const value = belief?.value ?? {};
   const raw = Number(value.percentage ?? value.sharePercent ?? 0);
@@ -1084,15 +1305,29 @@ function percentageValue(belief) {
 }
 
 function contractCategory(key) {
-  return key === "stockout_protection" ? "inventory" : key === "discount_review" ? "business" : "products";
+  return key === "stockout_protection"
+    ? "inventory"
+    : key === "discount_review"
+      ? "business"
+      : key === "catalog_health"
+        ? "catalog"
+        : "products";
 }
 
 function rankEligibleContracts(contracts, priority) {
   const secondary = priority === "profit"
     ? ["discount_review", "sales_concentration"]
-    : ["sales_concentration", "discount_review"];
+    : priority === "slow_inventory"
+      ? ["stockout_protection", "catalog_health", "discount_review"]
+      : priority === "jefe_read_first"
+        ? ["stockout_protection", "catalog_health", "sales_concentration", "discount_review"]
+        : ["sales_concentration", "stockout_protection", "catalog_health", "discount_review"];
   const order = ["stockout_protection", ...secondary];
-  return [...contracts].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  return [...contracts].sort((a, b) => {
+    const aIndex = order.includes(a.key) ? order.indexOf(a.key) : order.length;
+    const bIndex = order.includes(b.key) ? order.indexOf(b.key) : order.length;
+    return aIndex - bIndex;
+  });
 }
 
 function preferenceOption(value) {
@@ -1112,6 +1347,11 @@ function hashJson(value) {
 function dedupeById(items) {
   return [...new Map(items.map((item) => [stringValue(item.id), item])).values()].filter((item) => stringValue(item.id));
 }
+
+export const __bootstrapTestHooks = {
+  fetchRecentOrders,
+  fetchActiveCatalog,
+};
 
 function stringValue(value) {
   return typeof value === "string" && value ? value : null;
