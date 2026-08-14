@@ -15,6 +15,10 @@ const dailyHomeSource = fs.readFileSync(
   new URL("../app/components/daily-home.tsx", import.meta.url),
   "utf8",
 );
+const clientNavigationReporterSource = fs.readFileSync(
+  new URL("../app/components/client-navigation-reporter.tsx", import.meta.url),
+  "utf8",
+);
 
 test("a fresh app entry drops stale chat params and lands on the focused-action home", () => {
   // A once-per-document-load guard distinguishes a fresh entry from in-session nav...
@@ -77,6 +81,8 @@ test("the home uses action-centric navigation into focused chats", () => {
 
 test("home overlay navigations do not re-run the full app loader", () => {
   assert.match(appIndexSource, /function isAppHomeUiOnlyNavigation/);
+  assert.match(appIndexSource, /function normalizeAppDataPath/);
+  assert.match(appIndexSource, /pathname === "\/app\.data" \? "\/app" : pathname/);
   assert.match(appIndexSource, /"conversation", "talkAction", "actionChat"/);
   assert.match(appIndexSource, /!formData && isAppHomeUiOnlyNavigation\(currentUrl, nextUrl\)/);
   assert.doesNotMatch(appIndexSource, /changed\.every\(\(key\) => \["view", "conversation"/);
@@ -87,4 +93,17 @@ test("focused chat details load through narrow app-home resources", () => {
   assert.match(dailyHomeSource, /\/api\/app-home\/action-chats\?actionId=/);
   assert.match(dailyHomeSource, /conversationCache/);
   assert.match(dailyHomeSource, /actionChatsCache/);
+});
+
+test("daily home reads merchant actions without syncing on every load", () => {
+  assert.match(appIndexSource, /const merchantActionsPromise = listMerchantActions\(prisma, \{/);
+  assert.match(appIndexSource, /includeInactive: true,\s*sync: false,/);
+});
+
+test("client navigation logging only labels real UI-param changes as overlays", () => {
+  assert.match(clientNavigationReporterSource, /changed\.length > 0/);
+  assert.match(
+    clientNavigationReporterSource,
+    /changed\.every\(\(key\) => \["conversation", "talkAction", "actionChat"\]\.includes\(key\)\)/,
+  );
 });

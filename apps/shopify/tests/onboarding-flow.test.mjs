@@ -64,6 +64,8 @@ test("onboarding exposes Connect, Context, Insight, Action and terminal APP", ()
   assert.match(appIndexSource, /appMode: "fast_onboarding"/);
   assert.match(appIndexSource, /<FastValueOnboarding/);
   assert.match(fastOnboardingSource, /While I finish looking/);
+  assert.match(fastOnboardingSource, /Choosing the first move/);
+  assert.match(fastOnboardingSource, /This usually takes under a minute/);
   assert.match(fastOnboardingSource, /Something jumped out/);
   assert.match(fastOnboardingSource, /Here’s what I’d do/);
   assert.match(fastOnboardingSource, /Here’s what I’m on/);
@@ -99,6 +101,14 @@ test("Connect starts independent durable work and shows attention rather than im
   assert.match(fastOnboardingSource, /revalidator\.revalidate\(\)/);
   assert.doesNotMatch(fastOnboardingSource, /progress bar|spinner|\bETA\b|Importing refunds/i);
   assert.doesNotMatch(fastOnboardingSource, /\d+\s*\/\s*\d+/);
+});
+
+test("Context wait state explains generation is still happening", () => {
+  assert.match(fastOnboardingSource, /onboardingWaitingCopy/);
+  assert.match(fastOnboardingSource, /I’m turning that read into your first finding/);
+  assert.match(fastOnboardingSource, /the page will move on automatically/);
+  assert.match(fastOnboardingSource, /I’m retrying the first recommendation/);
+  assert.doesNotMatch(fastOnboardingSource, /Let me finish the last check/);
 });
 
 test("onboarding does not expose the retired goal form or interview path", () => {

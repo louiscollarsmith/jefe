@@ -53,7 +53,10 @@ function classifyNavigation(fromPath: string, toPath: string) {
   if (from.pathname !== to.pathname) return "route";
   if (from.pathname === "/app") {
     const changed = changedSearchKeys(from.searchParams, to.searchParams);
-    if (changed.every((key) => ["conversation", "talkAction", "actionChat"].includes(key))) {
+    if (
+      changed.length > 0 &&
+      changed.every((key) => ["conversation", "talkAction", "actionChat"].includes(key))
+    ) {
       return "app_home_overlay";
     }
   }
