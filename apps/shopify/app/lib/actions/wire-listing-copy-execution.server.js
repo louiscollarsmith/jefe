@@ -17,6 +17,7 @@ import {
   applyListingCopyChange,
   isListingCopyExecuteEnabled,
 } from "./listing-copy-adapter.server.js";
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
 
 const log = baseLogger.child({ component: "listing-copy-execution" });
 
@@ -97,6 +98,12 @@ export async function wireListingCopyExecution(prisma, session, input, deps = {}
         status: fresh?.status,
       };
     }
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: row.merchantId,
+      shopId: row.shopId,
+      actionRunId: row.runId,
+      execution: { ...row, status: "approved", approvedBy },
+    });
   }
 
   if (!isListingCopyExecuteEnabled()) {

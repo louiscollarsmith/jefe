@@ -19,7 +19,10 @@ export async function ensureShopifyTenant(prisma, input) {
     const shop = existingShop.merchant
       ? existingShop
       : await relinkOrphanedShop(prisma, existingShop, shopDomain);
-    return activateExistingShopifyTenant(prisma, shop, { ...input, shopDomain });
+    return activateExistingShopifyTenant(prisma, shop, {
+      ...input,
+      shopDomain,
+    });
   }
 
   try {
@@ -62,6 +65,31 @@ export async function ensureShopifyTenant(prisma, input) {
       shopDomain,
     });
   }
+}
+
+/**
+ * Resolve the tenant for an authenticated application request without rewriting
+ * connector state on every read. Install/auth/webhook paths continue to call
+ * ensureShopifyTenant; this fast path falls back to it only when the tenant is
+ * missing, orphaned, or inactive and genuinely needs repair/reactivation.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopDomain: string; accessTokenSessionId?: string | null; scopes?: string[]; rawPayload?: unknown }} input
+ */
+export async function resolveShopifyTenantForRequest(prisma, input) {
+  const shopDomain = normalizeShopDomain(input.shopDomain);
+  const existingShop = await findShopifyShop(prisma, shopDomain);
+
+  if (
+    !existingShop ||
+    !existingShop.merchant ||
+    existingShop.status === "uninstalled" ||
+    existingShop.setupStatus === "uninstalled"
+  ) {
+    return ensureShopifyTenant(prisma, { ...input, shopDomain });
+  }
+
+  return { merchant: existingShop.merchant, shop: existingShop };
 }
 
 /**
@@ -126,7 +154,8 @@ const WELCOME_REONBOARD_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 export function shouldReWelcomeOnReactivation(welcomeEmailSentAt, now) {
   if (welcomeEmailSentAt == null) return false;
   return (
-    now.getTime() - new Date(welcomeEmailSentAt).getTime() > WELCOME_REONBOARD_AFTER_MS
+    now.getTime() - new Date(welcomeEmailSentAt).getTime() >
+    WELCOME_REONBOARD_AFTER_MS
   );
 }
 

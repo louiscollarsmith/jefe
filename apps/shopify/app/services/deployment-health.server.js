@@ -34,9 +34,29 @@ export function buildHealthPayload(env = process.env, options = {}) {
     ok: true,
     environment: env.APP_ENV || env.NODE_ENV || "development",
     version: env.APP_VERSION || env.RAILWAY_GIT_COMMIT_SHA || null,
+    deployment: {
+      region: env.RAILWAY_REPLICA_REGION || null,
+    },
     timestamp: now.toISOString(),
     uptimeSeconds,
   };
+}
+
+/**
+ * Report whether a configured Neon runtime URL uses its pooled endpoint without
+ * exposing the hostname, username, database, or credentials on `/health`.
+ * @param {string | undefined} databaseUrl
+ * @returns {boolean | null}
+ */
+export function isNeonPooledRuntimeUrl(databaseUrl) {
+  if (!databaseUrl) return null;
+  try {
+    const hostname = new URL(databaseUrl).hostname.toLowerCase();
+    if (!hostname.endsWith(".neon.tech")) return null;
+    return hostname.includes("-pooler.");
+  } catch {
+    return null;
+  }
 }
 
 /**

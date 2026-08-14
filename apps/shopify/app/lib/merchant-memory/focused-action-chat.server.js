@@ -4,11 +4,13 @@ import {
   appendConversationMessage,
   createMerchantConversation,
   conversationTitleFromMessage,
+  enqueueCoalescingMemoryJob,
+  EPISODE_PROCESS_JOB_TYPE,
 } from "./episodic-memory.server.js";
 import {
   getMerchantAction,
+  getMerchantActionFocus,
   listMerchantActions,
-  syncMerchantActionsForShop,
 } from "../actions/merchant-action.server.js";
 
 /**
@@ -44,8 +46,7 @@ export async function listChatsFocusedOnAction(prisma, input) {
  * @param {{ merchantId: string; shopId: string; actionId: string; forceNew?: boolean }} input
  */
 export async function startFocusedActionChat(prisma, input) {
-  await syncMerchantActionsForShop(prisma, input);
-  const action = await getMerchantAction(prisma, {
+  const action = await getMerchantActionFocus(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     actionId: input.actionId,
@@ -57,40 +58,56 @@ export async function startFocusedActionChat(prisma, input) {
   if (existing.length) {
     return { ok: true, chooser: true, action, chats: existing };
   }
-  const conversation = await createMerchantConversation(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    conversationType: "general",
-    surface: "app",
-    topic: "general",
-    title: defaultChatTitle(action),
-    context: focusedActionContextPatch(action),
-  });
-  await prisma.merchantMemoryConversation.update({
-    where: { id: conversation.id },
-    data: { focusedActionId: action.id },
-  });
-  await recordFocusEvent(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    conversationId: conversation.id,
-    action,
-    eventType: "focus_set",
-    content: `Now working on: ${action.title}`,
-  });
-  await appendConversationMessage(prisma, {
-    conversation: { ...conversation, focusedActionId: action.id },
-    conversationId: conversation.id,
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    role: "assistant",
-    content:
-      "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you're ready.",
-    surface: "app",
-    recommendationId: action.sourceRecommendationId,
-    actionRunId: action.actionRunId,
-    safeSummary: "Jefe opened a chat focused on an action.",
-  });
+  const createFocusedConversation = async (/** @type {any} */ tx) => {
+    const conversation = await createMerchantConversation(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      conversationType: "general",
+      surface: "app",
+      topic: "general",
+      title: defaultChatTitle(action),
+      context: focusedActionContextPatch(action),
+      focusedActionId: action.id,
+    });
+    await recordFocusEvent(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      conversation,
+      conversationId: conversation.id,
+      action,
+      eventType: "focus_set",
+      content: `Now working on: ${action.title}`,
+      enqueue: false,
+      touchConversation: false,
+    });
+    await appendConversationMessage(tx, {
+      conversation,
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      role: "assistant",
+      content:
+        "Ask me anything about this one. I can explain how I got here, change what it does, or hold it until you're ready.",
+      surface: "app",
+      recommendationId: action.sourceRecommendationId,
+      actionRunId: action.actionRunId,
+      safeSummary: "Jefe opened a chat focused on an action.",
+      enqueue: false,
+    });
+    if (tx.backfillJob?.findUnique) {
+      await enqueueCoalescingMemoryJob(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        jobType: EPISODE_PROCESS_JOB_TYPE,
+        priority: 35,
+      });
+    }
+    return conversation;
+  };
+  const conversation =
+    typeof prisma.$transaction === "function"
+      ? await prisma.$transaction(createFocusedConversation)
+      : await createFocusedConversation(prisma);
   return { ok: true, chooser: false, action, conversationId: conversation.id };
 }
 
@@ -199,10 +216,11 @@ async function loadConversation(prisma, input) {
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; conversationId: string; action: any; eventType: string; content: string; metadata?: any }} input
+ * @param {{ merchantId: string; shopId: string; conversationId: string; conversation?: any; action: any; eventType: string; content: string; metadata?: any; enqueue?: boolean; touchConversation?: boolean }} input
  */
 async function recordFocusEvent(prisma, input) {
   const result = await appendConversationMessage(prisma, {
+    conversation: input.conversation,
     conversationId: input.conversationId,
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -217,6 +235,8 @@ async function recordFocusEvent(prisma, input) {
       ...(input.metadata ?? {}),
     },
     safeSummary: input.content,
+    enqueue: input.enqueue,
+    touchConversation: input.touchConversation,
   });
   await prisma.merchantActionEvent.create({
     data: {

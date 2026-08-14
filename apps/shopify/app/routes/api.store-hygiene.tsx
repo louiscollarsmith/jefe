@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { splitScopes } from "../services/shopify-backfill-status.server";
 import { getStoreHygieneFindings } from "../lib/store-hygiene/store-hygiene-scan.server";
 import { logger } from "../lib/observability/logger.server";
@@ -22,7 +22,7 @@ const log = logger.child({ component: "store-hygiene" });
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
     const { session } = await authenticateAppRequest(request);
-    const { merchant, shop } = await ensureShopifyTenant(prisma, {
+    const { merchant, shop } = await resolveShopifyTenantForRequest(prisma, {
       shopDomain: session.shop,
       accessTokenSessionId: session.id,
       scopes: splitScopes(session.scope),
@@ -35,7 +35,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     });
     return { findings };
   } catch (error) {
-    log.warn("store-hygiene findings load failed; returning none", { err: error });
+    log.warn("store-hygiene findings load failed; returning none", {
+      err: error,
+    });
     return { findings: [] };
   }
 }

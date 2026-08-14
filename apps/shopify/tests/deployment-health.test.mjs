@@ -5,6 +5,7 @@ import {
   buildHealthPayload,
   checkDatabaseHealth,
   getBootstrapJobHealth,
+  isNeonPooledRuntimeUrl,
   readinessStatus,
 } from "../app/services/deployment-health.server.js";
 import { resolveShopifyAppUrl } from "../app/services/shopify-app-url.server.js";
@@ -24,6 +25,7 @@ test("deployment health reports the configured app environment", () => {
       ok: true,
       environment: "staging",
       version: "abc123",
+      deployment: { region: null },
       timestamp: "2026-07-28T12:00:00.000Z",
       uptimeSeconds: 42,
     },
@@ -40,17 +42,59 @@ test("deployment health falls back to NODE_ENV, commit sha, and development", ()
       ok: true,
       environment: "production",
       version: "deadbeef",
+      deployment: { region: null },
       timestamp: "2026-07-28T12:00:00.000Z",
       uptimeSeconds: 0,
     },
   );
-  assert.deepEqual(buildHealthPayload({}, { now: FIXED_NOW, uptimeSeconds: 0 }), {
+  assert.deepEqual(
+    buildHealthPayload({}, { now: FIXED_NOW, uptimeSeconds: 0 }),
+    {
     ok: true,
     environment: "development",
     version: null,
+      deployment: { region: null },
     timestamp: "2026-07-28T12:00:00.000Z",
     uptimeSeconds: 0,
+    },
+  );
+});
+
+test("deployment health reports Railway's running replica region", () => {
+  const payload = buildHealthPayload(
+    {
+      APP_ENV: "production",
+      RAILWAY_REPLICA_REGION: "europe-west4-drams3a",
+    },
+    { now: FIXED_NOW, uptimeSeconds: 1 },
+  );
+
+  assert.deepEqual(payload.deployment, { region: "europe-west4-drams3a" });
+});
+
+test("Railway production runs one EU West replica", async () => {
+  const railway = JSON.parse(await readFile("railway.json", "utf8"));
+  assert.deepEqual(
+    railway.environments?.production?.deploy?.multiRegionConfig,
+    { "europe-west4-drams3a": { numReplicas: 1 } },
+  );
   });
+
+test("Neon runtime pooling can be verified without exposing the connection URL", () => {
+  assert.equal(
+    isNeonPooledRuntimeUrl(
+      "postgresql://role:secret@ep-example-pooler.eu-west-2.aws.neon.tech/jefe",
+    ),
+    true,
+  );
+  assert.equal(
+    isNeonPooledRuntimeUrl(
+      "postgresql://role:secret@ep-example.eu-west-2.aws.neon.tech/jefe",
+    ),
+    false,
+  );
+  assert.equal(isNeonPooledRuntimeUrl("postgresql://localhost/jefe"), null);
+  assert.equal(isNeonPooledRuntimeUrl(undefined), null);
 });
 
 test("database health probe reports ok with latency on success", async () => {
@@ -81,15 +125,24 @@ test("database health probe reports error without throwing", async () => {
 test("bootstrap health reports queued, running, failed and stale jobs without gating readiness", async () => {
   const calls = [];
   const counts = [2, 1, 3, 1];
-  const result = await getBootstrapJobHealth({
+  const result = await getBootstrapJobHealth(
+    {
     backfillJob: {
       async count(args) {
         calls.push(args);
         return counts[calls.length - 1];
       },
     },
-  }, { now: FIXED_NOW });
-  assert.deepEqual(result, { status: "ok", queued: 2, running: 1, failed: 3, stale: 1 });
+    },
+    { now: FIXED_NOW },
+  );
+  assert.deepEqual(result, {
+    status: "ok",
+    queued: 2,
+    running: 1,
+    failed: 3,
+    stale: 1,
+  });
   assert.equal(calls.length, 4);
   assert.match(JSON.stringify(calls[3]), /queued/);
   assert.match(JSON.stringify(calls[3]), /running/);
@@ -181,7 +234,16 @@ test("OAuth completion queues install backfill and worker can process jobs", asy
   assert.match(shopifyServer, /await queueInstallShopifyBackfill\(prisma/);
   assert.match(shopifyServer, /startShopifyBackfillLoop\(prisma\)/);
   assert.match(authRoute, /await queueInstallShopifyBackfill\(prisma/);
-  assert.doesNotMatch(backfillStatus, /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/);
-  assert.doesNotMatch(backfillWorker, /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/);
-  assert.doesNotMatch(backfillScript, /Shopify backfill is temporarily disabled/);
+  assert.doesNotMatch(
+    backfillStatus,
+    /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/,
+  );
+  assert.doesNotMatch(
+    backfillWorker,
+    /SHOPIFY_BACKFILL_DISABLED_FOR_CHANNELS_BRANCH/,
+  );
+  assert.doesNotMatch(
+    backfillScript,
+    /Shopify backfill is temporarily disabled/,
+  );
 });

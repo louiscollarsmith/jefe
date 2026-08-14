@@ -2,7 +2,7 @@ import type { LoaderFunctionArgs } from "react-router";
 
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { getMerchantFileBytes } from "../lib/attachments/merchant-file.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { splitScopes } from "../services/shopify-backfill-status.server";
 import prisma from "../db.server";
 
@@ -17,7 +17,7 @@ import prisma from "../db.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
-  const { merchant } = await ensureShopifyTenant(prisma, {
+  const { merchant } = await resolveShopifyTenantForRequest(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: splitScopes(session.scope),

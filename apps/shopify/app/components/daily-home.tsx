@@ -4,6 +4,7 @@ import {
   useActionData,
   useFetcher,
   useLocation,
+  useNavigate,
   useNavigation,
 } from "react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -202,7 +203,9 @@ type ConversationResourceData = {
 type ActionChatsResourceData = {
   ok?: boolean;
   actionId?: string;
+  chooser?: boolean;
   chats?: FocusedActionChatChoice[];
+  conversationId?: string;
   error?: string;
 };
 
@@ -241,16 +244,21 @@ export function DailyHome(props: {
   brandLogoUrl?: string | null; // merchant's brand logo for the header; monogram fallback
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const navigation = useNavigation();
   const params = new URLSearchParams(location.search);
   const openConversationId = params.get("conversation");
   const talkActionId = params.get("talkAction");
   const conversationFetcher = useFetcher<ConversationResourceData>();
   const actionChatsFetcher = useFetcher<ActionChatsResourceData>();
+  const startActionChatFetcher = useFetcher<ActionChatsResourceData>();
   const [conversationCache, setConversationCache] = useState<
     Record<string, { conversation: ChatThread; libraryFiles: LibraryPick[] }>
   >({});
   const [actionChatsCache, setActionChatsCache] = useState<Record<string, FocusedActionChatChoice[]>>({});
+  const [pendingTalkActionId, setPendingTalkActionId] = useState<string | null>(null);
+  const [startActionChatError, setStartActionChatError] = useState<string | null>(null);
+  const handledStartActionChatDataRef = useRef<ActionChatsResourceData | undefined>(undefined);
   const pendingThreadRefreshRef = useRef<string | null>(null);
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
@@ -286,6 +294,7 @@ export function DailyHome(props: {
     loaderConversation;
   const activeConversation = openConversationPayload?.conversation.conversation ?? null;
   const focusedAction = actionForConversation(activeConversation, merchantActions);
+  const displayedTalkActionId = talkActionId ?? pendingTalkActionId;
   const fetchedActionChats = useMemo(
     () =>
       actionChatsFetcher.data?.ok && actionChatsFetcher.data.actionId === talkActionId
@@ -301,9 +310,33 @@ export function DailyHome(props: {
       ? (props.focusedActionChats ?? [])
       : []);
   const actionChatsLoading =
-    Boolean(talkActionId) &&
-    !cachedActionChats &&
-    actionChatsFetcher.state !== "idle";
+    (Boolean(pendingTalkActionId) && startActionChatFetcher.state !== "idle") ||
+    (Boolean(talkActionId) &&
+      !cachedActionChats &&
+      actionChatsFetcher.state !== "idle");
+
+  const startFocusedChat = (actionId: string, forceNew = false) => {
+    if (!actionId || startActionChatFetcher.state !== "idle") return;
+    setPendingTalkActionId(actionId);
+    setStartActionChatError(null);
+    const formData = new FormData();
+    formData.set("intent", "chat.focus.start");
+    formData.set("focusedActionId", actionId);
+    if (forceNew) formData.set("forceNew", "true");
+    startActionChatFetcher.submit(formData, {
+      method: "post",
+      action: "/api/app-home/action-chats",
+    });
+  };
+
+  const closeTalkAction = () => {
+    if (startActionChatFetcher.state !== "idle") return;
+    setPendingTalkActionId(null);
+    setStartActionChatError(null);
+    navigate(searchWith(location.search, { talkAction: null }), {
+      preventScrollReset: true,
+    });
+  };
 
   useEffect(() => {
     if (!openConversationId) return;
@@ -368,6 +401,53 @@ export function DailyHome(props: {
     return () => window.clearTimeout(handle);
   }, [actionChatsFetcher.data]);
 
+  useEffect(() => {
+    const data = startActionChatFetcher.data;
+    if (
+      startActionChatFetcher.state !== "idle" ||
+      !pendingTalkActionId ||
+      !data ||
+      data === handledStartActionChatDataRef.current ||
+      data.actionId !== pendingTalkActionId
+    ) return;
+    handledStartActionChatDataRef.current = data;
+    const handle = window.setTimeout(() => {
+      if (!data.ok) {
+        setStartActionChatError(data.error ?? "That chat could not be opened.");
+        return;
+      }
+      if (data.chooser) {
+        setActionChatsCache((cache) => ({
+          ...cache,
+          [pendingTalkActionId]: data.chats ?? [],
+        }));
+        navigate(
+          searchWith(location.search, {
+            conversation: null,
+            talkAction: pendingTalkActionId,
+          }),
+          { preventScrollReset: true },
+        );
+      } else if (data.conversationId) {
+        navigate(
+          searchWith(location.search, {
+            conversation: data.conversationId,
+            talkAction: null,
+          }),
+          { preventScrollReset: true },
+        );
+      }
+      setPendingTalkActionId(null);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [
+    location.search,
+    navigate,
+    pendingTalkActionId,
+    startActionChatFetcher.data,
+    startActionChatFetcher.state,
+  ]);
+
   if (openConversationId || activeConversation) {
     if (!openConversationPayload) {
       if (conversationFetcher.state === "idle" && conversationFetcher.data?.ok === false) {
@@ -412,9 +492,15 @@ export function DailyHome(props: {
         <FocusedActionsHome
           conversations={props.conversation?.conversations ?? []}
           merchantActions={merchantActions}
-          talkActionId={talkActionId}
+          talkActionId={displayedTalkActionId}
           focusedActionChats={actionChats}
           focusedActionChatsLoading={actionChatsLoading}
+          focusedActionChatError={startActionChatError}
+          startingActionId={
+            startActionChatFetcher.state === "idle" ? null : pendingTalkActionId
+          }
+          onStartFocusedChat={startFocusedChat}
+          onCloseTalkAction={closeTalkAction}
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
         />
@@ -451,6 +537,10 @@ function FocusedActionsHome({
   talkActionId,
   focusedActionChats,
   focusedActionChatsLoading,
+  focusedActionChatError,
+  startingActionId,
+  onStartFocusedChat,
+  onCloseTalkAction,
   currentSearch,
   storeTimeZone,
 }: {
@@ -459,6 +549,10 @@ function FocusedActionsHome({
   talkActionId: string | null;
   focusedActionChats: FocusedActionChatChoice[];
   focusedActionChatsLoading?: boolean;
+  focusedActionChatError?: string | null;
+  startingActionId?: string | null;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
+  onCloseTalkAction: () => void;
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
@@ -475,7 +569,7 @@ function FocusedActionsHome({
         <h1 style={headlineStyle}>
           Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
         </h1>
-        <ActionSpotlight action={nextAction} />
+        <ActionSpotlight action={nextAction} onStartFocusedChat={onStartFocusedChat} />
       </section>
 
       <HomeSection
@@ -539,6 +633,7 @@ function FocusedActionsHome({
         actions={inProgress}
         currentSearch={currentSearch}
         variant="progress"
+        onStartFocusedChat={onStartFocusedChat}
       />
 
       <ActionShelf
@@ -548,12 +643,17 @@ function FocusedActionsHome({
         actions={history}
         currentSearch={currentSearch}
         variant="history"
+        onStartFocusedChat={onStartFocusedChat}
       />
 
       <TalkActionChooser
         action={talkAction}
         chats={focusedActionChats}
         loading={focusedActionChatsLoading}
+        error={focusedActionChatError}
+        starting={startingActionId === talkAction?.id}
+        onStartFocusedChat={onStartFocusedChat}
+        onClose={onCloseTalkAction}
         currentSearch={currentSearch}
         storeTimeZone={storeTimeZone}
       />
@@ -561,7 +661,13 @@ function FocusedActionsHome({
   );
 }
 
-function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
+function ActionSpotlight({
+  action,
+  onStartFocusedChat,
+}: {
+  action: MerchantActionView | null;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
+}) {
   if (!action) {
     return (
       <section style={spotlightStyle}>
@@ -593,7 +699,11 @@ function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
         />
       ) : null}
       <div style={actionButtonRowStyle}>
-        <TalkThisThroughButton action={action} primary />
+        <TalkThisThroughButton
+          action={action}
+          primary
+          onStartFocusedChat={onStartFocusedChat}
+        />
       </div>
     </section>
   );
@@ -606,6 +716,7 @@ function ActionShelf({
   actions,
   currentSearch,
   variant,
+  onStartFocusedChat,
 }: {
   title: string;
   emptyTitle: string;
@@ -613,6 +724,7 @@ function ActionShelf({
   actions: MerchantActionView[];
   currentSearch: string;
   variant: "progress" | "history";
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
 }) {
   return (
     <HomeSection title={title}>
@@ -629,6 +741,7 @@ function ActionShelf({
               <ActionProgressRow
                 key={action.id || action.title}
                 action={action}
+                onStartFocusedChat={onStartFocusedChat}
               />
             )
           ))}
@@ -640,7 +753,13 @@ function ActionShelf({
   );
 }
 
-function ActionProgressRow({ action }: { action: MerchantActionView }) {
+function ActionProgressRow({
+  action,
+  onStartFocusedChat,
+}: {
+  action: MerchantActionView;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
+}) {
   return (
     <article style={progressRowStyle}>
       <div style={progressRowHeaderStyle}>
@@ -671,7 +790,11 @@ function ActionProgressRow({ action }: { action: MerchantActionView }) {
           {action.baselineSignal && action.currentSignal ? <span>→</span> : null}
           {action.currentSignal ? <strong>{action.currentSignal}</strong> : null}
         </div>
-        <TalkThisThroughButton action={action} linkLike />
+        <TalkThisThroughButton
+          action={action}
+          linkLike
+          onStartFocusedChat={onStartFocusedChat}
+        />
       </div>
     </article>
   );
@@ -745,23 +868,22 @@ function TalkThisThroughButton({
   action,
   primary = false,
   linkLike = false,
+  onStartFocusedChat,
 }: {
   action: MerchantActionView;
   primary?: boolean;
   linkLike?: boolean;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
 }) {
   return (
-    <Form method="post" style={inlineFormStyle}>
-      <input type="hidden" name="intent" value="chat.focus.start" />
-      <input type="hidden" name="focusedActionId" value={action.id} />
-      <button
-        type="submit"
-        style={linkLike ? textButtonStyle : primary ? primaryButtonStyle : quietPillButtonStyle}
-        disabled={!action.id}
-      >
-        Talk this through{primary || linkLike ? " →" : ""}
-      </button>
-    </Form>
+    <button
+      type="button"
+      style={linkLike ? textButtonStyle : primary ? primaryButtonStyle : quietPillButtonStyle}
+      disabled={!action.id}
+      onClick={() => onStartFocusedChat(action.id)}
+    >
+      Talk this through{primary || linkLike ? " →" : ""}
+    </button>
   );
 }
 
@@ -769,12 +891,20 @@ function TalkActionChooser({
   action,
   chats,
   loading = false,
+  error,
+  starting = false,
+  onStartFocusedChat,
+  onClose,
   currentSearch,
   storeTimeZone,
 }: {
   action: MerchantActionView | null;
   chats: FocusedActionChatChoice[];
   loading?: boolean;
+  error?: string | null;
+  starting?: boolean;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
+  onClose: () => void;
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
@@ -802,10 +932,12 @@ function TalkActionChooser({
             </>
           )}
         </p>
-        {loading ? (
+        {error ? (
+          <EmptySection title="Chat could not be opened" body={error} />
+        ) : loading ? (
           <EmptySection
-            title="Checking existing chats"
-            body="Jefe is checking whether this action already has a thread."
+            title="Opening your chat"
+            body="Jefe is getting the focused thread ready."
           />
         ) : chats.length > 0 ? (
           <div style={talkChooserListStyle}>
@@ -838,20 +970,22 @@ function TalkActionChooser({
         )}
         <div style={talkChooserDividerStyle} />
         <div style={talkChooserActionsStyle}>
-          <Form method="post" style={inlineFormStyle}>
-            <input type="hidden" name="intent" value="chat.focus.start" />
-            <input type="hidden" name="focusedActionId" value={action.id} />
-            <input type="hidden" name="forceNew" value="true" />
-            <button type="submit" style={talkChooserPrimaryButtonStyle}>
-              Start a new chat
-            </button>
-          </Form>
-          <Link
-            to={searchWith(currentSearch, { talkAction: null })}
+          <button
+            type="button"
+            onClick={() => onStartFocusedChat(action.id, true)}
+            disabled={starting}
+            style={talkChooserPrimaryButtonStyle}
+          >
+            {starting ? "Opening chat…" : "Start a new chat"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={starting}
             style={talkChooserCancelStyle}
           >
             Cancel
-          </Link>
+          </button>
         </div>
       </section>
     </div>

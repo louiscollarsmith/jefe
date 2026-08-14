@@ -18,6 +18,8 @@ let next = 0;
 /** @type {number[]} */
 let clientNavigationRing = [];
 let clientNavigationNext = 0;
+/** @type {Map<string, { values: number[]; next: number }>} */
+let routeRings = new Map();
 
 /**
  * Record one request duration (ms). Silently ignores non-finite/negative input
@@ -41,6 +43,21 @@ export function recordClientNavigationDuration(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return;
   clientNavigationRing[clientNavigationNext] = ms;
   clientNavigationNext = (clientNavigationNext + 1) % CAPACITY;
+}
+
+/**
+ * Record a bounded server route or route-phase duration. Names are fixed code
+ * labels, never request paths or merchant input, so `/health` cannot leak data.
+ * @param {string} name
+ * @param {number} ms
+ */
+export function recordRouteDuration(name, ms) {
+  if (!/^[a-z0-9._-]{1,96}$/i.test(name)) return;
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return;
+  const ring = routeRings.get(name) ?? { values: [], next: 0 };
+  ring.values[ring.next] = ms;
+  ring.next = (ring.next + 1) % CAPACITY;
+  routeRings.set(name, ring);
 }
 
 /**
@@ -68,12 +85,25 @@ export function getLatencyPercentiles() {
   return summarise(ring);
 }
 
+/** Explicit name for the historical `latency` metric recorded in entry.server. */
+export function getSsrRenderLatencyPercentiles() {
+  return getLatencyPercentiles();
+}
+
 /**
  * Browser-observed navigation percentiles over the sampled window.
  * @returns {{ count: number; p50: number; p95: number; p99: number; max: number }}
  */
 export function getClientNavigationPercentiles() {
   return summarise(clientNavigationRing);
+}
+
+export function getRouteLatencyPercentiles() {
+  return Object.fromEntries(
+    [...routeRings.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, routeRing]) => [name, summarise(routeRing.values)]),
+  );
 }
 
 /**
@@ -98,4 +128,5 @@ export function __resetPerf() {
   next = 0;
   clientNavigationRing = [];
   clientNavigationNext = 0;
+  routeRings = new Map();
 }
