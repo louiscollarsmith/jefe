@@ -8,7 +8,10 @@ import {
   getBootstrapJobHealth,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
-import { getLatencyPercentiles } from "../lib/observability/perf.server";
+import {
+  getClientNavigationPercentiles,
+  getLatencyPercentiles,
+} from "../lib/observability/perf.server";
 import { getChatTurnPercentiles } from "../lib/observability/chat-turn-latency.server.js";
 import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
 import { getWebhookHealth } from "../lib/observability/webhook-health.server";
@@ -69,6 +72,7 @@ export const loader = async () => {
       ),
     },
     latency: getLatencyPercentiles(),
+    clientNavigation: getClientNavigationPercentiles(),
     // How long merchants are waiting for a chat reply on THIS instance, server-side
     // and as felt in the browser. In-process ring, so it answers "is Jefe slow right
     // now" without putting a query on the health path; the durable history is the

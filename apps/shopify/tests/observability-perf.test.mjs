@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getClientNavigationPercentiles,
   percentile,
+  recordClientNavigationDuration,
   recordRequestDuration,
   getLatencyPercentiles,
   __resetPerf,
@@ -35,6 +37,19 @@ test("recordRequestDuration ignores invalid input", () => {
   // @ts-expect-error — wrong type is defended against at runtime
   recordRequestDuration("nope");
   assert.equal(getLatencyPercentiles().count, 0);
+});
+
+test("client navigation percentiles are sampled separately from request latency", () => {
+  __resetPerf();
+  recordRequestDuration(5);
+  recordClientNavigationDuration(100);
+  recordClientNavigationDuration(300);
+
+  assert.equal(getLatencyPercentiles().count, 1);
+  const nav = getClientNavigationPercentiles();
+  assert.equal(nav.count, 2);
+  assert.equal(nav.p50, 200);
+  assert.equal(nav.max, 300);
 });
 
 test("the sampled window is bounded (ring buffer)", () => {

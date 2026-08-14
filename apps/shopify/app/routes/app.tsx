@@ -26,6 +26,7 @@ import { standaloneAppHost } from "../lib/auth/auth-mode.server.js";
 import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
 import { WebVitalsReporter } from "../components/web-vitals-reporter";
 import { AppUpdateBanner } from "../components/app-update-banner";
+import { ClientNavigationReporter } from "../components/client-navigation-reporter";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Dual-mode seam: embedded → authenticate.admin (unchanged); standalone
@@ -81,6 +82,7 @@ export default function App() {
   return (
     <AppProvider embedded={!standalone} apiKey={apiKey}>
       <WebVitalsReporter enabled={!standalone} />
+      <ClientNavigationReporter enabled={!standalone} />
       <Frame>
         {showChrome ? (
           <div style={topRightChromeStyle}>

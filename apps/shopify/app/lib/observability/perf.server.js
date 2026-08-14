@@ -15,6 +15,9 @@ const CAPACITY = 512;
 /** @type {number[]} */
 let ring = [];
 let next = 0;
+/** @type {number[]} */
+let clientNavigationRing = [];
+let clientNavigationNext = 0;
 
 /**
  * Record one request duration (ms). Silently ignores non-finite/negative input
@@ -25,6 +28,19 @@ export function recordRequestDuration(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return;
   ring[next] = ms;
   next = (next + 1) % CAPACITY;
+}
+
+/**
+ * Record one browser-observed navigation duration (ms). This is separate from
+ * request latency: a React Router transition can be slow even when the server
+ * response is quick, especially when a loader revalidates more than the click
+ * actually needed.
+ * @param {number} ms
+ */
+export function recordClientNavigationDuration(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return;
+  clientNavigationRing[clientNavigationNext] = ms;
+  clientNavigationNext = (clientNavigationNext + 1) % CAPACITY;
 }
 
 /**
@@ -49,14 +65,30 @@ export function percentile(values, p) {
  * @returns {{ count: number; p50: number; p95: number; p99: number; max: number }}
  */
 export function getLatencyPercentiles() {
-  const values = ring.filter((v) => typeof v === "number");
-  if (!values.length) return { count: 0, p50: 0, p95: 0, p99: 0, max: 0 };
+  return summarise(ring);
+}
+
+/**
+ * Browser-observed navigation percentiles over the sampled window.
+ * @returns {{ count: number; p50: number; p95: number; p99: number; max: number }}
+ */
+export function getClientNavigationPercentiles() {
+  return summarise(clientNavigationRing);
+}
+
+/**
+ * @param {number[]} values
+ * @returns {{ count: number; p50: number; p95: number; p99: number; max: number }}
+ */
+function summarise(values) {
+  const sampled = values.filter((v) => typeof v === "number");
+  if (!sampled.length) return { count: 0, p50: 0, p95: 0, p99: 0, max: 0 };
   return {
-    count: values.length,
-    p50: Math.round(percentile(values, 50)),
-    p95: Math.round(percentile(values, 95)),
-    p99: Math.round(percentile(values, 99)),
-    max: Math.round(Math.max(...values)),
+    count: sampled.length,
+    p50: Math.round(percentile(sampled, 50)),
+    p95: Math.round(percentile(sampled, 95)),
+    p99: Math.round(percentile(sampled, 99)),
+    max: Math.round(Math.max(...sampled)),
   };
 }
 
@@ -64,4 +96,6 @@ export function getLatencyPercentiles() {
 export function __resetPerf() {
   ring = [];
   next = 0;
+  clientNavigationRing = [];
+  clientNavigationNext = 0;
 }
