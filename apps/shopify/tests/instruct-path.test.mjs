@@ -36,12 +36,12 @@ test("the internal 'advisory until a typed action preview' line is no longer ren
     .join("\n");
   assert.doesNotMatch(code, /typed action preview/);
   assert.match(code, /FocusedActionDecisionRow/);
-  assert.match(code, /action\.raise\?\.reason/);
+  assert.match(code, /action\.raise\.reason/);
 });
 
 test("a non-executable move still says something the merchant can act on", () => {
   // The fallback must be a position, not an absence — no "unavailable", no "not supported".
-  const fallback = /This one's yours to make/;
+  const fallback = /Accepting the plan does not write to Shopify/;
   assert.match(dailyHome, fallback);
 });
 

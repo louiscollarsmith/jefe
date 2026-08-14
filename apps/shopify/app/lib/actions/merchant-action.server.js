@@ -10,6 +10,7 @@ export const MERCHANT_ACTION_STATUS = Object.freeze({
   proposed: "proposed",
   accepted: "accepted",
   inProgress: "in_progress",
+  needsAttention: "needs_attention",
   deferred: "deferred",
   declined: "declined",
   completed: "completed",
@@ -35,17 +36,31 @@ const ACTIVE_STATUSES = new Set([
   MERCHANT_ACTION_STATUS.proposed,
   MERCHANT_ACTION_STATUS.accepted,
   MERCHANT_ACTION_STATUS.inProgress,
+  MERCHANT_ACTION_STATUS.needsAttention,
 ]);
 
 /**
- * @param {{ recommendation?: any | null; execution?: any | null }} input
+ * @param {{ action?: any | null; recommendation?: any | null; execution?: any | null }} input
  */
 export function deriveMerchantActionStatus(input) {
   const execution = input.execution ?? null;
   const recommendation = input.recommendation ?? null;
+  const workflow = workflowFromRecommendation(recommendation);
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  const hasNeedsAttention = steps.some((/** @type {any} */ step) =>
+    ["blocked", "failed", "needs_attention"].includes(normalizeToken(step?.status)),
+  );
+  const hasRunningStep = steps.some((/** @type {any} */ step) =>
+    ["in_progress", "running"].includes(normalizeToken(step?.status)),
+  );
+  const actionStatus = normalizeToken(input.action?.status);
   const executionStatus = normalizeToken(execution?.status);
   const reviewStatus = normalizeToken(recommendation?.reviewStatus);
+  if (actionStatus === MERCHANT_ACTION_STATUS.deferred) return MERCHANT_ACTION_STATUS.deferred;
+  if (actionStatus === MERCHANT_ACTION_STATUS.declined) return MERCHANT_ACTION_STATUS.declined;
+  if (actionStatus === MERCHANT_ACTION_STATUS.superseded) return MERCHANT_ACTION_STATUS.superseded;
   if (
+    actionStatus === MERCHANT_ACTION_STATUS.completed ||
     recommendation?.completedAt ||
     reviewStatus === "completed" ||
     (["applied", "partially_applied"].includes(executionStatus) &&
@@ -53,7 +68,14 @@ export function deriveMerchantActionStatus(input) {
   ) {
     return MERCHANT_ACTION_STATUS.completed;
   }
-  if (["applied", "partially_applied", "approved"].includes(executionStatus)) {
+  if (hasNeedsAttention || actionStatus === MERCHANT_ACTION_STATUS.needsAttention) {
+    return MERCHANT_ACTION_STATUS.needsAttention;
+  }
+  if (
+    hasRunningStep ||
+    actionStatus === MERCHANT_ACTION_STATUS.inProgress ||
+    ["applied", "partially_applied", "approved"].includes(executionStatus)
+  ) {
     return MERCHANT_ACTION_STATUS.inProgress;
   }
   if (["rejected", "reverted"].includes(executionStatus)) {
@@ -61,6 +83,9 @@ export function deriveMerchantActionStatus(input) {
   }
   if (reviewStatus === "accepted" && recommendationHasStartedWorkflowStep(recommendation)) {
     return MERCHANT_ACTION_STATUS.inProgress;
+  }
+  if (actionStatus === MERCHANT_ACTION_STATUS.accepted) {
+    return MERCHANT_ACTION_STATUS.accepted;
   }
   if (reviewStatus === "accepted") return MERCHANT_ACTION_STATUS.accepted;
   if (reviewStatus === "deferred") return MERCHANT_ACTION_STATUS.deferred;
@@ -453,17 +478,25 @@ export async function getMerchantAction(prisma, input) {
 export function serializeMerchantAction(row) {
   const source = row.sourceRecommendation ?? null;
   const execution = row.currentExecution ?? row.executions?.[0] ?? null;
-  const status = deriveMerchantActionStatus({ recommendation: source, execution });
+  const status = deriveMerchantActionStatus({ action: row, recommendation: source, execution });
   const summary = safeText(row.summary || source?.summary, 700);
   const progress = jsonObject(row.progress);
   const executionSummary = jsonObject(execution?.proposalSummary);
+  const workflow = workflowView(workflowFromRecommendation(source));
+  const display = displaySteps(progress, source);
+  const currentStep = currentDisplayWorkflowStep(display);
   return {
     id: row.id,
     title: safeText(row.title || source?.title, 180) || "Review Jefe's next move",
     summary,
     status,
     statusLabel: statusLabel(status, execution),
-    statusTone: status === MERCHANT_ACTION_STATUS.inProgress ? "green" : status === MERCHANT_ACTION_STATUS.proposed ? "yellow" : "neutral",
+    statusTone:
+      status === MERCHANT_ACTION_STATUS.inProgress
+        ? "green"
+        : status === MERCHANT_ACTION_STATUS.needsAttention || status === MERCHANT_ACTION_STATUS.proposed
+          ? "yellow"
+          : "neutral",
     sourceRecommendationId: row.sourceRecommendationId ?? source?.id ?? null,
     sourceRecommendation: source ? sourceRecommendationView(source) : sourceRecommendationFromSummary(executionSummary),
     actionRunId: row.currentActionRunId ?? execution?.runId ?? null,
@@ -476,7 +509,9 @@ export function serializeMerchantAction(row) {
     executionStatus: execution?.status ?? null,
     outcomeStatus: execution?.outcomeStatus ?? null,
     progress,
-    displaySteps: displaySteps(progress, source),
+    workflow,
+    currentStep,
+    displaySteps: display,
     successText: successText(progress, source),
     baselineSignal: baselineSignal(executionSummary),
     currentSignal: currentSignal(execution, executionSummary),
@@ -772,6 +807,11 @@ function workflowView(workflow) {
           capabilityRef: step.capabilityRef ?? null,
           dependsOnStepIds: Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [],
           evidenceIds: Array.isArray(step.evidenceIds) ? step.evidenceIds : [],
+          statusReason: safeText(step.statusReason, 240) || null,
+          progress: jsonObject(step.progress),
+          attention: jsonObject(step.attention),
+          startedAt: step.startedAt?.toISOString?.() ?? null,
+          completedAt: step.completedAt?.toISOString?.() ?? null,
         }))
       : [],
   };
@@ -798,8 +838,23 @@ function displaySteps(progress, source) {
     status: safeText(step?.status, 40) || null,
     mode: safeText(step?.mode, 40) || null,
     capabilityRef: safeText(step?.capabilityRef, 120) || null,
+    statusReason: safeText(step?.statusReason, 240) || null,
+    progress: jsonObject(step?.progress),
+    attention: jsonObject(step?.attention),
+    startedAt: step?.startedAt?.toISOString?.() ?? null,
+    completedAt: step?.completedAt?.toISOString?.() ?? null,
     done: step?.status === "completed" || Boolean(step?.done),
   }));
+}
+
+/** @param {any[]} steps */
+function currentDisplayWorkflowStep(steps) {
+  const active = steps.find((step) =>
+    ["ready", "running", "needs_merchant", "needs_attention"].includes(
+      normalizeToken(step?.status),
+    ),
+  );
+  return active ?? steps.find((step) => !step?.done && normalizeToken(step?.status) !== "completed") ?? null;
 }
 
 /**
@@ -823,6 +878,7 @@ function successText(progress, source) {
 function statusLabel(status, execution) {
   if (status === MERCHANT_ACTION_STATUS.proposed) return "Proposed";
   if (status === MERCHANT_ACTION_STATUS.accepted) return "Accepted";
+  if (status === MERCHANT_ACTION_STATUS.needsAttention) return "Needs attention";
   if (status === MERCHANT_ACTION_STATUS.inProgress) {
     const approved = execution?.approvedAt ?? execution?.appliedAt;
     return approved ? `Approved ${shortDate(approved)}` : "In progress";

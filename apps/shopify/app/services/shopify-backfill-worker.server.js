@@ -59,6 +59,7 @@ import { reviewDueRecommendations } from "../lib/onboarding/recommendation-revie
 import { reconcileBootstrapRecommendationsAfterFullRefresh } from "../lib/onboarding/reconciliation.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
+import { processReadyActionStepRuns } from "../lib/actions/action-step-lifecycle.server.js";
 import { maybePruneOldEvents } from "./analytics/retention.server.js";
 import { maybePostChangelog } from "./changelog/changelog-watcher.server.js";
 import { maybeSendWinBackCampaign } from "../lib/email/winback-campaign.server.js";
@@ -366,6 +367,10 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
       await maybeMeasureClearanceOutcomes(workerPrisma, logger);
+      await processReadyActionStepRuns(workerPrisma, {
+        logger,
+        loadOfflineToken: (shop) => loadFreshOfflineToken(shop),
+      });
       await maybeSendWinBackCampaign(workerPrisma, { logger });
       await maybeSendMorningBriefs(workerPrisma, { logger }); // DARK unless ENABLE_MORNING_BRIEF && ENABLE_EMAIL
       await maybeGenerateProactiveRecommendations(workerPrisma, { logger }); // DARK unless ENABLE_PROACTIVE_RECOMMENDATIONS

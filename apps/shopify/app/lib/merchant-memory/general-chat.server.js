@@ -45,13 +45,11 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
 
 const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
 const DEFAULT_RESTOCK_COVER_DAYS = 120;
-const WORKFLOW_STEP_UPDATE_STATUSES = new Set([
-  "pending",
-  "in_progress",
-  "blocked",
-  "completed",
-  "skipped",
-]);
+// The Action Step lifecycle service owns executable transitions. The legacy
+// model-returned update hook is intentionally inert for lifecycle statuses so a
+// reply cannot mark work running/completed without server validation.
+/** @type {Set<string>} */
+const WORKFLOW_STEP_UPDATE_STATUSES = new Set([]);
 
 const log = baseLogger.child({ component: "merchant-general-chat" });
 
@@ -749,8 +747,7 @@ async function generateGroundedReply(input) {
         "Act like the merchant's eCommerce manager: when evidence supports a recommendation, choose a sensible default and ask for approval or correction. Do not make the merchant design the workflow from scratch.",
         "Use currentAction.operationalContext when present. It contains code-prepared facts, primitives, formulas and defaults that you may apply; the merchant's latest message determines which of those are relevant.",
         "When using an operational primitive, show the specific assumption or formula briefly and ask for approval or correction, not for the merchant to do the work.",
-        "You may return workflowStepUpdates only for steps listed in currentAction.operationalContext.workflowSteps. Use this when the merchant clearly confirms progress such as a step being complete, blocked, skipped or in progress.",
-        "workflowStepUpdates.status must be one of pending, in_progress, blocked, completed or skipped. The app validates and applies updates; you must still explain what changed in reply.",
+        "Do not return workflowStepUpdates for action execution. If the merchant says to go ahead, asks to start a step, or confirms a consequential step, explain what will happen; the application validates and starts steps through its own lifecycle service.",
         "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
         "If context is insufficient, say what is missing naturally; never discuss memory implementation.",

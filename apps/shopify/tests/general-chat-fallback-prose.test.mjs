@@ -226,7 +226,7 @@ test("current action input keeps stock-cover evidence generic for model interpre
   );
 });
 
-test("workflow step updates from the model are scoped to focused action steps", async () => {
+test("workflow step updates from the model cannot directly mutate lifecycle status", async () => {
   const updates = [];
   const prisma = {
     merchantRecommendationStep: {
@@ -268,21 +268,6 @@ test("workflow step updates from the model are scoped to focused action steps", 
     ],
   });
 
-  assert.deepEqual(result.applied, [
-    {
-      stepId: STEP_ONE_ID,
-      status: "completed",
-      reason: "Merchant said step 1 complete.",
-    },
-  ]);
-  assert.deepEqual(updates, [
-    {
-      where: {
-        id: STEP_ONE_ID,
-        merchantId: "merchant-1",
-        shopId: "shop-1",
-      },
-      data: { status: "completed" },
-    },
-  ]);
+  assert.deepEqual(result.applied, []);
+  assert.deepEqual(updates, []);
 });

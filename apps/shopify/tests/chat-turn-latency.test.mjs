@@ -148,8 +148,9 @@ test("the clock starts when the merchant acts — enter or yes", () => {
   assert.match(reporter, /Peek rather than take/);
 
   const home = read("app/components/daily-home.tsx");
-  assert.match(home, /onSubmit=\{markApprovalSent\}/, "Approve must start the clock");
-  assert.match(home, /value="action\.approve"/);
+  assert.match(home, /onSubmit=\{markApprovalSent\}/, "Lifecycle starts must start the clock");
+  assert.match(home, /value="action\.accept_plan"/);
+  assert.match(home, /value="action\.step\.start"/);
 
   // The beacon does not take the client's word for the category.
   const beacon = read("app/routes/api.chat-turn.tsx");

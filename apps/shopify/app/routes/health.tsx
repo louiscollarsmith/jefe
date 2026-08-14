@@ -22,6 +22,7 @@ import { getLlmProviderHealth } from "../lib/observability/llm-provider-health.s
 import { getInboundEmailHealth } from "../lib/email/inbound/health.server.js";
 import { getEpisodicEmbeddingConfig } from "../lib/llm/config.server.js";
 import { listActionTypes } from "../lib/actions/action-intent.server.js";
+import { getActionStepRunHealth } from "../lib/actions/action-step-lifecycle.server.js";
 import {
   getEmbeddingHealth,
   getEpisodeIndexHealth,
@@ -29,9 +30,10 @@ import {
 import { getShopifyIntelligenceCoverageHealth } from "../lib/shopify/intelligence-coverage.server.js";
 
 export const loader = async () => {
-  const [database, bootstrapJobs] = await Promise.all([
+  const [database, bootstrapJobs, actionStepRuns] = await Promise.all([
     checkDatabaseHealth(db),
     getBootstrapJobHealth(db),
+    getActionStepRunHealth(db),
   ]);
   const episodeIndex =
     database.status === "ok"
@@ -55,6 +57,7 @@ export const loader = async () => {
         enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
       }),
       bootstrapJobs,
+      actionStepRuns,
       webhooks: getWebhookHealth(),
       inboundEmail: getInboundEmailHealth(),
       llmFallback: getLlmProviderHealth(),
