@@ -95,7 +95,7 @@ test("chat replies preserve the reader's scroll position instead of jumping to t
 
 test("the home uses action-centric navigation into focused chats", () => {
   assert.match(dailyHomeSource, /function FocusedActionsHome/);
-  assert.match(dailyHomeSource, /function ActionSpotlight/);
+  assert.match(dailyHomeSource, /function AttentionSpotlight/);
   assert.match(dailyHomeSource, /function TalkActionChooser/);
   assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
   assert.match(dailyHomeSource, /action: "\/api\/app-home\/action-chats"/);

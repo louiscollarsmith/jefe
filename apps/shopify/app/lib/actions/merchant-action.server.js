@@ -16,6 +16,21 @@ export const MERCHANT_ACTION_STATUS = Object.freeze({
   superseded: "superseded",
 });
 
+export const MERCHANT_CURRENT_FOCUS_KIND = Object.freeze({
+  merchantInput: "merchant_input",
+  actionProblem: "action_problem",
+  actionReady: "action_ready",
+  recommendation: "recommendation",
+  progress: "progress",
+  empty: "empty",
+});
+
+export const MERCHANT_ATTENTION_TYPE = Object.freeze({
+  needsAttention: "NEEDS_ATTENTION",
+  merchantInputRequired: "MERCHANT_INPUT_REQUIRED",
+  stepReady: "STEP_READY",
+});
+
 const ACTIVE_STATUSES = new Set([
   MERCHANT_ACTION_STATUS.proposed,
   MERCHANT_ACTION_STATUS.accepted,
@@ -28,8 +43,8 @@ const ACTIVE_STATUSES = new Set([
 export function deriveMerchantActionStatus(input) {
   const execution = input.execution ?? null;
   const recommendation = input.recommendation ?? null;
-  const executionStatus = String(execution?.status ?? "");
-  const reviewStatus = String(recommendation?.reviewStatus ?? "");
+  const executionStatus = normalizeToken(execution?.status);
+  const reviewStatus = normalizeToken(recommendation?.reviewStatus);
   if (
     recommendation?.completedAt ||
     reviewStatus === "completed" ||
@@ -43,6 +58,9 @@ export function deriveMerchantActionStatus(input) {
   }
   if (["rejected", "reverted"].includes(executionStatus)) {
     return MERCHANT_ACTION_STATUS.declined;
+  }
+  if (reviewStatus === "accepted" && recommendationHasStartedWorkflowStep(recommendation)) {
+    return MERCHANT_ACTION_STATUS.inProgress;
   }
   if (reviewStatus === "accepted") return MERCHANT_ACTION_STATUS.accepted;
   if (reviewStatus === "deferred") return MERCHANT_ACTION_STATUS.deferred;
@@ -453,8 +471,10 @@ export function serializeMerchantAction(row) {
     executable:
       execution?.actionType && execution?.resolvedMode !== "recommend"
         ? isActionExecuteEnabled(execution.actionType)
-        : false,
+      : false,
     raise: buildActionRaise(execution?.eligibility),
+    executionStatus: execution?.status ?? null,
+    outcomeStatus: execution?.outcomeStatus ?? null,
     progress,
     displaySteps: displaySteps(progress, source),
     successText: successText(progress, source),
@@ -463,6 +483,150 @@ export function serializeMerchantAction(row) {
     updatedAt: row.updatedAt?.toISOString?.() ?? null,
     createdAt: row.createdAt?.toISOString?.() ?? null,
   };
+}
+
+/**
+ * Derive the one thing the merchant should pay attention to on the Daily Home.
+ * This is intentionally pure and read-only: callers pass the already-serialized
+ * MerchantAction rows, and this layer adds home-priority metadata without creating
+ * a second "home focus" record.
+ *
+ * @param {{ merchantActions?: any[]; actions?: any[] }} input
+ */
+export function getMerchantCurrentFocus(input = {}) {
+  return getMerchantCurrentFocuses(input)[0];
+}
+
+/**
+ * Return every attention-worthy Daily Home focus, in the same deterministic
+ * priority order used for the default hero. Quiet progress remains a fallback
+ * only: it is not mixed into the carousel when there are real things to act on.
+ *
+ * @param {{ merchantActions?: any[]; actions?: any[] }} input
+ */
+export function getMerchantCurrentFocuses(input = {}) {
+  /** @type {any[]} */
+  const attention = getMerchantAttentionItems(input).map(focusFromAttentionItem);
+  const actions = Array.isArray(input.merchantActions)
+    ? input.merchantActions
+    : Array.isArray(input.actions)
+      ? input.actions
+      : [];
+  const working = actions.filter(isWorkingActionForFocus);
+  const proposed = getMerchantProposedActions(input);
+
+  for (const action of proposed) {
+    attention.push(focusFromAction(action, {
+      kind: MERCHANT_CURRENT_FOCUS_KIND.recommendation,
+      priority: 4,
+      headline: "Here's what I'd do next.",
+      eyebrow: "Recommended",
+      reason: action.summary || "This is the next useful move Jefe has found.",
+      ctaLabel: "Talk this through",
+      ctaIntent: "chat.focus.start",
+    }));
+  }
+
+  if (attention.length > 0) return attention;
+
+  const progress = working.find((action) => action.status === MERCHANT_ACTION_STATUS.inProgress) ?? working[0] ?? null;
+  if (progress) {
+    return [focusFromAction(progress, {
+      kind: MERCHANT_CURRENT_FOCUS_KIND.progress,
+      priority: 5,
+      headline: "Nothing needs your attention right now.",
+      eyebrow: "In progress",
+      reason: progress.currentSignal || progress.successText || "Jefe is working on this and will report back when there is an outcome.",
+      ctaLabel: "Talk this through",
+      ctaIntent: "chat.focus.start",
+    })];
+  }
+
+  return [{
+    kind: MERCHANT_CURRENT_FOCUS_KIND.empty,
+    priority: 99,
+    headline: "Nothing needs your attention right now.",
+    eyebrow: "All clear",
+    reason: "When there is a grounded action to review, start, or fix, it will appear here.",
+    actionId: null,
+    actionRunId: null,
+    ctaLabel: null,
+    ctaIntent: null,
+    action: null,
+  }];
+}
+
+/**
+ * A queue of merchant handoffs for the Daily Home attention area. This is a
+ * view over existing MerchantAction/workflow state; it deliberately creates no
+ * homepage lifecycle state that could drift from the action system.
+ *
+ * @param {{ merchantActions?: any[]; actions?: any[] }} input
+ */
+export function getMerchantAttentionItems(input = {}) {
+  const actions = actionsFromInput(input);
+  const working = actions.filter(isWorkingActionForFocus);
+  /** @type {any[]} */
+  const items = [];
+  const seen = new Set();
+  const pushItem = (/** @type {any} */ action, /** @type {any} */ attention) => {
+    const item = attentionItemFromAction(action, attention);
+    const key = focusKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(item);
+  };
+
+  for (const action of working.filter(actionHasProblem)) {
+    pushItem(action, {
+      attentionType: MERCHANT_ATTENTION_TYPE.needsAttention,
+      priority: 1,
+      explanation: problemReason(action),
+      ctaLabel: "Review issue",
+      ctaIntent: "chat.focus.start",
+    });
+  }
+
+  for (const action of working.filter(actionNeedsMerchantInput)) {
+    pushItem(action, {
+      attentionType: MERCHANT_ATTENTION_TYPE.merchantInputRequired,
+      priority: 2,
+      explanation: merchantInputReason(action),
+      ctaLabel: "Review next step",
+      ctaIntent: "chat.focus.start",
+    });
+  }
+
+  for (const action of working.filter(actionHasReadyExecutableStep)) {
+    pushItem(action, {
+      attentionType: MERCHANT_ATTENTION_TYPE.stepReady,
+      priority: 3,
+      explanation: readyReason(action),
+      ctaLabel: "Start next step",
+      ctaIntent: "action.approve",
+    });
+  }
+
+  return items;
+}
+
+/** @param {{ merchantActions?: any[]; actions?: any[] }} input */
+export function getMerchantProposedActions(input = {}) {
+  return actionsFromInput(input).filter(
+    (action) => action?.status === MERCHANT_ACTION_STATUS.proposed,
+  );
+}
+
+/** @param {{ merchantActions?: any[]; actions?: any[] }} input */
+export function getMerchantInProgressActions(input = {}) {
+  return actionsFromInput(input).filter(isWorkingActionForFocus);
+}
+
+/** @param {{ merchantActions?: any[]; actions?: any[] }} input */
+export function getMerchantCompletedActions(input = {}) {
+  return actionsFromInput(input).filter(
+    (action) => action?.status === MERCHANT_ACTION_STATUS.completed,
+  );
 }
 
 /**
@@ -571,6 +735,17 @@ function workflowFromRecommendation(recommendation) {
 }
 
 /** @param {any} recommendation */
+function recommendationHasStartedWorkflowStep(recommendation) {
+  const workflow = workflowFromRecommendation(recommendation);
+  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  return steps.some((/** @type {any} */ step) =>
+    ["blocked", "completed", "failed", "in_progress", "needs_attention", "needs_merchant", "running"].includes(
+      normalizeToken(step?.status),
+    ),
+  );
+}
+
+/** @param {any} recommendation */
 function currentExecutionFromRecommendation(recommendation) {
   const workflow = workflowFromRecommendation(recommendation);
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
@@ -656,6 +831,192 @@ function statusLabel(status, execution) {
   if (status === MERCHANT_ACTION_STATUS.declined) return "Declined";
   if (status === MERCHANT_ACTION_STATUS.completed) return "Complete";
   return "Superseded";
+}
+
+/** @param {any} action */
+function isWorkingActionForFocus(action) {
+  return (
+    action?.status === MERCHANT_ACTION_STATUS.accepted ||
+    action?.status === MERCHANT_ACTION_STATUS.inProgress
+  );
+}
+
+/** @param {any} action */
+function actionNeedsMerchantInput(action) {
+  const step = currentWorkflowStep(action);
+  if (!step) return false;
+  const mode = normalizeToken(step.mode);
+  const status = normalizeToken(step.status);
+  return (
+    (["merchant_action", "evidence_required"].includes(mode) ||
+      ["evidence_required", "needs_merchant"].includes(status)) &&
+    !["blocked", "completed", "skipped", "superseded"].includes(status)
+  );
+}
+
+/** @param {any} action */
+function actionHasProblem(action) {
+  if (normalizeToken(action?.executionStatus) === "failed") return true;
+  return workflowStepsForFocus(action).some(
+    (/** @type {any} */ step) =>
+      ["blocked", "needs_attention"].includes(normalizeToken(step.status)),
+  );
+}
+
+/** @param {any} action */
+function actionHasReadyExecutableStep(action) {
+  const step = currentWorkflowStep(action);
+  if (!step) return false;
+  const status = normalizeToken(step.status);
+  return (
+    action?.status === MERCHANT_ACTION_STATUS.accepted &&
+    Boolean(action?.actionRunId) &&
+    action?.executable !== false &&
+    normalizeToken(action?.executionStatus) === "proposed" &&
+    normalizeToken(step.mode) === "execute" &&
+    ["", "draft", "pending", "proposed", "ready"].includes(status)
+  );
+}
+
+/** @param {any} action */
+function currentWorkflowStep(action) {
+  return workflowStepsForFocus(action).find((/** @type {any} */ step) => {
+    const status = normalizeToken(step.status);
+    return !["completed", "skipped", "superseded"].includes(status);
+  }) ?? null;
+}
+
+/** @param {any} action */
+function workflowStepsForFocus(action) {
+  if (Array.isArray(action?.displaySteps)) {
+    return action.displaySteps.filter((/** @type {any} */ step) => step && typeof step === "object");
+  }
+  const steps = action?.progress?.workflow?.steps;
+  return Array.isArray(steps) ? steps.filter((/** @type {any} */ step) => step && typeof step === "object") : [];
+}
+
+/** @param {any} action */
+function merchantInputReason(action) {
+  const step = currentWorkflowStep(action);
+  return (
+    safeText(step?.description, 240) ||
+    "Jefe needs your input before this can move forward."
+  );
+}
+
+/** @param {any} action */
+function problemReason(action) {
+  if (normalizeToken(action?.executionStatus) === "failed") {
+    return "Jefe hit a problem while executing this action.";
+  }
+  const blocked = workflowStepsForFocus(action).find(
+    (/** @type {any} */ step) => normalizeToken(step.status) === "blocked",
+  );
+  return (
+    safeText(blocked?.description, 240) ||
+    "The next step is blocked and needs review."
+  );
+}
+
+/** @param {any} action */
+function readyReason(action) {
+  const step = currentWorkflowStep(action);
+  return (
+    safeText(step?.description, 240) ||
+    "The plan is accepted and the next step is ready."
+  );
+}
+
+/**
+ * @param {any} action
+ * @param {{ kind: string; priority: number; headline: string; eyebrow: string; reason: string; ctaLabel: string; ctaIntent: string }} focus
+ */
+function focusFromAction(action, focus) {
+  return {
+    kind: focus.kind,
+    priority: focus.priority,
+    headline: focus.headline,
+    eyebrow: focus.eyebrow,
+    reason: focus.reason,
+    actionId: action?.id ?? null,
+    actionRunId: action?.actionRunId ?? null,
+    ctaLabel: focus.ctaLabel,
+    ctaIntent: focus.ctaIntent,
+    action,
+  };
+}
+
+/** @param {any} focus */
+function focusKey(focus) {
+  return (
+    focus.actionId ??
+    focus.actionRunId ??
+    focus.action?.title ??
+    focus.kind
+  );
+}
+
+/**
+ * @param {any} action
+ * @param {{ attentionType: string; priority: number; explanation: string; ctaLabel: string; ctaIntent: string }} attention
+ */
+function attentionItemFromAction(action, attention) {
+  const step = currentWorkflowStep(action);
+  return {
+    attentionType: attention.attentionType,
+    priority: attention.priority,
+    title: action?.title ?? "Review Jefe's next move",
+    explanation: attention.explanation,
+    actionId: action?.id ?? null,
+    actionRunId: action?.actionRunId ?? null,
+    stepId: step?.id ?? null,
+    ctaLabel: attention.ctaLabel,
+    ctaIntent: attention.ctaIntent,
+    waitingSince: action?.updatedAt ?? action?.createdAt ?? null,
+    action,
+  };
+}
+
+/** @param {any} item */
+function focusFromAttentionItem(item) {
+  const kind =
+    item.attentionType === MERCHANT_ATTENTION_TYPE.needsAttention
+      ? MERCHANT_CURRENT_FOCUS_KIND.actionProblem
+      : item.attentionType === MERCHANT_ATTENTION_TYPE.stepReady
+        ? MERCHANT_CURRENT_FOCUS_KIND.actionReady
+        : MERCHANT_CURRENT_FOCUS_KIND.merchantInput;
+  return {
+    kind,
+    priority: item.priority,
+    headline:
+      kind === MERCHANT_CURRENT_FOCUS_KIND.actionProblem
+        ? "This needs your attention."
+        : "Needs your attention",
+    eyebrow:
+      item.attentionType === MERCHANT_ATTENTION_TYPE.stepReady
+        ? "Ready to start"
+        : "Needs attention",
+    reason: item.explanation,
+    actionId: item.actionId,
+    actionRunId: item.actionRunId,
+    ctaLabel: item.ctaLabel,
+    ctaIntent: item.ctaIntent,
+    action: item.action,
+  };
+}
+
+/** @param {{ merchantActions?: any[]; actions?: any[] }} input */
+function actionsFromInput(input = {}) {
+  return Array.isArray(input.merchantActions)
+    ? input.merchantActions
+    : Array.isArray(input.actions)
+      ? input.actions
+      : [];
+}
+
+/** @param {unknown} value */
+function normalizeToken(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 /**

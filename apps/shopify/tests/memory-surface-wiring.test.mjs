@@ -150,14 +150,32 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
 });
 
 test("the live DailyHome is the focused-action home and chat surface", () => {
-  // The home is action-centric: one durable next move, a chat list, in-progress work,
-  // and action history. Opening a conversation renders the focused chat surface.
+  // The home is action-centric: attention, proposed work, in-progress work,
+  // chats and action history. Opening a conversation renders the focused chat surface.
   assert.match(dailyHomeSource, /function FocusedActionsHome/);
   assert.match(dailyHomeSource, /function FocusedConversation/);
-  assert.match(dailyHomeSource, /YOUR NEXT MOVE/);
+  assert.match(dailyHomeSource, /attentionItems/);
+  assert.match(dailyHomeSource, /proposedActions/);
+  assert.match(dailyHomeSource, /inProgressActions/);
+  assert.match(dailyHomeSource, /completedActions/);
+  assert.match(dailyHomeSource, /function AttentionSpotlight/);
+  assert.match(dailyHomeSource, /Attention queue/);
+  assert.match(dailyHomeSource, /Needs your attention/);
+  assert.match(dailyHomeSource, /Proposed ·/);
+  assert.match(dailyHomeSource, /proposedCardStyle/);
+  assert.match(dailyHomeSource, /proposedBadgeStyle/);
   assert.match(dailyHomeSource, /title="Chats"/);
-  assert.match(dailyHomeSource, /title="In Progress Actions"/);
-  assert.match(dailyHomeSource, /title="Action history"/);
+  assert.match(dailyHomeSource, /In progress ·/);
+  assert.match(dailyHomeSource, /Completed ·/);
+  assert.match(dailyHomeSource, /function actionProgressState/);
+  assert.match(dailyHomeSource, /function InProgressStepRow/);
+  assert.match(dailyHomeSource, /function progressBadgeLabel/);
+  assert.match(dailyHomeSource, /function progressFooterText/);
+  assert.match(dailyHomeSource, /function currentStepStatusLabel/);
+  assert.match(dailyHomeSource, /function workflowStepOwnerBadge/);
+  assert.match(dailyHomeSource, /function workflowOwnerBadgeStyle/);
+  assert.doesNotMatch(dailyHomeSource, /Jefe can do this/);
+  assert.doesNotMatch(dailyHomeSource, /Needs merchant action/);
   assert.match(dailyHomeSource, /focusStripLabelStyle/);
   assert.match(dailyHomeSource, /focusStripTextStyle/);
   assert.match(dailyHomeSource, /WORKING ON/);
@@ -272,7 +290,7 @@ test("focused action context is connected to the title row and system focus even
   assert.match(dailyHomeSource, /<span style=\{systemEventTextStyle\}>\{message\.content\}<\/span>/);
 });
 
-test("approve and defer decisions are reachable only from the focused action chat", () => {
+test("approval remains wired through governed action forms", () => {
   const beforeChat = dailyHomeSource.slice(
     0,
     dailyHomeSource.indexOf("function FocusedConversation"),
@@ -280,7 +298,8 @@ test("approve and defer decisions are reachable only from the focused action cha
   const chatSource = dailyHomeSource.slice(
     dailyHomeSource.indexOf("function FocusedConversation"),
   );
-  assert.doesNotMatch(beforeChat, /value="action\.approve"/);
+  assert.match(beforeChat, /function AttentionCta/);
+  assert.match(beforeChat, /value="action\.approve"/);
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
   assert.match(chatSource, /value="action\.approve"/);
   assert.match(chatSource, /value="action\.defer"/);
