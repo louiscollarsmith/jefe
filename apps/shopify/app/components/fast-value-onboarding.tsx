@@ -249,6 +249,8 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               answer={answer}
               failure={experience.failure}
               retrying={answerFetcher.state !== "idle"}
+              bootstrapPhase={experience.bootstrapPhase}
+              fullLearning={experience.fullLearning}
             />
           ) : stage === "insight" ? (
             <InsightScene
@@ -349,17 +351,24 @@ function ContextScene({
   answer,
   failure,
   retrying,
+  bootstrapPhase,
+  fullLearning,
 }: {
   context: { value: string; label: string; echo: string } | null;
   answer: (option: ContextOption) => void;
   failure: FastExperience["failure"];
   retrying: boolean;
+  bootstrapPhase: string;
+  fullLearning: FastExperience["fullLearning"];
 }) {
+  const waiting = onboardingWaitingCopy(bootstrapPhase, fullLearning);
   const readState = failure
     ? failure.type === "insufficient"
       ? "Recent read complete"
       : "Read paused"
-    : "Still looking";
+    : context
+      ? waiting.kicker
+      : "Still looking";
   return (
     <div className="jf-scene jf-context-scene">
       <Kicker pulse={!failure}>{readState}</Kicker>
@@ -381,7 +390,15 @@ function ContextScene({
           <span>Your priority is saved. I won’t force a recommendation the evidence can’t support.</span>
         </div>
       ) : (
-        <div className="jf-ack"><span className="jf-pulse-dot" aria-hidden="true" /><span>Got it — {context.echo}. Let me finish the last check.</span></div>
+        <>
+          <div className="jf-ack"><span className="jf-pulse-dot" aria-hidden="true" /><span>Got it — {context.echo}. {waiting.title}</span></div>
+          <div className="jf-honest-state">
+            <BlockStack gap="300">
+              <Text as="p">{waiting.detail}</Text>
+              <Text as="p" tone="subdued">{waiting.reassurance}</Text>
+            </BlockStack>
+          </div>
+        </>
       )}
       {failure ? (
         <div className="jf-honest-state">
@@ -393,6 +410,40 @@ function ContextScene({
       ) : null}
     </div>
   );
+}
+
+function onboardingWaitingCopy(
+  bootstrapPhase: string,
+  fullLearning: FastExperience["fullLearning"],
+) {
+  if (bootstrapPhase === "retrying") {
+    return {
+      kicker: "Still working",
+      title: "I’m retrying the first recommendation.",
+      detail:
+        "The store history is saved; I’m re-running the last generation step so the first finding is grounded enough to show.",
+      reassurance:
+        "This can take another minute. You don’t need to choose anything else.",
+    };
+  }
+  if (fullLearning.state === "complete") {
+    return {
+      kicker: "Choosing the first move",
+      title: "I’m turning that read into your first finding.",
+      detail:
+        "I’ve finished reading the available Shopify history. Now I’m checking the finding and action against the evidence before I put it in front of you.",
+      reassurance:
+        "This usually takes under a minute, and the page will move on automatically.",
+    };
+  }
+  return {
+    kicker: "Still working",
+    title: "I’m building your first evidence-backed finding.",
+    detail:
+      "Your priority is saved. I’m still reading the strongest recent store signals and checking what is safe to recommend first.",
+    reassurance:
+      "You can leave this open; it refreshes automatically as soon as the read is ready.",
+  };
 }
 
 function InsightScene({

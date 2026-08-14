@@ -299,12 +299,16 @@ export function shouldRevalidate({
 }
 
 export function isAppHomeUiOnlyNavigation(currentUrl: URL, nextUrl: URL) {
-  if (currentUrl.pathname !== "/app" || nextUrl.pathname !== "/app") return false;
+  if (normalizeAppDataPath(currentUrl.pathname) !== "/app" || normalizeAppDataPath(nextUrl.pathname) !== "/app") return false;
   const changed = changedSearchKeys(currentUrl.searchParams, nextUrl.searchParams);
   return (
     changed.length > 0 &&
     changed.every((key) => ["conversation", "talkAction", "actionChat"].includes(key))
   );
+}
+
+function normalizeAppDataPath(pathname: string) {
+  return pathname === "/app.data" ? "/app" : pathname;
 }
 
 function changedSearchKeys(current: URLSearchParams, next: URLSearchParams) {
@@ -1726,6 +1730,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         merchantId: merchant.id,
         shopId: shop.id,
         includeInactive: true,
+        sync: false,
       });
       // Same best-effort pattern for the merchant's brand logo (shop.brand): fire-and-
       // forget so its first-load-only Admin GraphQL call stays off the LCP path, cached

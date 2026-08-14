@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **Onboarding no longer looks frozen while Jefe is generating the first finding.** Production showed the Context step sitting on "let me finish the last check" for about a minute after the merchant chose a priority: the Shopify history read was complete, but Jefe was still turning that evidence into a grounded insight and action. The screen now says that explicitly, distinguishes a retry from a normal generation wait, and tells the merchant it will advance automatically. `app/components/fast-value-onboarding.tsx`.
+
+- **Daily Home overlay clicks no longer do read/write action sync work while they are trying to open.** A production recording showed chat/action transitions still waiting on `/app.data` for several seconds: the home read path was loading the action list through the syncing helper, and React Router's `.data` URL shape was not covered by the UI-only revalidation guard. The home action list is now read-only on load, and the revalidation guard treats `/app.data` as the same home route so lightweight chat/modal URL changes stay lightweight. `app/routes/app._index.tsx`, `app/components/client-navigation-reporter.tsx`.
+
 - **Jefe now opens chats and action talk-throughs without reloading the whole home.** The default app home no longer loads full Merchant Memory, horizon, settings, changelog, library picks or chat-thread detail before showing the next-move screen; lightweight URL transitions stay local and fetch only the thread or action-chat choices they need. Settings loads only the active panel, and `/health` now includes browser-observed navigation percentiles so slow clicks are visible before they become a merchant complaint. `app/routes/app._index.tsx`, `app/components/daily-home.tsx`, `app/routes/api.app-home.*.tsx`, `app/components/client-navigation-reporter.tsx`, `app/lib/observability/perf.server.js`.
 
 ## 2026-08-13
