@@ -6,7 +6,7 @@ import {
   useLocation,
   useNavigation,
 } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import {
   Button,
@@ -193,17 +193,29 @@ type FocusedActionChatChoice = {
   lastMessageAt?: string | null;
   createdAt?: string | null;
 };
+type ConversationResourceData = {
+  ok?: boolean;
+  conversation?: ChatThread;
+  libraryFiles?: LibraryPick[];
+  error?: string;
+};
+type ActionChatsResourceData = {
+  ok?: boolean;
+  actionId?: string;
+  chats?: FocusedActionChatChoice[];
+  error?: string;
+};
 
 export function DailyHome(props: {
   storeName: string;
   merchantName?: string;
-  metrics: Metrics;
-  memory: MemoryView;
-  recommendation: Recommendation;
+  metrics?: Metrics;
+  memory?: MemoryView;
+  recommendation?: Recommendation;
   suggestedAction?: SuggestedAction | null;
   executedActions?: ExecutedAction[];
-  insights: Insight[];
-  goals: Goal[];
+  insights?: Insight[];
+  goals?: Goal[];
   actionModes?: Record<string, string>;
   channels?: ChannelConn[];
   conversation?: ChatThread | null;
@@ -221,21 +233,33 @@ export function DailyHome(props: {
   }>;
   emailBrief?: EmailBrief | null;
   openQuestions?: MemoryQuestion[];
-  horizonNear: HorizonItem[];
-  horizonWatching: HorizonWatch[];
+  horizonNear?: HorizonItem[];
+  horizonWatching?: HorizonWatch[];
   todayLabel?: string; // loader-computed, store-tz-pinned; replaces render-time new Date()
   storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
   horizonHeadsUps?: HeadsUp[]; // proactive run-out / refund heads-ups, rendered as messages
   brandLogoUrl?: string | null; // merchant's brand logo for the header; monogram fallback
 }) {
   const location = useLocation();
+  const navigation = useNavigation();
+  const params = new URLSearchParams(location.search);
+  const openConversationId = params.get("conversation");
+  const talkActionId = params.get("talkAction");
+  const conversationFetcher = useFetcher<ConversationResourceData>();
+  const actionChatsFetcher = useFetcher<ActionChatsResourceData>();
+  const [conversationCache, setConversationCache] = useState<
+    Record<string, { conversation: ChatThread; libraryFiles: LibraryPick[] }>
+  >({});
+  const [actionChatsCache, setActionChatsCache] = useState<Record<string, FocusedActionChatChoice[]>>({});
+  const pendingThreadRefreshRef = useRef<string | null>(null);
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
+  const goals = props.goals ?? [];
   const primaryMove = buildPrimaryMove({
-    recommendation: props.recommendation,
+    recommendation: props.recommendation ?? null,
     suggestedAction,
     actions: executedActions,
-    goals: props.goals,
+    goals,
     storeTimeZone: props.storeTimeZone,
   });
   const fallbackAction = merchantActionFromPrimaryMove(primaryMove);
@@ -245,19 +269,132 @@ export function DailyHome(props: {
       : fallbackAction
         ? [fallbackAction]
         : [];
-  const activeConversation = props.conversation?.conversation ?? null;
-  const openConversationId = new URLSearchParams(location.search).get(
-    "conversation",
+  const fetchedConversation = useMemo(
+    () => conversationPayloadFromResource(conversationFetcher.data),
+    [conversationFetcher.data],
   );
+  const cachedConversation = openConversationId ? conversationCache[openConversationId] : null;
+  const loaderConversation =
+    openConversationId && props.conversation?.conversation?.id === openConversationId
+      ? { conversation: props.conversation, libraryFiles: props.libraryFiles ?? [] }
+      : null;
+  const openConversationPayload =
+    (fetchedConversation?.conversation.conversation?.id === openConversationId
+      ? fetchedConversation
+      : null) ??
+    cachedConversation ??
+    loaderConversation;
+  const activeConversation = openConversationPayload?.conversation.conversation ?? null;
   const focusedAction = actionForConversation(activeConversation, merchantActions);
+  const fetchedActionChats = useMemo(
+    () =>
+      actionChatsFetcher.data?.ok && actionChatsFetcher.data.actionId === talkActionId
+        ? (actionChatsFetcher.data.chats ?? [])
+        : null,
+    [actionChatsFetcher.data, talkActionId],
+  );
+  const cachedActionChats = talkActionId ? actionChatsCache[talkActionId] : null;
+  const actionChats =
+    fetchedActionChats ??
+    cachedActionChats ??
+    (talkActionId && props.talkActionId === talkActionId
+      ? (props.focusedActionChats ?? [])
+      : []);
+  const actionChatsLoading =
+    Boolean(talkActionId) &&
+    !cachedActionChats &&
+    actionChatsFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (!openConversationId) return;
+    if (conversationCache[openConversationId]) return;
+    if (fetchedConversation?.conversation.conversation?.id === openConversationId) return;
+    if (conversationFetcher.state !== "idle") return;
+    conversationFetcher.load(
+      `/api/app-home/conversation?conversationId=${encodeURIComponent(openConversationId)}`,
+    );
+  }, [openConversationId, conversationCache, fetchedConversation, conversationFetcher]);
+
+  useEffect(() => {
+    const payload = conversationPayloadFromResource(conversationFetcher.data);
+    const id = payload?.conversation.conversation?.id;
+    if (!payload || !id) return;
+    const handle = window.setTimeout(() => {
+      setConversationCache((cache) => ({ ...cache, [id]: payload }));
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [conversationFetcher.data]);
+
+  useEffect(() => {
+    if (!openConversationId) return;
+    const intent = String(navigation.formData?.get("intent") ?? "");
+    if (navigation.state !== "idle" && isThreadMutationIntent(intent)) {
+      pendingThreadRefreshRef.current = openConversationId;
+      return;
+    }
+    if (navigation.state !== "idle") return;
+    const refreshId = pendingThreadRefreshRef.current;
+    if (!refreshId) return;
+    pendingThreadRefreshRef.current = null;
+    const handle = window.setTimeout(() => {
+      setConversationCache((cache) => {
+        const next = { ...cache };
+        delete next[refreshId];
+        return next;
+      });
+    }, 0);
+    conversationFetcher.load(
+      `/api/app-home/conversation?conversationId=${encodeURIComponent(refreshId)}`,
+    );
+    return () => window.clearTimeout(handle);
+  }, [openConversationId, navigation.state, navigation.formData, conversationFetcher]);
+
+  useEffect(() => {
+    if (!talkActionId) return;
+    if (actionChatsCache[talkActionId]) return;
+    if (fetchedActionChats) return;
+    if (actionChatsFetcher.state !== "idle") return;
+    actionChatsFetcher.load(
+      `/api/app-home/action-chats?actionId=${encodeURIComponent(talkActionId)}`,
+    );
+  }, [talkActionId, actionChatsCache, fetchedActionChats, actionChatsFetcher]);
+
+  useEffect(() => {
+    const data = actionChatsFetcher.data;
+    if (!data?.ok || !data.actionId) return;
+    const handle = window.setTimeout(() => {
+      setActionChatsCache((cache) => ({ ...cache, [data.actionId as string]: data.chats ?? [] }));
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [actionChatsFetcher.data]);
 
   if (openConversationId || activeConversation) {
+    if (!openConversationPayload) {
+      if (conversationFetcher.state === "idle" && conversationFetcher.data?.ok === false) {
+        return (
+          <FocusedConversation
+            conversation={null}
+            focusedAction={null}
+            merchantActions={merchantActions}
+            libraryFiles={[]}
+            currentSearch={location.search}
+            todayLabel={props.todayLabel}
+          />
+        );
+      }
+      return (
+        <FocusedConversationLoading
+          currentSearch={location.search}
+          todayLabel={props.todayLabel}
+        />
+      );
+    }
     return (
       <FocusedConversation
-        conversation={props.conversation ?? null}
+        conversation={openConversationPayload.conversation}
         focusedAction={focusedAction}
         merchantActions={merchantActions}
-        libraryFiles={props.libraryFiles ?? []}
+        libraryFiles={openConversationPayload.libraryFiles}
         currentSearch={location.search}
         todayLabel={props.todayLabel}
       />
@@ -275,8 +412,9 @@ export function DailyHome(props: {
         <FocusedActionsHome
           conversations={props.conversation?.conversations ?? []}
           merchantActions={merchantActions}
-          talkActionId={props.talkActionId ?? null}
-          focusedActionChats={props.focusedActionChats ?? []}
+          talkActionId={talkActionId}
+          focusedActionChats={actionChats}
+          focusedActionChatsLoading={actionChatsLoading}
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
         />
@@ -288,11 +426,31 @@ export function DailyHome(props: {
   );
 }
 
+function isThreadMutationIntent(intent: string) {
+  return [
+    "chat.message",
+    "chat.retry",
+    "chat.rename",
+    "chat.focus.change",
+    "chat.action.reference",
+  ].includes(intent);
+}
+
+function conversationPayloadFromResource(data: ConversationResourceData | undefined) {
+  const thread = data?.conversation;
+  if (!data?.ok || !thread?.conversation) return null;
+  return {
+    conversation: thread,
+    libraryFiles: data.libraryFiles ?? [],
+  };
+}
+
 function FocusedActionsHome({
   conversations,
   merchantActions,
   talkActionId,
   focusedActionChats,
+  focusedActionChatsLoading,
   currentSearch,
   storeTimeZone,
 }: {
@@ -300,6 +458,7 @@ function FocusedActionsHome({
   merchantActions: MerchantActionView[];
   talkActionId: string | null;
   focusedActionChats: FocusedActionChatChoice[];
+  focusedActionChatsLoading?: boolean;
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
@@ -394,6 +553,7 @@ function FocusedActionsHome({
       <TalkActionChooser
         action={talkAction}
         chats={focusedActionChats}
+        loading={focusedActionChatsLoading}
         currentSearch={currentSearch}
         storeTimeZone={storeTimeZone}
       />
@@ -608,11 +768,13 @@ function TalkThisThroughButton({
 function TalkActionChooser({
   action,
   chats,
+  loading = false,
   currentSearch,
   storeTimeZone,
 }: {
   action: MerchantActionView | null;
   chats: FocusedActionChatChoice[];
+  loading?: boolean;
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
@@ -640,7 +802,12 @@ function TalkActionChooser({
             </>
           )}
         </p>
-        {chats.length > 0 ? (
+        {loading ? (
+          <EmptySection
+            title="Checking existing chats"
+            body="Jefe is checking whether this action already has a thread."
+          />
+        ) : chats.length > 0 ? (
           <div style={talkChooserListStyle}>
             {chats.map((chat) => (
               <Link
@@ -688,6 +855,31 @@ function TalkActionChooser({
         </div>
       </section>
     </div>
+  );
+}
+
+function FocusedConversationLoading({
+  currentSearch,
+  todayLabel,
+}: {
+  currentSearch: string;
+  todayLabel?: string;
+}) {
+  return (
+    <main style={chatPageStyle}>
+      <div style={chatShellStyle}>
+        <div style={chatTopStyle}>
+          <Link
+            to={searchWith(currentSearch, { conversation: null })}
+            style={backLinkStyle}
+          >
+            ← Back
+          </Link>
+          <DateLabel>{todayLabel ?? ""}</DateLabel>
+        </div>
+        <EmptySection title="Opening chat" body="Loading the latest thread." />
+      </div>
+    </main>
   );
 }
 

@@ -110,7 +110,6 @@ import {
 import {
   deleteMerchantFile,
   getMerchantFileText,
-  listMerchantFilePicks,
   listMerchantFiles,
   saveMerchantFile,
 } from "../lib/attachments/merchant-file.server.js";
@@ -124,10 +123,8 @@ import {
 } from "../lib/actions/action-resolution.server";
 import { listMerchantActions } from "../lib/actions/merchant-action.server";
 import {
-  getActionMode,
   setActionMode,
 } from "../lib/actions/action-autonomy-policy.server";
-import { listActionTypes } from "../lib/actions/action-intent.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
   MEMORY_BACKFILL_DOMAIN,
@@ -136,7 +133,6 @@ import {
   confirmMerchantInsightFinding,
   correctMerchantInsightFinding,
   ensureMerchantInsightsQueued,
-  getLatestMerchantInsights,
   getMerchantInsightsExperience,
 } from "../lib/merchant-insights/service.server.js";
 import {
@@ -163,7 +159,6 @@ import {
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
-import { getLatestHorizon, getHorizonHeadsUps } from "../lib/merchant-memory/horizon.server.js";
 import {
   beliefConfirmPriority,
   confirmBelief,
@@ -175,7 +170,6 @@ import {
   CONVERSATION_TOPICS,
   addActionChatNote,
   getMerchantMemoryConversationExperience,
-  getOpenQuestions,
   sendActionChatMessage,
   sendConversationMessage,
 } from "../lib/merchant-memory/conversation.server.js";
@@ -188,7 +182,6 @@ import {
 } from "../lib/merchant-memory/general-chat.server.js";
 import {
   changeConversationFocus,
-  listChatsFocusedOnAction,
   referenceActionInConversation,
   startFocusedActionChat,
 } from "../lib/merchant-memory/focused-action-chat.server.js";
@@ -197,21 +190,14 @@ import {
   validateConversationalValue,
 } from "../lib/merchant-memory/conversational-belief-registry.server.js";
 import { isMerchantVisibleBeliefKey } from "../lib/merchant-memory/deterministic-belief-registry.server.js";
-import { loadAppHomeWhatsNew } from "../lib/notifications/whats-new.server.js";
 import {
   computeHomeDateLabel,
   currentServerInstant,
   storeTimeZoneFromPayload,
 } from "../lib/home/home-dates.js";
 import {
-  formatBriefSendTime,
-  getNotificationPreference,
   setNotificationPreference,
 } from "../lib/notifications/service.server.js";
-import {
-  ensureShopContactEmail,
-  getShopContactEmail,
-} from "../lib/notifications/contact-email.server.js";
 import {
   ensureShopBrandLogo,
   brandLogoFromPayload,
@@ -296,14 +282,36 @@ type FastOnboardingActionResult = {
 // page, so skip the heavy app._index loader revalidation for it — the dial write is
 // a background fetcher. Approve/Decline/Edit are deliberately NOT skipped (they change
 // the proposed row / execute, so the card + "What Jefe did" feed must reload).
-export function shouldRevalidate({ formData, defaultShouldRevalidate }: ShouldRevalidateFunctionArgs) {
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formData,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
   const intent = formData?.get("intent");
   if (
     intent === "action.set_mode" ||
     intent === "onboarding.milestone" ||
     intent === "onboarding.recommendation.approve"
   ) return false;
+  if (!formData && isAppHomeUiOnlyNavigation(currentUrl, nextUrl)) return false;
   return defaultShouldRevalidate;
+}
+
+export function isAppHomeUiOnlyNavigation(currentUrl: URL, nextUrl: URL) {
+  if (currentUrl.pathname !== "/app" || nextUrl.pathname !== "/app") return false;
+  const changed = changedSearchKeys(currentUrl.searchParams, nextUrl.searchParams);
+  return (
+    changed.length > 0 &&
+    changed.every((key) => ["conversation", "talkAction", "actionChat"].includes(key))
+  );
+}
+
+function changedSearchKeys(current: URLSearchParams, next: URLSearchParams) {
+  const keys = new Set([...current.keys(), ...next.keys()]);
+  return [...keys].filter(
+    (key) => current.getAll(key).join("\u0000") !== next.getAll(key).join("\u0000"),
+  );
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -1664,10 +1672,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
   if (shop.onboardingCompletedAt || previewDaily || viewMemory) {
-    const [storeName, memory] = await Promise.all([
-      storeNamePromise,
-      getMerchantMemoryView({ merchantId: merchant.id, shopId: shop.id }),
-    ]);
     // Daily Home is the default post-onboarding surface. Toggle off with
     // ENABLE_DAILY_HOME=false to fall back to the Merchant Memory view; ?view=memory
     // forces the (editable) Merchant Memory view directly — the interim reachability
@@ -1675,22 +1679,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // docs/memory-correction-surface-spec.md).
     if (
       (process.env.ENABLE_DAILY_HOME !== "false" || previewDaily) &&
-      !viewMemory
+      !viewMemory &&
+      !viewLibrary
     ) {
+      const storeName = await storeNamePromise;
       // Daily Home is a HOME screen: read the latest completed run fast.
       // It must NOT rebuild belief snapshots or ensure/queue generation, so
       // it uses the read-only getLatest* fetchers rather than the
       // getMerchant*Experience calls used by the onboarding funnel.
-      // Settings (13a) roster: the merchant's autonomy dial for each LIVE action type —
-      // registered + its execute-flag on, from the action engine's listActionTypes() (chat 10),
-      // today just price_markdown. One cheap indexed getActionMode per live type, so a
-      // newly-graduated action's dial lights up here with no surface edit.
-      const liveActionTypes = listActionTypes().filter((t) => t.live);
-      const metricsPromise = getStoreMetrics({
-        merchantId: merchant.id,
-        shopId: shop.id,
-      });
-      const insightsPromise = getLatestMerchantInsights(prisma, {
+      const currencyPromise = getStoreCurrency({
         merchantId: merchant.id,
         shopId: shop.id,
       });
@@ -1702,37 +1699,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         merchantId: merchant.id,
         shopId: shop.id,
       });
-      const liveActionModeEntriesPromise =
-        // Folded into THIS Promise.all (with channel state) so the Settings reads run in
-        // parallel and add ~no serial latency to the LCP-critical daily loader (per chat 10).
-        Promise.all(
-          liveActionTypes.map(async (t): Promise<[string, string]> => [
-            t.actionType,
-            await getActionMode(prisma, {
-              merchantId: merchant.id,
-              actionType: t.actionType,
-            }),
-          ]),
-        );
-      const channelConnectionsPromise = listChannelConnections(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-      });
-      const openQuestionsPromise =
-        // openQuestions feeds Memory's "Still guessing" group (getOpenQuestions is
-        // idempotent + safe to call — ensures the initial questions, returns the open set).
-        getOpenQuestions(prisma, { merchantId: merchant.id, shopId: shop.id });
-      const horizonPromise =
-        // Store-grounded Horizon: near-term run-out / refund items + a "watching" block,
-        // computed read-only from persisted facts (never fabricated), seasonal timeline
-        // merged in. Non-throwing → degrades to seasonal-only, so it can't 5xx the loader.
-        getLatestHorizon(prisma, { merchantId: merchant.id, shopId: shop.id });
-      const horizonHeadsUpsPromise =
-        // Proactive run-out / refund heads-ups shaped as chat messages for the Shape B
-        // thread. Read-only, returns [] on any error (never throws into the loader);
-        // rendered from current state each load, not stored (a standing condition).
-        getHorizonHeadsUps(prisma, { merchantId: merchant.id, shopId: shop.id });
-      const suggestedActionPromise = metricsPromise.then((metrics) =>
+      const suggestedActionPromise = currencyPromise.then((currency) =>
         // Jefe's first visible action: the latest proposed action as a render-ready card,
         // money formatted in the shop currency. Read-only (a single indexed row) and
         // null when nothing is proposed, so the card stays inert. Executable only when the
@@ -1740,48 +1707,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         getActiveSuggestedAction(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-          currency: metrics?.currency || "GBP",
+          currency,
         }),
       );
-      const executedActionsPromise = metricsPromise.then((metrics) =>
+      const executedActionsPromise = currencyPromise.then((currency) =>
         // The "what Jefe did for you" feed — applied/reverted actions with their
         // measured outcome (chat 9's read, server-formatted). Empty until execution
         // is live, so the Daily Home section self-hides until the first real action.
         getExecutedActionFeed(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
-          currency: metrics?.currency || "GBP",
+          currency,
         }),
       );
       const actionChatId = url.searchParams.get("actionChat");
       const talkActionId = url.searchParams.get("talkAction");
-      const libraryFilesPromise = listMerchantFilePicks(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-      });
       const merchantActionsPromise = listMerchantActions(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
         includeInactive: true,
       });
-      const focusedActionChatsPromise = talkActionId
-        ? listChatsFocusedOnAction(prisma, {
-            merchantId: merchant.id,
-            shopId: shop.id,
-            actionId: talkActionId,
-          })
-        : Promise.resolve([]);
-      // 13a home extras: the real in-app chat thread (thin read — NO memory writes
-      // on the home), the "New in Jefe" changelog, and the email-brief preference.
-      // ensureShopContactEmail best-effort populates Shop.contactEmail from
-      // shop{email} — fire-and-forget so its (first-load-only) Admin GraphQL call
-      // stays OFF the LCP path; the email row shows from the next load once
-      // persisted (hidden until then — never a fabricated address).
-      void ensureShopContactEmail(prisma, {
-        shopId: shop.id,
-        shopDomain: session.shop,
-        accessToken: session.accessToken,
-      }).catch(() => {});
       // Same best-effort pattern for the merchant's brand logo (shop.brand): fire-and-
       // forget so its first-load-only Admin GraphQL call stays off the LCP path, cached
       // into rawPayload; the header shows it from the next load, monogram until then.
@@ -1796,58 +1741,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const conversationPromise = getDailyChatExperience(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
-        conversationId: url.searchParams.get("conversation"),
-      });
-      const changelogPromise = loadAppHomeWhatsNew();
-      const morningBriefPrefPromise = getNotificationPreference(prisma, {
-        merchantId: merchant.id,
-        category: "morning_brief",
-      });
-      const contactEmailPromise = getShopContactEmail(prisma, {
-        shopId: shop.id,
+        historyTake: 8,
       });
       const [
-        metrics,
-        insights,
         goals,
         plan,
-        liveActionModeEntries,
-        channelConnections,
-        openQuestions,
-        horizon,
-        horizonHeadsUps,
         suggestedAction,
         executedActions,
         merchantActions,
-        libraryFiles,
-        focusedActionChats,
         conversation,
-        changelog,
-        morningBriefPref,
-        contactEmail,
       ] = await Promise.all([
-        metricsPromise,
-        insightsPromise,
         goalsPromise,
         planPromise,
-        liveActionModeEntriesPromise,
-        channelConnectionsPromise,
-        openQuestionsPromise,
-        horizonPromise,
-        horizonHeadsUpsPromise,
         suggestedActionPromise,
         executedActionsPromise,
         merchantActionsPromise,
-        libraryFilesPromise,
-        focusedActionChatsPromise,
         conversationPromise,
-        changelogPromise,
-        morningBriefPrefPromise,
-        contactEmailPromise,
       ]);
-      // actionType → the merchant's mode, for LIVE types only. A key present ⇒ that type is
-      // live (renders a real dial); absent ⇒ the roster renders it "Soon" (or its blocked prompt).
-      const actionModes = Object.fromEntries(liveActionModeEntries);
       const selectedRecommendationId = plan?.selectedRun?.recommendation?.id ?? null;
       const visibleSuggestedAction =
         suggestedAction &&
@@ -1855,19 +1765,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           suggestedAction.sourceRecommendation?.id === selectedRecommendationId)
           ? suggestedAction
           : null;
-      const emailBrief = contactEmail
-        ? {
-            address: contactEmail,
-            enabled: morningBriefPref?.enabled ?? true,
-            sendTime: formatBriefSendTime(morningBriefPref?.schedule),
-            hour: morningBriefPref?.schedule?.hour ?? null,
-            minute: morningBriefPref?.schedule?.minute ?? null,
-            frequency: morningBriefPref?.schedule?.frequency ?? "daily",
-            // Phase 1: the preference is real + stored, but scheduled delivery is
-            // not live yet — surfaced honestly rather than implying Jefe emails now.
-            sending: false,
-          }
-        : null;
       // Hydration-safe date: compute the header label ONCE, server-side, pinned to
       // the store's timezone — never a render-time clock read (which differs SSR vs
       // browser and mismatched the "Tuesday 11 August" header). The instant comes
@@ -1890,41 +1787,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shop: session.shop,
         merchantName: merchant.name,
         storeName,
-        memory,
-        metrics,
         recommendation: plan?.selectedRun?.recommendation ?? null,
         suggestedAction: visibleSuggestedAction,
         executedActions,
-        insights: insights?.selectedRun?.findings ?? [],
         goals: goals?.selectedRun?.horizons ?? [],
-        actionModes,
-        channels: channelConnections,
         conversation,
         actionChatId,
         merchantActions,
-        libraryFiles,
         talkActionId,
-        focusedActionChats,
-        changelog,
-        emailBrief,
-        openQuestions: openQuestions.map((q) => ({
-          id: q.id,
-          question: q.question,
-          reason: q.reason ?? null,
-          answerType: String(q.answerType ?? "text"),
-          answerOptions: Array.isArray(q.answerOptions)
-            ? q.answerOptions.map((opt) => String(opt))
-            : [],
-        })),
-        horizonNear: horizon.near,
-        horizonWatching: horizon.watching,
-        horizonHeadsUps,
         todayLabel,
         storeTimeZone: homeTimeZone,
         brandLogoUrl,
       };
     }
     if (viewLibrary) {
+      const storeName = await storeNamePromise;
       // The Jefe Library — files the merchant chose to keep. `content` is never selected here;
       // the listing is built entirely from what Jefe read out of each file.
       const files = await listMerchantFiles(prisma, {
@@ -1949,6 +1826,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         storeTimeZone: libraryTimeZone,
       };
     }
+    const [storeName, memory] = await Promise.all([
+      storeNamePromise,
+      getMerchantMemoryView({ merchantId: merchant.id, shopId: shop.id }),
+    ]);
     // The Merchant Memory view is now editable: load the same conversation
     // experience the goals step uses so the merchant can correct/add memory here.
     const memoryConversation = await getMerchantMemoryConversationExperience(
@@ -2263,28 +2144,15 @@ export default function AppIndex() {
       <DailyHome
         storeName={data.storeName}
         merchantName={data.merchantName}
-        metrics={data.metrics}
-        memory={data.memory}
         recommendation={data.recommendation}
         suggestedAction={data.suggestedAction}
         executedActions={data.executedActions}
-        insights={data.insights}
         goals={data.goals}
-        actionModes={data.actionModes}
-        channels={data.channels}
         conversation={data.conversation}
         merchantActions={data.merchantActions}
-        libraryFiles={data.libraryFiles}
         talkActionId={data.talkActionId}
-        focusedActionChats={data.focusedActionChats}
-        changelog={data.changelog}
-        emailBrief={data.emailBrief}
-        openQuestions={data.openQuestions}
-        horizonNear={data.horizonNear}
-        horizonWatching={data.horizonWatching}
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}
-        horizonHeadsUps={data.horizonHeadsUps}
         brandLogoUrl={data.brandLogoUrl}
       />
     );
@@ -5285,6 +5153,21 @@ async function getStoreMetrics({
         : null,
     currency: revenue._min.currency ?? "GBP",
   };
+}
+
+async function getStoreCurrency({
+  merchantId,
+  shopId,
+}: {
+  merchantId: string;
+  shopId: string;
+}) {
+  const order = await prisma.order.findFirst({
+    where: { merchantId, shopId, currency: { not: "" } },
+    orderBy: [{ processedAt: "desc" }, { createdAt: "desc" }],
+    select: { currency: true },
+  });
+  return order?.currency ?? "GBP";
 }
 
 // Resolve a Memory-surface belief id (what the UI posts) to its belief key (what chat 9's

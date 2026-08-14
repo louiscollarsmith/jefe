@@ -676,6 +676,54 @@ export async function getDailyChatExperience(prisma, input) {
   };
 }
 
+/**
+ * Read one Daily Home chat thread without loading the home chat history. Used by
+ * the fast-path resource route when a merchant opens a thread from the home.
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; conversationId?: string | null; take?: number }} input
+ */
+export async function getDailyChatThread(prisma, input) {
+  if (!input.conversationId) {
+    return { conversation: null, conversations: [], messages: [] };
+  }
+  const active = await prisma.merchantMemoryConversation.findFirst({
+    where: {
+      id: input.conversationId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      surface: "app",
+      OR: [
+        { conversationType: "general" },
+        { conversationType: "action" },
+        { conversationType: "legacy", topic: "memory" },
+      ],
+    },
+    include: {
+      focusedAction: true,
+      _count: { select: { messages: true } },
+    },
+  });
+  if (!active) {
+    return { conversation: null, conversations: [], messages: [] };
+  }
+  const messages = await prisma.merchantMemoryConversationMessage.findMany({
+    where: {
+      conversationId: active.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: input.take ?? 20,
+  });
+  return {
+    conversation: serializeConversation(active),
+    conversations: [],
+    messages: messages
+      .reverse()
+      .map((/** @type {any} */ item) => serializeMessage(item)),
+  };
+}
+
 /** @param {{ provider: any; message: string; context: any; logger: any }} input */
 async function generateGroundedReply(input) {
   const allowedIds = new Set(

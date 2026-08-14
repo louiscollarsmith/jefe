@@ -74,3 +74,17 @@ test("the home uses action-centric navigation into focused chats", () => {
   assert.match(dailyHomeSource, /talkAction: null/);
   assert.match(dailyHomeSource, /conversation: chat\.id/);
 });
+
+test("home overlay navigations do not re-run the full app loader", () => {
+  assert.match(appIndexSource, /function isAppHomeUiOnlyNavigation/);
+  assert.match(appIndexSource, /"conversation", "talkAction", "actionChat"/);
+  assert.match(appIndexSource, /!formData && isAppHomeUiOnlyNavigation\(currentUrl, nextUrl\)/);
+  assert.doesNotMatch(appIndexSource, /changed\.every\(\(key\) => \["view", "conversation"/);
+});
+
+test("focused chat details load through narrow app-home resources", () => {
+  assert.match(dailyHomeSource, /\/api\/app-home\/conversation\?conversationId=/);
+  assert.match(dailyHomeSource, /\/api\/app-home\/action-chats\?actionId=/);
+  assert.match(dailyHomeSource, /conversationCache/);
+  assert.match(dailyHomeSource, /actionChatsCache/);
+});

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-14
+
+### Fixed
+
+- **Jefe now opens chats and action talk-throughs without reloading the whole home.** The default app home no longer loads full Merchant Memory, horizon, settings, changelog, library picks or chat-thread detail before showing the next-move screen; lightweight URL transitions stay local and fetch only the thread or action-chat choices they need. Settings loads only the active panel, and `/health` now includes browser-observed navigation percentiles so slow clicks are visible before they become a merchant complaint. `app/routes/app._index.tsx`, `app/components/daily-home.tsx`, `app/routes/api.app-home.*.tsx`, `app/components/client-navigation-reporter.tsx`, `app/lib/observability/perf.server.js`.
+
 ## 2026-08-13
 
 ### Added

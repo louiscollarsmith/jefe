@@ -84,7 +84,6 @@ test("route action dispatches to chat 9's services (imported + called)", () => {
   assert.match(appIndexSource, /correctBelief/);
   assert.match(appIndexSource, /markBeliefObsolete/);
   assert.match(appIndexSource, /validateConversationalValue/);
-  assert.match(appIndexSource, /getOpenQuestions/);
   assert.match(appIndexSource, /sendConversationMessage/);
 });
 
@@ -107,11 +106,10 @@ test("memory.correct validates free text before a direct correction, else defers
   assert.match(appIndexSource, /if \(!corrected\)/);
 });
 
-test("daily loader loads the open-questions feed and returns it", () => {
-  assert.match(appIndexSource, /getOpenQuestions\(prisma, \{ merchantId: merchant\.id, shopId: shop\.id \}\)/);
-  assert.match(appIndexSource, /openQuestions: openQuestions\.map/);
-  // And threads it into the live home.
-  assert.match(appIndexSource, /openQuestions=\{data\.openQuestions\}/);
+test("daily loader keeps memory-question detail off the default home", () => {
+  assert.doesNotMatch(appIndexSource, /getOpenQuestions\(prisma/);
+  assert.doesNotMatch(appIndexSource, /openQuestions: openQuestions\.map/);
+  assert.doesNotMatch(appIndexSource, /openQuestions=\{data\.openQuestions\}/);
 });
 
 test("data.ts exports the MemoryQuestion shape", () => {

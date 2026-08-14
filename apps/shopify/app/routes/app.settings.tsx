@@ -45,37 +45,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
     rawPayload: { source: "settings_shell" },
   });
-  // Per-panel data is computed HERE — this surface's single loader — and passed to each
-  // mounted panel as its documented prop (see the panel contract). Autonomy: the live
-  // per-action modes (engine truth; an absent key ⇒ "Soon"/needs-you, never a fake dial).
-  const actionModes = await getLiveActionModes(prisma, { merchantId: merchant.id });
+  const activePanel = normalizePanelId(new URL(request.url).searchParams.get("panel"));
+  const actionModes =
+    activePanel === "autonomy"
+      ? await getLiveActionModes(prisma, { merchantId: merchant.id })
+      : {};
+  const toolStack =
+    activePanel === "integrations"
+      ? await getDetectedToolStack(prisma, { merchantId: merchant.id })
+      : EMPTY_TOOL_STACK;
 
-  // Integrations: detected tool-stack (surfaceable-only, inference-framed in the panel). Empty
-  // today (0 detections); no merchant claim until chat 10's signature verification.
-  const toolStack = await getDetectedToolStack(prisma, { merchantId: merchant.id });
-
-  // Channels (Slack-first): the slack connection + its available destinations. listChannel
-  // connections always returns both providers; index/find gives the slack view (connected or not).
-  const channelConnections = await listChannelConnections(prisma, {
-    merchantId: merchant.id,
-    shopId: shop.id,
-  });
-  const slackConnection =
-    channelConnections.find((c) => c.provider === "slack") ?? channelConnections[0];
-  // listSlackDestinations makes a LIVE Slack API call — only when there's a usable workspace,
-  // and never let a token/API hiccup break the settings page (fall back to an empty list).
-  const slackConnected = !["not_connected", "disconnected", "connection_failed", "connection_expired"].includes(
-    slackConnection.status,
-  );
+  let slackConnection: SlackConnectionView = EMPTY_SLACK_CONNECTION;
   let slackDestinations: Awaited<ReturnType<typeof listSlackDestinations>> = [];
-  if (slackConnected) {
-    try {
-      slackDestinations = await listSlackDestinations(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-      });
-    } catch {
-      slackDestinations = [];
+  if (activePanel === "channels") {
+    // Channels (Slack-first): the slack connection + its available destinations. listChannel
+    // connections always returns both providers; index/find gives the slack view (connected or not).
+    const channelConnections = await listChannelConnections(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    slackConnection =
+      channelConnections.find((c) => c.provider === "slack") ?? channelConnections[0] ?? EMPTY_SLACK_CONNECTION;
+    // listSlackDestinations makes a LIVE Slack API call — only when the Channels panel is open
+    // and there's a usable workspace. A token/API hiccup falls back to an empty list.
+    const slackConnected = !["not_connected", "disconnected", "connection_failed", "connection_expired"].includes(
+      slackConnection.status,
+    );
+    if (slackConnected) {
+      try {
+        slackDestinations = await listSlackDestinations(prisma, {
+          merchantId: merchant.id,
+          shopId: shop.id,
+        });
+      } catch {
+        slackDestinations = [];
+      }
     }
   }
 
@@ -99,6 +103,29 @@ const PANELS: PanelDef[] = [
   { id: "channels", label: "Channels", blurb: "Where Jefe reaches you — Slack, WhatsApp, email.", owner: "channels session (Slack-first)", ready: true },
   { id: "settings", label: "Notifications", blurb: "Your morning brief — where it goes, when, and how often.", owner: "comms lane (email/notification prefs)", ready: false },
 ];
+
+function normalizePanelId(value: string | null) {
+  return PANELS.some((panel) => panel.id === value) ? String(value) : PANELS[0].id;
+}
+
+const EMPTY_TOOL_STACK: DetectedToolStackView = {
+  provenance: "not_loaded",
+  tools: [],
+  count: 0,
+  surfaceableCount: 0,
+  empty: true,
+  headline: null,
+  status: "none_yet",
+};
+
+const EMPTY_SLACK_CONNECTION: SlackConnectionView = {
+  status: "not_connected",
+  verified: false,
+  accountName: null,
+  destinationId: null,
+  destinationLabel: null,
+  errorMessage: null,
+};
 
 // The Merchant Memory view lives on the home route behind ?view=memory. Keep the embedded
 // params (host, shop, embedded) and drop only our own ?panel.
