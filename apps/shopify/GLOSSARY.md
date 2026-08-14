@@ -101,6 +101,9 @@ typed adapters write to Shopify or another external system.
 - **Recommendation** — Jefe's proposed business move, now shaped as a route to completion rather than only a single action.
 - **Recommendation workflow** — The ordered steps Jefe proposes for completing one recommendation.
 - **Recommendation step** — One unit of work inside a recommendation workflow; Jefe may execute it, assist it, ask for evidence, or leave it as a merchant action.
+- **Action Step** — The current merchant-facing recommendation step inside a Merchant Action lifecycle. Proposed actions have a plan but no executable current step; accepted actions advance one explicit step at a time.
+- **Step Run** — One auditable attempt to start and complete an Action Step. A Step Run records the actor, idempotency key, linked execution run when one exists, timestamps, result and error metadata.
+- **Needs Attention** — The lifecycle state for a step or action that cannot honestly be treated as completed, usually because execution partially applied, failed validation, needs merchant evidence, or needs a review before Jefe can continue.
 - **Merchant Action** — The durable merchant-facing identity for a piece of work. It can originate from a recommendation, point at the current execution run, hold progress/outcome state, and be the focus of zero or more chats.
 - **Move** — The merchant-facing unit of proposed or active work, usually surfaced as Jefe's next move.
 - **Action** — A concrete change Jefe can carry out or instruct the merchant to carry out.

@@ -174,7 +174,8 @@ test("the live DailyHome is the focused-action home and chat surface", () => {
   assert.match(dailyHomeSource, /function currentStepStatusLabel/);
   assert.match(dailyHomeSource, /function workflowStepOwnerBadge/);
   assert.match(dailyHomeSource, /function workflowOwnerBadgeStyle/);
-  assert.doesNotMatch(dailyHomeSource, /Jefe can do this/);
+  assert.match(dailyHomeSource, /function currentStepOwnerLabel/);
+  assert.match(dailyHomeSource, /Jefe can do this/);
   assert.doesNotMatch(dailyHomeSource, /Needs merchant action/);
   assert.match(dailyHomeSource, /focusStripLabelStyle/);
   assert.match(dailyHomeSource, /focusStripTextStyle/);
@@ -213,6 +214,9 @@ test("a new chat is visually blank and action references do not change focus", (
 test("talk-this-through chooser matches the chat reuse flow", () => {
   assert.match(dailyHomeSource, /function TalkActionChooser/);
   assert.match(dailyHomeSource, /style=\{talkChooserModalStyle\}/);
+  assert.match(dailyHomeSource, /actionChats\.length === 1/);
+  assert.match(dailyHomeSource, /conversation: onlyChatId/);
+  assert.match(dailyHomeSource, /data\.chats\?\.length === 1/);
   assert.match(dailyHomeSource, /You already have a chat working on/);
   assert.match(dailyHomeSource, /Continue one, or start a new chat focused on this action/);
   assert.match(dailyHomeSource, /style=\{talkChooserCardStyle\}/);
@@ -231,21 +235,22 @@ test("talk-this-through chooser matches the chat reuse flow", () => {
   assert.doesNotMatch(chooserSource, /aria-label="Close"/);
 });
 
-test("focused chat keeps the composer sticky and scrolls only the transcript", () => {
+test("focused chat keeps the composer sticky while the page can scroll", () => {
   assert.match(dailyHomeSource, /const chatPageStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /height: "100dvh"/);
-  assert.match(dailyHomeSource, /position: "fixed"/);
-  assert.match(dailyHomeSource, /overflow: "hidden"/);
+  assert.match(dailyHomeSource, /minHeight: "100vh"/);
+  assert.match(dailyHomeSource, /overflowX: "hidden"/);
+  assert.doesNotMatch(dailyHomeSource, /height: "100dvh"/);
+  assert.doesNotMatch(dailyHomeSource, /maxHeight: "100dvh"/);
   assert.match(dailyHomeSource, /const messagesStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /useScrollTranscriptToLatest/);
   assert.match(dailyHomeSource, /ref=\{transcriptRef\}/);
-  assert.match(dailyHomeSource, /transcript\.scrollTop = transcript\.scrollHeight/);
-  assert.match(dailyHomeSource, /overflowY: "auto"/);
-  assert.match(dailyHomeSource, /padding: "36px 4px 56px 0"/);
+  assert.match(dailyHomeSource, /window\.scrollTo\(\{ top: document\.documentElement\.scrollHeight \}\)/);
+  assert.doesNotMatch(dailyHomeSource, /overscrollBehavior: "contain"/);
+  assert.match(dailyHomeSource, /padding: "34px 4px 42px 0"/);
   assert.match(dailyHomeSource, /const chatComposerWrapStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /position: "sticky"/);
   assert.match(dailyHomeSource, /bottom: 0/);
-  assert.match(dailyHomeSource, /paddingTop: 18/);
+  assert.match(dailyHomeSource, /padding: "0 0 28px"/);
 });
 
 test("focused chat title can be renamed inline from the header", () => {
@@ -278,10 +283,10 @@ test("focused chat title can be renamed inline from the header", () => {
 
 test("focused action context is connected to the title row and system focus events use dividers", () => {
   assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /const focusDetailStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /borderTop: `1px solid \$\{COLORS\.hairline\}`/);
-  assert.match(dailyHomeSource, /flexDirection: "column"/);
-  assert.match(dailyHomeSource, /fontSize: 15/);
+  assert.match(dailyHomeSource, /const \[focusExpanded, setFocusExpanded\] = useState\(true\)/);
+  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel action=\{focusedAction\} \/>/);
+  assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
+  assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
   assert.match(dailyHomeSource, /aria-expanded=\{focusExpanded\}/);
   assert.match(dailyHomeSource, /focusExpanded \? "▲" : "▼"/);
   assert.match(dailyHomeSource, /style=\{inlineFormStyle\} onSubmit=\{onCancel\}/);
@@ -290,7 +295,7 @@ test("focused action context is connected to the title row and system focus even
   assert.match(dailyHomeSource, /<span style=\{systemEventTextStyle\}>\{message\.content\}<\/span>/);
 });
 
-test("approval remains wired through governed action forms", () => {
+test("approval and step lifecycle remain wired through governed action forms", () => {
   const beforeChat = dailyHomeSource.slice(
     0,
     dailyHomeSource.indexOf("function FocusedConversation"),
@@ -300,8 +305,11 @@ test("approval remains wired through governed action forms", () => {
   );
   assert.match(beforeChat, /function AttentionCta/);
   assert.match(beforeChat, /value="action\.approve"/);
+  assert.doesNotMatch(beforeChat, /value="action\.accept_plan"/);
+  assert.doesNotMatch(beforeChat, /value="action\.step\.start"/);
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
-  assert.match(chatSource, /value="action\.approve"/);
+  assert.match(chatSource, /value="action\.accept_plan"/);
+  assert.match(chatSource, /value="action\.step\.start"/);
   assert.match(chatSource, /value="action\.defer"/);
   assert.match(chatSource, /action\.status !== "proposed"/);
   assert.match(chatSource, /name="focusedActionId"/);

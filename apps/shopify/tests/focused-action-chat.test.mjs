@@ -231,7 +231,7 @@ test("listChatsFocusedOnAction returns every active chat for one action", async 
   );
 });
 
-test("startFocusedActionChat offers existing chats before creating another one", async () => {
+test("startFocusedActionChat opens one existing chat instead of showing a chooser", async () => {
   const prisma = buildPrisma({
     actions: [{ id: "a1" }],
     conversations: [
@@ -246,12 +246,38 @@ test("startFocusedActionChat offers existing chats before creating another one",
   });
 
   assert.equal(result.ok, true);
+  assert.equal(result.chooser, false);
+  assert.equal(result.conversationId, "c1");
+  assert.equal(prisma.state.conversations.length, 1);
+});
+
+test("startFocusedActionChat offers a chooser when several chats already exist", async () => {
+  const prisma = buildPrisma({
+    actions: [{ id: "a1" }],
+    conversations: [
+      { id: "c-old", title: "Earlier chat", focusedActionId: "a1" },
+      {
+        id: "c-new",
+        title: "Latest chat",
+        focusedActionId: "a1",
+        lastMessageAt: new Date("2026-08-13T11:00:00.000Z"),
+      },
+    ],
+  });
+
+  const result = await startFocusedActionChat(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+  });
+
+  assert.equal(result.ok, true);
   assert.equal(result.chooser, true);
   assert.deepEqual(
     result.chats.map((chat) => chat.id),
-    ["c1"],
+    ["c-new", "c-old"],
   );
-  assert.equal(prisma.state.conversations.length, 1);
+  assert.equal(prisma.state.conversations.length, 2);
 });
 
 test("startFocusedActionChat atomically creates one focused chat and one coalesced job", async () => {

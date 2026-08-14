@@ -55,7 +55,15 @@ export async function startFocusedActionChat(prisma, input) {
   const existing = input.forceNew
     ? []
     : await listChatsFocusedOnAction(prisma, input);
-  if (existing.length) {
+  if (existing.length === 1) {
+    return {
+      ok: true,
+      chooser: false,
+      action,
+      conversationId: existing[0].id,
+    };
+  }
+  if (existing.length > 1) {
     return { ok: true, chooser: true, action, chats: existing };
   }
   const createFocusedConversation = async (/** @type {any} */ tx) => {

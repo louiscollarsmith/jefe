@@ -129,6 +129,11 @@ import {
   listMerchantActions,
 } from "../lib/actions/merchant-action.server";
 import {
+  acceptMerchantActionPlan,
+  isActionStepStartCommand,
+  startActionStep,
+} from "../lib/actions/action-step-lifecycle.server.js";
+import {
   setActionMode,
 } from "../lib/actions/action-autonomy-policy.server";
 import {
@@ -599,6 +604,57 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       appPathFromSearch(new URL(request.url).search, { actionChat: null }),
     );
   }
+  if (intent === "action.accept_plan") {
+    const actionId = String(formData.get("actionId") ?? "");
+    const result = await acceptMerchantActionPlan(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId,
+      actor: merchant.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant action plan accept rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        reason: "reason" in result ? result.reason : "unknown",
+      });
+      return {
+        ok: false,
+        error: "That plan could not be accepted safely. Nothing was started.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.step.start") {
+    const actionId = String(formData.get("actionId") ?? "");
+    const stepId = String(formData.get("stepId") ?? "") || null;
+    const result = await startActionStep(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId,
+      stepId,
+      actor: merchant.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant action step start rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        stepId,
+        reason: "reason" in result ? result.reason : "unknown",
+      });
+      return {
+        ok: false,
+        error: "That step could not be started. Nothing was changed.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
   if (intent === "action.chat.message") {
     const actionRunId = String(formData.get("actionRunId") ?? "") || null;
     const recommendationId =
@@ -854,6 +910,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         kind: messageError.kind ?? null,
         intent,
       };
+    }
+    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
+    if (focusedActionId && isActionStepStartCommand(typed)) {
+      const stepStart = await startActionStep(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId: focusedActionId,
+        actor: merchant.id,
+        logger: actionLog,
+      });
+      if (stepStart.ok) {
+        actionLog.info("merchant started action step from chat", {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          focusedActionId,
+          stepId: stepStart.stepId,
+        });
+      } else {
+        actionLog.warn("chat step start command did not apply", {
+          merchantId: merchant.id,
+          shopId: shop.id,
+          focusedActionId,
+          reason: "reason" in stepStart ? stepStart.reason : "unknown",
+        });
+      }
     }
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
