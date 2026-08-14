@@ -16,6 +16,7 @@ import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { createClearanceShopifyClient } from "./clearance-shopify-client.server.js";
 import { applyClearance, isClearanceExecuteEnabled } from "./clearance-adapter.server.js";
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
 
 const log = baseLogger.child({ component: "clearance-execution" });
 
@@ -111,6 +112,12 @@ export async function wireClearanceExecution(prisma, session, input, deps = {}) 
         status: fresh?.status,
       };
     }
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: row.merchantId,
+      shopId: row.shopId,
+      actionRunId: row.runId,
+      execution: { ...row, status: "approved", approvedBy },
+    });
   }
   // status "approved" (fresh or pre-existing, e.g. approved while the flag was off) —
   // fall through and execute; applyClearance is itself idempotent per write.

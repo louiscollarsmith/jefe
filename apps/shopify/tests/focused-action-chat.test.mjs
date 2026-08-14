@@ -29,7 +29,15 @@ function buildPrisma({ actions = [], conversations = [] } = {}) {
       ...row,
     })),
     messages: [],
+    episodes: [],
     events: [],
+    jobs: [],
+    calls: {
+      transactions: 0,
+      actionReads: 0,
+      reconciliationReads: 0,
+      conversationUpdates: 0,
+    },
     nextConversation: 1,
     nextMessage: 1,
     nextEvent: 1,
@@ -37,16 +45,33 @@ function buildPrisma({ actions = [], conversations = [] } = {}) {
   const prisma = {
     state,
     async $transaction(run) {
-      return run(prisma);
+      state.calls.transactions += 1;
+      return run({ ...prisma, $transaction: undefined });
+    },
+    merchantPlanRecommendation: {
+      findMany: async () => {
+        state.calls.reconciliationReads += 1;
+        return [];
+      },
+    },
+    actionExecution: {
+      findMany: async () => {
+        state.calls.reconciliationReads += 1;
+        return [];
+      },
     },
     merchantAction: {
-      findFirst: async ({ where }) =>
+      findFirst: async ({ where }) => {
+        state.calls.actionReads += 1;
+        return (
         state.actions.find(
           (action) =>
             action.id === where.id &&
             action.merchantId === where.merchantId &&
             action.shopId === where.shopId,
-        ) ?? null,
+          ) ?? null
+        );
+      },
       findMany: async ({ where }) =>
         state.actions.filter(
           (action) =>
@@ -87,7 +112,10 @@ function buildPrisma({ actions = [], conversations = [] } = {}) {
         return conversation;
       },
       update: async ({ where, data }) => {
-        const conversation = state.conversations.find((row) => row.id === where.id);
+        state.calls.conversationUpdates += 1;
+        const conversation = state.conversations.find(
+          (row) => row.id === where.id,
+        );
         Object.assign(conversation, data, { updatedAt: NOW });
         return conversation;
       },
@@ -105,6 +133,16 @@ function buildPrisma({ actions = [], conversations = [] } = {}) {
         return message;
       },
     },
+    merchantMemoryEpisode: {
+      upsert: async ({ create }) => {
+        const episode = {
+          id: `episode-${state.episodes.length + 1}`,
+          ...create,
+        };
+        state.episodes.push(episode);
+        return episode;
+      },
+    },
     merchantActionEvent: {
       create: async ({ data }) => {
         const event = {
@@ -116,12 +154,22 @@ function buildPrisma({ actions = [], conversations = [] } = {}) {
         return event;
       },
     },
+    backfillJob: {
+      findUnique: async () => state.jobs[0] ?? null,
+      create: async ({ data }) => {
+        const job = { id: `job-${state.jobs.length + 1}`, ...data };
+        state.jobs.push(job);
+        return job;
+      },
+      update: async ({ data }) => Object.assign(state.jobs[0], data),
+    },
   };
   return prisma;
 }
 
 function actionRow(overrides = {}) {
-  const runId = overrides.currentActionRunId ?? overrides.actionRunId ?? "run-1";
+  const runId =
+    overrides.currentActionRunId ?? overrides.actionRunId ?? "run-1";
   return {
     id: overrides.id ?? "a1",
     merchantId: MERCHANT,
@@ -161,7 +209,12 @@ test("listChatsFocusedOnAction returns every active chat for one action", async 
   const prisma = buildPrisma({
     conversations: [
       { id: "c-old", title: "Earlier markdown chat", focusedActionId: "a1" },
-      { id: "c-new", title: "Latest markdown chat", focusedActionId: "a1", lastMessageAt: new Date("2026-08-13T11:00:00.000Z") },
+      {
+        id: "c-new",
+        title: "Latest markdown chat",
+        focusedActionId: "a1",
+        lastMessageAt: new Date("2026-08-13T11:00:00.000Z"),
+      },
       { id: "c-other", title: "Other action", focusedActionId: "a2" },
     ],
   });
@@ -172,13 +225,18 @@ test("listChatsFocusedOnAction returns every active chat for one action", async 
     actionId: "a1",
   });
 
-  assert.deepEqual(chats.map((chat) => chat.id), ["c-new", "c-old"]);
+  assert.deepEqual(
+    chats.map((chat) => chat.id),
+    ["c-new", "c-old"],
+  );
 });
 
 test("startFocusedActionChat offers existing chats before creating another one", async () => {
   const prisma = buildPrisma({
     actions: [{ id: "a1" }],
-    conversations: [{ id: "c1", title: "Already talking", focusedActionId: "a1" }],
+    conversations: [
+      { id: "c1", title: "Already talking", focusedActionId: "a1" },
+    ],
   });
 
   const result = await startFocusedActionChat(prisma, {
@@ -189,12 +247,20 @@ test("startFocusedActionChat offers existing chats before creating another one",
 
   assert.equal(result.ok, true);
   assert.equal(result.chooser, true);
-  assert.deepEqual(result.chats.map((chat) => chat.id), ["c1"]);
+  assert.deepEqual(
+    result.chats.map((chat) => chat.id),
+    ["c1"],
+  );
   assert.equal(prisma.state.conversations.length, 1);
 });
 
-test("startFocusedActionChat can force a new focused chat with a focus event", async () => {
-  const prisma = buildPrisma({ actions: [{ id: "a1" }] });
+test("startFocusedActionChat atomically creates one focused chat and one coalesced job", async () => {
+  const prisma = buildPrisma({
+    actions: [
+      { id: "a1" },
+      ...Array.from({ length: 100 }, (_, index) => ({ id: `other-${index}` })),
+    ],
+  });
 
   const result = await startFocusedActionChat(prisma, {
     merchantId: MERCHANT,
@@ -205,20 +271,35 @@ test("startFocusedActionChat can force a new focused chat with a focus event", a
 
   assert.equal(result.ok, true);
   assert.equal(result.chooser, false);
+  assert.equal(result.conversationId, "c1");
+  assert.equal(prisma.state.conversations.length, 1);
   assert.equal(prisma.state.conversations[0].focusedActionId, "a1");
   assert.deepEqual(
-    prisma.state.messages.map((message) => [message.role, message.metadata?.eventType]),
+    prisma.state.messages.map((message) => [
+      message.role,
+      message.metadata?.eventType,
+    ]),
     [
       ["system", "focus_set"],
       ["assistant", undefined],
     ],
   );
+  assert.equal(prisma.state.messages.length, 2);
+  assert.equal(prisma.state.episodes.length, 2);
+  assert.equal(prisma.state.events.length, 1);
   assert.equal(prisma.state.events[0].eventType, "focus_set");
+  assert.equal(prisma.state.jobs.length, 1);
+  assert.equal(prisma.state.calls.transactions, 1);
+  assert.equal(prisma.state.calls.conversationUpdates, 1);
+  assert.equal(prisma.state.calls.actionReads, 1);
+  assert.equal(prisma.state.calls.reconciliationReads, 0);
 });
 
 test("changeConversationFocus persists the new focus and writes a system event", async () => {
   const prisma = buildPrisma({
-    actions: [{ id: "a2", title: "Restock hero SKU", sourceRecommendationId: "rec-2" }],
+    actions: [
+      { id: "a2", title: "Restock hero SKU", sourceRecommendationId: "rec-2" },
+    ],
     conversations: [{ id: "c1", focusedActionId: "a1" }],
   });
 

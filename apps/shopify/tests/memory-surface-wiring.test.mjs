@@ -162,7 +162,9 @@ test("the live DailyHome is the focused-action home and chat surface", () => {
   assert.match(dailyHomeSource, /focusStripTextStyle/);
   assert.match(dailyHomeSource, /WORKING ON/);
   assert.match(dailyHomeSource, /value="chat\.message"/);
-  assert.match(dailyHomeSource, /value="chat\.focus\.start"/);
+  assert.match(dailyHomeSource, /formData\.set\("intent", "chat\.focus\.start"\)/);
+  assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
+  assert.match(dailyHomeSource, /displayedTalkActionId = talkActionId \?\? pendingTalkActionId/);
   assert.match(dailyHomeSource, /value="chat\.focus\.change"/);
   assert.match(dailyHomeSource, /value="chat\.action\.reference"/);
   assert.match(dailyHomeSource, /name="focusedActionId"/);

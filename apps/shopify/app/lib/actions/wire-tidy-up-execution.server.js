@@ -16,6 +16,7 @@ import {
   applyProductStatusChange,
   isProductStatusExecuteEnabled,
 } from "./product-status-adapter.server.js";
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
 
 const log = baseLogger.child({ component: "tidy-up-execution" });
 
@@ -96,6 +97,12 @@ export async function wireTidyUpExecution(prisma, session, input, deps = {}) {
         status: fresh?.status,
       };
     }
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: row.merchantId,
+      shopId: row.shopId,
+      actionRunId: row.runId,
+      execution: { ...row, status: "approved", approvedBy },
+    });
   }
 
   if (!isProductStatusExecuteEnabled()) {

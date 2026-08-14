@@ -515,7 +515,6 @@ async function loadOtherRelevantActionsForContext(prisma, input) {
     merchantId: input.merchantId,
     shopId,
     includeInactive: true,
-    sync: false,
   });
   const terms = meaningfulTerms(input.message ?? "");
   return actions

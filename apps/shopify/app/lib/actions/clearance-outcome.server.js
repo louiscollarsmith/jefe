@@ -1,5 +1,7 @@
 // @ts-check
 
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
+
 // Clearance outcome measurement — the Observe→Learn half of the action loop.
 //
 // The action loop is belief → decision → (typed action) → OUTCOME. This is the
@@ -164,6 +166,17 @@ export async function measureAndRecordClearanceOutcomes(prisma, input = {}) {
         outcome: /** @type {any} */ (outcome),
         outcomeStatus: "measured",
         outcomeMeasuredAt: now,
+      },
+    });
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: run.merchantId,
+      shopId: run.shopId,
+      actionRunId: run.runId,
+      execution: {
+        ...run,
+        status: "applied",
+        outcomeStatus: "measured",
+        outcome,
       },
     });
     results.push({ runId: run.runId, merchantId: run.merchantId, shopId: run.shopId, ...outcome });

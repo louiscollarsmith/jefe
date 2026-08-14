@@ -30,7 +30,10 @@ import {
   computeProductStatusAutoEligibility,
 } from "./product-status-adapter.server.js";
 import { track } from "../../services/analytics/event-log.server.js";
-import { ensureMerchantActionForExecution } from "./merchant-action.server.js";
+import {
+  ensureMerchantActionForExecution,
+  updateMerchantActionForExecution,
+} from "./merchant-action.server.js";
 import {
   DEFAULT_CLEARANCE_CAPS,
   buildClearancePreview,
@@ -1243,6 +1246,12 @@ export async function rejectAction(prisma, input) {
     data: { status: "rejected", proposalSummary },
     select: { id: true, runId: true, status: true },
   });
+  await updateMerchantActionForExecution(prisma, {
+    merchantId: execution.merchantId,
+    shopId: execution.shopId,
+    actionRunId: execution.runId,
+    execution: { ...execution, ...rejected },
+  });
   // Observe→Learn: capture the decline + split reason (best-effort; never blocks the reply).
   void track(
     prisma,
@@ -1330,6 +1339,12 @@ export async function reviseAction(prisma, input) {
   await prisma.actionExecution.update({
     where: { runId: input.actionRunId },
     data: { status: "superseded" },
+  });
+  await updateMerchantActionForExecution(prisma, {
+    merchantId: existing.merchantId,
+    shopId: existing.shopId,
+    actionRunId: existing.runId,
+    execution: { ...existing, status: "superseded" },
   });
   return {
     status: "revised",

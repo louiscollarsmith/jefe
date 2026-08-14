@@ -46,7 +46,7 @@ export function conversationTitleFromMessage(value) {
 
 /**
  * @param {import("@prisma/client").PrismaClient | any} prisma
- * @param {{ merchantId: string; shopId?: string | null; conversationType?: string; surface?: string; externalThreadId?: string | null; topic?: string; title?: string | null; context?: any }} input
+ * @param {{ merchantId: string; shopId?: string | null; conversationType?: string; surface?: string; externalThreadId?: string | null; topic?: string; title?: string | null; context?: any; focusedActionId?: string | null }} input
  */
 export async function createMerchantConversation(prisma, input) {
   return prisma.merchantMemoryConversation.create({
@@ -59,6 +59,7 @@ export async function createMerchantConversation(prisma, input) {
       externalThreadId: input.externalThreadId ?? null,
       title: input.title ?? null,
       context: input.context ?? {},
+      focusedActionId: input.focusedActionId ?? null,
       lastMessageAt: new Date(),
     },
   });
@@ -112,7 +113,7 @@ export async function getOrCreateMerchantConversation(prisma, input) {
 /**
  * Persist one canonical message and its rebuildable message episode atomically.
  * @param {import("@prisma/client").PrismaClient | any} prisma
- * @param {{ conversationId: string; merchantId: string; shopId?: string | null; role: string; content: string; conversation?: any; surface?: string; externalMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; structuredOperation?: any; operationStatus?: string | null; relatedBeliefIds?: string[]; relatedOpenQuestionId?: string | null; safeSummary?: string | null; enqueue?: boolean }} input
+ * @param {{ conversationId: string; merchantId: string; shopId?: string | null; role: string; content: string; conversation?: any; surface?: string; externalMessageId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; structuredOperation?: any; operationStatus?: string | null; relatedBeliefIds?: string[]; relatedOpenQuestionId?: string | null; safeSummary?: string | null; enqueue?: boolean; touchConversation?: boolean }} input
  */
 export async function appendConversationMessage(prisma, input) {
   const content = String(input.content ?? "").trim();
@@ -174,7 +175,7 @@ export async function appendConversationMessage(prisma, input) {
       conversation.title || input.role !== "merchant"
         ? undefined
         : conversationTitleFromMessage(content);
-    if (tx.merchantMemoryEpisode?.upsert) {
+    if (tx.merchantMemoryEpisode?.upsert && input.touchConversation !== false) {
       await tx.merchantMemoryConversation.update({
         where: { id: conversation.id },
         data: {

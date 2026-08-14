@@ -2,6 +2,7 @@
 
 import crypto from "node:crypto";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
+import { updateMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
 import { labelForBeliefKey } from "../merchant-memory/conversational-belief-registry.server.js";
 import { ACTIVE_BELIEF_STATUSES } from "../merchant-memory/constants.server.js";
 import { upsertMerchantSuppliedBelief } from "../merchant-memory/service.server.js";
@@ -317,6 +318,12 @@ export async function deferOnboardingRecommendation(prisma, input) {
   await prisma.merchantPlanRecommendation.update({
     where: { id: recommendation.id },
     data: { reviewStatus: "deferred" },
+  });
+  await updateMerchantActionForRecommendation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    recommendationId: recommendation.id,
+    recommendation: { ...recommendation, reviewStatus: "deferred" },
   });
   return createOnboardingHandoff(prisma, input, "recommendation_deferred");
 }
@@ -718,6 +725,12 @@ async function acceptRecommendationWorkflow(prisma, input) {
         status: "draft",
       },
       data: { status: "pending" },
+    });
+    await updateMerchantActionForRecommendation(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      recommendationId: input.recommendationId,
+      recommendation: input.data,
     });
   };
   return prisma.$transaction ? prisma.$transaction(run) : run(prisma);

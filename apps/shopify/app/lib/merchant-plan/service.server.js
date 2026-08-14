@@ -13,6 +13,10 @@ import { enqueueBackfillJob } from "../../services/shopify-backfill-status.serve
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
 import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
+import {
+  ensureMerchantActionForRecommendation,
+  updateMerchantActionForRecommendation,
+} from "../actions/merchant-action.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
 import {
@@ -288,11 +292,22 @@ export async function generateMerchantPlan(prisma, input) {
           caveat: recommendation.caveat,
         },
       });
-      await persistRecommendationWorkflow(tx, {
+      const persistedWorkflow = await persistRecommendationWorkflow(tx, {
         merchantId: input.merchantId,
         shopId: input.shopId,
         recommendation: persistedRecommendation,
         workflow: recommendation.workflow,
+      });
+      await ensureMerchantActionForRecommendation(tx, {
+        recommendation: {
+          ...persistedRecommendation,
+          workflows: [
+            {
+              ...persistedWorkflow,
+              steps: recommendation.workflow?.steps ?? [],
+            },
+          ],
+        },
       });
       await buildPlanEvidenceSnapshot(tx, {
         merchantId: input.merchantId,
@@ -493,7 +508,7 @@ export async function processMerchantPlanMessage(prisma, input) {
       observedAt: now,
     });
     if (input.recommendationId) {
-      await tx.merchantPlanRecommendation.updateMany({
+      const updated = await tx.merchantPlanRecommendation.updateMany({
         where: {
           id: input.recommendationId,
           merchantId: input.merchantId,
@@ -505,6 +520,16 @@ export async function processMerchantPlanMessage(prisma, input) {
           rejectedAt: now,
         },
       });
+      if (updated.count > 0) {
+        await updateMerchantActionForRecommendation(tx, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          recommendationId: input.recommendationId,
+          recommendation: {
+            reviewStatus: PLAN_REVIEW_STATUS.refinementRequested,
+          },
+        });
+      }
     }
   });
   await addMerchantConversationNote(prisma, {
@@ -595,6 +620,12 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
     await tx.merchantRecommendationStep.updateMany({
       where: { recommendationId: existing.id, status: "draft" },
       data: { status: "pending" },
+    });
+    await updateMerchantActionForRecommendation(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      recommendationId: updated.id,
+      recommendation: updated,
     });
     await emitExecutableWorkflowSteps(tx, {
       merchantId: input.merchantId,

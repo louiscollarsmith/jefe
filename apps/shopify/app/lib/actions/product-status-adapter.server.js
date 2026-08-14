@@ -1,5 +1,7 @@
 // @ts-check
 
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
+
 // The `product_status_change` typed adapter — Jefe's SECOND executable action (archive a product
 // that didn't clear = set status ARCHIVED; reversible via ACTIVE). A faithful parallel of the
 // dead-stock clearance adapter: same guardrails (flag gate, blast-radius cap, idempotent
@@ -204,11 +206,23 @@ export async function applyProductStatusChange({ prisma, shopifyClient, executio
       where: { id: parent.id },
       data: { status: "reverted", revertedAt: new Date(), error: err instanceof Error ? err.message : String(err) },
     });
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: parent.merchantId,
+      shopId: parent.shopId,
+      actionRunId: parent.runId,
+      execution: { ...parent, status: "reverted" },
+    });
     return { ok: false, executionId: parent.id, error: err instanceof Error ? err.message : String(err), revertedCount: undo.restored.length, revertFailures: undo.failed };
   }
 
   const status = skipped.length === 0 ? "applied" : applied.length === 0 ? "failed" : "partially_applied";
   await prisma.actionExecution.update({ where: { id: parent.id }, data: { status, appliedAt: new Date() } });
+  await updateMerchantActionForExecution(prisma, {
+    merchantId: parent.merchantId,
+    shopId: parent.shopId,
+    actionRunId: parent.runId,
+    execution: { ...parent, status },
+  });
   return { ok: true, executionId: parent.id, status, applied, appliedCount: applied.length, skipped, skippedCount: skipped.length };
 }
 

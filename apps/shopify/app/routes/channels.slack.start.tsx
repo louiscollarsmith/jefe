@@ -6,14 +6,14 @@ import {
   channelActionError,
   startSlackConnection,
 } from "../lib/channels/service.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { authenticate } from "../shopify.server";
 import { splitScopes } from "../services/shopify-backfill-status.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const wantsJson = request.headers.get("Accept")?.includes("application/json");
   const { session } = await authenticate.admin(request);
-  const { merchant, shop } = await ensureShopifyTenant(prisma, {
+  const { merchant, shop } = await resolveShopifyTenantForRequest(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: splitScopes(session.scope),
@@ -60,5 +60,7 @@ function slackChannelsPath(search: string) {
   params.set("step", "channels");
   params.set("channelProvider", "slack");
   const nextSearch = params.toString();
-  return nextSearch ? `/app?${nextSearch}` : "/app?step=channels&channelProvider=slack";
+  return nextSearch
+    ? `/app?${nextSearch}`
+    : "/app?step=channels&channelProvider=slack";
 }

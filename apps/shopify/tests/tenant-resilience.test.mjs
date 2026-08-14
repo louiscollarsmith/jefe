@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ensureShopifyTenant } from "../app/lib/ingestion/shopify/tenant.server.js";
+import {
+  ensureShopifyTenant,
+  resolveShopifyTenantForRequest,
+} from "../app/lib/ingestion/shopify/tenant.server.js";
 
 // Regression guard for the 2026-07-31 review-time incident: a Shop with a
 // dangling merchantId (Merchant deleted/never-linked, DB FK not yet enforced)
@@ -53,7 +56,12 @@ function mockCreateRacePrisma() {
     status: "active",
     setupStatus: "installed",
   };
-  const calls = { merchantCreate: 0, shopFindUnique: 0, shopUpdate: [], connectorUpsert: [] };
+  const calls = {
+    merchantCreate: 0,
+    shopFindUnique: 0,
+    shopUpdate: [],
+    connectorUpsert: [],
+  };
   return {
     calls,
     prisma: {
@@ -111,8 +119,39 @@ test("does NOT heal when the merchant is present (happy path)", async () => {
   assert.equal(calls.merchantCreate, 0); // no heal needed
 });
 
+test("active request tenant resolution performs no connector or tenant writes", async () => {
+  const { prisma, calls } = mockPrisma({ merchant: { id: "m1", name: "ok" } });
+  const result = await resolveShopifyTenantForRequest(prisma, {
+    shopDomain: "app-review.myshopify.com",
+    accessTokenSessionId: "session-1",
+    scopes: ["read_products"],
+  });
+
+  assert.equal(result.merchant.id, "m1");
+  assert.equal(calls.merchantCreate, 0);
+  assert.equal(calls.shopUpdate.length, 0);
+  assert.equal(calls.connectorUpsert, 0);
+});
+
+test("request tenant resolution retains orphan repair as a fallback", async () => {
+  const { prisma, calls } = mockPrisma({ merchant: null });
+  const result = await resolveShopifyTenantForRequest(prisma, {
+    shopDomain: "app-review.myshopify.com",
+  });
+
+  assert.equal(result.merchant.id, "merchant-new");
+  assert.equal(calls.merchantCreate, 1);
+  assert.ok(
+    calls.shopUpdate.some((data) => data.merchantId === "merchant-new"),
+  );
+  assert.equal(calls.connectorUpsert, 1);
+});
+
 test("heals + reactivates an uninstalled shop with a dangling merchant", async () => {
-  const { prisma, calls } = mockPrisma({ merchant: null, status: "uninstalled" });
+  const { prisma, calls } = mockPrisma({
+    merchant: null,
+    status: "uninstalled",
+  });
   const result = await ensureShopifyTenant(prisma, {
     shopDomain: "app-review.myshopify.com",
   });
@@ -132,7 +171,10 @@ test("reactivating an uninstalled shop clears the stale uninstalledAt stamp", as
     shopDomain: "app-review.myshopify.com",
   });
   const reactivation = calls.shopUpdate.find((d) => d.status === "active");
-  assert.ok(reactivation, "a reactivation update fired for the uninstalled shop");
+  assert.ok(
+    reactivation,
+    "a reactivation update fired for the uninstalled shop",
+  );
   assert.equal(
     reactivation.uninstalledAt,
     null,
