@@ -1,4 +1,8 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import type {
+  HeadersFunction,
+  LoaderFunctionArgs,
+  ShouldRevalidateFunctionArgs,
+} from "react-router";
 import {
   isRouteErrorResponse,
   Link,
@@ -23,22 +27,44 @@ import type { CSSProperties } from "react";
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import { standaloneAppHost } from "../lib/auth/auth-mode.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { WebVitalsReporter } from "../components/web-vitals-reporter";
 import { AppUpdateBanner } from "../components/app-update-banner";
 import { ClientNavigationReporter } from "../components/client-navigation-reporter";
+import {
+  isAppHomeNarrowMutation,
+  isAppHomeUiOnlyNavigation,
+} from "../lib/home/app-home-navigation";
+import { createServerRouteTiming } from "../lib/observability/server-timing.server.js";
+
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formData,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (isAppHomeNarrowMutation(formData)) return false;
+  if (!formData && isAppHomeUiOnlyNavigation(currentUrl, nextUrl)) return false;
+  return defaultShouldRevalidate;
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const timing = createServerRouteTiming(request, "app-shell", "loader");
+  try {
   // Dual-mode seam: embedded → authenticate.admin (unchanged); standalone
   // (app.mynamejefe.com, signed cookie) → the shop's offline session. The rest
   // of the shell is identical either way.
-  const { session, standalone } = await authenticateAppRequest(request);
-  const { shop } = await ensureShopifyTenant(prisma, {
-    shopDomain: session.shop,
-    accessTokenSessionId: session.id,
-    scopes: session.scope?.split(",").filter(Boolean) ?? [],
-    rawPayload: { source: "app_shell" },
-  });
+  const { session, standalone } = await timing.measure("auth", () =>
+    authenticateAppRequest(request),
+  );
+  const { shop } = await timing.measure("tenant", () =>
+    resolveShopifyTenantForRequest(prisma, {
+      shopDomain: session.shop,
+      accessTokenSessionId: session.id,
+      scopes: session.scope?.split(",").filter(Boolean) ?? [],
+      rawPayload: { source: "app_shell" },
+    }),
+  );
 
   const onboardingComplete = Boolean(shop.onboardingCompletedAt);
   // "Open the app" → the standalone web-app surface (app.mynamejefe.com). The link goes
@@ -61,6 +87,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     standalone: Boolean(standalone),
     openAppUrl,
   };
+  } finally {
+    timing.finish();
+  }
 };
 
 export default function App() {

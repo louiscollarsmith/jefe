@@ -84,7 +84,7 @@ import {
   startWhatsAppVerification,
 } from "../lib/channels/service.server.js";
 import { CHANNEL_STATUS } from "../lib/channels/status.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import {
   readFurthestStep,
   onboardingStepIndex,
@@ -189,7 +189,6 @@ import {
 import {
   changeConversationFocus,
   referenceActionInConversation,
-  startFocusedActionChat,
 } from "../lib/merchant-memory/focused-action-chat.server.js";
 import {
   getBeliefDefinition,
@@ -201,6 +200,11 @@ import {
   currentServerInstant,
   storeTimeZoneFromPayload,
 } from "../lib/home/home-dates.js";
+import {
+  isAppHomeNarrowMutation,
+  isAppHomeUiOnlyNavigation,
+} from "../lib/home/app-home-navigation";
+import { createServerRouteTiming } from "../lib/observability/server-timing.server.js";
 import {
   setNotificationPreference,
 } from "../lib/notifications/service.server.js";
@@ -298,40 +302,25 @@ export function shouldRevalidate({
   if (
     intent === "action.set_mode" ||
     intent === "onboarding.milestone" ||
-    intent === "onboarding.recommendation.approve"
+    intent === "onboarding.recommendation.approve" ||
+    isAppHomeNarrowMutation(formData)
   ) return false;
   if (!formData && isAppHomeUiOnlyNavigation(currentUrl, nextUrl)) return false;
   return defaultShouldRevalidate;
 }
 
-export function isAppHomeUiOnlyNavigation(currentUrl: URL, nextUrl: URL) {
-  if (normalizeAppDataPath(currentUrl.pathname) !== "/app" || normalizeAppDataPath(nextUrl.pathname) !== "/app") return false;
-  const changed = changedSearchKeys(currentUrl.searchParams, nextUrl.searchParams);
-  return (
-    changed.length > 0 &&
-    changed.every((key) => ["conversation", "talkAction", "actionChat"].includes(key))
-  );
-}
-
-function normalizeAppDataPath(pathname: string) {
-  return pathname === "/app.data" ? "/app" : pathname;
-}
-
-function changedSearchKeys(current: URLSearchParams, next: URLSearchParams) {
-  const keys = new Set([...current.keys(), ...next.keys()]);
-  return [...keys].filter(
-    (key) => current.getAll(key).join("\u0000") !== next.getAll(key).join("\u0000"),
-  );
-}
-
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticateAppRequest(request);
-  const { merchant, shop } = await ensureShopifyTenant(prisma, {
-    shopDomain: session.shop,
-    accessTokenSessionId: session.id,
-    scopes: splitScopes(session.scope),
-    rawPayload: { source: "jefe_onboarding_action" },
-  });
+  const timing = createServerRouteTiming(request, "app-index", "action");
+  try {
+  const { session } = await timing.measure("auth", () => authenticateAppRequest(request));
+  const { merchant, shop } = await timing.measure("tenant", () =>
+    resolveShopifyTenantForRequest(prisma, {
+      shopDomain: session.shop,
+      accessTokenSessionId: session.id,
+      scopes: splitScopes(session.scope),
+      rawPayload: { source: "jefe_onboarding_action" },
+    }),
+  );
   // Checked from Content-Length, BEFORE the body is buffered — otherwise an oversized upload is
   // pulled into memory and only then found to be too big.
   const oversized = oversizedUploadReason(request);
@@ -661,36 +650,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (intent === "chat.new") {
-    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
-    if (focusedActionId) {
-      const result = await startFocusedActionChat(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: focusedActionId,
-        forceNew: true,
-      });
-      if (!result.ok || !result.conversationId) {
-        return {
-          ok: false,
-          error:
-            ("error" in result ? result.error : null) ??
-            "That focused chat could not be started.",
-          intent,
-        };
-      }
-      actionLog.info("merchant started a focused action chat", {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        conversationId: result.conversationId,
-        focusedActionId,
-      });
-      return redirect(
-        appPathFromSearch(new URL(request.url).search, {
-          conversation: result.conversationId,
-          talkAction: null,
-        }),
-      );
-    }
     const conversation = await startNewGeneralChat(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
@@ -703,48 +662,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return redirect(
       appPathFromSearch(new URL(request.url).search, {
         conversation: conversation.id,
-      }),
-    );
-  }
-
-  if (intent === "chat.focus.start") {
-    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
-    const forceNew = formDataHasTruthyValue(formData, "forceNew");
-    const result = focusedActionId
-      ? await startFocusedActionChat(prisma, {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          actionId: focusedActionId,
-          forceNew,
-        })
-      : { ok: false, error: "That action could not be found." };
-    if (!result.ok) {
-      return {
-        ok: false,
-        error:
-          ("error" in result ? result.error : null) ??
-          "That focused chat could not be started.",
-        intent,
-      };
-    }
-    if (result.chooser) {
-      return redirect(
-        appPathFromSearch(new URL(request.url).search, {
-          talkAction: focusedActionId,
-        }),
-      );
-    }
-    actionLog.info("merchant opened action talk-through", {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      focusedActionId,
-      conversationId: result.conversationId ?? null,
-      forceNew,
-    });
-    return redirect(
-      appPathFromSearch(new URL(request.url).search, {
-        conversation: result.conversationId ?? null,
-        talkAction: null,
       }),
     );
   }
@@ -1592,6 +1509,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   return { ok: false, error: "Unsupported action." };
+  } finally {
+    timing.finish();
+  }
 };
 
 /**
@@ -1636,14 +1556,18 @@ export function ErrorBoundary() {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const timing = createServerRouteTiming(request, "app-index", "loader");
+  try {
   const loaderStartedAt = performance.now();
-  const { session } = await authenticateAppRequest(request);
-  const { merchant, shop } = await ensureShopifyTenant(prisma, {
-    shopDomain: session.shop,
-    accessTokenSessionId: session.id,
-    scopes: splitScopes(session.scope),
-    rawPayload: { source: "jefe_onboarding_loader" },
-  });
+  const { session } = await timing.measure("auth", () => authenticateAppRequest(request));
+  const { merchant, shop } = await timing.measure("tenant", () =>
+    resolveShopifyTenantForRequest(prisma, {
+      shopDomain: session.shop,
+      accessTokenSessionId: session.id,
+      scopes: splitScopes(session.scope),
+      rawPayload: { source: "jefe_onboarding_loader" },
+    }),
+  );
   const url = new URL(request.url);
   const scopes = splitScopes(session.scope);
   // Kick off (don't block): on first load this can hit Shopify's Admin API, so
@@ -1736,7 +1660,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         merchantId: merchant.id,
         shopId: shop.id,
         includeInactive: true,
-        sync: false,
       });
       // Same best-effort pattern for the merchant's brand logo (shop.brand): fire-and-
       // forget so its first-load-only Admin GraphQL call stays off the LCP path, cached
@@ -2097,6 +2020,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     planConversation,
     planEvidence,
   };
+  } finally {
+    timing.finish();
+  }
 };
 
 // Client-only: true on every fresh document load (the module is freshly evaluated),

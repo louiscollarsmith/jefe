@@ -3,9 +3,7 @@
   "build": {
     "builder": "RAILPACK",
     "buildCommand": "npx prisma generate && npm run typecheck && npm run lint && npm test && npm run build",
-    "watchPatterns": [
-      "apps/shopify/**"
-    ]
+    "watchPatterns": ["apps/shopify/**"]
   },
   "deploy": {
     "preDeployCommand": "npm run migrate",
@@ -14,5 +12,16 @@
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
+  },
+  "environments": {
+    "production": {
+      "deploy": {
+        "multiRegionConfig": {
+          "europe-west4-drams3a": {
+            "numReplicas": 1
+          }
+        }
+      }
+    }
   }
 }

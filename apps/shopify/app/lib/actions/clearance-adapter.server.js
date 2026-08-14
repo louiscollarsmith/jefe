@@ -1,5 +1,7 @@
 // @ts-check
 
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
+
 // Clearance execution adapter — the EXECUTION half of Jefe's first action.
 //
 // ⚠️  ONE-WAY DOOR / NOT LIVE. This is the only place in the action loop that
@@ -330,6 +332,12 @@ export async function applyClearance({ prisma, shopifyClient, execution }, previ
       where: { id: parent.id },
       data: { status: "reverted", revertedAt: new Date(), error: (err instanceof Error ? err.message : String(err)) },
     });
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: parent.merchantId,
+      shopId: parent.shopId,
+      actionRunId: parent.runId,
+      execution: { ...parent, status: "reverted", outcomeStatus: "failed" },
+    });
     return {
       ok: false,
       executionId: parent.id,
@@ -341,6 +349,12 @@ export async function applyClearance({ prisma, shopifyClient, execution }, previ
 
   const status = skipped.length === 0 ? "applied" : applied.length === 0 ? "failed" : "partially_applied";
   await prisma.actionExecution.update({ where: { id: parent.id }, data: { status, appliedAt: new Date() } });
+  await updateMerchantActionForExecution(prisma, {
+    merchantId: parent.merchantId,
+    shopId: parent.shopId,
+    actionRunId: parent.runId,
+    execution: { ...parent, status },
+  });
   return {
     ok: true,
     executionId: parent.id,

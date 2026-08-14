@@ -30,6 +30,7 @@ import {
   listActionTypes,
 } from "../actions/action-intent.server.js";
 import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
+import { ensureMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
 import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.server.js";
 import { BOOTSTRAP_OUTPUT_SCHEMA, parseBootstrapOutput } from "./bootstrap-schema.server.js";
 import { buildBootstrapPrompt, buildBootstrapSystemPrompt } from "./bootstrap-prompt.server.js";
@@ -1163,9 +1164,16 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
           evidenceIds: [],
         },
       });
+      const recommendationWithWorkflow = {
+        ...recommendation,
+        workflows: [{ ...workflow, steps: [step] }],
+      };
+      await ensureMerchantActionForRecommendation(tx, {
+        recommendation: recommendationWithWorkflow,
+      });
       if (opportunity.actionIntent) {
         actionCandidates.push({
-          recommendation: { ...recommendation, workflows: [{ ...workflow, steps: [step] }] },
+          recommendation: recommendationWithWorkflow,
           intent: opportunity.actionIntent,
           recommendationStepId: step.id,
         });

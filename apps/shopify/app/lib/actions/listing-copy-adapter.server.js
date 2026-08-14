@@ -1,5 +1,7 @@
 // @ts-check
 
+import { updateMerchantActionForExecution } from "./merchant-action.server.js";
+
 // The `listing_copy` typed adapter — Jefe's THIRD executable action: fill in the product type
 // on sellable products that have none. A faithful parallel of the clearance and
 // product-status adapters (flag gate, blast-radius cap, idempotent per-target ledger writes,
@@ -277,6 +279,12 @@ export async function applyListingCopyChange({ prisma, shopifyClient, execution 
         },
       },
     });
+    await updateMerchantActionForExecution(prisma, {
+      merchantId: parent.merchantId,
+      shopId: parent.shopId,
+      actionRunId: parent.runId,
+      execution: { ...parent, status: "reverted", outcomeStatus: "failed" },
+    });
     throw error;
   }
 
@@ -288,6 +296,12 @@ export async function applyListingCopyChange({ prisma, shopifyClient, execution 
       outcomeStatus: "applied",
       outcome: { appliedCount: applied.length, skippedCount: skipped.length },
     },
+  });
+  await updateMerchantActionForExecution(prisma, {
+    merchantId: parent.merchantId,
+    shopId: parent.shopId,
+    actionRunId: parent.runId,
+    execution: { ...parent, status: "applied", outcomeStatus: "applied" },
   });
   return { applied, skipped, refused: preview.refused, executionId: parent.id };
 }

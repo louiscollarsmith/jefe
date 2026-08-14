@@ -104,9 +104,27 @@ check). It always returns `200` when the process can serve, with a body of:
   "ok": true,
   "environment": "production",
   "version": "<APP_VERSION or RAILWAY_GIT_COMMIT_SHA>",
+  "deployment": { "region": "europe-west4-drams3a" },
   "timestamp": "2026-07-28T12:00:00.000Z",
   "uptimeSeconds": 1234,
-  "checks": { "database": { "status": "ok", "latencyMs": 3 } }
+  "checks": {
+    "database": {
+      "status": "ok",
+      "latencyMs": 3,
+      "pooledEndpoint": true
+    }
+  },
+  "ssrRenderLatency": { "count": 10, "p50": 3, "p95": 8, "p99": 9, "max": 9 },
+  "routeLatency": {
+    "app-home.action-chats.action": {
+      "count": 4,
+      "p50": 80,
+      "p95": 120,
+      "p99": 120,
+      "max": 120
+    }
+  },
+  "clientNavigation": { "count": 10, "p50": 140, "p95": 240, "p99": 250, "max": 250 }
 }
 ```
 
@@ -115,6 +133,25 @@ logged server-side but does **not** flip the status code, so a transient DB blip
 cannot cause Railway to recycle an otherwise-healthy instance. The raw DB error
 is never included in the public response — only logged. For dependency-aware
 gating, see `/ready` below.
+
+`deployment.region` is Railway's running replica region, not a preferred-region
+setting. `checks.database.pooledEndpoint` reports only whether `DATABASE_URL` is
+a Neon `-pooler` URL; it never exposes connection details. Use these two fields
+after every production deploy to confirm that the app, database region and
+runtime connection mode are the intended ones.
+
+Latency is split by vantage point:
+
+- `ssrRenderLatency` measures React's server render only. The legacy `latency`
+  field remains as a temporary alias for this value.
+- `routeLatency` measures authenticated loaders/actions and their fixed phases
+  (`auth`, `tenant`, domain reads and mutation persistence). Each request also
+  produces one structured timing log correlated with Railway's request ID.
+- `clientNavigation` starts in the browser and includes the round trip,
+  revalidation and render, so it is the merchant-facing navigation measure.
+
+Route timing labels are constants from code. Logs contain durations and request
+correlation metadata only—never URL query values, form data or customer data.
 
 ## Readiness endpoint — `/ready`
 

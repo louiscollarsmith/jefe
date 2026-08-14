@@ -5,7 +5,10 @@ import {
   percentile,
   recordClientNavigationDuration,
   recordRequestDuration,
+  recordRouteDuration,
   getLatencyPercentiles,
+  getRouteLatencyPercentiles,
+  getSsrRenderLatencyPercentiles,
   __resetPerf,
 } from "../app/lib/observability/perf.server.js";
 
@@ -50,6 +53,39 @@ test("client navigation percentiles are sampled separately from request latency"
   assert.equal(nav.count, 2);
   assert.equal(nav.p50, 200);
   assert.equal(nav.max, 300);
+});
+
+test("SSR render and named route timings are exposed separately", () => {
+  __resetPerf();
+  recordRequestDuration(7);
+  recordRouteDuration("app-home.action-chats.action.auth", 20);
+  recordRouteDuration("app-home.action-chats.action.auth", 40);
+  recordRouteDuration("app-home.action-chats.action", 90);
+  recordRouteDuration("invalid route label", 500);
+
+  assert.deepEqual(getSsrRenderLatencyPercentiles(), {
+    count: 1,
+    p50: 7,
+    p95: 7,
+    p99: 7,
+    max: 7,
+  });
+  assert.deepEqual(getRouteLatencyPercentiles(), {
+    "app-home.action-chats.action": {
+      count: 1,
+      p50: 90,
+      p95: 90,
+      p99: 90,
+      max: 90,
+    },
+    "app-home.action-chats.action.auth": {
+      count: 2,
+      p50: 30,
+      p95: 39,
+      p99: 40,
+      max: 40,
+    },
+  });
 });
 
 test("the sampled window is bounded (ring buffer)", () => {

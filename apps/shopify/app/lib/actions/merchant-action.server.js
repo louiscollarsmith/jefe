@@ -242,11 +242,128 @@ export async function ensureMerchantActionForExecution(prisma, input) {
 }
 
 /**
+ * Create/update the MerchantAction read identity at recommendation write time.
+ * This is the normal population path; bulk reconciliation is repair-only.
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; includeInactive?: boolean; sync?: boolean }} input
+ * @param {{ recommendation: any }} input
+ */
+export async function ensureMerchantActionForRecommendation(prisma, input) {
+  const recommendation = input.recommendation;
+  if (!prisma?.merchantAction?.upsert || !recommendation?.id) return null;
+  const action = await prisma.merchantAction.upsert({
+    where: { sourceRecommendationId: recommendation.id },
+    create: merchantActionDataFromRecommendation(recommendation),
+    update: merchantActionUpdateFromRecommendation(recommendation),
+    select: { id: true },
+  });
+  const execution = currentExecutionFromRecommendation(recommendation);
+  if (execution?.runId && prisma.actionExecution?.updateMany) {
+    await prisma.actionExecution.updateMany({
+      where: {
+        runId: execution.runId,
+        merchantId: recommendation.merchantId,
+        shopId: recommendation.shopId,
+        merchantActionId: null,
+      },
+      data: { merchantActionId: action.id },
+    });
+  }
+  return action;
+}
+
+/**
+ * Write a recommendation lifecycle change through without flattening a linked
+ * execution's stronger applied/reverted state.
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; recommendationId: string; recommendation: any }} input
+ */
+export async function updateMerchantActionForRecommendation(prisma, input) {
+  if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.update) {
+    return { updated: false };
+  }
+  const action = await prisma.merchantAction.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceRecommendationId: input.recommendationId,
+    },
+    select: {
+      id: true,
+      currentExecution: {
+        select: { status: true, outcomeStatus: true, outcome: true },
+      },
+    },
+  });
+  if (!action) return { updated: false };
+  const recommendation = input.recommendation ?? {};
+  await prisma.merchantAction.update({
+    where: { id: action.id },
+    data: {
+      status: deriveMerchantActionStatus({
+        recommendation,
+        execution: action.currentExecution,
+      }),
+      ...(recommendation.title == null
+        ? {}
+        : { title: safeText(recommendation.title, 180) || "Review Jefe's next move" }),
+      ...(recommendation.summary == null
+        ? {}
+        : { summary: safeText(recommendation.summary, 700) }),
+      ...(recommendation.outcome == null
+        ? {}
+        : { outcome: jsonObject(recommendation.outcome) }),
+    },
+  });
+  return { updated: true };
+}
+
+/**
+ * Write through an execution lifecycle change to its durable MerchantAction.
+ * A missed denormalisation never turns a guarded external write into a reported
+ * failure; the bounded reconciliation worker remains the repair path.
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionRunId: string; execution: any; logger?: Pick<Console, "warn"> }} input
+ */
+export async function updateMerchantActionForExecution(prisma, input) {
+  if (!prisma?.merchantAction?.updateMany || !input.actionRunId) {
+    return { updated: false, count: 0 };
+  }
+  try {
+    const execution = input.execution ?? {};
+    const result = await prisma.merchantAction.updateMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        OR: [
+          { currentActionRunId: input.actionRunId },
+          ...(execution.merchantActionId ? [{ id: execution.merchantActionId }] : []),
+        ],
+      },
+      data: {
+        status: deriveMerchantActionStatus({ execution }),
+        currentActionRunId: input.actionRunId,
+        ...(execution.outcome == null ? {} : { outcome: jsonObject(execution.outcome) }),
+      },
+    });
+    return { updated: result.count > 0, count: result.count };
+  } catch (error) {
+    (input.logger ?? log).warn("merchant action write-through failed", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionRunId: input.actionRunId,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return { updated: false, count: 0 };
+  }
+}
+
+/**
+ * @param {any} prisma
+ * Read-only application query. Reconciliation belongs on creation/status-write
+ * paths or in the bounded repair worker, never in a merchant request.
+ * @param {{ merchantId: string; shopId: string; includeInactive?: boolean }} input
  */
 export async function listMerchantActions(prisma, input) {
-  if (input.sync !== false) await syncMerchantActionsForShop(prisma, input);
   if (!prisma?.merchantAction?.findMany) return [];
   const rows = await prisma.merchantAction.findMany({
     where: {
@@ -266,6 +383,44 @@ export async function listMerchantActions(prisma, input) {
     take: 40,
   });
   return rows.map(serializeMerchantAction);
+}
+
+/**
+ * Minimal tenant-scoped identity for focused-chat reads. This deliberately
+ * avoids recommendation workflows and execution history.
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId?: string | null }} input
+ */
+export async function getMerchantActionFocus(prisma, input) {
+  if (!input.actionId || !prisma?.merchantAction?.findFirst) return null;
+  const row = await prisma.merchantAction.findFirst({
+    where: {
+      id: input.actionId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+    select: {
+      id: true,
+      title: true,
+      summary: true,
+      status: true,
+      sourceRecommendationId: true,
+      currentActionRunId: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: safeText(row.title, 180) || "Review Jefe's next move",
+    summary: safeText(row.summary, 700),
+    status: row.status,
+    sourceRecommendationId: row.sourceRecommendationId ?? null,
+    actionRunId: row.currentActionRunId ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? null,
+    updatedAt: row.updatedAt?.toISOString?.() ?? null,
+  };
 }
 
 /**

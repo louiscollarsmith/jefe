@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import {
+  isAppHomeNarrowMutation,
+  isAppHomeUiOnlyNavigation,
+} from "../app/lib/home/app-home-navigation.js";
 
 // Opening Jefe must always land on the focused-action home. The embedded app's URL is
 // persistent (App Bridge restores the last location on re-open), so a chat the
@@ -13,6 +17,14 @@ const appIndexSource = fs.readFileSync(
 );
 const dailyHomeSource = fs.readFileSync(
   new URL("../app/components/daily-home.tsx", import.meta.url),
+  "utf8",
+);
+const appShellSource = fs.readFileSync(
+  new URL("../app/routes/app.tsx", import.meta.url),
+  "utf8",
+);
+const appHomeNavigationSource = fs.readFileSync(
+  new URL("../app/lib/home/app-home-navigation.js", import.meta.url),
   "utf8",
 );
 const clientNavigationReporterSource = fs.readFileSync(
@@ -49,7 +61,10 @@ test("focused-chat polish: single 'Thinking' indicator + wired action menu", () 
     1,
     "exactly one thinking indicator",
   );
-  assert.match(dailyHomeSource, /pendingAttachmentName \? "Reading your file" : "Thinking"/);
+  assert.match(
+    dailyHomeSource,
+    /pendingAttachmentName \? "Reading your file" : "Thinking"/,
+  );
   // The plus menu is the way actions enter a chat: one action can become focus,
   // while other actions are added as read-only references.
   assert.match(dailyHomeSource, /function ActionAttachmentMenu/);
@@ -60,9 +75,18 @@ test("focused-chat polish: single 'Thinking' indicator + wired action menu", () 
 
 test("chat replies preserve the reader's scroll position instead of jumping to the top", () => {
   assert.match(dailyHomeSource, /function usePreserveChatScrollDuringIntent/);
-  assert.match(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "chat\.message"\)/);
-  assert.match(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "chat\.retry"\)/);
-  assert.doesNotMatch(dailyHomeSource, /usePreserveChatScrollDuringIntent\(navigation, "action\.chat\.message"\)/);
+  assert.match(
+    dailyHomeSource,
+    /usePreserveChatScrollDuringIntent\(navigation, "chat\.message"\)/,
+  );
+  assert.match(
+    dailyHomeSource,
+    /usePreserveChatScrollDuringIntent\(navigation, "chat\.retry"\)/,
+  );
+  assert.doesNotMatch(
+    dailyHomeSource,
+    /usePreserveChatScrollDuringIntent\(navigation, "action\.chat\.message"\)/,
+  );
   assert.match(dailyHomeSource, /distanceFromDocumentBottom\(\) < 160/);
   assert.match(dailyHomeSource, /window\.scrollTo\(\{ top: snapshot\.y \}\)/);
   assert.match(dailyHomeSource, /preventScrollReset/);
@@ -73,31 +97,88 @@ test("the home uses action-centric navigation into focused chats", () => {
   assert.match(dailyHomeSource, /function FocusedActionsHome/);
   assert.match(dailyHomeSource, /function AttentionSpotlight/);
   assert.match(dailyHomeSource, /function TalkActionChooser/);
-  assert.match(dailyHomeSource, /value="chat\.focus\.start"/);
+  assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
+  assert.match(dailyHomeSource, /action: "\/api\/app-home\/action-chats"/);
+  assert.match(dailyHomeSource, /setPendingTalkActionId\(actionId\)/);
+  assert.match(
+    dailyHomeSource,
+    /displayedTalkActionId = talkActionId \?\? pendingTalkActionId/,
+  );
   assert.match(dailyHomeSource, /conversation: conversation\.id/);
   assert.match(dailyHomeSource, /talkAction: null/);
   assert.match(dailyHomeSource, /conversation: chat\.id/);
+  assert.doesNotMatch(dailyHomeSource, /value="chat\.focus\.start"/);
 });
 
-test("home overlay navigations do not re-run the full app loader", () => {
-  assert.match(appIndexSource, /function isAppHomeUiOnlyNavigation/);
-  assert.match(appIndexSource, /function normalizeAppDataPath/);
-  assert.match(appIndexSource, /pathname === "\/app\.data" \? "\/app" : pathname/);
-  assert.match(appIndexSource, /"conversation", "talkAction", "actionChat"/);
-  assert.match(appIndexSource, /!formData && isAppHomeUiOnlyNavigation\(currentUrl, nextUrl\)/);
-  assert.doesNotMatch(appIndexSource, /changed\.every\(\(key\) => \["view", "conversation"/);
+test("chat resource submissions and overlays do not re-run parent or home loaders", () => {
+  assert.match(
+    appHomeNavigationSource,
+    /formData\?\.get\("intent"\) === "chat\.focus\.start"/,
+  );
+  assert.match(
+    appHomeNavigationSource,
+    /pathname === "\/app\.data" \? "\/app" : pathname/,
+  );
+  assert.match(appHomeNavigationSource, /"conversation"/);
+  assert.match(appHomeNavigationSource, /"talkAction"/);
+  assert.match(appHomeNavigationSource, /"actionChat"/);
+  assert.match(appIndexSource, /isAppHomeNarrowMutation\(formData\)/);
+  assert.match(
+    appIndexSource,
+    /!formData && isAppHomeUiOnlyNavigation\(currentUrl, nextUrl\)/,
+  );
+  assert.match(appShellSource, /isAppHomeNarrowMutation\(formData\)/);
+  assert.match(
+    appShellSource,
+    /!formData && isAppHomeUiOnlyNavigation\(currentUrl, nextUrl\)/,
+  );
+  assert.match(appIndexSource, /return defaultShouldRevalidate/);
+  assert.match(appShellSource, /return defaultShouldRevalidate/);
+  assert.doesNotMatch(appHomeNavigationSource, /approval/);
+});
+
+test("the shared home navigation guard is narrow and leaves approvals alone", () => {
+  const focusedChat = new FormData();
+  focusedChat.set("intent", "chat.focus.start");
+  assert.equal(isAppHomeNarrowMutation(focusedChat), true);
+
+  const approval = new FormData();
+  approval.set("intent", "recommendation.approve");
+  assert.equal(isAppHomeNarrowMutation(approval), false);
+
+  assert.equal(
+    isAppHomeUiOnlyNavigation(
+      new URL("https://jefe.example/app"),
+      new URL("https://jefe.example/app.data?talkAction=a1"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAppHomeUiOnlyNavigation(
+      new URL("https://jefe.example/app?talkAction=a1"),
+      new URL("https://jefe.example/app?view=library"),
+    ),
+    false,
+  );
 });
 
 test("focused chat details load through narrow app-home resources", () => {
-  assert.match(dailyHomeSource, /\/api\/app-home\/conversation\?conversationId=/);
+  assert.match(
+    dailyHomeSource,
+    /\/api\/app-home\/conversation\?conversationId=/,
+  );
   assert.match(dailyHomeSource, /\/api\/app-home\/action-chats\?actionId=/);
   assert.match(dailyHomeSource, /conversationCache/);
   assert.match(dailyHomeSource, /actionChatsCache/);
 });
 
 test("daily home reads merchant actions without syncing on every load", () => {
-  assert.match(appIndexSource, /const merchantActionsPromise = listMerchantActions\(prisma, \{/);
-  assert.match(appIndexSource, /includeInactive: true,\s*sync: false,/);
+  assert.match(
+    appIndexSource,
+    /const merchantActionsPromise = listMerchantActions\(prisma, \{/,
+  );
+  assert.match(appIndexSource, /includeInactive: true,/);
+  assert.doesNotMatch(appIndexSource, /syncMerchantActionsForShop/);
 });
 
 test("client navigation logging only labels real UI-param changes as overlays", () => {

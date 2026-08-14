@@ -9,7 +9,7 @@ import {
   listSlackDestinations,
   selectSlackDestinationAndSendWelcome,
 } from "../lib/channels/service.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { logger as baseLogger } from "../lib/observability/logger.server";
 
 /**
@@ -34,7 +34,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const { session } = await authenticateAppRequest(request);
-  const { merchant, shop } = await ensureShopifyTenant(prisma, {
+  const { merchant, shop } = await resolveShopifyTenantForRequest(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],
@@ -56,7 +56,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (intent === "slack.save_destination") {
       const destinationId = String(form.get("destinationId") ?? "");
       if (!destinationId) {
-        return redirect(`${PANEL_PATH}&channelNotice=slack_destination_required`);
+        return redirect(
+          `${PANEL_PATH}&channelNotice=slack_destination_required`,
+        );
       }
       // Selects the channel AND posts a confirming hello, so "saved" is also "verified it works".
       await selectSlackDestinationAndSendWelcome(prisma, {
@@ -79,12 +81,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response("Unknown intent", { status: 400 });
   } catch (error) {
     const safe = channelActionError(error);
-    log.warn("slack settings action failed", { intent, safeErrorCode: safe.code });
+    log.warn("slack settings action failed", {
+      intent,
+      safeErrorCode: safe.code,
+    });
     // Fetcher intents want JSON; navigations get a redirect carrying the safe code.
     if (intent === "slack.refresh_destinations") {
       return Response.json({ ok: false, error: safe }, { status: 400 });
     }
-    return redirect(`${PANEL_PATH}&channelNotice=${encodeURIComponent(safe.code)}`);
+    return redirect(
+      `${PANEL_PATH}&channelNotice=${encodeURIComponent(safe.code)}`,
+    );
   }
 };
 

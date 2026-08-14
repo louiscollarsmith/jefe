@@ -1,6 +1,7 @@
 // @ts-check
 
 import { ACTIVE_BELIEF_STATUSES } from "../merchant-memory/constants.server.js";
+import { updateMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
 import { BOOTSTRAP_BELIEF_KEYS, buildEvidenceContracts } from "./bootstrap.server.js";
 
 /**
@@ -66,11 +67,23 @@ export async function reconcileBootstrapRecommendationsAfterFullRefresh(prisma, 
         where: { id: recommendation.id },
         data: { reviewStatus: "needs_review" },
       });
+      await updateMerchantActionForRecommendation(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        recommendationId: recommendation.id,
+        recommendation: { ...recommendation, reviewStatus: "needs_review" },
+      });
       needsReview += 1;
     } else if (["proposed", "deferred"].includes(recommendation.reviewStatus)) {
       await prisma.merchantPlanRecommendation.update({
         where: { id: recommendation.id },
         data: { reviewStatus: "superseded" },
+      });
+      await updateMerchantActionForRecommendation(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        recommendationId: recommendation.id,
+        recommendation: { ...recommendation, reviewStatus: "superseded" },
       });
       superseded += 1;
     }

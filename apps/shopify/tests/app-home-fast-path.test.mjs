@@ -31,7 +31,7 @@ test("the daily loader no longer loads full memory or unused daily panels", () =
 test("narrow app-home resource routes authenticate and tenant-scope their reads", () => {
   for (const source of [conversationRoute, actionChatsRoute]) {
     assert.match(source, /authenticateAppRequest\(request\)/);
-    assert.match(source, /ensureShopifyTenant/);
+    assert.match(source, /resolveShopifyTenantForRequest/);
     assert.match(source, /merchantId: merchant\.id/);
     assert.match(source, /shopId: shop\.id/);
     assert.match(source, /Cache-Control": "no-store"/);
@@ -39,7 +39,19 @@ test("narrow app-home resource routes authenticate and tenant-scope their reads"
   assert.match(conversationRoute, /getDailyChatThread/);
   assert.match(conversationRoute, /listMerchantFilePicks/);
   assert.match(actionChatsRoute, /listChatsFocusedOnAction/);
-  assert.match(actionChatsRoute, /getMerchantAction/);
+  assert.match(actionChatsRoute, /getMerchantActionFocus/);
+});
+
+test("focused-chat start is a typed narrow POST instead of a home-route action", () => {
+  assert.match(actionChatsRoute, /export async function action/);
+  assert.match(actionChatsRoute, /startFocusedActionChat/);
+  assert.match(actionChatsRoute, /chooser: true, chats: result\.chats/);
+  assert.match(
+    actionChatsRoute,
+    /chooser: false,[\s\S]*conversationId: result\.conversationId/,
+  );
+  assert.match(actionChatsRoute, /ok: false, actionId, error: result\.error/);
+  assert.doesNotMatch(appIndex, /if \(intent === "chat\.focus\.start"\)/);
 });
 
 function branchBody(source, marker) {

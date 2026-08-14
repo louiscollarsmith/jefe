@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { Link, useLoaderData, useSearchParams } from "react-router";
 import prisma from "../db.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
-import { ensureShopifyTenant } from "../lib/ingestion/shopify/tenant.server";
+import { resolveShopifyTenantForRequest } from "../lib/ingestion/shopify/tenant.server";
 import { getLiveActionModes } from "../lib/actions/live-action-modes.server.js";
 import { getDetectedToolStack } from "../lib/integrations/tool-stack-read.server.js";
 import {
@@ -39,7 +39,7 @@ import type { SlackConnectionView, SlackDestination } from "../components/settin
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticateAppRequest(request);
-  const { merchant, shop } = await ensureShopifyTenant(prisma, {
+  const { merchant, shop } = await resolveShopifyTenantForRequest(prisma, {
     shopDomain: session.shop,
     accessTokenSessionId: session.id,
     scopes: session.scope?.split(",").filter(Boolean) ?? [],

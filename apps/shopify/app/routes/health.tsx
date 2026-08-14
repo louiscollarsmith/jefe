@@ -6,11 +6,14 @@ import {
   buildWorkerHealth,
   buildDependencyHealth,
   getBootstrapJobHealth,
+  isNeonPooledRuntimeUrl,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
 import {
   getClientNavigationPercentiles,
   getLatencyPercentiles,
+  getRouteLatencyPercentiles,
+  getSsrRenderLatencyPercentiles,
 } from "../lib/observability/perf.server";
 import { getChatTurnPercentiles } from "../lib/observability/chat-turn-latency.server.js";
 import { getWorkerLastTickAt } from "../lib/observability/heartbeat.server";
@@ -43,7 +46,11 @@ export const loader = async () => {
   const payload = {
     ...buildHealthPayload(process.env),
     checks: {
-      database: { status: database.status, latencyMs: database.latencyMs },
+      database: {
+        status: database.status,
+        latencyMs: database.latencyMs,
+        pooledEndpoint: isNeonPooledRuntimeUrl(process.env.DATABASE_URL),
+      },
       worker: buildWorkerHealth(getWorkerLastTickAt(), {
         enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
       }),
@@ -71,7 +78,12 @@ export const loader = async () => {
         {},
       ),
     },
+    // Compatibility alias: this historical field times React SSR only. It does
+    // not include auth/loaders/actions, so use ssrRenderLatency/routeLatency when
+    // diagnosing application work.
     latency: getLatencyPercentiles(),
+    ssrRenderLatency: getSsrRenderLatencyPercentiles(),
+    routeLatency: getRouteLatencyPercentiles(),
     clientNavigation: getClientNavigationPercentiles(),
     // How long merchants are waiting for a chat reply on THIS instance, server-side
     // and as felt in the browser. In-process ring, so it answers "is Jefe slow right
