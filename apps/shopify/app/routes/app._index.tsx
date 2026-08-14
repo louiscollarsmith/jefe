@@ -121,7 +121,13 @@ import {
   rejectAction,
   reviseAction,
 } from "../lib/actions/action-resolution.server";
-import { listMerchantActions } from "../lib/actions/merchant-action.server";
+import {
+  getMerchantAttentionItems,
+  getMerchantCompletedActions,
+  getMerchantInProgressActions,
+  getMerchantProposedActions,
+  listMerchantActions,
+} from "../lib/actions/merchant-action.server";
 import {
   setActionMode,
 } from "../lib/actions/action-autonomy-policy.server";
@@ -1770,6 +1776,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           suggestedAction.sourceRecommendation?.id === selectedRecommendationId)
           ? suggestedAction
           : null;
+      const focusActions =
+        merchantActions.length > 0
+          ? merchantActions
+          : visibleSuggestedAction
+            ? [
+                {
+                  id: "",
+                  title:
+                    visibleSuggestedAction.sourceRecommendation?.title ??
+                    visibleSuggestedAction.headline ??
+                    "Review Jefe's next move",
+                  summary:
+                    visibleSuggestedAction.sourceRecommendation?.summary ??
+                    visibleSuggestedAction.headline ??
+                    "",
+                  status: "proposed",
+                  statusLabel: "Proposed",
+                  actionRunId: visibleSuggestedAction.actionRunId ?? null,
+                  actionType: visibleSuggestedAction.actionType ?? null,
+                  executable: visibleSuggestedAction.executable ?? false,
+                  raise: visibleSuggestedAction.raise ?? null,
+                  displaySteps:
+                    visibleSuggestedAction.sourceRecommendation?.workflow?.steps ?? [],
+                },
+              ]
+            : merchantActions;
+      const attentionItems = getMerchantAttentionItems({ merchantActions: focusActions });
+      const proposedActions = getMerchantProposedActions({ merchantActions: focusActions });
+      const inProgressActions = getMerchantInProgressActions({ merchantActions: focusActions });
+      const completedActions = getMerchantCompletedActions({ merchantActions: focusActions });
       // Hydration-safe date: compute the header label ONCE, server-side, pinned to
       // the store's timezone — never a render-time clock read (which differs SSR vs
       // browser and mismatched the "Tuesday 11 August" header). The instant comes
@@ -1799,6 +1835,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         conversation,
         actionChatId,
         merchantActions,
+        attentionItems,
+        proposedActions,
+        inProgressActions,
+        completedActions,
         talkActionId,
         todayLabel,
         storeTimeZone: homeTimeZone,
@@ -2155,6 +2195,10 @@ export default function AppIndex() {
         goals={data.goals}
         conversation={data.conversation}
         merchantActions={data.merchantActions}
+        attentionItems={data.attentionItems}
+        proposedActions={data.proposedActions}
+        inProgressActions={data.inProgressActions}
+        completedActions={data.completedActions}
         talkActionId={data.talkActionId}
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}

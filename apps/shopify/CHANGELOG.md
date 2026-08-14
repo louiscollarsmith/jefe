@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **Daily Home now separates what needs the merchant, what Jefe recommends, and what is already underway.** The top area only appears for real merchant handoffs, with a manual queue when several things need attention; proposed actions now sit in their own section, and accepted/running actions stay in In progress even when one of them also needs attention. `app/lib/actions/merchant-action.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`.
+
+- **Daily Home In progress cards now say where the work actually is.** Accepted work only reads as accepted before a step starts; once a workflow step has completed, blocked or started running, the action derives as in progress. The home card now leads with the current step state, such as "Step 2 of 3 · Ready", "Needs you · Step 3 of 4" or "Measuring result", with completed and future steps kept quieter. The old Action history shelf is now Completed and only shows finished actions. `app/lib/actions/merchant-action.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`.
+
+- **Daily Home workflow steps now use compact JEFE/MERCHANT badges and cleaner indentation.** Proposed and attention cards no longer repeat per-step timing such as post-acceptance start copy; the owner badge sits before the step title, the number stays in a left gutter, and the description aligns under the step body. `app/components/daily-home.tsx`.
+
+- **Daily Home In progress jobs now use the working-card layout.** Accepted work renders as a large job card with its progress pill, numbered workflow rows, quiet completed steps, right-aligned step states, and a footer that says what is next or what Jefe is working on before the merchant opens the action chat. `app/components/daily-home.tsx`.
+
+- **Daily Home proposed actions now use the same card scale as work in progress.** Recommendations keep their own Proposed badge and omit workflow rows, but the card sizing, title treatment, body copy rhythm and footer CTA now match accepted job cards so proposed and active work sit together cleanly. `app/components/daily-home.tsx`.
+
+- **Daily Home In progress keeps its section count visible.** The heading again shows how many accepted jobs are underway while each card keeps its own completed-step progress pill. `app/components/daily-home.tsx`.
+
 - **Onboarding no longer looks frozen while Jefe is generating the first finding.** Production showed the Context step sitting on "let me finish the last check" for about a minute after the merchant chose a priority: the Shopify history read was complete, but Jefe was still turning that evidence into a grounded insight and action. The screen now says that explicitly, distinguishes a retry from a normal generation wait, and tells the merchant it will advance automatically. `app/components/fast-value-onboarding.tsx`.
 
 - **Daily Home overlay clicks no longer do read/write action sync work while they are trying to open.** A production recording showed chat/action transitions still waiting on `/app.data` for several seconds: the home read path was loading the action list through the syncing helper, and React Router's `.data` URL shape was not covered by the UI-only revalidation guard. The home action list is now read-only on load, and the revalidation guard treats `/app.data` as the same home route so lightweight chat/modal URL changes stay lightweight. `app/routes/app._index.tsx`, `app/components/client-navigation-reporter.tsx`.

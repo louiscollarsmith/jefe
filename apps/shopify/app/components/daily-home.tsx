@@ -165,6 +165,8 @@ type WorkflowStepDisplay =
       done?: boolean | null;
     };
 
+type StepTreatment = "completed" | "current" | "future";
+
 type MerchantActionView = {
   id: string;
   title: string;
@@ -176,6 +178,8 @@ type MerchantActionView = {
   actionRunId?: string | null;
   actionType?: string | null;
   executable?: boolean;
+  executionStatus?: string | null;
+  outcomeStatus?: string | null;
   raise?: { reason: string; detail: string | null } | null;
   progress?: Record<string, unknown> | null;
   displaySteps?: WorkflowStepDisplay[];
@@ -184,6 +188,20 @@ type MerchantActionView = {
   currentSignal?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+};
+
+type MerchantAttentionItem = {
+  attentionType: string;
+  priority: number;
+  title: string;
+  explanation: string;
+  actionId: string | null;
+  actionRunId: string | null;
+  stepId?: string | null;
+  ctaLabel: string | null;
+  ctaIntent: string | null;
+  waitingSince?: string | null;
+  action: MerchantActionView | null;
 };
 
 type FocusedActionChatChoice = {
@@ -220,6 +238,10 @@ export function DailyHome(props: {
   channels?: ChannelConn[];
   conversation?: ChatThread | null;
   merchantActions?: MerchantActionView[];
+  attentionItems?: MerchantAttentionItem[];
+  proposedActions?: MerchantActionView[];
+  inProgressActions?: MerchantActionView[];
+  completedActions?: MerchantActionView[];
   /** Files the merchant kept, so a chat can reuse one without re-uploading it. */
   libraryFiles?: LibraryPick[];
   talkActionId?: string | null;
@@ -412,6 +434,10 @@ export function DailyHome(props: {
         <FocusedActionsHome
           conversations={props.conversation?.conversations ?? []}
           merchantActions={merchantActions}
+          attentionItems={props.attentionItems ?? []}
+          proposedActions={props.proposedActions ?? []}
+          inProgressActions={props.inProgressActions ?? []}
+          completedActions={props.completedActions ?? []}
           talkActionId={talkActionId}
           focusedActionChats={actionChats}
           focusedActionChatsLoading={actionChatsLoading}
@@ -448,6 +474,10 @@ function conversationPayloadFromResource(data: ConversationResourceData | undefi
 function FocusedActionsHome({
   conversations,
   merchantActions,
+  attentionItems,
+  proposedActions,
+  inProgressActions,
+  completedActions,
   talkActionId,
   focusedActionChats,
   focusedActionChatsLoading,
@@ -456,27 +486,97 @@ function FocusedActionsHome({
 }: {
   conversations: ChatConversation[];
   merchantActions: MerchantActionView[];
+  attentionItems: MerchantAttentionItem[];
+  proposedActions: MerchantActionView[];
+  inProgressActions: MerchantActionView[];
+  completedActions: MerchantActionView[];
   talkActionId: string | null;
   focusedActionChats: FocusedActionChatChoice[];
   focusedActionChatsLoading?: boolean;
   currentSearch: string;
   storeTimeZone?: string | null;
 }) {
-  const nextAction = pickNextAction(merchantActions);
-  const inProgress = merchantActions.filter(isWorkingAction);
-  const history = merchantActions.filter(isHistoricalAction);
+  const attentionQueue = normalizeAttentionItems(attentionItems, merchantActions);
+  const [selectedAttentionKey, setSelectedAttentionKey] = useState<string | null>(null);
+  const matchedAttentionIndex = selectedAttentionKey
+    ? attentionQueue.findIndex((candidate) => attentionIdentity(candidate) === selectedAttentionKey)
+    : -1;
+  const selectedAttentionIndex =
+    matchedAttentionIndex >= 0 ? matchedAttentionIndex : 0;
+  const attentionItem = attentionQueue[selectedAttentionIndex] ?? null;
+  const proposed =
+    proposedActions.length > 0
+      ? proposedActions
+      : merchantActions.filter((action) => action.status === "proposed");
+  const inProgress =
+    inProgressActions.length > 0
+      ? inProgressActions
+      : merchantActions.filter(isWorkingAction);
+  const completed =
+    completedActions.length > 0
+      ? completedActions
+      : merchantActions.filter(isCompletedAction);
   const talkAction = talkActionId
     ? merchantActions.find((action) => action.id === talkActionId) ?? null
     : null;
 
   return (
     <>
-      <section style={homeHeroStyle} aria-label="Your next move">
-        <h1 style={headlineStyle}>
-          Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
-        </h1>
-        <ActionSpotlight action={nextAction} />
-      </section>
+      {attentionItem ? (
+        <section style={homeHeroStyle} aria-label="Needs your attention">
+          <h1 style={headlineStyle}>
+            {attentionQueue.length === 1
+              ? "Needs your attention"
+              : `${attentionQueue.length} things need your attention`}
+          </h1>
+          <AttentionSpotlight
+            item={attentionItem}
+            attentionCount={attentionQueue.length}
+            attentionIndex={selectedAttentionIndex}
+            onPreviousAttention={() =>
+              setSelectedAttentionKey(
+                attentionIdentity(
+                  attentionQueue[
+                    (selectedAttentionIndex - 1 + attentionQueue.length) %
+                      attentionQueue.length
+                  ] ?? attentionItem,
+                ),
+              )
+            }
+            onNextAttention={() =>
+              setSelectedAttentionKey(
+                attentionIdentity(
+                  attentionQueue[
+                    (selectedAttentionIndex + 1) % attentionQueue.length
+                  ] ?? attentionItem,
+                ),
+              )
+            }
+          />
+        </section>
+      ) : null}
+
+      {proposed.length > 0 ? (
+        <ActionShelf
+          title={`Proposed · ${proposed.length}`}
+          emptyTitle=""
+          emptyBody=""
+          actions={proposed}
+          currentSearch={currentSearch}
+          variant="proposed"
+        />
+      ) : null}
+
+      {inProgress.length > 0 ? (
+        <ActionShelf
+          title={`In progress · ${inProgress.length}`}
+          emptyTitle=""
+          emptyBody=""
+          actions={inProgress}
+          currentSearch={currentSearch}
+          variant="progress"
+        />
+      ) : null}
 
       <HomeSection
         title="Chats"
@@ -533,19 +633,10 @@ function FocusedActionsHome({
       </HomeSection>
 
       <ActionShelf
-        title="In Progress Actions"
-        emptyTitle="Nothing in progress"
-        emptyBody="When an action is approved or being executed, it will stay here until Jefe can report the outcome."
-        actions={inProgress}
-        currentSearch={currentSearch}
-        variant="progress"
-      />
-
-      <ActionShelf
-        title="Action history"
-        emptyTitle="No action history yet"
-        emptyBody="Completed, declined, deferred and superseded actions will appear here."
-        actions={history}
+        title={`Completed · ${completed.length}`}
+        emptyTitle="No completed actions yet"
+        emptyBody="Finished actions will appear here."
+        actions={completed}
         currentSearch={currentSearch}
         variant="history"
       />
@@ -561,16 +652,53 @@ function FocusedActionsHome({
   );
 }
 
-function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
+function AttentionSpotlight({
+  item,
+  attentionCount,
+  attentionIndex,
+  onPreviousAttention,
+  onNextAttention,
+}: {
+  item: MerchantAttentionItem;
+  attentionCount: number;
+  attentionIndex: number;
+  onPreviousAttention: () => void;
+  onNextAttention: () => void;
+}) {
+  const controls =
+    attentionCount > 1 ? (
+      <div style={focusCarouselStyle} aria-label="Attention queue">
+        <button
+          type="button"
+          aria-label="Previous attention item"
+          onClick={onPreviousAttention}
+          style={focusArrowButtonStyle}
+        >
+          ‹
+        </button>
+        <span style={focusCounterStyle}>
+          {attentionIndex + 1} of {attentionCount}
+        </span>
+        <button
+          type="button"
+          aria-label="Next attention item"
+          onClick={onNextAttention}
+          style={focusArrowButtonStyle}
+        >
+          ›
+        </button>
+      </div>
+    ) : null;
+  const action = item.action;
   if (!action) {
     return (
       <section style={spotlightStyle}>
-        <Mono>YOUR NEXT MOVE</Mono>
-        <h2 style={spotlightTitleStyle}>Jefe does not have a next move yet.</h2>
-        <p style={summaryStyle}>
-          When there is a grounded action to review or execute, it will appear
-          here with its own durable chat thread.
-        </p>
+        <div style={spotlightTopStyle}>
+          <Mono>{attentionLabel(item.attentionType)}</Mono>
+          {controls}
+        </div>
+        <h2 style={spotlightTitleStyle}>{item.title}</h2>
+        <p style={summaryStyle}>{item.explanation}</p>
       </section>
     );
   }
@@ -580,11 +708,14 @@ function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
   return (
     <section style={spotlightStyle}>
       <div style={spotlightTopStyle}>
-        <Mono>YOUR NEXT MOVE</Mono>
-        <WorkflowStatusSummary action={action} stepCount={steps.length} />
+        <Mono>{attentionLabel(item.attentionType)}</Mono>
+        <div style={spotlightMetaGroupStyle}>
+          <WorkflowStatusSummary action={action} stepCount={steps.length} />
+          {controls}
+        </div>
       </div>
       <h2 style={spotlightTitleStyle}>{action.title}</h2>
-      {action.summary ? <p style={summaryStyle}>{action.summary}</p> : null}
+      <p style={summaryStyle}>{item.explanation || action.summary}</p>
       {steps.length > 0 ? (
         <WorkflowStepList
           steps={steps}
@@ -593,7 +724,7 @@ function ActionSpotlight({ action }: { action: MerchantActionView | null }) {
         />
       ) : null}
       <div style={actionButtonRowStyle}>
-        <TalkThisThroughButton action={action} primary />
+        <AttentionCta item={item} action={action} />
       </div>
     </section>
   );
@@ -612,7 +743,7 @@ function ActionShelf({
   emptyBody: string;
   actions: MerchantActionView[];
   currentSearch: string;
-  variant: "progress" | "history";
+  variant: "proposed" | "progress" | "history";
 }) {
   return (
     <HomeSection title={title}>
@@ -624,6 +755,11 @@ function ActionShelf({
                 key={action.id || action.title}
                 action={action}
                 currentSearch={currentSearch}
+              />
+            ) : variant === "proposed" ? (
+              <ActionProposedRow
+                key={action.id || action.title}
+                action={action}
               />
             ) : (
               <ActionProgressRow
@@ -640,40 +776,102 @@ function ActionShelf({
   );
 }
 
-function ActionProgressRow({ action }: { action: MerchantActionView }) {
+function ActionProposedRow({ action }: { action: MerchantActionView }) {
   return (
-    <article style={progressRowStyle}>
-      <div style={progressRowHeaderStyle}>
-        <span style={progressRowTitleStyle}>{action.title}</span>
-        <StatusPill tone="green">
-          {action.statusLabel || statusLabelForAction(action.status)}
-        </StatusPill>
+    <article style={proposedCardStyle}>
+      <div style={inProgressHeaderStyle}>
+        <h3 style={inProgressTitleStyle}>{action.title}</h3>
+        <span style={proposedBadgeStyle}>
+          <span style={proposedBadgeDotStyle} />
+          Proposed
+        </span>
       </div>
       {action.summary ? (
-        <p style={actionCardSummaryStyle}>{compactText(action.summary, 180)}</p>
+        <p style={proposedSummaryStyle}>{compactText(action.summary, 260)}</p>
       ) : null}
-      {action.displaySteps && action.displaySteps.length > 0 ? (
-        <div style={stepInlineListStyle}>
-          {action.displaySteps.slice(0, 3).map((step, index) => (
-            <span
-              key={`${displayStepLabel(step, index)}-${index}`}
-              style={stepInlineItemStyle}
-            >
-              <span style={stepGlyphStyle}>{index === 0 ? "✓" : "·"}</span>
-              {displayStepLabel(step, index)}
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <div style={progressRowFooterStyle}>
-        <div style={signalLineStyle}>
+      <div style={proposedFooterStyle}>
+        <div style={proposedSignalLineStyle}>
           {action.baselineSignal ? <span>{action.baselineSignal}</span> : null}
-          {action.baselineSignal && action.currentSignal ? <span>→</span> : null}
           {action.currentSignal ? <strong>{action.currentSignal}</strong> : null}
         </div>
         <TalkThisThroughButton action={action} linkLike />
       </div>
     </article>
+  );
+}
+
+function ActionProgressRow({
+  action,
+}: {
+  action: MerchantActionView;
+}) {
+  const progressState = actionProgressState(action);
+  const displaySteps = action.displaySteps?.slice(0, 4) ?? [];
+  const progressBadge = progressBadgeLabel(action, displaySteps);
+  const footerText = progressFooterText(action, progressState.currentStepIndex);
+  return (
+    <article style={inProgressCardStyle}>
+      <div style={inProgressHeaderStyle}>
+        <h3 style={inProgressTitleStyle}>{action.title}</h3>
+        <span style={inProgressBadgeStyle}>
+          <span style={inProgressBadgeDotStyle} />
+          {progressBadge}
+        </span>
+      </div>
+      {displaySteps.length > 0 ? (
+        <div style={inProgressStepsStyle}>
+          {displaySteps.map((step, index) => {
+            const treatment = stepTreatment(
+              step,
+              index,
+              progressState.currentStepIndex,
+            );
+            return (
+              <InProgressStepRow
+                key={`${displayStepLabel(step, index)}-${index}`}
+                step={step}
+                index={index}
+                treatment={treatment}
+              />
+            );
+          })}
+        </div>
+      ) : null}
+      <div style={inProgressFooterStyle}>
+        <span style={inProgressFooterTextStyle}>{footerText}</span>
+        <TalkThisThroughButton action={action} linkLike />
+      </div>
+    </article>
+  );
+}
+
+function InProgressStepRow({
+  step,
+  index,
+  treatment,
+}: {
+  step: WorkflowStepDisplay;
+  index: number;
+  treatment: StepTreatment;
+}) {
+  const ownerBadge = workflowStepOwnerBadge(step);
+  return (
+    <div style={inProgressStepRowStyle(treatment)}>
+      <span style={inProgressStepNumberStyle}>{index + 1}.</span>
+      {ownerBadge ? (
+        <span style={inProgressOwnerBadgeStyle(ownerBadge, treatment)}>
+          {ownerBadge}
+        </span>
+      ) : (
+        <span />
+      )}
+      <span style={inProgressStepTitleStyle(treatment)}>
+        {displayStepLabel(step, index)}
+      </span>
+      <span style={inProgressStepStatusStyle(treatment, step)}>
+        {inProgressStepStatusLabel(treatment, step)}
+      </span>
+    </div>
   );
 }
 
@@ -745,10 +943,12 @@ function TalkThisThroughButton({
   action,
   primary = false,
   linkLike = false,
+  label = "Talk this through",
 }: {
   action: MerchantActionView;
   primary?: boolean;
   linkLike?: boolean;
+  label?: string;
 }) {
   return (
     <Form method="post" style={inlineFormStyle}>
@@ -759,9 +959,37 @@ function TalkThisThroughButton({
         style={linkLike ? textButtonStyle : primary ? primaryButtonStyle : quietPillButtonStyle}
         disabled={!action.id}
       >
-        Talk this through{primary || linkLike ? " →" : ""}
+        {label}
+        {primary || linkLike ? " →" : ""}
       </button>
     </Form>
+  );
+}
+
+function AttentionCta({
+  item,
+  action,
+}: {
+  item: MerchantAttentionItem;
+  action: MerchantActionView;
+}) {
+  if (item.ctaIntent === "action.approve" && item.actionRunId) {
+    return (
+      <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
+        <input type="hidden" name="intent" value="action.approve" />
+        <input type="hidden" name="actionRunId" value={item.actionRunId} />
+        <button type="submit" style={primaryButtonStyle}>
+          {item.ctaLabel ?? "Start next step"} →
+        </button>
+      </Form>
+    );
+  }
+  return (
+    <TalkThisThroughButton
+      action={action}
+      primary
+      label={item.ctaLabel ?? "Review"}
+    />
   );
 }
 
@@ -1480,28 +1708,26 @@ function WorkflowStepRow({
   step: WorkflowStepDisplay;
   index: number;
 }) {
-  const support = workflowStepSupportLabel(step);
+  const ownerBadge = workflowStepOwnerBadge(step);
   const description = displayStepDescription(step);
-  const status = displayStepStatus(step);
   return (
     <div style={workflowStepRowStyle}>
       <span style={workflowStepNumberStyle}>{index + 1}.</span>
       <span style={workflowStepBodyStyle}>
         <span style={workflowStepTitleLineStyle}>
+          {ownerBadge ? (
+            <span style={workflowOwnerBadgeStyle(ownerBadge)}>
+              {ownerBadge}
+            </span>
+          ) : null}
           <strong style={workflowStepTitleStyle}>
             {displayStepLabel(step, index)}
           </strong>
-          {support ? (
-            <span style={workflowSupportLabelStyle(workflowStepMode(step))}>
-              {support}
-            </span>
-          ) : null}
         </span>
         {description ? (
           <span style={workflowStepDescriptionStyle}>{description}</span>
         ) : null}
       </span>
-      <span style={workflowStepStatusStyle}>{status}</span>
     </div>
   );
 }
@@ -1763,23 +1989,50 @@ function actionForConversation(
   );
 }
 
-function pickNextAction(actions: MerchantActionView[]) {
+function normalizeAttentionItems(
+  items: MerchantAttentionItem[],
+  actions: MerchantActionView[],
+): MerchantAttentionItem[] {
+  const normalized = items.map((candidate) => {
+    const action =
+      candidate.action ??
+      actions.find((actionCandidate) => actionCandidate.id === candidate.actionId) ??
+      null;
+    return { ...candidate, action };
+  });
+  const deduped: MerchantAttentionItem[] = [];
+  const seen = new Set<string>();
+  for (const candidate of normalized) {
+    const key = attentionIdentity(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(candidate);
+  }
+  return deduped;
+}
+
+function attentionIdentity(item: MerchantAttentionItem) {
   return (
-    actions.find((action) => action.status === "proposed") ??
-    actions.find((action) => action.status === "accepted") ??
-    actions.find((action) => action.status === "in_progress") ??
-    null
+    item.actionId ??
+    item.actionRunId ??
+    item.action?.title ??
+    item.title ??
+    item.attentionType
   );
+}
+
+function attentionLabel(attentionType: string) {
+  if (attentionType === "STEP_READY") return "READY TO START";
+  if (attentionType === "MERCHANT_INPUT_REQUIRED") return "NEEDS YOU";
+  return "NEEDS ATTENTION";
 }
 
 function isWorkingAction(action: MerchantActionView) {
   return action.status === "accepted" || action.status === "in_progress";
 }
 
-function isHistoricalAction(action: MerchantActionView) {
-  return ["completed", "deferred", "declined", "superseded"].includes(
-    action.status,
-  );
+function isCompletedAction(action: MerchantActionView) {
+  return action.status === "completed";
 }
 
 function statusLabelForAction(status: string) {
@@ -1808,26 +2061,152 @@ function displayStepDescription(step: WorkflowStepDisplay) {
   return step.description || step.completionCriteria || "";
 }
 
-function displayStepStatus(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return "proposed";
-  const status = step.status || (step.done ? "completed" : "proposed");
-  return status.replace(/_/g, " ");
+function actionProgressState(action: MerchantActionView) {
+  const steps = action.displaySteps ?? [];
+  const currentStepIndex = currentStepIndexForAction(action);
+  if (isMeasuringAction(action, currentStepIndex)) {
+    return { label: "Measuring result", currentStepIndex };
+  }
+  if (currentStepIndex >= 0 && steps.length > 0) {
+    const step = steps[currentStepIndex];
+    const position = `Step ${currentStepIndex + 1} of ${steps.length}`;
+    const state = currentStepStatusLabel(step);
+    if (
+      state === "Needs you" ||
+      state === "Needs attention" ||
+      state === "Jefe is working"
+    ) {
+      return { label: `${state} · ${position}`, currentStepIndex };
+    }
+    return { label: `${position} · ${state}`, currentStepIndex };
+  }
+  if (steps.length > 0 && steps.every(stepIsDone)) {
+    return { label: "Completed", currentStepIndex };
+  }
+  if (action.status === "accepted") {
+    return { label: "Ready to start", currentStepIndex };
+  }
+  return {
+    label: action.statusLabel || statusLabelForAction(action.status),
+    currentStepIndex,
+  };
+}
+
+function progressBadgeLabel(
+  action: MerchantActionView,
+  visibleSteps: WorkflowStepDisplay[],
+) {
+  const steps = action.displaySteps ?? visibleSteps;
+  if (steps.length === 0) {
+    return action.statusLabel || statusLabelForAction(action.status);
+  }
+  const doneCount = steps.filter(stepIsDone).length;
+  return `In progress · ${doneCount} of ${steps.length} done`;
+}
+
+function progressFooterText(action: MerchantActionView, currentStepIndex: number) {
+  if (isMeasuringAction(action, currentStepIndex)) {
+    return "Jefe is measuring the result";
+  }
+  const steps = action.displaySteps ?? [];
+  const step = steps[currentStepIndex];
+  if (step) {
+    const label = displayStepLabel(step, currentStepIndex);
+    const state = currentStepStatusLabel(step);
+    if (state === "Needs you") return `Next: ${label} — needs you`;
+    if (state === "Needs attention") return `Needs attention: ${label}`;
+    if (state === "Jefe is working") return `Jefe is working on: ${label}`;
+    return `Next: ${label}`;
+  }
+  if (action.summary) return compactText(action.summary, 140);
+  return action.statusLabel || statusLabelForAction(action.status);
+}
+
+function currentStepIndexForAction(action: MerchantActionView) {
+  const steps = action.displaySteps ?? [];
+  return steps.findIndex((step) => !stepIsTerminal(step));
+}
+
+function isMeasuringAction(action: MerchantActionView, currentStepIndex: number) {
+  const executionStatus = normalizeDisplayToken(action.executionStatus);
+  const outcomeStatus = normalizeDisplayToken(action.outcomeStatus);
+  return (
+    currentStepIndex < 0 &&
+    ["applied", "partially_applied"].includes(executionStatus) &&
+    outcomeStatus !== "measured"
+  );
+}
+
+function stepTreatment(
+  step: WorkflowStepDisplay,
+  index: number,
+  currentStepIndex: number,
+): StepTreatment {
+  if (stepIsDone(step)) return "completed";
+  if (index === currentStepIndex) return "current";
+  return "future";
+}
+
+function stepIsTerminal(step: WorkflowStepDisplay) {
+  const status = normalizeDisplayToken(typeof step === "string" ? "" : step.status);
+  return ["completed", "skipped", "superseded"].includes(status) || stepIsDone(step);
+}
+
+function stepIsDone(step: WorkflowStepDisplay) {
+  if (typeof step === "string") return false;
+  return Boolean(step.done) || normalizeDisplayToken(step.status) === "completed";
+}
+
+function currentStepStatusLabel(step: WorkflowStepDisplay) {
+  const status = normalizeDisplayToken(typeof step === "string" ? "" : step.status);
+  const mode = normalizeDisplayToken(workflowStepMode(step));
+  if (["blocked", "failed", "needs_attention"].includes(status)) {
+    return "Needs attention";
+  }
+  if (
+    status === "needs_merchant" ||
+    ["merchant_action", "evidence_required"].includes(mode)
+  ) {
+    return "Needs you";
+  }
+  if (["running", "in_progress"].includes(status)) {
+    return "Jefe is working";
+  }
+  if (["", "draft", "pending", "proposed", "ready"].includes(status)) {
+    return "Ready";
+  }
+  return statusLabelForAction(status);
+}
+
+function inProgressStepStatusLabel(
+  treatment: StepTreatment,
+  step: WorkflowStepDisplay,
+) {
+  if (treatment === "completed") return "done";
+  if (treatment === "future") return "waiting";
+  const state = currentStepStatusLabel(step);
+  if (state === "Needs you") return "needs you";
+  if (state === "Needs attention") return "needs attention";
+  if (state === "Jefe is working") return "working";
+  return state.toLowerCase();
+}
+
+function normalizeDisplayToken(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
 function workflowStepMode(step: WorkflowStepDisplay) {
   return typeof step === "string" ? "" : step.mode || "";
 }
 
-function workflowStepSupportLabel(step: WorkflowStepDisplay) {
+function workflowStepOwnerBadge(step: WorkflowStepDisplay) {
   switch (workflowStepMode(step)) {
     case "execute":
-      return "Jefe can do this";
     case "assist":
-      return "Jefe can help";
+      return "JEFE";
     case "evidence_required":
-      return "Waiting for evidence";
     case "merchant_action":
-      return "Needs merchant action";
+      return "MERCHANT";
     default:
       return "";
   }
@@ -2270,38 +2649,6 @@ function distanceFromDocumentBottom() {
   return Math.max(0, scrollHeight - (window.scrollY + window.innerHeight));
 }
 
-function StatusPill({
-  tone,
-  children,
-}: {
-  tone: "yellow" | "green";
-  children: ReactNode;
-}) {
-  const green = tone === "green";
-  return (
-    <span
-      style={{
-        ...pillStyle,
-        background: green ? COLORS.greenWash : COLORS.yellow,
-        borderColor: green ? COLORS.greenBorder : COLORS.yellow,
-        color: green ? COLORS.green : "#111827",
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: 999,
-          background: "currentColor",
-          flex: "none",
-        }}
-      />
-      {children}
-    </span>
-  );
-}
-
 function Mono({ children }: { children: ReactNode }) {
   return <span style={monoStyle}>{children}</span>;
 }
@@ -2626,6 +2973,45 @@ const spotlightTopStyle: CSSProperties = {
   gap: 18,
   justifyContent: "space-between",
 };
+const spotlightMetaGroupStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 10,
+  justifyContent: "flex-end",
+};
+const focusCarouselStyle: CSSProperties = {
+  alignItems: "center",
+  display: "inline-flex",
+  gap: 6,
+};
+const focusArrowButtonStyle: CSSProperties = {
+  alignItems: "center",
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  color: COLORS.navy,
+  cursor: "pointer",
+  display: "inline-flex",
+  fontFamily: FONT.sans,
+  fontSize: 18,
+  fontWeight: 750,
+  height: 30,
+  justifyContent: "center",
+  lineHeight: 1,
+  padding: 0,
+  width: 30,
+};
+const focusCounterStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 11,
+  fontWeight: 650,
+  letterSpacing: 0,
+  lineHeight: 1,
+  minWidth: 36,
+  textAlign: "center",
+};
 const spotlightTitleStyle: CSSProperties = {
   color: COLORS.ink,
   fontFamily: FONT.serif,
@@ -2723,65 +3109,178 @@ const actionListStyle: CSSProperties = {
   flexDirection: "column",
   gap: 12,
 };
-const progressRowStyle: CSSProperties = {
+const inProgressCardStyle: CSSProperties = {
   background: COLORS.card,
-  border: `1px solid ${COLORS.hairline}`,
-  borderRadius: 10,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 16,
   display: "flex",
   flexDirection: "column",
-  gap: 12,
-  padding: "18px 20px",
+  gap: 22,
+  padding: "24px 24px 18px",
 };
-const progressRowHeaderStyle: CSSProperties = {
-  alignItems: "center",
+const proposedCardStyle: CSSProperties = {
+  ...inProgressCardStyle,
+  gap: 20,
+};
+const inProgressHeaderStyle: CSSProperties = {
+  alignItems: "flex-start",
   display: "flex",
-  gap: 10,
+  gap: 18,
   justifyContent: "space-between",
 };
-const progressRowTitleStyle: CSSProperties = {
+const inProgressTitleStyle: CSSProperties = {
   color: COLORS.ink,
-  fontSize: 15,
-  fontWeight: 750,
-  lineHeight: 1.25,
+  fontSize: 20,
+  fontWeight: 800,
+  lineHeight: 1.2,
+  margin: 0,
+  minWidth: 0,
 };
-const actionCardSummaryStyle: CSSProperties = {
+const inProgressBadgeStyle: CSSProperties = {
+  alignItems: "center",
+  background: COLORS.greenWash,
+  border: `1px solid ${COLORS.greenBorder}`,
+  borderRadius: 10,
+  color: COLORS.green,
+  display: "inline-flex",
+  flex: "0 0 auto",
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 700,
+  gap: 8,
+  lineHeight: 1.2,
+  padding: "7px 12px",
+  whiteSpace: "nowrap",
+};
+const inProgressBadgeDotStyle: CSSProperties = {
+  background: "currentColor",
+  borderRadius: 999,
+  height: 7,
+  width: 7,
+};
+const proposedBadgeStyle: CSSProperties = {
+  alignItems: "center",
+  background: COLORS.yellow,
+  border: `1px solid ${COLORS.yellow}`,
+  borderRadius: 10,
+  color: "#0f1f36",
+  display: "inline-flex",
+  flex: "0 0 auto",
+  fontSize: 15,
+  fontWeight: 800,
+  gap: 10,
+  lineHeight: 1.2,
+  padding: "10px 16px",
+  whiteSpace: "nowrap",
+};
+const proposedBadgeDotStyle: CSSProperties = {
+  background: "currentColor",
+  borderRadius: 999,
+  height: 7,
+  width: 7,
+};
+const proposedSummaryStyle: CSSProperties = {
   color: COLORS.body,
-  fontSize: 13.5,
+  fontSize: 17,
   lineHeight: 1.45,
   margin: 0,
 };
-const stepInlineListStyle: CSSProperties = {
-  alignItems: "center",
+const inProgressStepsStyle: CSSProperties = {
   display: "flex",
-  flexWrap: "wrap",
-  gap: "8px 18px",
+  flexDirection: "column",
+  gap: 14,
 };
-const stepInlineItemStyle: CSSProperties = {
+function inProgressStepRowStyle(treatment: StepTreatment): CSSProperties {
+  const current = treatment === "current";
+  return {
+    alignItems: "center",
+    color: current ? COLORS.ink : COLORS.meta,
+    display: "grid",
+    gap: "10px 14px",
+    gridTemplateColumns: "38px max-content minmax(0, 1fr) max-content",
+    lineHeight: 1.25,
+    opacity: treatment === "future" ? 0.82 : 1,
+  };
+}
+const inProgressStepNumberStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontFamily: FONT.mono,
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: "24px",
+};
+function inProgressOwnerBadgeStyle(
+  owner: string,
+  treatment: StepTreatment,
+): CSSProperties {
+  if (treatment === "completed") {
+    return {
+      ...workflowOwnerBadgeStyle(owner),
+      background: COLORS.card,
+      borderColor: COLORS.hairline,
+      color: COLORS.meta,
+    };
+  }
+  return workflowOwnerBadgeStyle(owner);
+}
+function inProgressStepTitleStyle(treatment: StepTreatment): CSSProperties {
+  return {
+    color: treatment === "current" ? COLORS.ink : "inherit",
+    fontSize: 17,
+    fontWeight: treatment === "current" ? 750 : 500,
+    minWidth: 0,
+  };
+}
+function inProgressStepStatusStyle(
+  treatment: StepTreatment,
+  step: WorkflowStepDisplay,
+): CSSProperties {
+  const state = inProgressStepStatusLabel(treatment, step);
+  const color =
+    state === "done"
+      ? COLORS.greenBorder
+      : state === "needs you"
+        ? "#7a5a08"
+        : state === "working"
+          ? COLORS.navy
+          : COLORS.meta;
+  return {
+    color,
+    fontFamily: FONT.mono,
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: 0,
+    lineHeight: 1.25,
+    textAlign: "right",
+    whiteSpace: "nowrap",
+  };
+}
+const inProgressFooterStyle: CSSProperties = {
   alignItems: "center",
-  color: COLORS.body,
-  display: "inline-flex",
-  fontSize: 13,
-  gap: 7,
-  lineHeight: 1.35,
-};
-const stepGlyphStyle: CSSProperties = {
-  color: COLORS.green,
-  fontWeight: 800,
-};
-const progressRowFooterStyle: CSSProperties = {
-  alignItems: "center",
+  borderTop: `1px solid ${COLORS.hairline}`,
   display: "flex",
   flexWrap: "wrap",
   gap: 14,
   justifyContent: "space-between",
+  paddingTop: 18,
 };
-const signalLineStyle: CSSProperties = {
+const proposedFooterStyle: CSSProperties = {
+  ...inProgressFooterStyle,
+  minHeight: 38,
+};
+const proposedSignalLineStyle: CSSProperties = {
   alignItems: "center",
   color: COLORS.meta,
   display: "flex",
   flexWrap: "wrap",
-  fontSize: 12.5,
+  fontSize: 14,
   gap: 8,
+};
+const inProgressFooterTextStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 16,
+  lineHeight: 1.35,
+  minWidth: 0,
 };
 const historyRowStyle: CSSProperties = {
   ...chatListItemStyle,
@@ -3087,17 +3586,6 @@ const summaryStyle: CSSProperties = {
   margin: 0,
   maxWidth: 760,
 };
-const pillStyle: CSSProperties = {
-  alignItems: "center",
-  border: "1px solid",
-  borderRadius: 8,
-  display: "inline-flex",
-  gap: 7,
-  fontSize: 12,
-  fontWeight: 700,
-  padding: "6px 14px",
-  whiteSpace: "nowrap",
-};
 const chatTopStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
@@ -3260,14 +3748,14 @@ const workflowStepRowStyle: CSSProperties = {
   alignItems: "start",
   columnGap: 14,
   display: "grid",
-  gridTemplateColumns: "28px minmax(0, 1fr) minmax(72px, max-content)",
+  gridTemplateColumns: "42px minmax(0, 1fr)",
 };
 const workflowStepNumberStyle: CSSProperties = {
   color: COLORS.meta,
   fontFamily: FONT.mono,
-  fontSize: 15,
-  fontWeight: 700,
-  lineHeight: "28px",
+  fontSize: 11,
+  fontWeight: 600,
+  lineHeight: "24px",
 };
 const workflowStepBodyStyle: CSSProperties = {
   display: "flex",
@@ -3279,7 +3767,7 @@ const workflowStepTitleLineStyle: CSSProperties = {
   alignItems: "baseline",
   display: "flex",
   flexWrap: "wrap",
-  gap: "6px 14px",
+  gap: "7px 12px",
   minWidth: 0,
 };
 const workflowStepTitleStyle: CSSProperties = {
@@ -3288,14 +3776,19 @@ const workflowStepTitleStyle: CSSProperties = {
   fontWeight: 800,
   lineHeight: 1.25,
 };
-function workflowSupportLabelStyle(mode: string): CSSProperties {
-  const evidence = mode === "evidence_required";
-  const merchant = mode === "merchant_action";
+function workflowOwnerBadgeStyle(owner: string): CSSProperties {
+  const merchant = owner === "MERCHANT";
   return {
-    color: evidence ? COLORS.muted : merchant ? "#7b5a07" : COLORS.navy,
-    fontSize: 13,
+    background: merchant ? "#fff4cf" : "#e9f2ff",
+    border: `1px solid ${merchant ? "#f3cf6b" : "#bdd4f2"}`,
+    borderRadius: 6,
+    color: merchant ? "#7b5a07" : COLORS.navy,
+    fontFamily: FONT.mono,
+    fontSize: 12,
     fontWeight: 800,
-    lineHeight: 1.25,
+    letterSpacing: 0,
+    lineHeight: 1,
+    padding: "5px 8px 4px",
     whiteSpace: "nowrap",
   };
 }
@@ -3303,16 +3796,6 @@ const workflowStepDescriptionStyle: CSSProperties = {
   color: COLORS.meta,
   fontSize: 15,
   lineHeight: 1.35,
-};
-const workflowStepStatusStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 700,
-  lineHeight: "28px",
-  textAlign: "right",
-  textTransform: "lowercase",
-  whiteSpace: "nowrap",
 };
 const messagesStyle: CSSProperties = {
   flex: "1 1 auto",
