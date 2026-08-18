@@ -290,7 +290,9 @@ test("focused chat title can be renamed inline from the header", () => {
 test("focused action context is connected to the title row and system focus events use dividers", () => {
   assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /const \[focusExpanded, setFocusExpanded\] = useState\(true\)/);
-  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel action=\{focusedAction\} \/>/);
+  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel/);
+  assert.match(dailyHomeSource, /action=\{focusedAction\}/);
+  assert.match(dailyHomeSource, /conversationId=\{activeConversation.id\}/);
   assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
   assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
   assert.match(dailyHomeSource, /const chatPlanHeaderStyle: CSSProperties = \{/);

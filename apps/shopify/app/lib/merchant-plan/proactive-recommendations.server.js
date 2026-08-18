@@ -86,18 +86,9 @@ export async function decideProactiveGeneration(
 }
 
 /**
- * Start of the merchant's current day as a UTC Date — the daily-cap window boundary. Uses the
- * shop's timezone to pick the calendar date, then midnight-UTC of that date (the codebase's
- * dayKey convention). Not the exact local midnight (no offset math), but a stable, monotonic
- * per-day boundary, which is all the cap needs. Falls back to UTC on a bad timezone.
- * @param {Date} now
- * @param {string} [timeZone]
- * @returns {Date}
- */
-/**
  * Start of the merchant's next calendar day (same dayKey convention as startOfMerchantDay).
  * @param {Date} now
- * @param {string} [timeZone]
+ * @param {string | null} [timeZone]
  * @returns {Date}
  */
 export function startOfNextMerchantDay(now, timeZone) {
@@ -112,7 +103,7 @@ export function startOfNextMerchantDay(now, timeZone) {
  * worker sweeps hourly; once capped, the next window is the merchant's next day. An honest
  * approximation — the sweep is fleet-wide, not pinned to the hour boundary — but close enough
  * for a merchant-facing countdown.
- * @param {{ now: Date; timeZone?: string; generatedToday: number; cap?: number }} input
+ * @param {{ now: Date; timeZone?: string | null; generatedToday: number; cap?: number }} input
  * @returns {{ kind: "hourly_check" | "daily_cap_reached"; at: Date; generatedToday: number; remaining: number; cap: number }}
  */
 export function computeNextRecommendationCheck({
@@ -151,7 +142,7 @@ export function computeNextRecommendationCheck({
  * Loader-facing schedule for the home empty state. Returns null when the cap read fails
  * (fail-closed — no fabricated countdown).
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; now: Date; timeZone?: string; cap?: number; deps?: { count?: typeof countProactivePlanRunsSince } }} input
+ * @param {{ merchantId: string; now: Date; timeZone?: string | null; cap?: number; deps?: { count?: typeof countProactivePlanRunsSince } }} input
  * @returns {Promise<{ kind: "hourly_check" | "daily_cap_reached"; at: string; generatedToday: number; remaining: number; cap: number; enabled: boolean } | null>}
  */
 export async function getProactiveRecommendationSchedule(
@@ -177,6 +168,15 @@ export async function getProactiveRecommendationSchedule(
   };
 }
 
+/**
+ * Start of the merchant's current day as a UTC Date — the daily-cap window boundary. Uses the
+ * shop's timezone to pick the calendar date, then midnight-UTC of that date (the codebase's
+ * dayKey convention). Not the exact local midnight (no offset math), but a stable, monotonic
+ * per-day boundary, which is all the cap needs. Falls back to UTC on a bad timezone.
+ * @param {Date} now
+ * @param {string | null} [timeZone]
+ * @returns {Date}
+ */
 export function startOfMerchantDay(now, timeZone) {
   const tz = typeof timeZone === "string" && timeZone ? timeZone : "UTC";
   const format = (/** @type {string} */ zone) =>

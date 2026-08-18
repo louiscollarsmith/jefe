@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **CI on main now gets past typecheck, lint, and the focused-chat wiring test after the recent home and action-step work.** The quality gate was failing on missing JSDoc types for the recommendation countdown, focused-action chat step starts, and assist-step artifacts — not on the test runner. Those call sites now name their types, null store timezones are accepted as “use UTC”, and the empty-home countdown no longer sets React state synchronously in an effect. The focused-chat wiring check now matches the lifecycle panel that also receives the conversation id so assist steps can start from chat. `app/lib/merchant-plan/proactive-recommendations.server.js`, `app/lib/merchant-memory/general-chat.server.js`, `app/lib/actions/{action-step-lifecycle,assist-steps}.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`, `tests/memory-surface-wiring.test.mjs`.
+
 - **Review next step now opens the existing action chat directly when there is only one.** The focused-action chooser no longer flashes or stays open for a one-chat action; that case is owned by the direct-open redirect, with the chooser reserved for actions that genuinely have several chats to choose from. `app/components/daily-home.tsx`, `tests/memory-surface-wiring.test.mjs`.
 
 - **In-progress action chats now keep THE PLAN flush with the working card instead of indenting the current step.** Accepted work still leads with the current step, then lists the rest of the plan as compact JEFE/MERCHANT rows with done/working labels and a blue highlight on the step in play — matching the working layout rather than nesting the active row under the heading. `app/components/daily-home.tsx`.

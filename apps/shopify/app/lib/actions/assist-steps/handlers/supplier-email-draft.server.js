@@ -25,7 +25,7 @@ export async function runSupplierEmailDraftAssist(context) {
           "",
           "Could we please place a replenishment order for the following items?",
           "",
-          ...lines.map((line) => `- ${line}`),
+          ...lines.map((/** @type {string} */ line) => `- ${line}`),
           "",
           "Please confirm lead time and availability.",
           "",
