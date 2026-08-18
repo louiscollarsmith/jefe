@@ -65,7 +65,7 @@ test("onboarding exposes Connect, Context, Insight, Action and terminal APP", ()
   assert.match(appIndexSource, /<FastValueOnboarding/);
   assert.match(fastOnboardingSource, /While I finish looking/);
   assert.match(fastOnboardingSource, /Choosing the first move/);
-  assert.match(fastOnboardingSource, /This usually takes under a minute/);
+  assert.match(fastOnboardingSource, /Usually under a minute/);
   assert.match(fastOnboardingSource, /Something jumped out/);
   assert.match(fastOnboardingSource, /Here’s what I’d do/);
   assert.match(fastOnboardingSource, /Here’s what I’m on/);
@@ -105,10 +105,23 @@ test("Connect starts independent durable work and shows attention rather than im
 
 test("Context wait state explains generation is still happening", () => {
   assert.match(fastOnboardingSource, /onboardingWaitingCopy/);
-  assert.match(fastOnboardingSource, /I’m turning that read into your first finding/);
-  assert.match(fastOnboardingSource, /the page will move on automatically/);
-  assert.match(fastOnboardingSource, /I’m retrying the first recommendation/);
+  assert.match(fastOnboardingSource, /I’m putting together your first finding/);
+  assert.match(fastOnboardingSource, /this page will move on by itself/);
+  assert.match(fastOnboardingSource, /Trying again to find your first recommendation/);
   assert.doesNotMatch(fastOnboardingSource, /Let me finish the last check/);
+});
+
+test("onboarding insight copy avoids developer phrasing", () => {
+  const fastOnboardingServerSource = fs.readFileSync(
+    new URL("../app/lib/onboarding/fast-onboarding.server.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(fastOnboardingServerSource, /renderBeliefStatement/);
+  assert.match(fastOnboardingServerSource, /humanizeOnboardingInsightText/);
+  assert.match(fastOnboardingServerSource, /onboardingEvidenceLabel/);
+  assert.doesNotMatch(fastOnboardingServerSource, /return "The captured evidence contains a supported recent signal/);
+  assert.match(fastOnboardingSource, /best opening move I can back up/);
+  assert.doesNotMatch(fastOnboardingSource, /strongest finding the current evidence can support/);
 });
 
 test("onboarding does not expose the retired goal form or interview path", () => {

@@ -408,7 +408,7 @@ test("the UI keeps the exact beats, one dominant result and honest chrome", () =
   assert.match(componentSource, /type: "entered_app"[\s\S]*current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(componentSource, /insight\.evidence\.slice\(0, 3\)/);
   assert.match(componentSource, /Boolean\(experience\.context\)[\s\S]*!experience\.failure/);
-  assert.match(componentSource, /I won’t force a recommendation the evidence can’t support/);
+  assert.match(componentSource, /I won’t suggest something I can’t back up with your store data/);
   assert.match(serviceSource, /Track this for me/);
   assert.doesNotMatch(componentSource, /<Spinner|progress bar|Synchronising|Importing refunds|Processing/i);
   assert.doesNotMatch(componentSource, /\d+\s+of\s+\d+/i);

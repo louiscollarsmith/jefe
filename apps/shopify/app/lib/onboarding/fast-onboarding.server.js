@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
 import { updateMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
 import { labelForBeliefKey } from "../merchant-memory/conversational-belief-registry.server.js";
+import { renderBeliefStatement } from "../merchant-memory/belief-statement.server.js";
 import { ACTIVE_BELIEF_STATUSES } from "../merchant-memory/constants.server.js";
 import { upsertMerchantSuppliedBelief } from "../merchant-memory/service.server.js";
 import { trackOnce } from "../../services/analytics/event-log.server.js";
@@ -152,11 +153,11 @@ export async function getFastOnboardingExperience(prisma, input) {
     ? {
         id: finding.id,
         runId: selected.run.insightRunId,
-        headline: finding.title,
-        explanation: finding.finding,
+        headline: humanizeOnboardingInsightText(finding.title),
+        explanation: humanizeOnboardingInsightText(finding.finding),
         whyItMatters: finding.whyItMatters,
         confidence: finding.confidence,
-        caveat: finding.caveat,
+        caveat: finding.caveat ? humanizeOnboardingInsightText(finding.caveat) : null,
         evidence,
       }
     : null;
@@ -510,8 +511,30 @@ function shapeEvidence(beliefs) {
     .sort((left, right) => evidencePriority(left.key) - evidencePriority(right.key))
     .flatMap((belief) => {
       const value = evidenceValue(belief);
-      return value ? [{ key: labelForBeliefKey(belief.key), value, source: "Shopify" }] : [];
+      return value
+        ? [{ key: onboardingEvidenceLabel(belief.key), value, source: "Shopify" }]
+        : [];
     });
+}
+
+const ONBOARDING_EVIDENCE_LABELS = {
+  "inventory.low_cover_products.trailing_30d": "Running low",
+  "inventory.at_risk_stockout_count.trailing_30d": "Stock risk",
+  "catalog.active_product_count": "Your range",
+  "catalog.total_variant_count": "Sizes & colours",
+  "business.catalogue_shape": "Your shop",
+  "catalog.out_of_stock_product_count": "Out of stock",
+  "catalog.zero_price_variant_count": "Pricing",
+  "products.top_product_revenue_share.trailing_90d": "Revenue mix",
+  "products.bestseller_by_revenue.trailing_90d": "Best seller",
+  "business.discount_depth.trailing_90d": "Discounting",
+  "data.line_item_product_link_coverage": "Recent orders",
+  "data.inventory_variant_coverage": "Stock levels",
+  "data.line_item_variant_link_coverage": "Recent orders",
+};
+
+function onboardingEvidenceLabel(key) {
+  return ONBOARDING_EVIDENCE_LABELS[key] ?? labelForBeliefKey(key);
 }
 
 function evidencePriority(key) {
@@ -527,36 +550,78 @@ function evidencePriority(key) {
 }
 
 function evidenceValue(belief) {
+  const statement = renderBeliefStatement(belief);
+  if (statement) return statement;
+
   const value = jsonObject(belief.value);
-  if (belief.key === "inventory.low_cover_products.trailing_30d") {
-    const product = jsonObject(value.topAtRiskProduct);
-    const days = Number(product.daysOfCoverUpperBound ?? product.daysOfCover);
-    return product.title && Number.isFinite(days)
-      ? `${product.title} has at most about ${Math.max(0, Math.round(days))} days of cover at the observed pace.`
+  if (belief.key === "catalog.active_product_count") {
+    const count = Number(value.count ?? value.number);
+    return Number.isFinite(count) ? `You're selling ${count} live products.` : null;
+  }
+  if (belief.key === "catalog.total_variant_count") {
+    const count = Number(value.count ?? value.number);
+    return Number.isFinite(count)
+      ? `${count} sizes and colours across those products.`
       : null;
   }
-  if (belief.key === "products.top_product_revenue_share.trailing_90d") {
-    const percentage = Number(value.percentage);
-    return Number.isFinite(percentage)
-      ? "The leading product represents a substantial share of recent product revenue."
+  if (belief.key === "business.catalogue_shape") {
+    const products = Number(value.activeProductCount);
+    const variants = Number(value.activeVariantCount);
+    if (!Number.isFinite(products)) return null;
+    const shape = String(value.enum ?? "");
+    if (shape === "single_product") return "You're focused on one product right now.";
+    if (shape === "focused") {
+      return `${products} products — a compact range to stay on top of.`;
+    }
+    if (shape === "broad") {
+      return `${products} products — a broad range to manage.`;
+    }
+    if (shape === "long_tail") {
+      return `${products} products — a wide catalogue with a long tail.`;
+    }
+    return Number.isFinite(variants)
+      ? `${products} products with ${variants} sizes and colours between them.`
+      : `${products} products in your live range.`;
+  }
+  if (belief.key === "inventory.at_risk_stockout_count.trailing_30d") {
+    const count = Number(value.count);
+    return Number.isFinite(count) && count > 0
+      ? `${count} product${count === 1 ? "" : "s"} at risk of running out soon.`
       : null;
   }
-  if (belief.key === "products.bestseller_by_revenue.trailing_90d" && value.title) {
-    return `${value.title} leads recent product revenue.`;
-  }
-  if (belief.key === "business.discount_depth.trailing_90d") {
-    const percentage = Number(value.percentage);
-    return Number.isFinite(percentage)
-      ? "Discounting is material across the complete recent window."
+  if (belief.key === "catalog.out_of_stock_product_count") {
+    const count = Number(value.count);
+    return Number.isFinite(count) && count > 0
+      ? `${count} product${count === 1 ? " is" : "s are"} out of stock right now.`
       : null;
   }
   if (Number.isFinite(Number(value.percentage))) {
-    return "The recent evidence shows a meaningful relative signal.";
+    return "This stood out in your recent trading.";
   }
   if (Number.isFinite(Number(value.count))) {
-    return "The captured evidence contains a supported recent signal.";
+    return "Worth a look in your recent trading.";
   }
   return null;
+}
+
+function humanizeOnboardingInsightText(text) {
+  if (!text || typeof text !== "string") return text;
+  return text
+    .replace(/\bactive product catalog\b/gi, "product range")
+    .replace(/\bproduct catalog\b/gi, "product range")
+    .replace(/\bactive variants?\b/gi, "sizes and colours")
+    .replace(/\brecorded prices\b/gi, "prices set")
+    .replace(/\bvariant link coverage\b/gi, "orders linking to products")
+    .replace(/\bcomplete variant link coverage\b/gi, "orders linking cleanly to products")
+    .replace(/\bactive items\b/gi, "products")
+    .replace(/\bcatalog consists of\b/gi, "has")
+    .replace(/\bcatalogue consists of\b/gi, "has")
+    .replace(/\bcaptured evidence contains a supported recent signal\.?/gi, "This showed up clearly in your recent trading.")
+    .replace(/\bthe captured evidence\b/gi, "what I've read")
+    .replace(/\bsupported recent signal\b/gi, "clear recent pattern")
+    .replace(/\bdays of cover at the observed pace\b/gi, "days of stock left at the current pace")
+    .replace(/\bat most about 0 days of cover\b/gi, "may already be out of stock")
+    .trim();
 }
 
 export function shapeFullLearning(statuses, jobs) {

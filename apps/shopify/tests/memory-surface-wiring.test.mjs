@@ -183,11 +183,15 @@ test("the live DailyHome is the focused-action home and chat surface", () => {
   assert.match(dailyHomeSource, /value="chat\.message"/);
   assert.match(dailyHomeSource, /formData\.set\("intent", "chat\.focus\.start"\)/);
   assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
-  assert.match(dailyHomeSource, /displayedTalkActionId = talkActionId \?\? pendingTalkActionId/);
+  assert.match(dailyHomeSource, /function chatsFocusedOnActionFromHome/);
+  assert.match(dailyHomeSource, /chatsFocusedOnActionFromHome\(actionId, homeConversations\)/);
+  assert.match(dailyHomeSource, /talkActionId=\{talkActionId\}/);
   assert.match(dailyHomeSource, /value="chat\.focus\.change"/);
   assert.match(dailyHomeSource, /value="chat\.action\.reference"/);
   assert.match(dailyHomeSource, /name="focusedActionId"/);
   assert.match(dailyHomeSource, /Talk this through/);
+  assert.match(dailyHomeSource, /const resolvedActionId = actionId \|\| action\.id/);
+  assert.match(dailyHomeSource, /const resolvedActionId = item\.actionId \|\| action\.id/);
   assert.match(dailyHomeSource, /useNavigation/);
   assert.match(dailyHomeSource, /Thinking/);
   // Watching, Goals, changelog and the metrics dashboard all left the home for their
@@ -214,6 +218,8 @@ test("a new chat is visually blank and action references do not change focus", (
 test("talk-this-through chooser matches the chat reuse flow", () => {
   assert.match(dailyHomeSource, /function TalkActionChooser/);
   assert.match(dailyHomeSource, /style=\{talkChooserModalStyle\}/);
+  assert.match(dailyHomeSource, /chats\.length === 1\) return null/);
+  assert.match(dailyHomeSource, /loading && chats\.length <= 1\) return null/);
   assert.match(dailyHomeSource, /actionChats\.length === 1/);
   assert.match(dailyHomeSource, /conversation: onlyChatId/);
   assert.match(dailyHomeSource, /data\.chats\?\.length === 1/);
@@ -287,9 +293,16 @@ test("focused action context is connected to the title row and system focus even
   assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel action=\{focusedAction\} \/>/);
   assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
   assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
+  assert.match(dailyHomeSource, /const chatPlanHeaderStyle: CSSProperties = \{/);
+  assert.doesNotMatch(
+    dailyHomeSource,
+    /gridTemplateColumns: "56px minmax\(0, 1fr\)"/,
+  );
+  assert.match(dailyHomeSource, /background: active \? "#e9f2ff" : "transparent"/);
   assert.match(dailyHomeSource, /aria-expanded=\{focusExpanded\}/);
   assert.match(dailyHomeSource, /focusExpanded \? "▲" : "▼"/);
   assert.match(dailyHomeSource, /style=\{inlineFormStyle\} onSubmit=\{onCancel\}/);
+  assert.match(dailyHomeSource, /function visibleTranscriptMessages/);
   assert.match(dailyHomeSource, /const systemEventLineStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /<span style=\{systemEventLineStyle\} \/>/);
   assert.match(dailyHomeSource, /<span style=\{systemEventTextStyle\}>\{message\.content\}<\/span>/);
@@ -355,7 +368,7 @@ test("chat composers clear immediately while Send keeps a disabled state", () =>
   // (chat_turn, vantage "client"). Pinned as a pair because a composer that clears
   // without marking silently drops its turns out of the latency numbers.
   assert.equal(
-    [...dailyHomeSource.matchAll(/markChatTurnSent\(\);\n    setComposerMessage\(""\);/g)].length,
+    [...dailyHomeSource.matchAll(/markChatTurnSent\(\);\n {4}setComposerMessage\(""\);/g)].length,
     1,
   );
   assert.equal(
