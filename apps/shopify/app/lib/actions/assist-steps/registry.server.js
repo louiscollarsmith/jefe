@@ -1,6 +1,7 @@
 // @ts-check
 
 import { runInventoryReviewAssist } from "./handlers/inventory-review.server.js";
+import { runListingCopyReviewAssist } from "./handlers/listing-copy-review.server.js";
 import { runMerchantChecklistAssist } from "./handlers/merchant-checklist.server.js";
 import { runSupplierEmailDraftAssist } from "./handlers/supplier-email-draft.server.js";
 
@@ -12,6 +13,7 @@ const HANDLERS_BY_REF = Object.freeze({
   "assist:supplier_sms_draft": runSupplierEmailDraftAssist,
   "assist:supplier_phone_script": runMerchantChecklistAssist,
   "assist:merchant_checklist": runMerchantChecklistAssist,
+  "assist:listing_copy_review": runListingCopyReviewAssist,
 });
 
 /** @param {any} step */
@@ -19,6 +21,9 @@ export function resolveAssistHandler(step) {
   const ref = typeof step?.capabilityRef === "string" ? step.capabilityRef.trim() : "";
   if (ref && HANDLERS_BY_REF[ref]) return HANDLERS_BY_REF[ref];
   const title = `${step?.title ?? ""} ${step?.description ?? ""}`.toLowerCase();
+  if (/categoris|product type|unassigned|listing copy|untagged/.test(title)) {
+    return runListingCopyReviewAssist;
+  }
   if (/supplier|email|sms|replenishment communication|draft/.test(title)) {
     return runSupplierEmailDraftAssist;
   }

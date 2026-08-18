@@ -131,8 +131,11 @@ import {
 } from "../lib/actions/merchant-action.server";
 import {
   acceptMerchantActionPlan,
+  completeCurrentActionStep,
   processReadyActionStepRuns,
+  skipCurrentActionStep,
   startActionStep,
+  stopActionStep,
 } from "../lib/actions/action-step-lifecycle.server.js";
 import { executeStartedAssistStepRun } from "../lib/actions/assist-steps/run.server.js";
 import {
@@ -209,8 +212,11 @@ import {
   storeTimeZoneFromPayload,
 } from "../lib/home/home-dates.js";
 import {
+  dailyHomeFreshEntryUpdates,
   isAppHomeNarrowMutation,
   isAppHomeUiOnlyNavigation,
+  readStoredOpenConversation,
+  writeStoredOpenConversation,
 } from "../lib/home/app-home-navigation";
 import { createServerRouteTiming } from "../lib/observability/server-timing.server.js";
 import {
@@ -678,6 +684,78 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           logger: actionLog,
         });
       }
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.step.stop") {
+    const actionId = String(formData.get("actionId") ?? "");
+    const result = await stopActionStep(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId,
+      actor: merchant.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant action step stop rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        reason: "reason" in result ? result.reason : "unknown",
+      });
+      return {
+        ok: false,
+        error: "That step could not be paused. Nothing was changed.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.step.complete") {
+    const actionId = String(formData.get("actionId") ?? "");
+    const result = await completeCurrentActionStep(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId,
+      actor: merchant.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant action step complete rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        reason: "reason" in result ? result.reason : "unknown",
+      });
+      return {
+        ok: false,
+        error: "That step could not be marked complete. Nothing was changed.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+  if (intent === "action.step.skip") {
+    const actionId = String(formData.get("actionId") ?? "");
+    const result = await skipCurrentActionStep(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionId,
+      actor: merchant.id,
+      logger: actionLog,
+    });
+    if (!result.ok) {
+      actionLog.warn("merchant action step skip rejected", {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        reason: "reason" in result ? result.reason : "unknown",
+      });
+      return {
+        ok: false,
+        error: "That step could not be skipped. Nothing was changed.",
+        intent,
+      };
     }
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
@@ -1743,13 +1821,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopId: shop.id,
         includeInactive: true,
       });
-      // Same best-effort pattern for the merchant's brand logo (shop.brand): fire-and-
-      // forget so its first-load-only Admin GraphQL call stays off the LCP path, cached
-      // into rawPayload; the header shows it from the next load, monogram until then.
+      // Same best-effort pattern for the merchant's brand logo (Storefront shop.brand):
+      // fire-and-forget so the first-load-only tokenless Storefront call stays off the
+      // LCP path, cached into rawPayload; the header shows it from the next load,
+      // monogram until then. Admin GraphQL has no shop.brand field.
       void ensureShopBrandLogo(prisma, {
         shopId: shop.id,
         shopDomain: session.shop,
-        accessToken: session.accessToken,
       }).catch(() => {});
       const brandLogoUrl = brandLogoFromPayload(
         (shop as { rawPayload?: unknown }).rawPayload,
@@ -2159,36 +2237,32 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
 
-  // Opening Jefe lands on the home unless the merchant refreshed a conversation URL.
-  // The embedded app's URL is persistent (App Bridge restores the last location on
-  // re-open), so a move zoom or action chooser the merchant left would re-open on a
-  // fresh entry. On the first mount of a fresh document load, drop those stale overlay
-  // params; a browser refresh keeps ?conversation= so the thread survives reload.
+  // Overlay params (move zoom / action chooser) drop on a fresh document load because
+  // App Bridge restores the last URL. Conversation is a destination, not an overlay:
+  // Shopify iframe refreshes arrive as type=navigate, so Navigation Timing cannot keep
+  // the thread. Persist it in this tab and put it back on the URL if reload lost it.
   useEffect(() => {
-    if (!staleZoomGuardArmed) return;
-    staleZoomGuardArmed = false;
-    if (data.appMode === "daily") {
-      const params = new URLSearchParams(location.search);
-      const navigationEntry = performance.getEntriesByType("navigation")[0] as
-        | PerformanceNavigationTiming
-        | undefined;
-      const isReload = navigationEntry?.type === "reload";
-      const staleOverlay =
-        params.has("actionChat") ||
-        params.has("talkAction") ||
-        (!isReload && params.has("conversation"));
-      if (staleOverlay) {
-        navigate(
-          appPathFromSearch(location.search, {
-            actionChat: null,
-            talkAction: null,
-            ...(isReload ? {} : { conversation: null }),
-          }),
-          { replace: true },
-        );
+    if (data.appMode !== "daily") return;
+    const params = new URLSearchParams(location.search);
+    const conversationId = params.get("conversation");
+
+    if (staleZoomGuardArmed) {
+      staleZoomGuardArmed = false;
+      const updates = dailyHomeFreshEntryUpdates(
+        params,
+        conversationId ? null : readStoredOpenConversation(),
+      );
+      if (updates) {
+        navigate(appPathFromSearch(location.search, updates), {
+          replace: true,
+        });
       }
+      if (conversationId) writeStoredOpenConversation(conversationId);
+      return;
     }
-  }, [data, navigate, location.search]);
+
+    writeStoredOpenConversation(conversationId);
+  }, [data.appMode, location.search, navigate]);
 
   if (data.appMode === "fast_onboarding") {
     return (

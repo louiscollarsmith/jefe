@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import {
+  dailyHomeFreshEntryUpdates,
   isAppHomeNarrowMutation,
   isAppHomeUiOnlyNavigation,
 } from "../app/lib/home/app-home-navigation.js";
 
-// Opening Jefe must always land on the focused-action home. The embedded app's URL is
-// persistent (App Bridge restores the last location on re-open), so a chat the
-// merchant left would silently re-open on a fresh entry. These are source-level
+// Overlay params must drop on a fresh app entry (App Bridge restores the last URL).
+// Conversation is a destination and must survive refresh. These are source-level
 // guards so a redesign can't quietly regress the behaviour.
 
 const appIndexSource = fs.readFileSync(
@@ -32,24 +32,49 @@ const clientNavigationReporterSource = fs.readFileSync(
   "utf8",
 );
 
-test("a fresh app entry drops stale overlay params but keeps conversation on reload", () => {
+test("a fresh app entry drops overlay params but keeps or restores the conversation", () => {
   // A once-per-document-load guard distinguishes a fresh entry from in-session nav...
   assert.match(appIndexSource, /staleZoomGuardArmed/);
-  // ...and on the daily home, when a persisted overlay/chooser param is present, it clears it.
-  assert.match(appIndexSource, /if \(data\.appMode === "daily"\)/);
-  assert.match(
-    appIndexSource,
-    /params\.has\("actionChat"\)[\s\S]*params\.has\("talkAction"\)/,
-  );
-  assert.match(appIndexSource, /performance\.getEntriesByType\("navigation"\)/);
-  assert.match(appIndexSource, /navigationEntry\?\.type === "reload"/);
-  assert.match(appIndexSource, /!isReload && params\.has\("conversation"\)/);
-  assert.match(
-    appIndexSource,
-    /appPathFromSearch\(location\.search,\s*\{[\s\S]*actionChat: null,[\s\S]*talkAction: null,[\s\S]*\.\.\.\(isReload \? \{\} : \{ conversation: null \}\)/,
-  );
+  assert.match(appIndexSource, /dailyHomeFreshEntryUpdates/);
+  assert.match(appIndexSource, /readStoredOpenConversation/);
+  assert.match(appIndexSource, /writeStoredOpenConversation/);
   // Client-only clock/location reads stay OUT of this route module (hydration lint).
   assert.doesNotMatch(appIndexSource, /\bwindow\./);
+  assert.doesNotMatch(appIndexSource, /performance\.getEntriesByType/);
+});
+
+test("fresh entry updates strip overlays without dropping a conversation destination", () => {
+  const conversation = "11111111-1111-4111-8111-111111111111";
+  assert.deepEqual(
+    dailyHomeFreshEntryUpdates(
+      new URLSearchParams(`conversation=${conversation}&talkAction=a1`),
+      null,
+    ),
+    { talkAction: null },
+  );
+  assert.deepEqual(
+    dailyHomeFreshEntryUpdates(new URLSearchParams("actionChat=c1"), null),
+    { actionChat: null },
+  );
+  assert.deepEqual(
+    dailyHomeFreshEntryUpdates(new URLSearchParams("shop=example.myshopify.com"), conversation),
+    { conversation },
+  );
+  assert.equal(
+    dailyHomeFreshEntryUpdates(new URLSearchParams("shop=example.myshopify.com"), null),
+    null,
+  );
+  assert.equal(
+    dailyHomeFreshEntryUpdates(
+      new URLSearchParams(`conversation=${conversation}`),
+      "22222222-2222-4222-8222-222222222222",
+    ),
+    null,
+  );
+  assert.equal(
+    dailyHomeFreshEntryUpdates(new URLSearchParams(), "not-a-uuid"),
+    null,
+  );
 });
 
 test("focused-chat polish: single 'Thinking' indicator + wired action menu", () => {

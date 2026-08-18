@@ -62,6 +62,10 @@ test("assist handler resolves from capability ref and step title", () => {
     resolveAssistHandler({ capabilityRef: "assist:supplier_email_draft" }),
     resolveAssistHandler({ title: "Draft supplier replenishment communication" }),
   );
+  assert.equal(
+    resolveAssistHandler({ capabilityRef: "assist:listing_copy_review" }),
+    resolveAssistHandler({ title: "Categorise unassigned products" }),
+  );
 });
 
 test("recommended purchase units follow stock-cover formula", () => {
