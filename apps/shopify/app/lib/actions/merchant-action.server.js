@@ -475,6 +475,14 @@ export async function getMerchantAction(prisma, input) {
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         take: 5,
       },
+      constraints: {
+        where: { status: "active" },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
+      changeSets: {
+        orderBy: [{ generatedAt: "desc" }, { id: "desc" }],
+        take: 3,
+      },
     },
   });
   return row ? serializeMerchantAction(row) : null;
@@ -521,6 +529,18 @@ export function serializeMerchantAction(row) {
       preview: jsonObject(progress.preview ?? execution?.preview),
     },
     previewItems: previewItemsFromExecution(execution),
+    plan: jsonObject(row.plan),
+    constraints: Array.isArray(row.constraints)
+      ? row.constraints.map((/** @type {any} */ item) => ({
+          id: item.id,
+          kind: item.kind,
+          params: jsonObject(item.params),
+          label: safeText(item.label, 180),
+          source: item.source ?? "chat",
+          status: item.status ?? "active",
+        }))
+      : [],
+    currentChangeSet: serializeCurrentChangeSet(row.changeSets),
     workflow,
     currentStep,
     displaySteps: display,
@@ -883,6 +903,26 @@ function successText(progress, source) {
   );
 }
 
+/** @param {any[]} changeSets */
+function serializeCurrentChangeSet(changeSets) {
+  const rows = Array.isArray(changeSets) ? changeSets : [];
+  const live = rows.find((/** @type {any} */ row) =>
+    ["ready", "approved", "applying"].includes(String(row?.status ?? "")),
+  ) ?? rows[0];
+  if (!live) return null;
+  return {
+    id: live.id,
+    status: live.status,
+    actionType: live.actionType,
+    itemCount: Array.isArray(live.items) ? live.items.length : 0,
+    excludedCount: Array.isArray(live.excluded) ? live.excluded.length : 0,
+    generatedAt: live.generatedAt?.toISOString?.() ?? live.generatedAt ?? null,
+  };
+}
+
+/**
+ * @param {any} execution
+ */
 function previewItemsFromExecution(execution) {
   const preview = jsonObject(execution?.preview);
   const summary = jsonObject(execution?.proposalSummary);

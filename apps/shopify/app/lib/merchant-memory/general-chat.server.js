@@ -21,30 +21,42 @@ import { getMerchantContextForQuestion } from "./context-retriever.server.js";
 import { answerCommerceQuestion } from "./commerce-analyst.server.js";
 import { getMerchantAction } from "../actions/merchant-action.server.js";
 import {
-  acceptMerchantActionPlan,
-  completeCurrentActionStep,
   isActionStepStartCommand,
   isPrimarilyQuestion,
-  processReadyActionStepRuns,
-  skipCurrentActionStep,
-  startActionStep,
-  stopActionStep,
 } from "../actions/action-step-lifecycle.server.js";
-import { executeStartedAssistStepRun } from "../actions/assist-steps/run.server.js";
-import { rejectAction } from "../actions/action-resolution.server.js";
 import {
   PLAN_CHAT_COMMANDS,
   PLAN_CHAT_INTENT,
-  buildPlanAcceptReply,
-  buildPlanCompleteReply,
-  buildPlanDeclineReply,
   buildPlanRecapReply,
   buildPlanScopeReply,
-  buildPlanSkipReply,
   buildPlanStatusReply,
-  buildPlanStopReply,
   classifyPlanChatIntent,
 } from "../actions/plan-chat.server.js";
+import {
+  ACTION_COMMAND,
+  classifyActionCommand,
+  executeActionCommand,
+  isMutationCommand,
+  parseProposedCommand,
+} from "../actions/action-command.server.js";
+import { getCurrentChangeSet } from "../actions/action-changeset.server.js";
+
+const ACTION_COMMAND_SCHEMA = {
+  type: Type.OBJECT,
+  nullable: true,
+  properties: {
+    type: { type: Type.STRING, nullable: true },
+    markdownPercent: { type: Type.NUMBER, nullable: true },
+    coverDays: { type: Type.NUMBER, nullable: true },
+    maxProducts: { type: Type.NUMBER, nullable: true },
+    constraintKind: { type: Type.STRING, nullable: true },
+    collectionTitle: { type: Type.STRING, nullable: true },
+    tag: { type: Type.STRING, nullable: true },
+    minInventory: { type: Type.NUMBER, nullable: true },
+    minPrice: { type: Type.NUMBER, nullable: true },
+    constraintLabel: { type: Type.STRING, nullable: true },
+  },
+};
 
 const GENERAL_CHAT_REPLY_SCHEMA = {
   type: Type.OBJECT,
@@ -54,6 +66,7 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
     citedContextIds: { type: Type.ARRAY, items: { type: Type.STRING } },
     startCurrentStep: { type: Type.BOOLEAN, nullable: true },
     planIntent: { type: Type.STRING, nullable: true },
+    command: ACTION_COMMAND_SCHEMA,
     workflowStepUpdates: {
       type: Type.ARRAY,
       nullable: true,
@@ -319,22 +332,37 @@ export async function sendGeneralChatMessage(prisma, input) {
   }
   turn.mark("decisionMs");
   const actionChat = Boolean(actionRunId || recommendationId || focusedAction);
-  /** @type {{ reply: string, citedContextIds: any[], chart?: any, workflowStepUpdates?: any[] }} */
+  /** @type {{ reply: string, citedContextIds: any[], chart?: any, workflowStepUpdates?: any[], command?: any }} */
   let generated;
   /** @type {any} */
   let context;
   /** @type {any} */
   let actionEvidence = null;
-  const planIntent = focusedAction
-    ? classifyPlanChatIntent(content)
-    : PLAN_CHAT_INTENT.question;
-  if (focusedAction && PLAN_CHAT_COMMANDS.has(planIntent)) {
-    generated = await runPlanChatIntent(prisma, {
-      intent: planIntent,
+  const readyChangeSet = focusedAction
+    ? await getCurrentChangeSet(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: focusedAction.id,
+      })
+    : null;
+  const classified = focusedAction
+    ? classifyActionCommand(content, {
+        hasReadyChangeSet: Boolean(readyChangeSet),
+        actionStatus: focusedAction.status,
+      })
+    : { type: ACTION_COMMAND.ANSWER, params: {} };
+  if (
+    focusedAction &&
+    (classified.type !== ACTION_COMMAND.ANSWER || classified.params?.questionKind)
+  ) {
+    generated = await runFocusedActionCommand(prisma, {
+      command: classified.type,
+      params: classified.params,
       merchantId: input.merchantId,
       shopId: input.shopId,
       focusedAction,
       conversationId: conversation.id,
+      message: content,
       logger: input.logger ?? log,
     });
     turn.mark("retrievalMs");
@@ -425,21 +453,38 @@ export async function sendGeneralChatMessage(prisma, input) {
         actionChat: Boolean(focusedAction && actionHasStartableStep(focusedAction)),
         logger: input.logger ?? log,
       });
+      const proposed = focusedAction ? parseProposedCommand(grounded.command) : null;
       const llmIntent =
-        focusedAction && PLAN_CHAT_COMMANDS.has(String(grounded.planIntent ?? ""))
+        focusedAction && PLAN_CHAT_COMMANDS.has(/** @type {any} */ (grounded.planIntent ?? ""))
           ? String(grounded.planIntent)
           : "";
       const wantsStepStart =
         Boolean(focusedAction) &&
         !isPrimarilyQuestion(content) &&
         (isActionStepStartCommand(content) || grounded.startCurrentStep === true);
-      if (wantsStepStart) {
-        generated = await runPlanChatIntent(prisma, {
-          intent: PLAN_CHAT_INTENT.start,
+      if (
+        proposed &&
+        isMutationCommand(proposed.type) &&
+        !isPrimarilyQuestion(content)
+      ) {
+        generated = await runFocusedActionCommand(prisma, {
+          command: proposed.type,
+          params: proposed.params,
           merchantId: input.merchantId,
           shopId: input.shopId,
           focusedAction,
           conversationId: conversation.id,
+          message: content,
+          logger: input.logger ?? log,
+        });
+      } else if (wantsStepStart) {
+        generated = await runFocusedActionCommand(prisma, {
+          command: ACTION_COMMAND.START_STEP,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          focusedAction,
+          conversationId: conversation.id,
+          message: content,
           logger: input.logger ?? log,
         });
       } else if (llmIntent) {
@@ -486,6 +531,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       ...(generated.chart ? { chart: generated.chart } : {}),
       retrievalRunId: context?.diagnosticId ?? null,
       focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+      actionCommand: generated.command ?? null,
       workflowStepUpdates: workflowStepUpdateResult.applied,
       // The wait this reply cost, stored beside the reply it describes. Durations
       // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
@@ -803,7 +849,7 @@ export async function getDailyChatThread(prisma, input) {
   };
 }
 
-/** @param {{ provider: any; message: string; context: any; logger: any }} input */
+/** @param {{ provider: any; message: string; context: any; logger: any; actionChat?: boolean }} input */
 async function generateGroundedReply(input) {
   const allowedIds = new Set(
     input.context.provenance.map((/** @type {any} */ item) => item.id),
@@ -830,7 +876,7 @@ async function generateGroundedReply(input) {
         "Use currentAction.operationalContext when present. It contains code-prepared facts, primitives, formulas and defaults that you may apply; the merchant's latest message determines which of those are relevant.",
         "When using an operational primitive, show the specific assumption or formula briefly and ask for approval or correction, not for the merchant to do the work.",
         input.actionChat
-          ? "This is a focused action chat. Answer any question the merchant asks. Set startCurrentStep to true only when they clearly want you to proceed with the ready step now — not when they are asking what, why, or how. Set planIntent to start, stop, status, complete, skip, accept, decline, scope, recap, or question. The application performs start/stop/complete/skip through its lifecycle service; never claim you already did that work unless the packet says so."
+          ? "This is a focused action chat. Answer any question the merchant asks. If they are changing the plan, adding a constraint, asking for an exact change set, or approving a write, set command.type to one of REVISE_PLAN, ADD_CONSTRAINT, CREATE_CHANGESET, APPLY_CHANGESET, ACCEPT_PLAN, START_STEP, DEFER_ACTION, REJECT_ACTION, CONFIRM_MERCHANT_STEP. Fill command parameters (markdownPercent, coverDays, maxProducts, constraintKind, collectionTitle, tag, minInventory, minPrice). The application validates and executes; never claim you already wrote to Shopify or flipped workflow status unless the packet's execution result says so. Set startCurrentStep to true only when they clearly want you to proceed with the ready step now. Set planIntent to start, stop, status, complete, skip, accept, decline, scope, recap, or question."
           : "Do not return workflowStepUpdates for action execution. If the merchant asks to start a step, explain what will happen; the application validates and starts steps through its own lifecycle service.",
         "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
@@ -867,6 +913,7 @@ async function generateGroundedReply(input) {
       typeof result.json?.planIntent === "string"
         ? result.json.planIntent.trim()
         : "";
+    const command = parseProposedCommand(result.json?.command);
     if (!reply || !numbersAreGrounded(reply, input.context)) {
       return { reply: fallback, citedContextIds: [], startCurrentStep: false };
     }
@@ -875,6 +922,7 @@ async function generateGroundedReply(input) {
       citedContextIds,
       startCurrentStep,
       planIntent: PLAN_CHAT_COMMANDS.has(planIntent) ? planIntent : "",
+      command,
       workflowStepUpdates: Array.isArray(result.json?.workflowStepUpdates)
         ? result.json.workflowStepUpdates
         : [],
@@ -949,12 +997,12 @@ export function buildGroundedFallbackReply(message, context) {
 export function buildActionStepStartReply(focusedAction, stepStart) {
   const steps = workflowStepsFromAction(focusedAction);
   const stepById = (/** @type {string | undefined | null} */ id) =>
-    steps.find((step) => step.id === id) ?? null;
+    steps.find((/** @type {any} */ step) => step.id === id) ?? null;
   if (stepStart.ok) {
     const step =
       stepById(stepStart.stepId) ??
       focusedAction?.currentStep ??
-      steps.find((step) => step.status === "ready") ??
+      steps.find((/** @type {any} */ step) => step.status === "ready") ??
       steps[0] ??
       null;
     const stepTitle = step?.title ?? step?.label ?? "the next step";
@@ -965,7 +1013,7 @@ export function buildActionStepStartReply(focusedAction, stepStart) {
     const status = reason.split(":").slice(1).join(":");
     const current =
       focusedAction?.currentStep ??
-      steps.find((step) =>
+      steps.find((/** @type {any} */ step) =>
         ["ready", "running", "needs_merchant", "needs_attention"].includes(
           String(step?.status ?? ""),
         ),
@@ -1040,7 +1088,7 @@ function isActionContextQuestion(message) {
 function findWorkflowStepOnAction(action, stepId) {
   if (!stepId) return null;
   const steps = workflowStepsFromAction(action);
-  return steps.find((step) => step?.id === stepId) ?? null;
+  return steps.find((/** @type {any} */ step) => step?.id === stepId) ?? null;
 }
 
 /** @param {any} action */
@@ -1053,9 +1101,37 @@ function workflowStepsFromAction(action) {
 
 /** @param {any} action */
 function actionHasStartableStep(action) {
-  return workflowStepsFromAction(action).some((step) =>
+  return workflowStepsFromAction(action).some((/** @type {any} */ step) =>
     ["ready", "needs_merchant"].includes(String(step?.status ?? "")),
   );
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ command: string; params?: Record<string, any>; merchantId: string; shopId: string; focusedAction: any; conversationId: string; message?: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function runFocusedActionCommand(prisma, input) {
+  const executed = await executeActionCommand(prisma, {
+    command: input.command,
+    params: input.params ?? {},
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.focusedAction.id,
+    actor: input.merchantId,
+    conversationId: input.conversationId,
+    message: input.message ?? null,
+    logger: input.logger ?? log,
+  });
+  return {
+    reply: executed.reply,
+    citedContextIds: [],
+    command: {
+      type: executed.command,
+      ok: executed.ok,
+      reason: executed.reason ?? null,
+      changeSetId: executed.changeSet?.id ?? null,
+    },
+  };
 }
 
 /**
@@ -1063,160 +1139,31 @@ function actionHasStartableStep(action) {
  * @param {{ intent: string; merchantId: string; shopId: string; focusedAction: any; conversationId: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 async function runPlanChatIntent(prisma, input) {
-  const logger = input.logger ?? log;
-  const action =
-    (await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: input.focusedAction.id,
-    })) ?? input.focusedAction;
-
-  if (input.intent === PLAN_CHAT_INTENT.recap) {
-    return { reply: buildPlanRecapReply(action), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.status) {
-    return { reply: buildPlanStatusReply(action), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.scope) {
-    return { reply: buildPlanScopeReply(action), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.accept) {
-    const result = await acceptMerchantActionPlan(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-      actor: input.merchantId,
-      logger,
-    });
-    const fresh = await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-    });
-    return { reply: buildPlanAcceptReply(fresh ?? action, result), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.decline) {
-    if (!action.actionRunId) {
-      return {
-        reply: "I can’t decline this as a draft — there’s no proposed run attached. Say stop to pause it instead.",
-        citedContextIds: [],
-      };
-    }
-    const result = await rejectAction(prisma, {
-      merchantId: input.merchantId,
-      actionRunId: action.actionRunId,
-      reasonCategory: "defer",
-    });
-    return { reply: buildPlanDeclineReply(result), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.stop) {
-    const result = await stopActionStep(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-      actor: input.merchantId,
-      logger,
-    });
-    const fresh = await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-    });
-    return { reply: buildPlanStopReply(fresh ?? action, result), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.complete) {
-    const result = await completeCurrentActionStep(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-      actor: input.merchantId,
-      logger,
-    });
-    const fresh = await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-    });
-    return { reply: buildPlanCompleteReply(fresh ?? action, result), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.skip) {
-    const result = await skipCurrentActionStep(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-      actor: input.merchantId,
-      logger,
-    });
-    const fresh = await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-    });
-    return { reply: buildPlanSkipReply(fresh ?? action, result), citedContextIds: [] };
-  }
-  if (input.intent === PLAN_CHAT_INTENT.start || input.intent === PLAN_CHAT_INTENT.retry) {
-    if (action.status === "proposed") {
-      const accepted = await acceptMerchantActionPlan(prisma, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        actionId: action.id,
-        actor: input.merchantId,
-        logger,
-      });
-      if (!accepted.ok) {
-        return { reply: buildPlanAcceptReply(action, accepted), citedContextIds: [] };
-      }
-    }
-    const fresh = await getMerchantAction(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: action.id,
-    });
-    return runActionStepStartFromChat(prisma, {
-      ...input,
-      focusedAction: fresh ?? action,
-    });
-  }
-  return { reply: buildPlanRecapReply(action), citedContextIds: [] };
-}
-
-/**
- * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; focusedAction: any; conversationId: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
- */
-async function runActionStepStartFromChat(prisma, input) {
-  const stepStart = await startActionStep(prisma, {
+  const mapped =
+    input.intent === PLAN_CHAT_INTENT.accept
+      ? ACTION_COMMAND.ACCEPT_PLAN
+      : input.intent === PLAN_CHAT_INTENT.start || input.intent === PLAN_CHAT_INTENT.retry
+        ? ACTION_COMMAND.START_STEP
+        : input.intent === PLAN_CHAT_INTENT.stop
+          ? ACTION_COMMAND.STOP_STEP
+          : input.intent === PLAN_CHAT_INTENT.skip
+            ? ACTION_COMMAND.SKIP_STEP
+            : input.intent === PLAN_CHAT_INTENT.complete
+              ? ACTION_COMMAND.CONFIRM_MERCHANT_STEP
+              : input.intent === PLAN_CHAT_INTENT.decline
+                ? ACTION_COMMAND.REJECT_ACTION
+                : input.intent === PLAN_CHAT_INTENT.scope
+                  ? ACTION_COMMAND.INSPECT_SCOPE
+                  : ACTION_COMMAND.ANSWER;
+  return runFocusedActionCommand(prisma, {
+    command: mapped,
+    params: { questionKind: input.intent },
     merchantId: input.merchantId,
     shopId: input.shopId,
-    actionId: input.focusedAction.id,
-    actor: input.merchantId,
-    logger: input.logger ?? log,
+    focusedAction: input.focusedAction,
+    conversationId: input.conversationId,
+    logger: input.logger,
   });
-  let reply = buildActionStepStartReply(input.focusedAction, stepStart);
-  if (stepStart.ok && stepStart.stepRunId) {
-    const startedStep = findWorkflowStepOnAction(input.focusedAction, stepStart.stepId);
-    if (startedStep?.mode === "assist") {
-      const assist = await executeStartedAssistStepRun(prisma, {
-        stepRunId: stepStart.stepRunId,
-        actionId: input.focusedAction.id,
-        conversationId: input.conversationId,
-        logger: input.logger ?? log,
-      });
-      if (assist.ok && assist.chatReply) {
-        reply = assist.chatReply;
-      } else if (!assist.ok) {
-        reply =
-          assist.chatReply ??
-          `${reply}\n\nI couldn't finish that step just now. Try again in a moment.`;
-      }
-    } else if (startedStep?.mode === "execute") {
-      await processReadyActionStepRuns(prisma, {
-        maxRuns: 1,
-        logger: input.logger ?? log,
-      });
-    }
-  }
-  return { reply, citedContextIds: [] };
 }
 
 /** @param {any} context */
@@ -1225,15 +1172,22 @@ export function buildCurrentActionInput(context) {
     context?.actionEvidence?.focusedAction ?? context?.focusedAction ?? null;
   if (!focusedAction) return null;
   const lowCoverItems = lowCoverItemsFromContext(context);
+  const coverDays =
+    Number(focusedAction.plan?.coverDays) > 0
+      ? Number(focusedAction.plan.coverDays)
+      : DEFAULT_RESTOCK_COVER_DAYS;
   const quantityPlanningItems = lowCoverItems.map((item) => ({
     ...item,
     recommendedUnitsAtDefaultCover:
-      recommendedPurchaseUnits(item, DEFAULT_RESTOCK_COVER_DAYS),
+      recommendedPurchaseUnits(item, coverDays),
   }));
   return {
     ...focusedAction,
     operationalContext: {
       role: "default_mutation_target",
+      constraints: Array.isArray(focusedAction.constraints) ? focusedAction.constraints : [],
+      plan: focusedAction.plan ?? {},
+      currentChangeSet: focusedAction.currentChangeSet ?? null,
       workflowSteps: Array.isArray(focusedAction.proposedSteps)
         ? focusedAction.proposedSteps
         : [],
@@ -1245,7 +1199,7 @@ export function buildCurrentActionInput(context) {
           ref: "restock_quantity_from_stock_cover",
           purpose:
             "Estimate purchase units for a restock/replenishment workflow step from current stock cover evidence.",
-          defaultTargetCoverDays: DEFAULT_RESTOCK_COVER_DAYS,
+          defaultTargetCoverDays: coverDays,
           alternativeTargetCoverDays: [
             {
               days: 90,
