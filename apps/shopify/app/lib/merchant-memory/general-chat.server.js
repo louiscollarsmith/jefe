@@ -849,7 +849,7 @@ export async function getDailyChatThread(prisma, input) {
   };
 }
 
-/** @param {{ provider: any; message: string; context: any; logger: any; actionChat?: boolean }} input */
+/** @param {{ provider: any; message: string; context: any; actionChat?: boolean; logger: any }} input */
 async function generateGroundedReply(input) {
   const allowedIds = new Set(
     input.context.provenance.map((/** @type {any} */ item) => item.id),
@@ -1091,7 +1091,7 @@ function findWorkflowStepOnAction(action, stepId) {
   return steps.find((/** @type {any} */ step) => step?.id === stepId) ?? null;
 }
 
-/** @param {any} action */
+/** @param {any} action @returns {any[]} */
 function workflowStepsFromAction(action) {
   if (Array.isArray(action?.workflow?.steps)) return action.workflow.steps;
   if (Array.isArray(action?.displaySteps)) return action.displaySteps;

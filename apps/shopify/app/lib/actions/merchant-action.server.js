@@ -920,9 +920,7 @@ function serializeCurrentChangeSet(changeSets) {
   };
 }
 
-/**
- * @param {any} execution
- */
+/** @param {any} execution */
 function previewItemsFromExecution(execution) {
   const preview = jsonObject(execution?.preview);
   const summary = jsonObject(execution?.proposalSummary);

@@ -19,7 +19,9 @@ export const PLAN_CHAT_INTENT = Object.freeze({
   question: "question",
 });
 
-/** Intents that must not go through the generic recap fallback. */
+/** Intents that must not go through the generic recap fallback.
+ * @type {Set<string>}
+ */
 export const PLAN_CHAT_COMMANDS = new Set([
   PLAN_CHAT_INTENT.accept,
   PLAN_CHAT_INTENT.start,
@@ -76,7 +78,7 @@ export function buildPlanRecapReply(action) {
   if (steps.length > 0) {
     const stepSummary = steps
       .slice(0, 6)
-      .map((step, index) => {
+      .map((/** @type {any} */ step, /** @type {number} */ index) => {
         const status = step.status ? ` (${step.status.replaceAll("_", " ")})` : "";
         return `${index + 1}. ${step.title}${status}`;
       })
@@ -206,7 +208,7 @@ export function buildPlanSkipReply(action, result) {
     : "Skipped that step.";
 }
 
-/** @param {{ status?: string }} result */
+/** @param {{ status?: string; ok?: boolean }} result */
 export function buildPlanDeclineReply(result) {
   if (result?.status === "rejected" || result?.ok) {
     return "Okay — I won’t do this plan. Nothing was written to the store.";
@@ -222,7 +224,7 @@ export function extractPlanScopeItems(action) {
   const seen = new Set();
   /** @type {Array<{ title: string; change?: string | null }>} */
   const items = [];
-  const push = (title, change) => {
+  const push = (/** @type {string} */ title, /** @type {string | null | undefined} */ change) => {
     const label = String(title ?? "").trim();
     if (!label) return;
     const key = label.toLowerCase();
@@ -290,7 +292,7 @@ export function currentPlanStep(action) {
   }
   const steps = planSteps(action);
   return (
-    steps.find((step) =>
+    steps.find((/** @type {any} */ step) =>
       ["ready", "running", "needs_merchant", "needs_attention"].includes(
         String(step.status ?? ""),
       ),

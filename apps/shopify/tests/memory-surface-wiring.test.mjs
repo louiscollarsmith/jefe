@@ -291,6 +291,7 @@ test("focused action context is connected to the title row and system focus even
   assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /const \[focusExpanded, setFocusExpanded\] = useState\(true\)/);
   assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel[\s\S]*action=\{focusedAction\}/);
+  assert.match(dailyHomeSource, /conversationId=\{activeConversation.id\}/);
   assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
   assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
   assert.match(dailyHomeSource, /const chatPlanHeaderStyle: CSSProperties = \{/);
