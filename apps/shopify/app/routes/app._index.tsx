@@ -168,6 +168,7 @@ import {
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
+import { getProactiveRecommendationSchedule } from "../lib/merchant-plan/proactive-recommendations.server.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
 import {
@@ -1819,10 +1820,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const homeTimeZone = storeTimeZoneFromPayload(
         (shop as { rawPayload?: unknown }).rawPayload,
       );
+      const homeNow = currentServerInstant();
       const todayLabel = computeHomeDateLabel({
-        now: currentServerInstant(),
+        now: homeNow,
         timeZone: homeTimeZone,
       });
+      const nextRecommendationSchedule = await getProactiveRecommendationSchedule(
+        prisma,
+        {
+          merchantId: merchant.id,
+          now: homeNow,
+          timeZone: homeTimeZone,
+        },
+      );
       logSlowAppIndexLoader(loaderStartedAt, {
         mode: "daily",
         shopDomain: session.shop,
@@ -1847,6 +1857,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         todayLabel,
         storeTimeZone: homeTimeZone,
         brandLogoUrl,
+        nextRecommendationSchedule,
       };
     }
     if (viewLibrary) {
@@ -2214,6 +2225,7 @@ export default function AppIndex() {
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}
         brandLogoUrl={data.brandLogoUrl}
+        nextRecommendationSchedule={data.nextRecommendationSchedule}
       />
     );
   }

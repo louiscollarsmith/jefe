@@ -119,6 +119,15 @@ type EmailBrief = {
   sending: boolean;
 };
 
+type NextRecommendationSchedule = {
+  kind: "hourly_check" | "daily_cap_reached";
+  at: string;
+  generatedToday: number;
+  remaining: number;
+  cap: number;
+  enabled: boolean;
+};
+
 type PrimaryMove = {
   title: string;
   summary: string;
@@ -271,6 +280,7 @@ export function DailyHome(props: {
   storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
   horizonHeadsUps?: HeadsUp[]; // proactive run-out / refund heads-ups, rendered as messages
   brandLogoUrl?: string | null; // merchant's brand logo for the header; monogram fallback
+  nextRecommendationSchedule?: NextRecommendationSchedule | null;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -596,6 +606,7 @@ export function DailyHome(props: {
           onCloseTalkAction={closeTalkAction}
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
+          nextRecommendationSchedule={props.nextRecommendationSchedule ?? null}
         />
         {/* No footer link. Merchant Memory is reached from the shell gear →
             Settings → "What Jefe knows" (see surface-reachability tests);
@@ -656,6 +667,7 @@ function FocusedActionsHome({
   onCloseTalkAction,
   currentSearch,
   storeTimeZone,
+  nextRecommendationSchedule,
 }: {
   conversations: ChatConversation[];
   merchantActions: MerchantActionView[];
@@ -672,6 +684,7 @@ function FocusedActionsHome({
   onCloseTalkAction: () => void;
   currentSearch: string;
   storeTimeZone?: string | null;
+  nextRecommendationSchedule?: NextRecommendationSchedule | null;
 }) {
   const attentionQueue = normalizeAttentionItems(attentionItems, merchantActions);
   const [selectedAttentionKey, setSelectedAttentionKey] = useState<string | null>(null);
@@ -746,7 +759,9 @@ function FocusedActionsHome({
               action={primaryProposedAction}
               onStartFocusedChat={onStartFocusedChat}
             />
-          ) : null}
+          ) : (
+            <NextRecommendationWait schedule={nextRecommendationSchedule} />
+          )}
         </section>
       ) : null}
 
@@ -851,6 +866,99 @@ function FocusedActionsHome({
       />
     </>
   );
+}
+
+function NextRecommendationWait({
+  schedule,
+}: {
+  schedule: NextRecommendationSchedule | null | undefined;
+}) {
+  const targetMs = schedule?.at ? Date.parse(schedule.at) : NaN;
+  const [remainingMs, setRemainingMs] = useState(() =>
+    Number.isFinite(targetMs) ? Math.max(0, targetMs - Date.now()) : null,
+  );
+
+  useEffect(() => {
+    if (!Number.isFinite(targetMs)) {
+      setRemainingMs(null);
+      return;
+    }
+    const tick = () => setRemainingMs(Math.max(0, targetMs - Date.now()));
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, [targetMs]);
+
+  if (!schedule) {
+    return (
+      <section style={nextMoveCardStyle} aria-label="Waiting for next move">
+        <div style={nextMoveTopStyle}>
+          <Mono>READING YOUR STORE</Mono>
+        </div>
+        <p style={nextRecommendationBodyStyle}>
+          Nothing worth your time right now. Jefe keeps reading and will bring the next move
+          when something&apos;s genuinely worth ten minutes.
+        </p>
+      </section>
+    );
+  }
+
+  if (!schedule.enabled) {
+    return (
+      <section style={nextMoveCardStyle} aria-label="Waiting for next move">
+        <div style={nextMoveTopStyle}>
+          <Mono>READING YOUR STORE</Mono>
+        </div>
+        <p style={nextRecommendationBodyStyle}>
+          Nothing worth your time right now. Jefe keeps reading and will bring the next move
+          when something&apos;s genuinely worth ten minutes.
+        </p>
+      </section>
+    );
+  }
+
+  const countdown =
+    remainingMs != null ? formatRecommendationCountdown(remainingMs) : null;
+  const usedLabel = `${schedule.generatedToday} of ${schedule.cap} today`;
+  const headline =
+    schedule.kind === "daily_cap_reached"
+      ? "Jefe's had a full look today."
+      : "Nothing worth your time right now.";
+  const detail =
+    schedule.kind === "daily_cap_reached"
+      ? countdown
+        ? `Next look in ${countdown}. Up to ${schedule.cap} fresh moves per day — only when something's real.`
+        : `Up to ${schedule.cap} fresh moves per day — only when something's real.`
+      : countdown
+        ? `Jefe checks again in ${countdown}. ${usedLabel} · up to ${schedule.cap} per day.`
+        : `Jefe checks hourly. ${usedLabel} · up to ${schedule.cap} per day.`;
+
+  return (
+    <section style={nextMoveCardStyle} aria-label="Waiting for next move">
+      <div style={nextMoveTopStyle}>
+        <Mono>NEXT CHECK</Mono>
+        {countdown ? (
+          <span style={nextRecommendationCountdownStyle} aria-live="polite">
+            {countdown}
+          </span>
+        ) : null}
+      </div>
+      <h2 style={nextRecommendationTitleStyle}>{headline}</h2>
+      <p style={nextRecommendationBodyStyle}>{detail}</p>
+    </section>
+  );
+}
+
+function formatRecommendationCountdown(remainingMs: number): string {
+  if (remainingMs <= 0) return "now";
+  const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 24) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const dayHours = hours % 24;
+  return dayHours > 0 ? `${days}d ${dayHours}h` : `${days}d`;
 }
 
 function NextMoveSpotlight({
@@ -3756,6 +3864,28 @@ const nextMoveSummaryStyle: CSSProperties = {
   lineHeight: 1.5,
   margin: 0,
   maxWidth: 700,
+};
+const nextRecommendationTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.sans,
+  fontSize: 24,
+  fontWeight: 750,
+  lineHeight: 1.2,
+  margin: 0,
+};
+const nextRecommendationBodyStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 15,
+  lineHeight: 1.55,
+  margin: 0,
+  maxWidth: 620,
+};
+const nextRecommendationCountdownStyle: CSSProperties = {
+  color: COLORS.navy,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  fontWeight: 800,
+  letterSpacing: 0,
 };
 const nextMoveActionRowStyle: CSSProperties = {
   alignItems: "center",
