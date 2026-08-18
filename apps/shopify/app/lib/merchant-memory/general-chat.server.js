@@ -803,7 +803,7 @@ export async function getDailyChatThread(prisma, input) {
   };
 }
 
-/** @param {{ provider: any; message: string; context: any; logger: any }} input */
+/** @param {{ provider: any; message: string; context: any; actionChat?: boolean; logger: any }} input */
 async function generateGroundedReply(input) {
   const allowedIds = new Set(
     input.context.provenance.map((/** @type {any} */ item) => item.id),
@@ -949,12 +949,12 @@ export function buildGroundedFallbackReply(message, context) {
 export function buildActionStepStartReply(focusedAction, stepStart) {
   const steps = workflowStepsFromAction(focusedAction);
   const stepById = (/** @type {string | undefined | null} */ id) =>
-    steps.find((step) => step.id === id) ?? null;
+    steps.find((/** @type {any} */ step) => step.id === id) ?? null;
   if (stepStart.ok) {
     const step =
       stepById(stepStart.stepId) ??
       focusedAction?.currentStep ??
-      steps.find((step) => step.status === "ready") ??
+      steps.find((/** @type {any} */ step) => step.status === "ready") ??
       steps[0] ??
       null;
     const stepTitle = step?.title ?? step?.label ?? "the next step";
@@ -965,7 +965,7 @@ export function buildActionStepStartReply(focusedAction, stepStart) {
     const status = reason.split(":").slice(1).join(":");
     const current =
       focusedAction?.currentStep ??
-      steps.find((step) =>
+      steps.find((/** @type {any} */ step) =>
         ["ready", "running", "needs_merchant", "needs_attention"].includes(
           String(step?.status ?? ""),
         ),
@@ -1040,10 +1040,10 @@ function isActionContextQuestion(message) {
 function findWorkflowStepOnAction(action, stepId) {
   if (!stepId) return null;
   const steps = workflowStepsFromAction(action);
-  return steps.find((step) => step?.id === stepId) ?? null;
+  return steps.find((/** @type {any} */ step) => step?.id === stepId) ?? null;
 }
 
-/** @param {any} action */
+/** @param {any} action @returns {any[]} */
 function workflowStepsFromAction(action) {
   if (Array.isArray(action?.workflow?.steps)) return action.workflow.steps;
   if (Array.isArray(action?.displaySteps)) return action.displaySteps;
@@ -1053,7 +1053,7 @@ function workflowStepsFromAction(action) {
 
 /** @param {any} action */
 function actionHasStartableStep(action) {
-  return workflowStepsFromAction(action).some((step) =>
+  return workflowStepsFromAction(action).some((/** @type {any} */ step) =>
     ["ready", "needs_merchant"].includes(String(step?.status ?? "")),
   );
 }

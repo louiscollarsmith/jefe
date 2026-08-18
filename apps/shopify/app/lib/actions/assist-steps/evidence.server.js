@@ -7,7 +7,7 @@ export const DEFAULT_RESTOCK_COVER_DAYS = 120;
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; actionId: string; stepId?: string | null; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; actionId: string; stepId?: string | null; step?: { id?: string | null } | null; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function loadAssistStepContext(prisma, input) {
   const action = await getMerchantAction(prisma, {

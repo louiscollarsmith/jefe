@@ -883,6 +883,7 @@ function successText(progress, source) {
   );
 }
 
+/** @param {any} execution */
 function previewItemsFromExecution(execution) {
   const preview = jsonObject(execution?.preview);
   const summary = jsonObject(execution?.proposalSummary);

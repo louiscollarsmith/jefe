@@ -156,7 +156,7 @@ export async function ensureShopBrandLogo(prisma, input) {
         shopId: input.shopId,
         reason: brand.unavailable,
       });
-      return { status: brand.unavailable, hasLogo: false };
+      return { status: String(brand.unavailable), hasLogo: false };
     }
 
     const url = pickBrandLogoUrl(brand);
@@ -292,6 +292,6 @@ async function persistShopifyPatch(prisma, shopId, patch) {
   }
   await prisma.shop.update({
     where: { id: shopId },
-    data: { rawPayload: { ...current, shopify: nextShopify } },
+    data: { rawPayload: /** @type {any} */ ({ ...current, shopify: nextShopify }) },
   });
 }

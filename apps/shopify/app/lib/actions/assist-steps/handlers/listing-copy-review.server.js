@@ -28,7 +28,7 @@ export async function runListingCopyReviewAssist(context) {
     title: stepTitle,
     summary: `Proposed product types for ${items.length} unassigned product${items.length === 1 ? "" : "s"}.`,
     detail: "Types come from your existing catalogue vocabulary — I fill blanks, I don't retag products you already typed.",
-    items: items.slice(0, 8).map((item) => ({
+    items: items.slice(0, 8).map((/** @type {any} */ item) => ({
       title: item.title,
       proposedType: item.toType,
     })),

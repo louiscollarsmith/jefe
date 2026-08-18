@@ -874,20 +874,17 @@ function NextRecommendationWait({
   schedule: NextRecommendationSchedule | null | undefined;
 }) {
   const targetMs = schedule?.at ? Date.parse(schedule.at) : NaN;
-  const [remainingMs, setRemainingMs] = useState(() =>
-    Number.isFinite(targetMs) ? Math.max(0, targetMs - Date.now()) : null,
-  );
+  const [clockMs, setClockMs] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!Number.isFinite(targetMs)) {
-      setRemainingMs(null);
-      return;
-    }
-    const tick = () => setRemainingMs(Math.max(0, targetMs - Date.now()));
-    tick();
-    const id = window.setInterval(tick, 30_000);
+    if (!Number.isFinite(targetMs)) return undefined;
+    const id = window.setInterval(() => setClockMs(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, [targetMs]);
+
+  const remainingMs = Number.isFinite(targetMs)
+    ? Math.max(0, targetMs - clockMs)
+    : null;
 
   if (!schedule) {
     return (
@@ -2425,12 +2422,11 @@ function findStepWithAssistArtifact(
   currentStep: WorkflowStepDisplay | null | undefined,
   steps: WorkflowStepDisplay[],
 ) {
-  const currentArtifact =
-    currentStep && typeof currentStep !== "string"
-      ? stepAssistArtifact(currentStep)
-      : null;
-  if (currentArtifact) {
-    return { step: currentStep, artifact: currentArtifact };
+  if (currentStep && typeof currentStep !== "string") {
+    const currentArtifact = stepAssistArtifact(currentStep);
+    if (currentArtifact) {
+      return { step: currentStep, artifact: currentArtifact };
+    }
   }
   for (let index = steps.length - 1; index >= 0; index -= 1) {
     const step = steps[index];

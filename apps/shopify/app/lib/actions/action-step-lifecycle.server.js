@@ -180,10 +180,11 @@ export async function startActionStep(prisma, input) {
         orderBy: { orderIndex: "asc" },
       });
       steps = orderedSteps(refreshed);
+      const advancedStepId = advance.currentStep?.id ?? null;
       current =
         pickCurrentStep(steps) ??
-        (advance.currentStep?.id
-          ? steps.find((/** @type {any} */ step) => step.id === advance.currentStep.id) ?? null
+        (advancedStepId
+          ? steps.find((/** @type {any} */ step) => step.id === advancedStepId) ?? null
           : null);
     }
     if (!current) return { ok: false, reason: "no_current_step" };

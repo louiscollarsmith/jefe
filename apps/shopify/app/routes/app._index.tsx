@@ -669,7 +669,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         actionId,
       });
       const startedStep = action?.workflow?.steps?.find(
-        (step) => step.id === result.stepId,
+        (step: { id?: string | null; mode?: string | null }) =>
+          step.id === result.stepId,
       );
       if (startedStep?.mode === "assist") {
         await executeStartedAssistStepRun(prisma, {
