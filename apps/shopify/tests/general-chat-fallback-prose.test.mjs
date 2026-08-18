@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { isActionStepStartCommand, isPrimarilyQuestion } from "../app/lib/actions/action-step-lifecycle.server.js";
 import {
   applyWorkflowStepUpdatesFromReply,
+  buildActionContextFallbackReply,
+  buildActionStepStartReply,
   buildCurrentActionInput,
   buildGroundedFallbackReply,
 } from "../app/lib/merchant-memory/general-chat.server.js";
@@ -78,6 +81,101 @@ test("key/value fragments are rejected too, not just full objects", () => {
 test("an empty context still produces the plain admission", () => {
   const reply = buildGroundedFallbackReply("how is growth?", ctx([]));
   assert.match(reply, /couldn’t connect|couldn't connect/);
+});
+
+test("action chat fallback answers deictic questions from the focused action", () => {
+  const reply = buildGroundedFallbackReply("what is this?", {
+    ...ctx([]),
+    actionEvidence: {
+      focusedAction: {
+        title: "Secure Stock Levels on At-Risk Products",
+        summary:
+          "Initiate supplier replenishment planning for wines below 21 days of stock cover.",
+        proposedSteps: [
+          { title: "Review low-cover inventory items", status: "ready" },
+          { title: "Draft supplier replenishment communication", status: "waiting" },
+        ],
+      },
+    },
+  });
+
+  assert.match(reply, /Secure Stock Levels on At-Risk Products/);
+  assert.match(reply, /Review low-cover inventory items/);
+  assert.doesNotMatch(reply, /couldn’t connect|couldn't connect/);
+});
+
+test("natural-language start requests are recognised in action chat", () => {
+  assert.equal(isActionStepStartCommand("ok lets go ahead and start that step please"), true);
+  assert.equal(isActionStepStartCommand("please start that step"), true);
+  assert.equal(isActionStepStartCommand("let's go ahead and do this"), true);
+  assert.equal(isPrimarilyQuestion("Tell me more about this plan please?"), true);
+  assert.equal(isActionStepStartCommand("Tell me more about this plan please?"), false);
+  assert.equal(isPrimarilyQuestion("what happens when you start that step?"), true);
+  assert.equal(isActionStepStartCommand("what happens when you start that step?"), false);
+});
+
+test("action chat fallback does not repeat the plan for proceed requests", () => {
+  const reply = buildActionContextFallbackReply("ok lets go ahead and start that step please", {
+    actionEvidence: {
+      focusedAction: {
+        title: "Secure Stock Levels on At-Risk Products",
+        proposedSteps: [
+          { title: "Review low-cover inventory items", status: "ready" },
+        ],
+      },
+    },
+  });
+
+  assert.match(reply, /couldn't start|Do this step/i);
+  assert.doesNotMatch(reply, /The plan:/);
+});
+
+test("action chat fallback still answers deictic plan questions", () => {
+  const reply = buildGroundedFallbackReply("Tell me more about this plan please?", {
+    ...ctx([]),
+    actionEvidence: {
+      focusedAction: {
+        title: "Secure Stock Levels on At-Risk Products",
+        summary:
+          "Initiate supplier replenishment planning for wines below 21 days of stock cover.",
+        proposedSteps: [
+          { title: "Review low-cover inventory items", status: "ready" },
+        ],
+      },
+    },
+  });
+
+  assert.match(reply, /Secure Stock Levels on At-Risk Products/);
+  assert.match(reply, /The plan:/);
+});
+
+test("action step start reply confirms a successful start", () => {
+  const reply = buildActionStepStartReply(
+    {
+      title: "Secure Stock Levels on At-Risk Products",
+      workflow: {
+        steps: [
+          {
+            id: STEP_ONE_ID,
+            title: "Review low-cover inventory items",
+            status: "ready",
+          },
+        ],
+      },
+    },
+    { ok: true, stepId: STEP_ONE_ID },
+  );
+
+  assert.match(reply, /Starting “Review low-cover inventory items” now/);
+});
+
+test("action step start reply asks for plan acceptance when needed", () => {
+  const reply = buildActionStepStartReply(
+    { title: "Secure Stock Levels on At-Risk Products" },
+    { ok: false, reason: "action_not_startable:proposed" },
+  );
+
+  assert.match(reply, /Accept the plan first/i);
 });
 
 test("current action input gives the model workflow evidence and quantity primitives", () => {

@@ -126,13 +126,15 @@ import {
   getMerchantCompletedActions,
   getMerchantInProgressActions,
   getMerchantProposedActions,
+  getMerchantAction,
   listMerchantActions,
 } from "../lib/actions/merchant-action.server";
 import {
   acceptMerchantActionPlan,
-  isActionStepStartCommand,
+  processReadyActionStepRuns,
   startActionStep,
 } from "../lib/actions/action-step-lifecycle.server.js";
+import { executeStartedAssistStepRun } from "../lib/actions/assist-steps/run.server.js";
 import {
   setActionMode,
 } from "../lib/actions/action-autonomy-policy.server";
@@ -654,6 +656,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         intent,
       };
     }
+    if (result.stepRunId) {
+      const action = await getMerchantAction(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+      });
+      const startedStep = action?.workflow?.steps?.find(
+        (step) => step.id === result.stepId,
+      );
+      if (startedStep?.mode === "assist") {
+        await executeStartedAssistStepRun(prisma, {
+          stepRunId: result.stepRunId,
+          actionId,
+          conversationId: String(formData.get("conversationId") ?? "") || null,
+          logger: actionLog,
+        });
+      } else if (startedStep?.mode === "execute") {
+        await processReadyActionStepRuns(prisma, {
+          maxRuns: 1,
+          logger: actionLog,
+        });
+      }
+    }
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }
   if (intent === "action.chat.message") {
@@ -911,31 +936,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         kind: messageError.kind ?? null,
         intent,
       };
-    }
-    const focusedActionId = String(formData.get("focusedActionId") ?? "") || null;
-    if (focusedActionId && isActionStepStartCommand(typed)) {
-      const stepStart = await startActionStep(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId: focusedActionId,
-        actor: merchant.id,
-        logger: actionLog,
-      });
-      if (stepStart.ok) {
-        actionLog.info("merchant started action step from chat", {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          focusedActionId,
-          stepId: stepStart.stepId,
-        });
-      } else {
-        actionLog.warn("chat step start command did not apply", {
-          merchantId: merchant.id,
-          shopId: shop.id,
-          focusedActionId,
-          reason: "reason" in stepStart ? stepStart.reason : "unknown",
-        });
-      }
     }
     return redirect(appPathFromSearch(new URL(request.url).search, {}));
   }

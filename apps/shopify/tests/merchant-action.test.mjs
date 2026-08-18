@@ -53,6 +53,27 @@ test("deriveMerchantActionStatus keeps the new lifecycle separate from source st
   );
 });
 
+test("deriveMerchantActionStatus does not surface completed when workflow steps remain", () => {
+  assert.equal(
+    deriveMerchantActionStatus({
+      action: { status: "completed" },
+      recommendation: {
+        reviewStatus: "accepted",
+        workflows: [
+          {
+            steps: [
+              { status: "completed" },
+              { status: "waiting", mode: "assist" },
+              { status: "waiting", mode: "merchant_action" },
+            ],
+          },
+        ],
+      },
+    }),
+    "in_progress",
+  );
+});
+
 test("ensureMerchantActionForExecution upserts by source recommendation and links the execution", async () => {
   const calls = [];
   const prisma = {

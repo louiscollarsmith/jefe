@@ -20,6 +20,13 @@ import { retrieveMerchantContext } from "./merchant-context.server.js";
 import { getMerchantContextForQuestion } from "./context-retriever.server.js";
 import { answerCommerceQuestion } from "./commerce-analyst.server.js";
 import { getMerchantAction } from "../actions/merchant-action.server.js";
+import {
+  isActionStepStartCommand,
+  isPrimarilyQuestion,
+  processReadyActionStepRuns,
+  startActionStep,
+} from "../actions/action-step-lifecycle.server.js";
+import { executeStartedAssistStepRun } from "../actions/assist-steps/run.server.js";
 
 const GENERAL_CHAT_REPLY_SCHEMA = {
   type: Type.OBJECT,
@@ -27,6 +34,7 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
   properties: {
     reply: { type: Type.STRING },
     citedContextIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+    startCurrentStep: { type: Type.BOOLEAN, nullable: true },
     workflowStepUpdates: {
       type: Type.ARRAY,
       nullable: true,
@@ -41,6 +49,11 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
       },
     },
   },
+};
+
+const ACTION_CHAT_REPLY_SCHEMA = {
+  ...GENERAL_CHAT_REPLY_SCHEMA,
+  required: ["reply", "citedContextIds", "startCurrentStep"],
 };
 
 const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
@@ -287,97 +300,128 @@ export async function sendGeneralChatMessage(prisma, input) {
   }
   turn.mark("decisionMs");
   const actionChat = Boolean(actionRunId || recommendationId || focusedAction);
-  const [context, actionEvidence] = await Promise.all([
-    retrieveMerchantContext(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      task: actionChat ? "action_chat" : "general_chat",
-      query: content,
-      queryMessageId: persisted.message.id,
-      conversationId: conversation.id,
-      focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
-      recommendationId,
-      actionRunId,
-      tokenBudget: 6000,
-      historicalMode: decision.action === "historical_recall",
-    }),
-    actionChat
-      ? getMerchantContextForQuestion(prisma, {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          conversationId: conversation.id,
-          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
-          recommendationId,
-          actionRunId,
-          message: content,
-          logger: input.logger ?? log,
-        })
-      : Promise.resolve(null),
-  ]);
-  const promptContext = actionEvidence
-    ? { ...context, actionEvidence }
-    : context;
-  if (actionEvidence) {
-    await prisma.merchantMemoryConversation.update({
-      where: { id: conversation.id },
-      data: {
-        context: {
-          ...(conversation.context ?? {}),
-          focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
-          currentActionRunId: actionRunId ?? null,
-          actionRunId: actionRunId ?? null,
-          recommendationId: recommendationId ?? null,
-          planEvidenceSnapshotId:
-            actionEvidence.planEvidenceAtRecommendationTime?.snapshotId ?? null,
-          contextRetrievedAt: new Date().toISOString(),
-        },
-      },
-    });
-  }
-  turn.mark("retrievalMs");
-  const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
   /** @type {{ reply: string, citedContextIds: any[], chart?: any, workflowStepUpdates?: any[] }} */
   let generated;
-  if (decision.action === "acknowledge_memory") {
-    generated = {
-      reply:
-        memoryReply ??
-        "I understood that as something you want me to remember, but I couldn’t safely save it as a durable preference. Please restate the rule and I’ll try again.",
-      citedContextIds: [],
-    };
-  } else if (decision.action === "commerce_analysis") {
-    const commerce = await answerCommerceQuestion(prisma, {
+  /** @type {any} */
+  let context;
+  /** @type {any} */
+  let actionEvidence = null;
+  if (focusedAction && isActionStepStartCommand(content)) {
+    generated = await runActionStepStartFromChat(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      message: promptMessage,
-      actionContext: actionEvidence ?? context,
-      recentMessages: context.workingMemory.map((/** @type {any} */ item) => ({
-        role: item.role ?? "message",
-        content: item.content,
-      })),
-      provider,
+      focusedAction,
+      conversationId: conversation.id,
       logger: input.logger ?? log,
-      requested: true,
     });
-    generated = {
-      reply: [memoryReply, commerce.reply].filter(Boolean).join("\n\n"),
-      citedContextIds: [],
-      // Already validated against the computed packet by the analyst — a chart whose numbers
-      // are not in the analysis never reaches here.
-      chart: commerce.chart ?? null,
-    };
+    turn.mark("retrievalMs");
+    turn.mark("generationMs");
   } else {
-    const grounded = await generateGroundedReply({
-      provider,
-      message: promptMessage,
-      context: promptContext,
-      logger: input.logger ?? log,
-    });
-    generated = memoryReply
-      ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
-      : grounded;
+    [context, actionEvidence] = await Promise.all([
+      retrieveMerchantContext(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        task: actionChat ? "action_chat" : "general_chat",
+        query: content,
+        queryMessageId: persisted.message.id,
+        conversationId: conversation.id,
+        focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+        recommendationId,
+        actionRunId,
+        tokenBudget: 6000,
+        historicalMode: decision.action === "historical_recall",
+      }),
+      actionChat
+        ? getMerchantContextForQuestion(prisma, {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            conversationId: conversation.id,
+            focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+            recommendationId,
+            actionRunId,
+            message: content,
+            logger: input.logger ?? log,
+          })
+        : Promise.resolve(null),
+    ]);
+    const promptContext = actionEvidence
+      ? { ...context, actionEvidence }
+      : context;
+    if (actionEvidence) {
+      await prisma.merchantMemoryConversation.update({
+        where: { id: conversation.id },
+        data: {
+          context: {
+            ...(conversation.context ?? {}),
+            focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+            currentActionRunId: actionRunId ?? null,
+            actionRunId: actionRunId ?? null,
+            recommendationId: recommendationId ?? null,
+            planEvidenceSnapshotId:
+              actionEvidence.planEvidenceAtRecommendationTime?.snapshotId ?? null,
+            contextRetrievedAt: new Date().toISOString(),
+          },
+        },
+      });
+    }
+    turn.mark("retrievalMs");
+    const memoryReply = buildMemoryDecisionReply(decision, promptMessage);
+    if (decision.action === "acknowledge_memory") {
+      generated = {
+        reply:
+          memoryReply ??
+          "I understood that as something you want me to remember, but I couldn’t safely save it as a durable preference. Please restate the rule and I’ll try again.",
+        citedContextIds: [],
+      };
+    } else if (decision.action === "commerce_analysis") {
+      const commerce = await answerCommerceQuestion(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        message: promptMessage,
+        actionContext: actionEvidence ?? context,
+        recentMessages: context.workingMemory.map((/** @type {any} */ item) => ({
+          role: item.role ?? "message",
+          content: item.content,
+        })),
+        provider,
+        logger: input.logger ?? log,
+        requested: true,
+      });
+      generated = {
+        reply: [memoryReply, commerce.reply].filter(Boolean).join("\n\n"),
+        citedContextIds: [],
+        // Already validated against the computed packet by the analyst — a chart whose numbers
+        // are not in the analysis never reaches here.
+        chart: commerce.chart ?? null,
+      };
+    } else {
+      const grounded = await generateGroundedReply({
+        provider,
+        message: promptMessage,
+        context: promptContext,
+        actionChat: Boolean(focusedAction && actionHasStartableStep(focusedAction)),
+        logger: input.logger ?? log,
+      });
+      const wantsStepStart =
+        Boolean(focusedAction) &&
+        !isPrimarilyQuestion(content) &&
+        (isActionStepStartCommand(content) || grounded.startCurrentStep === true);
+      if (wantsStepStart) {
+        generated = await runActionStepStartFromChat(prisma, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          focusedAction,
+          conversationId: conversation.id,
+          logger: input.logger ?? log,
+        });
+      } else {
+        generated = memoryReply
+          ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
+          : grounded;
+      }
+    }
+    turn.mark("generationMs");
   }
-  turn.mark("generationMs");
   const workflowStepUpdateResult = await applyWorkflowStepUpdatesFromReply(
     prisma,
     {
@@ -403,7 +447,7 @@ export async function sendGeneralChatMessage(prisma, input) {
       // Rides in metadata rather than in a column: it is presentation for one message, and the
       // reply text is the answer with or without it.
       ...(generated.chart ? { chart: generated.chart } : {}),
-      retrievalRunId: context.diagnosticId,
+      retrievalRunId: context?.diagnosticId ?? null,
       focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
       workflowStepUpdates: workflowStepUpdateResult.applied,
       // The wait this reply cost, stored beside the reply it describes. Durations
@@ -729,8 +773,9 @@ async function generateGroundedReply(input) {
   );
   const currentAction = buildCurrentActionInput(input.context);
   const fallback = buildGroundedFallbackReply(input.message, input.context);
+  const schema = input.actionChat ? ACTION_CHAT_REPLY_SCHEMA : GENERAL_CHAT_REPLY_SCHEMA;
   if (!input.provider?.enabled || !input.provider.generateStructuredJson) {
-    return { reply: fallback, citedContextIds: [] };
+    return { reply: fallback, citedContextIds: [], startCurrentStep: false };
   }
   try {
     const result = await input.provider.generateStructuredJson({
@@ -741,13 +786,15 @@ async function generateGroundedReply(input) {
         "Historical items are labelled and must never be described as current.",
         "Never claim you performed an action unless an action-ledger item says so.",
         "If the packet contains actionEvidence.focusedAction, describe it as WORKING ON: it is the only default action mutation target.",
-        "If the merchant asks what 'this', 'this one', or 'the steps' are in a focused-action chat, answer from actionEvidence.focusedAction first, especially focusedAction.proposedSteps.",
+        "If the merchant asks a question about the focused action or its steps, answer it directly from actionEvidence.focusedAction and currentAction. Do not repeat the same summary you already gave unless they ask for a recap.",
         "The prompt also includes currentAction as a top-level copy of the focused action. When the merchant asks about the action or a step, use currentAction before generic memory.",
         "If the merchant asks for help with an assist step, produce the requested artifact or next useful draft. Do not merely restate the recommendation.",
         "Act like the merchant's eCommerce manager: when evidence supports a recommendation, choose a sensible default and ask for approval or correction. Do not make the merchant design the workflow from scratch.",
         "Use currentAction.operationalContext when present. It contains code-prepared facts, primitives, formulas and defaults that you may apply; the merchant's latest message determines which of those are relevant.",
         "When using an operational primitive, show the specific assumption or formula briefly and ask for approval or correction, not for the merchant to do the work.",
-        "Do not return workflowStepUpdates for action execution. If the merchant says to go ahead, asks to start a step, or confirms a consequential step, explain what will happen; the application validates and starts steps through its own lifecycle service.",
+        input.actionChat
+          ? "This is a focused action chat. Answer any question the merchant asks. Set startCurrentStep to true only when they clearly want you to proceed with the ready step now — not when they are asking what, why, or how. The application starts the step when startCurrentStep is true."
+          : "Do not return workflowStepUpdates for action execution. If the merchant asks to start a step, explain what will happen; the application validates and starts steps through its own lifecycle service.",
         "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
         "If context is insufficient, say what is missing naturally; never discuss memory implementation.",
@@ -757,7 +804,7 @@ async function generateGroundedReply(input) {
         currentAction,
         merchantContext: input.context,
       }),
-      schema: GENERAL_CHAT_REPLY_SCHEMA,
+      schema,
       maxInputTokens: GENERAL_CHAT_MAX_INPUT_TOKENS,
       maxOutputTokens: 900,
     });
@@ -772,12 +819,14 @@ async function generateGroundedReply(input) {
           ),
         ]
       : [];
+    const startCurrentStep = result.json?.startCurrentStep === true;
     if (!reply || !numbersAreGrounded(reply, input.context)) {
-      return { reply: fallback, citedContextIds: [] };
+      return { reply: fallback, citedContextIds: [], startCurrentStep: false };
     }
     return {
       reply,
       citedContextIds,
+      startCurrentStep,
       workflowStepUpdates: Array.isArray(result.json?.workflowStepUpdates)
         ? result.json.workflowStepUpdates
         : [],
@@ -791,7 +840,7 @@ async function generateGroundedReply(input) {
         model: input.provider.model,
       },
     );
-    return { reply: fallback, citedContextIds: [] };
+    return { reply: fallback, citedContextIds: [], startCurrentStep: false };
   }
 }
 
@@ -817,6 +866,8 @@ function isReadableProse(content) {
  * @param {any} context
  */
 export function buildGroundedFallbackReply(message, context) {
+  const actionReply = buildActionContextFallbackReply(message, context);
+  if (actionReply) return actionReply;
   const historical = context.queryClass === "historical_recall";
   const groups = historical
     ? [context.episodicMemory, context.actionMemory, context.semanticMemory]
@@ -844,6 +895,157 @@ export function buildGroundedFallbackReply(message, context) {
     return `From our earlier conversation: ${content}`;
   }
   return `From what I know about your business, ${content}`;
+}
+
+/** @param {any} focusedAction @param {{ ok?: boolean; stepId?: string; reason?: string }} stepStart */
+export function buildActionStepStartReply(focusedAction, stepStart) {
+  const steps = workflowStepsFromAction(focusedAction);
+  const stepById = (/** @type {string | undefined | null} */ id) =>
+    steps.find((step) => step.id === id) ?? null;
+  if (stepStart.ok) {
+    const step =
+      stepById(stepStart.stepId) ??
+      focusedAction?.currentStep ??
+      steps.find((step) => step.status === "ready") ??
+      steps[0] ??
+      null;
+    const stepTitle = step?.title ?? step?.label ?? "the next step";
+    return `Starting “${stepTitle}” now. I’ll work through this and come back with what you need to review.`;
+  }
+  const reason = String(stepStart.reason ?? "");
+  if (reason.startsWith("step_not_ready:")) {
+    const status = reason.split(":").slice(1).join(":");
+    const current =
+      focusedAction?.currentStep ??
+      steps.find((step) =>
+        ["ready", "running", "needs_merchant", "needs_attention"].includes(
+          String(step?.status ?? ""),
+        ),
+      ) ??
+      null;
+    if (status === "running" && current) {
+      const stepTitle = current.title ?? current.label ?? "This step";
+      return `${stepTitle} is already running. I’ll report back when there’s something to review.`;
+    }
+    if (status === "needs_merchant") {
+      const mode = String(current?.mode ?? "");
+      if (mode === "merchant_action" || mode === "merchant") {
+        const stepTitle = current?.title ?? current?.label ?? "This step";
+        return `${stepTitle} needs your input before Jefe can continue. Tell me what you decided, or complete it in Shopify.`;
+      }
+    }
+    return `That step isn’t ready to start yet (${status.replaceAll("_", " ")}). Tell me if you want to change something first.`;
+  }
+  if (reason.startsWith("action_not_startable:")) {
+    const status = reason.split(":")[1] ?? "unknown";
+    if (status === "proposed") {
+      return "Accept the plan first — then tell me to start, or tap Review proposals above.";
+    }
+    return `This action can’t be started right now (${status.replaceAll("_", " ")}).`;
+  }
+  if (reason === "no_current_step") {
+    return "There isn’t a step ready to start on this action right now.";
+  }
+  if (reason === "not_found") {
+    return "I couldn’t find that action to start. Try opening it again from the home screen.";
+  }
+  return "I couldn’t start that step just now. Tell me which part you want to revisit, or tap Review proposals above.";
+}
+
+/** @param {string} message @param {any} context */
+export function buildActionContextFallbackReply(message, context) {
+  const focusedAction =
+    context?.actionEvidence?.focusedAction ?? context?.focusedAction ?? null;
+  if (!focusedAction?.title) return null;
+  if (isActionStepStartCommand(message)) {
+    return "I couldn't start that step just now — tap Do this step above, or say “start this” and I'll try again.";
+  }
+  if (!isActionContextQuestion(message)) return null;
+  const parts = [`We’re working on “${focusedAction.title}”.`];
+  if (focusedAction.summary) parts.push(String(focusedAction.summary));
+  const steps = Array.isArray(focusedAction.proposedSteps)
+    ? focusedAction.proposedSteps.filter((/** @type {any} */ step) => step?.title)
+    : workflowStepsFromAction(focusedAction).filter((step) => step?.title);
+  if (steps.length > 0) {
+    const stepSummary = steps
+      .slice(0, 5)
+      .map((/** @type {any} */ step, /** @type {number} */ index) => {
+        const status = step.status ? ` (${step.status})` : "";
+        return `${index + 1}. ${step.title ?? step.label}${status}`;
+      })
+      .join(" ");
+    parts.push(`The plan: ${stepSummary}.`);
+  }
+  return parts.join(" ");
+}
+
+/** @param {string} message */
+function isActionContextQuestion(message) {
+  if (isPrimarilyQuestion(message)) return true;
+  return /\b(what is this|what's this|about this plan|about the plan|explain this plan|explain the plan|walk me through this plan)\b/i.test(
+    String(message ?? "").trim(),
+  );
+}
+
+/** @param {any} action @param {string | null | undefined} stepId */
+function findWorkflowStepOnAction(action, stepId) {
+  if (!stepId) return null;
+  const steps = workflowStepsFromAction(action);
+  return steps.find((step) => step?.id === stepId) ?? null;
+}
+
+/** @param {any} action */
+function workflowStepsFromAction(action) {
+  if (Array.isArray(action?.workflow?.steps)) return action.workflow.steps;
+  if (Array.isArray(action?.displaySteps)) return action.displaySteps;
+  if (Array.isArray(action?.proposedSteps)) return action.proposedSteps;
+  return [];
+}
+
+/** @param {any} action */
+function actionHasStartableStep(action) {
+  return workflowStepsFromAction(action).some((step) =>
+    ["ready", "needs_merchant"].includes(String(step?.status ?? "")),
+  );
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; focusedAction: any; conversationId: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function runActionStepStartFromChat(prisma, input) {
+  const stepStart = await startActionStep(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.focusedAction.id,
+    actor: input.merchantId,
+    logger: input.logger ?? log,
+  });
+  let reply = buildActionStepStartReply(input.focusedAction, stepStart);
+  if (stepStart.ok && stepStart.stepRunId) {
+    const startedStep = findWorkflowStepOnAction(input.focusedAction, stepStart.stepId);
+    if (startedStep?.mode === "assist") {
+      const assist = await executeStartedAssistStepRun(prisma, {
+        stepRunId: stepStart.stepRunId,
+        actionId: input.focusedAction.id,
+        conversationId: input.conversationId,
+        logger: input.logger ?? log,
+      });
+      if (assist.ok && assist.chatReply) {
+        reply = assist.chatReply;
+      } else if (!assist.ok) {
+        reply =
+          assist.chatReply ??
+          `${reply}\n\nI couldn't finish that step just now. Try again in a moment.`;
+      }
+    } else if (startedStep?.mode === "execute") {
+      await processReadyActionStepRuns(prisma, {
+        maxRuns: 1,
+        logger: input.logger ?? log,
+      });
+    }
+  }
+  return { reply, citedContextIds: [] };
 }
 
 /** @param {any} context */
