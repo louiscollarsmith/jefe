@@ -2108,8 +2108,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // Client-only: true on every fresh document load (the module is freshly evaluated),
 // set false after the stale-zoom guard below runs once. It lets AppIndex tell a FRESH
-// app entry (App Bridge restoring the last URL on re-open, or a refresh) apart from an
-// in-session navigation, so a left-behind chat/chooser param can't silently re-open work.
+// app entry (App Bridge restoring the last URL on re-open) apart from in-session
+// navigation, so a left-behind overlay/chooser param can't silently re-open work.
 let staleZoomGuardArmed = true;
 
 export default function AppIndex() {
@@ -2148,26 +2148,30 @@ export default function AppIndex() {
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
 
-  // Opening Jefe always lands on the home. The embedded app's URL is persistent
-  // (App Bridge restores the last location on re-open), so a chat the merchant left
-  // would re-open on a fresh entry. On the first mount of a fresh document load,
-  // drop stale chat/chooser params and land on the home; in-session navigation is
-  // untouched after the guard disarms.
+  // Opening Jefe lands on the home unless the merchant refreshed a conversation URL.
+  // The embedded app's URL is persistent (App Bridge restores the last location on
+  // re-open), so a move zoom or action chooser the merchant left would re-open on a
+  // fresh entry. On the first mount of a fresh document load, drop those stale overlay
+  // params; a browser refresh keeps ?conversation= so the thread survives reload.
   useEffect(() => {
     if (!staleZoomGuardArmed) return;
     staleZoomGuardArmed = false;
     if (data.appMode === "daily") {
       const params = new URLSearchParams(location.search);
-      if (
+      const navigationEntry = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined;
+      const isReload = navigationEntry?.type === "reload";
+      const staleOverlay =
         params.has("actionChat") ||
-        params.has("conversation") ||
-        params.has("talkAction")
-      ) {
+        params.has("talkAction") ||
+        (!isReload && params.has("conversation"));
+      if (staleOverlay) {
         navigate(
           appPathFromSearch(location.search, {
             actionChat: null,
-            conversation: null,
             talkAction: null,
+            ...(isReload ? {} : { conversation: null }),
           }),
           { replace: true },
         );
