@@ -3,6 +3,11 @@
 import { executeApprovedAction } from "./execute-approved-action.server.js";
 import { produceAssistStepArtifact } from "./assist-steps/run.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
+import {
+  prepareExecutionChangeSet,
+  recordChangeSetExecution,
+  getCurrentChangeSet,
+} from "./action-changeset.server.js";
 
 const log = baseLogger.child({ component: "action-step-lifecycle" });
 
@@ -798,6 +803,23 @@ export async function processNextActionStepRun(prisma, options = {}) {
     actionRunId: stepRun.actionExecutionRunId,
   });
 
+  const merchantAction = await prisma.merchantAction.findFirst({
+    where: {
+      merchantId: stepRun.merchantId,
+      shopId: stepRun.shopId,
+      sourceRecommendationId: stepRun.step.recommendationId,
+    },
+    select: { id: true },
+  });
+  if (merchantAction?.id) {
+    await prepareExecutionChangeSet(prisma, {
+      merchantId: stepRun.merchantId,
+      shopId: stepRun.shopId,
+      actionId: merchantAction.id,
+      logger,
+    });
+  }
+
   const loadToken = options.loadOfflineToken;
   let result;
   try {
@@ -836,6 +858,21 @@ export async function processNextActionStepRun(prisma, options = {}) {
       logger,
     });
     return { status: "needs_attention", stepRunId: stepRun.id, stepId: stepRun.stepId };
+  }
+  if (merchantAction?.id) {
+    const current = await getCurrentChangeSet(prisma, {
+      merchantId: stepRun.merchantId,
+      shopId: stepRun.shopId,
+      actionId: merchantAction.id,
+    });
+    if (current?.id) {
+      await recordChangeSetExecution(prisma, {
+        changeSetId: current.id,
+        actionRunId: stepRun.actionExecutionRunId,
+        result,
+        logger,
+      });
+    }
   }
   if (!result.ok) {
     await completeActionStepRun(prisma, {

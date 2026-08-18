@@ -130,14 +130,9 @@ import {
   listMerchantActions,
 } from "../lib/actions/merchant-action.server";
 import {
-  acceptMerchantActionPlan,
-  completeCurrentActionStep,
-  processReadyActionStepRuns,
-  skipCurrentActionStep,
-  startActionStep,
-  stopActionStep,
-} from "../lib/actions/action-step-lifecycle.server.js";
-import { executeStartedAssistStepRun } from "../lib/actions/assist-steps/run.server.js";
+  ACTION_COMMAND,
+  executeActionCommand,
+} from "../lib/actions/action-command.server.js";
 import {
   setActionMode,
 } from "../lib/actions/action-autonomy-policy.server";
@@ -585,6 +580,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   if (intent === "action.defer") {
     const actionRunId = String(formData.get("actionRunId") ?? "");
+    const actionId = await merchantActionIdForRun(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      actionRunId,
+      actionId: String(formData.get("actionId") ?? ""),
+    });
+    if (actionId) {
+      const result = await executeActionCommand(prisma, {
+        command: ACTION_COMMAND.DEFER_ACTION,
+        merchantId: merchant.id,
+        shopId: shop.id,
+        actionId,
+        actor: merchant.id,
+        logger: actionLog,
+      });
+      if (!result.ok) {
+        actionLog.warn("merchant defer did not apply", {
+          merchantId: merchant.id,
+          actionRunId,
+          actionId,
+          reason: result.reason ?? "unknown",
+        });
+      } else {
+        actionLog.info("merchant deferred suggested action", {
+          merchantId: merchant.id,
+          actionRunId,
+          actionId,
+        });
+      }
+      return redirect(
+        appPathFromSearch(new URL(request.url).search, { actionChat: null }),
+      );
+    }
     const reasonCategory =
       String(formData.get("reason") ?? "defer").trim() || "defer";
     const result = await rejectAction(prisma, {
@@ -613,148 +641,56 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       appPathFromSearch(new URL(request.url).search, { actionChat: null }),
     );
   }
-  if (intent === "action.accept_plan") {
+  if (
+    intent === "action.accept_plan" ||
+    intent === "action.step.start" ||
+    intent === "action.step.stop" ||
+    intent === "action.step.complete" ||
+    intent === "action.step.skip"
+  ) {
     const actionId = String(formData.get("actionId") ?? "");
-    const result = await acceptMerchantActionPlan(prisma, {
+    const command =
+      intent === "action.accept_plan"
+        ? ACTION_COMMAND.ACCEPT_PLAN
+        : intent === "action.step.start"
+          ? ACTION_COMMAND.START_STEP
+          : intent === "action.step.stop"
+            ? ACTION_COMMAND.STOP_STEP
+            : intent === "action.step.complete"
+              ? ACTION_COMMAND.CONFIRM_MERCHANT_STEP
+              : ACTION_COMMAND.SKIP_STEP;
+    const result = await executeActionCommand(prisma, {
+      command,
+      params: {
+        stepId: String(formData.get("stepId") ?? "") || null,
+      },
       merchantId: merchant.id,
       shopId: shop.id,
       actionId,
       actor: merchant.id,
+      conversationId: String(formData.get("conversationId") ?? "") || undefined,
+      session: { shop: session.shop },
+      executeDeps: {
+        loadOfflineToken: (_prisma: unknown, domain: string) =>
+          loadFreshOfflineToken(domain),
+      },
       logger: actionLog,
     });
     if (!result.ok) {
-      actionLog.warn("merchant action plan accept rejected", {
+      actionLog.warn("merchant action command rejected", {
         merchantId: merchant.id,
         shopId: shop.id,
         actionId,
-        reason: "reason" in result ? result.reason : "unknown",
-      });
-      return {
-        ok: false,
-        error: "That plan could not be accepted safely. Nothing was started.",
         intent,
-      };
-    }
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
-  }
-  if (intent === "action.step.start") {
-    const actionId = String(formData.get("actionId") ?? "");
-    const stepId = String(formData.get("stepId") ?? "") || null;
-    const result = await startActionStep(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      actionId,
-      stepId,
-      actor: merchant.id,
-      logger: actionLog,
-    });
-    if (!result.ok) {
-      actionLog.warn("merchant action step start rejected", {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-        stepId,
-        reason: "reason" in result ? result.reason : "unknown",
+        command,
+        reason: result.reason ?? "unknown",
       });
       return {
         ok: false,
-        error: "That step could not be started. Nothing was changed.",
-        intent,
-      };
-    }
-    if (result.stepRunId) {
-      const action = await getMerchantAction(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-      });
-      const startedStep = action?.workflow?.steps?.find(
-        (step: { id?: string | null; mode?: string | null }) =>
-          step.id === result.stepId,
-      );
-      if (startedStep?.mode === "assist") {
-        await executeStartedAssistStepRun(prisma, {
-          stepRunId: result.stepRunId,
-          actionId,
-          conversationId: String(formData.get("conversationId") ?? "") || null,
-          logger: actionLog,
-        });
-      } else if (startedStep?.mode === "execute") {
-        await processReadyActionStepRuns(prisma, {
-          maxRuns: 1,
-          logger: actionLog,
-        });
-      }
-    }
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
-  }
-  if (intent === "action.step.stop") {
-    const actionId = String(formData.get("actionId") ?? "");
-    const result = await stopActionStep(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      actionId,
-      actor: merchant.id,
-      logger: actionLog,
-    });
-    if (!result.ok) {
-      actionLog.warn("merchant action step stop rejected", {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-        reason: "reason" in result ? result.reason : "unknown",
-      });
-      return {
-        ok: false,
-        error: "That step could not be paused. Nothing was changed.",
-        intent,
-      };
-    }
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
-  }
-  if (intent === "action.step.complete") {
-    const actionId = String(formData.get("actionId") ?? "");
-    const result = await completeCurrentActionStep(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      actionId,
-      actor: merchant.id,
-      logger: actionLog,
-    });
-    if (!result.ok) {
-      actionLog.warn("merchant action step complete rejected", {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-        reason: "reason" in result ? result.reason : "unknown",
-      });
-      return {
-        ok: false,
-        error: "That step could not be marked complete. Nothing was changed.",
-        intent,
-      };
-    }
-    return redirect(appPathFromSearch(new URL(request.url).search, {}));
-  }
-  if (intent === "action.step.skip") {
-    const actionId = String(formData.get("actionId") ?? "");
-    const result = await skipCurrentActionStep(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      actionId,
-      actor: merchant.id,
-      logger: actionLog,
-    });
-    if (!result.ok) {
-      actionLog.warn("merchant action step skip rejected", {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-        reason: "reason" in result ? result.reason : "unknown",
-      });
-      return {
-        ok: false,
-        error: "That step could not be skipped. Nothing was changed.",
+        error:
+          intent === "action.accept_plan"
+            ? "That plan could not be accepted safely. Nothing was started."
+            : "That step could not be updated. Nothing was changed.",
         intent,
       };
     }
@@ -6436,6 +6372,30 @@ function formDataHasTruthyValue(formData: FormData, name: string) {
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat("en-GB").format(value);
+}
+
+async function merchantActionIdForRun(
+  db: typeof prisma,
+  input: {
+    merchantId: string;
+    shopId: string;
+    actionRunId?: string;
+    actionId?: string;
+  },
+) {
+  const actionId = String(input.actionId ?? "").trim();
+  if (actionId) return actionId;
+  const actionRunId = String(input.actionRunId ?? "").trim();
+  if (!actionRunId || !db.merchantAction?.findFirst) return null;
+  const row = await db.merchantAction.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      currentActionRunId: actionRunId,
+    },
+    select: { id: true },
+  });
+  return row?.id ?? null;
 }
 
 function formatCurrency(value: number, currency: string) {

@@ -324,12 +324,14 @@ export async function sendActionChatMessage(prisma, input) {
   const topic = actionConversationTopic(input);
   if (!input.shopId)
     return { ok: false, error: "A shop is required for action chat." };
+  const focusedActionId = await resolveFocusedActionIdFromLegacyRefs(prisma, input);
   const result = await sendGeneralChatMessage(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     message: input.message,
     surface: "app",
     externalThreadId: topic,
+    focusedActionId,
     recommendationId: input.recommendationId,
     actionRunId: input.actionRunId,
     llmProvider: input.llmProvider,
@@ -337,6 +339,44 @@ export async function sendActionChatMessage(prisma, input) {
     logger: input.logger,
   });
   return result.ok ? { ok: true, topic } : result;
+}
+
+/**
+ * Legacy action-topic chat is the same conversation model as focused chat:
+ * optional focusedActionId is the write target.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null }} input
+ */
+async function resolveFocusedActionIdFromLegacyRefs(prisma, input) {
+  if (!prisma?.merchantAction?.findFirst) return null;
+  try {
+    if (input.recommendationId) {
+      const byRecommendation = await prisma.merchantAction.findFirst({
+        where: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? undefined,
+          sourceRecommendationId: input.recommendationId,
+        },
+        select: { id: true },
+      });
+      if (byRecommendation?.id) return byRecommendation.id;
+    }
+    if (input.actionRunId) {
+      const byRun = await prisma.merchantAction.findFirst({
+        where: {
+          merchantId: input.merchantId,
+          shopId: input.shopId ?? undefined,
+          currentActionRunId: input.actionRunId,
+        },
+        select: { id: true },
+      });
+      if (byRun?.id) return byRun.id;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**

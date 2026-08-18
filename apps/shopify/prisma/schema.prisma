@@ -69,6 +69,8 @@ model Merchant {
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   merchantActions               MerchantAction[]
   merchantActionEvents          MerchantActionEvent[]
+  merchantActionConstraints     MerchantActionConstraint[]
+  actionChangeSets              ActionChangeSet[]
   onboardingHandoffs            OnboardingHandoff[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
@@ -145,6 +147,8 @@ model Shop {
   merchantPlanEvidenceSnapshots MerchantPlanEvidenceSnapshot[]
   merchantActions               MerchantAction[]
   merchantActionEvents          MerchantActionEvent[]
+  merchantActionConstraints     MerchantActionConstraint[]
+  actionChangeSets              ActionChangeSet[]
   onboardingHandoffs            OnboardingHandoff[]
   channelConnections            ChannelConnection[]
   channelCredentials            ChannelCredential[]
@@ -1329,6 +1333,7 @@ model MerchantRecommendationStep {
   shop               Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   actionExecutions   ActionExecution[]
   stepRuns           MerchantRecommendationStepRun[]
+  changeSets         ActionChangeSet[]
 
   @@unique([workflowId, orderIndex])
   @@index([recommendationId, status])
@@ -1400,6 +1405,7 @@ model MerchantAction {
   status                 String                       @default("proposed")
   sourceRecommendationId String?                      @unique @map("source_recommendation_id") @db.Uuid
   currentActionRunId     String?                      @map("current_action_run_id") @db.Uuid
+  plan                   Json                         @default("{}") @map("plan_json")
   progress               Json                         @default("{}") @map("progress_json")
   outcome                Json                         @default("{}") @map("outcome_json")
   createdAt              DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1411,6 +1417,8 @@ model MerchantAction {
   executions             ActionExecution[]            @relation("MerchantActionExecutions")
   focusedConversations   MerchantMemoryConversation[]
   events                 MerchantActionEvent[]        @relation("MerchantActionEvents")
+  constraints            MerchantActionConstraint[]
+  changeSets             ActionChangeSet[]
 
   @@index([merchantId, shopId, status, updatedAt], map: "merchant_actions_status_updated_idx")
   @@index([shopId, status])
@@ -1440,6 +1448,62 @@ model MerchantActionEvent {
   @@index([merchantActionId, createdAt])
   @@index([conversationId, createdAt])
   @@map("merchant_action_events")
+}
+
+/// Durable, action-scoped operating rules. Distinct from Merchant Memory beliefs:
+/// these bind to one MerchantAction, show in its context, and are enforced when
+/// building and executing Change Sets.
+model MerchantActionConstraint {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId       String         @map("merchant_id") @db.Uuid
+  shopId           String         @map("shop_id") @db.Uuid
+  merchantActionId String         @map("merchant_action_id") @db.Uuid
+  kind             String
+  params           Json           @default("{}") @map("params_json")
+  label            String
+  source           String         @default("chat")
+  status           String         @default("active")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  removedAt        DateTime?      @map("removed_at") @db.Timestamptz(6)
+  merchant         Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop             Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  merchantAction   MerchantAction @relation(fields: [merchantActionId], references: [id], onDelete: Cascade)
+
+  @@index([merchantActionId, status], map: "merchant_action_constraints_action_status_idx")
+  @@index([merchantId, shopId, status])
+  @@map("merchant_action_constraints")
+}
+
+/// Exact proposed mutation set between planning and execution.
+/// Action → Step → ChangeSet → Approval → ExecutionRun.
+model ActionChangeSet {
+  id                 String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId         String                      @map("merchant_id") @db.Uuid
+  shopId             String                      @map("shop_id") @db.Uuid
+  merchantActionId   String                      @map("merchant_action_id") @db.Uuid
+  workflowStepId     String?                     @map("workflow_step_id") @db.Uuid
+  actionExecutionId  String?                     @map("action_execution_id") @db.Uuid
+  actionType         String                      @map("action_type")
+  status             String                      @default("ready")
+  items              Json                        @default("[]") @map("items_json")
+  excluded           Json                        @default("[]") @map("excluded_json")
+  constraintSnapshot Json                        @default("[]") @map("constraint_snapshot_json")
+  result             Json                        @default("{}") @map("result_json")
+  generatedAt        DateTime                    @default(now()) @map("generated_at") @db.Timestamptz(6)
+  approvedAt         DateTime?                   @map("approved_at") @db.Timestamptz(6)
+  appliedAt          DateTime?                   @map("applied_at") @db.Timestamptz(6)
+  createdAt          DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant           Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop               Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  merchantAction     MerchantAction              @relation(fields: [merchantActionId], references: [id], onDelete: Cascade)
+  workflowStep       MerchantRecommendationStep? @relation(fields: [workflowStepId], references: [id], onDelete: SetNull)
+  actionExecution    ActionExecution?            @relation(fields: [actionExecutionId], references: [id], onDelete: SetNull)
+
+  @@index([merchantActionId, status, generatedAt], map: "action_change_sets_action_status_generated_idx")
+  @@index([actionExecutionId])
+  @@index([merchantId, shopId, status])
+  @@map("action_change_sets")
 }
 
 /// Append-only activity/event log for the internal observability panel. Every
@@ -1548,6 +1612,7 @@ model ActionExecution {
   currentForActions      MerchantAction[]            @relation("MerchantActionCurrentExecution")
   recommendationStep     MerchantRecommendationStep?  @relation(fields: [recommendationStepId], references: [id], onDelete: SetNull)
   recommendationStepRuns MerchantRecommendationStepRun[]
+  changeSets             ActionChangeSet[]
 
   @@index([merchantId, actionType, status])
   @@index([recommendationStepId])
