@@ -100,10 +100,13 @@ test("the home uses action-centric navigation into focused chats", () => {
   assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
   assert.match(dailyHomeSource, /action: "\/api\/app-home\/action-chats"/);
   assert.match(dailyHomeSource, /setPendingTalkActionId\(actionId\)/);
-  assert.match(
-    dailyHomeSource,
-    /displayedTalkActionId = talkActionId \?\? pendingTalkActionId/,
-  );
+  // Chooser opens only via ?talkAction= (2+ chats). One known chat navigates directly —
+  // no modal flash while a start-chat POST is pending.
+  assert.match(dailyHomeSource, /knownChats\?\.length === 1/);
+  assert.match(dailyHomeSource, /knownChats && knownChats\.length > 1/);
+  assert.match(dailyHomeSource, /talkActionId=\{talkActionId\}/);
+  assert.match(dailyHomeSource, /startingActionId=\{/);
+  assert.match(dailyHomeSource, /chats\.length === 1\) return null/);
   assert.match(dailyHomeSource, /conversation: conversation\.id/);
   assert.match(dailyHomeSource, /talkAction: null/);
   assert.match(dailyHomeSource, /conversation: chat\.id/);
