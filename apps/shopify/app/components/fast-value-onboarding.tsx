@@ -164,9 +164,9 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
   const approvedMode = approvalFetcher.data?.ok && approvalFetcher.data.handoffUrl
     ? approvalFetcher.data.mode ?? "track"
     : null;
-  const visibleAlternativeMessage = alternativeFetcher.data?.reason === "strongest_supported_finding"
-    ? "This is the strongest finding the current evidence can support."
-    : alternativeMessage;
+  const visibleAlternativeMessage =     alternativeFetcher.data?.reason === "strongest_supported_finding"
+      ? "This is the best opening move I can back up with what I’ve read so far."
+      : alternativeMessage;
 
   function answer(option: ContextOption) {
     if (answerFetcher.state !== "idle") return;
@@ -295,7 +295,7 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
                             <Form method="post">
                               <input type="hidden" name="intent" value="onboarding.retry" />
                               <input type="hidden" name="target" value="full_learning" />
-                              <Button submit>Retry background learning</Button>
+                              <Button submit>Try again</Button>
                             </Form>
                           ) : null}
                         </BlockStack>
@@ -387,7 +387,7 @@ function ContextScene({
       ) : failure ? (
         <div className="jf-ack">
           <span aria-hidden="true">✓</span>
-          <span>Your priority is saved. I won’t force a recommendation the evidence can’t support.</span>
+          <span>Your priority is saved. I won’t suggest something I can’t back up with your store data.</span>
         </div>
       ) : (
         <>
@@ -404,7 +404,7 @@ function ContextScene({
         <div className="jf-honest-state">
           <Text as="p">{failure.message}</Text>
           {failure.type !== "insufficient" ? (
-            <Form method="post"><input type="hidden" name="intent" value="onboarding.retry" /><Button submit>Try the read again</Button></Form>
+            <Form method="post"><input type="hidden" name="intent" value="onboarding.retry" /><Button submit>Try again</Button></Form>
           ) : null}
         </div>
       ) : null}
@@ -419,30 +419,30 @@ function onboardingWaitingCopy(
   if (bootstrapPhase === "retrying") {
     return {
       kicker: "Still working",
-      title: "I’m retrying the first recommendation.",
+      title: "Trying again to find your first recommendation.",
       detail:
-        "The store history is saved; I’m re-running the last generation step so the first finding is grounded enough to show.",
+        "Your store data is saved. I’m giving this another go so the first suggestion is solid enough to show you.",
       reassurance:
-        "This can take another minute. You don’t need to choose anything else.",
+        "This can take another minute — nothing else for you to do.",
     };
   }
   if (fullLearning.state === "complete") {
     return {
       kicker: "Choosing the first move",
-      title: "I’m turning that read into your first finding.",
+      title: "I’m putting together your first finding.",
       detail:
-        "I’ve finished reading the available Shopify history. Now I’m checking the finding and action against the evidence before I put it in front of you.",
+        "I’ve been through your Shopify history. Now I’m checking the suggestion makes sense before I show it to you.",
       reassurance:
-        "This usually takes under a minute, and the page will move on automatically.",
+        "Usually under a minute — this page will move on by itself.",
     };
   }
   return {
     kicker: "Still working",
-    title: "I’m building your first evidence-backed finding.",
+    title: "Now I’m looking for the best first move.",
     detail:
-      "Your priority is saved. I’m still reading the strongest recent store signals and checking what is safe to recommend first.",
+      "I’ve saved your priority. I’m going through your recent sales, stock and customers to find something worth acting on.",
     reassurance:
-      "You can leave this open; it refreshes automatically as soon as the read is ready.",
+      "You can leave this open — I’ll take you to the next step as soon as I’m ready.",
   };
 }
 
@@ -461,7 +461,7 @@ function InsightScene({
   alternativeMessage: string | null;
   alternativeBusy: boolean;
 }) {
-  if (!insight) return <div className="jf-scene jf-insight-scene"><Kicker>Something jumped out</Kicker><div className="jf-honest-state"><Text as="p">I’m checking that the finding is strong enough to act on. Your answer is saved, and there’s nothing else you need to do.</Text></div></div>;
+  if (!insight) return <div className="jf-scene jf-insight-scene"><Kicker>Something jumped out</Kicker><div className="jf-honest-state"><Text as="p">I’m double-checking this before I show you what I’d do. Your answer is saved — nothing else for you to do.</Text></div></div>;
   return (
     <div className="jf-scene jf-insight-scene">
       <Kicker>Something jumped out</Kicker>
@@ -493,7 +493,7 @@ function ActionScene({
   approvedMode: string | null;
   approve: () => void;
 }) {
-  if (!recommendation) return <div className="jf-scene jf-action-scene"><div className="jf-honest-state">The recommendation is no longer available. I’ll keep learning and surface the next supported move in Jefe.</div></div>;
+  if (!recommendation) return <div className="jf-scene jf-action-scene"><div className="jf-honest-state">That recommendation isn’t available any more. I’ll keep learning and bring you the next useful move in Jefe.</div></div>;
   return (
     <div className="jf-scene jf-action-scene">
       <div className="jf-recap"><span aria-hidden="true" />{insight?.headline ?? "The first supported opportunity"}</div>

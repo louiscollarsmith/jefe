@@ -44,7 +44,7 @@ export const BOOTSTRAP_INITIAL_ORDER_LIMIT = 50;
 export const BOOTSTRAP_SECOND_PASS_LIMIT = 100;
 export const BOOTSTRAP_LOOKBACK_DAYS = 90;
 export const BOOTSTRAP_CONNECTION_PAGE_SIZE = 250;
-export const BOOTSTRAP_PROMPT_VERSION = "bootstrap-v1";
+export const BOOTSTRAP_PROMPT_VERSION = "bootstrap-v2";
 export const BOOTSTRAP_SCHEMA_VERSION = "bootstrap-v1";
 export const BOOTSTRAP_SNAPSHOT_VERSION = "bootstrap-v1";
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-18
+
+### Fixed
+
+- **Review next step now opens the existing action chat directly when there is only one.** The focused-action chooser no longer flashes or stays open for a one-chat action; that case is owned by the direct-open redirect, with the chooser reserved for actions that genuinely have several chats to choose from. `app/components/daily-home.tsx`, `tests/memory-surface-wiring.test.mjs`.
+
+- **In-progress action chats now keep THE PLAN flush with the working card instead of indenting the current step.** Accepted work still leads with the current step, then lists the rest of the plan as compact JEFE/MERCHANT rows with done/working labels and a blue highlight on the step in play — matching the working layout rather than nesting the active row under the heading. `app/components/daily-home.tsx`.
+
 ## 2026-08-14
 
 ### Added
@@ -7,6 +15,8 @@
 - **Action plans now become real step-by-step work instead of jumping straight from "approve" to execution.** Accepting a proposed move now only accepts the plan: Jefe then shows the current Action Step, whether it belongs to Jefe or the merchant, and starts executable steps explicitly from the same lifecycle service whether the merchant clicks the button or says "go ahead" in the focused chat. Each start creates a Step Run with an idempotency key and audit metadata, and the worker executes through the existing typed adapters and ledgers rather than any new write path. Partial adapter results now put the step into Needs Attention with persisted detail instead of pretending the whole action simply failed. The home and action chat surfaces also now follow the supplied warm Claude design while still showing only real Merchant Action, workflow, chat and execution state. `prisma/schema.prisma`, `app/lib/actions/action-step-lifecycle.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`, `app/services/shopify-backfill-worker.server.js`, `app/routes/health.tsx`, `tests/action-step-lifecycle.test.mjs`.
 
 ### Fixed
+
+- **Focus now opens on one clear next move instead of a dashboard stack.** When Jefe has proposed work or needs attention, the home surface now leads with the warm editorial headline, a single centred recommendation card, role-labelled workflow steps without redundant right-hand status labels, and one “Talk this through” action before secondary queues and chats appear below. `app/components/daily-home.tsx`.
 
 - **Daily Home now separates what needs the merchant, what Jefe recommends, and what is already underway.** The top area only appears for real merchant handoffs, with a manual queue when several things need attention; proposed actions now sit in their own section, and accepted/running actions stay in In progress even when one of them also needs attention. `app/lib/actions/merchant-action.server.js`, `app/routes/app._index.tsx`, `app/components/daily-home.tsx`.
 
