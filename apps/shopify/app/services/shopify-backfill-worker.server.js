@@ -47,7 +47,10 @@ import {
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
-import { maybeEnqueueProactivePlan } from "../lib/merchant-plan/proactive-recommendations.server.js";
+import {
+  maybeEnqueueProactivePlan,
+  PROACTIVE_SWEEP_INTERVAL_MS,
+} from "../lib/merchant-plan/proactive-recommendations.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
 import {
   newCorrelationId,
@@ -258,7 +261,6 @@ async function maybeMeasureClearanceOutcomes(prisma, logger) {
 }
 
 let lastProactiveSweepAt = 0;
-const PROACTIVE_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly — spreads the day's ≤5 and catches belief-changes as they land
 const PROACTIVE_SWEEP_MAX_SHOPS = 500; // v1 fleet-size guard per sweep; logged if hit
 
 /**

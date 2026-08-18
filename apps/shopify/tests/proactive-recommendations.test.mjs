@@ -4,6 +4,8 @@ import {
   proactiveBudget,
   decideProactiveGeneration,
   startOfMerchantDay,
+  startOfNextMerchantDay,
+  computeNextRecommendationCheck,
   maybeEnqueueProactivePlan,
   DEFAULT_PROACTIVE_DAILY_CAP,
 } from "../app/lib/merchant-plan/proactive-recommendations.server.js";
@@ -130,4 +132,36 @@ test("maybeEnqueueProactivePlan: an unchanged snapshot ('reused') is not an enqu
   });
   assert.equal(res.enqueued, false, "nothing new to say → not counted as a generation");
   assert.equal(res.status, "reused");
+});
+
+test("startOfNextMerchantDay: rolls to the following merchant-local date", () => {
+  const now = new Date("2026-08-12T09:00:00Z");
+  assert.equal(
+    startOfNextMerchantDay(now, "Europe/London").toISOString(),
+    "2026-08-13T00:00:00.000Z",
+  );
+});
+
+test("computeNextRecommendationCheck: under cap → next hourly boundary", () => {
+  const now = new Date("2026-08-12T09:17:00Z");
+  const check = computeNextRecommendationCheck({
+    now,
+    timeZone: "Europe/London",
+    generatedToday: 2,
+  });
+  assert.equal(check.kind, "hourly_check");
+  assert.equal(check.at.toISOString(), "2026-08-12T10:00:00.000Z");
+  assert.equal(check.remaining, 3);
+});
+
+test("computeNextRecommendationCheck: at cap → next merchant day", () => {
+  const now = new Date("2026-08-12T21:00:00Z");
+  const check = computeNextRecommendationCheck({
+    now,
+    timeZone: "Europe/London",
+    generatedToday: DEFAULT_PROACTIVE_DAILY_CAP,
+  });
+  assert.equal(check.kind, "daily_cap_reached");
+  assert.equal(check.at.toISOString(), "2026-08-13T00:00:00.000Z");
+  assert.equal(check.remaining, 0);
 });

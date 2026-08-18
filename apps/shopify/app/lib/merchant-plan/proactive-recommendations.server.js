@@ -13,6 +13,8 @@
 
 export const PROACTIVE_SOURCE_MODE = "proactive";
 export const DEFAULT_PROACTIVE_DAILY_CAP = 5;
+/** Hourly worker sweep — spreads the day's ≤5 fresh proactive runs. */
+export const PROACTIVE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Pure budget check. `generatedToday` = proactive runs the merchant has already had since
@@ -92,6 +94,89 @@ export async function decideProactiveGeneration(
  * @param {string} [timeZone]
  * @returns {Date}
  */
+/**
+ * Start of the merchant's next calendar day (same dayKey convention as startOfMerchantDay).
+ * @param {Date} now
+ * @param {string} [timeZone]
+ * @returns {Date}
+ */
+export function startOfNextMerchantDay(now, timeZone) {
+  const dayStart = startOfMerchantDay(now, timeZone);
+  const next = new Date(dayStart);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next;
+}
+
+/**
+ * When Jefe will next check for a fresh proactive recommendation. Under the daily cap the
+ * worker sweeps hourly; once capped, the next window is the merchant's next day. An honest
+ * approximation — the sweep is fleet-wide, not pinned to the hour boundary — but close enough
+ * for a merchant-facing countdown.
+ * @param {{ now: Date; timeZone?: string; generatedToday: number; cap?: number }} input
+ * @returns {{ kind: "hourly_check" | "daily_cap_reached"; at: Date; generatedToday: number; remaining: number; cap: number }}
+ */
+export function computeNextRecommendationCheck({
+  now,
+  timeZone,
+  generatedToday,
+  cap = DEFAULT_PROACTIVE_DAILY_CAP,
+}) {
+  const budget = proactiveBudget({ generatedToday, cap });
+  if (!budget.allowed) {
+    return {
+      kind: "daily_cap_reached",
+      at: startOfNextMerchantDay(now, timeZone),
+      generatedToday: budget.used,
+      remaining: budget.remaining,
+      cap: budget.cap,
+    };
+  }
+  const at = new Date(now);
+  at.setUTCSeconds(0, 0);
+  at.setUTCMinutes(0);
+  at.setUTCHours(at.getUTCHours() + 1);
+  if (at.getTime() <= now.getTime()) {
+    at.setUTCHours(at.getUTCHours() + 1);
+  }
+  return {
+    kind: "hourly_check",
+    at,
+    generatedToday: budget.used,
+    remaining: budget.remaining,
+    cap: budget.cap,
+  };
+}
+
+/**
+ * Loader-facing schedule for the home empty state. Returns null when the cap read fails
+ * (fail-closed — no fabricated countdown).
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; now: Date; timeZone?: string; cap?: number; deps?: { count?: typeof countProactivePlanRunsSince } }} input
+ * @returns {Promise<{ kind: "hourly_check" | "daily_cap_reached"; at: string; generatedToday: number; remaining: number; cap: number; enabled: boolean } | null>}
+ */
+export async function getProactiveRecommendationSchedule(
+  prisma,
+  { merchantId, now, timeZone, cap = DEFAULT_PROACTIVE_DAILY_CAP, deps = {} },
+) {
+  const count = deps.count ?? countProactivePlanRunsSince;
+  const since = startOfMerchantDay(now, timeZone);
+  let generatedToday;
+  try {
+    generatedToday = await count(prisma, { merchantId, since });
+  } catch {
+    return null;
+  }
+  const check = computeNextRecommendationCheck({ now, timeZone, generatedToday, cap });
+  return {
+    kind: check.kind,
+    at: check.at.toISOString(),
+    generatedToday: check.generatedToday,
+    remaining: check.remaining,
+    cap: check.cap,
+    enabled: process.env.ENABLE_PROACTIVE_RECOMMENDATIONS === "true",
+  };
+}
+
 export function startOfMerchantDay(now, timeZone) {
   const tz = typeof timeZone === "string" && timeZone ? timeZone : "UTC";
   const format = (/** @type {string} */ zone) =>
