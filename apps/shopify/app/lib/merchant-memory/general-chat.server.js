@@ -21,12 +21,30 @@ import { getMerchantContextForQuestion } from "./context-retriever.server.js";
 import { answerCommerceQuestion } from "./commerce-analyst.server.js";
 import { getMerchantAction } from "../actions/merchant-action.server.js";
 import {
+  acceptMerchantActionPlan,
+  completeCurrentActionStep,
   isActionStepStartCommand,
   isPrimarilyQuestion,
   processReadyActionStepRuns,
+  skipCurrentActionStep,
   startActionStep,
+  stopActionStep,
 } from "../actions/action-step-lifecycle.server.js";
 import { executeStartedAssistStepRun } from "../actions/assist-steps/run.server.js";
+import { rejectAction } from "../actions/action-resolution.server.js";
+import {
+  PLAN_CHAT_COMMANDS,
+  PLAN_CHAT_INTENT,
+  buildPlanAcceptReply,
+  buildPlanCompleteReply,
+  buildPlanDeclineReply,
+  buildPlanRecapReply,
+  buildPlanScopeReply,
+  buildPlanSkipReply,
+  buildPlanStatusReply,
+  buildPlanStopReply,
+  classifyPlanChatIntent,
+} from "../actions/plan-chat.server.js";
 
 const GENERAL_CHAT_REPLY_SCHEMA = {
   type: Type.OBJECT,
@@ -35,6 +53,7 @@ const GENERAL_CHAT_REPLY_SCHEMA = {
     reply: { type: Type.STRING },
     citedContextIds: { type: Type.ARRAY, items: { type: Type.STRING } },
     startCurrentStep: { type: Type.BOOLEAN, nullable: true },
+    planIntent: { type: Type.STRING, nullable: true },
     workflowStepUpdates: {
       type: Type.ARRAY,
       nullable: true,
@@ -306,8 +325,12 @@ export async function sendGeneralChatMessage(prisma, input) {
   let context;
   /** @type {any} */
   let actionEvidence = null;
-  if (focusedAction && isActionStepStartCommand(content)) {
-    generated = await runActionStepStartFromChat(prisma, {
+  const planIntent = focusedAction
+    ? classifyPlanChatIntent(content)
+    : PLAN_CHAT_INTENT.question;
+  if (focusedAction && PLAN_CHAT_COMMANDS.has(planIntent)) {
+    generated = await runPlanChatIntent(prisma, {
+      intent: planIntent,
       merchantId: input.merchantId,
       shopId: input.shopId,
       focusedAction,
@@ -402,12 +425,26 @@ export async function sendGeneralChatMessage(prisma, input) {
         actionChat: Boolean(focusedAction && actionHasStartableStep(focusedAction)),
         logger: input.logger ?? log,
       });
+      const llmIntent =
+        focusedAction && PLAN_CHAT_COMMANDS.has(String(grounded.planIntent ?? ""))
+          ? String(grounded.planIntent)
+          : "";
       const wantsStepStart =
         Boolean(focusedAction) &&
         !isPrimarilyQuestion(content) &&
         (isActionStepStartCommand(content) || grounded.startCurrentStep === true);
       if (wantsStepStart) {
-        generated = await runActionStepStartFromChat(prisma, {
+        generated = await runPlanChatIntent(prisma, {
+          intent: PLAN_CHAT_INTENT.start,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          focusedAction,
+          conversationId: conversation.id,
+          logger: input.logger ?? log,
+        });
+      } else if (llmIntent) {
+        generated = await runPlanChatIntent(prisma, {
+          intent: llmIntent,
           merchantId: input.merchantId,
           shopId: input.shopId,
           focusedAction,
@@ -793,7 +830,7 @@ async function generateGroundedReply(input) {
         "Use currentAction.operationalContext when present. It contains code-prepared facts, primitives, formulas and defaults that you may apply; the merchant's latest message determines which of those are relevant.",
         "When using an operational primitive, show the specific assumption or formula briefly and ask for approval or correction, not for the merchant to do the work.",
         input.actionChat
-          ? "This is a focused action chat. Answer any question the merchant asks. Set startCurrentStep to true only when they clearly want you to proceed with the ready step now — not when they are asking what, why, or how. The application starts the step when startCurrentStep is true."
+          ? "This is a focused action chat. Answer any question the merchant asks. Set startCurrentStep to true only when they clearly want you to proceed with the ready step now — not when they are asking what, why, or how. Set planIntent to start, stop, status, complete, skip, accept, decline, scope, recap, or question. The application performs start/stop/complete/skip through its lifecycle service; never claim you already did that work unless the packet says so."
           : "Do not return workflowStepUpdates for action execution. If the merchant asks to start a step, explain what will happen; the application validates and starts steps through its own lifecycle service.",
         "actionEvidence.referencedActions and actionEvidence.otherRelevantActions are read-only context. Do not imply they changed focus or can be mutated by default.",
         "Return citedContextIds containing only ids from the packet that materially support the answer.",
@@ -802,6 +839,12 @@ async function generateGroundedReply(input) {
       prompt: JSON.stringify({
         merchantMessage: input.message,
         currentAction,
+        recentMessages: Array.isArray(input.context?.workingMemory)
+          ? input.context.workingMemory.slice(-8).map((/** @type {any} */ item) => ({
+              role: item.role ?? "message",
+              content: item.content,
+            }))
+          : [],
         merchantContext: input.context,
       }),
       schema,
@@ -820,6 +863,10 @@ async function generateGroundedReply(input) {
         ]
       : [];
     const startCurrentStep = result.json?.startCurrentStep === true;
+    const planIntent =
+      typeof result.json?.planIntent === "string"
+        ? result.json.planIntent.trim()
+        : "";
     if (!reply || !numbersAreGrounded(reply, input.context)) {
       return { reply: fallback, citedContextIds: [], startCurrentStep: false };
     }
@@ -827,6 +874,7 @@ async function generateGroundedReply(input) {
       reply,
       citedContextIds,
       startCurrentStep,
+      planIntent: PLAN_CHAT_COMMANDS.has(planIntent) ? planIntent : "",
       workflowStepUpdates: Array.isArray(result.json?.workflowStepUpdates)
         ? result.json.workflowStepUpdates
         : [],
@@ -957,26 +1005,27 @@ export function buildActionContextFallbackReply(message, context) {
   const focusedAction =
     context?.actionEvidence?.focusedAction ?? context?.focusedAction ?? null;
   if (!focusedAction?.title) return null;
-  if (isActionStepStartCommand(message)) {
+  const intent = classifyPlanChatIntent(message);
+  if (intent === PLAN_CHAT_INTENT.start || intent === PLAN_CHAT_INTENT.retry) {
     return "I couldn't start that step just now — tap Do this step above, or say “start this” and I'll try again.";
   }
-  if (!isActionContextQuestion(message)) return null;
-  const parts = [`We’re working on “${focusedAction.title}”.`];
-  if (focusedAction.summary) parts.push(String(focusedAction.summary));
-  const steps = Array.isArray(focusedAction.proposedSteps)
-    ? focusedAction.proposedSteps.filter((/** @type {any} */ step) => step?.title)
-    : workflowStepsFromAction(focusedAction).filter((step) => step?.title);
-  if (steps.length > 0) {
-    const stepSummary = steps
-      .slice(0, 5)
-      .map((/** @type {any} */ step, /** @type {number} */ index) => {
-        const status = step.status ? ` (${step.status})` : "";
-        return `${index + 1}. ${step.title ?? step.label}${status}`;
-      })
-      .join(" ");
-    parts.push(`The plan: ${stepSummary}.`);
+  if (intent === PLAN_CHAT_INTENT.stop) {
+    return "I couldn't pause that step just now. Tap Pause above, or say “stop” again.";
   }
-  return parts.join(" ");
+  if (intent === PLAN_CHAT_INTENT.complete) {
+    return "I couldn't mark that complete just now. If it's a step you own, tell me you've done it.";
+  }
+  if (intent === PLAN_CHAT_INTENT.status) {
+    return buildPlanStatusReply(focusedAction);
+  }
+  if (intent === PLAN_CHAT_INTENT.scope) {
+    return buildPlanScopeReply(focusedAction);
+  }
+  if (intent === PLAN_CHAT_INTENT.recap) {
+    return buildPlanRecapReply(focusedAction);
+  }
+  if (!isActionContextQuestion(message)) return null;
+  return buildPlanRecapReply(focusedAction);
 }
 
 /** @param {string} message */
@@ -1007,6 +1056,128 @@ function actionHasStartableStep(action) {
   return workflowStepsFromAction(action).some((step) =>
     ["ready", "needs_merchant"].includes(String(step?.status ?? "")),
   );
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ intent: string; merchantId: string; shopId: string; focusedAction: any; conversationId: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function runPlanChatIntent(prisma, input) {
+  const logger = input.logger ?? log;
+  const action =
+    (await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.focusedAction.id,
+    })) ?? input.focusedAction;
+
+  if (input.intent === PLAN_CHAT_INTENT.recap) {
+    return { reply: buildPlanRecapReply(action), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.status) {
+    return { reply: buildPlanStatusReply(action), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.scope) {
+    return { reply: buildPlanScopeReply(action), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.accept) {
+    const result = await acceptMerchantActionPlan(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.merchantId,
+      logger,
+    });
+    const fresh = await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    return { reply: buildPlanAcceptReply(fresh ?? action, result), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.decline) {
+    if (!action.actionRunId) {
+      return {
+        reply: "I can’t decline this as a draft — there’s no proposed run attached. Say stop to pause it instead.",
+        citedContextIds: [],
+      };
+    }
+    const result = await rejectAction(prisma, {
+      merchantId: input.merchantId,
+      actionRunId: action.actionRunId,
+      reasonCategory: "defer",
+    });
+    return { reply: buildPlanDeclineReply(result), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.stop) {
+    const result = await stopActionStep(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.merchantId,
+      logger,
+    });
+    const fresh = await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    return { reply: buildPlanStopReply(fresh ?? action, result), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.complete) {
+    const result = await completeCurrentActionStep(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.merchantId,
+      logger,
+    });
+    const fresh = await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    return { reply: buildPlanCompleteReply(fresh ?? action, result), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.skip) {
+    const result = await skipCurrentActionStep(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.merchantId,
+      logger,
+    });
+    const fresh = await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    return { reply: buildPlanSkipReply(fresh ?? action, result), citedContextIds: [] };
+  }
+  if (input.intent === PLAN_CHAT_INTENT.start || input.intent === PLAN_CHAT_INTENT.retry) {
+    if (action.status === "proposed") {
+      const accepted = await acceptMerchantActionPlan(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: action.id,
+        actor: input.merchantId,
+        logger,
+      });
+      if (!accepted.ok) {
+        return { reply: buildPlanAcceptReply(action, accepted), citedContextIds: [] };
+      }
+    }
+    const fresh = await getMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    return runActionStepStartFromChat(prisma, {
+      ...input,
+      focusedAction: fresh ?? action,
+    });
+  }
+  return { reply: buildPlanRecapReply(action), citedContextIds: [] };
 }
 
 /**
@@ -1289,6 +1460,7 @@ function numbersAreGrounded(reply, context) {
     episodicMemory: context.episodicMemory,
     actionMemory: context.actionMemory,
     liveEvidence: context.liveEvidence,
+    actionEvidence: context.actionEvidence,
   });
   return numbers.every((number) => source.includes(number));
 }

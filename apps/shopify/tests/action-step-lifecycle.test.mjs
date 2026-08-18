@@ -5,7 +5,10 @@ import {
   acceptMerchantActionPlan,
   advanceActionWorkflow,
   completeActionStepRun,
+  completeCurrentActionStep,
+  skipCurrentActionStep,
   startActionStep,
+  stopActionStep,
 } from "../app/lib/actions/action-step-lifecycle.server.js";
 
 const MERCHANT = "m1";
@@ -150,6 +153,74 @@ test("starting can claim an assist step unlocked as needs_merchant", async () =>
   assert.equal(started.ok, true);
   assert.equal(prisma.state.steps[0].status, "running");
   assert.equal(prisma.state.stepRuns.length, 1);
+});
+
+test("stopping a running step cancels the run and restores ready", async () => {
+  const prisma = buildPrisma();
+  await acceptMerchantActionPlan(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+  await startActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+
+  const stopped = await stopActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+
+  assert.equal(stopped.ok, true);
+  assert.equal(prisma.state.steps[0].status, "ready");
+  assert.equal(prisma.state.stepRuns[0].status, "cancelled");
+});
+
+test("completing a merchant-owned step advances the plan", async () => {
+  const prisma = buildPrisma();
+  prisma.state.action.status = "in_progress";
+  prisma.state.steps[0].status = "completed";
+  prisma.state.steps[1].status = "needs_merchant";
+  prisma.state.steps[1].mode = "merchant_action";
+
+  const completed = await completeCurrentActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+
+  assert.equal(completed.ok, true);
+  assert.equal(completed.completed, true);
+  assert.equal(prisma.state.steps[1].status, "completed");
+  assert.equal(prisma.state.action.status, "completed");
+});
+
+test("skipping the current step unlocks the next one", async () => {
+  const prisma = buildPrisma();
+  await acceptMerchantActionPlan(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+
+  const skipped = await skipCurrentActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    logger: quietLogger,
+  });
+
+  assert.equal(skipped.ok, true);
+  assert.equal(prisma.state.steps[0].status, "skipped");
+  assert.equal(prisma.state.steps[1].status, "needs_merchant");
 });
 
 test("advance does not complete the action while workflow steps are still waiting", async () => {

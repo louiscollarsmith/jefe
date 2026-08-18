@@ -2204,10 +2204,35 @@ function FocusedActionLifecyclePanel({
           </div>
         ) : status === "running" ? (
           <div style={currentStepActionRowStyle}>
-            <button type="button" style={pauseButtonStyle} disabled>
-              Pause
-            </button>
-            <span style={currentStepNoteStyle}>I&apos;ll tell you when this is done.</span>
+            <Form method="post" style={inlineFormStyle}>
+              <input type="hidden" name="intent" value="action.step.stop" />
+              <input type="hidden" name="actionId" value={action.id} />
+              {conversationId ? (
+                <input type="hidden" name="conversationId" value={conversationId} />
+              ) : null}
+              <button type="submit" style={pauseButtonStyle}>
+                Pause
+              </button>
+            </Form>
+            <span style={currentStepNoteStyle}>
+              Or say “stop” in the chat.
+            </span>
+          </div>
+        ) : status === "needs_merchant" && canCompleteCurrentStep(currentStep) ? (
+          <div style={currentStepActionRowStyle}>
+            <Form method="post" style={inlineFormStyle}>
+              <input type="hidden" name="intent" value="action.step.complete" />
+              <input type="hidden" name="actionId" value={action.id} />
+              {conversationId ? (
+                <input type="hidden" name="conversationId" value={conversationId} />
+              ) : null}
+              <button type="submit" style={primaryButtonStyle}>
+                Mark done
+              </button>
+            </Form>
+            <span style={currentStepNoteStyle}>
+              Or tell me you&apos;ve done it in the chat.
+            </span>
           </div>
         ) : null}
       </section>
@@ -2377,6 +2402,14 @@ function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   const mode = String(step.mode ?? "");
   if (status === "ready") return true;
   return status === "needs_merchant" && mode === "assist";
+}
+
+function canCompleteCurrentStep(step: WorkflowStepDisplay | null | undefined) {
+  if (!step || typeof step === "string") return false;
+  const status = String(step.status ?? "");
+  const mode = String(step.mode ?? "");
+  if (status !== "needs_merchant") return false;
+  return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
 }
 
 function stepAssistArtifact(step: WorkflowStepDisplay) {
@@ -3145,23 +3178,22 @@ function suggestedPromptsForAction(action: MerchantActionView) {
   const currentStatus =
     current && typeof current !== "string" ? String(current.status ?? "") : "";
   if (action.status === "proposed") {
-    return [
-      "Why are you doing this?",
-      "Don't touch archived products",
-      "What have you changed so far?",
-    ];
+    return ["Accept this plan", "What will you change?", "Don't do this"];
   }
-  if (currentStatus === "running" || action.status === "in_progress") {
-    return ["Is it working?", "Go deeper on the rest?"];
+  if (currentStatus === "running") {
+    return ["How's it going?", "Stop this"];
   }
   if (currentStatus === "needs_merchant") {
-    return ["What do you need from me?", "Show me the plan"];
+    return ["That's done", "What do you need from me?"];
   }
   if (currentStatus === "ready" || action.status === "accepted") {
-    return ["Start this", "What will you change?"];
+    return ["Start this", "What will you change?", "How's it going?"];
   }
   if (currentStatus === "needs_attention" || action.status === "needs_attention") {
-    return ["What needs attention?", "How do we fix it?"];
+    return ["Try again", "What needs attention?"];
+  }
+  if (action.status === "in_progress") {
+    return ["How's it going?", "Start this", "Stop this"];
   }
   if (action.status === "completed") {
     return ["What changed?", "What did it achieve?"];
@@ -3472,7 +3504,7 @@ function Header({
 }
 
 // The header mark wears the MERCHANT's brand: the real brand logo when the store has one
-// (from shop.brand, cached in rawPayload), otherwise the store's initial in the navy
+// (from Storefront shop.brand, cached in rawPayload), otherwise the store's initial in the navy
 // square — an honest monogram, never a fake photo (mirrors the ImageSlot rule).
 function StoreMark({ storeName, logoUrl }: { storeName: string; logoUrl?: string | null }) {
   if (logoUrl) {
@@ -4910,8 +4942,8 @@ const pauseButtonStyle: CSSProperties = {
   background: "transparent",
   border: `1px solid ${COLORS.border}`,
   borderRadius: 8,
-  color: COLORS.muted,
-  cursor: "not-allowed",
+  color: COLORS.ink,
+  cursor: "pointer",
   fontFamily: FONT.sans,
   fontSize: 14,
   fontWeight: 750,
