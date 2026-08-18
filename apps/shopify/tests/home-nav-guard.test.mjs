@@ -32,18 +32,21 @@ const clientNavigationReporterSource = fs.readFileSync(
   "utf8",
 );
 
-test("a fresh app entry drops stale chat params and lands on the focused-action home", () => {
+test("a fresh app entry drops stale overlay params but keeps conversation on reload", () => {
   // A once-per-document-load guard distinguishes a fresh entry from in-session nav...
   assert.match(appIndexSource, /staleZoomGuardArmed/);
-  // ...and on the daily home, when a persisted chat/chooser param is present, it clears it.
+  // ...and on the daily home, when a persisted overlay/chooser param is present, it clears it.
   assert.match(appIndexSource, /if \(data\.appMode === "daily"\)/);
   assert.match(
     appIndexSource,
-    /params\.has\("actionChat"\)[\s\S]*params\.has\("conversation"\)[\s\S]*params\.has\("talkAction"\)/,
+    /params\.has\("actionChat"\)[\s\S]*params\.has\("talkAction"\)/,
   );
+  assert.match(appIndexSource, /performance\.getEntriesByType\("navigation"\)/);
+  assert.match(appIndexSource, /navigationEntry\?\.type === "reload"/);
+  assert.match(appIndexSource, /!isReload && params\.has\("conversation"\)/);
   assert.match(
     appIndexSource,
-    /appPathFromSearch\(location\.search,\s*\{\s*actionChat: null,\s*conversation: null,\s*talkAction: null,\s*\}\)/,
+    /appPathFromSearch\(location\.search,\s*\{[\s\S]*actionChat: null,[\s\S]*talkAction: null,[\s\S]*\.\.\.\(isReload \? \{\} : \{ conversation: null \}\)/,
   );
   // Client-only clock/location reads stay OUT of this route module (hydration lint).
   assert.doesNotMatch(appIndexSource, /\bwindow\./);
