@@ -59,6 +59,9 @@ export function deriveMerchantActionStatus(input) {
   if (actionStatus === MERCHANT_ACTION_STATUS.deferred) return MERCHANT_ACTION_STATUS.deferred;
   if (actionStatus === MERCHANT_ACTION_STATUS.declined) return MERCHANT_ACTION_STATUS.declined;
   if (actionStatus === MERCHANT_ACTION_STATUS.superseded) return MERCHANT_ACTION_STATUS.superseded;
+  const hasIncompleteSteps = steps.some((/** @type {any} */ step) =>
+    !["completed", "skipped", "superseded"].includes(normalizeToken(step?.status)),
+  );
   if (
     actionStatus === MERCHANT_ACTION_STATUS.completed ||
     recommendation?.completedAt ||
@@ -66,6 +69,11 @@ export function deriveMerchantActionStatus(input) {
     (["applied", "partially_applied"].includes(executionStatus) &&
       execution?.outcomeStatus === "measured")
   ) {
+    if (hasIncompleteSteps) {
+      if (hasRunningStep) return MERCHANT_ACTION_STATUS.inProgress;
+      if (hasNeedsAttention) return MERCHANT_ACTION_STATUS.needsAttention;
+      return MERCHANT_ACTION_STATUS.inProgress;
+    }
     return MERCHANT_ACTION_STATUS.completed;
   }
   if (hasNeedsAttention || actionStatus === MERCHANT_ACTION_STATUS.needsAttention) {

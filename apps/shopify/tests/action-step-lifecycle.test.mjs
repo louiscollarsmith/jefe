@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   acceptMerchantActionPlan,
+  advanceActionWorkflow,
   completeActionStepRun,
   startActionStep,
 } from "../app/lib/actions/action-step-lifecycle.server.js";
@@ -92,6 +93,81 @@ test("completing a Jefe step advances to a merchant-owned next step", async () =
   assert.equal(prisma.state.steps[0].status, "completed");
   assert.equal(prisma.state.steps[1].status, "needs_merchant");
   assert.equal(prisma.state.action.status, "in_progress");
+});
+
+test("starting advances pending steps when the plan is accepted but not unlocked yet", async () => {
+  const prisma = buildPrisma();
+  prisma.state.action.status = "accepted";
+  prisma.state.recommendation.reviewStatus = "accepted";
+  prisma.state.steps[0].status = "pending";
+  prisma.state.steps[1].status = "pending";
+
+  const started = await startActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    actor: MERCHANT,
+    logger: quietLogger,
+  });
+
+  assert.equal(started.ok, true);
+  assert.equal(prisma.state.steps[0].status, "running");
+  assert.equal(prisma.state.steps[1].status, "waiting");
+  assert.equal(prisma.state.stepRuns.length, 1);
+});
+
+test("starting can claim an assist step unlocked as needs_merchant", async () => {
+  const prisma = buildPrisma();
+  prisma.state.action.status = "accepted";
+  prisma.state.recommendation.reviewStatus = "accepted";
+  prisma.state.steps = [
+    step({
+      id: "step-1",
+      orderIndex: 0,
+      mode: "assist",
+      capabilityRef: "assist:inventory_review",
+      status: "needs_merchant",
+    }),
+    step({
+      id: "step-2",
+      orderIndex: 1,
+      mode: "merchant_action",
+      dependsOnStepIds: ["step-1"],
+      status: "waiting",
+    }),
+  ];
+  prisma.state.workflow.steps = prisma.state.steps;
+  prisma.state.recommendation.workflows = [prisma.state.workflow];
+
+  const started = await startActionStep(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    actor: MERCHANT,
+    logger: quietLogger,
+  });
+
+  assert.equal(started.ok, true);
+  assert.equal(prisma.state.steps[0].status, "running");
+  assert.equal(prisma.state.stepRuns.length, 1);
+});
+
+test("advance does not complete the action while workflow steps are still waiting", async () => {
+  const prisma = buildPrisma();
+  prisma.state.action.status = "in_progress";
+  prisma.state.steps[0].status = "completed";
+  prisma.state.steps[1].status = "waiting";
+
+  const advance = await advanceActionWorkflow(prisma, {
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: "a1",
+    workflowId: "wf-1",
+  });
+
+  assert.equal(advance.completed, false);
+  assert.equal(prisma.state.action.status, "in_progress");
+  assert.equal(prisma.state.steps[1].status, "needs_merchant");
 });
 
 test("partial execution records needs_attention instead of completing the action", async () => {

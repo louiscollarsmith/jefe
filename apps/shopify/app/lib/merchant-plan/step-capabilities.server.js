@@ -11,6 +11,18 @@ export const WORKFLOW_STEP_MODES = /** @type {const} */ ({
 
 const ASSIST_CAPABILITIES = [
   {
+    ref: "assist:inventory_review",
+    mode: WORKFLOW_STEP_MODES.assist,
+    label: "Review low-cover inventory",
+    description: "Review at-risk SKUs, stock cover, and suggested reorder quantities.",
+  },
+  {
+    ref: "assist:replenishment_proposal",
+    mode: WORKFLOW_STEP_MODES.assist,
+    label: "Build replenishment proposal",
+    description: "Prepare a replenishment proposal from current low-cover evidence.",
+  },
+  {
     ref: "assist:supplier_email_draft",
     mode: WORKFLOW_STEP_MODES.assist,
     label: "Draft supplier email",

@@ -1,6 +1,7 @@
 // @ts-check
 
 import { executeApprovedAction } from "./execute-approved-action.server.js";
+import { produceAssistStepArtifact } from "./assist-steps/run.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 
 const log = baseLogger.child({ component: "action-step-lifecycle" });
@@ -157,21 +158,48 @@ export async function startActionStep(prisma, input) {
     }
     const workflow = latestWorkflow(action);
     if (!workflow) return { ok: false, reason: "no_workflow" };
-    const steps = orderedSteps(workflow.steps);
-    const current = pickCurrentStep(steps);
+    let steps = orderedSteps(workflow.steps);
+    let current = pickCurrentStep(steps);
+    if (!current) {
+      const advance = await advanceActionWorkflow(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: action.id,
+        workflowId: workflow.id,
+        now,
+      });
+      if (advance.completed) {
+        return { ok: false, reason: "no_current_step" };
+      }
+      const refreshed = await tx.merchantRecommendationStep.findMany({
+        where: {
+          workflowId: workflow.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+        },
+        orderBy: { orderIndex: "asc" },
+      });
+      steps = orderedSteps(refreshed);
+      current =
+        pickCurrentStep(steps) ??
+        (advance.currentStep?.id
+          ? steps.find((/** @type {any} */ step) => step.id === advance.currentStep.id) ?? null
+          : null);
+    }
     if (!current) return { ok: false, reason: "no_current_step" };
     if (input.stepId && input.stepId !== current.id) {
       return { ok: false, reason: "not_current_step", currentStepId: current.id };
     }
-    if (current.status !== ACTION_STEP_STATUS.ready) {
+    if (!isStepStartable(current)) {
       return { ok: false, reason: `step_not_ready:${current.status}`, currentStepId: current.id };
     }
+    const claimFromStatus = claimStatusForStep(current);
     const claimed = await tx.merchantRecommendationStep.updateMany({
       where: {
         id: current.id,
         merchantId: input.merchantId,
         shopId: input.shopId,
-        status: ACTION_STEP_STATUS.ready,
+        status: claimFromStatus,
       },
       data: {
         status: ACTION_STEP_STATUS.running,
@@ -271,6 +299,12 @@ export async function advanceActionWorkflow(prisma, input) {
   if (active) return { currentStep: serializeStep(active), completed: false };
   const next = firstEligibleStep(ordered);
   if (!next) {
+    const remaining = ordered.filter(
+      (step) => !TERMINAL_STEP_STATUSES.has(String(step.status)),
+    );
+    if (remaining.length > 0) {
+      return { currentStep: serializeStep(remaining[0]), completed: false };
+    }
     if (input.actionId) {
       await prisma.merchantAction.updateMany({
         where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
@@ -410,10 +444,80 @@ export async function processNextActionStepRun(prisma, options = {}) {
   });
   if (claimed.count !== 1) return null;
 
+  if (stepRun.step.mode === "assist") {
+    const action = await prisma.merchantAction.findFirst({
+      where: {
+        merchantId: stepRun.merchantId,
+        shopId: stepRun.shopId,
+        sourceRecommendationId: stepRun.step.recommendationId,
+      },
+      select: { id: true },
+    });
+    const assist = await produceAssistStepArtifact(prisma, {
+      stepRun,
+      actionId: action?.id ?? "",
+      logger,
+    });
+    if (assist.ok && assist.progress) {
+      await completeActionStepRun(prisma, {
+        stepRunId: stepRun.id,
+        result: assist.progress,
+        logger,
+      });
+      return {
+        status: "succeeded",
+        stepRunId: stepRun.id,
+        stepId: stepRun.stepId,
+        artifactType: assist.progress.artifactType ?? null,
+      };
+    }
+    await completeActionStepRun(prisma, {
+      stepRunId: stepRun.id,
+      attention: {
+        reason: assist.reason ?? "assist_failed",
+        detail: "Jefe couldn't finish this assist step yet. Try again from chat.",
+      },
+      logger,
+    });
+    return {
+      status: "needs_attention",
+      stepRunId: stepRun.id,
+      stepId: stepRun.stepId,
+      reason: assist.reason ?? "assist_failed",
+    };
+  }
+
   if (stepRun.step.mode !== "execute") {
-    const result = { note: "Non-executable step marked complete after start." };
-    await completeActionStepRun(prisma, { stepRunId: stepRun.id, result, logger });
-    return { status: "succeeded", stepRunId: stepRun.id, stepId: stepRun.stepId };
+    await prisma.merchantRecommendationStepRun.updateMany({
+      where: { id: stepRun.id },
+      data: {
+        status: ACTION_STEP_RUN_STATUS.cancelled,
+        completedAt: now,
+        error: { reason: "non_executable_step_run_cancelled" },
+      },
+    });
+    await prisma.merchantRecommendationStep.updateMany({
+      where: {
+        id: stepRun.stepId,
+        merchantId: stepRun.merchantId,
+        shopId: stepRun.shopId,
+        status: ACTION_STEP_STATUS.running,
+      },
+      data: {
+        status:
+          stepRun.step.mode === "merchant_action" ||
+          stepRun.step.mode === "evidence_required"
+            ? ACTION_STEP_STATUS.needsMerchant
+            : ACTION_STEP_STATUS.waiting,
+        statusReason: "Waiting for merchant input.",
+      },
+    });
+    return {
+      status: "cancelled",
+      stepRunId: stepRun.id,
+      stepId: stepRun.stepId,
+      reason: "merchant_owned_step",
+    };
   }
 
   if (!stepRun.actionExecutionRunId) {
@@ -538,9 +642,35 @@ export async function getActionStepRunHealth(prisma, options = {}) {
 }
 
 /** @param {string} message */
+export function isPrimarilyQuestion(message) {
+  const text = String(message ?? "").trim();
+  if (!text) return false;
+  if (/\?\s*$/.test(text)) return true;
+  return /^(what|why|how|when|where|who|which|can you|could you|would you|tell me|explain|describe|walk me through|is there|are there|do you)\b/i.test(
+    text,
+  );
+}
+
+/** @param {string} message */
 export function isActionStepStartCommand(message) {
-  return /^(go ahead|do it|start|start it|start this|start the step|start step [0-9]+|do step [0-9]+|analyse them|analyze them|apply the changes|apply changes|start watching)\.?$/i.test(
-    String(message ?? "").trim(),
+  const text = String(message ?? "").trim();
+  if (!text || isPrimarilyQuestion(text)) return false;
+  if (
+    /^(go ahead|do it|start|start it|start this|start the step|start step [0-9]+|do step [0-9]+|analyse them|analyze them|apply the changes|apply changes|start watching)\.?$/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return (
+    /\b(?:go ahead and|please)\s+(?:start|begin|run|do)\b/i.test(text) ||
+    /\blet(?:'s| us)\s+(?:go ahead and\s+)?(?:start|begin|run|do)\b/i.test(text) ||
+    /\b(?:ok(?:ay)?|yes|sure|yep)[,.\s]+.*\b(?:start|go ahead|do it|do this|run)\b/i.test(
+      text,
+    ) ||
+    /\b(?:start|begin|run|do)\s+(?:that|this|the)\s+step\b/i.test(text) ||
+    /\b(?:start|begin|run|do)\s+(?:that|this|it)\b/i.test(text) ||
+    /\bstart\s+step\s+[0-9]+\b/i.test(text)
   );
 }
 
@@ -621,8 +751,10 @@ function firstEligibleStep(steps) {
 
 /** @param {any} step */
 function statusForEligibleStep(step) {
-  if (step.mode === "execute") return ACTION_STEP_STATUS.ready;
-  if (step.mode === "merchant_action" || step.mode === "assist") {
+  if (step.mode === "execute" || step.mode === "assist") {
+    return ACTION_STEP_STATUS.ready;
+  }
+  if (step.mode === "merchant_action" || step.mode === "evidence_required") {
     return ACTION_STEP_STATUS.needsMerchant;
   }
   return ACTION_STEP_STATUS.waiting;
@@ -642,6 +774,25 @@ function actionExecutionForStep(action, stepId) {
     (/** @type {any} */ item) => item.id === stepId,
   );
   return step?.actionExecutions?.[0] ?? action.currentExecution ?? action.executions?.[0] ?? null;
+}
+
+/** @param {any} step */
+function isStepStartable(step) {
+  const status = String(step?.status ?? "");
+  const mode = String(step?.mode ?? "");
+  if (status === ACTION_STEP_STATUS.ready) return true;
+  // Assist steps are Jefe-owned. The UI shows them as ready even though lifecycle
+  // unlocks them as needs_merchant — chat and the Review proposals button must
+  // be able to start them the same way.
+  if (status === ACTION_STEP_STATUS.needsMerchant && mode === "assist") return true;
+  return false;
+}
+
+/** @param {any} step */
+function claimStatusForStep(step) {
+  return String(step?.status ?? "") === ACTION_STEP_STATUS.needsMerchant
+    ? ACTION_STEP_STATUS.needsMerchant
+    : ACTION_STEP_STATUS.ready;
 }
 
 /** @param {any} step */

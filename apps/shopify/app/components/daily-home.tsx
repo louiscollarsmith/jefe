@@ -1578,7 +1578,10 @@ function FocusedConversation({
               onToggle={() => setFocusExpanded(!focusExpanded)}
             />
             {focusExpanded ? (
-              <FocusedActionLifecyclePanel action={focusedAction} />
+              <FocusedActionLifecyclePanel
+                action={focusedAction}
+                conversationId={activeConversation.id}
+              />
             ) : null}
           </>
         ) : null}
@@ -1950,11 +1953,18 @@ function FocusedActionStrip({
   );
 }
 
-function FocusedActionLifecyclePanel({ action }: { action: MerchantActionView }) {
+function FocusedActionLifecyclePanel({
+  action,
+  conversationId,
+}: {
+  action: MerchantActionView;
+  conversationId?: string | null;
+}) {
   const currentStep = normalizedCurrentStep(action);
   const proposed = action.status === "proposed";
   const completed = action.status === "completed";
   const steps = actionSteps(action);
+  const artifactStep = findStepWithAssistArtifact(currentStep, steps);
   if (proposed) {
     return (
       <>
@@ -2059,11 +2069,20 @@ function FocusedActionLifecyclePanel({ action }: { action: MerchantActionView })
             {currentStepProgressLine(currentStep, action)}
           </p>
         ) : null}
-        {status === "ready" ? (
+        {artifactStep ? (
+          <AssistStepArtifactPanel
+            step={artifactStep.step}
+            artifact={artifactStep.artifact}
+          />
+        ) : null}
+        {canStartCurrentStep(currentStep) ? (
           <div style={currentStepActionRowStyle}>
             <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
               <input type="hidden" name="intent" value="action.step.start" />
               <input type="hidden" name="actionId" value={action.id} />
+              {conversationId ? (
+                <input type="hidden" name="conversationId" value={conversationId} />
+              ) : null}
               {currentStep.id ? (
                 <input type="hidden" name="stepId" value={currentStep.id} />
               ) : null}
@@ -2237,10 +2256,110 @@ function stepDetail(step: Exclude<WorkflowStepDisplay, string>) {
 
 function stepCta(step: Exclude<WorkflowStepDisplay, string>) {
   const title = displayStepLabel(step, 0).toLowerCase();
+  if (stepAssistArtifact(step)) return "Review proposals";
   if (/apply|write|update/.test(title)) return "Apply changes";
   if (/review|approve/.test(title)) return "Review proposals";
   if (/measure|watch/.test(title)) return "Start watching";
   return "Do this step";
+}
+
+function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
+  if (!step || typeof step === "string") return false;
+  const status = String(step.status ?? "");
+  const mode = String(step.mode ?? "");
+  if (status === "ready") return true;
+  return status === "needs_merchant" && mode === "assist";
+}
+
+function stepAssistArtifact(step: WorkflowStepDisplay) {
+  if (typeof step === "string") return null;
+  const progress = step.progress;
+  if (!progress || typeof progress !== "object") return null;
+  const artifactType = String(progress.artifactType ?? "").trim();
+  const summary = String(progress.summary ?? "").trim();
+  return artifactType && summary ? progress : null;
+}
+
+function findStepWithAssistArtifact(
+  currentStep: WorkflowStepDisplay | null | undefined,
+  steps: WorkflowStepDisplay[],
+) {
+  const currentArtifact =
+    currentStep && typeof currentStep !== "string"
+      ? stepAssistArtifact(currentStep)
+      : null;
+  if (currentArtifact) {
+    return { step: currentStep, artifact: currentArtifact };
+  }
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (typeof step === "string") continue;
+    const artifact = stepAssistArtifact(step);
+    if (artifact) return { step, artifact };
+  }
+  return null;
+}
+
+function AssistStepArtifactPanel({
+  step,
+  artifact,
+}: {
+  step: Exclude<WorkflowStepDisplay, string>;
+  artifact: Record<string, unknown>;
+}) {
+  const items = Array.isArray(artifact.items) ? artifact.items : [];
+  const body = typeof artifact.body === "string" ? artifact.body.trim() : "";
+  return (
+    <section style={assistArtifactPanelStyle} aria-label="Step proposal">
+      <div style={assistArtifactHeaderStyle}>
+        <Mono>PROPOSAL</Mono>
+        <span style={assistArtifactTitleStyle}>
+          {String(artifact.title ?? displayStepLabel(step, 0))}
+        </span>
+      </div>
+      {artifact.summary ? (
+        <p style={assistArtifactSummaryStyle}>{String(artifact.summary)}</p>
+      ) : null}
+      {artifact.detail ? (
+        <p style={assistArtifactDetailStyle}>{String(artifact.detail)}</p>
+      ) : null}
+      {items.length > 0 ? (
+        <ul style={assistArtifactListStyle}>
+          {items.slice(0, 6).map((item, index) => (
+            <li key={`${String(item?.title ?? "item")}-${index}`} style={assistArtifactListItemStyle}>
+              <strong>{String(item?.title ?? "Item")}</strong>
+              {formatAssistArtifactItemMeta(item, artifact)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {body ? <pre style={assistArtifactBodyStyle}>{body}</pre> : null}
+      {artifact.nextPrompt ? (
+        <p style={assistArtifactPromptStyle}>{String(artifact.nextPrompt)}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function formatAssistArtifactItemMeta(
+  item: Record<string, unknown>,
+  artifact: Record<string, unknown>,
+) {
+  const parts = [];
+  if (item.daysOfCover !== null && item.daysOfCover !== undefined) {
+    parts.push(`${item.daysOfCover} days cover`);
+  }
+  if (item.available !== null && item.available !== undefined) {
+    parts.push(`${item.available} in stock`);
+  }
+  if (
+    item.recommendedUnitsAtDefaultCover !== null &&
+    item.recommendedUnitsAtDefaultCover !== undefined
+  ) {
+    const days = artifact.targetCoverDays ?? 120;
+    parts.push(`${item.recommendedUnitsAtDefaultCover} units (${days}-day cover)`);
+  }
+  return parts.length ? ` — ${parts.join(" · ")}` : "";
 }
 
 function attentionDetail(attention: Record<string, unknown>) {
@@ -2256,6 +2375,10 @@ function currentStepProgressLine(
   step: Exclude<WorkflowStepDisplay, string>,
   action: MerchantActionView,
 ) {
+  const artifact = stepAssistArtifact(step);
+  if (artifact?.summary && typeof artifact.summary === "string") {
+    return artifact.summary;
+  }
   const progress = step.progress && typeof step.progress === "object" ? step.progress : {};
   for (const key of ["summary", "detail", "line", "message"]) {
     const value = progress[key];
@@ -4569,6 +4692,69 @@ const currentStepProgressStyle: CSSProperties = {
   fontWeight: 700,
   gap: 12,
   lineHeight: 1.4,
+  margin: 0,
+};
+const assistArtifactPanelStyle: CSSProperties = {
+  background: "#f7f9fc",
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: "14px 16px",
+};
+const assistArtifactHeaderStyle: CSSProperties = {
+  alignItems: "baseline",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px 12px",
+};
+const assistArtifactTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.serif,
+  fontSize: 18,
+  fontWeight: 500,
+};
+const assistArtifactSummaryStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontSize: 15,
+  fontWeight: 650,
+  lineHeight: 1.45,
+  margin: 0,
+};
+const assistArtifactDetailStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 14,
+  lineHeight: 1.5,
+  margin: 0,
+};
+const assistArtifactListStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 14,
+  lineHeight: 1.55,
+  margin: 0,
+  paddingLeft: 18,
+};
+const assistArtifactListItemStyle: CSSProperties = {
+  marginBottom: 6,
+};
+const assistArtifactBodyStyle: CSSProperties = {
+  background: COLORS.card,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  color: COLORS.ink,
+  fontFamily: FONT.mono,
+  fontSize: 13,
+  lineHeight: 1.5,
+  margin: 0,
+  overflowX: "auto",
+  padding: "12px 14px",
+  whiteSpace: "pre-wrap",
+};
+const assistArtifactPromptStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 13,
+  lineHeight: 1.45,
   margin: 0,
 };
 const currentStepDotStyle: CSSProperties = {
