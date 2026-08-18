@@ -290,8 +290,7 @@ test("focused chat title can be renamed inline from the header", () => {
 test("focused action context is connected to the title row and system focus events use dividers", () => {
   assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
   assert.match(dailyHomeSource, /const \[focusExpanded, setFocusExpanded\] = useState\(true\)/);
-  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel/);
-  assert.match(dailyHomeSource, /action=\{focusedAction\}/);
+  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel[\s\S]*action=\{focusedAction\}/);
   assert.match(dailyHomeSource, /conversationId=\{activeConversation.id\}/);
   assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
   assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
@@ -325,6 +324,8 @@ test("approval and step lifecycle remain wired through governed action forms", (
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
   assert.match(chatSource, /value="action\.accept_plan"/);
   assert.match(chatSource, /value="action\.step\.start"/);
+  assert.match(chatSource, /value="action\.step\.stop"/);
+  assert.match(chatSource, /value="action\.step\.complete"/);
   assert.match(chatSource, /value="action\.defer"/);
   assert.match(chatSource, /action\.status !== "proposed"/);
   assert.match(chatSource, /name="focusedActionId"/);

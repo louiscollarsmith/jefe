@@ -44,6 +44,9 @@ function formatArtifactItem(item, progress) {
     const days = progress.targetCoverDays ?? 120;
     parts.push(`suggest reordering ${item.recommendedUnitsAtDefaultCover} units (${days}-day cover)`);
   }
+  if (item.proposedType) {
+    parts.push(`set type to ${item.proposedType}`);
+  }
   return parts.join(" — ");
 }
 

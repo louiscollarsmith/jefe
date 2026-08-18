@@ -281,6 +281,269 @@ export async function startActionStep(prisma, input) {
 }
 
 /**
+ * Pause the current running/queued step. Cancels the step run and puts the step
+ * back to ready so the merchant can start it again. Does not decline the plan.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; actor?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function stopActionStep(prisma, input) {
+  const logger = input.logger ?? log;
+  const now = new Date();
+  const run = async (/** @type {any} */ tx) => {
+    const action = await loadActionForLifecycle(tx, input);
+    if (!action) return { ok: false, reason: "not_found" };
+    const workflow = latestWorkflow(action);
+    if (!workflow) return { ok: false, reason: "no_workflow" };
+    const steps = orderedSteps(workflow.steps);
+    const current =
+      steps.find((/** @type {any} */ step) => String(step.status) === ACTION_STEP_STATUS.running) ??
+      pickCurrentStep(steps);
+    if (!current) return { ok: false, reason: "nothing_running" };
+    if (String(current.status) !== ACTION_STEP_STATUS.running) {
+      return { ok: false, reason: "nothing_running", currentStepId: current.id };
+    }
+    await tx.merchantRecommendationStepRun.updateMany({
+      where: {
+        stepId: current.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: {
+          in: [ACTION_STEP_RUN_STATUS.queued, ACTION_STEP_RUN_STATUS.running],
+        },
+      },
+      data: {
+        status: ACTION_STEP_RUN_STATUS.cancelled,
+        completedAt: now,
+        error: { reason: "stopped_by_merchant" },
+      },
+    });
+    const restoredStatus =
+      current.mode === "merchant_action" || current.mode === "evidence_required"
+        ? ACTION_STEP_STATUS.needsMerchant
+        : ACTION_STEP_STATUS.ready;
+    await tx.merchantRecommendationStep.updateMany({
+      where: {
+        id: current.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: ACTION_STEP_STATUS.running,
+      },
+      data: {
+        status: restoredStatus,
+        statusReason: "Paused by the merchant.",
+        completedAt: null,
+      },
+    });
+    if (tx.merchantActionEvent?.create) {
+      await tx.merchantActionEvent.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          merchantActionId: action.id,
+          eventType: "action_step_stopped",
+          metadata: {
+            stepId: current.id,
+            actor: input.actor ?? input.merchantId,
+          },
+        },
+      });
+    }
+    return {
+      ok: true,
+      actionId: action.id,
+      stepId: current.id,
+      status: restoredStatus,
+    };
+  };
+  const result = prisma.$transaction ? await prisma.$transaction(run) : await run(prisma);
+  if (result.ok) {
+    logger.info("merchant stopped action step", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      stepId: result.stepId,
+    });
+  }
+  return result;
+}
+
+/**
+ * Mark the current merchant-owned step complete, or finish a paused/ready
+ * merchant step the merchant says they've already done. Executable Jefe steps
+ * cannot be completed from chat without a real step run.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; actor?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function completeCurrentActionStep(prisma, input) {
+  const logger = input.logger ?? log;
+  const now = new Date();
+  const run = async (/** @type {any} */ tx) => {
+    const action = await loadActionForLifecycle(tx, input);
+    if (!action) return { ok: false, reason: "not_found" };
+    const workflow = latestWorkflow(action);
+    if (!workflow) return { ok: false, reason: "no_workflow" };
+    const steps = orderedSteps(workflow.steps);
+    const current = pickCurrentStep(steps);
+    if (!current) return { ok: false, reason: "no_current_step" };
+    const mode = String(current.mode ?? "");
+    const status = String(current.status ?? "");
+    if (status === ACTION_STEP_STATUS.running && (mode === "execute" || mode === "assist")) {
+      return { ok: false, reason: "jefe_step_still_running", currentStepId: current.id };
+    }
+    const merchantOwned =
+      mode === "merchant_action" ||
+      mode === "merchant" ||
+      mode === "evidence_required" ||
+      status === ACTION_STEP_STATUS.needsMerchant;
+    if (!merchantOwned && status !== ACTION_STEP_STATUS.needsAttention) {
+      return { ok: false, reason: "not_merchant_completable", currentStepId: current.id };
+    }
+    await tx.merchantRecommendationStep.updateMany({
+      where: {
+        id: current.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      data: {
+        status: ACTION_STEP_STATUS.completed,
+        completedAt: now,
+        statusReason: "Merchant marked this step complete.",
+        attention: {},
+      },
+    });
+    const advance = await advanceActionWorkflow(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      workflowId: workflow.id,
+      now,
+    });
+    if (tx.merchantActionEvent?.create) {
+      await tx.merchantActionEvent.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          merchantActionId: action.id,
+          eventType: "action_step_completed",
+          metadata: {
+            stepId: current.id,
+            actor: input.actor ?? input.merchantId,
+            source: "merchant_chat",
+          },
+        },
+      });
+    }
+    return {
+      ok: true,
+      actionId: action.id,
+      stepId: current.id,
+      currentStep: advance.currentStep,
+      completed: advance.completed,
+    };
+  };
+  const result = prisma.$transaction ? await prisma.$transaction(run) : await run(prisma);
+  if (result.ok) {
+    logger.info("merchant completed action step", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      stepId: result.stepId,
+      planCompleted: result.completed === true,
+    });
+  }
+  return result;
+}
+
+/**
+ * Skip the current step and unlock whatever comes next.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; actor?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+export async function skipCurrentActionStep(prisma, input) {
+  const logger = input.logger ?? log;
+  const now = new Date();
+  const run = async (/** @type {any} */ tx) => {
+    const action = await loadActionForLifecycle(tx, input);
+    if (!action) return { ok: false, reason: "not_found" };
+    const workflow = latestWorkflow(action);
+    if (!workflow) return { ok: false, reason: "no_workflow" };
+    const steps = orderedSteps(workflow.steps);
+    const current = pickCurrentStep(steps);
+    if (!current) return { ok: false, reason: "no_current_step" };
+    if (String(current.status) === ACTION_STEP_STATUS.running) {
+      await tx.merchantRecommendationStepRun.updateMany({
+        where: {
+          stepId: current.id,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          status: {
+            in: [ACTION_STEP_RUN_STATUS.queued, ACTION_STEP_RUN_STATUS.running],
+          },
+        },
+        data: {
+          status: ACTION_STEP_RUN_STATUS.cancelled,
+          completedAt: now,
+          error: { reason: "skipped_by_merchant" },
+        },
+      });
+    }
+    await tx.merchantRecommendationStep.updateMany({
+      where: {
+        id: current.id,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      data: {
+        status: ACTION_STEP_STATUS.skipped,
+        completedAt: now,
+        statusReason: "Skipped by the merchant.",
+      },
+    });
+    const advance = await advanceActionWorkflow(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      workflowId: workflow.id,
+      now,
+    });
+    if (tx.merchantActionEvent?.create) {
+      await tx.merchantActionEvent.create({
+        data: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          merchantActionId: action.id,
+          eventType: "action_step_skipped",
+          metadata: {
+            stepId: current.id,
+            actor: input.actor ?? input.merchantId,
+          },
+        },
+      });
+    }
+    return {
+      ok: true,
+      actionId: action.id,
+      stepId: current.id,
+      currentStep: advance.currentStep,
+      completed: advance.completed,
+    };
+  };
+  const result = prisma.$transaction ? await prisma.$transaction(run) : await run(prisma);
+  if (result.ok) {
+    logger.info("merchant skipped action step", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      stepId: result.stepId,
+    });
+  }
+  return result;
+}
+
+/**
  * Recompute the authoritative current/next step for a workflow.
  *
  * @param {any} prisma
@@ -742,9 +1005,8 @@ function firstEligibleStep(steps) {
     steps.find((step) => {
       if (TERMINAL_STEP_STATUSES.has(String(step.status))) return false;
       const dependencies = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
-      return dependencies.every(
-        (/** @type {string} */ id) =>
-          byId.get(id)?.status === ACTION_STEP_STATUS.completed,
+      return dependencies.every((/** @type {string} */ id) =>
+        TERMINAL_STEP_STATUSES.has(String(byId.get(id)?.status ?? "")),
       );
     }) ?? null
   );

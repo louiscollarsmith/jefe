@@ -516,7 +516,11 @@ export function serializeMerchantAction(row) {
     raise: buildActionRaise(execution?.eligibility),
     executionStatus: execution?.status ?? null,
     outcomeStatus: execution?.outcomeStatus ?? null,
-    progress,
+    progress: {
+      ...progress,
+      preview: jsonObject(progress.preview ?? execution?.preview),
+    },
+    previewItems: previewItemsFromExecution(execution),
     workflow,
     currentStep,
     displaySteps: display,
@@ -877,6 +881,26 @@ function successText(progress, source) {
     safeText(source?.expectedBenefit, 220) ||
     ""
   );
+}
+
+/** @param {any} execution */
+function previewItemsFromExecution(execution) {
+  const preview = jsonObject(execution?.preview);
+  const summary = jsonObject(execution?.proposalSummary);
+  const changes = Array.isArray(preview.changes) ? preview.changes : [];
+  const summaryItems = Array.isArray(summary.topItems) ? summary.topItems : [];
+  const rows = changes.length ? changes : summaryItems;
+  return rows.slice(0, 12).map((/** @type {any} */ item) => ({
+    title: safeText(item?.title ?? item?.productTitle ?? item?.variantId, 180),
+    productId: typeof item?.productId === "string" ? item.productId : null,
+    toType: typeof item?.toType === "string" ? item.toType : null,
+    proposedType: typeof item?.proposedType === "string" ? item.proposedType : null,
+    fromPrice: Number.isFinite(Number(item?.fromPrice)) ? Number(item.fromPrice) : null,
+    toPrice: Number.isFinite(Number(item?.toPrice)) ? Number(item.toPrice) : null,
+    discountPercent: Number.isFinite(Number(item?.discountPercent))
+      ? Number(item.discountPercent)
+      : null,
+  })).filter((/** @type {any} */ item) => item.title);
 }
 
 /**

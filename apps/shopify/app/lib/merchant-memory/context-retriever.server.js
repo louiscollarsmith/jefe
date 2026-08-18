@@ -420,7 +420,17 @@ function merchantActionContext(action) {
     sourceRecommendationId: action.sourceRecommendationId ?? null,
     actionRunId: action.actionRunId ?? null,
     actionType: action.actionType ?? null,
+    progress: action.progress ?? null,
     proposedSteps: sourceWorkflowSteps.length ? sourceWorkflowSteps : workflowSteps,
+    previewItems: Array.isArray(action.previewItems) ? action.previewItems : [],
+    currentStep: action.currentStep
+      ? {
+          id: action.currentStep.id ?? null,
+          title: action.currentStep.title ?? action.currentStep.label ?? null,
+          status: action.currentStep.status ?? null,
+          mode: action.currentStep.mode ?? null,
+        }
+      : null,
     sourceRecommendation: action.sourceRecommendation
       ? {
           id: action.sourceRecommendation.id ?? null,
@@ -1296,6 +1306,8 @@ function topItems(summary, preview) {
       fromPrice: numberOrNull(item?.fromPrice),
       toPrice: numberOrNull(item?.toPrice),
       discountPercent: numberOrNull(item?.discountPercent),
+      toType: text(item?.toType ?? item?.proposedType),
+      fromType: text(item?.fromType),
     }));
 }
 
