@@ -636,6 +636,27 @@ const TOOLS = {
       return assistResultToTool("run_work_item", result, await ctx.reloadState());
     },
   },
+
+  add_plan_step: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: "*",
+    description:
+      "Add a new step to this action's plan. Use when the merchant wants to extend the workflow with an additional piece of work — for example 'add a step to create a Shopify transfer'. The step is persisted to the plan, not simulated.",
+    args: {
+      title: { type: "string", required: true },
+      description: { type: "string" },
+      capabilityRef: { type: "string" },
+      mode: { type: "string" },
+    },
+    async run(/** @type {any} */ ctx, /** @type {any} */ args) {
+      return ctx.runCommandWithDiff("add_plan_step", ACTION_COMMAND.ADD_PLAN_STEP, {
+        title: args.title,
+        description: args.description,
+        capabilityRef: args.capabilityRef,
+        mode: args.mode,
+      });
+    },
+  },
 };
 
 /* -------------------------------------------------------------------------- */

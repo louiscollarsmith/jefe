@@ -95,6 +95,7 @@ export const ACTION_COMMAND = Object.freeze({
   INSPECT_PROPOSAL: "INSPECT_PROPOSAL",
   REPORT_EXECUTION: "REPORT_EXECUTION",
   ACHIEVE_OUTCOME: "ACHIEVE_OUTCOME",
+  ADD_PLAN_STEP: "ADD_PLAN_STEP",
 });
 
 /** @type {Set<string>} */
@@ -115,6 +116,7 @@ const MUTATION_COMMANDS = new Set([
   ACTION_COMMAND.APPLY_CHANGESET,
   ACTION_COMMAND.CONFIRM_MERCHANT_STEP,
   ACTION_COMMAND.ACHIEVE_OUTCOME,
+  ACTION_COMMAND.ADD_PLAN_STEP,
 ]);
 
 const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
@@ -258,6 +260,8 @@ export async function executeActionCommand(prisma, input) {
       return runReportExecution(prisma, { ...input, action, logger });
     case ACTION_COMMAND.ACHIEVE_OUTCOME:
       return runAchieveOutcome(prisma, { ...input, action, params, logger });
+    case ACTION_COMMAND.ADD_PLAN_STEP:
+      return runAddPlanStep(prisma, { ...input, action, params, logger });
     default:
       return runAnswer(prisma, { ...input, action, params, logger });
   }
@@ -465,6 +469,104 @@ async function runRevisePlan(prisma, input) {
     reply: buildReviseReply(fresh ?? input.action, planPatch, changeSet),
     action: fresh ?? input.action,
     changeSet: createdChangeSet(changeSet),
+  };
+}
+
+/**
+ * Append a new step to the workflow. The step is persisted (not a simulation)
+ * and gets proper UUID-to-UUID dependency wiring so the work chain resolves.
+ *
+ * @param {any} prisma @param {any} input
+ */
+async function runAddPlanStep(prisma, input) {
+  const { listStepCapabilities, resolveWorkflowStepCapability } = await import(
+    "../merchant-plan/step-capabilities.server.js"
+  );
+  const steps = [
+    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
+    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+  ];
+  const workflowId =
+    input.action?.workflow?.id ??
+    (steps.length > 0 ? steps[0]?.workflowId : null) ??
+    null;
+  const recommendationId =
+    input.action?.sourceRecommendationId ??
+    (steps.length > 0 ? steps[0]?.recommendationId : null) ??
+    null;
+
+  if (!workflowId || !recommendationId) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_PLAN_STEP,
+      reason: "no_workflow",
+      reply: "I couldn't find a workflow to add this step to.",
+    };
+  }
+
+  const title = String(input.params?.title ?? "").trim().slice(0, 120);
+  const description = String(input.params?.description ?? "").trim().slice(0, 260);
+  const capabilityRefRaw = String(input.params?.capabilityRef ?? "").trim();
+  const modeRaw = input.params?.mode;
+
+  if (!title) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_PLAN_STEP,
+      reason: "missing_title",
+      reply: "What should the new step be called? Give it a title.",
+    };
+  }
+
+  const capability = resolveWorkflowStepCapability(capabilityRefRaw || null, modeRaw || null);
+  const maxOrderIndex = steps.reduce(
+    (/** @type {number} */ max, /** @type {any} */ step) =>
+      Math.max(max, Number(step?.orderIndex ?? 0)),
+    -1,
+  );
+
+  // Build dependency chain from declared deps or attach to the current last step.
+  const rawDeps = Array.isArray(input.params?.dependsOnStepIds) ? input.params.dependsOnStepIds : [];
+  const existingIds = new Set(steps.map((/** @type {any} */ s) => String(s.id ?? "")));
+  // Only reference deps that actually exist in the workflow.
+  const resolvedDeps = rawDeps.filter((/** @type {any} */ id) => existingIds.has(String(id)));
+  // Default: depend on the last step so the chain is coherent.
+  const fallbackLast = steps.length > 0 ? String(steps[steps.length - 1]?.id ?? "") : null;
+  const dependsOnStepIds =
+    resolvedDeps.length > 0
+      ? resolvedDeps
+      : fallbackLast
+        ? [fallbackLast]
+        : [];
+
+  const { randomUUID } = await import("crypto");
+  const newStepId = randomUUID();
+
+  await prisma.merchantRecommendationStep.create({
+    data: {
+      id: newStepId,
+      workflowId,
+      recommendationId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      orderIndex: maxOrderIndex + 1,
+      title,
+      description: description || title,
+      status: "waiting",
+      mode: capability.mode,
+      capabilityRef: capability.capabilityRef ?? null,
+      dependsOnStepIds,
+      evidenceIds: [],
+    },
+  });
+
+  const fresh = await refreshAction(prisma, input);
+  return {
+    ok: true,
+    command: ACTION_COMMAND.ADD_PLAN_STEP,
+    result: { stepId: newStepId, title, mode: capability.mode, capabilityRef: capability.capabilityRef },
+    reply: `Added "${title}" as a new step to this action's plan.`,
+    action: fresh ?? input.action,
   };
 }
 
@@ -1916,18 +2018,25 @@ async function invalidateDownstreamFromCurrentFocus(prisma, input) {
     ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
     ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
   ];
-  const current =
-    steps.find((step) =>
-      ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
-        String(step?.status ?? ""),
-      ),
-    ) ?? null;
-  if (!current?.id) return;
   const workflowId =
     input.action?.workflow?.id ??
     steps[0]?.workflowId ??
     null;
   if (!workflowId) return;
+  // Prefer the active step as the invalidation origin. When every step is
+  // completed (plan changed after full run), fall back to the first step so
+  // ALL artifact-bearing steps are marked needs_updating and the dependency
+  // graph can rebuild coherently.
+  const current =
+    steps.find((step) =>
+      ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
+        String(step?.status ?? ""),
+      ),
+    ) ??
+    steps.find((step) => step?.progress?.artifactType) ??
+    steps[0] ??
+    null;
+  if (!current?.id) return;
   await invalidateDownstreamSteps(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,

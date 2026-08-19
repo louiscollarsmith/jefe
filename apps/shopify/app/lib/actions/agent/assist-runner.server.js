@@ -71,7 +71,23 @@ export function resolveWorkChain(state, targetStepId) {
     // Walk the declared dependency graph, not just the current blocker list:
     // a prerequisite can be complete-but-stale, which is not a blocker yet
     // still has to be rebuilt before this step's result means anything.
-    for (const dependencyId of row.dependsOn ?? []) visit(String(dependencyId));
+    const declaredDeps = row.dependsOn ?? [];
+    // Defensive: if declared deps reference IDs that don't exist in the work
+    // state (LLM-generated placeholder IDs that were never resolved to DB UUIDs
+    // on legacy actions), fall back to treating all preceding steps as implicit
+    // dependencies so a stale upstream cannot be skipped.
+    const unresolvedDeps = declaredDeps.filter((depId) => !byId.has(String(depId)));
+    if (unresolvedDeps.length > 0 && declaredDeps.length === unresolvedDeps.length) {
+      // ALL deps are unresolved — use orderIndex to derive predecessors
+      const currentIndex = Number(row.step.orderIndex ?? 0);
+      for (const predecessor of rows) {
+        if (Number(predecessor.step.orderIndex ?? 0) < currentIndex) {
+          visit(String(predecessor.step.id));
+        }
+      }
+    } else {
+      for (const dependencyId of declaredDeps) visit(String(dependencyId));
+    }
     for (const blocker of row.blockers ?? []) {
       if (blocker.stepId) visit(String(blocker.stepId));
     }
