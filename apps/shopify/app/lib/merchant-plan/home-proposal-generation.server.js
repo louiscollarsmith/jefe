@@ -1,0 +1,257 @@
+// @ts-check
+// Merchant-triggered proposal generation from the home screen. The merchant clicks
+// "Generate a proposal" / "Generate another proposal"; generation runs through the
+// canonical `generateMerchantPlan` pipeline (via `ensureMerchantPlanQueued`). This
+// module owns eligibility, the per-merchant-local-day ceiling, and concurrency safety —
+// there is no background scheduler.
+
+import { PLAN_RUN_STATUS } from "./constants.server.js";
+import { merchantHasProposedAction } from "./proposal-creation-invariant.server.js";
+
+export { merchantHasProposedAction };
+
+export const HOME_PROPOSAL_SOURCE_MODE = "home";
+export const DEFAULT_HOME_PROPOSAL_DAILY_CAP = 5;
+
+const ACTIVE_HOME_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
+
+/**
+ * Pure budget check. `generatedToday` = successful home-triggered generations since
+ * the start of the merchant's day; `cap` = the daily ceiling.
+ * @param {{ generatedToday: number; cap?: number }} input
+ * @returns {{ allowed: boolean; remaining: number; used: number; cap: number; reason: string | null }}
+ */
+export function proposalGenerationBudget({
+  generatedToday,
+  cap = DEFAULT_HOME_PROPOSAL_DAILY_CAP,
+}) {
+  const safeCap =
+    Number.isFinite(cap) && Number(cap) > 0
+      ? Math.floor(Number(cap))
+      : DEFAULT_HOME_PROPOSAL_DAILY_CAP;
+  const used =
+    Number.isFinite(generatedToday) && Number(generatedToday) > 0
+      ? Math.floor(Number(generatedToday))
+      : 0;
+  const remaining = Math.max(0, safeCap - used);
+  return {
+    allowed: remaining > 0,
+    remaining,
+    used,
+    cap: safeCap,
+    reason: remaining > 0 ? null : "daily_cap_reached",
+  };
+}
+
+/**
+ * Start of the merchant's current day as a UTC Date — the daily-cap window boundary.
+ * Uses the shop's timezone to pick the calendar date, then midnight-UTC of that date.
+ * @param {Date} now
+ * @param {string | null | undefined} [timeZone]
+ * @returns {Date}
+ */
+export function startOfMerchantDay(now, timeZone) {
+  const tz = typeof timeZone === "string" && timeZone ? timeZone : "UTC";
+  const format = (/** @type {string} */ zone) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now);
+  let ymd;
+  try {
+    ymd = format(tz);
+  } catch {
+    ymd = format("UTC");
+  }
+  return new Date(`${ymd}T00:00:00Z`);
+}
+
+/**
+ * Count successful home-triggered plan runs since a boundary.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; since: Date }} input
+ * @returns {Promise<number>}
+ */
+export async function countHomeProposalGenerationsSince(prisma, { merchantId, since }) {
+  return prisma.merchantPlanRun.count({
+    where: {
+      merchantId,
+      sourceMode: HOME_PROPOSAL_SOURCE_MODE,
+      status: PLAN_RUN_STATUS.completed,
+      completedAt: { gte: since },
+    },
+  });
+}
+
+/**
+ * Whether a home-triggered generation is currently queued or running.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ * @returns {Promise<boolean>}
+ */
+export async function isHomeProposalGenerationInFlight(prisma, { merchantId, shopId }) {
+  const count = await prisma.merchantPlanRun.count({
+    where: {
+      merchantId,
+      shopId,
+      sourceMode: HOME_PROPOSAL_SOURCE_MODE,
+      status: { in: ACTIVE_HOME_RUN_STATUSES },
+    },
+  });
+  return count > 0;
+}
+
+/**
+ * Loader-facing state for the Reading your store card.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
+ * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean } | null>}
+ */
+export async function getHomeProposalGenerationState(
+  prisma,
+  { merchantId, shopId, now, timeZone, cap = DEFAULT_HOME_PROPOSAL_DAILY_CAP, deps = {} },
+) {
+  const count = deps.count ?? countHomeProposalGenerationsSince;
+  const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
+  const inFlight = deps.inFlight ?? isHomeProposalGenerationInFlight;
+  const since = startOfMerchantDay(now, timeZone);
+
+  let generatedToday;
+  let proposedExists;
+  let generating;
+  let priorCount;
+  try {
+    [generatedToday, proposedExists, generating, priorCount] = await Promise.all([
+      count(prisma, { merchantId, since }),
+      hasProposed(prisma, { merchantId, shopId }),
+      inFlight(prisma, { merchantId, shopId }),
+      prisma.merchantPlanRun.count({
+        where: {
+          merchantId,
+          sourceMode: HOME_PROPOSAL_SOURCE_MODE,
+          status: PLAN_RUN_STATUS.completed,
+        },
+      }),
+    ]);
+  } catch {
+    return null;
+  }
+
+  const budget = proposalGenerationBudget({ generatedToday, cap });
+  let reason = budget.reason;
+  let canGenerate = budget.allowed;
+
+  if (proposedExists) {
+    canGenerate = false;
+    reason = "proposed_exists";
+  } else if (generating) {
+    canGenerate = false;
+    reason = "generating";
+  }
+
+  return {
+    canGenerate,
+    reason,
+    generatedToday: budget.used,
+    remaining: budget.remaining,
+    cap: budget.cap,
+    isGenerating: generating,
+    hasPriorProposal: priorCount > 0 || budget.used > 0,
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ * @param {(tx: any) => Promise<T>} callback
+ * @returns {Promise<T>}
+ * @template T
+ */
+async function withHomeProposalGenerationLock(prisma, input, callback) {
+  if (typeof prisma.$transaction !== "function") return callback(prisma);
+  return prisma.$transaction(
+    async (/** @type {any} */ tx) => {
+      if (typeof tx.$queryRawUnsafe === "function") {
+        const lockKey = [input.merchantId, input.shopId, "home_proposal_generation"].join(":");
+        await tx.$queryRawUnsafe(
+          "SELECT 1::integer AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
+          lockKey,
+        );
+      }
+      return callback(tx);
+    },
+    { maxWait: 10_000, timeout: 30_000 },
+  );
+}
+
+/**
+ * Merchant clicked Generate — enqueue a plan run through the canonical pipeline.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; now?: Date; timeZone?: string | null; cap?: number; ensureQueued?: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
+ * @returns {Promise<{ ok: boolean; status?: string; reason?: string | null; remaining?: number }>}
+ */
+export async function requestHomeProposalGeneration(
+  prisma,
+  {
+    merchantId,
+    shopId,
+    now = new Date(),
+    timeZone,
+    cap = DEFAULT_HOME_PROPOSAL_DAILY_CAP,
+    ensureQueued,
+    deps = {},
+  },
+) {
+  const count = deps.count ?? countHomeProposalGenerationsSince;
+  const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
+  const inFlight = deps.inFlight ?? isHomeProposalGenerationInFlight;
+  const queuePlan =
+    ensureQueued ??
+    (async (client, queueInput) => {
+      const { ensureMerchantPlanQueued } = await import("./service.server.js");
+      return ensureMerchantPlanQueued(client, queueInput);
+    });
+
+  return withHomeProposalGenerationLock(prisma, { merchantId, shopId }, async (tx) => {
+    const since = startOfMerchantDay(now, timeZone);
+
+    let generatedToday;
+    try {
+      generatedToday = await count(tx, { merchantId, since });
+    } catch {
+      return { ok: false, reason: "cap_read_failed" };
+    }
+
+    const budget = proposalGenerationBudget({ generatedToday, cap });
+    if (!budget.allowed) {
+      return { ok: false, reason: "daily_cap_reached", remaining: budget.remaining };
+    }
+
+    try {
+      if (await hasProposed(tx, { merchantId, shopId })) {
+        return { ok: false, reason: "proposed_exists" };
+      }
+      if (await inFlight(tx, { merchantId, shopId })) {
+        return { ok: false, reason: "generating" };
+      }
+    } catch {
+      return { ok: false, reason: "eligibility_read_failed" };
+    }
+
+    const result = await queuePlan(tx, {
+      merchantId,
+      shopId,
+      sourceMode: HOME_PROPOSAL_SOURCE_MODE,
+      resetAttempts: true,
+    });
+    const status = result?.status ?? "unknown";
+    return {
+      ok: status === "queued",
+      status,
+      reason: status === "queued" ? null : status === "reused" ? "nothing_new" : status,
+      remaining: budget.remaining,
+    };
+  });
+}

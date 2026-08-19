@@ -119,13 +119,14 @@ type EmailBrief = {
   sending: boolean;
 };
 
-type NextRecommendationSchedule = {
-  kind: "hourly_check" | "daily_cap_reached";
-  at: string;
+type HomeProposalGenerationState = {
+  canGenerate: boolean;
+  reason: string | null;
   generatedToday: number;
   remaining: number;
   cap: number;
-  enabled: boolean;
+  isGenerating: boolean;
+  hasPriorProposal: boolean;
 };
 
 type PrimaryMove = {
@@ -295,7 +296,7 @@ export function DailyHome(props: {
   storeTimeZone?: string | null; // the store's IANA zone; pins fixed-instant date labels
   horizonHeadsUps?: HeadsUp[]; // proactive run-out / refund heads-ups, rendered as messages
   brandLogoUrl?: string | null; // merchant's brand logo for the header; monogram fallback
-  nextRecommendationSchedule?: NextRecommendationSchedule | null;
+  homeProposalGeneration?: HomeProposalGenerationState | null;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -621,7 +622,7 @@ export function DailyHome(props: {
           onCloseTalkAction={closeTalkAction}
           currentSearch={location.search}
           storeTimeZone={props.storeTimeZone}
-          nextRecommendationSchedule={props.nextRecommendationSchedule ?? null}
+          homeProposalGeneration={props.homeProposalGeneration ?? null}
         />
         {/* No footer link. Merchant Memory is reached from the shell gear →
             Settings → "What Jefe knows" (see surface-reachability tests);
@@ -682,7 +683,7 @@ function FocusedActionsHome({
   onCloseTalkAction,
   currentSearch,
   storeTimeZone,
-  nextRecommendationSchedule,
+  homeProposalGeneration,
 }: {
   conversations: ChatConversation[];
   merchantActions: MerchantActionView[];
@@ -699,8 +700,12 @@ function FocusedActionsHome({
   onCloseTalkAction: () => void;
   currentSearch: string;
   storeTimeZone?: string | null;
-  nextRecommendationSchedule?: NextRecommendationSchedule | null;
+  homeProposalGeneration?: HomeProposalGenerationState | null;
 }) {
+  const navigation = useNavigation();
+  const isSubmittingGeneration =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "home.generate_proposal";
   const attentionQueue = normalizeAttentionItems(attentionItems, merchantActions);
   const [selectedAttentionKey, setSelectedAttentionKey] = useState<string | null>(null);
   const matchedAttentionIndex = selectedAttentionKey
@@ -775,7 +780,10 @@ function FocusedActionsHome({
               onStartFocusedChat={onStartFocusedChat}
             />
           ) : (
-            <NextRecommendationWait schedule={nextRecommendationSchedule} />
+            <ReadingYourStoreCard
+              generation={homeProposalGeneration}
+              isSubmitting={isSubmittingGeneration}
+            />
           )}
         </section>
       ) : null}
@@ -883,94 +891,65 @@ function FocusedActionsHome({
   );
 }
 
-function NextRecommendationWait({
-  schedule,
+function ReadingYourStoreCard({
+  generation,
+  isSubmitting,
 }: {
-  schedule: NextRecommendationSchedule | null | undefined;
+  generation: HomeProposalGenerationState | null | undefined;
+  isSubmitting: boolean;
 }) {
-  const targetMs = schedule?.at ? Date.parse(schedule.at) : NaN;
-  const [clockMs, setClockMs] = useState(() => Date.now());
+  const isGenerating = isSubmitting || generation?.isGenerating === true;
+  const atDailyCap = generation?.reason === "daily_cap_reached";
+  const canGenerate = generation?.canGenerate === true && !isGenerating;
+  const buttonLabel = generation?.hasPriorProposal
+    ? "Generate another proposal"
+    : "Generate a proposal";
+  const allowanceLabel =
+    generation && generation.generatedToday > 0
+      ? `${generation.generatedToday} of ${generation.cap} proposals generated today`
+      : generation && generation.remaining < generation.cap
+        ? `${generation.remaining} of ${generation.cap} remaining today`
+        : null;
 
-  useEffect(() => {
-    if (!Number.isFinite(targetMs)) return undefined;
-    const id = window.setInterval(() => setClockMs(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, [targetMs]);
-
-  const remainingMs = Number.isFinite(targetMs)
-    ? Math.max(0, targetMs - clockMs)
-    : null;
-
-  if (!schedule) {
-    return (
-      <section style={nextMoveCardStyle} aria-label="Waiting for next move">
-        <div style={nextMoveTopStyle}>
-          <Mono>READING YOUR STORE</Mono>
-        </div>
-        <p style={nextRecommendationBodyStyle}>
-          Nothing worth your time right now. Jefe keeps reading and will bring the next move
-          when something&apos;s genuinely worth ten minutes.
-        </p>
-      </section>
-    );
+  let bodyCopy =
+    "Jefe reads your store continuously. When you're ready, ask for the next move worth ten minutes.";
+  if (generation?.reason === "nothing_new") {
+    bodyCopy =
+      "Nothing worth your time right now. Jefe will only suggest moves that are genuinely worth ten minutes.";
+  } else if (atDailyCap) {
+    bodyCopy =
+      "You've generated 5 proposals today. You can generate more tomorrow.";
+  } else if (isGenerating) {
+    bodyCopy = "Looking through what Jefe knows about your store…";
   }
-
-  if (!schedule.enabled) {
-    return (
-      <section style={nextMoveCardStyle} aria-label="Waiting for next move">
-        <div style={nextMoveTopStyle}>
-          <Mono>READING YOUR STORE</Mono>
-        </div>
-        <p style={nextRecommendationBodyStyle}>
-          Nothing worth your time right now. Jefe keeps reading and will bring the next move
-          when something&apos;s genuinely worth ten minutes.
-        </p>
-      </section>
-    );
-  }
-
-  const countdown =
-    remainingMs != null ? formatRecommendationCountdown(remainingMs) : null;
-  const usedLabel = `${schedule.generatedToday} of ${schedule.cap} today`;
-  const headline =
-    schedule.kind === "daily_cap_reached"
-      ? "Jefe's had a full look today."
-      : "Nothing worth your time right now.";
-  const detail =
-    schedule.kind === "daily_cap_reached"
-      ? countdown
-        ? `Next look in ${countdown}. Up to ${schedule.cap} fresh moves per day — only when something's real.`
-        : `Up to ${schedule.cap} fresh moves per day — only when something's real.`
-      : countdown
-        ? `Jefe checks again in ${countdown}. ${usedLabel} · up to ${schedule.cap} per day.`
-        : `Jefe checks hourly. ${usedLabel} · up to ${schedule.cap} per day.`;
 
   return (
-    <section style={nextMoveCardStyle} aria-label="Waiting for next move">
+    <section style={nextMoveCardStyle} aria-label="Reading your store">
       <div style={nextMoveTopStyle}>
-        <Mono>NEXT CHECK</Mono>
-        {countdown ? (
-          <span style={nextRecommendationCountdownStyle} aria-live="polite">
-            {countdown}
-          </span>
+        <Mono>READING YOUR STORE</Mono>
+        {allowanceLabel && !atDailyCap ? (
+          <span style={nextMoveMetaStyle}>{allowanceLabel}</span>
         ) : null}
       </div>
-      <h2 style={nextRecommendationTitleStyle}>{headline}</h2>
-      <p style={nextRecommendationBodyStyle}>{detail}</p>
+      <p style={nextRecommendationBodyStyle}>{bodyCopy}</p>
+      <div style={nextMoveActionRowStyle}>
+        <Form method="post" style={inlineFormStyle}>
+          <input type="hidden" name="intent" value="home.generate_proposal" />
+          <button
+            type="submit"
+            style={{
+              ...nextMoveButtonStyle,
+              opacity: canGenerate ? 1 : 0.55,
+              cursor: canGenerate ? "pointer" : "not-allowed",
+            }}
+            disabled={!canGenerate}
+          >
+            {isGenerating ? "Finding your next move…" : buttonLabel}
+          </button>
+        </Form>
+      </div>
     </section>
   );
-}
-
-function formatRecommendationCountdown(remainingMs: number): string {
-  if (remainingMs <= 0) return "now";
-  const totalMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours < 24) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const dayHours = hours % 24;
-  return dayHours > 0 ? `${days}d ${dayHours}h` : `${days}d`;
 }
 
 function NextMoveSpotlight({
@@ -4313,27 +4292,12 @@ const nextMoveSummaryStyle: CSSProperties = {
   margin: 0,
   maxWidth: 700,
 };
-const nextRecommendationTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontFamily: FONT.sans,
-  fontSize: 24,
-  fontWeight: 750,
-  lineHeight: 1.2,
-  margin: 0,
-};
 const nextRecommendationBodyStyle: CSSProperties = {
   color: COLORS.meta,
   fontSize: 15,
   lineHeight: 1.55,
   margin: 0,
   maxWidth: 620,
-};
-const nextRecommendationCountdownStyle: CSSProperties = {
-  color: COLORS.navy,
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 800,
-  letterSpacing: 0,
 };
 const nextMoveActionRowStyle: CSSProperties = {
   alignItems: "center",
