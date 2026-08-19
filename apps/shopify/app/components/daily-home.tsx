@@ -206,6 +206,14 @@ type MerchantActionView = {
   workProjection?: {
     work?: Array<{ step?: { id?: string | null }; state?: string; stale?: boolean }>;
     nextUsefulWork?: { step?: { id?: string | null }; state?: string } | null;
+    artifacts?: Array<{
+      stepId?: string | null;
+      title?: string | null;
+      artifactType?: string | null;
+      stale?: boolean;
+      current?: boolean;
+    }> | null;
+    planSchema?: unknown;
   } | null;
   successText?: string | null;
   baselineSignal?: string | null;
@@ -2075,9 +2083,17 @@ function FocusedActionLifecyclePanel({
 }) {
   const currentStep = normalizedCurrentStep(action);
   const proposed = action.status === "proposed";
-  const completed = action.status === "completed";
+  const completionWork = Array.isArray(action.workProjection?.work)
+    ? action.workProjection?.work
+    : null;
+  // "Complete" at the action level should reflect canonical current work state
+  // (including staleness), not just the persisted step statuses.
+  const derivedCompleted =
+    completionWork && completionWork.length > 0
+      ? completionWork.every((row) => ["complete", "skipped"].includes(normalizeDisplayToken(row.state)))
+      : null;
+  const completed = action.status === "completed" && (derivedCompleted ?? true);
   const steps = actionSteps(action);
-  const artifactStep = findStepWithAssistArtifact(currentStep, steps);
   if (proposed) {
     return (
       <>
@@ -2119,6 +2135,7 @@ function FocusedActionLifecyclePanel({
   if (!currentStep || typeof currentStep === "string") {
     return (
       <>
+        <CurrentArtifactsPanel action={action} steps={steps} />
         <FocusedActionPlanBlock
           action={action}
           steps={steps}
@@ -2129,25 +2146,28 @@ function FocusedActionLifecyclePanel({
     );
   }
 
-  const status = currentStep.status || "waiting";
+  const workState = String(currentStep.workState ?? "");
+  const derivedWorkState = normalizeDisplayToken(workState);
   const mode = currentStep.mode || "";
   const attention = currentStep.attention && Object.keys(currentStep.attention).length
     ? currentStep.attention
     : null;
   const eyebrow =
-    status === "running"
+    derivedWorkState === "running"
       ? mode === "execute"
         ? "JEFE IS WORKING"
         : "CURRENT STEP"
-      : status === "needs_merchant"
+      : derivedWorkState === "needs_input"
         ? "YOUR NEXT STEP"
-        : status === "needs_attention"
+        : derivedWorkState === "needs_attention"
           ? "NEEDS ATTENTION"
+          : derivedWorkState === "needs_updating"
+            ? "NEEDS UPDATING"
           : "NEXT STEP";
   const tone =
-    status === "needs_attention"
+    derivedWorkState === "needs_attention"
       ? "attention"
-      : status === "running" || status === "ready"
+      : derivedWorkState === "running" || derivedWorkState === "available"
         ? "ready"
         : "merchant";
   return (
@@ -2156,7 +2176,7 @@ function FocusedActionLifecyclePanel({
         <div style={currentStepTopStyle}>
           <Mono>{eyebrow}</Mono>
           <span style={currentStepBadgeGroupStyle}>
-            <StatusPill tone={status === "running" || status === "completed" ? "green" : "yellow"}>
+            <StatusPill tone={["running", "complete", "skipped"].includes(derivedWorkState) ? "green" : "yellow"}>
               {displayStepStatus(currentStep)}
             </StatusPill>
             <span style={ownerBadgeStyle(mode)}>
@@ -2195,12 +2215,6 @@ function FocusedActionLifecyclePanel({
             {currentStepProgressLine(currentStep, action)}
           </p>
         ) : null}
-        {artifactStep ? (
-          <AssistStepArtifactPanel
-            step={artifactStep.step}
-            artifact={artifactStep.artifact}
-          />
-        ) : null}
         {canStartCurrentStep(currentStep) ? (
           <div style={currentStepActionRowStyle}>
             <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
@@ -2220,7 +2234,7 @@ function FocusedActionLifecyclePanel({
               Or just tell me to go ahead in the chat.
             </span>
           </div>
-        ) : status === "running" ? (
+        ) : derivedWorkState === "running" ? (
           <div style={currentStepActionRowStyle}>
             <Form method="post" style={inlineFormStyle}>
               <input type="hidden" name="intent" value="action.step.stop" />
@@ -2236,7 +2250,7 @@ function FocusedActionLifecyclePanel({
               Or say “stop” in the chat.
             </span>
           </div>
-        ) : status === "needs_merchant" && canCompleteCurrentStep(currentStep) ? (
+        ) : derivedWorkState === "needs_input" && canCompleteCurrentStep(currentStep) ? (
           <div style={currentStepActionRowStyle}>
             <Form method="post" style={inlineFormStyle}>
               <input type="hidden" name="intent" value="action.step.complete" />
@@ -2254,6 +2268,7 @@ function FocusedActionLifecyclePanel({
           </div>
         ) : null}
       </section>
+      <CurrentArtifactsPanel action={action} steps={steps} />
       <FocusedActionPlanBlock
         action={action}
         steps={steps}
@@ -2327,8 +2342,13 @@ function WorkflowStatusSummary({
 function actionStatusLabel(action: MerchantActionView) {
   if (action.status === "accepted") {
     const current = normalizedCurrentStep(action);
-    if (current && typeof current !== "string" && current.status === "ready") {
-      return "Ready to apply";
+    if (current && typeof current !== "string") {
+      const workState = String(current.workState ?? current.status ?? "");
+      if (normalizeDisplayToken(workState) === "available") {
+        // Only true write/execute actions have a Shopify "apply" step.
+        if (action.executable) return "Ready to apply";
+        return "Ready to review";
+      }
     }
   }
   return action.statusLabel || statusLabelForAction(action.status);
@@ -2341,7 +2361,7 @@ function actionSteps(action: MerchantActionView) {
 function completedStepCount(steps: WorkflowStepDisplay[]) {
   return steps.filter((step) => {
     if (typeof step === "string") return false;
-    return step.done || ["completed", "skipped"].includes(String(step.status ?? ""));
+    return stepIsDone(step);
   }).length;
 }
 
@@ -2409,8 +2429,14 @@ function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
 
 function canCompleteCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   if (!step || typeof step === "string") return false;
-  const status = String(step.status ?? "");
   const mode = String(step.mode ?? "");
+  const workState = String(step.workState ?? "");
+  const normalizedWorkState = normalizeDisplayToken(workState);
+  if (normalizedWorkState === "needs_input") {
+    return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
+  }
+  // Back-compat fallback when workProjection isn't present on older rows.
+  const status = String(step.status ?? "");
   if (status !== "needs_merchant") return false;
   return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
 }
@@ -2428,17 +2454,12 @@ function findStepWithAssistArtifact(
   currentStep: WorkflowStepDisplay | null | undefined,
   steps: WorkflowStepDisplay[],
 ) {
+  void steps;
   if (currentStep && typeof currentStep !== "string") {
     const currentArtifact = stepAssistArtifact(currentStep);
     if (currentArtifact) {
       return { step: currentStep, artifact: currentArtifact };
     }
-  }
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
-    const step = steps[index];
-    if (typeof step === "string") continue;
-    const artifact = stepAssistArtifact(step);
-    if (artifact) return { step, artifact };
   }
   return null;
 }
@@ -2446,18 +2467,31 @@ function findStepWithAssistArtifact(
 function AssistStepArtifactPanel({
   step,
   artifact,
+  stale,
+  current,
 }: {
   step: Exclude<WorkflowStepDisplay, string>;
   artifact: Record<string, unknown>;
+  stale?: boolean;
+  current?: boolean;
 }) {
   const items = Array.isArray(artifact.items) ? artifact.items : [];
   const body = typeof artifact.body === "string" ? artifact.body.trim() : "";
+  const artifactType = String(artifact.artifactType ?? "").trim();
+  const titleByType =
+    artifactType === "replenishment_proposal"
+      ? "Replenishment proposal"
+      : artifactType === "supplier_email_draft"
+        ? "Supplier email draft"
+        : artifactType === "inventory_review"
+          ? "Review low-cover inventory"
+          : String(artifact.title ?? displayStepLabel(step, 0));
   return (
-    <section style={assistArtifactPanelStyle} aria-label="Step proposal">
+    <section style={assistArtifactPanelStyle} aria-label="Current artifact">
       <div style={assistArtifactHeaderStyle}>
-        <Mono>PROPOSAL</Mono>
+        <Mono>{current ? "CURRENT" : stale ? "Needs updating" : "ARTIFACT"}</Mono>
         <span style={assistArtifactTitleStyle}>
-          {String(artifact.title ?? displayStepLabel(step, 0))}
+          {titleByType}
         </span>
       </div>
       {artifact.summary ? (
@@ -2480,6 +2514,99 @@ function AssistStepArtifactPanel({
       {artifact.nextPrompt ? (
         <p style={assistArtifactPromptStyle}>{String(artifact.nextPrompt)}</p>
       ) : null}
+    </section>
+  );
+}
+
+function CurrentArtifactsPanel({
+  action,
+  steps,
+}: {
+  action: MerchantActionView;
+  steps: WorkflowStepDisplay[];
+}) {
+  const currentStep = normalizedCurrentStep(action);
+  const currentStepId =
+    currentStep && typeof currentStep !== "string" ? String(currentStep.id ?? "") : null;
+
+  const artifacts = Array.isArray(action.workProjection?.artifacts)
+    ? action.workProjection?.artifacts.filter(Boolean)
+    : [];
+
+  const stepById = new Map<string, Exclude<WorkflowStepDisplay, string>>();
+  const stepIndex = new Map<string, number>();
+  steps.forEach((s, i) => {
+    if (typeof s === "string") return;
+    if (!s?.id) return;
+    stepById.set(String(s.id), s);
+    stepIndex.set(String(s.id), i);
+  });
+
+  const cards: Array<{
+    entry: NonNullable<(typeof artifacts)[number]>;
+    step: Exclude<WorkflowStepDisplay, string>;
+    artifact: Record<string, unknown>;
+  }> = [];
+
+  const pushCardForStep = (step: Exclude<WorkflowStepDisplay, string>, entry: any) => {
+    const artifact = stepAssistArtifact(step);
+    if (!artifact) return;
+    const artifactType = String(entry?.artifactType ?? artifact.artifactType ?? "");
+    // The "current artifacts" area is for the merchant handoff; hide upstream
+    // inventory review unless it's the current work card.
+    if (artifactType === "inventory_review" && currentStepId && step.id !== currentStepId) return;
+    cards.push({ entry, step, artifact });
+  };
+
+  if (artifacts.length > 0) {
+    for (const entry of artifacts) {
+      const stepId = entry?.stepId ? String(entry.stepId) : "";
+      const step = stepById.get(stepId);
+      if (!step) continue;
+      pushCardForStep(step, entry);
+    }
+  } else {
+    // Fallback: show any assist artifacts on steps (older payloads).
+    for (const step of steps) {
+      if (typeof step === "string") continue;
+      const artifact = stepAssistArtifact(step);
+      if (!artifact) continue;
+      pushCardForStep(step, { artifactType: artifact.artifactType ?? null, stale: step.workStale, current: step.workState === "complete" });
+    }
+  }
+
+  if (cards.length === 0) return null;
+
+  const sorted = cards.sort((a, b) => {
+    const ac = Boolean(a.entry.current);
+    const bc = Boolean(b.entry.current);
+    if (ac !== bc) return ac ? -1 : 1;
+    const ai = stepIndex.get(String(a.step.id ?? "")) ?? 0;
+    const bi = stepIndex.get(String(b.step.id ?? "")) ?? 0;
+    return ai - bi;
+  });
+
+  return (
+    <section
+      style={{
+        borderTop: `1px solid ${COLORS.hairline}`,
+        marginTop: 16,
+        paddingTop: 16,
+      }}
+      aria-label="Current artifacts"
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Mono>CURRENT ARTIFACTS</Mono>
+        {sorted.map(({ entry, step, artifact }) => (
+          <AssistStepArtifactPanel
+            key={String(entry?.stepId ?? step.id ?? "")}
+            step={step}
+            artifact={artifact}
+            stale={Boolean(entry?.stale)}
+            current={Boolean(entry?.current)}
+          />
+        ))}
+      </div>
     </section>
   );
 }
@@ -2577,8 +2704,11 @@ function WorkflowStepRow({
   const ownerBadge = workflowStepOwnerBadge(step);
   const description = displayStepDescription(step);
   const status = displayStepStatus(step);
-  const normalizedStatus = typeof step === "string" ? "" : String(step.status ?? "");
-  const isActive = highlighted || ["ready", "running", "needs_merchant", "needs_attention"].includes(normalizedStatus);
+  const workState = typeof step === "string" ? "" : String(step.workState ?? "");
+  const normalizedWorkState = normalizeDisplayToken(workState);
+  const isActive =
+    highlighted ||
+    ["available", "running", "needs_input", "needs_attention", "needs_updating"].includes(normalizedWorkState);
   const compact = variant === "focus";
   return (
     <div style={workflowStepRowStyle(isActive, variant)}>
@@ -3158,34 +3288,44 @@ function stepTreatment(
 }
 
 function stepIsTerminal(step: WorkflowStepDisplay) {
-  const status = normalizeDisplayToken(typeof step === "string" ? "" : step.status);
+  if (typeof step === "string") return false;
+  const workState = normalizeDisplayToken(String(step.workState ?? ""));
+  if (["complete", "skipped"].includes(workState)) return true;
+  const status = normalizeDisplayToken(String(step.status ?? ""));
   return ["completed", "skipped", "superseded"].includes(status) || stepIsDone(step);
 }
 
 function stepIsDone(step: WorkflowStepDisplay) {
   if (typeof step === "string") return false;
+  const workState = normalizeDisplayToken(String(step.workState ?? ""));
+  if (["complete", "skipped"].includes(workState)) return true;
   return Boolean(step.done) || normalizeDisplayToken(step.status) === "completed";
 }
 
 function currentStepStatusLabel(step: WorkflowStepDisplay) {
-  const status = normalizeDisplayToken(typeof step === "string" ? "" : step.status);
+  const workState = normalizeDisplayToken(
+    typeof step === "string" ? "" : String(step.workState ?? step.status ?? "")
+  );
   const mode = normalizeDisplayToken(workflowStepMode(step));
-  if (["blocked", "failed", "needs_attention"].includes(status)) {
+  if (["needs_attention", "blocked", "failed"].includes(workState)) {
     return "Needs attention";
   }
   if (
-    status === "needs_merchant" ||
+    workState === "needs_input" ||
     ["merchant_action", "evidence_required"].includes(mode)
   ) {
     return "Needs you";
   }
-  if (["running", "in_progress"].includes(status)) {
+  if (["running", "in_progress"].includes(workState)) {
     return "Jefe is working";
   }
-  if (["", "draft", "pending", "proposed", "ready"].includes(status)) {
+  if (["", "draft", "pending", "proposed", "available", "ready"].includes(workState)) {
     return "Ready";
   }
-  return statusLabelForAction(status);
+  if (workState === "needs_updating") return "Needs updating";
+  if (workState === "complete") return "Done";
+  if (workState === "skipped") return "Skipped";
+  return statusLabelForAction(workState);
 }
 
 function inProgressStepStatusLabel(
@@ -3207,16 +3347,39 @@ function normalizeDisplayToken(value: unknown) {
 
 function displayStepStatus(step: WorkflowStepDisplay) {
   if (typeof step === "string") return "proposed";
-  const status = step.status || (step.done ? "completed" : "proposed");
-  if (status === "draft" || status === "proposed") {
-    return "starts after acceptance";
+  const workState = String(step.workState ?? "").trim();
+  if (workState) {
+    switch (normalizeDisplayToken(workState)) {
+      case "available":
+        return "ready";
+      case "running":
+        return "working";
+      case "needs_input":
+        return "needs you";
+      case "needs_attention":
+        return "needs attention";
+      case "needs_updating":
+        return "needs updating";
+      case "blocked":
+        return "waiting";
+      case "complete":
+        return "done";
+      case "skipped":
+        return "skipped";
+      default:
+        return workState.replace(/_/g, " ");
+    }
   }
-  if (status === "waiting") return "waiting";
-  if (status === "completed") return "done";
-  if (status === "needs_merchant") return "needs you";
-  if (status === "needs_attention") return "needs attention";
-  if (status === "running") return "working";
-  return status.replace(/_/g, " ");
+
+  // Back-compat fallback when workProjection isn't attached yet.
+  const persisted = step.status || (step.done ? "completed" : "proposed");
+  if (persisted === "draft" || persisted === "proposed") return "starts after acceptance";
+  if (persisted === "waiting") return "waiting";
+  if (persisted === "completed") return "done";
+  if (persisted === "needs_merchant") return "needs you";
+  if (persisted === "needs_attention") return "needs attention";
+  if (persisted === "running") return "working";
+  return String(persisted).replace(/_/g, " ");
 }
 
 function workflowStepMode(step: WorkflowStepDisplay) {
