@@ -352,7 +352,7 @@ export async function advanceCurrentActionStep(prisma, input) {
         current =
           pickCurrentStep(refreshed) ??
           (unlocked.currentStep?.id
-            ? refreshed.find((step) => step.id === unlocked.currentStep.id) ?? null
+            ? refreshed.find((/** @type {any} */ step) => step.id === unlocked.currentStep?.id) ?? null
             : null);
       }
     }

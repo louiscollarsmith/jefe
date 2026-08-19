@@ -12,6 +12,7 @@ import {
   resolveActionContext,
   snapshotFromResolvedContext,
 } from "./resolved-action-context.server.js";
+import { scheduleProactivePlanAfterTerminalState } from "../merchant-plan/proactive-recommendation-trigger.server.js";
 
 const log = baseLogger.child({ component: "action-step-lifecycle" });
 
@@ -617,6 +618,11 @@ export async function advanceActionWorkflow(prisma, input) {
     await prisma.merchantRecommendationWorkflow.updateMany({
       where: { id: input.workflowId, merchantId: input.merchantId, shopId: input.shopId },
       data: { status: "completed" },
+    });
+    scheduleProactivePlanAfterTerminalState(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      trigger: "workflow_completed",
     });
     return { currentStep: null, completed: true };
   }

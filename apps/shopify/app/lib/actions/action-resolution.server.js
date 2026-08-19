@@ -24,6 +24,7 @@ import {
 } from "./listing-copy-adapter.server.js";
 import { buildStaleListingTidyUpProposal } from "./stale-listing-tidy-up.server.js";
 import { buildActionRaise } from "./action-raise.server.js";
+import { scheduleProactivePlanAfterTerminalState } from "../merchant-plan/proactive-recommendation-trigger.server.js";
 import {
   DEFAULT_PRODUCT_STATUS_CAPS,
   buildProductStatusPreview,
@@ -1260,6 +1261,11 @@ export async function rejectAction(prisma, input) {
       reasonText: input.reasonText ?? input.reason ?? null,
     }),
   );
+  scheduleProactivePlanAfterTerminalState(prisma, {
+    merchantId: execution.merchantId,
+    shopId: execution.shopId,
+    trigger: "execution_rejected",
+  });
   return { status: "rejected", execution: rejected };
 }
 

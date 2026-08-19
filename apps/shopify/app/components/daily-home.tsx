@@ -2173,7 +2173,7 @@ function FocusedActionLifecyclePanel({
         ) : null}
         {currentStep.workStale ? (
           <p style={currentStepReasonStyle}>
-            Earlier results are out of date — I'll re-run this when you continue.
+            Earlier results are out of date — I&apos;ll re-run this when you continue.
           </p>
         ) : null}
         {Array.isArray(currentStep.blockers) && currentStep.blockers.length > 0 ? (

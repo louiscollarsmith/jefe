@@ -19,6 +19,7 @@ import {
   inspectRestockEvidence,
   recommendedPurchaseUnits,
 } from "./action-capability.server.js";
+import { deriveScopeStatus } from "./listing-copy-scope.server.js";
 
 const log = baseLogger.child({ component: "resolved-action-context" });
 
@@ -42,6 +43,14 @@ export function actionRuntimeKind(action) {
   ]
     .join(" ")
     .toLowerCase();
+  if (
+    /\blisting_copy\b/.test(haystack) ||
+    /\b(product types?|missing product types?|categoris(?:e|ing)|unassigned products?)\b/.test(
+      haystack,
+    )
+  ) {
+    return "listing_copy";
+  }
   if (/\b(restock|replenish(?:ment)?|reorder|stock cover|supplier order)\b/.test(haystack)) {
     return "restock";
   }
@@ -77,15 +86,17 @@ export async function resolveActionContext(prisma, input) {
     shopId: input.shopId,
     changes: candidates,
   });
+  const scopeDiscovery = jsonObject(action?.progress?.scopeDiscovery);
   const scope = resolveActionScope({
     candidates,
     constraints,
     catalog,
     planValues: plan.values,
     kind,
+    scopeDiscovery,
   });
   const constraintVersion = hashPayload(
-    constraints.map((row) => ({ id: row.id, kind: row.kind, params: row.params })),
+    constraints.map((/** @type {any} */ row) => ({ id: row.id, kind: row.kind, params: row.params })),
   );
   const inputHash = hashResolvedActionInput({
     planValues: plan.values,
@@ -121,7 +132,9 @@ export async function resolveActionContext(prisma, input) {
     coverDays: plan.values.coverDays ?? null,
     markdownPercent: plan.values.markdownPercent ?? null,
     scopeCount: scope.items.length,
+    scopeStatus: scope.status,
     excludedCount: scope.excluded.length,
+    scopeDiscovered: Boolean(scopeDiscovery.discoveredAt),
     currentStepId: currentStep?.id ?? null,
     conversationId: input.conversationId ?? null,
   });
@@ -182,12 +195,14 @@ export function resolvePlanValues(action, kind = actionRuntimeKind(action)) {
  *   catalog?: Record<string, any>;
  *   planValues?: Record<string, number>;
  *   kind?: string;
+ *   scopeDiscovery?: Record<string, any> | null;
  * }} input
  */
 export function resolveActionScope(input) {
   const kind = input.kind ?? "generic";
   const planValues = input.planValues ?? {};
   const candidates = Array.isArray(input.candidates) ? input.candidates : [];
+  const scopeDiscovery = input.scopeDiscovery ?? null;
   const planned =
     kind === "markdown" ? applyMarkdownPlan(candidates, planValues.markdownPercent) : candidates;
   const filtered = applyConstraintsToPreview(
@@ -222,6 +237,8 @@ export function resolveActionScope(input) {
       discountPercent: numberOrNull(change.discountPercent),
       toType: change.toType ?? change.proposedType ?? null,
       fromType: change.fromType ?? null,
+      confidence: change.confidence ?? null,
+      because: change.because ?? null,
       reason:
         kind === "restock" && planValues.coverDays
           ? `${planValues.coverDays} days of cover`
@@ -230,12 +247,21 @@ export function resolveActionScope(input) {
       status: change.status ?? null,
     };
   });
+  const status = deriveScopeStatus({
+    kind,
+    candidateCount: candidates.length,
+    keptCount: items.length,
+    discovery: scopeDiscovery,
+  });
   return {
     items,
     excluded: filtered.excluded,
     candidateCount: candidates.length,
     keptCount: items.length,
     excludedCount: filtered.excludedCount,
+    status,
+    discovery: scopeDiscovery,
+    originalEvidence: scopeDiscovery?.originalEvidence ?? null,
   };
 }
 
@@ -374,6 +400,8 @@ function candidateToChange(item) {
     discountPercent: item?.discountPercent ?? null,
     toType: item?.toType ?? item?.proposedType ?? null,
     fromType: item?.fromType ?? null,
+    confidence: item?.confidence ?? null,
+    because: item?.because ?? null,
     reason: item?.reason ?? null,
     tags: Array.isArray(item?.tags) ? item.tags : [],
     status: item?.status ?? null,
@@ -442,6 +470,9 @@ function normalizeMatch(value) {
  *     candidateCount: number;
  *     keptCount: number;
  *     excludedCount: number;
+ *     status: string;
+ *     discovery?: Record<string, any> | null;
+ *     originalEvidence?: Record<string, any> | null;
  *   };
  *   evidence: { kind: string; loadedAt: string; candidateCount: number };
  *   inputHash: string;
