@@ -141,11 +141,94 @@ const TOOLS = {
     args: {},
     async run(/** @type {any} */ ctx) {
       const history = await ctx.loadHistory();
+      if (!history.length) {
+        return ok("inspect_history", {
+          effect: TOOL_EFFECT.read,
+          message: "Nothing has changed on this action yet.",
+          facts: { history },
+        });
+      }
+
+      const first = history[0] ?? {};
+      const last = history[history.length - 1] ?? {};
+
+      /** @type {any[]} */
+      const firstChanges = Array.isArray(first.changes) ? first.changes : [];
+      /** @type {any} */
+      const firstResulting = first.resulting ?? {};
+      /** @type {any} */
+      const current = last.resulting ?? {};
+
+      // Prefer persisted truth (`before`) to reconstructing original state.
+      // Fall back to inversion only for legacy revisions.
+      let original = first.before ?? null;
+      if (!original) {
+        original = { ...firstResulting };
+        for (const change of firstChanges) {
+          if (change?.field === "coverDays" && change.from != null) {
+            original.coverDays = change.from;
+          }
+          if (change?.field === "excluded" && typeof change.added === "string") {
+            const title = change.added;
+            original.excluded = (original.excluded ?? []).filter((t) => t !== title);
+            original.included = Array.isArray(original.included)
+              ? [...new Set([...(original.included ?? []), title])]
+              : [title];
+          }
+          if (change?.field === "included" && typeof change.added === "string") {
+            const title = change.added;
+            original.included = (original.included ?? []).filter((t) => t !== title);
+            original.excluded = Array.isArray(original.excluded)
+              ? [...new Set([...(original.excluded ?? []), title])]
+              : [title];
+          }
+        }
+      }
+
+      const includedList = Array.isArray(original.included) ? original.included.join(" + ") : "";
+      const currentIncludedList = Array.isArray(current.included)
+        ? current.included.join(" + ")
+        : "";
+      const originalCover = original.coverDays != null ? Number(original.coverDays) : null;
+      const currentCover = current.coverDays != null ? Number(current.coverDays) : null;
+
+      const narrativeParts = [];
+      narrativeParts.push(
+        originalCover != null && includedList
+          ? `Originally the recommendation covered ${includedList} at ${originalCover}-day cover.`
+          : originalCover != null
+            ? `Originally the recommendation used ${originalCover}-day cover.`
+            : "Originally the recommendation was different.",
+      );
+
+      // Chronological, from oldest→newest.
+      for (const rev of history) {
+        const changes = Array.isArray(rev.changes) ? rev.changes : [];
+        for (const change of changes) {
+          if (change?.field === "coverDays") {
+            const to = change.to;
+            if (to != null) narrativeParts.push(`You moved to ${to}-day cover.`);
+          }
+          if (change?.field === "excluded" && typeof change.added === "string") {
+            narrativeParts.push(`You removed ${change.added}.`);
+          }
+          if (change?.field === "included" && typeof change.added === "string") {
+            narrativeParts.push(`You added ${change.added} back into scope.`);
+          }
+        }
+      }
+
+      if (currentCover != null && currentIncludedList) {
+        narrativeParts.push(
+          `The current proposal is ${currentIncludedList} at ${currentCover}-day cover.`,
+        );
+      } else if (currentCover != null) {
+        narrativeParts.push(`The current proposal uses ${currentCover}-day cover.`);
+      }
+
       return ok("inspect_history", {
         effect: TOOL_EFFECT.read,
-        message: history.length
-          ? history.map((/** @type {any} */ row) => row.summary).join(" ")
-          : "Nothing has changed on this action yet.",
+        message: narrativeParts.join(" "),
         facts: { history },
       });
     },

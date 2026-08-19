@@ -52,6 +52,8 @@ export async function resolveActionState(prisma, input) {
   const planVersion = resolved?.plan?.version ?? null;
   const constraintVersion = resolved?.constraintVersion ?? null;
   const inputHash = resolved?.inputHash ?? null;
+  const scopeVersion = resolved?.scopeVersion ?? null;
+  const evidenceVersion = resolved?.evidenceVersion ?? null;
 
   /** @type {any[]} */
   const work = steps.map((step) => {
@@ -60,9 +62,21 @@ export async function resolveActionState(prisma, input) {
       const dep = byId.get(String(id));
       if (!dep) return true;
       if (!isTerminal(dep)) return false;
-      return !isArtifactStale(dep, { planVersion, constraintVersion, inputHash });
+      return !isArtifactStale(dep, {
+        planVersion,
+        constraintVersion,
+        inputHash,
+        scopeVersion,
+        evidenceVersion,
+      });
     });
-    const stale = isArtifactStale(step, { planVersion, constraintVersion, inputHash });
+    const stale = isArtifactStale(step, {
+      planVersion,
+      constraintVersion,
+      inputHash,
+      scopeVersion,
+      evidenceVersion,
+    });
     const persisted = String(step.status ?? "");
 
     // Blockers are a property of the dependency graph, not of which branch
@@ -72,7 +86,13 @@ export async function resolveActionState(prisma, input) {
     /** @type {any[]} */
     const blockers = depsSatisfied
       ? []
-      : dependencyBlockers(deps, byId, { planVersion, constraintVersion, inputHash });
+      : dependencyBlockers(deps, byId, {
+          planVersion,
+          constraintVersion,
+          inputHash,
+          scopeVersion,
+          evidenceVersion,
+        });
 
     /** @type {WorkState} */
     let state = "blocked";
@@ -275,7 +295,7 @@ export function workNeedsExecution(workRow) {
   return true;
 }
 
-/** @param {any} step @param {{ planVersion?: string | null; constraintVersion?: string | null; inputHash?: string | null }} versions */
+/** @param {any} step @param {{ planVersion?: string | null; constraintVersion?: string | null; inputHash?: string | null; scopeVersion?: string | null; evidenceVersion?: string | null }} versions */
 export function isArtifactStale(step, versions) {
   const progress = step?.progress;
   if (!progress || typeof progress !== "object" || !progress.artifactType) return false;
@@ -293,6 +313,20 @@ export function isArtifactStale(step, versions) {
     progress.constraintVersion &&
     versions.constraintVersion &&
     progress.constraintVersion !== versions.constraintVersion
+  ) {
+    return true;
+  }
+  if (
+    progress.scopeVersion &&
+    versions.scopeVersion &&
+    progress.scopeVersion !== versions.scopeVersion
+  ) {
+    return true;
+  }
+  if (
+    progress.evidenceVersion &&
+    versions.evidenceVersion &&
+    progress.evidenceVersion !== versions.evidenceVersion
   ) {
     return true;
   }

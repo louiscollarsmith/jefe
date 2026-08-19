@@ -97,6 +97,7 @@ export function resolveWorkChain(state, targetStepId) {
  *   shopId: string;
  *   actionId: string;
  *   stepId: string;
+ *   provider?: any;
  *   actor?: string | null;
  *   conversationId?: string | null;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
@@ -260,6 +261,7 @@ export async function runAssistStepById(prisma, input) {
       actionId: input.actionId,
       conversationId: input.conversationId ?? null,
       resolvedContext: resolved,
+      provider: input.provider ?? null,
       logger,
     });
   } catch (error) {

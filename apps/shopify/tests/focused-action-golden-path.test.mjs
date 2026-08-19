@@ -204,6 +204,138 @@ test("golden path: eight turns on one replenishment action", async () => {
   assert.equal(draftsAfter, draftsBefore, "no supplier email should have been generated");
 });
 
+test("full regression conversation: proposal → simulate → email → history → proposal only", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const supplierStep = stepByTitle(prisma, "supplier");
+  const supplierRuns = () =>
+    prisma.state.stepRuns.filter((row) => row.stepId === supplierStep.id).length;
+
+  /* -- Turn 1: proposal only (merchant did NOT ask for email) ------------ */
+  const t1 = await turn(
+    prisma,
+    "Only replenish Picnic Xinomavro, use 90 days instead of 120, and show me the proposal.",
+    [
+      { tool: "restrict_to_products", arguments: { productTitle: "Picnic Xinomavro" } },
+      { tool: "update_plan", arguments: { coverDays: 90 } },
+      { tool: "build_replenishment_proposal", arguments: {} },
+    ],
+    null,
+  );
+
+  assert.equal(t1.outcome, TURN_OUTCOME.success);
+  assert.equal(prisma.state.action.plan.coverDays, 90);
+
+  const s1 = await state(prisma);
+  assert.deepEqual(
+    s1.scope.items.map((item) => item.title),
+    ["Picnic Xinomavro"],
+  );
+  assert.equal(s1.scope.items[0].recommendedUnits, unitsFor(90));
+  assert.equal(s1.scope.excluded[0].title, "Pear Skin Sipon");
+  assert.equal(supplierRuns(), 0, "no supplier email should be generated yet");
+  assert.doesNotMatch(String(t1.reply), /Hi,|Could we please place|Please confirm lead time/i);
+
+  /* -- Turn 2: hypothetical must not persist --------------------------- */
+  const t2 = await turn(
+    prisma,
+    "What would 60 days look like? Don't change it.",
+    [{ tool: "simulate_plan", arguments: { coverDays: 60 } }],
+    null,
+  );
+
+  assert.match(t2.reply, /\b6\b/);
+  assert.equal(prisma.state.action.plan.coverDays, 90, "simulation must not persist");
+  assert.equal(supplierRuns(), 0, "still no email yet");
+
+  /* -- Turn 3: persist + draft email (explicit request) ---------------- */
+  const t3 = await turn(
+    prisma,
+    "Use 60 and draft the supplier email.",
+    [
+      { tool: "update_plan", arguments: { coverDays: 60 } },
+      { tool: "draft_supplier_email", arguments: {} },
+    ],
+  );
+
+  assert.equal(t3.outcome, TURN_OUTCOME.success);
+  assert.equal(prisma.state.action.plan.coverDays, 60);
+  assert.equal(supplierRuns(), 1);
+
+  const supplierAfterT3 = stepByTitle(prisma, "supplier");
+  const draftBody3 = JSON.stringify(supplierAfterT3.progress);
+  assert.match(draftBody3, /Picnic Xinomavro/);
+  assert.match(draftBody3, /\b6\b/);
+  assert.doesNotMatch(draftBody3, /Pear Skin Sipon/);
+
+  /* -- Turn 4: put Pear back and redo proposal + email ---------------- */
+  const t4 = await turn(
+    prisma,
+    "Put Pear back in and redo the proposal and email.",
+    [
+      { tool: "include_product_again", arguments: { productTitle: "Pear Skin Sipon" } },
+      { tool: "draft_supplier_email", arguments: {} },
+    ],
+  );
+
+  assert.equal(t4.outcome, TURN_OUTCOME.success);
+  const s4 = await state(prisma);
+  assert.deepEqual(
+    s4.scope.items.map((item) => `${item.title}:${item.recommendedUnits}`).sort(),
+    ["Pear Skin Sipon:6", "Picnic Xinomavro:6"],
+  );
+  const draftBody4 = JSON.stringify(stepByTitle(prisma, "supplier").progress);
+  assert.match(draftBody4, /Pear Skin Sipon/);
+  assert.match(draftBody4, /Picnic Xinomavro/);
+
+  /* -- Turn 5: what should I do next? (no generic fallback) ---------- */
+  const t5 = await turn(prisma, "What should I do next?", [], null);
+  assert.doesNotMatch(t5.reply, /I haven't changed anything/i);
+  assert.match(t5.reply, /send|supplier/i);
+
+  /* -- Turn 6: coherent, grounded history ------------------------------ */
+  const t6 = await turn(
+    prisma,
+    "What changed from the original?",
+    [{ tool: "inspect_history", arguments: {} }],
+    null,
+  );
+  assert.match(t6.reply, /120/);
+  assert.match(t6.reply, /90/);
+  assert.match(t6.reply, /60/);
+  assert.match(t6.reply, /Pear Skin Sipon/);
+  assert.match(t6.reply, /Picnic Xinomavro/);
+
+  /* -- Turn 7: proposal-only again; no email, even if model asks ---- */
+  const draftsBeforeT7 = supplierRuns();
+  const t7 = await turn(
+    prisma,
+    "Go back to 90 days, remove Pear, update the proposal, but don't draft another email.",
+    [
+      { tool: "update_plan", arguments: { coverDays: 90 } },
+      { tool: "exclude_product", arguments: { productTitle: "Pear Skin Sipon" } },
+      { tool: "build_replenishment_proposal", arguments: {} },
+    ],
+    null,
+  );
+
+  const s7 = await state(prisma);
+  assert.equal(s7.plan.coverDays ?? prisma.state.action.plan.coverDays, 90);
+  assert.deepEqual(
+    s7.scope.items.map((item) => `${item.title}:${item.recommendedUnits}`),
+    ["Picnic Xinomavro:9"],
+  );
+  assert.equal(supplierRuns(), draftsBeforeT7, "no new supplier email should be generated");
+  assert.doesNotMatch(t7.reply, /Hi,|Could we please place|Please confirm lead time/i);
+
+  const supplierArtifacts7 = (await state(prisma)).artifacts.filter(
+    (a) => String(a?.artifactType ?? "") === "supplier_email_draft",
+  );
+  assert.ok(
+    supplierArtifacts7.length > 0 && supplierArtifacts7.some((a) => a.current === false),
+    "supplier email artifact must be marked stale (not current) after proposal scope changes",
+  );
+});
+
 test("a downstream outcome runs its own prerequisites from a cold start", async () => {
   const prisma = buildActionFixture({ kind: "restock" });
 
