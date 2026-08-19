@@ -907,8 +907,13 @@ async function persistRecommendationWorkflow(tx, { merchantId, shopId, recommend
     where: { workflowId: persistedWorkflow.id, status: "draft" },
   });
   if (steps.length === 0) return persistedWorkflow;
+  // Map LLM-generated placeholder IDs (e.g. "step_1") to real UUIDs so that
+  // dependsOnStepIds references resolve against actual DB rows.
+  const { randomUUID } = await import("crypto");
+  const llmIdToUuid = new Map(steps.map((step) => [String(step.id ?? ""), randomUUID()]));
   await tx.merchantRecommendationStep.createMany({
     data: steps.map((step, index) => ({
+      id: llmIdToUuid.get(String(step.id ?? "")),
       workflowId: persistedWorkflow.id,
       recommendationId: recommendation.id,
       merchantId,
@@ -920,7 +925,9 @@ async function persistRecommendationWorkflow(tx, { merchantId, shopId, recommend
       status: "draft",
       mode: step.mode,
       capabilityRef: step.capabilityRef ?? null,
-      dependsOnStepIds: step.dependsOnStepIds ?? [],
+      dependsOnStepIds: (step.dependsOnStepIds ?? [])
+        .map((id) => llmIdToUuid.get(String(id)) ?? null)
+        .filter(Boolean),
       evidenceIds: [],
     })),
   });

@@ -189,6 +189,35 @@ export const ACTION_REGISTRY = {
   //     (action-ontology-audit-2026-08-12.md §4) and a founder call, not a build task.
   // The subtitle was changed to describe what this actually does. Widening the family is
   // adding target kinds here, each with its own resolver — never loosening this one.
+  // ⚠️ NOT YET LIVE. Flag-gated behind INVENTORY_TRANSFER_EXECUTE_ENABLED (default off).
+  // Requires write_inventory_transfers OAuth scope (added to shopify.app.toml 2026-08-19).
+  // The adapter is wired but the execute path is closed until the founder flips the flag.
+  // A restock action can add this as a plan step via `add_plan_step`; until the flag is on,
+  // Jefe proposes and instructs (no dead ends — the adapter's preview runs fine).
+  shopify_inventory_transfer: {
+    label: "Create Shopify inventory transfer",
+    description:
+      "Create a Shopify inventory transfer to move stock from one location to another, matching the approved replenishment quantities.",
+    targetKinds: ["restock"],
+    reversible: false,
+    primitive: "inventory-transfer-adapter",
+    executeFlag: "INVENTORY_TRANSFER_EXECUTE_ENABLED",
+    requiredScopes: ["write_inventory_transfers"],
+    applicability: {
+      suits: ["tracked_stock"],
+      unsuitedWhen: ["made_to_order"],
+    },
+    outcome: {
+      // What fraction of line items in the transfer reached status COMPLETE (all
+      // units accepted by the destination). A transfer Shopify rejects entirely
+      // scores 0; a fully accepted transfer scores 100.
+      // ⚠️ Proposed defaults — no transfer runs have been scored yet. Revisit once real data exists.
+      metric: "transferCompletenessPercent",
+      windowDays: 7,
+      baseline: 0,
+      verdict: { goodAtOrAbove: 95, underperformedAtOrBelow: 50 },
+    },
+  },
   tidy_up: {
     label: "Tidy up the storefront",
     description:

@@ -636,6 +636,27 @@ const TOOLS = {
       return assistResultToTool("run_work_item", result, await ctx.reloadState());
     },
   },
+
+  add_plan_step: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: "*",
+    description:
+      "Add a new step to this action's plan. Use when the merchant wants to extend the workflow with an additional piece of work — for example 'add a step to create a Shopify transfer'. The step is persisted to the plan, not simulated.",
+    args: {
+      title: { type: "string", required: true },
+      description: { type: "string" },
+      capabilityRef: { type: "string" },
+      mode: { type: "string" },
+    },
+    async run(/** @type {any} */ ctx, /** @type {any} */ args) {
+      return ctx.runCommandWithDiff("add_plan_step", ACTION_COMMAND.ADD_PLAN_STEP, {
+        title: args.title,
+        description: args.description,
+        capabilityRef: args.capabilityRef,
+        mode: args.mode,
+      });
+    },
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -898,6 +919,13 @@ export function planFacts(state) {
 }
 
 /** @param {any} state */
+export function workflowStepTitles(state) {
+  return (state?.work ?? [])
+    .map((/** @type {any} */ row) => String(row.step?.title ?? "").trim())
+    .filter(Boolean);
+}
+
+/** @param {any} state */
 export function snapshotFacts(state) {
   return {
     ...planFacts(state),
@@ -1080,6 +1108,14 @@ export function diffFacts(before, after) {
   if (before.lifecycle !== after.lifecycle && after.lifecycle) {
     changes.push({ field: "status", from: before.lifecycle ?? null, to: after.lifecycle });
   }
+  const beforeSteps = before.workStepTitles ?? [];
+  const afterSteps = after.workStepTitles ?? [];
+  for (const title of afterSteps.filter((/** @type {string} */ t) => !beforeSteps.includes(t))) {
+    changes.push({ field: "plan_step_added", added: title });
+  }
+  for (const title of beforeSteps.filter((/** @type {string} */ t) => !afterSteps.includes(t))) {
+    changes.push({ field: "plan_step_removed", removed: title });
+  }
   return changes;
 }
 
@@ -1093,6 +1129,8 @@ export function describeChanges(changes) {
       if (change.field === "excluded") return `${change.added} is excluded`;
       if (change.field === "included") return `${change.added} is back in scope`;
       if (change.field === "status") return `the action is now ${String(change.to).replace(/_/g, " ")}`;
+      if (change.field === "plan_step_added") return `added "${change.added}" to the plan`;
+      if (change.field === "plan_step_removed") return `removed "${change.removed}" from the plan`;
       return null;
     })
     .filter(Boolean);
