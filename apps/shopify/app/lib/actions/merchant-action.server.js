@@ -4,6 +4,7 @@ import { isActionExecuteEnabled } from "./action-intent.server.js";
 import { buildActionRaise } from "./action-raise.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { healInconsistentWorkflow, unlockActiveWorkflowIfNeeded } from "./action-step-lifecycle.server.js";
+import { resolveActionState, applyWorkProjectionToAction } from "./action-state.server.js";
 
 const log = baseLogger.child({ component: "merchant-action" });
 
@@ -427,7 +428,10 @@ export async function listMerchantActions(prisma, input) {
     });
     if (result.unlocked) unlocked = true;
   }
-  if (!unlocked) return rows.map(serializeMerchantAction);
+  if (!unlocked) {
+    const serialized = rows.map(serializeMerchantAction);
+    return Promise.all(serialized.map((row) => attachWorkProjection(prisma, input, row)));
+  }
   const refreshed = await prisma.merchantAction.findMany({
     where: {
       merchantId: input.merchantId,
@@ -445,7 +449,8 @@ export async function listMerchantActions(prisma, input) {
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: 40,
   });
-  return refreshed.map(serializeMerchantAction);
+  const serialized = refreshed.map(serializeMerchantAction);
+  return Promise.all(serialized.map((row) => attachWorkProjection(prisma, input, row)));
 }
 
 /**
@@ -490,6 +495,17 @@ export async function getMerchantActionFocus(prisma, input) {
  * @param {any} prisma
  * @param {{ merchantId: string; shopId: string; actionId?: string | null }} input
  */
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; conversationId?: string | null; skipWorkProjection?: boolean }} input
+ * @param {any} row
+ */
+async function finishMerchantActionLoad(prisma, input, row) {
+  const serialized = serializeMerchantAction(row);
+  if (input.skipWorkProjection) return serialized;
+  return attachWorkProjection(prisma, input, serialized);
+}
+
 export async function getMerchantAction(prisma, input) {
   if (!input.actionId || !prisma?.merchantAction?.findFirst) return null;
   const row = await prisma.merchantAction.findFirst({
@@ -556,7 +572,7 @@ export async function getMerchantAction(prisma, input) {
           },
         },
       });
-      return serializeMerchantAction(fresh ?? row);
+      return finishMerchantActionLoad(prisma, input, fresh ?? row);
     }
   } else if (healed.healed) {
     const fresh = await prisma.merchantAction.findFirst({
@@ -582,10 +598,31 @@ export async function getMerchantAction(prisma, input) {
         },
       },
     });
-    return serializeMerchantAction(fresh ?? row);
+    return finishMerchantActionLoad(prisma, input, fresh ?? row);
   }
 
-  return serializeMerchantAction(row);
+  return finishMerchantActionLoad(prisma, input, row);
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId?: string | null; conversationId?: string | null }} input
+ * @param {any} serialized
+ */
+async function attachWorkProjection(prisma, input, serialized) {
+  if (!serialized?.id || !prisma) return serialized;
+  try {
+    const state = await resolveActionState(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: serialized.id,
+      conversationId: input.conversationId ?? null,
+    });
+    if (state) applyWorkProjectionToAction(serialized, state);
+  } catch {
+    // Best-effort projection — page load must not fail if reconciliation hiccups.
+  }
+  return serialized;
 }
 
 /**
@@ -1111,6 +1148,7 @@ function actionHasProblem(action) {
 function actionHasReadyExecutableStep(action) {
   const step = currentWorkflowStep(action);
   if (!step) return false;
+  const workState = normalizeToken(step.workState);
   const status = normalizeToken(step.status);
   return (
     action?.status === MERCHANT_ACTION_STATUS.accepted &&
@@ -1118,13 +1156,24 @@ function actionHasReadyExecutableStep(action) {
     action?.executable !== false &&
     normalizeToken(action?.executionStatus) === "proposed" &&
     normalizeToken(step.mode) === "execute" &&
-    ["", "draft", "pending", "proposed", "ready"].includes(status)
+    (workState === "available" ||
+      ["", "draft", "pending", "proposed", "ready"].includes(status))
   );
 }
 
 /** @param {any} action */
 function currentWorkflowStep(action) {
+  const projected = action?.workProjection?.nextUsefulWork?.step;
+  if (projected?.id) {
+    const steps = workflowStepsForFocus(action);
+    const match = steps.find((/** @type {any} */ step) => step?.id === projected.id);
+    if (match) return match;
+  }
   return workflowStepsForFocus(action).find((/** @type {any} */ step) => {
+    const workState = normalizeToken(step.workState);
+    if (workState === "available" || workState === "needs_updating" || workState === "running") {
+      return true;
+    }
     const status = normalizeToken(step.status);
     return !["completed", "skipped", "superseded"].includes(status);
   }) ?? null;

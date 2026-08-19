@@ -150,7 +150,8 @@ export function resolveStepCandidates(steps, hint) {
   const candidates = [];
 
   for (const step of ordered) {
-    const title = String(step.title ?? "").toLowerCase();
+    const displayTitle = step.title ?? step.label ?? "";
+    const title = String(displayTitle).toLowerCase();
     let score = 0;
     if (title.includes(normalized) || normalized.includes(title)) score += 10;
     if (/\bstep\s+(\d+)\b/i.test(normalized)) {
@@ -177,7 +178,7 @@ export function resolveStepCandidates(steps, hint) {
       if (/supplier|communication|draft|email/.test(title)) score += 10;
     }
     if (score > 0) {
-      candidates.push({ step, score, label: step.title ?? "step" });
+      candidates.push({ step, score, label: displayTitle || "step" });
     }
   }
 
@@ -214,13 +215,16 @@ export function resolveStepTargetOrClarify(steps, hint) {
       ambiguous: true,
       question:
         "Do you want to revisit how I calculated the quantities, or the final replenishment proposal?",
-      candidates: top.map((item) => ({
-        stepId: item.step.id,
-        label: item.label,
-        hint: /inventory|review|cover|calculat/.test(String(item.label ?? "").toLowerCase())
-          ? "cover calculation inventory review"
-          : "proposal quantities",
-      })),
+      candidates: top.map((item) => {
+        const title = String(item.step?.title ?? item.label ?? "").toLowerCase();
+        return {
+          stepId: item.step.id,
+          label: item.step?.title ?? item.label ?? "step",
+          hint: /inventory|review|cover|calculat/.test(title)
+            ? "cover calculation inventory review"
+            : "proposal quantities",
+        };
+      }),
     };
   }
   if (ranked.length === 1 || ranked[0].score > ranked[1].score + 2) {

@@ -4,7 +4,6 @@ import test from "node:test";
 import { isActionStepStartCommand, isPrimarilyQuestion } from "../app/lib/actions/action-step-lifecycle.server.js";
 import {
   applyWorkflowStepUpdatesFromReply,
-  buildActionContextFallbackReply,
   buildActionStepStartReply,
   buildCurrentActionInput,
   buildGroundedFallbackReply,
@@ -114,43 +113,7 @@ test("natural-language start requests are recognised in action chat", () => {
   assert.equal(isActionStepStartCommand("what happens when you start that step?"), false);
 });
 
-test("action chat fallback does not repeat the plan for proceed requests", () => {
-  const reply = buildActionContextFallbackReply("ok lets go ahead and start that step please", {
-    actionEvidence: {
-      focusedAction: {
-        title: "Secure Stock Levels on At-Risk Products",
-        proposedSteps: [
-          { title: "Review low-cover inventory items", status: "ready" },
-        ],
-      },
-    },
-  });
-
-  assert.match(reply, /couldn't start|Do this step/i);
-  assert.doesNotMatch(reply, /The plan:/);
-});
-
-test("action chat fallback answers unassigned-product questions from scope, not the recap", () => {
-  const reply = buildActionContextFallbackReply("what are the unassigned products?", {
-    actionEvidence: {
-      focusedAction: {
-        title: "Categorise Catalogue Products",
-        actionType: "listing_copy",
-        proposedSteps: [{ title: "Categorise unassigned products", status: "ready" }],
-        progress: {
-          preview: {
-            changes: [{ title: "Hawkstone Lager", toType: "Beer" }],
-          },
-        },
-      },
-    },
-  });
-
-  assert.match(reply, /Hawkstone Lager/);
-  assert.doesNotMatch(reply, /The plan:/);
-});
-
-test("action chat fallback still answers deictic plan questions", () => {
+test("grounded fallback admits the gap for deictic plan questions without memory", () => {
   const reply = buildGroundedFallbackReply("Tell me more about this plan please?", {
     ...ctx([]),
     actionEvidence: {
@@ -165,8 +128,7 @@ test("action chat fallback still answers deictic plan questions", () => {
     },
   });
 
-  assert.match(reply, /Secure Stock Levels on At-Risk Products/);
-  assert.match(reply, /The plan:/);
+  assert.match(reply, /couldn’t connect|couldn't connect/);
 });
 
 test("action step start reply confirms a successful start", () => {

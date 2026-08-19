@@ -16,7 +16,7 @@ import {
   acceptMerchantActionPlan,
 } from "../app/lib/actions/action-step-lifecycle.server.js";
 import { assertRunMatchesResolvedContext } from "../app/lib/actions/resolved-action-context.server.js";
-import { createOracleInterpreterProvider } from "./helpers/action-interpreter-oracle.mjs";
+import { createOracleActionProvider } from "./helpers/action-agent-oracle.mjs";
 
 const MERCHANT = "m1";
 const SHOP = "s1";
@@ -310,18 +310,27 @@ async function runCommand(prisma, message) {
     merchantId: MERCHANT,
     shopId: SHOP,
     actionId: ACTION_ID,
-    provider: createOracleInterpreterProvider(),
+    provider: createOracleActionProvider(),
     logger: quietLogger,
   });
-  if (handled.result) {
+  const payload = handled.result ?? null;
+  const command =
+    payload?.command ??
+    payload?.result?.command ??
+    handled.command?.type ??
+    null;
+  if (payload) {
+    const inner = payload.result?.result ?? payload.result ?? payload;
     return {
-      ...handled.result,
-      reply: handled.reply ?? handled.result.reply,
+      ...payload,
+      command,
+      reply: handled.reply ?? payload.reply,
+      result: inner,
     };
   }
   return {
     ok: handled.ok,
-    command: handled.command?.type,
+    command,
     reply: handled.reply,
     reason: handled.command?.reason,
   };

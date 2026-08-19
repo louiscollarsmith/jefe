@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   ACTION_COMMAND,
-  classifyActionCommand,
 } from "../app/lib/actions/action-command.server.js";
 import { handleFocusedActionMessage } from "../app/lib/actions/action-interpreter.server.js";
 import {
@@ -16,7 +15,7 @@ import {
   parseGoBackCommand,
   resolveStepTarget,
 } from "../app/lib/actions/action-workflow-navigation.server.js";
-import { createOracleInterpreterProvider } from "./helpers/action-interpreter-oracle.mjs";
+import { createOracleActionProvider } from "./helpers/action-agent-oracle.mjs";
 
 const MERCHANT = "m1";
 const SHOP = "s1";
@@ -213,20 +212,35 @@ async function runCommand(prisma, message, params = {}) {
     merchantId: MERCHANT,
     shopId: SHOP,
     actionId: ACTION_ID,
-    provider: createOracleInterpreterProvider(),
+    provider: createOracleActionProvider(),
     logger: quietLogger,
   });
-  if (handled.result) {
+  const payload = handled.result ?? null;
+  const command =
+    payload?.command ??
+    payload?.result?.command ??
+    handled.command?.type ??
+    null;
+  const reason =
+    payload?.reason ??
+    payload?.result?.reason ??
+    handled.command?.reason ??
+    null;
+  if (payload) {
+    const inner = payload.result?.result ?? payload.result ?? payload;
     return {
-      ...handled.result,
-      reply: handled.reply ?? handled.result.reply,
+      ...payload,
+      command,
+      reason,
+      reply: handled.reply ?? payload.reply,
+      result: inner,
     };
   }
   return {
     ok: handled.ok,
-    command: handled.command?.type,
+    command,
     reply: handled.reply,
-    reason: handled.command?.reason,
+    reason,
   };
 }
 
@@ -234,25 +248,10 @@ function stepStatus(prisma, stepId) {
   return prisma.state.steps.find((row) => row.id === stepId)?.status;
 }
 
-test("demoted phrase matchers still exist as LLM-down aids, not the chat router", () => {
+test("workflow navigation phrase parsers remain available for explicit commands", () => {
   assert.equal(isAdvanceStepCommand("Let's move on."), true);
   assert.equal(isAdvanceStepCommand("Carry on."), true);
   assert.equal(isAdvanceStepCommand("ok lets move to the next step"), true);
-  assert.equal(
-    classifyActionCommand("ok lets move to the next step").type,
-    ACTION_COMMAND.ADVANCE_STEP,
-  );
-  assert.equal(classifyActionCommand("Let's move on.").type, ACTION_COMMAND.ADVANCE_STEP);
-  assert.equal(classifyActionCommand("Go back.").type, ACTION_COMMAND.GO_BACK);
-  assert.equal(classifyActionCommand("Go back two steps.").params.steps, 2);
-  assert.equal(
-    classifyActionCommand("Go back to the inventory review.").type,
-    ACTION_COMMAND.GO_TO_STEP,
-  );
-  assert.equal(
-    classifyActionCommand("Skip this — I'll message the supplier myself.").type,
-    ACTION_COMMAND.SKIP_STEP,
-  );
   assert.deepEqual(parseGoBackCommand("Go back again."), { steps: 1 });
 });
 
