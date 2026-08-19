@@ -250,3 +250,123 @@ test("scenario G - completely different ordering: simulate → persist → suppl
   assert.match(emailed.reply, /\b9\b/);
 });
 
+const TRANSFER_STEP = {
+  title: "Create Shopify transfer",
+  description: "Move approved replenishment quantities between Shopify locations",
+  capabilityRef: "execute:shopify_inventory_transfer:restock",
+};
+
+function transferSteps(prisma) {
+  return prisma.state.steps.filter((row) =>
+    String(row.title ?? "").toLowerCase().includes("shopify transfer"),
+  );
+}
+
+function assertTransferStepPersisted(prisma, initialCount) {
+  assert.equal(
+    prisma.state.steps.length,
+    initialCount + 1,
+    "canonical plan must gain exactly one new step",
+  );
+  const added = transferSteps(prisma);
+  assert.equal(added.length, 1, "transfer step must be persisted, not chat-only");
+  assert.equal(added[0].capabilityRef, TRANSFER_STEP.capabilityRef);
+  assert.ok(
+    added[0].dependsOnStepIds.length > 0,
+    "new step must declare dependencies on existing workflow steps",
+  );
+  const knownIds = new Set(
+    prisma.state.steps.filter((row) => row !== added[0]).map((row) => row.id),
+  );
+  assert.ok(
+    added[0].dependsOnStepIds.every((id) => knownIds.has(id)),
+    "dependsOnStepIds must reference real step IDs, not LLM placeholders",
+  );
+}
+
+test("scenario H - plan mutation: add Shopify transfer step (wording variant 1)", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const initialCount = prisma.state.steps.length;
+
+  const result = await turn(
+    prisma,
+    "Add another step to move this into Shopify.",
+    [{ tool: "add_plan_step", arguments: TRANSFER_STEP }],
+    null,
+  );
+
+  assert.equal(result.outcome, TURN_OUTCOME.success);
+  assertTransferStepPersisted(prisma, initialCount);
+  assert.match(result.reply, /Create Shopify transfer/i);
+});
+
+test("scenario I - plan mutation: add Shopify transfer step (wording variant 2)", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const initialCount = prisma.state.steps.length;
+
+  const result = await turn(
+    prisma,
+    "We use transfers in Shopify after this.",
+    [{ tool: "add_plan_step", arguments: TRANSFER_STEP }],
+    null,
+  );
+
+  assert.equal(result.outcome, TURN_OUTCOME.success);
+  assertTransferStepPersisted(prisma, initialCount);
+});
+
+test("scenario J - plan mutation: add Shopify transfer step (wording variant 3)", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const initialCount = prisma.state.steps.length;
+
+  const result = await turn(
+    prisma,
+    "Before we're finished, create the stock transfer in Shopify too.",
+    [{ tool: "add_plan_step", arguments: TRANSFER_STEP }],
+    null,
+  );
+
+  assert.equal(result.outcome, TURN_OUTCOME.success);
+  assertTransferStepPersisted(prisma, initialCount);
+});
+
+test("scenario K - plan mutation: add Shopify transfer as final step (wording variant 4)", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const initialCount = prisma.state.steps.length;
+
+  const result = await turn(
+    prisma,
+    "Can you add a Shopify transfer as the final step?",
+    [{ tool: "add_plan_step", arguments: TRANSFER_STEP }],
+    null,
+  );
+
+  assert.equal(result.outcome, TURN_OUTCOME.success);
+  assertTransferStepPersisted(prisma, initialCount);
+  const added = transferSteps(prisma)[0];
+  const lastExisting = prisma.state.steps
+    .filter((row) => row.id !== added.id)
+    .sort((a, b) => Number(b.orderIndex ?? 0) - Number(a.orderIndex ?? 0))[0];
+  assert.ok(
+    added.dependsOnStepIds.includes(lastExisting.id),
+    "final transfer step should depend on the prior workflow step",
+  );
+});
+
+test("scenario L - exploratory: what would a Shopify transfer step involve (no plan mutation)", async () => {
+  const prisma = buildActionFixture({ kind: "restock" });
+  const initialCount = prisma.state.steps.length;
+
+  const result = await turn(
+    prisma,
+    "Actually don't change anything yet — what would a Shopify transfer step involve?",
+    [],
+    "A Shopify transfer step would move the approved replenishment quantities between two Shopify locations. I haven't changed your plan.",
+  );
+
+  assert.equal(prisma.state.steps.length, initialCount, "exploratory question must not mutate plan");
+  assert.equal(transferSteps(prisma).length, 0);
+  assert.equal(result.outcome, TURN_OUTCOME.noAction);
+  assert.match(result.reply, /haven't changed/i);
+});
+

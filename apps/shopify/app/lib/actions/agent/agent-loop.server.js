@@ -40,6 +40,7 @@ import {
   toolEffect,
   toolNamesForKind,
   toolRequiresExplicitApproval,
+  workflowStepTitles,
 } from "./tool-registry.server.js";
 import {
   TURN_OUTCOME,
@@ -516,10 +517,18 @@ async function buildToolContext(prisma, input, extra) {
      * @param {string} tool @param {string} command @param {Record<string, any>} params
      */
     async runCommandWithDiff(tool, command, params) {
-      const before = { ...planFacts(ctx.state), lifecycle: ctx.state?.lifecycle ?? null };
+      const before = {
+        ...planFacts(ctx.state),
+        lifecycle: ctx.state?.lifecycle ?? null,
+        workStepTitles: workflowStepTitles(ctx.state),
+      };
       const executed = await ctx.runCommand(command, params);
       const after = await ctx.reloadState();
-      const afterFacts = { ...planFacts(after), lifecycle: after?.lifecycle ?? null };
+      const afterFacts = {
+        ...planFacts(after),
+        lifecycle: after?.lifecycle ?? null,
+        workStepTitles: workflowStepTitles(after),
+      };
       const changes = diffFacts(before, afterFacts);
 
       if (!executed.ok) {

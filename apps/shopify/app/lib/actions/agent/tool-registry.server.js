@@ -919,6 +919,13 @@ export function planFacts(state) {
 }
 
 /** @param {any} state */
+export function workflowStepTitles(state) {
+  return (state?.work ?? [])
+    .map((/** @type {any} */ row) => String(row.step?.title ?? "").trim())
+    .filter(Boolean);
+}
+
+/** @param {any} state */
 export function snapshotFacts(state) {
   return {
     ...planFacts(state),
@@ -1101,6 +1108,14 @@ export function diffFacts(before, after) {
   if (before.lifecycle !== after.lifecycle && after.lifecycle) {
     changes.push({ field: "status", from: before.lifecycle ?? null, to: after.lifecycle });
   }
+  const beforeSteps = before.workStepTitles ?? [];
+  const afterSteps = after.workStepTitles ?? [];
+  for (const title of afterSteps.filter((/** @type {string} */ t) => !beforeSteps.includes(t))) {
+    changes.push({ field: "plan_step_added", added: title });
+  }
+  for (const title of beforeSteps.filter((/** @type {string} */ t) => !afterSteps.includes(t))) {
+    changes.push({ field: "plan_step_removed", removed: title });
+  }
   return changes;
 }
 
@@ -1114,6 +1129,8 @@ export function describeChanges(changes) {
       if (change.field === "excluded") return `${change.added} is excluded`;
       if (change.field === "included") return `${change.added} is back in scope`;
       if (change.field === "status") return `the action is now ${String(change.to).replace(/_/g, " ")}`;
+      if (change.field === "plan_step_added") return `added "${change.added}" to the plan`;
+      if (change.field === "plan_step_removed") return `removed "${change.removed}" from the plan`;
       return null;
     })
     .filter(Boolean);

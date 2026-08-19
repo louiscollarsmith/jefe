@@ -314,6 +314,22 @@ export function buildActionFixture(options = {}) {
         for (const key of Object.keys(select)) if (select[key]) picked[key] = row[key];
         return picked;
       },
+      create: async ({ data }) => {
+        const row = {
+          workflowId: "wf-1",
+          recommendationId: "rec-1",
+          merchantId: MERCHANT,
+          shopId: SHOP,
+          mode: "assist",
+          progress: {},
+          attention: {},
+          dependsOnStepIds: [],
+          status: "waiting",
+          ...data,
+        };
+        state.steps.push(row);
+        return row;
+      },
       updateMany: async ({ where = {}, data }) => {
         const rows = state.steps.filter((row) => {
           if (where.id && row.id !== where.id) return false;
