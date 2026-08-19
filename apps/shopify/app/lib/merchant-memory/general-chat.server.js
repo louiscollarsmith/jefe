@@ -38,7 +38,7 @@ import {
   isMutationCommand,
   parseProposedCommand,
 } from "../actions/action-command.server.js";
-import { handleFocusedActionMessage } from "../actions/action-interpreter.server.js";
+import { handleFocusedActionMessage } from "../actions/agent/focused-action-turn.server.js";
 import {
   DEFAULT_RESTOCK_COVER_DAYS,
   resolveActionScope,
@@ -125,6 +125,32 @@ async function loadStoredMerchantMessage(prisma, input) {
     },
   });
   return message ? { duplicate: false, message } : null;
+}
+
+/**
+ * Recent dialogue for pronoun/reference resolution in focused action chat.
+ *
+ * @param {any} prisma
+ * @param {{ conversationId: string; beforeMessageId?: string | null; limit?: number }} input
+ */
+async function loadRecentDialogue(prisma, input) {
+  if (!prisma?.merchantMemoryConversationMessage?.findMany) return [];
+  try {
+    const rows = await prisma.merchantMemoryConversationMessage.findMany({
+      where: {
+        conversationId: input.conversationId,
+        ...(input.beforeMessageId ? { NOT: { id: input.beforeMessageId } } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: input.limit ?? 8,
+      select: { role: true, content: true },
+    });
+    return rows
+      .reverse()
+      .map((/** @type {any} */ row) => ({ role: row.role, content: row.content }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -349,6 +375,12 @@ export async function sendGeneralChatMessage(prisma, input) {
         merchantMessageId: persisted.message.id,
         actor: input.merchantId,
         provider,
+        // Dialogue is for resolving "that"/"the other one" only. Domain truth
+        // comes from canonical action state, never from transcript prose.
+        recentMessages: await loadRecentDialogue(prisma, {
+          conversationId: conversation.id,
+          beforeMessageId: persisted.message.id,
+        }),
         logger: input.logger ?? log,
       })
     : null;
@@ -641,7 +673,7 @@ function lowercaseFirst(value) {
 async function resolveFocusedAction(prisma, input) {
   if (!input.actionId) return null;
   try {
-    return await getMerchantAction(prisma, input);
+    return await getMerchantAction(prisma, { ...input, actionId: String(input.actionId) });
   } catch (error) {
     log.warn("Focused action could not be resolved for chat", {
       merchantId: input.merchantId,
@@ -1090,13 +1122,6 @@ function isActionContextQuestion(message) {
   return /\b(what is this|what's this|about this plan|about the plan|explain this plan|explain the plan|walk me through this plan)\b/i.test(
     String(message ?? "").trim(),
   );
-}
-
-/** @param {any} action @param {string | null | undefined} stepId */
-function findWorkflowStepOnAction(action, stepId) {
-  if (!stepId) return null;
-  const steps = workflowStepsFromAction(action);
-  return steps.find((/** @type {any} */ step) => step?.id === stepId) ?? null;
 }
 
 /** @param {any} action @returns {any[]} */

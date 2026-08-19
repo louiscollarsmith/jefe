@@ -239,7 +239,7 @@ export function parseConstraintsFromMessage(message) {
 
   const namedProduct =
     text.match(/\b(?:exclude|leave out)\s+(.+?)\s+from this action\b/i) ||
-    text.match(/\bexclude\s+([A-Z][\w][\w'’\-]*(?:\s+[A-Z][\w][\w'’\-]*)+)\b/);
+    text.match(/\bexclude\s+([A-Z][\w][\w'’-]*(?:\s+[A-Z][\w][\w'’-]*)+)\b/);
   if (namedProduct?.[1] && found.length === 0) {
     const title = namedProduct[1].replace(/^the\s+/i, "").trim();
     if (title && !/^(archived|collection)\b/i.test(title)) {

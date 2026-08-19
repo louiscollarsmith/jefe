@@ -19,6 +19,7 @@ import {
 } from "./action-step-lifecycle.server.js";
 import { executeStartedAssistStepRun } from "./assist-steps/run.server.js";
 import { rejectAction, reviseAction } from "./action-resolution.server.js";
+import { scheduleProactivePlanAfterTerminalState } from "../merchant-plan/proactive-recommendation-trigger.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
 import {
   addActionConstraint,
@@ -61,13 +62,13 @@ import {
 } from "./plan-chat.server.js";
 import { resolveActionContext } from "./resolved-action-context.server.js";
 import { validatePlanPatch, describePlanRevision } from "./action-plan-schema.server.js";
-import { achieveOutcome } from "./action-outcome.server.js";
+import { reachCapability, runAssistStepById } from "./agent/assist-runner.server.js";
+import { outcomeCapabilityRef, resolveActionState } from "./action-state.server.js";
 import {
   advanceCurrentActionStep,
   goBackActionSteps,
   goToActionStep,
   invalidateDownstreamSteps,
-  resolveStepTarget,
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
 
@@ -403,6 +404,10 @@ async function runAcceptPlan(prisma, input) {
 
 /** @param {any} prisma @param {any} input */
 async function runRevisePlan(prisma, input) {
+  const reopened = await reopenForRevision(prisma, input);
+  if (!reopened.ok) {
+    return { ...reopened, command: ACTION_COMMAND.REVISE_PLAN };
+  }
   const rawPatch = planPatchFromParams(input.params);
   const { patch: planPatch, rejected } = validatePlanPatch(input.action, rawPatch);
   if (rejected.length > 0 && Object.keys(planPatch).length === 0) {
@@ -464,40 +469,112 @@ async function runRevisePlan(prisma, input) {
   };
 }
 
-/** @param {any} prisma @param {any} input */
-async function runAchieveOutcome(prisma, input) {
-  const result = await achieveOutcome(prisma, {
+/**
+ * The next piece of Jefe-owned work, derived from dependencies and artifact
+ * freshness rather than from a persisted cursor.
+ *
+ * @param {any} prisma @param {any} input
+ */
+async function nextJefeOwnedStepId(prisma, input) {
+  const state = await resolveActionState(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     actionId: input.action.id,
-    outcome: input.params?.outcome ?? input.params?.targetHint ?? "supplier_draft",
+    conversationId: input.conversationId ?? null,
+  });
+  const rows = state?.work ?? [];
+  const next =
+    rows.find(
+      (/** @type {any} */ row) =>
+        row.step.mode === "assist" && (row.state === "available" || row.state === "needs_updating"),
+    ) ??
+    rows.find(
+      (/** @type {any} */ row) => row.state === "available" || row.state === "needs_updating",
+    ) ??
+    null;
+  return next?.step?.id ?? null;
+}
+
+/** @param {any} prisma @param {any} input */
+async function runAchieveOutcome(prisma, input) {
+  const outcome = input.params?.outcome ?? input.params?.targetHint ?? "supplier_draft";
+  const capabilityRef = outcomeCapabilityRef(String(outcome).toLowerCase().replace(/\s+/g, "_"));
+  if (!capabilityRef) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ACHIEVE_OUTCOME,
+      reason: "unknown_outcome",
+      reply: "I couldn't map that to a piece of work on this action.",
+    };
+  }
+  const result = await reachCapability(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    capabilityRef,
     actor: input.actor ?? input.merchantId,
     conversationId: input.conversationId ?? null,
-    session: input.session ?? null,
-    executeDeps: input.executeDeps,
     logger: input.logger,
   });
   const fresh = await refreshAction(prisma, input);
   return {
     ok: Boolean(result.ok),
     command: ACTION_COMMAND.ACHIEVE_OUTCOME,
-    reason: result.ok ? null : result.reason,
+    reason: result.ok ? null : result.code ?? null,
     result,
-    reply: result.reply ?? "I couldn't reach that outcome just now.",
+    reply: result.ok
+      ? `Completed "${result.title ?? "that work"}".`
+      : result.message ?? "I couldn't reach that outcome just now.",
     action: fresh ?? input.action,
   };
 }
 
-/** @param {any} prisma @param {any} input */
-async function runAddConstraint(prisma, input) {
-  if (input.action?.status === "completed") {
+/**
+ * A finished action can still be revised while nothing has been written to
+ * Shopify: the merchant is iterating on documents, not rewriting history.
+ * Derived staleness then marks the affected results as needing an update, so
+ * "completed" simply stops being true. Once an external write has actually
+ * happened, the refusal stands — that history is real.
+ *
+ * @param {any} prisma @param {any} input
+ * @returns {Promise<{ ok: boolean; reason?: string; reply?: string; reopened?: boolean }>}
+ */
+async function reopenForRevision(prisma, input) {
+  const action = input.action;
+  if (String(action?.status ?? "") !== "completed") return { ok: true };
+  if (hasExternalExecution(action)) {
     return {
       ok: false,
-      command: ACTION_COMMAND.ADD_CONSTRAINT,
-      reason: "action_completed",
+      reason: "action_executed",
       reply:
-        "This action is already complete, so I can't change what was done. Start a new recommendation if you want to revisit the scope.",
+        "I've already applied these changes to your store, so I can't revise them retrospectively. Start a new recommendation to change things again.",
     };
+  }
+  await prisma.merchantAction.updateMany({
+    where: { id: action.id, merchantId: input.merchantId, shopId: input.shopId },
+    data: { status: "in_progress" },
+  });
+  action.status = "in_progress";
+  return { ok: true, reopened: true };
+}
+
+/** @param {any} action */
+function hasExternalExecution(action) {
+  const executions = Array.isArray(action?.executions) ? action.executions : [];
+  if (executions.some((/** @type {any} */ row) => String(row?.status ?? "") === "succeeded")) {
+    return true;
+  }
+  const changeSets = Array.isArray(action?.changeSets) ? action.changeSets : [];
+  return changeSets.some((/** @type {any} */ row) =>
+    ["applied", "partial", "applying"].includes(String(row?.status ?? "")),
+  );
+}
+
+/** @param {any} prisma @param {any} input @returns {Promise<any>} */
+async function runAddConstraint(prisma, input) {
+  const reopened = await reopenForRevision(prisma, input);
+  if (!reopened.ok) {
+    return { ...reopened, command: ACTION_COMMAND.ADD_CONSTRAINT };
   }
   if (input.params?.scopeModification) {
     return runScopeModification(prisma, input);
@@ -545,7 +622,6 @@ async function runAddConstraint(prisma, input) {
     actor: input.actor,
     logger: input.logger,
   });
-  const labels = added.map((item) => item.label).join("; ");
   const scope = changeSet.ok
     ? `\n\n${formatChangeSetReply(createdChangeSet(changeSet), input.action)}`
     : "";
@@ -558,16 +634,11 @@ async function runAddConstraint(prisma, input) {
   };
 }
 
-/** @param {any} prisma @param {any} input */
+/** @param {any} prisma @param {any} input @returns {Promise<any>} */
 async function runScopeModification(prisma, input) {
-  if (input.action?.status === "completed") {
-    return {
-      ok: false,
-      command: ACTION_COMMAND.ADD_CONSTRAINT,
-      reason: "action_completed",
-      reply:
-        "This action is already complete, so I can't change what was done. Start a new recommendation if you want to revisit the scope.",
-    };
+  const reopened = await reopenForRevision(prisma, input);
+  if (!reopened.ok) {
+    return { ...reopened, command: ACTION_COMMAND.ADD_CONSTRAINT };
   }
   const modification = input.params?.scopeModification;
   if (!modification) {
@@ -586,7 +657,7 @@ async function runScopeModification(prisma, input) {
     });
     const wanted = normalizeMatch(modification.title);
     const match = constraints.find(
-      (row) =>
+      (/** @type {any} */ row) =>
         row.kind === "exclude_product" &&
         productHintMatchesConstraint(wanted, row),
     );
@@ -753,6 +824,35 @@ async function runStartStep(prisma, input) {
     });
   }
 
+  // Jefe-owned work runs by step id off derived availability. The old path
+  // asked the persisted cursor for permission, which is why "Start this"
+  // refused work whose prerequisites were already complete.
+  const targetStepId = input.params?.stepId ?? (await nextJefeOwnedStepId(prisma, input));
+  if (targetStepId) {
+    const assistRun = await runAssistStepById(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+      stepId: targetStepId,
+      actor: input.actor ?? input.merchantId,
+      conversationId: input.conversationId ?? null,
+      logger: input.logger,
+    });
+    if (assistRun.ok || assistRun.code !== "NOT_JEFE_OWNED") {
+      const refreshed = await refreshAction(prisma, input);
+      return {
+        ok: Boolean(assistRun.ok),
+        command: ACTION_COMMAND.START_STEP,
+        reason: assistRun.ok ? null : assistRun.code ?? null,
+        result: assistRun,
+        reply: assistRun.ok
+          ? assistRun.chatReply ?? `Completed "${assistRun.title ?? "that step"}".`
+          : assistRun.message ?? "I couldn't start that.",
+        action: refreshed ?? input.action,
+      };
+    }
+  }
+
   const stepStart = await startActionStep(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -761,40 +861,8 @@ async function runStartStep(prisma, input) {
     actor: input.actor ?? input.merchantId,
     logger: input.logger,
   });
-  let fresh = await refreshAction(prisma, input);
+  const fresh = await refreshAction(prisma, input);
   let reply = buildStartReply(fresh ?? input.action, stepStart);
-
-  // Assist steps: if wizard state blocked START_STEP, run goal-oriented execution instead.
-  if (!stepStart.ok && isRestockAction(input.action)) {
-    const currentStep = findStep(fresh ?? input.action, stepStart.currentStepId ?? fresh?.currentStep?.id);
-    if (!currentStep || currentStep.mode === "assist") {
-      const achieved = await achieveOutcome(prisma, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        actionId: input.action.id,
-        outcome:
-          capabilityRefToOutcome(currentStep?.capabilityRef) ??
-          capabilityRefToOutcome(fresh?.currentStep?.capabilityRef) ??
-          "replenishment_proposal",
-        actor: input.actor ?? input.merchantId,
-        conversationId: input.conversationId ?? null,
-        session: input.session ?? null,
-        executeDeps: input.executeDeps,
-        logger: input.logger,
-      });
-      if (achieved.ok) {
-        fresh = await refreshAction(prisma, input);
-        return {
-          ok: true,
-          command: ACTION_COMMAND.ACHIEVE_OUTCOME,
-          reason: null,
-          result: achieved,
-          reply: achieved.reply ?? reply,
-          action: fresh ?? input.action,
-        };
-      }
-    }
-  }
 
   if (stepStart.ok && stepStart.stepRunId) {
     const startedStep = findStep(fresh ?? input.action, stepStart.stepId);
@@ -1118,8 +1186,33 @@ async function runApplyChangeSet(prisma, input) {
     };
   }
   if (applied.pendingExecution) {
+    // The change set is approved but no live session was available to write
+    // with. The worker may still pick it up; until a run actually records a
+    // result, this turn has written nothing and must not say otherwise.
     const started = await runStartStep(prisma, input);
-    return { ...started, command: ACTION_COMMAND.APPLY_CHANGESET };
+    const latest = await getLatestChangeSet(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+    });
+    const wrote = ["applied", "partial"].includes(String(latest?.status ?? ""));
+    if (wrote) {
+      return {
+        ...started,
+        ok: true,
+        command: ACTION_COMMAND.APPLY_CHANGESET,
+        changeSet: serializeChangeSet(latest),
+        reply: formatExecutionResultReply(serializeChangeSet(latest)),
+      };
+    }
+    return {
+      ok: false,
+      command: ACTION_COMMAND.APPLY_CHANGESET,
+      reason: "execution_unavailable",
+      changeSet: latest ? serializeChangeSet(latest) : applied.changeSet,
+      reply:
+        "The change set is approved, but I couldn't reach your store to apply it. Nothing has been written — ask me again in a moment.",
+    };
   }
   return {
     ok: true,
@@ -1331,7 +1424,7 @@ async function runInspectProposal(prisma, input) {
   return {
     ok: true,
     command: ACTION_COMMAND.INSPECT_PROPOSAL,
-    reason: created.reason ?? "no_proposal",
+    reason: /** @type {any} */ (created).reason ?? "no_proposal",
     reply,
   };
 }
@@ -1343,7 +1436,7 @@ async function runReportConstraints(prisma, input) {
     shopId: input.shopId,
     actionId: input.action.id,
   });
-  const excluded = constraints.filter((row) => row.kind === "exclude_product");
+  const excluded = constraints.filter((/** @type {any} */ row) => row.kind === "exclude_product");
   if (excluded.length === 0) {
     return {
       ok: true,
@@ -1351,14 +1444,16 @@ async function runReportConstraints(prisma, input) {
       reply: "You haven't excluded anything on this action yet.",
     };
   }
-  const lines = excluded.map((row) => row.label?.replace(/^Exclude\s+/i, "") ?? row.params?.title).filter(Boolean);
+  const lines = excluded
+    .map((/** @type {any} */ row) => row.label?.replace(/^Exclude\s+/i, "") ?? row.params?.title)
+    .filter(Boolean);
   return {
     ok: true,
     command: ACTION_COMMAND.ANSWER,
     reply:
       lines.length === 1
         ? `You excluded ${lines[0]}.`
-        : `You excluded:\n${lines.map((line) => `• ${line}`).join("\n")}`,
+        : `You excluded:\n${lines.map((/** @type {any} */ line) => `• ${line}`).join("\n")}`,
   };
 }
 
@@ -1394,7 +1489,7 @@ async function answerFocusedAction(prisma, input) {
         const deps = (Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [])
           .map((/** @type {string} */ id) => byId.get(String(id)))
           .filter(Boolean);
-        const depNames = deps.map((d) => `"${d.title ?? d.id}"`).join(" and ");
+        const depNames = deps.map((/** @type {any} */ d) => `"${d.title ?? d.id}"`).join(" and ");
         return (
           `"${step.title ?? step.id}" is currently marked as waiting. ` +
           `It depends on ${depNames}, which ${deps.length === 1 ? "is" : "are"} already complete — ` +
@@ -1521,6 +1616,13 @@ export async function deferMerchantAction(prisma, input) {
       },
     });
   }
+  if (status === "declined") {
+    scheduleProactivePlanAfterTerminalState(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      trigger: "recommendation_declined",
+    });
+  }
   return { ok: true, status };
 }
 
@@ -1624,15 +1726,6 @@ function buildReviseReply(action, patch, changeSet) {
   return `${summary}${restock}${table}`;
 }
 
-/** @param {string | null | undefined} capabilityRef */
-function capabilityRefToOutcome(capabilityRef) {
-  const ref = String(capabilityRef ?? "");
-  if (ref.includes("supplier")) return "supplier_draft";
-  if (ref.includes("replenishment") || ref.includes("proposal")) return "replenishment_proposal";
-  if (ref.includes("inventory")) return "inventory_review";
-  return null;
-}
-
 /** @param {any} action @param {any} stepStart */
 function buildStartReply(action, stepStart) {
   if (stepStart.ok) {
@@ -1682,10 +1775,10 @@ function buildStartReply(action, stepStart) {
     return `"${title}" is waiting on an earlier step to complete first.`;
   }
   if (reason === "no_current_step") {
-    return "There\'s no step ready to start right now.";
+    return "There is no step ready to start right now.";
   }
   if (reason === "not_current_step") {
-    return "That step isn\'t the active one. Finish the current step first, or navigate to the one you want.";
+    return "That step is not the active one. Finish the current step first, or navigate to the one you want.";
   }
   if (reason === "claim_race") {
     return "Another process just claimed that step. Refresh and try again.";
@@ -1817,7 +1910,8 @@ async function clearPendingNavigation(prisma, input) {
   if (!prisma?.merchantAction?.update) return;
   const progress = jsonObject(input.action?.progress);
   if (!progress.pendingNavigation) return;
-  const { pendingNavigation: _removed, ...rest } = progress;
+  const rest = { ...progress };
+  delete rest.pendingNavigation;
   await prisma.merchantAction.update({
     where: { id: input.action.id },
     data: { progress: rest },

@@ -518,29 +518,6 @@ async function markChangeSetApplied(prisma, input) {
   return serializeChangeSet(row);
 }
 
-/** @param {any} change @param {string} actionType */
-function itemFromChange(change, actionType) {
-  return {
-    title: change?.title ?? change?.productTitle ?? null,
-    productId: change?.productId ?? null,
-    variantId: change?.variantId ?? null,
-    targetRef: change?.variantId ?? change?.productId ?? null,
-    before:
-      actionType === "listing_copy"
-        ? change?.fromType ?? ""
-        : change?.fromPrice ?? change?.currentPrice ?? null,
-    after:
-      actionType === "listing_copy"
-        ? change?.toType ?? change?.proposedType ?? null
-        : change?.toPrice ?? change?.suggestedPrice ?? null,
-    reason: change?.reason ?? null,
-    fromPrice: change?.fromPrice ?? null,
-    toPrice: change?.toPrice ?? null,
-    fromType: change?.fromType ?? null,
-    toType: change?.toType ?? change?.proposedType ?? null,
-    discountPercent: change?.discountPercent ?? null,
-  };
-}
 
 /** @param {any} item */
 function changeFromItem(item) {

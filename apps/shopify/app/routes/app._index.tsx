@@ -126,7 +126,6 @@ import {
   getMerchantCompletedActions,
   getMerchantInProgressActions,
   getMerchantProposedActions,
-  getMerchantAction,
   listMerchantActions,
 } from "../lib/actions/merchant-action.server";
 import {
@@ -650,7 +649,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   ) {
     const actionId = String(formData.get("actionId") ?? "");
     const stepId = String(formData.get("stepId") ?? "") || null;
-    let command =
+    // START_STEP now resolves Jefe-owned work from derived availability, so the
+    // route no longer needs to translate the button into an outcome itself.
+    const command =
       intent === "action.accept_plan"
         ? ACTION_COMMAND.ACCEPT_PLAN
         : intent === "action.step.start"
@@ -660,38 +661,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             : intent === "action.step.complete"
               ? ACTION_COMMAND.CONFIRM_MERCHANT_STEP
               : ACTION_COMMAND.SKIP_STEP;
-    let params = { stepId };
-    if (intent === "action.step.start") {
-      const actionRow = await getMerchantAction(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        actionId,
-      });
-      const currentStep =
-        actionRow?.currentStep ??
-        actionRow?.workProjection?.nextUsefulWork?.step ??
-        (Array.isArray(actionRow?.displaySteps) ? actionRow.displaySteps : []).find(
-          (/** @type {any} */ step) =>
-            step?.workState === "available" ||
-            step?.workState === "needs_updating" ||
-            step?.status === "ready" ||
-            step?.status === "needs_updating",
-        ) ??
-        null;
-      if (currentStep?.mode === "assist") {
-        command = ACTION_COMMAND.ACHIEVE_OUTCOME;
-        const ref = String(currentStep.capabilityRef ?? "");
-        params = {
-          outcome: ref.includes("supplier")
-            ? "supplier_draft"
-            : ref.includes("replenishment") || ref.includes("proposal")
-              ? "replenishment_proposal"
-              : ref.includes("inventory")
-                ? "inventory_review"
-                : "replenishment_proposal",
-        };
-      }
-    }
+    const params = { stepId };
     const result = await executeActionCommand(prisma, {
       command,
       params,

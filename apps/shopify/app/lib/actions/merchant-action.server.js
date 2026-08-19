@@ -430,7 +430,9 @@ export async function listMerchantActions(prisma, input) {
   }
   if (!unlocked) {
     const serialized = rows.map(serializeMerchantAction);
-    return Promise.all(serialized.map((row) => attachWorkProjection(prisma, input, row)));
+    return Promise.all(
+      serialized.map((/** @type {any} */ row) => attachWorkProjection(prisma, input, row)),
+    );
   }
   const refreshed = await prisma.merchantAction.findMany({
     where: {
@@ -450,7 +452,9 @@ export async function listMerchantActions(prisma, input) {
     take: 40,
   });
   const serialized = refreshed.map(serializeMerchantAction);
-  return Promise.all(serialized.map((row) => attachWorkProjection(prisma, input, row)));
+  return Promise.all(
+    serialized.map((/** @type {any} */ row) => attachWorkProjection(prisma, input, row)),
+  );
 }
 
 /**
@@ -506,6 +510,10 @@ async function finishMerchantActionLoad(prisma, input, row) {
   return attachWorkProjection(prisma, input, serialized);
 }
 
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; conversationId?: string | null; skipWorkProjection?: boolean }} input
+ */
 export async function getMerchantAction(prisma, input) {
   if (!input.actionId || !prisma?.merchantAction?.findFirst) return null;
   const row = await prisma.merchantAction.findFirst({
@@ -653,7 +661,11 @@ export function serializeMerchantAction(row) {
     sourceRecommendationId: row.sourceRecommendationId ?? source?.id ?? null,
     sourceRecommendation: source ? sourceRecommendationView(source) : sourceRecommendationFromSummary(executionSummary),
     actionRunId: row.currentActionRunId ?? execution?.runId ?? null,
-    actionType: execution?.actionType ?? null,
+    actionType:
+      execution?.actionType ??
+      jsonObject(progress).actionType ??
+      inferActionTypeFromWorkflow(source) ??
+      null,
     executable:
       execution?.actionType && execution?.resolvedMode !== "recommend"
         ? isActionExecuteEnabled(execution.actionType)
@@ -1310,6 +1322,21 @@ function actionsFromInput(input = {}) {
 /** @param {unknown} value */
 function normalizeToken(value) {
   return String(value ?? "").trim().toLowerCase();
+}
+
+/**
+ * @param {any} source
+ */
+function inferActionTypeFromWorkflow(source) {
+  const steps = Array.isArray(source?.workflows?.[0]?.steps) ? source.workflows[0].steps : [];
+  const haystack = steps
+    .map((/** @type {any} */ step) => `${step?.title ?? ""} ${step?.capabilityRef ?? ""}`)
+    .join(" ")
+    .toLowerCase();
+  if (/\blisting_copy\b/.test(haystack)) return "listing_copy";
+  if (/\bprice_markdown\b/.test(haystack) || /\bmarkdown\b/.test(haystack)) return "price_markdown";
+  if (/\btidy_up\b/.test(haystack)) return "tidy_up";
+  return null;
 }
 
 /**

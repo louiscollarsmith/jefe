@@ -1,9 +1,14 @@
 // @ts-check
-// Proactive recommendations — Jefe asking the LLM, on a daily cadence, for the moves worth
-// surfacing from a merchant's memory WITHOUT being asked. Generation itself is the existing
+// Proactive recommendations — Jefe asking the LLM for the moves worth surfacing from a
+// merchant's memory WITHOUT being asked. Generation itself is the existing
 // `generateMerchantPlan` (same LLM-from-memory path the reactive plan uses) run through the
 // existing worker; this module owns only the DECISION of whether to generate now, enforcing
 // an initial ceiling of N per merchant per day.
+//
+// Two enqueue paths (both respect the daily cap):
+//   1. Terminal state — when the merchant completes or rejects the current recommendation,
+//      enqueue the next one immediately (`maybeEnqueueProactivePlanAfterTerminalState`).
+//   2. Hourly sweep — worker fallback that spreads the day's ≤5 fresh runs (`PROACTIVE_SWEEP_INTERVAL_MS`).
 //
 // A ceiling, not a target: silence is fine when nothing is real (docs/proactive-messages.md,
 // "the floor"). Proactive runs are marked `sourceMode = "proactive"` on MerchantPlanRun, so
@@ -100,9 +105,9 @@ export function startOfNextMerchantDay(now, timeZone) {
 
 /**
  * When Jefe will next check for a fresh proactive recommendation. Under the daily cap the
- * worker sweeps hourly; once capped, the next window is the merchant's next day. An honest
- * approximation — the sweep is fleet-wide, not pinned to the hour boundary — but close enough
- * for a merchant-facing countdown.
+ * worker sweeps hourly as a fallback; once capped, the next window is the merchant's next
+ * day. Terminal states (completed / rejected) enqueue immediately — the hourly sweep is
+ * only for merchants with nothing new to react to.
  * @param {{ now: Date; timeZone?: string | null; generatedToday: number; cap?: number }} input
  * @returns {{ kind: "hourly_check" | "daily_cap_reached"; at: Date; generatedToday: number; remaining: number; cap: number }}
  */
@@ -221,4 +226,53 @@ export async function maybeEnqueueProactivePlan(
   // new to say; the snapshot was already generated, so no proactive run row was created and the
   // cap was not consumed.
   return { enqueued: status === "queued", status, remaining: decision.remaining, reason: decision.reason };
+}
+
+/**
+ * Whether the merchant still has a proposed move waiting for review.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ * @returns {Promise<boolean>}
+ */
+export async function merchantHasProposedAction(prisma, { merchantId, shopId }) {
+  if (!prisma?.merchantAction?.count) return false;
+  const count = await prisma.merchantAction.count({
+    where: { merchantId, shopId, status: "proposed" },
+  });
+  return count > 0;
+}
+
+/**
+ * Enqueue the next proactive recommendation once the previous one reached a terminal state
+ * (completed / rejected / declined). Skips when proactive is disabled, the daily cap is
+ * reached, or another proposed move is already waiting. The hourly worker sweep remains
+ * as a fallback when nothing terminal happens.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; now?: Date; timeZone?: string | null; cap?: number; ensureQueued: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countProactivePlanRunsSince; hasProposed?: typeof merchantHasProposedAction } }} input
+ * @returns {Promise<{ enqueued: boolean; status: string; remaining: number; reason: string | null }>}
+ */
+export async function maybeEnqueueProactivePlanAfterTerminalState(
+  prisma,
+  { merchantId, shopId, now = new Date(), timeZone, cap = DEFAULT_PROACTIVE_DAILY_CAP, ensureQueued, deps = {} },
+) {
+  if (process.env.ENABLE_PROACTIVE_RECOMMENDATIONS !== "true") {
+    return { enqueued: false, status: "skipped", remaining: 0, reason: "disabled" };
+  }
+  const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
+  try {
+    if (await hasProposed(prisma, { merchantId, shopId })) {
+      return { enqueued: false, status: "skipped", remaining: 0, reason: "proposed_exists" };
+    }
+  } catch {
+    return { enqueued: false, status: "skipped", remaining: 0, reason: "proposed_read_failed" };
+  }
+  return maybeEnqueueProactivePlan(prisma, {
+    merchantId,
+    shopId,
+    now,
+    timeZone: timeZone ?? undefined,
+    cap,
+    ensureQueued,
+    deps,
+  });
 }

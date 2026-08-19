@@ -7,6 +7,8 @@ import {
   startOfNextMerchantDay,
   computeNextRecommendationCheck,
   maybeEnqueueProactivePlan,
+  maybeEnqueueProactivePlanAfterTerminalState,
+  merchantHasProposedAction,
   DEFAULT_PROACTIVE_DAILY_CAP,
 } from "../app/lib/merchant-plan/proactive-recommendations.server.js";
 
@@ -164,4 +166,79 @@ test("computeNextRecommendationCheck: at cap → next merchant day", () => {
   assert.equal(check.kind, "daily_cap_reached");
   assert.equal(check.at.toISOString(), "2026-08-13T00:00:00.000Z");
   assert.equal(check.remaining, 0);
+});
+
+test("maybeEnqueueProactivePlanAfterTerminalState: skips when proactive is disabled", async () => {
+  const prev = process.env.ENABLE_PROACTIVE_RECOMMENDATIONS;
+  process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = "false";
+  try {
+    const res = await maybeEnqueueProactivePlanAfterTerminalState(/** @type {any} */ ({}), {
+      merchantId: "m1",
+      shopId: "s1",
+      ensureQueued: async () => ({ status: "queued" }),
+    });
+    assert.equal(res.enqueued, false);
+    assert.equal(res.reason, "disabled");
+  } finally {
+    process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = prev;
+  }
+});
+
+test("maybeEnqueueProactivePlanAfterTerminalState: skips when a proposed move is waiting", async () => {
+  const prev = process.env.ENABLE_PROACTIVE_RECOMMENDATIONS;
+  process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = "true";
+  try {
+    let called = false;
+    const res = await maybeEnqueueProactivePlanAfterTerminalState(/** @type {any} */ ({}), {
+      merchantId: "m1",
+      shopId: "s1",
+      ensureQueued: async () => {
+        called = true;
+        return { status: "queued" };
+      },
+      deps: {
+        count: async () => 0,
+        hasProposed: async () => true,
+      },
+    });
+    assert.equal(res.enqueued, false);
+    assert.equal(res.reason, "proposed_exists");
+    assert.equal(called, false);
+  } finally {
+    process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = prev;
+  }
+});
+
+test("maybeEnqueueProactivePlanAfterTerminalState: enqueues when terminal and no proposed move", async () => {
+  const prev = process.env.ENABLE_PROACTIVE_RECOMMENDATIONS;
+  process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = "true";
+  try {
+    const calls = [];
+    const res = await maybeEnqueueProactivePlanAfterTerminalState(/** @type {any} */ ({}), {
+      merchantId: "m1",
+      shopId: "s1",
+      ensureQueued: async (_p, input) => {
+        calls.push(input);
+        return { status: "queued" };
+      },
+      deps: {
+        count: async () => 1,
+        hasProposed: async () => false,
+      },
+    });
+    assert.equal(res.enqueued, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].sourceMode, "proactive");
+  } finally {
+    process.env.ENABLE_PROACTIVE_RECOMMENDATIONS = prev;
+  }
+});
+
+test("merchantHasProposedAction: true when a proposed row exists", async () => {
+  const prisma = {
+    merchantAction: {
+      count: async ({ where }) => (where.status === "proposed" ? 1 : 0),
+    },
+  };
+  assert.equal(await merchantHasProposedAction(/** @type {any} */ (prisma), { merchantId: "m1", shopId: "s1" }), true);
 });

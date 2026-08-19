@@ -64,39 +64,46 @@ export async function resolveActionState(prisma, input) {
     });
     const stale = isArtifactStale(step, { planVersion, constraintVersion, inputHash });
     const persisted = String(step.status ?? "");
+
+    // Blockers are a property of the dependency graph, not of which branch
+    // below happens to fire. Computing them only in the `blocked` branch was
+    // why a stale-but-completed step reported no prerequisites, so its own
+    // stale inputs were never rebuilt and it produced yesterday's numbers.
+    /** @type {any[]} */
+    const blockers = depsSatisfied
+      ? []
+      : dependencyBlockers(deps, byId, { planVersion, constraintVersion, inputHash });
+
     /** @type {WorkState} */
     let state = "blocked";
-    /** @type {any[]} */
-    const blockers = [];
 
+    // Order matters: what a step *is* outranks what mode it was defined with.
+    // Checking `evidence_required` before terminality is why a merchant's
+    // uploaded file left its step reporting "needs you" forever, which in turn
+    // kept every dependent blocked.
     if (persisted === ACTION_STEP_STATUS.skipped) {
       state = "skipped";
     } else if (persisted === ACTION_STEP_STATUS.running) {
       state = "running";
     } else if (persisted === ACTION_STEP_STATUS.needsAttention) {
       state = "needs_attention";
+    } else if (stale || persisted === ACTION_STEP_STATUS.needsUpdating) {
+      state = "needs_updating";
+    } else if (isTerminal(step)) {
+      // An out-of-date prerequisite makes a finished result out of date too.
+      state = depsSatisfied ? "complete" : "needs_updating";
     } else if (
       persisted === ACTION_STEP_STATUS.needsMerchant ||
       step.mode === "merchant_action" ||
       step.mode === "evidence_required"
     ) {
       state = "needs_input";
-      if (!depsSatisfied) {
-        blockers.push(...dependencyBlockers(deps, byId, { planVersion, constraintVersion, inputHash }));
-      }
-    } else if (persisted === ACTION_STEP_STATUS.completed && stale) {
-      state = "needs_updating";
-    } else if (persisted === ACTION_STEP_STATUS.needsUpdating || stale) {
-      state = "needs_updating";
-    } else if (isTerminal(step)) {
-      state = "complete";
     } else if (!depsSatisfied) {
       state = "blocked";
-      blockers.push(...dependencyBlockers(deps, byId, { planVersion, constraintVersion, inputHash }));
     } else if (
       persisted === ACTION_STEP_STATUS.ready ||
       persisted === ACTION_STEP_STATUS.waiting ||
-      persisted === ACTION_STEP_STATUS.pending ||
+      persisted === "pending" ||
       persisted === ACTION_STEP_STATUS.draft
     ) {
       state = "available";
@@ -111,6 +118,7 @@ export async function resolveActionState(prisma, input) {
         capabilityRef: step.capabilityRef ?? null,
       },
       state,
+      dependsOn: deps.map((/** @type {any} */ id) => String(id)),
       validResult: step.progress ?? null,
       stale,
       blockers,
@@ -181,7 +189,11 @@ export function buildAgentStateContext(state) {
     scope: (state.scope?.items ?? []).slice(0, 12).map((/** @type {any} */ item) => ({
       title: item.title,
       recommendedUnits: item.recommendedUnits ?? null,
+      toType: item.toType ?? null,
+      fromType: item.fromType ?? null,
     })),
+    scopeStatus: state.scope?.status ?? null,
+    originalEvidence: state.scope?.originalEvidence ?? null,
     excluded: (state.scope?.excluded ?? []).slice(0, 8).map((/** @type {any} */ item) => ({
       title: item.title,
       reason: item.reason ?? null,
@@ -219,6 +231,9 @@ export function listAvailableOutcomes(state) {
   if (kind === "markdown") {
     outcomes.push("changeset_preview", "apply_changes");
   }
+  if (kind === "listing_copy") {
+    outcomes.push("product_type_discovery", "changeset_preview", "apply_changes");
+  }
   return outcomes;
 }
 
@@ -235,6 +250,7 @@ export function findStepForOutcome(state, outcome) {
 
 /** @param {string} outcome */
 export function outcomeCapabilityRef(outcome) {
+  /** @type {Record<string, string>} */
   const map = {
     inventory_review: "assist:inventory_review",
     replenishment_proposal: "assist:replenishment_proposal",
@@ -283,7 +299,7 @@ export function isArtifactStale(step, versions) {
   return false;
 }
 
-/** @param {string[]} deps @param {Map<string, any>} byId */
+/** @param {string[]} deps @param {Map<string, any>} byId @param {any} versions */
 function dependencyBlockers(deps, byId, versions) {
   return deps
     .map((id) => byId.get(String(id)))
