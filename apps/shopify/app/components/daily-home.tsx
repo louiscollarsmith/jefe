@@ -2255,7 +2255,7 @@ function FocusedActionPlanBlock({
   summary?: string | null;
 }) {
   if (steps.length === 0 && !summary) return null;
-  const displaySteps = normalizedActionSteps(action, steps);
+  const displaySteps = steps;
   const inProgressPlan = action.status !== "proposed";
   return (
     <section style={chatPlanBlockStyle} aria-label="Action plan">
@@ -2325,7 +2325,7 @@ function completedStepCount(steps: WorkflowStepDisplay[]) {
 }
 
 function currentWorkflowStep(action: MerchantActionView) {
-  const steps = normalizedActionSteps(action, actionSteps(action));
+  const steps = actionSteps(action);
   return (
     steps.find((step) => {
       if (typeof step === "string") return false;
@@ -2347,33 +2347,7 @@ function currentWorkflowStepId(action: MerchantActionView) {
 }
 
 function normalizedCurrentStep(action: MerchantActionView) {
-  const current = action.currentStep ?? currentWorkflowStep(action);
-  if (!current || typeof current === "string") return current;
-  return normalizedActionSteps(action, [current])[0] ?? current;
-}
-
-function normalizedActionSteps(
-  action: MerchantActionView,
-  steps: WorkflowStepDisplay[],
-) {
-  if (action.status === "proposed") return steps;
-  let unlocked = false;
-  return steps.map((step) => {
-    if (typeof step === "string") return step;
-    const status = String(step.status ?? "");
-    if (status !== "pending") return step;
-    if (!unlocked && !step.done) {
-      unlocked = true;
-      return {
-        ...step,
-        status:
-          step.mode === "merchant_action" || step.mode === "merchant"
-            ? "needs_merchant"
-            : "ready",
-      };
-    }
-    return { ...step, status: "waiting" };
-  });
+  return action.currentStep ?? currentWorkflowStep(action);
 }
 
 function stepDetail(step: Exclude<WorkflowStepDisplay, string>) {

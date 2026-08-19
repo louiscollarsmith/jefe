@@ -39,7 +39,11 @@ import {
   isMutationCommand,
   parseProposedCommand,
 } from "../actions/action-command.server.js";
-import { getCurrentChangeSet } from "../actions/action-changeset.server.js";
+import { handleFocusedActionMessage } from "../actions/action-interpreter.server.js";
+import {
+  DEFAULT_RESTOCK_COVER_DAYS,
+  resolveActionScope,
+} from "../actions/resolved-action-context.server.js";
 
 const ACTION_COMMAND_SCHEMA = {
   type: Type.OBJECT,
@@ -88,8 +92,6 @@ const ACTION_CHAT_REPLY_SCHEMA = {
   required: ["reply", "citedContextIds", "startCurrentStep"],
 };
 
-const GENERAL_CHAT_MAX_INPUT_TOKENS = 8000;
-const DEFAULT_RESTOCK_COVER_DAYS = 120;
 // The Action Step lifecycle service owns executable transitions. The legacy
 // model-returned update hook is intentionally inert for lifecycle statuses so a
 // reply cannot mark work running/completed without server validation.
@@ -338,33 +340,28 @@ export async function sendGeneralChatMessage(prisma, input) {
   let context;
   /** @type {any} */
   let actionEvidence = null;
-  const readyChangeSet = focusedAction
-    ? await getCurrentChangeSet(prisma, {
+  const focusedInterpretation = focusedAction
+    ? await handleFocusedActionMessage(prisma, {
+        message: content,
         merchantId: input.merchantId,
         shopId: input.shopId,
         actionId: focusedAction.id,
+        conversationId: conversation.id,
+        merchantMessageId: persisted.message.id,
+        actor: input.merchantId,
+        provider,
+        classifyFallback: classifyActionCommand,
+        logger: input.logger ?? log,
       })
     : null;
-  const classified = focusedAction
-    ? classifyActionCommand(content, {
-        hasReadyChangeSet: Boolean(readyChangeSet),
-        actionStatus: focusedAction.status,
-      })
-    : { type: ACTION_COMMAND.ANSWER, params: {} };
-  if (
-    focusedAction &&
-    (classified.type !== ACTION_COMMAND.ANSWER || classified.params?.questionKind)
-  ) {
-    generated = await runFocusedActionCommand(prisma, {
-      command: classified.type,
-      params: classified.params,
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      focusedAction,
-      conversationId: conversation.id,
-      message: content,
-      logger: input.logger ?? log,
-    });
+  const useFocusedActionRuntime =
+    Boolean(focusedAction) && focusedInterpretation?.routing !== "general_store";
+  if (useFocusedActionRuntime && focusedInterpretation) {
+    generated = {
+      reply: focusedInterpretation.reply,
+      citedContextIds: [],
+      command: focusedInterpretation.command,
+    };
     turn.mark("retrievalMs");
     turn.mark("generationMs");
   } else {
@@ -894,7 +891,12 @@ async function generateGroundedReply(input) {
         merchantContext: input.context,
       }),
       schema,
-      maxInputTokens: GENERAL_CHAT_MAX_INPUT_TOKENS,
+      // Do not pass a Groq-sized request cap. Chat is Groq-first with Gemini
+      // fallback (`LLM_CHAT_*`, `LLM_GROQ_MAX_INPUT_TOKENS=6000`,
+      // `LLM_CHAT_MAX_INPUT_TOKENS=18000`). A shared cap tighter than Gemini's
+      // budget throws LlmInputLimitError on Groq and skips fallback. Each
+      // provider enforces its own precondition; Groq over-size or any
+      // fallbackable error goes to Gemini.
       maxOutputTokens: 900,
     });
     const reply = String(result.json?.reply ?? "").trim();
@@ -1176,11 +1178,21 @@ export function buildCurrentActionInput(context) {
     Number(focusedAction.plan?.coverDays) > 0
       ? Number(focusedAction.plan.coverDays)
       : DEFAULT_RESTOCK_COVER_DAYS;
-  const quantityPlanningItems = lowCoverItems.map((item) => ({
-    ...item,
-    recommendedUnitsAtDefaultCover:
-      recommendedPurchaseUnits(item, coverDays),
-  }));
+  const scoped = resolveActionScope({
+    candidates: lowCoverItems,
+    constraints: Array.isArray(focusedAction.constraints) ? focusedAction.constraints : [],
+    planValues: {
+      coverDays,
+      ...(Number(focusedAction.plan?.markdownPercent) > 0
+        ? { markdownPercent: Number(focusedAction.plan.markdownPercent) }
+        : {}),
+      ...(Number(focusedAction.plan?.maxProducts) > 0
+        ? { maxProducts: Number(focusedAction.plan.maxProducts) }
+        : {}),
+    },
+    kind: "restock",
+  });
+  const quantityPlanningItems = scoped.items;
   return {
     ...focusedAction,
     operationalContext: {
@@ -1188,6 +1200,10 @@ export function buildCurrentActionInput(context) {
       constraints: Array.isArray(focusedAction.constraints) ? focusedAction.constraints : [],
       plan: focusedAction.plan ?? {},
       currentChangeSet: focusedAction.currentChangeSet ?? null,
+      resolvedScope: {
+        items: quantityPlanningItems,
+        excluded: scoped.excluded,
+      },
       workflowSteps: Array.isArray(focusedAction.proposedSteps)
         ? focusedAction.proposedSteps
         : [],
@@ -1213,7 +1229,7 @@ export function buildCurrentActionInput(context) {
           formula:
             "recommendedPurchaseUnits = ceil(max(0, dailyVelocity * targetCoverDays - available))",
           inputs:
-            "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+            "Use operationalContext.resolvedScope and lowCoverProducts from current plan_json and active constraints. Do not reconstruct cover days or product scope from earlier assistant messages.",
           output:
             "Mention recommended units as a recommendation for approval/correction, not as a completed order.",
         },
@@ -1315,15 +1331,6 @@ function lowCoverItemsFromContext(context) {
     seen.add(key);
     return true;
   }).slice(0, 6);
-}
-
-/**
- * @param {{ available: number | null; dailyVelocity: number | null }} item
- * @param {number} targetCoverDays
- */
-function recommendedPurchaseUnits(item, targetCoverDays) {
-  if (item.available === null || item.dailyVelocity === null) return null;
-  return Math.max(0, Math.ceil(item.dailyVelocity * targetCoverDays - item.available));
 }
 
 /** @param {unknown} value */

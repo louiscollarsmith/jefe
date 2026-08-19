@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
 import { updateMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
+import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
 import { labelForBeliefKey } from "../merchant-memory/conversational-belief-registry.server.js";
 import { renderBeliefStatement } from "../merchant-memory/belief-statement.server.js";
 import { ACTIVE_BELIEF_STATUSES } from "../merchant-memory/constants.server.js";
@@ -782,21 +783,41 @@ async function acceptRecommendationWorkflow(prisma, input) {
       },
       data: { status: "active" },
     });
-    await tx.merchantRecommendationStep.updateMany({
-      where: {
-        recommendationId: input.recommendationId,
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        status: "draft",
-      },
-      data: { status: "pending" },
-    });
     await updateMerchantActionForRecommendation(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       recommendationId: input.recommendationId,
       recommendation: input.data,
     });
+    const workflow = tx.merchantRecommendationWorkflow.findFirst
+      ? await tx.merchantRecommendationWorkflow.findFirst({
+          where: {
+            recommendationId: input.recommendationId,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+          },
+          orderBy: { version: "desc" },
+          select: { id: true },
+        })
+      : null;
+    const actionRow = tx.merchantAction?.findFirst
+      ? await tx.merchantAction.findFirst({
+          where: {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            sourceRecommendationId: input.recommendationId,
+          },
+          select: { id: true },
+        })
+      : null;
+    if (workflow?.id) {
+      await advanceActionWorkflow(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: actionRow?.id ?? null,
+        workflowId: workflow.id,
+      });
+    }
   };
   return prisma.$transaction ? prisma.$transaction(run) : run(prisma);
 }

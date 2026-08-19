@@ -1315,7 +1315,7 @@ model MerchantRecommendationStep {
   title              String
   description        String
   completionCriteria String?                        @map("completion_criteria")
-  status             String                         @default("draft") // draft|pending|in_progress|blocked|completed|skipped|superseded
+  status             String                         @default("draft") // draft|waiting|ready|running|needs_merchant|needs_attention|needs_updating|completed|skipped|superseded
   mode               String                         // execute|assist|merchant_action|evidence_required
   capabilityRef      String?                        @map("capability_ref")
   dependsOnStepIds   String[]                       @default([]) @map("depends_on_step_ids")
@@ -1352,6 +1352,7 @@ model MerchantRecommendationStepRun {
   status               String                     @default("queued") // queued|running|succeeded|failed|needs_attention|cancelled
   idempotencyKey       String                     @map("idempotency_key")
   actionExecutionRunId String?                    @map("action_execution_run_id") @db.Uuid
+  inputSnapshot        Json                       @default("{}") @map("input_snapshot_json")
   result               Json                       @default("{}") @map("result_json")
   error                Json                       @default("{}") @map("error_json")
   queuedAt             DateTime                   @default(now()) @map("queued_at") @db.Timestamptz(6)
@@ -1488,6 +1489,8 @@ model ActionChangeSet {
   items              Json                        @default("[]") @map("items_json")
   excluded           Json                        @default("[]") @map("excluded_json")
   constraintSnapshot Json                        @default("[]") @map("constraint_snapshot_json")
+  planSnapshot       Json                        @default("{}") @map("plan_snapshot_json")
+  inputHash          String                      @default("") @map("input_hash")
   result             Json                        @default("{}") @map("result_json")
   generatedAt        DateTime                    @default(now()) @map("generated_at") @db.Timestamptz(6)
   approvedAt         DateTime?                   @map("approved_at") @db.Timestamptz(6)

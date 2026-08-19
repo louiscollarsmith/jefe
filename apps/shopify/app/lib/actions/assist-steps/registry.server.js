@@ -3,12 +3,13 @@
 import { runInventoryReviewAssist } from "./handlers/inventory-review.server.js";
 import { runListingCopyReviewAssist } from "./handlers/listing-copy-review.server.js";
 import { runMerchantChecklistAssist } from "./handlers/merchant-checklist.server.js";
+import { runReplenishmentProposalAssist } from "./handlers/replenishment-proposal.server.js";
 import { runSupplierEmailDraftAssist } from "./handlers/supplier-email-draft.server.js";
 
 /** @type {Readonly<Record<string, (context: any) => Promise<{ progress: any; chatReply: string | null }>>>} */
 const HANDLERS_BY_REF = Object.freeze({
   "assist:inventory_review": runInventoryReviewAssist,
-  "assist:replenishment_proposal": runInventoryReviewAssist,
+  "assist:replenishment_proposal": runReplenishmentProposalAssist,
   "assist:supplier_email_draft": runSupplierEmailDraftAssist,
   "assist:supplier_sms_draft": runSupplierEmailDraftAssist,
   "assist:supplier_phone_script": runMerchantChecklistAssist,

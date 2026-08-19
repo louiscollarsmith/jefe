@@ -17,6 +17,7 @@ import {
   ensureMerchantActionForRecommendation,
   updateMerchantActionForRecommendation,
 } from "../actions/merchant-action.server.js";
+import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
 import {
@@ -617,16 +618,35 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
       where: { recommendationId: existing.id, status: "draft" },
       data: { status: "active" },
     });
-    await tx.merchantRecommendationStep.updateMany({
-      where: { recommendationId: existing.id, status: "draft" },
-      data: { status: "pending" },
-    });
     await updateMerchantActionForRecommendation(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       recommendationId: updated.id,
       recommendation: updated,
     });
+    const workflow =
+      updated.workflows?.[0] ??
+      (await tx.merchantRecommendationWorkflow.findFirst({
+        where: { recommendationId: updated.id, merchantId: input.merchantId, shopId: input.shopId },
+        orderBy: { version: "desc" },
+      }));
+    const actionRow = await tx.merchantAction.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceRecommendationId: updated.id,
+      },
+      select: { id: true },
+    });
+    if (workflow?.id) {
+      await advanceActionWorkflow(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: actionRow?.id ?? null,
+        workflowId: workflow.id,
+        now,
+      });
+    }
     await emitExecutableWorkflowSteps(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,

@@ -31,6 +31,7 @@ import {
 } from "../actions/action-intent.server.js";
 import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
 import { ensureMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
+import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
 import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.server.js";
 import { BOOTSTRAP_OUTPUT_SCHEMA, parseBootstrapOutput } from "./bootstrap-schema.server.js";
 import { buildBootstrapPrompt, buildBootstrapSystemPrompt } from "./bootstrap-prompt.server.js";
@@ -1155,7 +1156,7 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
           title: opportunity.actionIntent ? "Review and approve the Shopify action" : "Track the signal",
           description: opportunity.whatIllDo,
           completionCriteria: opportunity.howWellKnow,
-          status: "pending",
+          status: "draft",
           mode: opportunity.actionIntent ? "execute" : "assist",
           capabilityRef: opportunity.actionIntent
             ? `execute:${opportunity.actionIntent.actionType}:${opportunity.actionIntent.targetKind}`
@@ -1168,8 +1169,14 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
         ...recommendation,
         workflows: [{ ...workflow, steps: [step] }],
       };
-      await ensureMerchantActionForRecommendation(tx, {
+      const action = await ensureMerchantActionForRecommendation(tx, {
         recommendation: recommendationWithWorkflow,
+      });
+      await advanceActionWorkflow(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: action?.id ?? null,
+        workflowId: workflow.id,
       });
       if (opportunity.actionIntent) {
         actionCandidates.push({

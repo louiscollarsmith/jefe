@@ -14,7 +14,7 @@ const log = baseLogger.child({ component: "assist-steps" });
  * Produce the assist artifact for one step run without mutating lifecycle state.
  *
  * @param {any} prisma
- * @param {{ stepRun: any; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ stepRun: any; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; resolvedContext?: any }} input
  */
 export async function produceAssistStepArtifact(prisma, input) {
   const logger = input.logger ?? log;
@@ -33,6 +33,7 @@ export async function produceAssistStepArtifact(prisma, input) {
     actionId: input.actionId,
     stepId: step.id,
     conversationId: input.conversationId ?? null,
+    resolvedContext: input.resolvedContext ?? null,
     logger,
   });
   try {
@@ -66,7 +67,7 @@ export async function produceAssistStepArtifact(prisma, input) {
 
 /**
  * @param {any} prisma
- * @param {{ stepRunId: string; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; completeActionStepRun?: typeof import("../action-step-lifecycle.server.js").completeActionStepRun }} input
+ * @param {{ stepRunId: string; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; completeActionStepRun?: typeof import("../action-step-lifecycle.server.js").completeActionStepRun; resolvedContext?: any }} input
  */
 export async function executeStartedAssistStepRun(prisma, input) {
   const logger = input.logger ?? log;
@@ -94,6 +95,7 @@ export async function executeStartedAssistStepRun(prisma, input) {
     stepRun: { ...stepRun, step: stepRun.step },
     actionId: input.actionId,
     conversationId: input.conversationId ?? null,
+    resolvedContext: input.resolvedContext ?? null,
     logger,
   });
   if (!produced.ok || !produced.progress) return produced;

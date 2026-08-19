@@ -23,6 +23,13 @@ export function formatAssistArtifactForChat(progress) {
       lines.push(formatArtifactItem(item, progress));
     }
   }
+  if (Array.isArray(progress.excluded) && progress.excluded.length > 0) {
+    lines.push("");
+    lines.push("Excluded:");
+    for (const row of progress.excluded.slice(0, 6)) {
+      lines.push(`• ${row.title ?? row.reason ?? "Item"}`);
+    }
+  }
   if (progress.body) {
     lines.push("");
     lines.push(String(progress.body));

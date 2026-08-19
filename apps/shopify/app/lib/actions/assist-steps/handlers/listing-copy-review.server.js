@@ -39,6 +39,17 @@ export async function runListingCopyReviewAssist(context) {
 
 /** @param {any} context */
 function listingCopyItemsFromContext(context) {
+  const scoped = Array.isArray(context?.resolvedContext?.scope?.items)
+    ? context.resolvedContext.scope.items
+    : [];
+  if (scoped.length > 0) {
+    return scoped
+      .map((/** @type {any} */ item) => ({
+        title: String(item?.title ?? item?.productTitle ?? "").trim(),
+        toType: String(item?.toType ?? item?.proposedType ?? "").trim(),
+      }))
+      .filter((/** @type {any} */ item) => item.title);
+  }
   const action = context?.action ?? null;
   const preview = action?.progress?.preview ?? {};
   const changes = Array.isArray(preview.changes) ? preview.changes : [];

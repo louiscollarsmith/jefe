@@ -1,10 +1,15 @@
 // @ts-check
 
 /**
- * Structured Action Runtime commands. Chat and UI buttons both land here.
- * The LLM may propose a command; application code validates state and executes
- * through lifecycle / Change Set / typed-adapter services. The model never
- * mutates Shopify or workflow status itself.
+ * Structured Action Runtime commands. UI buttons land here with an explicit
+ * command. Focused chat lands here through the Action Interpreter's structured
+ * plan. Application code validates state and executes through lifecycle /
+ * Change Set / typed-adapter services. The model never mutates Shopify or
+ * workflow status itself.
+ *
+ * `classifyActionCommand` is not the product semantic engine. It remains as a
+ * tiny LLM-down read-only fallback and as a helper for tests of that fallback.
+ * Merchant natural language is interpreted in action-interpreter.server.js.
  */
 
 import { logger as baseLogger } from "../observability/logger.server.js";
@@ -22,12 +27,16 @@ import { rejectAction, reviseAction } from "./action-resolution.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
 import {
   addActionConstraint,
+  expandScopeModificationToConstraints,
   listActionConstraints,
+  normalizeMatch,
   parseConstraintsFromMessage,
+  parseScopeModificationFromMessage,
   removeActionConstraint,
   serializeConstraint,
   normalizeChatText,
 } from "./action-constraint.server.js";
+import { inspectRestockEvidence, recommendedPurchaseUnits } from "./action-capability.server.js";
 import {
   applyActionChangeSet,
   createActionChangeSet,
@@ -42,16 +51,33 @@ import {
 import {
   PLAN_CHAT_INTENT,
   buildPlanAcceptReply,
+  buildPlanAdvanceReply,
   buildPlanCompleteReply,
   buildPlanDeclineReply,
+  buildPlanGoBackReply,
+  buildPlanGoToReply,
   buildPlanRecapReply,
   buildPlanScopeReply,
   buildPlanSkipReply,
   buildPlanStatusReply,
   buildPlanStopReply,
   classifyPlanChatIntent,
+  currentPlanStep,
   extractPlanScopeItems,
 } from "./plan-chat.server.js";
+import { resolveActionContext } from "./resolved-action-context.server.js";
+import {
+  advanceCurrentActionStep,
+  goBackActionSteps,
+  goToActionStep,
+  invalidateDownstreamSteps,
+  isAdvanceStepCommand,
+  isExtendedSkipCommand,
+  parseGoBackCommand,
+  parseGoToStepCommand,
+  resolveStepTarget,
+  resolveStepTargetOrClarify,
+} from "./action-workflow-navigation.server.js";
 
 const log = baseLogger.child({ component: "action-command" });
 
@@ -64,12 +90,17 @@ export const ACTION_COMMAND = Object.freeze({
   START_STEP: "START_STEP",
   STOP_STEP: "STOP_STEP",
   SKIP_STEP: "SKIP_STEP",
+  ADVANCE_STEP: "ADVANCE_STEP",
+  GO_BACK: "GO_BACK",
+  GO_TO_STEP: "GO_TO_STEP",
+  NEEDS_CLARIFICATION: "NEEDS_CLARIFICATION",
   DEFER_ACTION: "DEFER_ACTION",
   REJECT_ACTION: "REJECT_ACTION",
   CREATE_CHANGESET: "CREATE_CHANGESET",
   APPLY_CHANGESET: "APPLY_CHANGESET",
   CONFIRM_MERCHANT_STEP: "CONFIRM_MERCHANT_STEP",
   INSPECT_SCOPE: "INSPECT_SCOPE",
+  INSPECT_PROPOSAL: "INSPECT_PROPOSAL",
   REPORT_EXECUTION: "REPORT_EXECUTION",
 });
 
@@ -82,6 +113,9 @@ const MUTATION_COMMANDS = new Set([
   ACTION_COMMAND.START_STEP,
   ACTION_COMMAND.STOP_STEP,
   ACTION_COMMAND.SKIP_STEP,
+  ACTION_COMMAND.ADVANCE_STEP,
+  ACTION_COMMAND.GO_BACK,
+  ACTION_COMMAND.GO_TO_STEP,
   ACTION_COMMAND.DEFER_ACTION,
   ACTION_COMMAND.REJECT_ACTION,
   ACTION_COMMAND.CREATE_CHANGESET,
@@ -104,12 +138,22 @@ const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
 }));
 
 /**
+ * Deterministic fallback classifier. Not the primary focused-chat router.
+ * Used when the Action Interpreter is unavailable and the request is
+ * read-only, and by tests of that fallback.
+ *
  * @param {string} message
- * @param {{ hasReadyChangeSet?: boolean; actionStatus?: string | null }} [context]
+ * @param {{ hasReadyChangeSet?: boolean; actionStatus?: string | null; pendingNavigation?: any }} [context]
  */
 export function classifyActionCommand(message, context = {}) {
   const text = normalizeChatText(message);
   if (!text) return { type: ACTION_COMMAND.ANSWER, params: {} };
+
+  const pending = context.pendingNavigation ?? null;
+  if (pending?.candidates?.length) {
+    const resolved = resolvePendingNavigation(text, pending);
+    if (resolved) return resolved;
+  }
 
   if (isCreateChangeSetAsk(text)) {
     return { type: ACTION_COMMAND.CREATE_CHANGESET, params: {} };
@@ -122,6 +166,34 @@ export function classifyActionCommand(message, context = {}) {
   }
 
   if (!isPrimarilyQuestion(text)) {
+    const ambiguousBack = parseAmbiguousBackNavigation(text);
+    if (ambiguousBack) {
+      return {
+        type: ACTION_COMMAND.NEEDS_CLARIFICATION,
+        params: ambiguousBack,
+      };
+    }
+    if (isAdvanceStepCommand(text)) {
+      return { type: ACTION_COMMAND.ADVANCE_STEP, params: {} };
+    }
+    const goBack = parseGoBackCommand(text);
+    if (goBack) {
+      if ("targetHint" in goBack && goBack.targetHint) {
+        return { type: ACTION_COMMAND.GO_TO_STEP, params: { targetHint: goBack.targetHint } };
+      }
+      return { type: ACTION_COMMAND.GO_BACK, params: { steps: goBack.steps ?? 1 } };
+    }
+    const goTo = parseGoToStepCommand(text);
+    if (goTo?.targetHint) {
+      return { type: ACTION_COMMAND.GO_TO_STEP, params: { targetHint: goTo.targetHint } };
+    }
+    if (isExtendedSkipCommand(text)) {
+      return { type: ACTION_COMMAND.SKIP_STEP, params: {} };
+    }
+    const scopeModification = parseScopeModificationFromMessage(text);
+    if (scopeModification) {
+      return { type: ACTION_COMMAND.ADD_CONSTRAINT, params: { scopeModification } };
+    }
     const constraints = parseConstraintsFromMessage(text);
     if (constraints.length > 0) {
       return { type: ACTION_COMMAND.ADD_CONSTRAINT, params: { constraints } };
@@ -140,6 +212,18 @@ export function classifyActionCommand(message, context = {}) {
 
   if (isInspectScopeAsk(text)) {
     return { type: ACTION_COMMAND.INSPECT_SCOPE, params: {} };
+  }
+  if (isProposalAsk(text) || isCurrentProposalAsk(text) || isExactActionStateAsk(text)) {
+    return { type: ACTION_COMMAND.INSPECT_PROPOSAL, params: {} };
+  }
+  if (isActionStateAsk(text)) {
+    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: PLAN_CHAT_INTENT.recap } };
+  }
+  if (isNextStepAsk(text)) {
+    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: PLAN_CHAT_INTENT.status } };
+  }
+  if (isConstraintsAsk(text)) {
+    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: "constraints" } };
   }
 
   const planIntent = classifyPlanChatIntent(text);
@@ -179,6 +263,7 @@ export function parseProposedCommand(raw) {
       constraintKind: stringOrNull(raw.constraintKind ?? raw.params?.constraintKind),
       collectionTitle: stringOrNull(raw.collectionTitle ?? raw.params?.collectionTitle),
       tag: stringOrNull(raw.tag ?? raw.params?.tag),
+      productTitle: stringOrNull(raw.productTitle ?? raw.params?.productTitle ?? raw.params?.title),
       minInventory: finiteOrNull(raw.minInventory ?? raw.params?.minInventory),
       minPrice: finiteOrNull(raw.minPrice ?? raw.params?.minPrice ?? raw.params?.amount),
       constraintLabel: stringOrNull(raw.constraintLabel ?? raw.params?.constraintLabel),
@@ -262,6 +347,14 @@ export async function executeActionCommand(prisma, input) {
       return runStopStep(prisma, { ...input, action, logger });
     case ACTION_COMMAND.SKIP_STEP:
       return runSkipStep(prisma, { ...input, action, logger });
+    case ACTION_COMMAND.ADVANCE_STEP:
+      return runAdvanceStep(prisma, { ...input, action, logger });
+    case ACTION_COMMAND.GO_BACK:
+      return runGoBack(prisma, { ...input, action, params, logger });
+    case ACTION_COMMAND.GO_TO_STEP:
+      return runGoToStep(prisma, { ...input, action, params, logger });
+    case ACTION_COMMAND.NEEDS_CLARIFICATION:
+      return runNeedsClarification(prisma, { ...input, action, params, logger });
     case ACTION_COMMAND.DEFER_ACTION:
       return runDeferAction(prisma, { ...input, action, logger });
     case ACTION_COMMAND.REJECT_ACTION:
@@ -274,11 +367,131 @@ export async function executeActionCommand(prisma, input) {
       return runConfirmMerchantStep(prisma, { ...input, action, logger });
     case ACTION_COMMAND.INSPECT_SCOPE:
       return runInspectScope(prisma, { ...input, action, logger });
+    case ACTION_COMMAND.INSPECT_PROPOSAL:
+      return runInspectProposal(prisma, { ...input, action, logger });
     case ACTION_COMMAND.REPORT_EXECUTION:
       return runReportExecution(prisma, { ...input, action, logger });
     default:
-      return runAnswer(action, params);
+      return runAnswer(prisma, { ...input, action, params, logger });
   }
+}
+
+/**
+ * Execute a multi-operation interpreter plan in order. Sequential by default:
+ * earlier successes stay if a later command is blocked. Atomic only when the
+ * interpreter marks the plan atomic, or when APPLY is combined with plan
+ * mutations and `explicitApply` is set.
+ *
+ * @param {any} prisma
+ * @param {{
+ *   operations: Array<{ command: string; params?: Record<string, any> }>;
+ *   atomic?: boolean;
+ *   merchantId: string;
+ *   shopId: string;
+ *   actionId: string;
+ *   actor?: string | null;
+ *   conversationId?: string | null;
+ *   session?: { shop: string } | null;
+ *   executeDeps?: any;
+ *   message?: string | null;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ * }} input
+ */
+export async function executeActionPlan(prisma, input) {
+  const logger = input.logger ?? log;
+  const operations = Array.isArray(input.operations) ? input.operations : [];
+  if (operations.length === 0) {
+    return executeActionCommand(prisma, {
+      ...input,
+      command: ACTION_COMMAND.ANSWER,
+      params: {},
+    });
+  }
+  if (operations.length === 1) {
+    return executeActionCommand(prisma, {
+      ...input,
+      command: operations[0].command,
+      params: operations[0].params ?? {},
+    });
+  }
+
+  logger.info("action plan", {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.actionId,
+    commands: operations.map((op) => op.command),
+    atomic: input.atomic === true,
+  });
+
+  /** @type {any[]} */
+  const results = [];
+  for (const operation of operations) {
+    const result = await executeActionCommand(prisma, {
+      ...input,
+      command: operation.command,
+      params: operation.params ?? {},
+    });
+    results.push(result);
+    if (!result.ok || result.command === ACTION_COMMAND.NEEDS_CLARIFICATION) {
+      break;
+    }
+  }
+  return composeActionPlanResult(results);
+}
+
+/** @param {any[]} results */
+function composeActionPlanResult(results) {
+  const succeeded = results.filter((row) => row.ok);
+  const failed = results.filter((row) => !row.ok);
+  const last = results[results.length - 1];
+  const commands = results.map((row) => row.command);
+  const primary =
+    failed[0] ??
+    succeeded.find((row) =>
+      [
+        ACTION_COMMAND.ADVANCE_STEP,
+        ACTION_COMMAND.START_STEP,
+        ACTION_COMMAND.GO_BACK,
+        ACTION_COMMAND.GO_TO_STEP,
+        ACTION_COMMAND.INSPECT_PROPOSAL,
+        ACTION_COMMAND.APPLY_CHANGESET,
+      ].includes(row.command),
+    ) ??
+    last;
+  return {
+    ok: failed.length === 0 && Boolean(last?.ok),
+    command: primary?.command ?? ACTION_COMMAND.ANSWER,
+    reason: failed[0]?.reason ?? (last?.ok ? null : last?.reason),
+    reply: composeActionPlanReply(results),
+    result: { operations: results },
+    results,
+    action: last?.action,
+    changeSet: [...results].reverse().find((row) => row.changeSet)?.changeSet ?? null,
+    commands,
+  };
+}
+
+/** @param {any[]} results */
+function composeActionPlanReply(results) {
+  if (results.length === 0) return "I couldn't do that just now.";
+  if (results.length === 1) return String(results[0].reply ?? "");
+  const summaries = results
+    .filter((row) => row.ok)
+    .map((row) => firstUsefulSentence(row.reply))
+    .filter(Boolean);
+  const failed = results.find((row) => !row.ok);
+  const parts = [...summaries];
+  if (failed?.reply) parts.push(String(failed.reply));
+  return parts.join(" ").trim() || String(results[results.length - 1]?.reply ?? "");
+}
+
+/** @param {unknown} reply */
+function firstUsefulSentence(reply) {
+  const text = String(reply ?? "").trim();
+  if (!text) return "";
+  const beforeTable = text.split(/\n\n/)[0] ?? text;
+  const sentence = beforeTable.split(/(?<=\.)\s+/)[0] ?? beforeTable;
+  return sentence.trim();
 }
 
 /** @param {any} prisma @param {any} input */
@@ -318,6 +531,7 @@ async function runRevisePlan(prisma, input) {
     shopId: input.shopId,
     actionId: input.action.id,
   });
+  await invalidateDownstreamFromCurrentFocus(prisma, input);
 
   let reviseResult = null;
   if (input.action.actionRunId && (planPatch.markdownPercent != null || planPatch.maxProducts != null)) {
@@ -355,6 +569,18 @@ async function runRevisePlan(prisma, input) {
 
 /** @param {any} prisma @param {any} input */
 async function runAddConstraint(prisma, input) {
+  if (input.action?.status === "completed") {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      reason: "action_completed",
+      reply:
+        "This action is already complete, so I can't change what was done. Start a new recommendation if you want to revisit the scope.",
+    };
+  }
+  if (input.params?.scopeModification) {
+    return runScopeModification(prisma, input);
+  }
   const parsed = constraintsFromParams(input.params, input.message);
   if (parsed.length === 0) {
     return {
@@ -390,6 +616,7 @@ async function runAddConstraint(prisma, input) {
     shopId: input.shopId,
     actionId: input.action.id,
   });
+  await invalidateDownstreamFromCurrentFocus(prisma, input);
   const changeSet = await createActionChangeSet(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -399,15 +626,126 @@ async function runAddConstraint(prisma, input) {
   });
   const labels = added.map((item) => item.label).join("; ");
   const scope = changeSet.ok
-    ? `\n\n${formatChangeSetReply(createdChangeSet(changeSet))}`
+    ? `\n\n${formatChangeSetReply(createdChangeSet(changeSet), input.action)}`
     : "";
   return {
     ok: true,
     command: ACTION_COMMAND.ADD_CONSTRAINT,
     result: { constraints: added, changeSet: createdChangeSet(changeSet) },
-    reply: `Saved ${added.length === 1 ? "this constraint" : "these constraints"} on this action: ${labels}.${scope}`,
+    reply: `${buildConstraintAddedReply(added, input.message)}${scope}`,
     changeSet: createdChangeSet(changeSet),
   };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runScopeModification(prisma, input) {
+  if (input.action?.status === "completed") {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      reason: "action_completed",
+      reply:
+        "This action is already complete, so I can't change what was done. Start a new recommendation if you want to revisit the scope.",
+    };
+  }
+  const modification = input.params?.scopeModification;
+  if (!modification) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      reason: "no_constraint",
+      reply: "I understood that as a scope change, but I couldn't turn it into a precise constraint.",
+    };
+  }
+  if (modification.intent === "include_again") {
+    const constraints = await listActionConstraints(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+    });
+    const wanted = normalizeMatch(modification.title);
+    const match = constraints.find(
+      (row) =>
+        row.kind === "exclude_product" &&
+        normalizeMatch(row.params?.title) === wanted,
+    );
+    if (!match) {
+      return {
+        ok: false,
+        command: ACTION_COMMAND.ADD_CONSTRAINT,
+        reason: "not_found",
+        reply: `I don't have ${modification.title} excluded on this action right now.`,
+      };
+    }
+    await removeActionConstraint(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+      constraintId: match.id,
+    });
+    await staleLiveChangeSets(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+    });
+    await invalidateDownstreamFromCurrentFocus(prisma, input);
+    const changeSet = await createActionChangeSet(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+      actor: input.actor,
+      logger: input.logger,
+    });
+    const scope = changeSet.ok
+      ? `\n\n${formatChangeSetReply(createdChangeSet(changeSet), input.action)}`
+      : "";
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      reply: `Included ${modification.title} again.${scope}`,
+      changeSet: createdChangeSet(changeSet),
+    };
+  }
+  const candidates = await inspectRestockEvidence(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+  });
+  const parsed = expandScopeModificationToConstraints(modification, candidates);
+  if (parsed.length === 0) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      reason: "no_constraint",
+      reply: "I understood that as a scope change, but I couldn't match it to products on this action.",
+    };
+  }
+  return runAddConstraint(prisma, {
+    ...input,
+    params: { constraints: parsed },
+    message: input.message,
+  });
+}
+
+/** @param {any[]} added @param {string | null | undefined} message */
+function buildConstraintAddedReply(added, message) {
+  const scopeMod = parseScopeModificationFromMessage(String(message ?? ""));
+  if (scopeMod?.intent === "include_only") {
+    const excluded = added
+      .map((item) => item.label?.replace(/^Exclude\s+/i, "") ?? item.params?.title)
+      .filter(Boolean);
+    const included = scopeMod.title;
+    if (excluded.length === 1) {
+      return `Got it — I'll only include ${included} in this action. ${excluded[0]} is excluded.`;
+    }
+    if (excluded.length > 1) {
+      return `Got it — I'll only include ${included} in this action. Excluded: ${excluded.join(", ")}.`;
+    }
+    return `Got it — I'll only include ${included} in this action.`;
+  }
+  if (added.length === 1) {
+    return `Saved this constraint on this action: ${added[0].label}.`;
+  }
+  return `Saved these constraints on this action: ${added.map((item) => item.label).join("; ")}.`;
 }
 
 /** @param {any} prisma @param {any} input */
@@ -511,6 +849,7 @@ async function runStartStep(prisma, input) {
         stepRunId: stepStart.stepRunId,
         actionId: input.action.id,
         conversationId: input.conversationId ?? null,
+        resolvedContext: stepStart.resolvedContext ?? null,
         logger: input.logger,
       });
       if (assist.ok && assist.chatReply) reply = assist.chatReply;
@@ -556,6 +895,132 @@ async function runStopStep(prisma, input) {
     reason: result.ok ? null : result.reason,
     result,
     reply: buildPlanStopReply(fresh ?? input.action, result),
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runAdvanceStep(prisma, input) {
+  if (input.action.status === "proposed") {
+    const accepted = await acceptMerchantActionPlan(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.action.id,
+      actor: input.actor ?? input.merchantId,
+      logger: input.logger,
+    });
+    if (!accepted.ok) {
+      return {
+        ok: false,
+        command: ACTION_COMMAND.ADVANCE_STEP,
+        reason: accepted.reason,
+        reply: buildPlanAcceptReply(input.action, accepted),
+      };
+    }
+  }
+  const result = await advanceCurrentActionStep(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    actor: input.actor ?? input.merchantId,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.ADVANCE_STEP,
+    reason: result.reason ?? null,
+    result,
+    reply: buildPlanAdvanceReply(fresh ?? input.action, result),
+    action: fresh ?? input.action,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runGoBack(prisma, input) {
+  const result = await goBackActionSteps(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    steps: input.params?.steps ?? 1,
+    actor: input.actor ?? input.merchantId,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  await clearPendingNavigation(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.GO_BACK,
+    reason: result.ok ? null : result.reason,
+    result,
+    reply: buildPlanGoBackReply(fresh ?? input.action, result),
+    action: fresh ?? input.action,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runGoToStep(prisma, input) {
+  const steps = [
+    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
+    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+  ];
+  let targetStepId = input.params?.stepId ?? null;
+  if (!targetStepId && input.params?.targetHint) {
+    const resolved = resolveStepTargetOrClarify(steps, input.params.targetHint);
+    if (resolved.ambiguous) {
+      await persistPendingNavigation(prisma, input, {
+        intent: ACTION_COMMAND.GO_TO_STEP,
+        question: resolved.question,
+        candidates: resolved.candidates,
+      });
+      return {
+        ok: true,
+        command: ACTION_COMMAND.NEEDS_CLARIFICATION,
+        reply: resolved.question,
+        action: input.action,
+      };
+    }
+    targetStepId = resolved.step?.id ?? null;
+  }
+  if (!targetStepId) {
+    return {
+      ok: false,
+      command: ACTION_COMMAND.GO_TO_STEP,
+      reason: "step_not_found",
+      reply: "I couldn't figure out which step you meant.",
+    };
+  }
+  const result = await goToActionStep(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    targetStepId,
+    actor: input.actor ?? input.merchantId,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  await clearPendingNavigation(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.GO_TO_STEP,
+    reason: result.ok ? null : result.reason,
+    result,
+    reply: buildPlanGoToReply(fresh ?? input.action, result),
+    action: fresh ?? input.action,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runNeedsClarification(prisma, input) {
+  await persistPendingNavigation(prisma, input, {
+    intent: input.params?.intent ?? ACTION_COMMAND.GO_TO_STEP,
+    question: input.params?.question ?? "Which step did you mean?",
+    candidates: input.params?.candidates ?? [],
+  });
+  return {
+    ok: true,
+    command: ACTION_COMMAND.NEEDS_CLARIFICATION,
+    reply: input.params?.question ?? "Which step did you mean?",
+    action: input.action,
   };
 }
 
@@ -639,21 +1104,27 @@ async function runCreateChangeSet(prisma, input) {
     logger: input.logger,
   });
   if (!result.ok) {
+    const restock = isRestockAction(input.action);
     return {
       ok: false,
       command: ACTION_COMMAND.CREATE_CHANGESET,
       reason: result.reason,
       reply:
         result.reason === "no_preview"
-          ? "I don’t have an exact mutation list yet. Accept the plan and I can build one from the live proposal."
+          ? restock
+            ? "I don’t have restock evidence loaded yet, so I can’t show recommended quantities. Once inventory cover is in Merchant Memory I can build the proposal without writing to Shopify."
+            : "I don’t have an exact mutation list yet. Accept the plan and I can build one from the live proposal."
           : "I couldn’t build an exact change set just now.",
     };
   }
+  const restock = result.changeSet?.actionType === "restock" || isRestockAction(input.action);
   return {
     ok: true,
     command: ACTION_COMMAND.CREATE_CHANGESET,
     changeSet: result.changeSet,
-    reply: `${formatChangeSetReply(result.changeSet)}\n\nSay go ahead when you want me to apply this exact set.`,
+    reply: restock
+      ? `${formatChangeSetReply(result.changeSet)}\n\nThese are recommended order quantities, not Shopify writes. Say go ahead when you want me to use this proposal for the current step.`
+      : `${formatChangeSetReply(result.changeSet)}\n\nSay go ahead when you want me to apply this exact set.`,
   };
 }
 
@@ -792,8 +1263,13 @@ async function runReportExecution(prisma, input) {
   };
 }
 
-function runAnswer(/** @type {any} */ action, /** @type {any} */ params) {
-  const kind = params?.questionKind;
+/** @param {any} prisma @param {any} input */
+async function runAnswer(prisma, input) {
+  if (input.params?.simulate) {
+    return runSimulate(prisma, input);
+  }
+  const kind = input.params?.questionKind;
+  const action = input.action;
   if (kind === PLAN_CHAT_INTENT.status) {
     return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanStatusReply(action) };
   }
@@ -801,9 +1277,249 @@ function runAnswer(/** @type {any} */ action, /** @type {any} */ params) {
     return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanRecapReply(action) };
   }
   if (kind === PLAN_CHAT_INTENT.scope) {
-    return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanScopeReply(action) };
+    return runInspectScope(prisma, input);
   }
-  return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanRecapReply(action) };
+  if (kind === "constraints") {
+    return runReportConstraints(prisma, input);
+  }
+  return answerFocusedAction(prisma, input);
+}
+
+/** @param {any} prisma @param {any} input */
+async function runSimulate(prisma, input) {
+  const resolved = await resolveActionContext(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    conversationId: input.conversationId ?? null,
+    logger: input.logger,
+  });
+  const currentCover = Number(resolved?.plan?.values?.coverDays ?? input.action?.plan?.coverDays);
+  const coverDays = Number(input.params?.coverDays);
+  const markdown = Number(input.params?.markdownPercent);
+  const items = Array.isArray(resolved?.scope?.items) ? resolved.scope.items : [];
+  if (Number.isFinite(coverDays) && coverDays > 0) {
+    const lines = items.map((/** @type {any} */ item) => {
+      const units = recommendedPurchaseUnits(
+        {
+          available: item.available ?? item.inventory ?? 0,
+          dailyVelocity: item.dailyVelocity,
+        },
+        coverDays,
+      );
+      const title = item.title ?? item.productTitle ?? "Item";
+      return units == null ? `• ${title}` : `• ${title} = ${units}`;
+    });
+    const kept = Number.isFinite(currentCover)
+      ? ` The current plan is still ${currentCover} days.`
+      : " I haven't changed the current plan.";
+    const body = lines.length > 0 ? `\n${lines.join("\n")}` : "";
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ANSWER,
+      reply: `If we used ${coverDays} days:${body}.${kept}`,
+    };
+  }
+  if (Number.isFinite(markdown) && markdown >= 0) {
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ANSWER,
+      reply: `A ${markdown}% markdown would change the current proposal. I haven't applied that yet.`,
+    };
+  }
+  return {
+    ok: true,
+    command: ACTION_COMMAND.ANSWER,
+    reply: "I can show a hypothetical, but I need a cover period or markdown percent to calculate from.",
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runInspectProposal(prisma, input) {
+  const current = await getCurrentChangeSet(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+  });
+  if (current) {
+    const serialized = serializeChangeSet(current);
+    return {
+      ok: true,
+      command: ACTION_COMMAND.INSPECT_PROPOSAL,
+      changeSet: serialized,
+      reply: formatChangeSetReply(serialized),
+    };
+  }
+  const created = await createActionChangeSet(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    logger: input.logger,
+  });
+  if (created.ok) {
+    const items = Array.isArray(created.changeSet?.items) ? created.changeSet.items : [];
+    const excluded = Array.isArray(created.changeSet?.excluded) ? created.changeSet.excluded : [];
+    if (items.length > 0 || excluded.length > 0) {
+      return {
+        ok: true,
+        command: ACTION_COMMAND.INSPECT_PROPOSAL,
+        changeSet: created.changeSet,
+        reply: formatChangeSetReply(created.changeSet),
+      };
+    }
+  }
+  const step = currentPlanStep(input.action);
+  const stepTitle = step?.title ?? "the current step";
+  const restock = isRestockAction(input.action);
+  const reply = restock
+    ? `I haven't built the replenishment proposal yet. The current step is "${stepTitle}". Once that's complete, I'll calculate the proposed reorder quantities.`
+    : `I haven't built the proposal yet. The current step is "${stepTitle}". Once that's complete, I'll show you the exact changes.`;
+  return {
+    ok: true,
+    command: ACTION_COMMAND.INSPECT_PROPOSAL,
+    reason: created.reason ?? "no_proposal",
+    reply,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runReportConstraints(prisma, input) {
+  const constraints = await listActionConstraints(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+  });
+  const excluded = constraints.filter((row) => row.kind === "exclude_product");
+  if (excluded.length === 0) {
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ANSWER,
+      reply: "You haven't excluded anything on this action yet.",
+    };
+  }
+  const lines = excluded.map((row) => row.label?.replace(/^Exclude\s+/i, "") ?? row.params?.title).filter(Boolean);
+  return {
+    ok: true,
+    command: ACTION_COMMAND.ANSWER,
+    reply:
+      lines.length === 1
+        ? `You excluded ${lines[0]}.`
+        : `You excluded:\n${lines.map((line) => `• ${line}`).join("\n")}`,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function answerFocusedAction(prisma, input) {
+  const resolved = await resolveActionContext(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    conversationId: input.conversationId ?? null,
+    logger: input.logger,
+  });
+  const text = normalizeChatText(input.message ?? "");
+
+  // Lifecycle contradiction explanation: if the merchant asks about waiting steps
+  // and the actual persisted state has a completed-prerequisite/still-waiting
+  // inconsistency, name the contradiction directly instead of giving a generic recap.
+  if (/\b(waiting|blocked|stuck|why.{0,20}step|which step)\b/i.test(text)) {
+    const allSteps = [
+      ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
+      ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+    ];
+    const byId = new Map(allSteps.map((s) => [String(s.id), s]));
+    const contradictions = allSteps.filter((step) => {
+      if (String(step.status ?? "") !== "waiting") return false;
+      const deps = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
+      return deps.length > 0 && deps.every((/** @type {string} */ id) =>
+        ["completed", "skipped", "superseded"].includes(String(byId.get(String(id))?.status ?? "")),
+      );
+    });
+    if (contradictions.length > 0) {
+      const lines = contradictions.map((step) => {
+        const deps = (Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [])
+          .map((/** @type {string} */ id) => byId.get(String(id)))
+          .filter(Boolean);
+        const depNames = deps.map((d) => `"${d.title ?? d.id}"`).join(" and ");
+        return (
+          `"${step.title ?? step.id}" is currently marked as waiting. ` +
+          `It depends on ${depNames}, which ${deps.length === 1 ? "is" : "are"} already complete — ` +
+          `so that state is inconsistent. I'll repair it automatically next time you interact with the action.`
+        );
+      });
+      return { ok: true, command: ACTION_COMMAND.ANSWER, reply: lines.join("\n\n") };
+    }
+  }
+
+  // Answer focused factual questions from structured Action Runtime state.
+  // Never fall back to a generic recap for questions about plan parameters,
+  // proposal contents, scope, or execution history that the action already holds.
+
+  if (resolved) {
+    const planValues = resolved.plan?.values ?? {};
+    const coverDays = planValues.coverDays ?? null;
+    const markdownPercent = planValues.markdownPercent ?? null;
+    const scopeItems = Array.isArray(resolved.scope?.items) ? resolved.scope.items : [];
+    const excluded = Array.isArray(resolved.scope?.excluded) ? resolved.scope.excluded : [];
+
+    // Cover-period / replenishment window questions
+    if (
+      /\b(cover|window|period|days?|how long|replenishment window|days? of (cover|stock))\b/i.test(text) &&
+      !/\bproduct|which|scope|what.?s included\b/i.test(text)
+    ) {
+      if (coverDays != null) {
+        const lines = [];
+        lines.push(`${coverDays} days of cover.`);
+        if (scopeItems.length > 0) {
+          const ordered = scopeItems.slice(0, 6).map((item) => {
+            const title = item.title ?? item.productTitle ?? null;
+            const units = item.recommendedUnits ?? item.after ?? null;
+            return title && units != null ? `${title}: ${units} units` : title;
+          }).filter(Boolean);
+          if (ordered.length > 0) {
+            lines.push(`Current recommendation: ${ordered.join(", ")}.`);
+          }
+        }
+        return { ok: true, command: ACTION_COMMAND.ANSWER, reply: lines.join(" ") };
+      }
+    }
+
+    // Markdown percent questions
+    if (/\b(markdown|discount|percent|%|price drop)\b/i.test(text) && markdownPercent != null) {
+      return {
+        ok: true,
+        command: ACTION_COMMAND.ANSWER,
+        reply: `The current markdown target is ${markdownPercent}%.`,
+      };
+    }
+
+    // Why questions — grounded in plan parameters and scope
+    if (/\bwhy\b/i.test(text)) {
+      const parts = [];
+      if (coverDays != null) parts.push(`Cover target: ${coverDays} days.`);
+      if (markdownPercent != null) parts.push(`Markdown target: ${markdownPercent}%.`);
+      if (scopeItems.length > 0) {
+        const titles = scopeItems.slice(0, 6).map((/** @type {any} */ item) => item.title).filter(Boolean);
+        if (titles.length) {
+          parts.push(`In scope: ${titles.join(", ")}${scopeItems.length > 6 ? ` (+${scopeItems.length - 6} more)` : ""}.`);
+        }
+      }
+      if (excluded.length > 0) {
+        const exTitles = excluded.slice(0, 4).map((/** @type {any} */ item) => item.title ?? item.reason).filter(Boolean);
+        if (exTitles.length) parts.push(`Excluded: ${exTitles.join(", ")}.`);
+      }
+      if (resolved.constraints?.length) {
+        parts.push(
+          `Constraints: ${resolved.constraints.map((/** @type {any} */ row) => row.label ?? row.kind).join("; ")}.`,
+        );
+      }
+      if (parts.length > 0) {
+        return { ok: true, command: ACTION_COMMAND.ANSWER, reply: parts.join(" ") };
+      }
+    }
+  }
+
+  return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanRecapReply(input.action) };
 }
 
 /**
@@ -878,7 +1594,8 @@ export function parsePlanRevision(text) {
     normalized.match(/\bmarkdown(?: of)?\s+(\d+(?:\.\d+)?)\s*%/i);
   const cover =
     normalized.match(/\b(\d+)\s*days?\s+(?:of\s+)?cover\b/i) ||
-    normalized.match(/\bcover\s+(?:of\s+)?(\d+)\s*days?\b/i);
+    normalized.match(/\bcover\s+(?:of\s+)?(\d+)\s*days?\b/i) ||
+    normalized.match(/\b(?:use|make it|actually use|change (?:cover )?to)\s+(\d+)\s*days?\b/i);
   const maxProducts =
     normalized.match(/\b(?:top|only|just)\s+(\d+)\s+products?\b/i) ||
     normalized.match(/\bonly do(?: the)?\s+(\d+)\b/i);
@@ -902,6 +1619,8 @@ function constraintsFromParams(params, message) {
         params: {
           collectionTitle: params.collectionTitle,
           tag: params.tag,
+          title: params.productTitle ?? params.constraintLabel,
+          productId: params.productId,
           min: params.minInventory,
           amount: params.minPrice,
         },
@@ -966,6 +1685,52 @@ function buildStartReply(action, stepStart) {
   if (reason.startsWith("action_not_startable:proposed")) {
     return "Accept the plan first — then tell me to start.";
   }
+  if (reason.startsWith("step_not_ready:running")) {
+    return "This step is already running.";
+  }
+  if (reason.startsWith("step_not_ready:needs_attention")) {
+    const step = action.currentStep;
+    const title = step?.title ?? "This step";
+    const detail = step?.attention?.reason ?? step?.statusReason ?? null;
+    return detail
+      ? `"${title}" needs attention before it can restart: ${detail}`
+      : `"${title}" needs attention before it can restart. Check the details and try again.`;
+  }
+  if (reason.startsWith("step_not_ready:needs_updating")) {
+    const step = action.currentStep;
+    const title = step?.title ?? "This step";
+    return `"${title}" needs rebuilding because an earlier step or the plan changed. Revise and rebuild before starting.`;
+  }
+  if (reason.startsWith("step_not_ready:waiting")) {
+    const step = action.currentStep;
+    const title = step?.title ?? "This step";
+    const allSteps = [
+      ...(Array.isArray(action?.workflow?.steps) ? action.workflow.steps : []),
+      ...(Array.isArray(action?.displaySteps) ? action.displaySteps : []),
+    ];
+    const deps = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
+    if (deps.length > 0) {
+      const depTitles = deps
+        .map((/** @type {string} */ id) => allSteps.find((/** @type {any} */ s) => s.id === id))
+        .filter(Boolean)
+        .filter((/** @type {any} */ s) => !["completed", "skipped"].includes(String(s.status ?? "")))
+        .map((/** @type {any} */ s) => `"${s.title ?? s.label}"`)
+        .slice(0, 2);
+      if (depTitles.length > 0) {
+        return `"${title}" is waiting for ${depTitles.join(" and ")} to complete first.`;
+      }
+    }
+    return `"${title}" is waiting on an earlier step to complete first.`;
+  }
+  if (reason === "no_current_step") {
+    return "There\'s no step ready to start right now.";
+  }
+  if (reason === "not_current_step") {
+    return "That step isn\'t the active one. Finish the current step first, or navigate to the one you want.";
+  }
+  if (reason === "claim_race") {
+    return "Another process just claimed that step. Refresh and try again.";
+  }
   return "I couldn’t start that step just now.";
 }
 
@@ -992,6 +1757,33 @@ async function refreshAction(prisma, input) {
   });
 }
 
+/**
+ * True when the merchant is asking a store-wide question that should not be
+ * answered from the focused action by default.
+ * @param {string} message
+ */
+export function isExplicitGeneralStoreQuestion(message) {
+  const text = normalizeChatText(message);
+  if (!text) return false;
+  const generalPatterns = [
+    /\bhow many products (?:do i|does my store|are there)\b/i,
+    /\btotal (?:number of )?products\b/i,
+    /\boverall (?:store|business|catalogue|catalog)\b/i,
+    /\bacross (?:my |the )?(?:whole )?(?:store|catalogue|catalog|business)\b/i,
+    /\bstore(?:wide|-wide)\b/i,
+    /\bmy entire (?:catalogue|catalog|store)\b/i,
+    /\ball (?:my )?products (?:in the store|overall|in total)\b/i,
+  ];
+  if (!generalPatterns.some((pattern) => pattern.test(text))) return false;
+  if (/\b(this|the|current) (?:action|plan|step|proposal|replenishment)\b/i.test(text)) {
+    return false;
+  }
+  if (/\b(?:proposing|replenish|restock|markdown|in scope)\b/i.test(text)) {
+    return false;
+  }
+  return true;
+}
+
 /** @param {string} text */
 function isCreateChangeSetAsk(text) {
   return (
@@ -999,6 +1791,57 @@ function isCreateChangeSetAsk(text) {
     /\bexact(?:ly)? (?:what you(?:'ll| will) change|changes)\b/i.test(text) ||
     /\bchange ?set\b/i.test(text) ||
     /\bpreview (?:the )?(?:changes|markdowns?)\b/i.test(text)
+  );
+}
+
+/** @param {string} text */
+function isProposalAsk(text) {
+  return (
+    /\bshow me what you(?:'re| are) proposing\b/i.test(text) ||
+    /\bwhat are (?:we|you) proposing\b/i.test(text) ||
+    /\bwhat(?:'s| is) (?:the |your )?(?:current )?(?:proposal|replenishment proposal|replenishment plan)\b/i.test(text) ||
+    /\b(show me|what(?:'s| is)) (?:the |your )?(?:current )?(?:proposal|proposing|recommend(?:ation|ed)?(?: order quantities)?)\b/i.test(text)
+  );
+}
+
+/** @param {string} text */
+function isCurrentProposalAsk(text) {
+  return /\bwhat(?:'s| is) the current proposal\b/i.test(text);
+}
+
+/** @param {string} text */
+function isExactActionStateAsk(text) {
+  return (
+    /\bremind me exactly\b/i.test(text) ||
+    /\bexactly what we(?:'re| are) (?:doing|replenishing|proposing)\b/i.test(text)
+  );
+}
+
+/** @param {string} text */
+function isActionStateAsk(text) {
+  return (
+    /\bwhat are we doing\b/i.test(text) ||
+    /\bwhat(?:'s| is) this action\b/i.test(text) ||
+    /\bwhat(?:'s| is) the (?:current )?(?:action|plan)\b/i.test(text)
+  );
+}
+
+/** @param {string} text */
+function isNextStepAsk(text) {
+  return (
+    /\bwhat happens next\b/i.test(text) ||
+    /\bwhat(?:'s| is) next\b/i.test(text) ||
+    /\bwhat do we do next\b/i.test(text)
+  );
+}
+
+/** @param {string} text */
+function isConstraintsAsk(text) {
+  return (
+    /\bwhat constraints\b/i.test(text) ||
+    /\bwhich constraints\b/i.test(text) ||
+    /\bwhat (?:rules|exclusions) (?:have i|did i)\b/i.test(text) ||
+    /\bwhat (?:have i|did i) exclud(?:e|ed)\b/i.test(text)
   );
 }
 
@@ -1015,7 +1858,10 @@ function isExecutionReportAsk(text) {
 function isInspectScopeAsk(text) {
   return (
     /\bwhich products (?:does|do) that leave\b/i.test(text) ||
-    /\bwhat(?:'s| is) left\b/i.test(text)
+    /\bwhat(?:'s| is) (?:in scope|left)\b/i.test(text) ||
+    /\bwhat are we (?:replenishing|restocking|reordering|ordering)\b/i.test(text) ||
+    /\bwhat cover (?:period|days) are we using\b/i.test(text) ||
+    /\bwhat will you change\b/i.test(text)
   );
 }
 
@@ -1073,4 +1919,152 @@ function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, any>} */ (value)
     : {};
+}
+
+/** @param {string} text */
+function parseAmbiguousBackNavigation(text) {
+  if (!/\b(?:go back|return|revisit)\b/i.test(text)) return null;
+  if (!/\bquantit/i.test(text)) return null;
+  return {
+    intent: ACTION_COMMAND.GO_TO_STEP,
+    question:
+      "Do you want to revisit how I calculated the quantities, or the final replenishment proposal?",
+    candidates: [
+      { stepId: null, label: "how quantities are calculated", hint: "cover calculation inventory review" },
+      { stepId: null, label: "final replenishment proposal", hint: "proposal quantities" },
+    ],
+  };
+}
+
+/**
+ * @param {string} text
+ * @param {{ intent?: string; candidates?: { stepId?: string | null; label?: string; hint?: string }[] }} pending
+ */
+function resolvePendingNavigation(text, pending) {
+  const normalized = normalizeChatText(text);
+  if (!normalized || !Array.isArray(pending.candidates)) return null;
+
+  if (
+    /\bhow they(?:'re| are) calculated\b/i.test(normalized) ||
+    /\bchange how\b/i.test(normalized) ||
+    /\bcalculation|assumptions\b/i.test(normalized)
+  ) {
+    const calc =
+      pending.candidates.find((candidate) =>
+        /calculat|assumption|inventory|cover/.test(
+          String(candidate.hint ?? candidate.label ?? "").toLowerCase(),
+        ),
+      ) ?? pending.candidates[0];
+    return {
+      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+      params: { targetHint: calc?.hint ?? calc?.label ?? "inventory review cover" },
+    };
+  }
+
+  if (/\bproposal\b/i.test(normalized)) {
+    const proposal =
+      pending.candidates.find((candidate) =>
+        /proposal/.test(String(candidate.hint ?? candidate.label ?? "").toLowerCase()),
+      ) ?? pending.candidates[1];
+    if (proposal) {
+      return {
+        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+        params: { targetHint: proposal.hint ?? proposal.label ?? "" },
+      };
+    }
+  }
+
+  for (const candidate of pending.candidates) {
+    const label = String(candidate.label ?? "").toLowerCase();
+    const hint = String(candidate.hint ?? candidate.label ?? "").toLowerCase();
+    if (
+      normalized.includes(label) ||
+      label.split(/\s+/).some((word) => word.length > 4 && normalized.includes(word)) ||
+      /\bcalculated|calculation|assumptions\b/i.test(normalized) && /calculat|assumption|inventory|cover/.test(hint)
+    ) {
+      return {
+        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+        params: {
+          targetHint: candidate.hint ?? candidate.label ?? "",
+          stepId: candidate.stepId ?? null,
+        },
+      };
+    }
+    if (/\bproposal\b/i.test(normalized) && /proposal/.test(hint)) {
+      return {
+        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+        params: {
+          targetHint: candidate.hint ?? candidate.label ?? "",
+          stepId: candidate.stepId ?? null,
+        },
+      };
+    }
+  }
+
+  if (/\b(?:first|1|one|calculation|calculated|assumptions)\b/i.test(normalized)) {
+    const first = pending.candidates[0];
+    return {
+      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+      params: { targetHint: first?.hint ?? first?.label ?? "" },
+    };
+  }
+  if (/\b(?:second|2|proposal|final)\b/i.test(normalized) && pending.candidates[1]) {
+    return {
+      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
+      params: {
+        targetHint: pending.candidates[1].hint ?? pending.candidates[1].label ?? "",
+      },
+    };
+  }
+  return null;
+}
+
+/** @param {any} prisma @param {any} input @param {any} pending */
+async function persistPendingNavigation(prisma, input, pending) {
+  if (!prisma?.merchantAction?.update) return;
+  const progress = jsonObject(input.action?.progress);
+  await prisma.merchantAction.update({
+    where: { id: input.action.id },
+    data: { progress: { ...progress, pendingNavigation: pending } },
+  });
+}
+
+/** @param {any} prisma @param {any} input */
+async function clearPendingNavigation(prisma, input) {
+  if (!prisma?.merchantAction?.update) return;
+  const progress = jsonObject(input.action?.progress);
+  if (!progress.pendingNavigation) return;
+  const { pendingNavigation: _removed, ...rest } = progress;
+  await prisma.merchantAction.update({
+    where: { id: input.action.id },
+    data: { progress: rest },
+  });
+}
+
+/** @param {any} prisma @param {any} input */
+async function invalidateDownstreamFromCurrentFocus(prisma, input) {
+  const steps = [
+    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
+    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+  ];
+  const current =
+    steps.find((step) =>
+      ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
+        String(step?.status ?? ""),
+      ),
+    ) ?? null;
+  if (!current?.id) return;
+  const workflowId =
+    input.action?.workflow?.id ??
+    steps[0]?.workflowId ??
+    null;
+  if (!workflowId) return;
+  await invalidateDownstreamSteps(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    workflowId,
+    fromStepId: current.id,
+    logger: input.logger,
+  });
 }

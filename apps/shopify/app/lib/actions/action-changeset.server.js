@@ -1,18 +1,14 @@
 // @ts-check
 
 import { logger as baseLogger } from "../observability/logger.server.js";
-import {
-  applyConstraintsToPreview,
-  listActionConstraints,
-  serializeConstraint,
-} from "./action-constraint.server.js";
-import {
-  inspectCandidates,
-  inspectRestockEvidence,
-  recommendedPurchaseUnits,
-} from "./action-capability.server.js";
 import { executeApprovedAction } from "./execute-approved-action.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
+import {
+  actionRuntimeKind,
+  isRestockAction,
+  resolveActionContext,
+  snapshotFromResolvedContext,
+} from "./resolved-action-context.server.js";
 
 const log = baseLogger.child({ component: "action-changeset" });
 
@@ -31,8 +27,6 @@ const LIVE_CHANGE_SET_STATUSES = new Set([
   CHANGE_SET_STATUS.ready,
   CHANGE_SET_STATUS.approved,
 ]);
-
-const DEFAULT_RESTOCK_COVER_DAYS = 120;
 
 /**
  * @param {any} prisma
@@ -77,25 +71,22 @@ export async function getLatestChangeSet(prisma, input) {
  */
 export async function createActionChangeSet(prisma, input) {
   const logger = input.logger ?? log;
-  const action = await getMerchantAction(prisma, input);
-  if (!action) return { ok: false, reason: "not_found" };
+  const resolved = await resolveActionContext(prisma, input);
+  if (!resolved) return { ok: false, reason: "not_found" };
+  const action = resolved.action;
   if (!prisma?.actionChangeSet?.create) {
     return { ok: false, reason: "changeset_unavailable" };
   }
 
-  const constraints = await listActionConstraints(prisma, input);
-  const serializedConstraints = constraints.map(serializeConstraint);
+  const serializedConstraints = resolved.constraints;
   await staleLiveChangeSets(prisma, input);
 
-  const runtimeKind = actionRuntimeKind(action);
-  const built =
-    runtimeKind === "restock"
-      ? await buildRestockChangeSet(prisma, { ...input, action, constraints: serializedConstraints })
-      : await buildExecuteChangeSet(prisma, { ...input, action, constraints: serializedConstraints });
+  const built = buildChangeSetFromResolved(resolved);
   if (!built.ok || !Array.isArray(built.items)) {
-    return { ok: false, reason: "reason" in built && built.reason ? String(built.reason) : "no_preview" };
+    return { ok: false, reason: built.reason ?? "no_preview" };
   }
 
+  const snapshot = snapshotFromResolvedContext(resolved);
   const row = await prisma.actionChangeSet.create({
     data: {
       merchantId: input.merchantId,
@@ -108,6 +99,8 @@ export async function createActionChangeSet(prisma, input) {
       items: built.items,
       excluded: built.excluded ?? [],
       constraintSnapshot: serializedConstraints,
+      planSnapshot: snapshot.plan,
+      inputHash: resolved.inputHash,
       result: {},
     },
   });
@@ -158,6 +151,16 @@ export async function prepareExecutionChangeSet(prisma, input) {
     changeSet.status === CHANGE_SET_STATUS.partial
   ) {
     return { ok: true, changeSet, alreadyApplied: true };
+  }
+
+  const resolved = await resolveActionContext(prisma, input);
+  if (
+    resolved &&
+    changeSet.inputHash &&
+    changeSet.inputHash !== resolved.inputHash
+  ) {
+    await staleLiveChangeSets(prisma, input);
+    return { ok: false, reason: "stale_changeset" };
   }
 
   const action = await getMerchantAction(prisma, input);
@@ -363,6 +366,8 @@ export function serializeChangeSet(row) {
     items,
     excluded,
     constraintSnapshot: Array.isArray(row.constraintSnapshot) ? row.constraintSnapshot : [],
+    planSnapshot: jsonObject(row.planSnapshot),
+    inputHash: row.inputHash ?? "",
     result: jsonObject(row.result),
     generatedAt: row.generatedAt?.toISOString?.() ?? row.generatedAt ?? null,
     approvedAt: row.approvedAt?.toISOString?.() ?? row.approvedAt ?? null,
@@ -372,23 +377,23 @@ export function serializeChangeSet(row) {
   };
 }
 
-/** @param {any} changeSet */
-export function formatChangeSetReply(changeSet) {
-  if (!changeSet) return "I don’t have an exact change set for this action yet.";
+/** @param {any} changeSet @param {any} [action] */
+export function formatChangeSetReply(changeSet, action = null) {
+  if (!changeSet) return "I don't have a replenishment proposal for this action yet.";
   const items = Array.isArray(changeSet.items) ? changeSet.items : [];
   const excluded = Array.isArray(changeSet.excluded) ? changeSet.excluded : [];
   if (items.length === 0 && excluded.length === 0) {
-    return "After applying the current constraints, there is nothing left to change.";
+    return "After applying the current constraints, there is nothing left to include in this action.";
   }
   const lines = items.slice(0, 12).map((/** @type {any} */ item) => formatChangeSetItem(item, changeSet.actionType));
   const extra = items.length > 12 ? `\n• +${items.length - 12} more` : "";
   const excludedLines = summarizeExcluded(excluded);
-  const header =
-    changeSet.actionType === "restock"
-      ? `Recommended restock quantities (${items.length}):`
-      : changeSet.actionType === "listing_copy"
-        ? `I’ll set a product type on ${items.length} item${items.length === 1 ? "" : "s"}:`
-        : `I’ll change ${items.length} item${items.length === 1 ? "" : "s"}:`;
+  const restock = changeSet.actionType === "restock" || isRestockAction(action ?? changeSet);
+  const header = restock
+    ? `Recommended replenishment (${items.length}):`
+    : changeSet.actionType === "listing_copy"
+      ? `I'll set a product type on ${items.length} item${items.length === 1 ? "" : "s"}:`
+      : `I'll change ${items.length} item${items.length === 1 ? "" : "s"}:`;
   return [header, ...lines, extra, excludedLines].filter(Boolean).join("\n");
 }
 
@@ -437,81 +442,65 @@ export function formatExecutionResultReply(changeSet) {
 }
 
 /**
- * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; action: any; constraints: any[] }} input
+ * @param {import("./resolved-action-context.server.js").ResolvedActionContext} resolved
  */
-async function buildExecuteChangeSet(prisma, input) {
-  const preview = jsonObject(input.action?.progress?.preview);
-  const changes = Array.isArray(preview.changes) ? preview.changes : [];
-  if (changes.length === 0) {
+function buildChangeSetFromResolved(resolved) {
+  const kind = resolved.evidence.kind;
+  if (kind === "restock") {
+    return {
+      ok: true,
+      actionType: "restock",
+      actionExecutionId: null,
+      items: resolved.scope.items.map((item) => ({
+        title: item.title,
+        productId: item.productId ?? null,
+        before: item.available ?? null,
+        after: item.recommendedUnits,
+        reason: item.reason,
+        dailyVelocity: item.dailyVelocity ?? null,
+      })),
+      excluded: resolved.scope.excluded,
+    };
+  }
+  if (resolved.scope.candidateCount === 0 && resolved.scope.items.length === 0) {
     return { ok: false, reason: "no_preview" };
   }
-  const catalog = await inspectCandidates(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    changes,
-  });
-  const filtered = applyConstraintsToPreview(preview, input.constraints, catalog);
-  const actionType = input.action.actionType || "price_markdown";
-  const execution = input.action.actionRunId
-    ? await prisma.actionExecution?.findUnique?.({
-        where: { runId: input.action.actionRunId },
-        select: { id: true },
-      })
-    : null;
+  const actionType =
+    kind === "markdown"
+      ? "price_markdown"
+      : kind === "listing_copy"
+        ? "listing_copy"
+        : resolved.action.actionType || "price_markdown";
   return {
     ok: true,
     actionType,
-    actionExecutionId: execution?.id ?? null,
-    items: filtered.changes.map((change) => itemFromChange(change, actionType)),
-    excluded: filtered.excluded,
+    actionExecutionId: null,
+    items: resolved.scope.items.map((item) => itemFromResolved(item, actionType)),
+    excluded: resolved.scope.excluded,
   };
 }
 
-/**
- * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; action: any; constraints: any[] }} input
- */
-async function buildRestockChangeSet(prisma, input) {
-  const coverDays =
-    Number(input.action?.plan?.coverDays) || DEFAULT_RESTOCK_COVER_DAYS;
-  const evidence = await inspectRestockEvidence(prisma, input);
-  const previewChanges = evidence.map((/** @type {any} */ item) => ({
-    title: item.title,
-    productId: item.productId,
-    available: item.available,
-    dailyVelocity: item.dailyVelocity,
-    inventory: item.available,
-  }));
-  const filtered = applyConstraintsToPreview(
-    { changes: previewChanges },
-    input.constraints,
-    Object.fromEntries(
-      previewChanges
-        .filter((/** @type {any} */ item) => item.productId)
-        .map((/** @type {any} */ item) => [item.productId, item]),
-    ),
-  );
-  const items = filtered.changes.map((/** @type {any} */ item) => {
-    const recommended = recommendedPurchaseUnits(
-      { available: numberOrNull(item.available), dailyVelocity: numberOrNull(item.dailyVelocity) },
-      coverDays,
-    );
-    return {
-      title: item.title,
-      productId: item.productId ?? null,
-      before: item.available ?? null,
-      after: recommended,
-      reason: `${coverDays} days of cover`,
-      dailyVelocity: item.dailyVelocity ?? null,
-    };
-  });
+/** @param {any} item @param {string} actionType */
+function itemFromResolved(item, actionType) {
   return {
-    ok: true,
-    actionType: "restock",
-    actionExecutionId: null,
-    items,
-    excluded: filtered.excluded,
+    title: item.title,
+    productId: item.productId ?? null,
+    variantId: item.variantId ?? null,
+    targetRef: item.targetRef ?? item.variantId ?? item.productId ?? null,
+    before:
+      actionType === "listing_copy"
+        ? item.fromType ?? ""
+        : item.fromPrice ?? item.available ?? null,
+    after:
+      actionType === "listing_copy"
+        ? item.toType ?? null
+        : item.toPrice ?? item.recommendedUnits ?? null,
+    reason: item.reason ?? null,
+    fromPrice: item.fromPrice ?? null,
+    toPrice: item.toPrice ?? null,
+    fromType: item.fromType ?? null,
+    toType: item.toType ?? null,
+    discountPercent: item.discountPercent ?? null,
   };
 }
 
@@ -594,43 +583,13 @@ function summarizeExcluded(excluded) {
   return `Excluded: ${parts.join("; ")}.`;
 }
 
-/** @param {any} action */
-export function actionRuntimeKind(action) {
-  const type = String(action?.actionType ?? "");
-  if (type === "price_markdown") return "markdown";
-  if (type === "listing_copy") return "listing_copy";
-  if (type === "tidy_up") return "tidy_up";
-  const haystack = [
-    action?.title,
-    action?.summary,
-    ...(Array.isArray(action?.workflow?.steps) ? action.workflow.steps : []).map(
-      (/** @type {any} */ step) => `${step?.title ?? ""} ${step?.capabilityRef ?? ""}`,
-    ),
-  ]
-    .join(" ")
-    .toLowerCase();
-  if (/\b(restock|replenish|reorder|stock cover|supplier order)\b/.test(haystack)) {
-    return "restock";
-  }
-  return "generic";
-}
-
-/** @param {any} action */
-export function isRestockAction(action) {
-  return actionRuntimeKind(action) === "restock";
-}
+export { actionRuntimeKind, isRestockAction };
 
 /** @param {unknown} value */
 function formatMoney(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "");
   return Number.isInteger(number) ? String(number) : number.toFixed(2);
-}
-
-/** @param {unknown} value */
-function numberOrNull(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
 }
 
 /** @param {unknown} value */
