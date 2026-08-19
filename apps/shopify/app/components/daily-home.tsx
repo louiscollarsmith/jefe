@@ -1688,7 +1688,10 @@ function FocusedConversation({
           <DateLabel>{todayLabel ?? ""}</DateLabel>
         </div>
 
-        <ChatTitleBlock conversation={activeConversation} />
+        <ChatTitleBlock
+          conversation={activeConversation}
+          messages={messages}
+        />
 
         {focusedAction ? (
           <>
@@ -1936,9 +1939,12 @@ function FocusedConversation({
 
 function ChatTitleBlock({
   conversation,
+  messages,
 }: {
   conversation: ChatConversation;
+  messages: Array<{ role: string; content: string }>;
 }) {
+  const [headerHovered, setHeaderHovered] = useState(false);
   const renameFetcher = useFetcher<ChatRenameActionData>();
   const renameData = renameFetcher.data;
   const saving = renameFetcher.state !== "idle";
@@ -1952,6 +1958,7 @@ function ChatTitleBlock({
     fetchedTitle === undefined
       ? conversationTitle(conversation)
       : fetchedTitle || "New chat";
+  const canDownload = messages.length > 0;
 
   const finishTitleEdit = (nextTitle: string) => {
     if (nextTitle.trim() === displayTitle.trim()) return;
@@ -1963,8 +1970,25 @@ function ChatTitleBlock({
   };
 
   return (
-    <section style={chatTitleBlockStyle}>
-      <Mono>CHAT</Mono>
+    <section
+      style={chatTitleBlockStyle}
+      onMouseEnter={() => setHeaderHovered(true)}
+      onMouseLeave={() => setHeaderHovered(false)}
+    >
+      <div style={chatTitleHeaderRowStyle}>
+        <Mono>CHAT</Mono>
+        <button
+          type="button"
+          style={downloadTranscriptButtonStyle(headerHovered && canDownload)}
+          onClick={() => downloadChatTranscript(displayTitle, messages)}
+          disabled={!canDownload}
+          aria-label="Download transcript"
+          aria-hidden={!headerHovered || !canDownload}
+          tabIndex={headerHovered && canDownload ? 0 : -1}
+        >
+          Download transcript
+        </button>
+      </div>
       <ChatTitleInlineEditor
         key={`${conversation.id}:${displayTitle}`}
         title={displayTitle}
@@ -2903,6 +2927,61 @@ function FocusChangeConfirm({
       </section>
     </div>
   );
+}
+
+function transcriptRoleLabel(role: string) {
+  if (role === "merchant" || role === "user") return "User";
+  if (role === "assistant") return "Assistant";
+  if (role === "system") return "System";
+  if (role === "reference") return "Reference";
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function formatChatTranscriptMarkdown(
+  title: string,
+  messages: Array<{ role: string; content: string }>,
+) {
+  const exportedAt = new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date());
+  const lines = [`# ${title}`, "", `Exported ${exportedAt}`, ""];
+  for (const message of messages) {
+    lines.push(`## ${transcriptRoleLabel(message.role)}`, "", message.content.trim(), "");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function transcriptDownloadFilename(title: string) {
+  const base =
+    title
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80) || "chat";
+  return `${base}.md`;
+}
+
+function downloadChatTranscript(
+  title: string,
+  messages: Array<{ role: string; content: string }>,
+) {
+  const markdown = formatChatTranscriptMarkdown(title, messages);
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = transcriptDownloadFilename(title);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function visibleTranscriptMessages(
@@ -4909,6 +4988,31 @@ const chatTitleBlockStyle: CSSProperties = {
   gap: 8,
   padding: "26px 0 10px",
 };
+const chatTitleHeaderRowStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  justifyContent: "space-between",
+  width: "100%",
+};
+function downloadTranscriptButtonStyle(visible: boolean): CSSProperties {
+  return {
+    background: "transparent",
+    border: 0,
+    color: COLORS.meta,
+    cursor: visible ? "pointer" : "default",
+    flex: "none",
+    fontFamily: FONT.mono,
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: 0,
+    opacity: visible ? 1 : 0,
+    padding: 0,
+    pointerEvents: visible ? "auto" : "none",
+    textDecoration: "underline",
+    transition: "opacity 120ms ease",
+    whiteSpace: "nowrap",
+  };
+}
 const focusStripWrapStyle: CSSProperties = {
   background: COLORS.page,
   display: "flex",

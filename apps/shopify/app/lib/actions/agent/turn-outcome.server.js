@@ -132,6 +132,7 @@ export function assertsSuccess(text) {
  */
 export function composeGroundedReply(input) {
   const parts = summarizeLedger(input.ledger);
+  const artifactBlock = renderArtifacts(parts.artifacts);
   const modelReply = cleanProse(input.modelReply);
 
   if (input.outcome === TURN_OUTCOME.needsClarification) {
@@ -189,7 +190,6 @@ export function composeGroundedReply(input) {
         artifactRendered: false,
       };
     }
-    const artifactBlock = renderArtifacts(parts.artifacts);
     return {
       reply: artifactBlock ? `${modelReply}\n\n${artifactBlock}` : modelReply,
       grounded: true,
@@ -201,15 +201,21 @@ export function composeGroundedReply(input) {
   // SUCCESS / PARTIAL_SUCCESS: the reply must enumerate what actually happened.
   const deterministic = describeSuccess(parts, input.outcome);
   const tokens = groundingTokens(parts.changes);
+  const looksLikeArtifactEcho =
+    Boolean(artifactBlock) &&
+    Boolean(modelReply) &&
+    /(REPLENISHMENT PROPOSAL|Could we please place a replenishment order|Please confirm lead time|^Hi[,]|^Thanks[,])/i.test(
+      modelReply,
+    );
   const useModel =
     Boolean(modelReply) &&
     !isBareSuccess(modelReply) &&
     proseCoversTokens(modelReply, tokens) &&
-    !claimsUngroundedShopifyWrite(modelReply ?? "", parts);
+    !claimsUngroundedShopifyWrite(modelReply ?? "", parts) &&
+    !looksLikeArtifactEcho;
 
   const head = useModel ? modelReply : deterministic.head;
   const tail = input.outcome === TURN_OUTCOME.partialSuccess ? deterministic.tail : null;
-  const artifactBlock = renderArtifacts(parts.artifacts);
 
   return {
     reply: [head, tail, artifactBlock].filter(Boolean).join("\n\n"),
@@ -290,6 +296,13 @@ function renderArtifact(artifact) {
   if (!artifact) return null;
   const title = artifact.title ?? "Result";
   const lines = Array.isArray(artifact.lines) ? artifact.lines : [];
+  const type = String(artifact.type ?? "");
+  // Supplier email drafts include both structured quantities (`lines`) and
+  // prose (`body`). For merchant-facing output we prefer the prose because
+  // it is the LLM-owned artifact content.
+  if (type === "supplier_email_draft" && typeof artifact.body === "string" && artifact.body.trim().length) {
+    return `**${title}**\n${artifact.body}`;
+  }
   if (lines.length > 0) {
     const body = lines
       .map((/** @type {any} */ line) => {
@@ -328,6 +341,17 @@ function capitalize(text) {
 
 /** @param {string | null | undefined} value */
 function cleanProse(value) {
-  const text = typeof value === "string" ? value.trim() : "";
+  let text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
+  // Strip internal tool-loop/control noise that must never reach the merchant.
+  const lines = text
+    .split("\n")
+    .filter(
+      (line) =>
+        !/already ran with those arguments/i.test(line) &&
+        !/tool trace/i.test(line) &&
+        !/^planner:/i.test(line),
+    );
+  text = lines.join("\n").trim();
   return text || null;
 }

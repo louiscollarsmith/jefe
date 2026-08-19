@@ -103,6 +103,28 @@ export async function resolveActionContext(prisma, input) {
     constraints,
     scopeKeys: scope.items.map(scopeKey),
   });
+  // Versions used to mark assist artifacts stale when either upstream
+  // scope/evidence changes, or the plan/constraints change.
+  // - `scopeVersion` tracks the exact set of included/excluded products.
+  // - `evidenceVersion` tracks the evidence (inventory facts) loaded for this
+  //   action. This is what keeps proposal/email quantities grounded.
+  const scopeVersion = hashPayload({
+    kind,
+    scope: {
+      items: scope.items.map((/** @type {any} */ item) => ({
+        title: item.title ?? null,
+        productId: item.productId ?? null,
+        variantId: item.variantId ?? null,
+        recommendedUnits: item.recommendedUnits ?? null,
+        recommendedUnitsAtDefaultCover: item.recommendedUnitsAtDefaultCover ?? null,
+      })),
+      excluded: scope.excluded.map((/** @type {any} */ item) => ({
+        title: item.title ?? null,
+        reason: item.reason ?? null,
+      })),
+    },
+  });
+  const evidenceVersion = hashPayload({ kind, candidates });
   const currentStep = action.currentStep ?? null;
   const context = {
     action,
@@ -111,12 +133,14 @@ export async function resolveActionContext(prisma, input) {
     plan,
     constraints,
     constraintVersion,
+    scopeVersion,
     scope,
     evidence: {
       kind,
       loadedAt: new Date().toISOString(),
       candidateCount: candidates.length,
     },
+    evidenceVersion,
     inputHash,
     focusedConversationId: input.conversationId ?? null,
   };
@@ -128,6 +152,8 @@ export async function resolveActionContext(prisma, input) {
     planVersion: plan.version,
     constraintVersion,
     inputHash,
+    scopeVersion,
+    evidenceVersion,
     kind,
     coverDays: plan.values.coverDays ?? null,
     markdownPercent: plan.values.markdownPercent ?? null,
@@ -295,6 +321,8 @@ export function snapshotFromResolvedContext(context) {
       label: row.label,
     })),
     constraintVersion: context.constraintVersion,
+    scopeVersion: context.scopeVersion ?? null,
+    evidenceVersion: context.evidenceVersion ?? null,
     scope: (context.scope?.items ?? []).map((item) => ({
       title: item.title,
       productId: item.productId ?? null,
@@ -464,6 +492,7 @@ function normalizeMatch(value) {
  *   plan: { values: Record<string, number>; source: Record<string, string>; version: string };
  *   constraints: any[];
  *   constraintVersion: string;
+ *   scopeVersion: string;
  *   scope: {
  *     items: any[];
  *     excluded: any[];
@@ -475,6 +504,7 @@ function normalizeMatch(value) {
  *     originalEvidence?: Record<string, any> | null;
  *   };
  *   evidence: { kind: string; loadedAt: string; candidateCount: number };
+ *   evidenceVersion: string;
  *   inputHash: string;
  *   focusedConversationId?: string | null;
  * }} ResolvedActionContext

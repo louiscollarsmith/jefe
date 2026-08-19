@@ -27,6 +27,58 @@ export function scriptedProvider(script) {
     async generateStructuredJson({ prompt }) {
       const payload = typeof prompt === "string" ? JSON.parse(prompt) : prompt;
       calls.push(payload);
+
+      // Assist-step semantic generation calls (artifact drafting) shouldn't
+      // interfere with the planner's turn script.
+      if (payload?.artifactType === "supplier_email_draft") {
+        const groundingItems = Array.isArray(payload?.grounding?.items)
+          ? payload.grounding.items
+          : [];
+        const itemsLen = groundingItems.length;
+
+        const body =
+          itemsLen > 0
+            ? [
+                "Hi,",
+                "",
+                "Could we please place a replenishment order for the following items?",
+                "",
+                ...groundingItems.map((item) => {
+                  const units = item?.units ?? null;
+                  return units != null ? `- ${item.title}: ${units} units` : `- ${item.title}: please confirm quantity`;
+                }),
+                "",
+                "Please confirm lead time and availability.",
+                "",
+                "Thanks,",
+              ].join("\n")
+            : [
+                "Hi,",
+                "",
+                "Could we please place a replenishment order for the low-cover items we discussed?",
+                "",
+                "Please confirm quantities, lead time, and availability.",
+                "",
+                "Thanks,",
+              ].join("\n");
+
+        return {
+          json: {
+            summary:
+              itemsLen > 0
+                ? `Drafted a supplier email covering ${itemsLen} item${itemsLen === 1 ? "" : "s"}.`
+                : "Drafted a supplier email template for you to complete.",
+            detail:
+              "Copy, edit, or send this outside Jefe. Tell me what to change before you contact the supplier. I haven't placed or sent the supplier order.",
+            nextPrompt: "Want me to change tone, quantities, or add delivery notes before you send it?",
+            body,
+            items: groundingItems.map((row) => ({ title: row.title, units: row.units ?? null })),
+          },
+          provider: "test",
+          model: "scripted-agent",
+        };
+      }
+
       const turn =
         typeof script === "function"
           ? script(payload)

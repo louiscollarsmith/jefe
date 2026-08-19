@@ -11,7 +11,17 @@ export { DEFAULT_RESTOCK_COVER_DAYS, recommendedPurchaseUnits };
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; actionId: string; stepId?: string | null; step?: { id?: string | null } | null; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; resolvedContext?: any }} input
+ * @param {{
+ *   merchantId: string;
+ *   shopId: string;
+ *   actionId: string;
+ *   stepId?: string | null;
+ *   step?: { id?: string | null } | null;
+ *   conversationId?: string | null;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   resolvedContext?: any;
+ *   provider?: any;
+ * }} input
  */
 export async function loadAssistStepContext(prisma, input) {
   const resolved =
@@ -53,6 +63,7 @@ export async function loadAssistStepContext(prisma, input) {
     lowCoverProducts,
     targetCoverDays: coverDays,
     priorStepArtifacts,
+    provider: input.provider ?? null,
   };
 }
 

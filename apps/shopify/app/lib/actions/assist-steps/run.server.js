@@ -14,7 +14,14 @@ const log = baseLogger.child({ component: "assist-steps" });
  * Produce the assist artifact for one step run without mutating lifecycle state.
  *
  * @param {any} prisma
- * @param {{ stepRun: any; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; resolvedContext?: any }} input
+ * @param {{
+ *   stepRun: any;
+ *   actionId: string;
+ *   conversationId?: string | null;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   resolvedContext?: any;
+ *   provider?: any;
+ * }} input
  */
 export async function produceAssistStepArtifact(prisma, input) {
   const logger = input.logger ?? log;
@@ -34,6 +41,7 @@ export async function produceAssistStepArtifact(prisma, input) {
     stepId: step.id,
     conversationId: input.conversationId ?? null,
     resolvedContext: input.resolvedContext ?? null,
+    provider: input.provider ?? null,
     logger,
   });
   try {
@@ -96,6 +104,7 @@ export async function executeStartedAssistStepRun(prisma, input) {
     actionId: input.actionId,
     conversationId: input.conversationId ?? null,
     resolvedContext: input.resolvedContext ?? null,
+    provider: input.provider ?? null,
     logger,
   });
   if (!produced.ok || !produced.progress) return produced;
@@ -130,6 +139,8 @@ function stampArtifactVersions(progress, resolvedContext) {
     ...progress,
     planVersion: resolvedContext?.plan?.version ?? progress.planVersion ?? null,
     constraintVersion: resolvedContext?.constraintVersion ?? progress.constraintVersion ?? null,
+    scopeVersion: resolvedContext?.scopeVersion ?? progress.scopeVersion ?? null,
+    evidenceVersion: resolvedContext?.evidenceVersion ?? progress.evidenceVersion ?? null,
     inputHash: resolvedContext?.inputHash ?? progress.inputHash ?? null,
   };
 }

@@ -56,6 +56,54 @@ export const ACTION_AGENT_PROMPT_VERSION = "2";
 export const MAX_AGENT_ITERATIONS = 6;
 export const MAX_TOOL_CALLS_PER_TURN = 12;
 
+function merchantAsksForNextAction(message) {
+  const text = String(message ?? "").toLowerCase();
+  return /\bwhat should i do next\b/.test(text) || /\bwhat next\b/.test(text) || /\bnext step\b/.test(text);
+}
+
+function suggestNextActionFromState(state) {
+  const next = state?.nextUsefulWork ?? null;
+  const work = Array.isArray(state?.work) ? state.work : [];
+  const artifacts = Array.isArray(state?.artifacts) ? state.artifacts : [];
+
+  const supplierCurrent = artifacts.find(
+    (a) => String(a?.artifactType ?? "") === "supplier_email_draft" && a?.current === true,
+  );
+  const proposalCurrent = artifacts.find(
+    (a) => String(a?.artifactType ?? "") === "replenishment_proposal" && a?.current === true,
+  );
+
+  if (next?.step?.capabilityRef === "assist:supplier_email_draft") {
+    // Next useful action is explicitly something Jefe can do.
+    return 'The replenishment proposal is ready. Next useful action is to draft the supplier communication for the current quantities. Say "draft the supplier email" when you\'re ready.';
+  }
+  if (next?.step?.capabilityRef === "assist:replenishment_proposal") {
+    return "Next, I can build the replenishment proposal for your current scope and cover target.";
+  }
+  if (next?.step?.capabilityRef === "assist:inventory_review") {
+    return "Next, I can review the low-cover inventory inputs and rebuild the proposal.";
+  }
+
+  const needsInput = work.find((row) => row.state === "needs_input");
+  if (needsInput?.step?.title) {
+    return `To continue, I need: ${needsInput.step.title}.`;
+  }
+
+  if (supplierCurrent) {
+    return "Your supplier email draft is ready. The next step is to send the order to the supplier.";
+  }
+  if (proposalCurrent) {
+    return "Your replenishment proposal is ready. Next step is to draft the supplier email, then you can send it to the supplier.";
+  }
+
+  return null;
+}
+
+function isBareSuccessish(text) {
+  if (typeof text !== "string") return false;
+  return /^(?:ok(?:ay)?|done|updated|applied|built|changed)\b[.!\s—-]*$/i.test(text.trim());
+}
+
 /**
  * Union of every argument any tool accepts. Per-tool validation narrows this;
  * the model is separately told which arguments each tool actually takes.
@@ -188,6 +236,7 @@ export async function runFocusedActionAgent(prisma, input) {
   const kind = state.action?.kind ?? "generic";
   const availableTools = toolNamesForKind(kind);
   const catalogue = toolCatalogueForKind(kind);
+  const stateBeforeTurn = state;
   const trace = startAgentTrace({
     merchantMessageId: input.merchantMessageId ?? null,
     conversationId: input.conversationId ?? null,
@@ -324,6 +373,16 @@ export async function runFocusedActionAgent(prisma, input) {
     ? TURN_OUTCOME.needsClarification
     : classifyTurn(ledger);
 
+  const stateAfter = await resolveActionState(prisma, input);
+
+  if (outcome === TURN_OUTCOME.noAction && merchantAsksForNextAction(input.message)) {
+    // Avoid the generic "tell me what you want me to do" fallback.
+    if (!modelReply || isBareSuccessish(modelReply)) {
+      const suggestion = suggestNextActionFromState(stateAfter);
+      if (suggestion) modelReply = suggestion;
+    }
+  }
+
   const composed = composeGroundedReply({
     outcome,
     ledger,
@@ -331,8 +390,7 @@ export async function runFocusedActionAgent(prisma, input) {
     clarificationQuestion,
   });
 
-  const stateAfter = await resolveActionState(prisma, input);
-  await recordRevisions(prisma, input, ledger, stateAfter, logger);
+  await recordRevisions(prisma, input, ledger, stateBeforeTurn, stateAfter, logger);
 
   trace.stateAfter = snapshotFacts(stateAfter);
   trace.ledger = ledger.map(publicToolResult);
@@ -510,6 +568,7 @@ async function buildToolContext(prisma, input, extra) {
         capabilityRef,
         actor: input.actor ?? input.merchantId,
         conversationId: input.conversationId ?? null,
+        provider: input.provider ?? null,
         logger: extra.logger,
       });
       const after = await ctx.reloadState();
@@ -596,7 +655,7 @@ async function safeListConstraints(prisma, input) {
  * @param {any} stateAfter
  * @param {any} logger
  */
-async function recordRevisions(prisma, input, ledger, stateAfter, logger) {
+async function recordRevisions(prisma, input, ledger, stateBefore, stateAfter, logger) {
   const changes = ledger.filter((row) => row.ok).flatMap((row) => row.changes ?? []);
   if (changes.length === 0) return;
   if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.update) return;
@@ -614,6 +673,7 @@ async function recordRevisions(prisma, input, ledger, stateAfter, logger) {
     revisions.push({
       at: new Date().toISOString(),
       changes,
+      before: planFacts(stateBefore),
       resulting: planFacts(stateAfter),
     });
     await prisma.merchantAction.update({
@@ -643,6 +703,7 @@ async function loadActionHistory(prisma, input) {
     return revisions.map((/** @type {any} */ revision) => ({
       at: revision.at,
       changes: revision.changes,
+      before: revision.before ?? null,
       resulting: revision.resulting,
       summary: summarizeRevision(revision),
     }));
