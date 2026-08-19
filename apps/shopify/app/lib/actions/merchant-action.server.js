@@ -3,6 +3,7 @@
 import { isActionExecuteEnabled } from "./action-intent.server.js";
 import { buildActionRaise } from "./action-raise.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { healInconsistentWorkflow, unlockActiveWorkflowIfNeeded } from "./action-step-lifecycle.server.js";
 
 const log = baseLogger.child({ component: "merchant-action" });
 
@@ -392,8 +393,9 @@ export async function updateMerchantActionForExecution(prisma, input) {
 
 /**
  * @param {any} prisma
- * Read-only application query. Reconciliation belongs on creation/status-write
- * paths or in the bounded repair worker, never in a merchant request.
+ * MerchantAction identity sync stays off this read path. The only write is
+ * unlocking legacy `pending`/`draft` steps on an already-accepted workflow so
+ * home and chat show the same ready/waiting statuses that live in the DB.
  * @param {{ merchantId: string; shopId: string; includeInactive?: boolean }} input
  */
 export async function listMerchantActions(prisma, input) {
@@ -415,7 +417,35 @@ export async function listMerchantActions(prisma, input) {
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     take: 40,
   });
-  return rows.map(serializeMerchantAction);
+  let unlocked = false;
+  for (const row of rows) {
+    if (!workflowNeedsUnlock(row)) continue;
+    const result = await unlockActiveWorkflowIfNeeded(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: row.id,
+    });
+    if (result.unlocked) unlocked = true;
+  }
+  if (!unlocked) return rows.map(serializeMerchantAction);
+  const refreshed = await prisma.merchantAction.findMany({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      ...(input.includeInactive ? {} : { status: { in: [...ACTIVE_STATUSES] } }),
+    },
+    include: {
+      sourceRecommendation: recommendationWorkflowInclude(),
+      currentExecution: true,
+      executions: {
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take: 3,
+      },
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take: 40,
+  });
+  return refreshed.map(serializeMerchantAction);
 }
 
 /**
@@ -485,7 +515,77 @@ export async function getMerchantAction(prisma, input) {
       },
     },
   });
-  return row ? serializeMerchantAction(row) : null;
+  if (!row) return null;
+
+  // Repair derivable inconsistencies (e.g. "Step 1 completed, Step 2 still waiting")
+  // before falling back to the legacy pending/draft unlock path.
+  const healed = await healInconsistentWorkflow(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: String(input.actionId),
+    logger: log,
+  });
+
+  if (workflowNeedsUnlock(row)) {
+    const unlocked = await unlockActiveWorkflowIfNeeded(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+    });
+    if (unlocked.unlocked || healed.healed) {
+      const fresh = await prisma.merchantAction.findFirst({
+        where: {
+          id: input.actionId,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+        },
+        include: {
+          sourceRecommendation: recommendationWorkflowInclude(),
+          currentExecution: true,
+          executions: {
+            orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+            take: 5,
+          },
+          constraints: {
+            where: { status: "active" },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          },
+          changeSets: {
+            orderBy: [{ generatedAt: "desc" }, { id: "desc" }],
+            take: 3,
+          },
+        },
+      });
+      return serializeMerchantAction(fresh ?? row);
+    }
+  } else if (healed.healed) {
+    const fresh = await prisma.merchantAction.findFirst({
+      where: {
+        id: input.actionId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
+      include: {
+        sourceRecommendation: recommendationWorkflowInclude(),
+        currentExecution: true,
+        executions: {
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+          take: 5,
+        },
+        constraints: {
+          where: { status: "active" },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        },
+        changeSets: {
+          orderBy: [{ generatedAt: "desc" }, { id: "desc" }],
+          take: 3,
+        },
+      },
+    });
+    return serializeMerchantAction(fresh ?? row);
+  }
+
+  return serializeMerchantAction(row);
 }
 
 /**
@@ -799,6 +899,25 @@ function recommendationWorkflowInclude() {
 /** @param {any} recommendation */
 function workflowFromRecommendation(recommendation) {
   return Array.isArray(recommendation?.workflows) ? recommendation.workflows[0] ?? null : null;
+}
+
+/** @param {any} row */
+function workflowNeedsUnlock(row) {
+  const actionStatus = normalizeToken(row?.status);
+  if (!["accepted", "in_progress"].includes(actionStatus)) return false;
+  const steps = Array.isArray(row?.sourceRecommendation?.workflows?.[0]?.steps)
+    ? row.sourceRecommendation.workflows[0].steps
+    : [];
+  if (steps.length === 0) return false;
+  const hasLive = steps.some((/** @type {any} */ step) =>
+    ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
+      normalizeToken(step?.status),
+    ),
+  );
+  if (hasLive) return false;
+  return steps.some((/** @type {any} */ step) =>
+    ["pending", "draft"].includes(normalizeToken(step?.status)),
+  );
 }
 
 /** @param {any} recommendation */

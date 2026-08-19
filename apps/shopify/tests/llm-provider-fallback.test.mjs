@@ -416,6 +416,42 @@ test("withFallbackProvider falls back on provider request-size 413s", async () =
   assert.equal(result.fallback.fromModel, "openai/gpt-oss-120b");
 });
 
+test("chat env: prompts over Groq's 6k cap but under the 18k chat budget fall back to Gemini without calling Groq", async () => {
+  let groqCalls = 0;
+  const primary = createGroqProvider({
+    config: baseConfig({
+      maxInputTokens: 18000,
+      providerInputLimits: { groq: 6000, gemini: 18000 },
+    }),
+    logger,
+    fetchImpl: async () => {
+      groqCalls += 1;
+      throw new Error("Groq should not be called");
+    },
+  });
+  const fallback = fakeProvider("gemini", "gemini-3.5-flash-lite", async () => ({
+    provider: "gemini",
+    model: "gemini-3.5-flash-lite",
+    json: { reply: "from fallback" },
+    usage: { inputTokens: 7000, outputTokens: 40, totalTokens: 7040 },
+    attempts: 1,
+    durationMs: 10,
+  }));
+
+  const provider = withFallbackProvider(primary, fallback, logger);
+  // ~6250 estimated tokens: over Groq's 6000 precondition, under the 18000
+  // chat/Gemini budget, so this must degrade instead of throwing.
+  const result = await provider.generateStructuredJson({
+    systemPrompt: "system",
+    prompt: "x".repeat(25_000),
+    schema: { type: "OBJECT", properties: { reply: { type: "STRING" } } },
+  });
+
+  assert.equal(groqCalls, 0);
+  assert.equal(result.provider, "gemini");
+  assert.equal(result.fallback.fromProvider, "groq");
+});
+
 test("withFallbackProvider skips Groq before fetch when the prompt exceeds Groq's configured cap", async () => {
   let groqCalls = 0;
   const primary = createGroqProvider({

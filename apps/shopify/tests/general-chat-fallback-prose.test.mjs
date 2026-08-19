@@ -245,15 +245,24 @@ test("current action input gives the model workflow evidence and quantity primit
     currentAction.operationalContext.workflowSteps[0].capabilityRef,
     "assist:supplier_email_draft",
   );
-  assert.deepEqual(currentAction.operationalContext.evidence.lowCoverProducts, [
-    {
-      title: "Morgon Cote du Py",
-      available: 3,
-      dailyVelocity: 0.2,
-      daysOfCover: 15,
-      recommendedUnitsAtDefaultCover: 21,
-    },
-  ]);
+  assert.deepEqual(
+    currentAction.operationalContext.evidence.lowCoverProducts.map((item) => ({
+      title: item.title,
+      available: item.available,
+      dailyVelocity: item.dailyVelocity,
+      daysOfCover: item.daysOfCover,
+      recommendedUnitsAtDefaultCover: item.recommendedUnitsAtDefaultCover,
+    })),
+    [
+      {
+        title: "Morgon Cote du Py",
+        available: 3,
+        dailyVelocity: 0.2,
+        daysOfCover: 15,
+        recommendedUnitsAtDefaultCover: 21,
+      },
+    ],
+  );
   assert.deepEqual(currentAction.operationalContext.primitives, [
     {
       ref: "restock_quantity_from_stock_cover",
@@ -273,7 +282,7 @@ test("current action input gives the model workflow evidence and quantity primit
       formula:
         "recommendedPurchaseUnits = ceil(max(0, dailyVelocity * targetCoverDays - available))",
       inputs:
-        "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+        "Use operationalContext.resolvedScope and lowCoverProducts from current plan_json and active constraints. Do not reconstruct cover days or product scope from earlier assistant messages.",
       output:
         "Mention recommended units as a recommendation for approval/correction, not as a completed order.",
     },
@@ -340,7 +349,7 @@ test("current action input keeps stock-cover evidence generic for model interpre
   );
   assert.equal(
     currentAction.operationalContext.primitives[0].inputs,
-    "Use lowCoverProducts[].dailyVelocity and lowCoverProducts[].available. If the merchant supplies a different targetCoverDays in the conversation, use that value.",
+    "Use operationalContext.resolvedScope and lowCoverProducts from current plan_json and active constraints. Do not reconstruct cover days or product scope from earlier assistant messages.",
   );
 });
 

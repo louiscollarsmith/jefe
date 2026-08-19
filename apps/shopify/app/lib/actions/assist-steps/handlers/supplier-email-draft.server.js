@@ -47,7 +47,7 @@ export async function runSupplierEmailDraftAssist(context) {
       items.length > 0
         ? `Drafted a supplier email covering ${items.length} item${items.length === 1 ? "" : "s"}.`
         : "Drafted a supplier email template for you to complete.",
-    detail: "Copy, edit, or send this outside Jefe. Tell me what to change before you contact the supplier.",
+    detail: "Copy, edit, or send this outside Jefe. Tell me what to change before you contact the supplier. I haven't placed or sent the supplier order.",
     body,
     items: items.map((/** @type {any} */ item) => ({
       title: item.title,

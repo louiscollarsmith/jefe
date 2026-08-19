@@ -10,6 +10,7 @@ export const CONSTRAINT_KIND = Object.freeze({
   excludeArchived: "exclude_archived",
   excludeCollection: "exclude_collection",
   excludeTag: "exclude_tag",
+  excludeProduct: "exclude_product",
   minInventory: "min_inventory",
   priceFloor: "price_floor",
   custom: "custom",
@@ -236,9 +237,127 @@ export function parseConstraintsFromMessage(message) {
     });
   }
 
+  const namedProduct =
+    text.match(/\b(?:exclude|leave out)\s+(.+?)\s+from this action\b/i) ||
+    text.match(/\bexclude\s+([A-Z][\w][\w'’\-]*(?:\s+[A-Z][\w][\w'’\-]*)+)\b/);
+  if (namedProduct?.[1] && found.length === 0) {
+    const title = namedProduct[1].replace(/^the\s+/i, "").trim();
+    if (title && !/^(archived|collection)\b/i.test(title)) {
+      found.push({
+        kind: CONSTRAINT_KIND.excludeProduct,
+        params: { title },
+        label: `Exclude ${title}`,
+      });
+    }
+  }
+
+  const scopeMod = parseScopeModificationFromMessage(text);
+  if (scopeMod?.intent === "exclude_product" && found.length === 0) {
+    found.push({
+      kind: CONSTRAINT_KIND.excludeProduct,
+      params: { title: scopeMod.title },
+      label: `Exclude ${scopeMod.title}`,
+    });
+  }
+
   return found
     .map((item) => normalizeConstraint(item))
     .filter((item) => item != null);
+}
+
+/**
+ * Parse natural-language scope narrowing/expansion intents that need candidate
+ * context to expand into concrete exclude_product constraints.
+ *
+ * @param {string} message
+ * @returns {{ intent: "include_only" | "exclude_product" | "include_again"; title: string } | null}
+ */
+export function parseScopeModificationFromMessage(message) {
+  const text = normalizeChatText(message);
+  if (!text) return null;
+
+  const includeOnly =
+    text.match(/\b(?:only|just)\s+(?:replenish|restock|reorder|include|do)\s+(.+?)\.?$/i) ||
+    text.match(/\b(?:only|just)\s+(.+?)\.?$/i);
+  if (includeOnly?.[1]) {
+    const title = cleanScopeProductTitle(includeOnly[1]);
+    if (title && !/^(archived|collection)\b/i.test(title)) {
+      return { intent: "include_only", title };
+    }
+  }
+
+  const excludePatterns = [
+    /\b(?:don'?t|do not)\s+include\s+(.+?)\.?$/i,
+    /\bleave\s+(.+?)\s+out\.?$/i,
+    /\bskip\s+(.+?)(?:\s+for this(?: one| action)?)?\.?$/i,
+    /\bignore\s+(.+?)\s+for this(?: one| action)?\.?$/i,
+    /\b(?:don'?t|do not)\s+(?:touch|include|replenish|restock)\s+(.+?)\.?$/i,
+  ];
+  for (const pattern of excludePatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      const title = cleanScopeProductTitle(match[1]);
+      if (title) return { intent: "exclude_product", title };
+    }
+  }
+
+  const includeAgain = text.match(/\binclude\s+(.+?)\s+again\.?$/i);
+  if (includeAgain?.[1]) {
+    const title = cleanScopeProductTitle(includeAgain[1]);
+    if (title) return { intent: "include_again", title };
+  }
+
+  return null;
+}
+
+/**
+ * Expand an include-only intent into exclude_product constraints for every
+ * candidate that does not match the included product title.
+ *
+ * @param {{ intent: string; title: string }} modification
+ * @param {Array<{ title?: string | null }>} candidates
+ */
+export function expandScopeModificationToConstraints(modification, candidates) {
+  if (modification.intent === "exclude_product") {
+    return [
+      {
+        kind: CONSTRAINT_KIND.excludeProduct,
+        params: { title: modification.title },
+        label: `Exclude ${modification.title}`,
+      },
+    ];
+  }
+  if (modification.intent !== "include_only") return [];
+  const wanted = normalizeMatch(modification.title);
+  /** @type {Array<{ kind: string; params: Record<string, any>; label: string }>} */
+  const constraints = [];
+  for (const candidate of candidates) {
+    const title = String(candidate?.title ?? "").trim();
+    if (!title) continue;
+    const normalized = normalizeMatch(title);
+    if (
+      normalized === wanted ||
+      normalized.includes(wanted) ||
+      wanted.includes(normalized)
+    ) {
+      continue;
+    }
+    constraints.push({
+      kind: CONSTRAINT_KIND.excludeProduct,
+      params: { title },
+      label: `Exclude ${title}`,
+    });
+  }
+  return constraints;
+}
+
+/** @param {string} raw */
+function cleanScopeProductTitle(raw) {
+  return String(raw ?? "")
+    .replace(/\s+from this action\b/i, "")
+    .replace(/\s+for this(?: one| action)?\b/i, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
 }
 
 /** @param {unknown} value */
@@ -276,6 +395,19 @@ export function normalizeConstraint(input) {
       kind,
       params: { tag },
       label: input.label?.trim() || `Do not modify products tagged ${tag}`,
+    };
+  }
+  if (kind === CONSTRAINT_KIND.excludeProduct) {
+    const title = String(params.title ?? params.productTitle ?? input.label ?? "").trim();
+    const productId = String(params.productId ?? "").trim();
+    if (!title && !productId) return null;
+    return {
+      kind,
+      params: {
+        ...(title ? { title } : {}),
+        ...(productId ? { productId } : {}),
+      },
+      label: input.label?.trim() || `Exclude ${title || productId}`,
     };
   }
   if (kind === CONSTRAINT_KIND.minInventory) {
@@ -347,6 +479,21 @@ function constraintMatches(constraint, change, record) {
     const inventory = Number(record?.inventory ?? change?.inventory ?? change?.unitsOnHand);
     if (!Number.isFinite(inventory)) return false;
     return inventory <= Number(constraint.params.min);
+  }
+  if (constraint.kind === CONSTRAINT_KIND.excludeProduct) {
+    const wantedId = String(constraint.params.productId ?? "").trim();
+    if (
+      wantedId &&
+      [change?.productId, record?.productId, change?.variantId, record?.variantId]
+        .filter(Boolean)
+        .includes(wantedId)
+    ) {
+      return true;
+    }
+    const wanted = normalizeMatch(constraint.params.title);
+    const title = normalizeMatch(change?.title ?? change?.productTitle ?? record?.title);
+    if (!wanted || !title) return false;
+    return title === wanted || title.includes(wanted) || wanted.includes(title);
   }
   return false;
 }
@@ -421,8 +568,12 @@ function isArchivedStatus(value) {
 }
 
 /** @param {unknown} value */
-function normalizeMatch(value) {
-  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+export function normalizeMatch(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s+/g, " ");
 }
 
 /** @param {unknown} value */

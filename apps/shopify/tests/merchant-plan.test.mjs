@@ -674,7 +674,11 @@ test("Plan acceptance emits executable workflow steps → proposed clearance row
       where: { merchantId: merchant.id, shopId: shop.id, status: "proposed" },
     });
     assert.equal(activeWorkflow.status, "active");
-    assert.equal(activeWorkflow.steps.every((step) => step.status === "pending"), true);
+    assert.equal(activeWorkflow.steps[0].status, "ready");
+    assert.equal(
+      activeWorkflow.steps.slice(1).every((step) => step.status === "waiting"),
+      true,
+    );
     assert.ok(proposed, "accepting the workflow created a proposed action row");
     assert.equal(proposed.recommendationStepId, executableStep.id);
     assert.equal(proposed.actionType, "price_markdown");

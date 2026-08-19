@@ -8,6 +8,10 @@ import {
   recordChangeSetExecution,
   getCurrentChangeSet,
 } from "./action-changeset.server.js";
+import {
+  resolveActionContext,
+  snapshotFromResolvedContext,
+} from "./resolved-action-context.server.js";
 
 const log = baseLogger.child({ component: "action-step-lifecycle" });
 
@@ -18,6 +22,7 @@ export const ACTION_STEP_STATUS = Object.freeze({
   running: "running",
   needsMerchant: "needs_merchant",
   needsAttention: "needs_attention",
+  needsUpdating: "needs_updating",
   completed: "completed",
   skipped: "skipped",
   superseded: "superseded",
@@ -104,7 +109,7 @@ export async function acceptMerchantActionPlan(prisma, input) {
       data: { status: "accepted" },
     });
     const advance = workflow
-      ? await advanceActionWorkflow(tx, {
+      ? await reconcileWorkflow(tx, {
           merchantId: input.merchantId,
           shopId: input.shopId,
           actionId: action.id,
@@ -150,7 +155,7 @@ export async function acceptMerchantActionPlan(prisma, input) {
  * run; the worker executes any typed adapter.
  *
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; actionId: string; stepId?: string | null; actor?: string | null; idempotencyKey?: string | null; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; actionId: string; stepId?: string | null; actor?: string | null; idempotencyKey?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; resolvedContext?: any }} input
  */
 export async function startActionStep(prisma, input) {
   const logger = input.logger ?? log;
@@ -165,8 +170,13 @@ export async function startActionStep(prisma, input) {
     if (!workflow) return { ok: false, reason: "no_workflow" };
     let steps = orderedSteps(workflow.steps);
     let current = pickCurrentStep(steps);
-    if (!current) {
-      const advance = await advanceActionWorkflow(tx, {
+
+    // Reconcile before the startability guard so that a persisted
+    // "completed prerequisite → waiting dependent" state is always
+    // corrected before we evaluate whether the step can be started.
+    const needsReconcile = !current || !isStepStartable(current);
+    if (needsReconcile) {
+      const advance = await reconcileWorkflow(tx, {
         merchantId: input.merchantId,
         shopId: input.shopId,
         actionId: action.id,
@@ -227,6 +237,15 @@ export async function startActionStep(prisma, input) {
     const execution = actionExecutionForStep(action, current.id);
     const idempotencyKey =
       input.idempotencyKey ?? `start:${action.id}:${current.id}`;
+    const resolved =
+      input.resolvedContext ??
+      (await resolveActionContext(tx, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: action.id,
+        logger,
+      }));
+    const inputSnapshot = resolved ? snapshotFromResolvedContext(resolved) : {};
     let stepRun;
     try {
       stepRun = await tx.merchantRecommendationStepRun.create({
@@ -238,6 +257,7 @@ export async function startActionStep(prisma, input) {
           status: ACTION_STEP_RUN_STATUS.queued,
           idempotencyKey,
           actionExecutionRunId: execution?.runId ?? null,
+          inputSnapshot,
         },
       });
     } catch (error) {
@@ -270,7 +290,14 @@ export async function startActionStep(prisma, input) {
         },
       });
     }
-    return { ok: true, actionId: action.id, stepId: current.id, stepRunId: stepRun?.id ?? null };
+    return {
+      ok: true,
+      actionId: action.id,
+      stepId: current.id,
+      stepRunId: stepRun?.id ?? null,
+      resolvedContext: resolved,
+      inputSnapshot,
+    };
   };
   const result = prisma.$transaction ? await prisma.$transaction(run) : await run(prisma);
   if (result.ok) {
@@ -280,6 +307,13 @@ export async function startActionStep(prisma, input) {
       actionId: input.actionId,
       stepId: result.stepId,
       stepRunId: result.stepRunId,
+      planVersion: result.inputSnapshot?.planVersion ?? null,
+      constraintVersion: result.inputSnapshot?.constraintVersion ?? null,
+      inputHash: result.inputSnapshot?.inputHash ?? null,
+      coverDays: result.inputSnapshot?.plan?.coverDays ?? null,
+      scopeCount: Array.isArray(result.inputSnapshot?.scope)
+        ? result.inputSnapshot.scope.length
+        : null,
     });
   }
   return result;
@@ -418,7 +452,7 @@ export async function completeCurrentActionStep(prisma, input) {
         attention: {},
       },
     });
-    const advance = await advanceActionWorkflow(tx, {
+    const advance = await reconcileWorkflow(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: action.id,
@@ -507,7 +541,7 @@ export async function skipCurrentActionStep(prisma, input) {
         statusReason: "Skipped by the merchant.",
       },
     });
-    const advance = await advanceActionWorkflow(tx, {
+    const advance = await reconcileWorkflow(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: action.id,
@@ -607,11 +641,50 @@ export async function advanceActionWorkflow(prisma, input) {
         },
       });
     }
+    // Keep the in-transaction view consistent so we can assert invariants before commit.
+    step.status = targetStatus;
   }
+  assertReconciledWorkflowInvariants(ordered, next.id, status);
   return {
     currentStep: serializeStep({ ...next, status }),
     completed: false,
   };
+}
+
+/**
+ * When a recommendation/workflow is already accepted but steps are still on
+ * the legacy `pending`/`draft` statuses, unlock the first eligible step to
+ * ready / needs_merchant. No-op if a current step is already live.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string }} input
+ */
+export async function unlockActiveWorkflowIfNeeded(prisma, input) {
+  if (!prisma?.merchantRecommendationStep?.findMany || !prisma?.merchantAction?.findFirst) {
+    return { unlocked: false, currentStep: null };
+  }
+  const action = await loadActionForLifecycle(prisma, input);
+  if (!action) return { unlocked: false, currentStep: null };
+  if (!STARTABLE_ACTION_STATUSES.has(String(action.status))) {
+    return { unlocked: false, currentStep: null };
+  }
+  const workflow = latestWorkflow(action);
+  if (!workflow) return { unlocked: false, currentStep: null };
+  const steps = orderedSteps(workflow.steps);
+  if (pickCurrentStep(steps)) {
+    return { unlocked: false, currentStep: serializeStep(pickCurrentStep(steps)) };
+  }
+  const hasLegacy = steps.some((step) =>
+    ["pending", "draft"].includes(String(step.status ?? "")),
+  );
+  if (!hasLegacy) return { unlocked: false, currentStep: null };
+  const advanced = await reconcileWorkflow(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    workflowId: workflow.id,
+  });
+  return { unlocked: Boolean(advanced.currentStep), currentStep: advanced.currentStep };
 }
 
 /**
@@ -670,7 +743,7 @@ export async function completeActionStepRun(prisma, input) {
     });
     const advance =
       nextStatus === ACTION_STEP_STATUS.completed
-        ? await advanceActionWorkflow(tx, {
+        ? await reconcileWorkflow(tx, {
             merchantId: stepRun.merchantId,
             shopId: stepRun.shopId,
             actionId: action?.id ?? null,
@@ -969,6 +1042,7 @@ export function isActionStepStartCommand(message) {
     /\b(?:ok(?:ay)?|yes|sure|yep)[,.\s]+.*\b(?:start|go ahead|do it|do this|run)\b/i.test(
       text,
     ) ||
+    /\bgo ahead with (?:the )?next step\b/i.test(text) ||
     /\b(?:start|begin|run|do)\s+(?:that|this|the)\s+step\b/i.test(text) ||
     /\b(?:start|begin|run|do)\s+(?:that|this|it)\b/i.test(text) ||
     /\bstart\s+step\s+[0-9]+\b/i.test(text)
@@ -1067,6 +1141,234 @@ function statusReasonFor(status) {
   return "Waiting on more evidence.";
 }
 
+/**
+ * Hard invariants for sequential workflow reconciliation.
+ *
+ * After reconciliation chooses the first eligible step, the workflow should be
+ * in one coherent shape:
+ * - the eligible step is the only non-terminal step allowed to be `ready` /
+ *   `needs_merchant`
+ * - all other non-terminal steps must be `waiting`
+ *
+ * This prevents the "completed prerequisite but dependent still waiting"
+ * contradiction from persisting.
+ *
+ * @param {any[]} steps ordered by orderIndex
+ * @param {string} expectedNextId
+ * @param {string} expectedNextStatus
+ */
+function assertReconciledWorkflowInvariants(steps, expectedNextId, expectedNextStatus) {
+  /** @type {Map<string, any>} */
+  const byId = new Map(steps.map((step) => [String(step.id), step]));
+  const next = byId.get(String(expectedNextId));
+  if (!next) throw new Error(`workflow invariant failed: missing next step ${expectedNextId}`);
+
+  for (const step of steps) {
+    const stepId = String(step.id);
+    const status = String(step.status ?? "");
+
+    if (TERMINAL_STEP_STATUSES.has(status)) continue;
+
+    if (stepId === String(expectedNextId)) {
+      if (status !== String(expectedNextStatus)) {
+        throw new Error(
+          `workflow invariant failed: expected step ${stepId} to be ${expectedNextStatus} but got ${status}`,
+        );
+      }
+
+      const dependencies = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
+      const depsSatisfied = dependencies.every((/** @type {string} */ id) =>
+        TERMINAL_STEP_STATUSES.has(String(byId.get(String(id))?.status ?? "")),
+      );
+      if (!depsSatisfied) {
+        throw new Error(`workflow invariant failed: next step ${stepId} dependencies are not satisfied`);
+      }
+    } else if (status !== ACTION_STEP_STATUS.waiting) {
+      throw new Error(
+        `workflow invariant failed: expected non-terminal step ${stepId} to be waiting, but got ${status}`,
+      );
+    }
+  }
+}
+
+/**
+ * Deterministic workflow reconciliation boundary.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId?: string | null; workflowId: string; now?: Date }} input
+ */
+export async function reconcileWorkflow(prisma, input) {
+  return advanceActionWorkflow(prisma, input);
+}
+
+/**
+ * Detect whether a set of steps has a derivable inconsistency that can be
+ * safely repaired by `reconcileWorkflow`. Returns true only when:
+ *
+ *   - At least one non-terminal step is `waiting`
+ *   - All of that step's dependencies are in terminal statuses
+ *
+ * This is the "completed prerequisite → still waiting dependent" stale state
+ * that `unlockActiveWorkflowIfNeeded` does not catch (it only looks for
+ * pending/draft). The steps must already be loaded and ordered.
+ *
+ * @param {any[]} steps
+ * @returns {boolean}
+ */
+export function hasDerivableInconsistency(steps) {
+  const ordered = [...(Array.isArray(steps) ? steps : [])].sort(
+    (left, right) => Number(left.orderIndex ?? 0) - Number(right.orderIndex ?? 0),
+  );
+  const byId = new Map(ordered.map((step) => [String(step.id), step]));
+  return ordered.some((step) => {
+    if (String(step.status ?? "") !== ACTION_STEP_STATUS.waiting) return false;
+    const deps = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
+    return deps.every((/** @type {string} */ id) =>
+      TERMINAL_STEP_STATUSES.has(String(byId.get(String(id))?.status ?? "")),
+    );
+  });
+}
+
+/**
+ * Repair an active workflow whose persisted step statuses contain a derivable
+ * inconsistency (e.g. "Step 1 completed, Step 2 still waiting on Step 1").
+ *
+ * Safe to call on every action load — it short-circuits quickly when there is
+ * nothing to repair. It never rewrites historical execution results: it only
+ * promotes derived lifecycle state that the reconciler can deterministically
+ * compute from existing completed/skipped steps.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @returns {Promise<{ healed: boolean; currentStep: any | null }>}
+ */
+export async function healInconsistentWorkflow(prisma, input) {
+  const logger = input.logger ?? log;
+  if (!prisma?.merchantAction?.findFirst) return { healed: false, currentStep: null };
+  const action = await loadActionForLifecycle(prisma, input);
+  if (!action) return { healed: false, currentStep: null };
+  if (!STARTABLE_ACTION_STATUSES.has(String(action.status))) {
+    return { healed: false, currentStep: null };
+  }
+  const workflow = latestWorkflow(action);
+  if (!workflow) return { healed: false, currentStep: null };
+  const steps = orderedSteps(workflow.steps);
+
+  // Only repair if there is a live active step already — don't compete with
+  // the pending/draft unlock path handled by unlockActiveWorkflowIfNeeded.
+  const hasActive = steps.some((step) => ACTIVE_STEP_STATUSES.has(String(step.status ?? "")));
+  if (hasActive) return { healed: false, currentStep: null };
+
+  if (!hasDerivableInconsistency(steps)) {
+    return { healed: false, currentStep: null };
+  }
+
+  logger.info("healing inconsistent workflow state", {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.actionId,
+    waitingStepIds: steps
+      .filter((s) => String(s.status) === ACTION_STEP_STATUS.waiting)
+      .map((s) => s.id),
+  });
+
+  const advance = await reconcileWorkflow(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.actionId,
+    workflowId: workflow.id,
+  });
+
+  return { healed: Boolean(advance.currentStep), currentStep: advance.currentStep };
+}
+
+/**
+ * Workflow consistency assertion. In tests this throws on any violation.
+ * In production it returns a structured diagnostic instead.
+ *
+ * Checks:
+ *  - Impossible dependency state: step B waiting while all deps are terminal
+ *  - Ready without satisfied dependency: step B ready while a dep is not terminal
+ *  - Invalid current step: active step is also terminal (contradiction)
+ *  - Missing current step while eligible required step exists
+ *  - Completed action with unfinished required work
+ *
+ * @param {any[]} steps ordered steps
+ * @param {{ actionStatus?: string; throwOnViolation?: boolean }} [options]
+ * @returns {{ consistent: boolean; violations: string[] }}
+ */
+export function assertWorkflowConsistent(steps, options = {}) {
+  const throwOnViolation = options.throwOnViolation ?? true;
+  const actionStatus = String(options.actionStatus ?? "");
+  const ordered = [...(Array.isArray(steps) ? steps : [])].sort(
+    (left, right) => Number(left.orderIndex ?? 0) - Number(right.orderIndex ?? 0),
+  );
+  const byId = new Map(ordered.map((step) => [String(step.id), step]));
+  /** @type {string[]} */
+  const violations = [];
+
+  for (const step of ordered) {
+    const stepId = String(step.id);
+    const status = String(step.status ?? "");
+    const deps = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
+
+    const allDepsDone = deps.every((/** @type {string} */ id) =>
+      TERMINAL_STEP_STATUSES.has(String(byId.get(String(id))?.status ?? "")),
+    );
+
+    // Impossible: waiting but all deps are already terminal
+    if (status === ACTION_STEP_STATUS.waiting && deps.length > 0 && allDepsDone) {
+      const depDetails = deps.map((/** @type {string} */ id) => {
+        const dep = byId.get(String(id));
+        return dep ? `${dep.title ?? id}=${dep.status}` : id;
+      }).join(", ");
+      violations.push(
+        `Step "${step.title ?? stepId}" is waiting but all dependencies are satisfied (${depDetails}). ` +
+        `This state is derivably wrong and should be repaired by reconcileWorkflow().`,
+      );
+    }
+
+    // Ready/needs_merchant but a dep is not terminal
+    if (
+      (status === ACTION_STEP_STATUS.ready || status === ACTION_STEP_STATUS.needsMerchant) &&
+      !allDepsDone
+    ) {
+      const unsatisfied = deps
+        .filter((/** @type {string} */ id) => !TERMINAL_STEP_STATUSES.has(String(byId.get(String(id))?.status ?? "")))
+        .map((/** @type {string} */ id) => {
+          const dep = byId.get(String(id));
+          return dep ? `${dep.title ?? id}=${dep.status}` : id;
+        });
+      violations.push(
+        `Step "${step.title ?? stepId}" is ${status} but has unsatisfied dependencies: ${unsatisfied.join(", ")}.`,
+      );
+    }
+
+    // Active step that is also terminal — impossible
+    if (ACTIVE_STEP_STATUSES.has(status) && TERMINAL_STEP_STATUSES.has(status)) {
+      violations.push(`Step "${step.title ?? stepId}" has contradictory status: ${status}.`);
+    }
+  }
+
+  // Completed action with non-terminal required steps
+  if (actionStatus === "completed") {
+    const incomplete = ordered.filter(
+      (step) => !TERMINAL_STEP_STATUSES.has(String(step.status ?? "")),
+    );
+    if (incomplete.length > 0) {
+      violations.push(
+        `Action is completed but steps are still non-terminal: ${incomplete.map((s) => `${s.title ?? s.id}=${s.status}`).join(", ")}.`,
+      );
+    }
+  }
+
+  if (violations.length > 0 && throwOnViolation) {
+    throw new Error(`Workflow consistency violations:\n${violations.map((v) => `  - ${v}`).join("\n")}`);
+  }
+
+  return { consistent: violations.length === 0, violations };
+}
+
 /** @param {any} action @param {string} stepId */
 function actionExecutionForStep(action, stepId) {
   const workflow = latestWorkflow(action);
@@ -1081,9 +1383,7 @@ function isStepStartable(step) {
   const status = String(step?.status ?? "");
   const mode = String(step?.mode ?? "");
   if (status === ACTION_STEP_STATUS.ready) return true;
-  // Assist steps are Jefe-owned. The UI shows them as ready even though lifecycle
-  // unlocks them as needs_merchant — chat and the Review proposals button must
-  // be able to start them the same way.
+  // Assist steps unlocked as needs_merchant are still Jefe-owned and startable.
   if (status === ACTION_STEP_STATUS.needsMerchant && mode === "assist") return true;
   return false;
 }

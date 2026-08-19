@@ -6,6 +6,7 @@ import {
   ACTION_COMMAND,
   classifyActionCommand,
   executeActionCommand,
+  isExplicitGeneralStoreQuestion,
   parsePlanRevision,
 } from "../app/lib/actions/action-command.server.js";
 import {
@@ -17,6 +18,7 @@ import {
   formatChangeSetReply,
   formatExecutionResultReply,
 } from "../app/lib/actions/action-changeset.server.js";
+import { assertRunMatchesResolvedContext } from "../app/lib/actions/resolved-action-context.server.js";
 
 const MERCHANT = "m1";
 const SHOP = "s1";
@@ -29,13 +31,24 @@ test("schema and migration add action constraints and change sets additively", (
     new URL("../prisma/migrations/20260818154700_action_runtime_v2/migration.sql", import.meta.url),
     "utf8",
   );
+  const snapshotMigration = fs.readFileSync(
+    new URL(
+      "../prisma/migrations/20260818193500_action_runtime_resolved_context/migration.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
   assert.match(schema, /model MerchantActionConstraint \{/);
   assert.match(schema, /model ActionChangeSet \{/);
   assert.match(schema, /plan\s+Json\s+@default\("\{\}"\) @map\("plan_json"\)/);
+  assert.match(schema, /inputSnapshot\s+Json\s+@default\("\{\}"\) @map\("input_snapshot_json"\)/);
   assert.match(migration, /ALTER TABLE "merchant_actions"/);
   assert.match(migration, /CREATE TABLE "merchant_action_constraints"/);
   assert.match(migration, /CREATE TABLE "action_change_sets"/);
   assert.doesNotMatch(migration, /DROP TABLE/);
+  assert.match(snapshotMigration, /input_snapshot_json/);
+  assert.match(snapshotMigration, /plan_snapshot_json/);
+  assert.doesNotMatch(snapshotMigration, /DROP TABLE/);
 });
 
 test("classifies the action-runtime conversation turns", () => {
@@ -74,6 +87,183 @@ test("classifies the action-runtime conversation turns", () => {
     classifyActionCommand("Why these products?").type,
     ACTION_COMMAND.ANSWER,
   );
+});
+
+test("classifies focused action inspection questions", () => {
+  assert.equal(
+    classifyActionCommand("Show me what you're proposing right now.").type,
+    ACTION_COMMAND.INSPECT_PROPOSAL,
+  );
+  assert.equal(
+    classifyActionCommand("What are we doing?").params.questionKind,
+    "recap",
+  );
+  assert.equal(
+    classifyActionCommand("What happens next?").params.questionKind,
+    "status",
+  );
+  assert.equal(
+    classifyActionCommand("What's in scope?").type,
+    ACTION_COMMAND.INSPECT_SCOPE,
+  );
+  assert.equal(
+    classifyActionCommand("What constraints have I given you?").params.questionKind,
+    "constraints",
+  );
+  assert.equal(classifyActionCommand("What changed?").type, ACTION_COMMAND.REPORT_EXECUTION);
+});
+
+test("explicit general store questions bypass focused action routing", () => {
+  assert.equal(isExplicitGeneralStoreQuestion("How many products do I sell overall?"), true);
+  assert.equal(isExplicitGeneralStoreQuestion("Show me what you're proposing right now."), false);
+  assert.equal(isExplicitGeneralStoreQuestion("What's in scope?"), false);
+  assert.equal(isExplicitGeneralStoreQuestion("How many products are in this proposal?"), false);
+});
+
+test("Show me what you're proposing returns action proposal, not generic store commentary", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: null,
+    title: "Review Inventory and Prepare Supplier Replenishment for At-Risk Wine Lines",
+    summary: "Reorder at-risk wine lines from the supplier.",
+    preview: { changes: [] },
+  });
+  prisma.state.action.status = "accepted";
+  prisma.state.action.plan = { coverDays: 90 };
+  prisma.state.action.currentStep = {
+    id: "step-1",
+    title: "Review low-cover inventory",
+    status: "ready",
+  };
+  prisma.state.steps = [
+    {
+      id: "step-1",
+      title: "Review low-cover inventory",
+      status: "ready",
+      mode: "assist",
+    },
+  ];
+  prisma.state.beliefs.push({
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    key: "inventory.low_cover_products.trailing_30d",
+    status: "active",
+    value: {
+      items: [
+        { title: "Pear Skin Sipon", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+        { title: "Picnic Xinomavro", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+      ],
+    },
+    updatedAt: new Date(),
+  });
+  await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ADD_CONSTRAINT,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    message: "Exclude Picnic Xinomavro from this action.",
+    logger: quietLogger,
+  });
+
+  const result = await executeActionCommand(prisma, {
+    command: classifyActionCommand("Show me what you're proposing right now.").type,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.command, ACTION_COMMAND.INSPECT_PROPOSAL);
+  assert.match(result.reply, /Pear Skin Sipon/);
+  assert.match(result.reply, /order 9|Recommended restock/i);
+  assert.doesNotMatch(result.reply, /You sell \d+ products/i);
+  assert.doesNotMatch(result.reply, /out of stock/i);
+  assert.doesNotMatch(result.reply, /Picnic Xinomavro — on hand/i);
+});
+
+test("proposal inspection says not built yet when no evidence exists", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: null,
+    title: "Review Inventory and Prepare Supplier Replenishment for At-Risk Wine Lines",
+    preview: { changes: [] },
+  });
+  prisma.state.action.status = "accepted";
+  prisma.state.action.currentStep = {
+    id: "step-1",
+    title: "Review low-cover inventory",
+    status: "ready",
+  };
+  prisma.state.steps = [
+    {
+      id: "step-1",
+      title: "Review low-cover inventory",
+      status: "ready",
+      mode: "assist",
+    },
+  ];
+
+  const result = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.INSPECT_PROPOSAL,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /haven't built the replenishment proposal yet/i);
+  assert.match(result.reply, /Review low-cover inventory/i);
+  assert.doesNotMatch(result.reply, /You sell \d+ products/i);
+});
+
+test("focused answers reflect revised plan and constraints", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: null,
+    title: "Review Inventory and Prepare Supplier Replenishment for At-Risk Wine Lines",
+    preview: { changes: [] },
+  });
+  prisma.state.beliefs.push({
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    key: "inventory.low_cover_products.trailing_30d",
+    status: "active",
+    value: {
+      items: [
+        { title: "Pear Skin Sipon", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+        { title: "Picnic Xinomavro", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+      ],
+    },
+    updatedAt: new Date(),
+  });
+  await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.REVISE_PLAN,
+    params: { coverDays: 90 },
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ADD_CONSTRAINT,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    message: "Exclude Picnic Xinomavro from this action.",
+    logger: quietLogger,
+  });
+
+  const result = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.INSPECT_PROPOSAL,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+
+  assert.match(result.reply, /Pear Skin Sipon/);
+  assert.match(result.reply, /order 9|Recommended restock/i);
+  assert.doesNotMatch(result.reply, /120-day|120 days/i);
+  assert.doesNotMatch(result.reply, /Picnic Xinomavro — on hand/i);
 });
 
 test("parses stacked constraints from one merchant message", () => {
@@ -271,6 +461,174 @@ test("restock change set is a reviewable quantity artifact, not a Shopify write"
   assert.match(applied.reply, /haven’t written anything to Shopify|supplier/i);
 });
 
+test("restock execution uses the revised 90-day plan and Picnic exclusion, not 120-day defaults", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: null,
+    title: "Review Inventory and Prepare Supplier Replenishment for At-Risk Wine Lines",
+    summary: "Reorder at-risk wine lines from the supplier.",
+    preview: { changes: [] },
+  });
+  prisma.state.beliefs.push({
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    key: "inventory.low_cover_products.trailing_30d",
+    status: "active",
+    value: {
+      items: [
+        { title: "Pear Skin Sipon", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+        { title: "Picnic Xinomavro", available: 3, dailyVelocity: 0.125, daysOfCover: 24 },
+      ],
+    },
+    updatedAt: new Date(),
+  });
+
+  const revised = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.REVISE_PLAN,
+    params: { coverDays: 90 },
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  assert.equal(revised.ok, true);
+  assert.equal(prisma.state.action.plan.coverDays, 90);
+
+  const constrained = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ADD_CONSTRAINT,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    message: "Exclude Picnic Xinomavro from this action.",
+    logger: quietLogger,
+  });
+  assert.equal(constrained.ok, true);
+  assert.equal(prisma.state.constraints[0].kind, CONSTRAINT_KIND.excludeProduct);
+
+  const inspect = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.INSPECT_SCOPE,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  assert.equal(inspect.ok, true);
+  assert.equal(inspect.changeSet.items.length, 1);
+  assert.equal(inspect.changeSet.items[0].title, "Pear Skin Sipon");
+  assert.equal(inspect.changeSet.items[0].after, 9);
+  assert.match(inspect.changeSet.items[0].reason, /90 days of cover/);
+  assert.equal(
+    inspect.changeSet.excluded.some((item) => item.title === "Picnic Xinomavro"),
+    true,
+  );
+  assert.match(inspect.reply, /Pear Skin Sipon/);
+  assert.doesNotMatch(inspect.reply, /Picnic Xinomavro — on hand/);
+
+  const accepted = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ACCEPT_PLAN,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(prisma.state.action.plan.coverDays, 90);
+  assert.equal(prisma.state.constraints[0].status, "active");
+
+  const started = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.START_STEP,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  assert.equal(started.ok, true);
+  const snapshot = prisma.state.stepRuns[0]?.inputSnapshot;
+  assert.equal(snapshot.plan.coverDays, 90);
+  assert.deepEqual(
+    snapshot.scope.map((item) => item.title),
+    ["Pear Skin Sipon"],
+  );
+  assert.equal(
+    snapshot.constraints.some((row) => /Picnic Xinomavro/i.test(row.label)),
+    true,
+  );
+  assertRunMatchesResolvedContext(snapshot, started.result.resolvedContext);
+
+  assert.match(started.reply, /Pear Skin Sipon/);
+  assert.match(started.reply, /9 units|90-day|90 days/);
+  assert.doesNotMatch(started.reply, /Picnic Xinomavro — on hand/i);
+  assert.doesNotMatch(started.reply, /120-day|120 days/i);
+});
+
+test("markdown execute change set uses revised percent and exclusions", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: "price_markdown",
+    preview: {
+      changes: [
+        { title: "Product A", productId: "p1", variantId: "v1", fromPrice: 100, toPrice: 75, discountPercent: 25 },
+        { title: "Product B", productId: "p2", variantId: "v2", fromPrice: 80, toPrice: 60, discountPercent: 25 },
+        { title: "Product C", productId: "p3", variantId: "v3", fromPrice: 40, toPrice: 30, discountPercent: 25 },
+      ],
+    },
+  });
+
+  await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.REVISE_PLAN,
+    params: { markdownPercent: 20 },
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    logger: quietLogger,
+  });
+  const constrained = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ADD_CONSTRAINT,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    message: "Exclude Product C from this action.",
+    logger: quietLogger,
+  });
+  assert.equal(constrained.ok, true);
+  assert.equal(constrained.changeSet.items.length, 2);
+  assert.deepEqual(
+    constrained.changeSet.items.map((item) => item.title),
+    ["Product A", "Product B"],
+  );
+  assert.equal(constrained.changeSet.items[0].toPrice, 80);
+  assert.equal(constrained.changeSet.items[0].discountPercent, 20);
+  assert.equal(constrained.changeSet.excluded[0].title, "Product C");
+});
+
+test("listing-copy execute change set excludes wholesale-tagged products", async () => {
+  const prisma = buildRuntimePrisma({
+    actionType: "listing_copy",
+    title: "Categorise unassigned products",
+    summary: "Fill missing product types from the catalogue vocabulary.",
+    preview: {
+      changes: [
+        { title: "Product A", productId: "p1", fromType: "", toType: "Wine" },
+        { title: "Product B", productId: "p2", fromType: "", toType: "Wine", tags: ["wholesale"] },
+        { title: "Product C", productId: "p3", fromType: "", toType: "Wine" },
+      ],
+    },
+  });
+
+  const constrained = await executeActionCommand(prisma, {
+    command: ACTION_COMMAND.ADD_CONSTRAINT,
+    merchantId: MERCHANT,
+    shopId: SHOP,
+    actionId: ACTION_ID,
+    message: "Don't touch products tagged wholesale.",
+    logger: quietLogger,
+  });
+  assert.equal(constrained.ok, true);
+  assert.deepEqual(
+    constrained.changeSet.items.map((item) => item.title),
+    ["Product A", "Product C"],
+  );
+  assert.equal(constrained.changeSet.excluded[0].title, "Product B");
+});
+
 test("execution result reply reports actual item outcomes, not intended changes", () => {
   const reply = formatExecutionResultReply({
     actionType: "price_markdown",
@@ -342,6 +700,26 @@ function buildRuntimePrisma({
     changeSets: [],
     beliefs: [],
     events: [],
+    steps: [
+      {
+        id: "step-1",
+        workflowId: "wf-1",
+        recommendationId: "rec-1",
+        merchantId: MERCHANT,
+        shopId: SHOP,
+        title: actionType ? "Apply markdown" : "Review restock",
+        status: "ready",
+        mode: actionType ? "execute" : "assist",
+        capabilityRef: actionType
+          ? "execute:price_markdown:dead_stock"
+          : "assist:replenishment_proposal",
+        orderIndex: 0,
+        dependsOnStepIds: [],
+        progress: {},
+        attention: {},
+      },
+    ],
+    stepRuns: [],
   };
 
   const actionRow = () => ({
@@ -356,18 +734,7 @@ function buildRuntimePrisma({
           id: "wf-1",
           status: "draft",
           version: 1,
-          steps: [
-            {
-              id: "step-1",
-              title: actionType ? "Apply markdown" : "Review restock",
-              status: "ready",
-              mode: actionType ? "execute" : "assist",
-              capabilityRef: actionType
-                ? "execute:price_markdown:dead_stock"
-                : "assist:replenishment_proposal",
-              orderIndex: 0,
-            },
-          ],
+          steps: state.steps,
         },
       ],
     },
@@ -482,5 +849,54 @@ function buildRuntimePrisma({
     merchantPlanRecommendation: {
       updateMany: async () => ({ count: 1 }),
     },
+    merchantRecommendationWorkflow: {
+      updateMany: async () => ({ count: 1 }),
+    },
+    merchantRecommendationStep: {
+      findMany: async () => [...state.steps],
+      findFirst: async ({ where }) =>
+        state.steps.find((row) => row.id === where.id) ?? null,
+      updateMany: async ({ where, data }) => {
+        const rows = state.steps.filter((row) => {
+          if (where.id && row.id !== where.id) return false;
+          if (where.status && row.status !== where.status) return false;
+          return true;
+        });
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
+    },
+    merchantRecommendationStepRun: {
+      create: async ({ data }) => {
+        const row = {
+          id: `sr-${state.stepRuns.length + 1}`,
+          createdAt: new Date(),
+          ...data,
+        };
+        state.stepRuns.push(row);
+        return row;
+      },
+      findFirst: async ({ where, include }) => {
+        const row =
+          state.stepRuns.find((item) => {
+            if (where.id && item.id !== where.id) return false;
+            if (where.idempotencyKey && item.idempotencyKey !== where.idempotencyKey) {
+              return false;
+            }
+            if (where.status?.in && !where.status.in.includes(item.status)) return false;
+            return true;
+          }) ?? null;
+        if (!row) return null;
+        const step = state.steps.find((item) => item.id === row.stepId) ?? state.steps[0];
+        return include?.step ? { ...row, step } : row;
+      },
+      updateMany: async ({ where, data }) => {
+        const rows = state.stepRuns.filter((row) => !where.id || row.id === where.id);
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
+    },
+    product: { findMany: async () => [] },
+    variant: { findMany: async () => [] },
   };
 }

@@ -8,6 +8,7 @@ import {
 export const PLAN_CHAT_INTENT = Object.freeze({
   accept: "accept",
   start: "start",
+  advance: "advance",
   status: "status",
   scope: "scope",
   recap: "recap",
@@ -36,10 +37,10 @@ export const PLAN_CHAT_COMMANDS = new Set([
 ]);
 
 /**
- * Classify a merchant message against the focused plan. Deterministic on purpose:
- * the LLM path was restating the plan for every turn, including "start" and
- * "what are the unassigned products?". Commands are routed to the lifecycle
- * service; only leftover questions hit the model.
+ * Classify a merchant message against the focused plan. Kept as a tiny
+ * deterministic fallback for recap/status/scope questions and tests — not the
+ * primary focused-chat router. Merchant natural language is interpreted by
+ * the Action Interpreter.
  *
  * @param {string} message
  * @returns {string}
@@ -123,6 +124,9 @@ export function buildPlanStatusReply(action) {
   if (current.status === "needs_attention") {
     return `“${current.title}” needs attention before I can continue. Ask what went wrong, or tell me to try again.`;
   }
+  if (current.status === "needs_updating") {
+    return `“${current.title}” needs updating because earlier inputs changed. Tell me to start and I'll rebuild it.`;
+  }
   return `On “${action.title}”, the current step is “${current.title}” (${status}).`;
 }
 
@@ -192,6 +196,58 @@ export function buildPlanCompleteReply(action, result) {
   return next
     ? `Marked that step done. Next up: “${next}”.`
     : "Marked that step done.";
+}
+
+/** @param {any} action @param {{ ok?: boolean; reason?: string; completed?: boolean; currentStep?: any; blocker?: string }} result */
+/** @param {any} action @param {{ ok?: boolean; reason?: string; completed?: boolean; currentStep?: any; blocker?: string }} result */
+export function buildPlanAdvanceReply(action, result) {
+  if (result?.reason === "step_not_started") {
+    if (result.blocker) return result.blocker;
+    const title =
+      result.currentStep?.title ?? currentPlanStep(action)?.title ?? "this step";
+    return `“${title}” hasn't started yet — I can't skip past it. Tell me to start it, or tap Review proposals.`;
+  }
+  if (!result?.ok) {
+    if (result?.blocker) return result.blocker;
+    if (result?.reason === "no_current_step") {
+      return "There's no active step to move on from right now.";
+    }
+    return "I couldn't move to the next step just now.";
+  }
+  if (result.completed) {
+    return `That's the last step — “${action?.title ?? "this plan"}” is complete.`;
+  }
+  const next = result.currentStep?.title;
+  return next
+    ? `Done with that step. Next up: “${next}”.`
+    : "Moved on to the next step.";
+}
+
+/** @param {any} action @param {{ ok?: boolean; reason?: string; currentStep?: any }} result */
+export function buildPlanGoBackReply(action, result) {
+  if (!result?.ok) {
+    if (result?.reason === "already_at_start") {
+      return "We're already at the first step.";
+    }
+    return "I couldn't go back just now.";
+  }
+  const title = result.currentStep?.title ?? currentPlanStep(action)?.title ?? "that step";
+  return `Okay — we're back at “${title}”.`;
+}
+
+/** @param {any} action @param {{ ok?: boolean; reason?: string; currentStep?: any; offer?: string; targetTitle?: string }} result */
+export function buildPlanGoToReply(action, result) {
+  if (!result?.ok) {
+    if (result?.reason === "prerequisites_missing" && result.offer) {
+      return result.offer;
+    }
+    if (result?.reason === "step_not_found") {
+      return "I couldn't find that step in this workflow.";
+    }
+    return "I couldn't jump to that step just now.";
+  }
+  const title = result.currentStep?.title ?? currentPlanStep(action)?.title ?? "that step";
+  return `Taking you to “${title}”.`;
 }
 
 /** @param {any} action @param {{ ok?: boolean; reason?: string; completed?: boolean; currentStep?: any }} result */
@@ -293,7 +349,7 @@ export function currentPlanStep(action) {
   const steps = planSteps(action);
   return (
     steps.find((/** @type {any} */ step) =>
-      ["ready", "running", "needs_merchant", "needs_attention"].includes(
+      ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
         String(step.status ?? ""),
       ),
     ) ?? null

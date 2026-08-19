@@ -1193,8 +1193,32 @@ test("applied or rejected execution rows never render executable approval wordin
   }
 });
 
-test("approving a tracked onboarding recommendation activates its workflow steps", async () => {
+test("approving a tracked onboarding recommendation unlocks the first workflow step", async () => {
   const calls = [];
+  const steps = [
+    {
+      id: "s1",
+      orderIndex: 0,
+      title: "Review",
+      mode: "assist",
+      status: "draft",
+      dependsOnStepIds: [],
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      workflowId: "wf-1",
+    },
+    {
+      id: "s2",
+      orderIndex: 1,
+      title: "Next",
+      mode: "assist",
+      status: "draft",
+      dependsOnStepIds: ["s1"],
+      merchantId: "merchant-1",
+      shopId: "shop-1",
+      workflowId: "wf-1",
+    },
+  ];
   const recommendation = {
     id: "rec-1",
     merchantId: "merchant-1",
@@ -1203,15 +1227,7 @@ test("approving a tracked onboarding recommendation activates its workflow steps
     reviewStatus: "proposed",
     acceptedAt: null,
     reviewAt: new Date("2026-08-20T10:00:00.000Z"),
-    workflows: [
-      {
-        steps: [
-          {
-            actionExecutions: [],
-          },
-        ],
-      },
-    ],
+    workflows: [{ id: "wf-1", steps }],
   };
   const tx = {
     merchantPlanRecommendation: {
@@ -1225,12 +1241,19 @@ test("approving a tracked onboarding recommendation activates its workflow steps
         calls.push(["workflow.updateMany", args]);
         return { count: 1 };
       },
+      findFirst: async () => ({ id: "wf-1" }),
     },
     merchantRecommendationStep: {
-      updateMany: async (args) => {
-        calls.push(["step.updateMany", args]);
-        return { count: 2 };
+      findMany: async () => steps,
+      updateMany: async ({ where, data }) => {
+        calls.push(["step.updateMany", { where, data }]);
+        const rows = steps.filter((row) => !where.id || row.id === where.id);
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
       },
+    },
+    merchantAction: {
+      findFirst: async () => ({ id: "a1" }),
     },
     shop: {
       findUnique: async () => ({ onboardingMetadata: {} }),
@@ -1283,15 +1306,12 @@ test("approving a tracked onboarding recommendation activates its workflow steps
     },
     data: { status: "active" },
   });
-  assert.deepEqual(calls.find(([name]) => name === "step.updateMany")?.[1], {
-    where: {
-      recommendationId: "rec-1",
-      merchantId: "merchant-1",
-      shopId: "shop-1",
-      status: "draft",
-    },
-    data: { status: "pending" },
-  });
+  assert.equal(steps[0].status, "ready");
+  assert.equal(steps[1].status, "waiting");
+  assert.equal(
+    calls.some(([name, args]) => name === "step.updateMany" && args?.data?.status === "pending"),
+    false,
+  );
 });
 
 test("full-memory reconciliation re-runs contracts and preserves applied action history", async () => {
