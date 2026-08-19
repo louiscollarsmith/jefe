@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   ACTION_COMMAND,
-  classifyActionCommand,
   executeActionPlan,
 } from "../app/lib/actions/action-command.server.js";
 import {
@@ -276,8 +275,9 @@ test("LLM-down refuses natural-language mutations and keeps read-only fallback",
     logger: quietLogger,
   });
   assert.equal(mutation.unavailable, true);
-  assert.match(mutation.reply, /couldn.?t interpret that safely/i);
+  assert.equal(mutation.ok, false);
   assert.equal(mutation.reply, LLM_DOWN_INTERPRETER_REPLY);
+  assert.equal(mutation.command.reason, "agent_unavailable");
 
   const inspect = await handleFocusedActionMessage(prisma, {
     message: "Show me what you're proposing right now.",
@@ -285,11 +285,12 @@ test("LLM-down refuses natural-language mutations and keeps read-only fallback",
     shopId: "s1",
     actionId: "a1",
     provider: { enabled: false },
-    classifyFallback: classifyActionCommand,
     logger: quietLogger,
   });
   assert.equal(inspect.unavailable, true);
-  assert.equal(inspect.command.type, ACTION_COMMAND.INSPECT_PROPOSAL);
+  assert.equal(inspect.ok, false);
+  assert.equal(inspect.command.type, ACTION_COMMAND.ANSWER);
+  assert.equal(inspect.command.reason, "agent_unavailable");
 });
 
 test("executeActionPlan runs sequential operations and keeps earlier success", async () => {

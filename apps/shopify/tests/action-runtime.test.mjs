@@ -4,7 +4,6 @@ import test from "node:test";
 
 import {
   ACTION_COMMAND,
-  classifyActionCommand,
   executeActionCommand,
   isExplicitGeneralStoreQuestion,
   parsePlanRevision,
@@ -49,68 +48,6 @@ test("schema and migration add action constraints and change sets additively", (
   assert.match(snapshotMigration, /input_snapshot_json/);
   assert.match(snapshotMigration, /plan_snapshot_json/);
   assert.doesNotMatch(snapshotMigration, /DROP TABLE/);
-});
-
-test("classifies the action-runtime conversation turns", () => {
-  assert.equal(
-    classifyActionCommand("Don’t touch archived products or anything in Summer Essentials.").type,
-    ACTION_COMMAND.ADD_CONSTRAINT,
-  );
-  assert.equal(
-    classifyActionCommand("Use a 20% markdown instead.").type,
-    ACTION_COMMAND.REVISE_PLAN,
-  );
-  assert.equal(
-    classifyActionCommand("Make this 90 days of cover rather than 120.").params.coverDays,
-    90,
-  );
-  assert.equal(
-    classifyActionCommand("Show me exactly what you’ll change.").type,
-    ACTION_COMMAND.CREATE_CHANGESET,
-  );
-  assert.equal(
-    classifyActionCommand("Which products does that leave?").type,
-    ACTION_COMMAND.INSPECT_SCOPE,
-  );
-  assert.equal(
-    classifyActionCommand("Go ahead.", { hasReadyChangeSet: true }).type,
-    ACTION_COMMAND.APPLY_CHANGESET,
-  );
-  assert.equal(
-    classifyActionCommand("Go ahead.", { hasReadyChangeSet: false }).type,
-    ACTION_COMMAND.START_STEP,
-  );
-  assert.equal(classifyActionCommand("What changed?").type, ACTION_COMMAND.REPORT_EXECUTION);
-  assert.equal(classifyActionCommand("Leave this until next month.").type, ACTION_COMMAND.DEFER_ACTION);
-  assert.equal(classifyActionCommand("Looks good, let’s do it.").type, ACTION_COMMAND.ACCEPT_PLAN);
-  assert.equal(
-    classifyActionCommand("Why these products?").type,
-    ACTION_COMMAND.ANSWER,
-  );
-});
-
-test("classifies focused action inspection questions", () => {
-  assert.equal(
-    classifyActionCommand("Show me what you're proposing right now.").type,
-    ACTION_COMMAND.INSPECT_PROPOSAL,
-  );
-  assert.equal(
-    classifyActionCommand("What are we doing?").params.questionKind,
-    "recap",
-  );
-  assert.equal(
-    classifyActionCommand("What happens next?").params.questionKind,
-    "status",
-  );
-  assert.equal(
-    classifyActionCommand("What's in scope?").type,
-    ACTION_COMMAND.INSPECT_SCOPE,
-  );
-  assert.equal(
-    classifyActionCommand("What constraints have I given you?").params.questionKind,
-    "constraints",
-  );
-  assert.equal(classifyActionCommand("What changed?").type, ACTION_COMMAND.REPORT_EXECUTION);
 });
 
 test("explicit general store questions bypass focused action routing", () => {
@@ -165,7 +102,7 @@ test("Show me what you're proposing returns action proposal, not generic store c
   });
 
   const result = await executeActionCommand(prisma, {
-    command: classifyActionCommand("Show me what you're proposing right now.").type,
+    command: ACTION_COMMAND.INSPECT_PROPOSAL,
     merchantId: MERCHANT,
     shopId: SHOP,
     actionId: ACTION_ID,

@@ -99,9 +99,10 @@ export async function executeStartedAssistStepRun(prisma, input) {
     logger,
   });
   if (!produced.ok || !produced.progress) return produced;
+  const stampedProgress = stampArtifactVersions(produced.progress, input.resolvedContext);
   const completion = await complete(prisma, {
     stepRunId: stepRun.id,
-    result: produced.progress,
+    result: stampedProgress,
     logger,
   });
   if (!completion.ok) {
@@ -119,7 +120,18 @@ export async function executeStartedAssistStepRun(prisma, input) {
     stepId: stepRun.step.id,
     artifactType: produced.progress.artifactType,
   });
-  return { ...produced, completion };
+  return { ...produced, progress: stampedProgress, completion };
+}
+
+/** @param {any} progress @param {any} resolvedContext */
+function stampArtifactVersions(progress, resolvedContext) {
+  if (!progress || typeof progress !== "object") return progress;
+  return {
+    ...progress,
+    planVersion: resolvedContext?.plan?.version ?? progress.planVersion ?? null,
+    constraintVersion: resolvedContext?.constraintVersion ?? progress.constraintVersion ?? null,
+    inputHash: resolvedContext?.inputHash ?? progress.inputHash ?? null,
+  };
 }
 
 export { formatAssistArtifactForChat, isAssistStepArtifact } from "./format.server.js";

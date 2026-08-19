@@ -136,6 +136,11 @@ export function oracleInterpretJson(message, snapshot = {}) {
   }
   if (isAdvance(text)) {
     operations.push({ command: ACTION_COMMAND.ADVANCE_STEP });
+  } else if (/\b(just finish|finish this for me)\b/.test(text)) {
+    operations.push({
+      command: ACTION_COMMAND.ACHIEVE_OUTCOME,
+      arguments: { outcome: "cost_analysis" },
+    });
   } else if (isApply(text, snapshot)) {
     operations.push({
       command: ACTION_COMMAND.APPLY_CHANGESET,

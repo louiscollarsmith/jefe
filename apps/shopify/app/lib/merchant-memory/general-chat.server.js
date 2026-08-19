@@ -34,7 +34,6 @@ import {
 } from "../actions/plan-chat.server.js";
 import {
   ACTION_COMMAND,
-  classifyActionCommand,
   executeActionCommand,
   isMutationCommand,
   parseProposedCommand,
@@ -350,7 +349,6 @@ export async function sendGeneralChatMessage(prisma, input) {
         merchantMessageId: persisted.message.id,
         actor: input.merchantId,
         provider,
-        classifyFallback: classifyActionCommand,
         logger: input.logger ?? log,
       })
     : null;
@@ -450,53 +448,56 @@ export async function sendGeneralChatMessage(prisma, input) {
         actionChat: Boolean(focusedAction && actionHasStartableStep(focusedAction)),
         logger: input.logger ?? log,
       });
-      const proposed = focusedAction ? parseProposedCommand(grounded.command) : null;
-      const llmIntent =
-        focusedAction && PLAN_CHAT_COMMANDS.has(/** @type {any} */ (grounded.planIntent ?? ""))
-          ? String(grounded.planIntent)
-          : "";
-      const wantsStepStart =
-        Boolean(focusedAction) &&
-        !isPrimarilyQuestion(content) &&
-        (isActionStepStartCommand(content) || grounded.startCurrentStep === true);
-      if (
-        proposed &&
-        isMutationCommand(proposed.type) &&
-        !isPrimarilyQuestion(content)
-      ) {
-        generated = await runFocusedActionCommand(prisma, {
-          command: proposed.type,
-          params: proposed.params,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          focusedAction,
-          conversationId: conversation.id,
-          message: content,
-          logger: input.logger ?? log,
-        });
-      } else if (wantsStepStart) {
-        generated = await runFocusedActionCommand(prisma, {
-          command: ACTION_COMMAND.START_STEP,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          focusedAction,
-          conversationId: conversation.id,
-          message: content,
-          logger: input.logger ?? log,
-        });
-      } else if (llmIntent) {
-        generated = await runPlanChatIntent(prisma, {
-          intent: llmIntent,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          focusedAction,
-          conversationId: conversation.id,
-          logger: input.logger ?? log,
-        });
-      } else {
+      // Focused actions are handled exclusively by the Action Agent / interpreter.
+      // Legacy command routing here caused duplicate semantics and step-navigation failures.
+      if (focusedAction) {
         generated = memoryReply
           ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
           : grounded;
+      } else {
+        const proposed = parseProposedCommand(grounded.command);
+        const llmIntent =
+          PLAN_CHAT_COMMANDS.has(/** @type {any} */ (grounded.planIntent ?? ""))
+            ? String(grounded.planIntent)
+            : "";
+        const wantsStepStart =
+          !isPrimarilyQuestion(content) &&
+          (isActionStepStartCommand(content) || grounded.startCurrentStep === true);
+        if (proposed && isMutationCommand(proposed.type) && !isPrimarilyQuestion(content)) {
+          generated = await runFocusedActionCommand(prisma, {
+            command: proposed.type,
+            params: proposed.params,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            focusedAction,
+            conversationId: conversation.id,
+            message: content,
+            logger: input.logger ?? log,
+          });
+        } else if (wantsStepStart) {
+          generated = await runFocusedActionCommand(prisma, {
+            command: ACTION_COMMAND.START_STEP,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            focusedAction,
+            conversationId: conversation.id,
+            message: content,
+            logger: input.logger ?? log,
+          });
+        } else if (llmIntent) {
+          generated = await runPlanChatIntent(prisma, {
+            intent: llmIntent,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            focusedAction,
+            conversationId: conversation.id,
+            logger: input.logger ?? log,
+          });
+        } else {
+          generated = memoryReply
+            ? { ...grounded, reply: `${memoryReply}\n\n${grounded.reply}` }
+            : grounded;
+        }
       }
     }
     turn.mark("generationMs");
@@ -1072,10 +1073,15 @@ export function buildActionContextFallbackReply(message, context) {
     return buildPlanScopeReply(focusedAction);
   }
   if (intent === PLAN_CHAT_INTENT.recap) {
-    return buildPlanRecapReply(focusedAction);
+    return isSimpleDeicticQuestion(message) ? buildPlanRecapReply(focusedAction) : null;
   }
   if (!isActionContextQuestion(message)) return null;
-  return buildPlanRecapReply(focusedAction);
+  return isSimpleDeicticQuestion(message) ? buildPlanRecapReply(focusedAction) : null;
+}
+
+/** @param {string} message */
+function isSimpleDeicticQuestion(message) {
+  return /\b(what is this|what's this)\b/i.test(String(message ?? "").trim());
 }
 
 /** @param {string} message */

@@ -2,21 +2,16 @@
 
 /**
  * Structured Action Runtime commands. UI buttons land here with an explicit
- * command. Focused chat lands here through the Action Interpreter's structured
- * plan. Application code validates state and executes through lifecycle /
+ * command. Focused chat lands here through the Action Agent's tool loop.
+ * Application code validates state and executes through lifecycle /
  * Change Set / typed-adapter services. The model never mutates Shopify or
  * workflow status itself.
- *
- * `classifyActionCommand` is not the product semantic engine. It remains as a
- * tiny LLM-down read-only fallback and as a helper for tests of that fallback.
- * Merchant natural language is interpreted in action-interpreter.server.js.
  */
 
 import { logger as baseLogger } from "../observability/logger.server.js";
 import {
   acceptMerchantActionPlan,
   completeCurrentActionStep,
-  isPrimarilyQuestion,
   processReadyActionStepRuns,
   skipCurrentActionStep,
   startActionStep,
@@ -61,20 +56,17 @@ import {
   buildPlanSkipReply,
   buildPlanStatusReply,
   buildPlanStopReply,
-  classifyPlanChatIntent,
   currentPlanStep,
   extractPlanScopeItems,
 } from "./plan-chat.server.js";
 import { resolveActionContext } from "./resolved-action-context.server.js";
+import { validatePlanPatch, describePlanRevision } from "./action-plan-schema.server.js";
+import { achieveOutcome } from "./action-outcome.server.js";
 import {
   advanceCurrentActionStep,
   goBackActionSteps,
   goToActionStep,
   invalidateDownstreamSteps,
-  isAdvanceStepCommand,
-  isExtendedSkipCommand,
-  parseGoBackCommand,
-  parseGoToStepCommand,
   resolveStepTarget,
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
@@ -102,6 +94,7 @@ export const ACTION_COMMAND = Object.freeze({
   INSPECT_SCOPE: "INSPECT_SCOPE",
   INSPECT_PROPOSAL: "INSPECT_PROPOSAL",
   REPORT_EXECUTION: "REPORT_EXECUTION",
+  ACHIEVE_OUTCOME: "ACHIEVE_OUTCOME",
 });
 
 /** @type {Set<string>} */
@@ -121,6 +114,7 @@ const MUTATION_COMMANDS = new Set([
   ACTION_COMMAND.CREATE_CHANGESET,
   ACTION_COMMAND.APPLY_CHANGESET,
   ACTION_COMMAND.CONFIRM_MERCHANT_STEP,
+  ACTION_COMMAND.ACHIEVE_OUTCOME,
 ]);
 
 const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
@@ -136,115 +130,6 @@ const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
   status: ACTION_COMMAND.ANSWER,
   question: ACTION_COMMAND.ANSWER,
 }));
-
-/**
- * Deterministic fallback classifier. Not the primary focused-chat router.
- * Used when the Action Interpreter is unavailable and the request is
- * read-only, and by tests of that fallback.
- *
- * @param {string} message
- * @param {{ hasReadyChangeSet?: boolean; actionStatus?: string | null; pendingNavigation?: any }} [context]
- */
-export function classifyActionCommand(message, context = {}) {
-  const text = normalizeChatText(message);
-  if (!text) return { type: ACTION_COMMAND.ANSWER, params: {} };
-
-  const pending = context.pendingNavigation ?? null;
-  if (pending?.candidates?.length) {
-    const resolved = resolvePendingNavigation(text, pending);
-    if (resolved) return resolved;
-  }
-
-  if (isCreateChangeSetAsk(text)) {
-    return { type: ACTION_COMMAND.CREATE_CHANGESET, params: {} };
-  }
-  if (isExecutionReportAsk(text)) {
-    return { type: ACTION_COMMAND.REPORT_EXECUTION, params: {} };
-  }
-  if (/\blooks good\b/i.test(text) && !isPrimarilyQuestion(text)) {
-    return { type: ACTION_COMMAND.ACCEPT_PLAN, params: {} };
-  }
-
-  if (!isPrimarilyQuestion(text)) {
-    const ambiguousBack = parseAmbiguousBackNavigation(text);
-    if (ambiguousBack) {
-      return {
-        type: ACTION_COMMAND.NEEDS_CLARIFICATION,
-        params: ambiguousBack,
-      };
-    }
-    if (isAdvanceStepCommand(text)) {
-      return { type: ACTION_COMMAND.ADVANCE_STEP, params: {} };
-    }
-    const goBack = parseGoBackCommand(text);
-    if (goBack) {
-      if ("targetHint" in goBack && goBack.targetHint) {
-        return { type: ACTION_COMMAND.GO_TO_STEP, params: { targetHint: goBack.targetHint } };
-      }
-      return { type: ACTION_COMMAND.GO_BACK, params: { steps: goBack.steps ?? 1 } };
-    }
-    const goTo = parseGoToStepCommand(text);
-    if (goTo?.targetHint) {
-      return { type: ACTION_COMMAND.GO_TO_STEP, params: { targetHint: goTo.targetHint } };
-    }
-    if (isExtendedSkipCommand(text)) {
-      return { type: ACTION_COMMAND.SKIP_STEP, params: {} };
-    }
-    const scopeModification = parseScopeModificationFromMessage(text);
-    if (scopeModification) {
-      return { type: ACTION_COMMAND.ADD_CONSTRAINT, params: { scopeModification } };
-    }
-    const constraints = parseConstraintsFromMessage(text);
-    if (constraints.length > 0) {
-      return { type: ACTION_COMMAND.ADD_CONSTRAINT, params: { constraints } };
-    }
-    const revision = parsePlanRevision(text);
-    if (revision) {
-      return { type: ACTION_COMMAND.REVISE_PLAN, params: revision };
-    }
-    if (isDeferCommand(text)) {
-      return { type: ACTION_COMMAND.DEFER_ACTION, params: {} };
-    }
-    if (isRemoveConstraintCommand(text)) {
-      return { type: ACTION_COMMAND.REMOVE_CONSTRAINT, params: parseRemoveConstraint(text) };
-    }
-  }
-
-  if (isInspectScopeAsk(text)) {
-    return { type: ACTION_COMMAND.INSPECT_SCOPE, params: {} };
-  }
-  if (isProposalAsk(text) || isCurrentProposalAsk(text) || isExactActionStateAsk(text)) {
-    return { type: ACTION_COMMAND.INSPECT_PROPOSAL, params: {} };
-  }
-  if (isActionStateAsk(text)) {
-    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: PLAN_CHAT_INTENT.recap } };
-  }
-  if (isNextStepAsk(text)) {
-    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: PLAN_CHAT_INTENT.status } };
-  }
-  if (isConstraintsAsk(text)) {
-    return { type: ACTION_COMMAND.ANSWER, params: { questionKind: "constraints" } };
-  }
-
-  const planIntent = classifyPlanChatIntent(text);
-  if (planIntent === PLAN_CHAT_INTENT.start || planIntent === PLAN_CHAT_INTENT.retry) {
-    if (context.hasReadyChangeSet) {
-      return { type: ACTION_COMMAND.APPLY_CHANGESET, params: {} };
-    }
-    return { type: ACTION_COMMAND.START_STEP, params: {} };
-  }
-  if (planIntent === PLAN_CHAT_INTENT.scope) {
-    return { type: ACTION_COMMAND.INSPECT_SCOPE, params: {} };
-  }
-  const mapped = COMMAND_ALIASES[planIntent];
-  if (mapped && mapped !== ACTION_COMMAND.ANSWER) {
-    return { type: mapped, params: {} };
-  }
-  return {
-    type: ACTION_COMMAND.ANSWER,
-    params: { questionKind: planIntent === PLAN_CHAT_INTENT.question ? null : planIntent },
-  };
-}
 
 /**
  * Normalize an LLM-proposed command. Unknown types become ANSWER.
@@ -371,6 +256,8 @@ export async function executeActionCommand(prisma, input) {
       return runInspectProposal(prisma, { ...input, action, logger });
     case ACTION_COMMAND.REPORT_EXECUTION:
       return runReportExecution(prisma, { ...input, action, logger });
+    case ACTION_COMMAND.ACHIEVE_OUTCOME:
+      return runAchieveOutcome(prisma, { ...input, action, params, logger });
     default:
       return runAnswer(prisma, { ...input, action, params, logger });
   }
@@ -516,7 +403,17 @@ async function runAcceptPlan(prisma, input) {
 
 /** @param {any} prisma @param {any} input */
 async function runRevisePlan(prisma, input) {
-  const planPatch = planPatchFromParams(input.params);
+  const rawPatch = planPatchFromParams(input.params);
+  const { patch: planPatch, rejected } = validatePlanPatch(input.action, rawPatch);
+  if (rejected.length > 0 && Object.keys(planPatch).length === 0) {
+    const kind = isRestockAction(input.action) ? "cover days" : "markdown percent";
+    return {
+      ok: false,
+      command: ACTION_COMMAND.REVISE_PLAN,
+      reason: "invalid_plan_field",
+      reply: `That parameter doesn't apply to this action. For this one, tell me the ${kind} or how many products.`,
+    };
+  }
   if (Object.keys(planPatch).length === 0) {
     return {
       ok: false,
@@ -564,6 +461,30 @@ async function runRevisePlan(prisma, input) {
     reply: buildReviseReply(fresh ?? input.action, planPatch, changeSet),
     action: fresh ?? input.action,
     changeSet: createdChangeSet(changeSet),
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runAchieveOutcome(prisma, input) {
+  const result = await achieveOutcome(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    outcome: input.params?.outcome ?? input.params?.targetHint ?? "supplier_draft",
+    actor: input.actor ?? input.merchantId,
+    conversationId: input.conversationId ?? null,
+    session: input.session ?? null,
+    executeDeps: input.executeDeps,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.ACHIEVE_OUTCOME,
+    reason: result.ok ? null : result.reason,
+    result,
+    reply: result.reply ?? "I couldn't reach that outcome just now.",
+    action: fresh ?? input.action,
   };
 }
 
@@ -667,7 +588,7 @@ async function runScopeModification(prisma, input) {
     const match = constraints.find(
       (row) =>
         row.kind === "exclude_product" &&
-        normalizeMatch(row.params?.title) === wanted,
+        productHintMatchesConstraint(wanted, row),
     );
     if (!match) {
       return {
@@ -840,8 +761,41 @@ async function runStartStep(prisma, input) {
     actor: input.actor ?? input.merchantId,
     logger: input.logger,
   });
-  const fresh = await refreshAction(prisma, input);
+  let fresh = await refreshAction(prisma, input);
   let reply = buildStartReply(fresh ?? input.action, stepStart);
+
+  // Assist steps: if wizard state blocked START_STEP, run goal-oriented execution instead.
+  if (!stepStart.ok && isRestockAction(input.action)) {
+    const currentStep = findStep(fresh ?? input.action, stepStart.currentStepId ?? fresh?.currentStep?.id);
+    if (!currentStep || currentStep.mode === "assist") {
+      const achieved = await achieveOutcome(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: input.action.id,
+        outcome:
+          capabilityRefToOutcome(currentStep?.capabilityRef) ??
+          capabilityRefToOutcome(fresh?.currentStep?.capabilityRef) ??
+          "replenishment_proposal",
+        actor: input.actor ?? input.merchantId,
+        conversationId: input.conversationId ?? null,
+        session: input.session ?? null,
+        executeDeps: input.executeDeps,
+        logger: input.logger,
+      });
+      if (achieved.ok) {
+        fresh = await refreshAction(prisma, input);
+        return {
+          ok: true,
+          command: ACTION_COMMAND.ACHIEVE_OUTCOME,
+          reason: null,
+          result: achieved,
+          reply: achieved.reply ?? reply,
+          action: fresh ?? input.action,
+        };
+      }
+    }
+  }
+
   if (stepStart.ok && stepStart.stepRunId) {
     const startedStep = findStep(fresh ?? input.action, stepStart.stepId);
     if (startedStep?.mode === "assist") {
@@ -959,10 +913,10 @@ async function runGoBack(prisma, input) {
 
 /** @param {any} prisma @param {any} input */
 async function runGoToStep(prisma, input) {
-  const steps = [
+  const steps = uniqueStepsById([
     ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
     ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
-  ];
+  ]);
   let targetStepId = input.params?.stepId ?? null;
   if (!targetStepId && input.params?.targetHint) {
     const resolved = resolveStepTargetOrClarify(steps, input.params.targetHint);
@@ -1662,16 +1616,21 @@ async function persistActionPlan(prisma, input, patch) {
 
 /** @param {any} action @param {Record<string, number>} patch @param {any} changeSet */
 function buildReviseReply(action, patch, changeSet) {
-  const bits = [];
-  if (patch.markdownPercent != null) bits.push(`markdown to ${patch.markdownPercent}%`);
-  if (patch.coverDays != null) bits.push(`cover to ${patch.coverDays} days`);
-  if (patch.maxProducts != null) bits.push(`scope to the top ${patch.maxProducts} products`);
-  const summary = bits.length ? `Updated ${bits.join(" and ")}.` : "Updated the plan.";
+  const summary = describePlanRevision(action, patch);
   const restock = isRestockAction(action)
-    ? " I’ll recalculate recommended quantities from that cover."
+    ? " I'll recalculate recommended quantities from that cover."
     : "";
   const table = changeSet?.ok ? `\n\n${formatChangeSetReply(changeSet.changeSet)}` : "";
   return `${summary}${restock}${table}`;
+}
+
+/** @param {string | null | undefined} capabilityRef */
+function capabilityRefToOutcome(capabilityRef) {
+  const ref = String(capabilityRef ?? "");
+  if (ref.includes("supplier")) return "supplier_draft";
+  if (ref.includes("replenishment") || ref.includes("proposal")) return "replenishment_proposal";
+  if (ref.includes("inventory")) return "inventory_review";
+  return null;
 }
 
 /** @param {any} action @param {any} stepStart */
@@ -1734,6 +1693,28 @@ function buildStartReply(action, stepStart) {
   return "I couldn’t start that step just now.";
 }
 
+/** @param {any[]} steps */
+function uniqueStepsById(steps) {
+  const seen = new Set();
+  return steps.filter((step) => {
+    const id = String(step?.id ?? "");
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+/** @param {string} hint @param {any} constraint */
+function productHintMatchesConstraint(hint, constraint) {
+  const wanted = normalizeMatch(hint);
+  if (!wanted) return false;
+  const title = normalizeMatch(
+    constraint?.params?.title ?? String(constraint?.label ?? "").replace(/^exclude\s+/i, ""),
+  );
+  if (!title) return false;
+  return title === wanted || title.includes(wanted) || wanted.includes(title);
+}
+
 /** @param {any} action @param {any} stepId */
 function findStep(action, stepId) {
   const steps = [
@@ -1784,106 +1765,6 @@ export function isExplicitGeneralStoreQuestion(message) {
   return true;
 }
 
-/** @param {string} text */
-function isCreateChangeSetAsk(text) {
-  return (
-    /\bshow me exactly\b/i.test(text) ||
-    /\bexact(?:ly)? (?:what you(?:'ll| will) change|changes)\b/i.test(text) ||
-    /\bchange ?set\b/i.test(text) ||
-    /\bpreview (?:the )?(?:changes|markdowns?)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isProposalAsk(text) {
-  return (
-    /\bshow me what you(?:'re| are) proposing\b/i.test(text) ||
-    /\bwhat are (?:we|you) proposing\b/i.test(text) ||
-    /\bwhat(?:'s| is) (?:the |your )?(?:current )?(?:proposal|replenishment proposal|replenishment plan)\b/i.test(text) ||
-    /\b(show me|what(?:'s| is)) (?:the |your )?(?:current )?(?:proposal|proposing|recommend(?:ation|ed)?(?: order quantities)?)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isCurrentProposalAsk(text) {
-  return /\bwhat(?:'s| is) the current proposal\b/i.test(text);
-}
-
-/** @param {string} text */
-function isExactActionStateAsk(text) {
-  return (
-    /\bremind me exactly\b/i.test(text) ||
-    /\bexactly what we(?:'re| are) (?:doing|replenishing|proposing)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isActionStateAsk(text) {
-  return (
-    /\bwhat are we doing\b/i.test(text) ||
-    /\bwhat(?:'s| is) this action\b/i.test(text) ||
-    /\bwhat(?:'s| is) the (?:current )?(?:action|plan)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isNextStepAsk(text) {
-  return (
-    /\bwhat happens next\b/i.test(text) ||
-    /\bwhat(?:'s| is) next\b/i.test(text) ||
-    /\bwhat do we do next\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isConstraintsAsk(text) {
-  return (
-    /\bwhat constraints\b/i.test(text) ||
-    /\bwhich constraints\b/i.test(text) ||
-    /\bwhat (?:rules|exclusions) (?:have i|did i)\b/i.test(text) ||
-    /\bwhat (?:have i|did i) exclud(?:e|ed)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isExecutionReportAsk(text) {
-  return (
-    /\bwhat (?:did you|have you) (?:actually )?(?:change|write|do)\b/i.test(text) ||
-    /\bwhat changed\b/i.test(text) ||
-    /\bexecution (?:result|run)\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isInspectScopeAsk(text) {
-  return (
-    /\bwhich products (?:does|do) that leave\b/i.test(text) ||
-    /\bwhat(?:'s| is) (?:in scope|left)\b/i.test(text) ||
-    /\bwhat are we (?:replenishing|restocking|reordering|ordering)\b/i.test(text) ||
-    /\bwhat cover (?:period|days) are we using\b/i.test(text) ||
-    /\bwhat will you change\b/i.test(text)
-  );
-}
-
-/** @param {string} text */
-function isDeferCommand(text) {
-  return (
-    /\b(leave this|defer this|not right now|next month|later)\b/i.test(text) &&
-    !isPrimarilyQuestion(text)
-  );
-}
-
-/** @param {string} text */
-function isRemoveConstraintCommand(text) {
-  return /\b(remove|drop|clear) (that |the |this )?(constraint|exclusion|rule)\b/i.test(text);
-}
-
-/** @param {string} text */
-function parseRemoveConstraint(text) {
-  const kind = parseConstraintsFromMessage(text)[0]?.kind ?? null;
-  return { constraintKind: kind };
-}
-
 /** @param {{ ok: boolean; changeSet?: any }} result */
 function createdChangeSet(result) {
   return result.ok ? result.changeSet ?? null : null;
@@ -1919,104 +1800,6 @@ function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, any>} */ (value)
     : {};
-}
-
-/** @param {string} text */
-function parseAmbiguousBackNavigation(text) {
-  if (!/\b(?:go back|return|revisit)\b/i.test(text)) return null;
-  if (!/\bquantit/i.test(text)) return null;
-  return {
-    intent: ACTION_COMMAND.GO_TO_STEP,
-    question:
-      "Do you want to revisit how I calculated the quantities, or the final replenishment proposal?",
-    candidates: [
-      { stepId: null, label: "how quantities are calculated", hint: "cover calculation inventory review" },
-      { stepId: null, label: "final replenishment proposal", hint: "proposal quantities" },
-    ],
-  };
-}
-
-/**
- * @param {string} text
- * @param {{ intent?: string; candidates?: { stepId?: string | null; label?: string; hint?: string }[] }} pending
- */
-function resolvePendingNavigation(text, pending) {
-  const normalized = normalizeChatText(text);
-  if (!normalized || !Array.isArray(pending.candidates)) return null;
-
-  if (
-    /\bhow they(?:'re| are) calculated\b/i.test(normalized) ||
-    /\bchange how\b/i.test(normalized) ||
-    /\bcalculation|assumptions\b/i.test(normalized)
-  ) {
-    const calc =
-      pending.candidates.find((candidate) =>
-        /calculat|assumption|inventory|cover/.test(
-          String(candidate.hint ?? candidate.label ?? "").toLowerCase(),
-        ),
-      ) ?? pending.candidates[0];
-    return {
-      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-      params: { targetHint: calc?.hint ?? calc?.label ?? "inventory review cover" },
-    };
-  }
-
-  if (/\bproposal\b/i.test(normalized)) {
-    const proposal =
-      pending.candidates.find((candidate) =>
-        /proposal/.test(String(candidate.hint ?? candidate.label ?? "").toLowerCase()),
-      ) ?? pending.candidates[1];
-    if (proposal) {
-      return {
-        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-        params: { targetHint: proposal.hint ?? proposal.label ?? "" },
-      };
-    }
-  }
-
-  for (const candidate of pending.candidates) {
-    const label = String(candidate.label ?? "").toLowerCase();
-    const hint = String(candidate.hint ?? candidate.label ?? "").toLowerCase();
-    if (
-      normalized.includes(label) ||
-      label.split(/\s+/).some((word) => word.length > 4 && normalized.includes(word)) ||
-      /\bcalculated|calculation|assumptions\b/i.test(normalized) && /calculat|assumption|inventory|cover/.test(hint)
-    ) {
-      return {
-        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-        params: {
-          targetHint: candidate.hint ?? candidate.label ?? "",
-          stepId: candidate.stepId ?? null,
-        },
-      };
-    }
-    if (/\bproposal\b/i.test(normalized) && /proposal/.test(hint)) {
-      return {
-        type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-        params: {
-          targetHint: candidate.hint ?? candidate.label ?? "",
-          stepId: candidate.stepId ?? null,
-        },
-      };
-    }
-  }
-
-  if (/\b(?:first|1|one|calculation|calculated|assumptions)\b/i.test(normalized)) {
-    const first = pending.candidates[0];
-    return {
-      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-      params: { targetHint: first?.hint ?? first?.label ?? "" },
-    };
-  }
-  if (/\b(?:second|2|proposal|final)\b/i.test(normalized) && pending.candidates[1]) {
-    return {
-      type: pending.intent ?? ACTION_COMMAND.GO_TO_STEP,
-      params: {
-        targetHint: pending.candidates[1].hint ?? pending.candidates[1].label ?? "",
-      },
-    };
-  }
-  return null;
 }
 
 /** @param {any} prisma @param {any} input @param {any} pending */

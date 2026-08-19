@@ -7,11 +7,8 @@
  * Application code in action-command validates and executes; the model never
  * writes to Shopify, flips workflow status, or bypasses approval gates.
  *
- * Phrase matchers in plan-chat / action-command are not the product semantic
- * engine. They remain only as:
- * - button / explicit-command entry points
- * - a tiny LLM-down read-only fallback
- * - Stage B entity/step resolution helpers
+ * Explicit UI commands land in action-command. Merchant natural language is
+ * handled only by the LLM Action Agent — no regex or interpreter fallbacks.
  */
 
 import { Type } from "@google/genai";
@@ -19,12 +16,11 @@ import { logger as baseLogger } from "../observability/logger.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
 import {
   ACTION_COMMAND,
-  executeActionCommand,
   executeActionPlan,
   isExplicitGeneralStoreQuestion,
   isMutationCommand,
 } from "./action-command.server.js";
-import { isActionStepStartCommand } from "./action-step-lifecycle.server.js";
+import { isPrimarilyQuestion } from "./action-step-lifecycle.server.js";
 import {
   listActionConstraints,
   normalizeChatText,
@@ -37,13 +33,16 @@ import {
   isAdvanceStepCommand,
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
+import { runActionAgent, ACTION_AGENT_VERSION, primaryCommandFromToolTrace } from "./action-agent.server.js";
+import { buildAgentStateContext, resolveActionState } from "./action-state.server.js";
+import { planSchemaForAgent } from "./action-plan-schema.server.js";
 
 const log = baseLogger.child({ component: "action-interpreter" });
 
 export const ACTION_INTERPRETER_VERSION = "1";
 
 export const LLM_DOWN_INTERPRETER_REPLY =
-  "I couldn't interpret that safely right now. You can use the step controls, or try again.";
+  "I couldn't process that right now. Try again in a moment, or use the step controls above.";
 
 /** Commands the model may propose. Unknown values are rejected in Stage B. */
 export const ACTION_INTERPRETER_COMMANDS = Object.freeze([
@@ -67,6 +66,7 @@ export const ACTION_INTERPRETER_COMMANDS = Object.freeze([
   ACTION_COMMAND.APPLY_CHANGESET,
   ACTION_COMMAND.CONFIRM_MERCHANT_STEP,
   ACTION_COMMAND.NEEDS_CLARIFICATION,
+  ACTION_COMMAND.ACHIEVE_OUTCOME,
   "INSPECT_ACTION",
   "RETRY_STEP",
   "REOPEN_STEP",
@@ -79,13 +79,6 @@ const INTERPRETER_ALIASES = Object.freeze(/** @type {Record<string, string>} */ 
   REOPEN_STEP: ACTION_COMMAND.GO_TO_STEP,
   CREATE_ARTIFACT: ACTION_COMMAND.CREATE_CHANGESET,
 }));
-
-const READ_ONLY_COMMANDS = new Set([
-  ACTION_COMMAND.ANSWER,
-  ACTION_COMMAND.INSPECT_SCOPE,
-  ACTION_COMMAND.INSPECT_PROPOSAL,
-  ACTION_COMMAND.REPORT_EXECUTION,
-]);
 
 const OPERATION_ARGUMENT_SCHEMA = {
   type: Type.OBJECT,
@@ -112,6 +105,7 @@ const OPERATION_ARGUMENT_SCHEMA = {
     scopeIntent: { type: Type.STRING, nullable: true },
     explicitApply: { type: Type.BOOLEAN, nullable: true },
     doNotMutate: { type: Type.BOOLEAN, nullable: true },
+    outcome: { type: Type.STRING, nullable: true },
   },
 };
 
@@ -172,9 +166,10 @@ const INTERPRETER_SYSTEM_PROMPT = [
   "- 'Put Picnic back in' / 'Add Picnic again' → ADD_CONSTRAINT scopeIntent=include_again or REMOVE_CONSTRAINT.",
   "- 'Exclude archived products' → ADD_CONSTRAINT constraintKind=exclude_archived.",
   "",
-  "Navigation:",
-  "- Move on / continue / proceed / we've finished this part → ADVANCE_STEP when they want the current step completed and the next unlocked. If the current step has not started, the runtime will not skip it; it will tell them to start.",
-  "- Start the ready step / build it / go ahead and build it → START_STEP.",
+  "Navigation (legacy — prefer achieve_outcome for desired results):",
+  "- Move on / continue / proceed → ADVANCE_STEP only when explicitly advancing the current step.",
+  "- Start the ready step / build it → START_STEP, or ACHIEVE_OUTCOME for proposal/supplier draft outcomes.",
+  "- Draft supplier message / build proposal / show replenishment → ACHIEVE_OUTCOME with outcome supplier_draft or replenishment_proposal. Do NOT use START_STEP when the merchant wants a downstream result.",
   "- Go back / previous step → GO_BACK (set steps for 'two steps').",
   "- Go back to the inventory review / supplier bit / proposal → GO_TO_STEP with targetHint.",
   "- Skip this / I'll handle the supplier myself → SKIP_STEP.",
@@ -205,9 +200,22 @@ const INTERPRETER_SYSTEM_PROMPT = [
  *   recentMessages?: Array<{ role?: string; content?: string }>;
  *   executeDeps?: any;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
- *   classifyFallback?: ((message: string, context?: any) => { type: string; params?: Record<string, any> }) | null;
  * }} input
  */
+function agentUnavailableResponse() {
+  return {
+    ok: false,
+    routing: "focused",
+    reply: LLM_DOWN_INTERPRETER_REPLY,
+    command: {
+      type: ACTION_COMMAND.ANSWER,
+      ok: false,
+      reason: "agent_unavailable",
+    },
+    unavailable: true,
+  };
+}
+
 export async function handleFocusedActionMessage(prisma, input) {
   const logger = input.logger ?? log;
   const message = normalizeChatText(input.message);
@@ -223,176 +231,115 @@ export async function handleFocusedActionMessage(prisma, input) {
 
   const pending = snapshot.pendingClarification;
   const followUp = pending ? resolveFollowUpClarification(message, pending, snapshot) : null;
-  const interpretation = followUp
-    ? followUp
-    : await interpretActionMessage({
-        provider: input.provider ?? null,
-        message,
-        snapshot,
-        recentMessages: input.recentMessages ?? [],
-        logger,
-      });
 
-  logger.info("action interpreter", {
-    merchantMessageId: input.merchantMessageId ?? null,
-    conversationId: input.conversationId ?? null,
-    focusedActionId: input.actionId,
-    interpreterModel: interpretation.model ?? null,
-    interpreterVersion: ACTION_INTERPRETER_VERSION,
-    interpretedOperations: (interpretation.rawOperations ?? interpretation.operations).map(summarizeOp),
-    confidence: interpretation.confidence ?? null,
-    requiresClarification: interpretation.requiresClarification === true,
-    clarificationState: pending ? "pending" : "clear",
-    routing: interpretation.routing,
-    unavailable: interpretation.unavailable === true,
-    resolvedActionVersion: snapshot.action?.updatedAt ?? null,
-    planVersion: snapshot.plan?.version ?? null,
-    constraintVersion: snapshot.constraintVersion ?? null,
-    currentStep: snapshot.currentStep?.id ?? null,
-  });
-
-  if (interpretation.unavailable) {
-    return handleInterpreterUnavailable(prisma, input, snapshot, message);
-  }
-
-  if (
-    interpretation.routing !== "general_store" &&
-    isExplicitGeneralStoreQuestion(message) &&
-    (interpretation.operations ?? []).every(
-      (op) => op.command === ACTION_COMMAND.ANSWER && !op.params?.simulate,
-    )
-  ) {
-    interpretation.routing = "general_store";
-  }
-
-  if (interpretation.routing === "general_store") {
-    return {
-      ok: true,
-      routing: "general_store",
-      reply: "",
-      command: { type: ACTION_COMMAND.ANSWER, ok: true, reason: "general_store" },
-      interpretation,
-    };
-  }
-
-  if (interpretation.requiresClarification) {
-    await persistPendingInterpretation(prisma, snapshot.action, {
-      kind: "interpretation",
-      version: ACTION_INTERPRETER_VERSION,
-      question: interpretation.clarificationQuestion,
-      originalMessage: message,
-      pendingOperations: interpretation.operations,
-      candidates: interpretation.candidates ?? pending?.candidates ?? [],
-      ambiguities: interpretation.ambiguities ?? [],
+  if (followUp) {
+    const executed = await executeActionPlan(prisma, {
+      operations: followUp.operations,
+      atomic: followUp.atomic === true,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      actor: input.actor ?? input.merchantId,
+      conversationId: input.conversationId ?? null,
+      session: input.session ?? null,
+      executeDeps: input.executeDeps,
+      message,
+      logger,
     });
+    if (!followUp.requiresClarification) {
+      await clearPendingInterpretation(prisma, snapshot.action);
+    }
     return {
-      ok: true,
+      ok: executed.ok,
       routing: "focused",
-      reply: interpretation.clarificationQuestion || "Which did you mean?",
+      reply: executed.reply,
       command: {
-        type: ACTION_COMMAND.NEEDS_CLARIFICATION,
-        ok: true,
-        reason: null,
-        interpretation,
-      },
-      interpretation,
-    };
-  }
-
-  const resolved = resolveInterpretedOperations(interpretation.operations, snapshot);
-  resolved.operations = coerceAdvanceIntent(message, resolved.operations);
-  if (resolved.requiresClarification && resolved.operations.length === 0) {
-    await persistPendingInterpretation(prisma, snapshot.action, {
-      kind: "interpretation",
-      version: ACTION_INTERPRETER_VERSION,
-      question: resolved.clarificationQuestion,
-      originalMessage: message,
-      pendingOperations: resolved.operations,
-      candidates: resolved.candidates ?? [],
-      ambiguities: resolved.ambiguities ?? [],
-    });
-    return {
-      ok: true,
-      routing: "focused",
-      reply: resolved.clarificationQuestion || "Which did you mean?",
-      command: {
-        type: ACTION_COMMAND.NEEDS_CLARIFICATION,
-        ok: true,
-        reason: null,
-        interpretation,
-      },
-      interpretation,
-    };
-  }
-
-  const executed = await executeActionPlan(prisma, {
-    operations: resolved.operations,
-    atomic: interpretation.atomic === true,
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    actionId: input.actionId,
-    actor: input.actor ?? input.merchantId,
-    conversationId: input.conversationId ?? null,
-    session: input.session ?? null,
-    executeDeps: input.executeDeps,
-    message,
-    logger,
-  });
-
-  if (resolved.requiresClarification) {
-    await persistPendingInterpretation(prisma, snapshot.action, {
-      kind: "interpretation",
-      version: ACTION_INTERPRETER_VERSION,
-      question: resolved.clarificationQuestion,
-      originalMessage: message,
-      pendingOperations: [],
-      candidates: resolved.candidates ?? [],
-      ambiguities: resolved.ambiguities ?? [],
-    });
-    return {
-      ok: true,
-      routing: "focused",
-      reply: [executed.reply, resolved.clarificationQuestion].filter(Boolean).join(" "),
-      command: {
-        type: ACTION_COMMAND.NEEDS_CLARIFICATION,
-        ok: true,
-        reason: null,
+        type: executed.command,
+        ok: executed.ok,
+        reason: executed.reason ?? null,
         operations: (executed.results ?? []).map((/** @type {any} */ row) => row.command),
-        interpretation,
       },
-      interpretation,
       result: executed,
     };
   }
 
-  await clearPendingInterpretation(prisma, snapshot.action);
+  if (!input.provider?.enabled) {
+    return agentUnavailableResponse();
+  }
 
-  logger.info("action interpreter executed", {
-    merchantMessageId: input.merchantMessageId ?? null,
-    conversationId: input.conversationId ?? null,
-    focusedActionId: input.actionId,
-    validatedOperations: (executed.results ?? []).filter((/** @type {any} */ row) => row.ok).map((/** @type {any} */ row) => row.command),
-    rejectedOperations: (executed.results ?? []).filter((/** @type {any} */ row) => !row.ok).map((/** @type {any} */ row) => ({
-      command: row.command,
-      reason: row.reason ?? null,
-    })),
-    executionOk: executed.ok,
-  });
+  const agentResult = await runActionAgent(prisma, {
+      message,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      conversationId: input.conversationId ?? null,
+      actor: input.actor ?? input.merchantId,
+      session: input.session ?? null,
+      executeDeps: input.executeDeps,
+      provider: input.provider,
+      recentMessages: input.recentMessages ?? [],
+      logger,
+    });
 
-  return {
-    ok: executed.ok,
-    routing: "focused",
-    reply: executed.reply,
-    command: {
-      type: executed.command,
-      ok: executed.ok,
-      reason: executed.reason ?? null,
-      operations: (executed.results ?? []).map((/** @type {any} */ row) => row.command),
-      interpretation,
-    },
-    interpretation,
-    result: executed,
-  };
+    if (!agentResult.unavailable) {
+      logger.info("action agent completed", {
+        merchantMessageId: input.merchantMessageId ?? null,
+        conversationId: input.conversationId ?? null,
+        focusedActionId: input.actionId,
+        agentVersion: ACTION_AGENT_VERSION,
+        routing: agentResult.routing,
+        toolTrace: (agentResult.toolTrace ?? []).map((row) => row.tool),
+        requiresClarification: agentResult.requiresClarification === true,
+      });
+
+      if (agentResult.routing === "general_store") {
+        return {
+          ok: true,
+          routing: "general_store",
+          reply: "",
+          command: { type: ACTION_COMMAND.ANSWER, ok: true, reason: "general_store" },
+        };
+      }
+
+      if (agentResult.requiresClarification) {
+        await persistPendingInterpretation(prisma, snapshot.action, {
+          kind: "interpretation",
+          version: ACTION_AGENT_VERSION,
+          question: agentResult.reply,
+          originalMessage: message,
+          pendingOperations: [],
+          candidates: [],
+          ambiguities: [],
+        });
+        return {
+          ok: true,
+          routing: "focused",
+          reply: agentResult.reply,
+          command: {
+            type: ACTION_COMMAND.NEEDS_CLARIFICATION,
+            ok: true,
+            reason: null,
+          },
+        };
+      }
+
+      const lastTool = agentResult.toolTrace?.[agentResult.toolTrace.length - 1];
+      return {
+        ok: agentResult.ok !== false,
+        routing: "focused",
+        reply: agentResult.reply,
+        result: agentResult.result ?? lastTool?.result ?? null,
+        command: {
+          type: primaryCommandFromToolTrace(agentResult.toolTrace ?? []) ?? ACTION_COMMAND.ANSWER,
+          ok: agentResult.ok !== false,
+          reason: null,
+          toolTrace: agentResult.toolTrace ?? [],
+        },
+        agentResult,
+      };
+  }
+
+  return agentUnavailableResponse();
 }
 
 /**
@@ -598,7 +545,7 @@ export async function buildFocusedInterpreterSnapshot(prisma, input) {
     actionId: input.actionId,
   });
   if (!action) return null;
-  const [resolved, constraints, changeSet] = await Promise.all([
+  const [resolved, constraints, changeSet, actionState] = await Promise.all([
     resolveActionContext(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -615,6 +562,7 @@ export async function buildFocusedInterpreterSnapshot(prisma, input) {
       shopId: input.shopId,
       actionId: input.actionId,
     }),
+    resolveActionState(prisma, input),
   ]);
   const steps = uniqueSteps([
     ...(Array.isArray(action.workflow?.steps) ? action.workflow.steps : []),
@@ -641,17 +589,23 @@ export async function buildFocusedInterpreterSnapshot(prisma, input) {
     excluded: Array.isArray(resolved?.scope?.excluded) ? resolved.scope.excluded : [],
     currentChangeSet: changeSet ?? null,
     pendingClarification: progress.pendingInterpretation ?? progress.pendingNavigation ?? null,
+    actionState,
   };
 }
 
 /** @param {any} snapshot */
 export function buildInterpreterModelContext(snapshot) {
   const planValues = snapshot?.plan?.values ?? jsonObject(snapshot?.action?.plan);
+  const agentContext = snapshot?.actionState
+    ? buildAgentStateContext(snapshot.actionState)
+    : null;
   return {
-    title: snapshot?.action?.title ?? null,
-    actionType: snapshot?.action?.actionType ?? null,
-    status: snapshot?.action?.status ?? null,
+    ...(agentContext ?? {}),
+    title: snapshot?.action?.title ?? agentContext?.action?.title ?? null,
+    actionType: snapshot?.action?.actionType ?? agentContext?.action?.actionType ?? null,
+    status: snapshot?.action?.status ?? agentContext?.lifecycle ?? null,
     plan: planValues,
+    planSchema: planSchemaForAgent(snapshot?.action ?? {}),
     currentStep: snapshot?.currentStep
       ? {
           id: snapshot.currentStep.id ?? null,
@@ -694,54 +648,6 @@ export function buildInterpreterModelContext(snapshot) {
   };
 }
 
-/** @param {any} prisma @param {any} input @param {any} snapshot @param {string} message */
-async function handleInterpreterUnavailable(prisma, input, snapshot, message) {
-  const fallback = input.classifyFallback
-    ? input.classifyFallback(message, {
-        hasReadyChangeSet: Boolean(snapshot.currentChangeSet),
-        actionStatus: snapshot.action?.status ?? null,
-        pendingNavigation: snapshot.pendingClarification,
-      })
-    : null;
-  const type = fallback?.type ?? ACTION_COMMAND.ANSWER;
-  if (fallback && READ_ONLY_COMMANDS.has(type)) {
-    const executed = await executeActionCommand(prisma, {
-      command: type,
-      params: fallback.params ?? {},
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      actionId: input.actionId,
-      actor: input.actor ?? input.merchantId,
-      conversationId: input.conversationId ?? null,
-      message,
-      logger: input.logger ?? log,
-    });
-    return {
-      ok: executed.ok,
-      routing: "focused",
-      reply: executed.reply,
-      command: {
-        type: executed.command,
-        ok: executed.ok,
-        reason: executed.reason ?? "llm_down_readonly_fallback",
-      },
-      unavailable: true,
-    };
-  }
-  return {
-    ok: true,
-    routing: "focused",
-    reply: LLM_DOWN_INTERPRETER_REPLY,
-    command: {
-      type: ACTION_COMMAND.ANSWER,
-      ok: true,
-      reason: "interpreter_unavailable",
-    },
-    unavailable: true,
-  };
-}
-
-/** @param {any} operation */
 function parseInterpretedOperation(operation) {
   if (!operation || typeof operation !== "object") return null;
   const rawCommand = String(operation.command ?? operation.type ?? "").trim().toUpperCase();
@@ -774,6 +680,7 @@ function parseInterpretedOperation(operation) {
       scopeIntent: stringOrNull(args.scopeIntent ?? args.intent),
       explicitApply: args.explicitApply === true,
       doNotMutate: args.doNotMutate === true,
+      outcome: stringOrNull(args.outcome),
     },
   };
 }
@@ -1090,9 +997,15 @@ function matchClarificationCandidate(text, candidates) {
     return (
       candidates.find((candidate) =>
         /calculat|assumption|inventory|cover/.test(
-          String(candidate.hint ?? candidate.label ?? "").toLowerCase(),
+          String(
+            candidate.hint ?? candidate.label ?? candidate.stepId ?? "",
+          ).toLowerCase(),
         ),
-      ) ?? candidates[0]
+      ) ??
+      candidates.find((candidate) =>
+        /inventory|review|cover|calculat/.test(String(candidate.label ?? "").toLowerCase()),
+      ) ??
+      candidates[0]
     );
   }
   if (/\bproposal|final\b/.test(text)) {
@@ -1255,5 +1168,6 @@ function stringOrNull(value) {
   const text = typeof value === "string" ? value.trim() : "";
   return text || null;
 }
+
 
 export { isExplicitGeneralStoreQuestion };

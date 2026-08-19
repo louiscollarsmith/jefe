@@ -177,6 +177,9 @@ type WorkflowStepDisplay =
       attention?: Record<string, unknown> | null;
       startedAt?: string | null;
       completedAt?: string | null;
+      workState?: string | null;
+      workStale?: boolean | null;
+      blockers?: Array<{ type?: string; reason?: string | null }> | null;
       done?: boolean | null;
     };
 
@@ -200,6 +203,10 @@ type MerchantActionView = {
   currentStep?: WorkflowStepDisplay | null;
   workflow?: { steps?: WorkflowStepDisplay[] | null } | null;
   displaySteps?: WorkflowStepDisplay[];
+  workProjection?: {
+    work?: Array<{ step?: { id?: string | null }; state?: string; stale?: boolean }>;
+    nextUsefulWork?: { step?: { id?: string | null }; state?: string } | null;
+  } | null;
   successText?: string | null;
   baselineSignal?: string | null;
   currentSignal?: string | null;
@@ -1763,6 +1770,7 @@ function FocusedConversation({
           {focusedAction ? (
             <SuggestedPromptRow
               action={focusedAction}
+              conversationId={activeConversation.id}
               disabled={isThinking}
               onPick={setComposerMessage}
             />
@@ -2163,6 +2171,19 @@ function FocusedActionLifecyclePanel({
         {currentStep.statusReason ? (
           <p style={currentStepReasonStyle}>{currentStep.statusReason}</p>
         ) : null}
+        {currentStep.workStale ? (
+          <p style={currentStepReasonStyle}>
+            Earlier results are out of date — I'll re-run this when you continue.
+          </p>
+        ) : null}
+        {Array.isArray(currentStep.blockers) && currentStep.blockers.length > 0 ? (
+          <p style={currentStepReasonStyle}>
+            {currentStep.blockers
+              .map((blocker) => blocker.reason)
+              .filter(Boolean)
+              .join(" ")}
+          </p>
+        ) : null}
         {attention ? (
           <p style={currentStepAttentionStyle}>
             {attentionDetail(attention)}
@@ -2325,10 +2346,19 @@ function completedStepCount(steps: WorkflowStepDisplay[]) {
 }
 
 function currentWorkflowStep(action: MerchantActionView) {
+  const projected = action.workProjection?.nextUsefulWork?.step;
+  if (projected?.id) {
+    const steps = actionSteps(action);
+    const match = steps.find(
+      (step) => typeof step !== "string" && step.id === projected.id,
+    );
+    if (match && typeof match !== "string") return match;
+  }
   const steps = actionSteps(action);
   return (
     steps.find((step) => {
       if (typeof step === "string") return false;
+      if (step.workState === "available" || step.workState === "needs_updating") return true;
       return ["ready", "running", "needs_merchant", "needs_attention"].includes(
         String(step.status ?? ""),
       );
@@ -2369,9 +2399,11 @@ function stepCta(step: Exclude<WorkflowStepDisplay, string>) {
 
 function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   if (!step || typeof step === "string") return false;
+  const workState = String(step.workState ?? "");
+  if (workState === "available" || workState === "needs_updating") return true;
   const status = String(step.status ?? "");
   const mode = String(step.mode ?? "");
-  if (status === "ready") return true;
+  if (status === "ready" || status === "needs_updating") return true;
   return status === "needs_merchant" && mode === "assist";
 }
 
@@ -2801,30 +2833,106 @@ function FocusedMessageRow({
 
 function SuggestedPromptRow({
   action,
+  conversationId,
   disabled,
   onPick,
 }: {
   action: MerchantActionView;
+  conversationId?: string | null;
   disabled: boolean;
   onPick: (prompt: string) => void;
 }) {
   const prompts = suggestedPromptsForAction(action);
+  const current = action.currentStep ?? currentWorkflowStep(action);
+  const stepId =
+    current && typeof current !== "string" ? String(current.id ?? "") : "";
   if (prompts.length === 0) return null;
   return (
     <div style={suggestedPromptRowStyle} aria-label="Suggested prompts">
-      {prompts.map((prompt) => (
-        <button
-          key={prompt}
-          type="button"
-          style={suggestedPromptButtonStyle}
-          onClick={() => onPick(prompt)}
-          disabled={disabled}
-        >
-          {prompt}
-        </button>
-      ))}
+      {prompts.map((prompt) => {
+        const intent = suggestedPromptIntent(prompt);
+        if (intent) {
+          return (
+            <Form key={prompt} method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
+              <input type="hidden" name="intent" value={intent} />
+              <input type="hidden" name="actionId" value={action.id} />
+              {conversationId ? (
+                <input type="hidden" name="conversationId" value={conversationId} />
+              ) : null}
+              {stepId ? <input type="hidden" name="stepId" value={stepId} /> : null}
+              <button type="submit" style={suggestedPromptButtonStyle} disabled={disabled}>
+                {prompt}
+              </button>
+            </Form>
+          );
+        }
+        return (
+          <button
+            key={prompt}
+            type="button"
+            style={suggestedPromptButtonStyle}
+            onClick={() => onPick(prompt)}
+            disabled={disabled}
+          >
+            {prompt}
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+function suggestedPromptIntent(prompt: string) {
+  switch (prompt) {
+    case "Accept this plan":
+      return "action.accept_plan";
+    case "Start this":
+      return "action.step.start";
+    case "Stop this":
+      return "action.step.stop";
+    case "That's done":
+      return "action.step.complete";
+    default:
+      return null;
+  }
+}
+
+function suggestedPromptsForAction(action: MerchantActionView) {
+  const current = action.currentStep ?? currentWorkflowStep(action);
+  const workState =
+    current && typeof current !== "string" ? String(current.workState ?? "") : "";
+  const currentStatus =
+    current && typeof current !== "string" ? String(current.status ?? "") : "";
+  if (action.status === "proposed") {
+    return ["Accept this plan", "What will you change?", "Don't do this"];
+  }
+  if (workState === "running" || currentStatus === "running") {
+    return ["How's it going?", "Stop this"];
+  }
+  if (workState === "needs_input" || currentStatus === "needs_merchant") {
+    return ["That's done", "What do you need from me?"];
+  }
+  if (
+    workState === "available" ||
+    workState === "needs_updating" ||
+    currentStatus === "ready"
+  ) {
+    return ["Start this", "What will you change?", "How's it going?"];
+  }
+  if (
+    workState === "needs_attention" ||
+    currentStatus === "needs_attention" ||
+    action.status === "needs_attention"
+  ) {
+    return ["Try again", "What needs attention?"];
+  }
+  if (action.status === "in_progress") {
+    return ["How's it going?", "Start this", "Stop this"];
+  }
+  if (action.status === "completed") {
+    return ["What changed?", "What did it achieve?"];
+  }
+  return ["Show me the plan"];
 }
 
 function FocusedActionDecisionRow({
@@ -3143,33 +3251,6 @@ function currentStepOwnerLabel(step: Exclude<WorkflowStepDisplay, string>) {
   }
 }
 
-function suggestedPromptsForAction(action: MerchantActionView) {
-  const current = action.currentStep ?? currentWorkflowStep(action);
-  const currentStatus =
-    current && typeof current !== "string" ? String(current.status ?? "") : "";
-  if (action.status === "proposed") {
-    return ["Accept this plan", "What will you change?", "Don't do this"];
-  }
-  if (currentStatus === "running") {
-    return ["How's it going?", "Stop this"];
-  }
-  if (currentStatus === "needs_merchant") {
-    return ["That's done", "What do you need from me?"];
-  }
-  if (currentStatus === "ready" || action.status === "accepted") {
-    return ["Start this", "What will you change?", "How's it going?"];
-  }
-  if (currentStatus === "needs_attention" || action.status === "needs_attention") {
-    return ["Try again", "What needs attention?"];
-  }
-  if (action.status === "in_progress") {
-    return ["How's it going?", "Start this", "Stop this"];
-  }
-  if (action.status === "completed") {
-    return ["What changed?", "What did it achieve?"];
-  }
-  return ["Show me the plan"];
-}
 
 function merchantActionFromPrimaryMove(
   move: PrimaryMove,
