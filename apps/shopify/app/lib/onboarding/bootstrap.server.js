@@ -33,6 +33,14 @@ import { proposeActionFromIntent } from "../actions/action-resolution.server.js"
 import { ensureMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
 import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
 import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.server.js";
+import {
+  acquireProposalCreationLock,
+  checkProposedCreationAllowed,
+  PROPOSAL_CREATION_TRIGGERS,
+  repairDuplicateProposedActions,
+  shouldDeferAutonomousProposalCreation,
+  supersedeAllProposedRecommendations,
+} from "../merchant-plan/proposal-creation-invariant.server.js";
 import { BOOTSTRAP_OUTPUT_SCHEMA, parseBootstrapOutput } from "./bootstrap-schema.server.js";
 import { buildBootstrapPrompt, buildBootstrapSystemPrompt } from "./bootstrap-prompt.server.js";
 import {
@@ -425,7 +433,10 @@ export async function generateBootstrapAlternative(prisma, input) {
   });
   const selected = buildEvidenceContracts(beliefs, scope).find((candidate) => candidate.key === contractKey);
   if (!selected) return { status: "no_longer_supported" };
-  const generated = await generateAndPersistBootstrapOpportunities(prisma, generationInput, {
+  const generated = await generateAndPersistBootstrapOpportunities(prisma, {
+    ...generationInput,
+    proposalTrigger: PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING,
+  }, {
     beliefs,
     contracts: [selected],
     scope,
@@ -903,6 +914,12 @@ function contract(key, beliefs, priority) {
 }
 
 async function generateAndPersistBootstrapOpportunities(prisma, input, prepared) {
+  await repairDuplicateProposedActions(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    logger: input.logger,
+  }).catch(() => ({ retained: 0, superseded: 0 }));
+
   const snapshotHash = hashJson({
     scope: prepared.scope,
     contracts: prepared.contracts,
@@ -1037,12 +1054,73 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
     return { status: "generation_failed", selectedContract: null, insightRunId: insightRun.id, planRunIds: [], recommendationIds: [] };
   }
 
+  const proposalTrigger =
+    input.proposalTrigger === PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING
+      ? PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING
+      : PROPOSAL_CREATION_TRIGGERS.BACKGROUND;
+  if (
+    proposalTrigger === "background" &&
+    (await shouldDeferAutonomousProposalCreation(prisma, input))
+  ) {
+    await prisma.merchantInsightRun.update({
+      where: { id: insightRun.id },
+      data: {
+        status: "completed",
+        completedAt: new Date(),
+        result: {
+          sourceMode: "bootstrap",
+          skipped: "deferred_initial_proposal_exists",
+          opportunityCount: 0,
+        },
+      },
+    });
+    input.logger?.info?.("Bootstrap proposal skipped — initial proposal already exists", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      insightRunId: insightRun.id,
+    });
+    return {
+      status: "deferred_initial_proposal_exists",
+      selectedContract: null,
+      insightRunId: insightRun.id,
+      planRunIds: [],
+      recommendationIds: [],
+    };
+  }
+
   const recommendationIds = [];
   const planRunIds = [];
   const actionCandidates = [];
+  let proposalGateReason = null;
   await prisma.$transaction(async (tx) => {
+    await acquireProposalCreationLock(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    });
+    const gate = await checkProposedCreationAllowed(tx, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      trigger: proposalTrigger,
+    });
+    if (!gate.allowed) {
+      if (proposalTrigger === "merchant_onboarding" && gate.reason === "proposed_exists") {
+        await supersedeAllProposedRecommendations(tx, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+        });
+        const retryGate = await checkProposedCreationAllowed(tx, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          trigger: proposalTrigger,
+        });
+        if (!retryGate.allowed) proposalGateReason = retryGate.reason;
+      } else {
+        proposalGateReason = gate.reason;
+      }
+    }
     await tx.merchantInsightFinding.deleteMany({ where: { runId: insightRun.id } });
     for (let index = 0; index < parsed.opportunities.length; index += 1) {
+      if (proposalGateReason) break;
       const opportunity = parsed.opportunities[index];
       const finding = await tx.merchantInsightFinding.create({
         data: {
@@ -1201,13 +1279,23 @@ async function generateAndPersistBootstrapOpportunities(prisma, input, prepared)
         completedAt: new Date(),
         result: {
           sourceMode: "bootstrap",
-          opportunityCount: parsed.opportunities.length,
+          opportunityCount: proposalGateReason ? 0 : parsed.opportunities.length,
+          skipped: proposalGateReason,
           durationMs: lastResult?.durationMs ?? null,
           usage: lastResult?.usage ?? null,
         },
       },
     });
   });
+  if (proposalGateReason) {
+    return {
+      status: proposalGateReason,
+      selectedContract: null,
+      insightRunId: insightRun.id,
+      planRunIds,
+      recommendationIds,
+    };
+  }
   for (const candidate of actionCandidates) {
     const proposal = await proposeActionFromIntent(prisma, {
       merchantId: input.merchantId,

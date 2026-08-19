@@ -11,6 +11,15 @@ frozen. The one part that touches stored data is the exception, called out below
 
 Owner: the app-home / Shape B lane (`daily-home.tsx`, `app._index.tsx`).
 
+## Not the same as merchant-plan recommendation generation
+
+**Proactive messages** (heads-ups, outcome reports, etc.) are separate from the
+merchant's **next-move proposals**. Plan proposals are generated only when the merchant
+clicks **Generate a proposal** / **Generate another proposal** in the Reading your store
+card (`home-proposal-generation.server.js`) — there is no background scheduler, hourly
+sweep, or terminal-state auto-generation. The ~5/day ceiling for those merchant-triggered
+generations lives on that home-screen flow, not on proactive message rendering.
+
 ## The floor: silence is allowed
 
 The failure mode is a merchant opening the app to a wall of Jefe talking to itself. The

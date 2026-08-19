@@ -37,14 +37,29 @@ import {
   buildMerchantPlanPrompt,
   buildMerchantPlanSystemPrompt,
 } from "./prompt.server.js";
+import {
+  isMerchantProposalTrigger,
+  persistProposedRecommendationIfAllowed,
+  resolveProposalTriggerForPlanRun,
+  resolveProposalTriggerForQueue,
+  shouldDeferAutonomousProposalCreation,
+} from "./proposal-creation-invariant.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; runAfter?: Date; resetAttempts?: boolean }} input
+ * @param {{ merchantId: string; shopId: string; runAfter?: Date; resetAttempts?: boolean; sourceMode?: string; proposalTrigger?: import("./proposal-creation-invariant.server.js").ProposalCreationTrigger }} input
  */
 export async function ensureMerchantPlanQueued(prisma, input) {
+  const proposalTrigger = resolveProposalTriggerForQueue(input);
+  if (
+    !isMerchantProposalTrigger(proposalTrigger) &&
+    (await shouldDeferAutonomousProposalCreation(prisma, input))
+  ) {
+    return { status: "deferred_initial_proposal_exists" };
+  }
+
   const prepared = await preparePlanRun(prisma, input);
   if (prepared.status !== "ready") return prepared;
   const run = prepared.run;
@@ -80,6 +95,7 @@ export async function ensureMerchantPlanQueued(prisma, input) {
       runId: run.id,
       snapshotHash: prepared.snapshot.snapshotHash,
       reason: "merchant_goals_ready",
+      proposalTrigger,
     },
   });
 
@@ -166,9 +182,8 @@ export async function getLatestMerchantPlan(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       status: PLAN_RUN_STATUS.completed,
-      // "proactive" runs are the same primary-move plan, generated on Jefe's own cadence
-      // rather than the merchant's — surface them on the home too.
-      sourceMode: { in: ["full", "proactive"] },
+      // "home" runs are merchant-triggered from the Reading your store card.
+      sourceMode: { in: ["full", "home"] },
     },
     include: recommendationInclude(),
     orderBy: { completedAt: "desc" },
@@ -178,7 +193,7 @@ export async function getLatestMerchantPlan(prisma, input) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; runId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; runId?: string | null; llmProvider?: import("../llm/provider.server.js").LlmProvider; logger?: Pick<Console, "info" | "warn" | "error">; proposalTrigger?: import("./proposal-creation-invariant.server.js").ProposalCreationTrigger }} input
  */
 export async function generateMerchantPlan(prisma, input) {
   const logger = input.logger ?? console;
@@ -189,6 +204,26 @@ export async function generateMerchantPlan(prisma, input) {
 
   const run = prepared.run;
   const snapshot = prepared.snapshot;
+  const proposalTrigger = resolveProposalTriggerForPlanRun(run, input);
+  if (
+    proposalTrigger === "background" &&
+    (await shouldDeferAutonomousProposalCreation(prisma, input))
+  ) {
+    await prisma.merchantPlanRun.update({
+      where: { id: run.id },
+      data: {
+        status: PLAN_RUN_STATUS.completed,
+        completedAt: new Date(),
+        result: { reason: "deferred_initial_proposal_exists" },
+      },
+    });
+    logger.info("Merchant Plan generation deferred — initial proposal already exists", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      runId: run.id,
+    });
+    return { status: "deferred_initial_proposal_exists", runId: run.id };
+  }
   if (!snapshot.hasGoals || snapshot.candidateCount < MIN_PLAN_BELIEFS) {
     await prisma.merchantPlanRun.update({
       where: { id: run.id },
@@ -252,106 +287,134 @@ export async function generateMerchantPlan(prisma, input) {
     });
     const recommendation = parsed.recommendation;
 
-    let persistedRecommendation = null;
-    await prisma.$transaction(async (tx) => {
-      persistedRecommendation = await tx.merchantPlanRecommendation.upsert({
-        where: { runId: run.id },
-        create: {
-          runId: run.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          title: recommendation.title,
-          summary: recommendation.summary,
-          primaryGoalId: recommendation.primaryGoalId,
-          supportingGoalIds: recommendation.supportingGoalIds,
-          whyThisAction: recommendation.whyThisAction,
-          whyNow: recommendation.whyNow,
-          startToday: recommendation.startToday,
-          successSignal: recommendation.successSignal,
-          expectedBenefit: recommendation.expectedBenefit,
-          supportingBeliefIds: recommendation.supportingBeliefIds,
-          supportingInsightIds: recommendation.supportingInsightIds,
-          confidence: recommendation.confidence,
-          assumption: recommendation.assumption,
-          caveat: recommendation.caveat,
-          reviewStatus: PLAN_REVIEW_STATUS.proposed,
-        },
-        update: {
-          title: recommendation.title,
-          summary: recommendation.summary,
-          primaryGoalId: recommendation.primaryGoalId,
-          supportingGoalIds: recommendation.supportingGoalIds,
-          whyThisAction: recommendation.whyThisAction,
-          whyNow: recommendation.whyNow,
-          startToday: recommendation.startToday,
-          successSignal: recommendation.successSignal,
-          expectedBenefit: recommendation.expectedBenefit,
-          supportingBeliefIds: recommendation.supportingBeliefIds,
-          supportingInsightIds: recommendation.supportingInsightIds,
-          confidence: recommendation.confidence,
-          assumption: recommendation.assumption,
-          caveat: recommendation.caveat,
-        },
-      });
-      const persistedWorkflow = await persistRecommendationWorkflow(tx, {
+    const persistResult = await persistProposedRecommendationIfAllowed(
+      prisma,
+      {
         merchantId: input.merchantId,
         shopId: input.shopId,
-        recommendation: persistedRecommendation,
-        workflow: recommendation.workflow,
-      });
-      await ensureMerchantActionForRecommendation(tx, {
-        recommendation: {
-          ...persistedRecommendation,
-          workflows: [
-            {
-              ...persistedWorkflow,
-              steps: recommendation.workflow?.steps ?? [],
+        trigger: proposalTrigger,
+      },
+      async (tx) => {
+        const persistedRecommendation = await tx.merchantPlanRecommendation.upsert({
+          where: { runId: run.id },
+          create: {
+            runId: run.id,
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            title: recommendation.title,
+            summary: recommendation.summary,
+            primaryGoalId: recommendation.primaryGoalId,
+            supportingGoalIds: recommendation.supportingGoalIds,
+            whyThisAction: recommendation.whyThisAction,
+            whyNow: recommendation.whyNow,
+            startToday: recommendation.startToday,
+            successSignal: recommendation.successSignal,
+            expectedBenefit: recommendation.expectedBenefit,
+            supportingBeliefIds: recommendation.supportingBeliefIds,
+            supportingInsightIds: recommendation.supportingInsightIds,
+            confidence: recommendation.confidence,
+            assumption: recommendation.assumption,
+            caveat: recommendation.caveat,
+            reviewStatus: PLAN_REVIEW_STATUS.proposed,
+          },
+          update: {
+            title: recommendation.title,
+            summary: recommendation.summary,
+            primaryGoalId: recommendation.primaryGoalId,
+            supportingGoalIds: recommendation.supportingGoalIds,
+            whyThisAction: recommendation.whyThisAction,
+            whyNow: recommendation.whyNow,
+            startToday: recommendation.startToday,
+            successSignal: recommendation.successSignal,
+            expectedBenefit: recommendation.expectedBenefit,
+            supportingBeliefIds: recommendation.supportingBeliefIds,
+            supportingInsightIds: recommendation.supportingInsightIds,
+            confidence: recommendation.confidence,
+            assumption: recommendation.assumption,
+            caveat: recommendation.caveat,
+          },
+        });
+        const persistedWorkflow = await persistRecommendationWorkflow(tx, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          recommendation: persistedRecommendation,
+          workflow: recommendation.workflow,
+        });
+        await ensureMerchantActionForRecommendation(tx, {
+          recommendation: {
+            ...persistedRecommendation,
+            workflows: [
+              {
+                ...persistedWorkflow,
+                steps: recommendation.workflow?.steps ?? [],
+              },
+            ],
+          },
+        });
+        await buildPlanEvidenceSnapshot(tx, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          recommendation: persistedRecommendation,
+          sourceSnapshotHash: run.snapshotHash,
+          snapshotSource: "plan_generation",
+          logger,
+        });
+        await tx.merchantPlanRun.updateMany({
+          where: {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            status: PLAN_RUN_STATUS.completed,
+            id: { not: run.id },
+            supersededAt: null,
+          },
+          data: { supersededAt: new Date() },
+        });
+        await tx.merchantPlanRun.update({
+          where: { id: run.id },
+          data: {
+            status: PLAN_RUN_STATUS.completed,
+            completedAt: new Date(),
+            safeErrorCode: null,
+            lastError: null,
+            result: {
+              selectedCandidateId: recommendation.candidateId,
+              candidateSummaries: parsed.candidates.map((candidate) => ({
+                id: candidate.id,
+                action: candidate.action,
+                expectedEffort: candidate.expectedEffort,
+                timeToUsefulSignal: candidate.timeToUsefulSignal,
+                supportingBeliefIds: candidate.supportingBeliefIds,
+                supportingInsightIds: candidate.supportingInsightIds,
+              })),
+              usage: llmResult.usage,
+              attempts: llmResult.attempts,
+              durationMs: llmResult.durationMs,
             },
-          ],
-        },
-      });
-      await buildPlanEvidenceSnapshot(tx, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        recommendation: persistedRecommendation,
-        sourceSnapshotHash: run.snapshotHash,
-        snapshotSource: "plan_generation",
-        logger,
-      });
-      await tx.merchantPlanRun.updateMany({
-        where: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: PLAN_RUN_STATUS.completed,
-          id: { not: run.id },
-          supersededAt: null,
-        },
-        data: { supersededAt: new Date() },
-      });
-      await tx.merchantPlanRun.update({
+          },
+        });
+        return persistedRecommendation;
+      },
+    );
+
+    if (!persistResult.ok) {
+      await prisma.merchantPlanRun.update({
         where: { id: run.id },
         data: {
           status: PLAN_RUN_STATUS.completed,
           completedAt: new Date(),
-          safeErrorCode: null,
-          lastError: null,
-          result: {
-            selectedCandidateId: recommendation.candidateId,
-            candidateSummaries: parsed.candidates.map((candidate) => ({
-              id: candidate.id,
-              action: candidate.action,
-              expectedEffort: candidate.expectedEffort,
-              timeToUsefulSignal: candidate.timeToUsefulSignal,
-              supportingBeliefIds: candidate.supportingBeliefIds,
-              supportingInsightIds: candidate.supportingInsightIds,
-            })),
-            usage: llmResult.usage,
-            attempts: llmResult.attempts,
-            durationMs: llmResult.durationMs,
-          },
+          result: { reason: persistResult.reason },
         },
       });
-    });
+      logger.info("Merchant Plan generation skipped — proposal invariant", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        runId: run.id,
+        reason: persistResult.reason,
+      });
+      return { status: persistResult.reason, runId: run.id };
+    }
+
+    const persistedRecommendation = persistResult.value;
 
     logger.info("Merchant Plan generated", {
       merchantId: input.merchantId,
@@ -544,6 +607,7 @@ export async function processMerchantPlanMessage(prisma, input) {
     shopId: input.shopId,
     resetAttempts: true,
     runAfter: input.runAfter,
+    proposalTrigger: "merchant_onboarding",
   });
   await addAssistantConversationNote(prisma, {
     merchantId: input.merchantId,
@@ -696,11 +760,10 @@ async function preparePlanRun(prisma, input) {
     goalRunId: snapshot.goalRunId,
     promptVersion: MERCHANT_PLAN_PROMPT_VERSION,
     schemaVersion: MERCHANT_PLAN_SCHEMA_VERSION,
-    // Marks who first generated this snapshot's plan. "proactive" = Jefe deciding on its
-    // own cadence (not the merchant) — counted against the per-day proactive cap and
-    // surfaced alongside "full" runs. Set on CREATE only; the upsert `update` below never
-    // reclassifies an existing run, so a snapshot keeps whichever trigger reached it first.
-    sourceMode: input.sourceMode === "proactive" ? "proactive" : "full",
+    // Marks who first generated this snapshot's plan. "home" = merchant clicked Generate on
+    // the home screen — counted against the per-day home proposal cap. Set on CREATE only;
+    // the upsert `update` below never reclassifies an existing run.
+    sourceMode: input.sourceMode === "home" ? "home" : "full",
   };
   const run = await prisma.merchantPlanRun.upsert({
     where: {

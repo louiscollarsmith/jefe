@@ -19,7 +19,6 @@ import {
 } from "./action-step-lifecycle.server.js";
 import { executeStartedAssistStepRun } from "./assist-steps/run.server.js";
 import { rejectAction, reviseAction } from "./action-resolution.server.js";
-import { scheduleProactivePlanAfterTerminalState } from "../merchant-plan/proactive-recommendation-trigger.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
 import {
   addActionConstraint,
@@ -1614,13 +1613,6 @@ export async function deferMerchantAction(prisma, input) {
         eventType: status === "declined" ? "action_rejected" : "action_deferred",
         metadata: { actor: input.actor ?? input.merchantId },
       },
-    });
-  }
-  if (status === "declined") {
-    scheduleProactivePlanAfterTerminalState(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      trigger: "recommendation_declined",
     });
   }
   return { ok: true, status };

@@ -167,7 +167,8 @@ import {
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
-import { getProactiveRecommendationSchedule } from "../lib/merchant-plan/proactive-recommendations.server.js";
+import { getHomeProposalGenerationState } from "../lib/merchant-plan/home-proposal-generation.server.js";
+import { requestHomeProposalGeneration } from "../lib/merchant-plan/home-proposal-generation.server.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
 import {
@@ -1290,6 +1291,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  if (intent === "home.generate_proposal") {
+    const homeTimeZone = storeTimeZoneFromPayload(
+      (shop as { rawPayload?: unknown }).rawPayload,
+    );
+    const result = await requestHomeProposalGeneration(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      timeZone: homeTimeZone,
+      ensureQueued: ensureMerchantPlanQueued,
+    });
+    if (!result.ok) {
+      const reasonMessages: Record<string, string> = {
+        proposed_exists:
+          "Accept or reject the current proposal before generating another.",
+        daily_cap_reached:
+          "You've generated 5 proposals today. You can generate more tomorrow.",
+        generating: "Jefe is already finding your next move.",
+        nothing_new:
+          "Nothing worth your time right now. Jefe will only suggest moves that are genuinely worth ten minutes.",
+        cap_read_failed: "Could not check your daily allowance. Try again shortly.",
+        eligibility_read_failed: "Could not verify eligibility. Try again shortly.",
+      };
+      return {
+        ok: false,
+        error: reasonMessages[result.reason ?? ""] ?? "Could not start generation.",
+        intent,
+      };
+    }
+    return redirect(appPathFromSearch(new URL(request.url).search, {}));
+  }
+
   if (intent.startsWith("plan.")) {
     try {
       if (intent === "plan.retry") {
@@ -1297,6 +1329,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           merchantId: merchant.id,
           shopId: shop.id,
           resetAttempts: true,
+          proposalTrigger: "merchant_onboarding",
         });
         return redirect(
           appPathFromSearch(new URL(request.url).search, {
@@ -1841,14 +1874,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         now: homeNow,
         timeZone: homeTimeZone,
       });
-      const nextRecommendationSchedule = await getProactiveRecommendationSchedule(
-        prisma,
-        {
-          merchantId: merchant.id,
-          now: homeNow,
-          timeZone: homeTimeZone,
-        },
-      );
+      const homeProposalGeneration = await getHomeProposalGenerationState(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        now: homeNow,
+        timeZone: homeTimeZone,
+      });
       logSlowAppIndexLoader(loaderStartedAt, {
         mode: "daily",
         shopDomain: session.shop,
@@ -1873,7 +1904,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         todayLabel,
         storeTimeZone: homeTimeZone,
         brandLogoUrl,
-        nextRecommendationSchedule,
+        homeProposalGeneration,
       };
     }
     if (viewLibrary) {
@@ -2237,7 +2268,7 @@ export default function AppIndex() {
         todayLabel={data.todayLabel}
         storeTimeZone={data.storeTimeZone}
         brandLogoUrl={data.brandLogoUrl}
-        nextRecommendationSchedule={data.nextRecommendationSchedule}
+        homeProposalGeneration={data.homeProposalGeneration}
       />
     );
   }
