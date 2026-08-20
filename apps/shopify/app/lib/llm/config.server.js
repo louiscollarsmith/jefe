@@ -2,14 +2,14 @@
 
 import { externalLlmCallsDisabled } from "./external-call-guard.server.js";
 
-export const DEFAULT_LLM_PROVIDER = "gemini";
-export const DEFAULT_LLM_MODEL = "gemini-3.5-flash-lite";
-export const DEFAULT_LLM_FALLBACK_PROVIDER = "gemini";
-export const DEFAULT_LLM_FALLBACK_MODEL = "gemini-3.1-flash-lite";
-export const DEFAULT_LLM_CHAT_PROVIDER = "groq";
-export const DEFAULT_LLM_CHAT_MODEL = "openai/gpt-oss-120b";
-export const DEFAULT_LLM_CHAT_FALLBACK_PROVIDER = "gemini";
-export const DEFAULT_LLM_CHAT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+export const DEFAULT_LLM_PROVIDER = "openai";
+export const DEFAULT_LLM_MODEL = "gpt-5.6-luna";
+export const DEFAULT_LLM_FALLBACK_PROVIDER = "";
+export const DEFAULT_LLM_FALLBACK_MODEL = "";
+export const DEFAULT_LLM_CHAT_PROVIDER = "openai";
+export const DEFAULT_LLM_CHAT_MODEL = "gpt-5.6-luna";
+export const DEFAULT_LLM_CHAT_FALLBACK_PROVIDER = "";
+export const DEFAULT_LLM_CHAT_FALLBACK_MODEL = "";
 // 30s, not 8s: the real conversation prompt is ~6k input tokens and the primary
 // (Groq gpt-oss-120b) takes ~19s at that size, so an 8s default timed out a large
 // fraction of real turns (measured 2026-08-12). Prod overrides LLM_TIMEOUT_MS; this
@@ -53,6 +53,8 @@ export function getLlmConfig(input = {}) {
   const env = input.env ?? process.env;
   const slice = input.slice ?? sliceForFeature(input.feature);
   const prefix = slice === "chat" ? "LLM_CHAT_" : "LLM_";
+  const openAiApiKey = env.OPENAI_API_KEY || "";
+  const openAiBaseUrl = env.OPENAI_BASE_URL || "https://api.openai.com/v1";
   const geminiApiKey = env.GEMINI_API_KEY || "";
   const groqApiKey = env.GROQ_API_KEY || "";
   const openAiCompatible = getOpenAiCompatibleProviders(env);
@@ -63,7 +65,7 @@ export function getLlmConfig(input = {}) {
     !externalLlmCallsDisabled() &&
     (env.LLM_ENABLED === "true" ||
       (env.LLM_ENABLED !== "false" &&
-        Boolean(geminiApiKey || groqApiKey || anyCompatKey)));
+        Boolean(openAiApiKey || geminiApiKey || groqApiKey || anyCompatKey)));
   const defaults = slice === "chat"
     ? {
         provider: DEFAULT_LLM_CHAT_PROVIDER,
@@ -84,6 +86,8 @@ export function getLlmConfig(input = {}) {
     model: env[`${prefix}MODEL`] || defaults.model,
     fallbackProvider: env[`${prefix}FALLBACK_PROVIDER`] || defaults.fallbackProvider,
     fallbackModel: env[`${prefix}FALLBACK_MODEL`] || defaults.fallbackModel,
+    openAiApiKey,
+    openAiBaseUrl,
     geminiApiKey,
     groqApiKey,
     openAiCompatible,

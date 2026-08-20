@@ -23,7 +23,14 @@ import { ACTION_COMMAND } from "../action-command.server.js";
 import { resolveActionState } from "../action-state.server.js";
 import { allowedPlanFields } from "../action-plan-schema.server.js";
 import { reachCapability, runAssistStepById } from "./assist-runner.server.js";
-import { recommendedPurchaseUnits } from "../action-capability.server.js";
+import {
+  recommendedPurchaseUnits,
+  resolveShopifyProductReference,
+} from "../action-capability.server.js";
+import {
+  addItemToActionScope,
+  persistCanonicalReplenishmentState,
+} from "../action-scope.server.js";
 import { normalizeMatch } from "../action-constraint.server.js";
 import {
   SCOPE_STATUS,
@@ -457,6 +464,87 @@ const TOOLS = {
         productTitle: title,
         },
       );
+    },
+  },
+
+  add_product_to_scope: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: ["restock"],
+    description:
+      "Add a Shopify product or variant to the current replenishment scope, even if it was not in the original recommendation evidence. Use for 'add X', 'include X as well', or 'X also comes from the same supplier'.",
+    args: { productReference: { type: "string", required: true } },
+    async run(/** @type {any} */ ctx, /** @type {any} */ args) {
+      const before = planFacts(ctx.state);
+      const resolved = await resolveShopifyProductReference(ctx.prisma, {
+        merchantId: ctx.merchantId,
+        shopId: ctx.shopId,
+        reference: args.productReference,
+        supplierHint: supplierHintFromState(ctx.state),
+      });
+      if (!resolved.ok) {
+        if (resolved.reason === "ambiguous") {
+          return needsClarification(
+            "add_product_to_scope",
+            `Which product did you mean — ${resolved.matches
+              .slice(0, 3)
+              .map((row) => `"${row.title}"`)
+              .join(" or ")}?`,
+            resolved.matches.slice(0, 4).map((row) => ({
+              label: row.title,
+              productId: row.productId ?? null,
+            })),
+          );
+        }
+        return fail("add_product_to_scope", {
+          code: String(resolved.reason ?? "NOT_FOUND").toUpperCase(),
+          message: `I couldn't resolve "${args.productReference}" to a Shopify product.`,
+        });
+      }
+      const resolvedItem = resolved.item;
+      if (!resolvedItem) {
+        return fail("add_product_to_scope", {
+          code: "NOT_FOUND",
+          message: `I couldn't resolve "${args.productReference}" to a Shopify product.`,
+        });
+      }
+      const persisted = await addItemToActionScope(ctx.prisma, {
+        merchantId: ctx.merchantId,
+        shopId: ctx.shopId,
+        actionId: ctx.actionId,
+        actor: ctx.actor,
+        item: resolvedItem,
+      });
+      if (!persisted.ok) {
+        return fail("add_product_to_scope", {
+          code: String(persisted.reason ?? "SCOPE_UPDATE_FAILED").toUpperCase(),
+          message: "I found that product but couldn't save it to this action's scope.",
+        });
+      }
+      let after = await ctx.reloadState();
+      await persistCanonicalReplenishmentState(ctx.prisma, {
+        merchantId: ctx.merchantId,
+        shopId: ctx.shopId,
+        actionId: ctx.actionId,
+      }, {
+        plan: after.plan,
+        scope: after.scope,
+        inputHash: after.inputHash,
+        scopeVersion: after.scopeVersion,
+        evidenceVersion: after.evidenceVersion,
+        canonicalProposal: after.canonicalProposal,
+      });
+      after = await ctx.reloadState();
+      const afterFacts = planFacts(after);
+      return ok("add_product_to_scope", {
+        effect: TOOL_EFFECT.stateChange,
+        message: `Added ${resolvedItem.title} to this replenishment action.`,
+        facts: {
+          ...afterFacts,
+          addedProduct: resolvedItem,
+          proposal: buildCurrentProposal(after).lines,
+        },
+        changes: diffFacts(before, afterFacts),
+      });
     },
   },
 
@@ -1107,6 +1195,15 @@ export function planFacts(state) {
 }
 
 /** @param {any} state */
+function supplierHintFromState(state) {
+  const vendors = (state?.scope?.items ?? [])
+    .map((/** @type {any} */ item) => String(item?.vendor ?? "").trim())
+    .filter(Boolean);
+  const unique = [...new Set(vendors)];
+  return unique.length === 1 ? unique[0] : null;
+}
+
+/** @param {any} state */
 export function workflowStepTitles(state) {
   return (state?.work ?? [])
     .map((/** @type {any} */ row) => String(row.step?.title ?? "").trim())
@@ -1133,6 +1230,9 @@ export function snapshotFacts(state) {
 export function scopeLines(state) {
   return (state?.scope?.items ?? []).map((/** @type {any} */ item) => ({
     title: item.title ?? item.productTitle ?? "Item",
+    productId: item.productId ?? null,
+    variantId: item.variantId ?? null,
+    vendor: item.vendor ?? null,
     units: item.recommendedUnits ?? null,
     available: item.available ?? null,
     dailyVelocity: item.dailyVelocity ?? null,
@@ -1165,12 +1265,21 @@ export function buildCurrentProposal(state) {
   const values = state?.plan?.values ?? {};
 
   if (kind === "restock") {
-    const lines = items
-      .filter((/** @type {any} */ row) => row.units != null)
-      .map((/** @type {any} */ row) => ({
-        title: row.title,
-        units: row.units,
-      }));
+    const canonical = state?.canonicalProposal;
+    const lines = Array.isArray(canonical?.items)
+      ? canonical.items
+          .filter((/** @type {any} */ row) => row.recommendedUnits != null)
+          .map((/** @type {any} */ row) => ({
+            title: row.title,
+            units: row.recommendedUnits,
+            proposalRevision: canonical.revision ?? null,
+          }))
+      : items
+          .filter((/** @type {any} */ row) => row.units != null)
+          .map((/** @type {any} */ row) => ({
+            title: row.title,
+            units: row.units,
+          }));
     const title =
       values.coverDays != null
         ? `Proposal (${values.coverDays}-day cover)`

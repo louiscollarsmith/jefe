@@ -202,16 +202,19 @@ export async function getBootstrapJobHealth(prisma, options = {}) {
  * Non-gating: informational, never fails the check.
  *
  * @param {Record<string, string | undefined>} [env]
- * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string; chatProvider: string; chatModel: string; chatFallbackProvider: string; chatFallbackModel: string; groqConfigured: boolean; geminiConfigured: boolean; providerKeyPresent: boolean; chatProviderKeyPresent: boolean } }}
+ * @returns {{ email: { configured: boolean }; slack: { configured: boolean }; llm: { enabled: boolean; provider: string; model: string; fallbackProvider: string; fallbackModel: string; chatProvider: string; chatModel: string; chatFallbackProvider: string; chatFallbackModel: string; openAiConfigured: boolean; groqConfigured: boolean; geminiConfigured: boolean; providerKeyPresent: boolean; chatProviderKeyPresent: boolean } }}
  */
 export function buildDependencyHealth(env = process.env) {
   const provider = env.LLM_PROVIDER || DEFAULT_LLM_PROVIDER;
   const chatProvider = env.LLM_CHAT_PROVIDER || DEFAULT_LLM_CHAT_PROVIDER;
+  const openAiConfigured = Boolean(env.OPENAI_API_KEY);
   const groqConfigured = Boolean(env.GROQ_API_KEY);
   const geminiConfigured = Boolean(env.GEMINI_API_KEY);
   /** @param {string} selectedProvider */
   const keyPresent = (selectedProvider) =>
-    selectedProvider === "groq"
+    selectedProvider === "openai"
+      ? openAiConfigured
+      : selectedProvider === "groq"
       ? groqConfigured
       : selectedProvider === "gemini"
         ? geminiConfigured
@@ -222,7 +225,8 @@ export function buildDependencyHealth(env = process.env) {
     llm: {
       enabled:
         env.LLM_ENABLED === "true" ||
-        (env.LLM_ENABLED !== "false" && (geminiConfigured || groqConfigured)),
+        (env.LLM_ENABLED !== "false" &&
+          (openAiConfigured || geminiConfigured || groqConfigured)),
       provider,
       model: env.LLM_MODEL || DEFAULT_LLM_MODEL,
       fallbackProvider: env.LLM_FALLBACK_PROVIDER || DEFAULT_LLM_FALLBACK_PROVIDER,
@@ -239,6 +243,7 @@ export function buildDependencyHealth(env = process.env) {
       // whether the selected provider's key is one of them) makes that silent
       // substitution visible instead of /health reporting a provider that isn't
       // serving. `providerKeyPresent: false` with `enabled: true` = substitution.
+      openAiConfigured,
       groqConfigured,
       geminiConfigured,
       providerKeyPresent: keyPresent(provider),

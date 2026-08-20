@@ -284,7 +284,7 @@ export async function decideMerchantMessage(input) {
       }),
       schema: MESSAGE_DECISION_SCHEMA,
       maxInputTokens: MESSAGE_DECISION_MAX_INPUT_TOKENS,
-      maxOutputTokens: 1200,
+      maxOutputTokens: 500,
     });
     const candidates = Array.isArray(result.json?.candidates)
       ? result.json.candidates

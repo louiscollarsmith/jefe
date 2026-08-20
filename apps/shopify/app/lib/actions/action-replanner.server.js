@@ -26,6 +26,7 @@ import { resolveActionState } from "./action-state.server.js";
 const log = baseLogger.child({ component: "action-replanner" });
 
 export const ACTION_REPLANNER_VERSION = "1";
+const ACTION_REPLANNER_TIMEOUT_MS = 15_000;
 
 const REPLAN_SCHEMA = {
   type: Type.OBJECT,
@@ -147,8 +148,17 @@ export async function replanAction(prisma, input) {
       state,
       before,
       recentMessages: input.recentMessages ?? [],
+      logger,
+      actionId: input.actionId,
     });
   } catch (error) {
+    logger.warn("action replanner inference failed", {
+      actionId: input.actionId,
+      provider: planner.provider ?? null,
+      model: planner.model ?? null,
+      error: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+    });
     const fallback = fallbackPlanFromInstruction(before, input.merchantInstruction);
     if (fallback) {
       generation = {
@@ -226,8 +236,9 @@ export async function replanAction(prisma, input) {
     before,
     input.merchantInstruction,
   );
+  const stablePlan = preserveExistingStepIdentity(explicitPlan, before);
   const planForApply = preserveOmittedSteps(
-    explicitPlan,
+    stablePlan,
     before,
     input.merchantInstruction,
   );
@@ -252,6 +263,7 @@ export async function replanAction(prisma, input) {
     };
   }
   const fresh = await getMerchantAction(prisma, input);
+  await persistWorkspaceSnapshot(prisma, input, fresh);
   const after = workflowSnapshot(fresh);
   const changes = diffWorkflow(before.steps, after.steps);
 
@@ -293,6 +305,20 @@ export async function replanAction(prisma, input) {
   };
 }
 
+/** @param {any} prisma @param {any} input @param {any} action */
+async function persistWorkspaceSnapshot(prisma, input, action) {
+  const workspace = action?.workspace ?? null;
+  if (!workspace || !prisma?.merchantAction?.update) return;
+  const progress =
+    action.progress && typeof action.progress === "object" && !Array.isArray(action.progress)
+      ? action.progress
+      : {};
+  await prisma.merchantAction.update({
+    where: { id: input.actionId },
+    data: { progress: { ...progress, workspace } },
+  });
+}
+
 /** @returns {Array<Record<string, any>>} */
 function availableCapabilityView() {
   return listStepCapabilities().map((capability) => ({
@@ -315,23 +341,42 @@ function currentProposalView(state) {
 }
 
 /**
- * @param {{ generateStructuredJson: Function }} provider
+ * @param {{ generateStructuredJson: Function; provider?: string | null; model?: string | null }} provider
  * @param {{
  *   merchantInstruction: string;
  *   state: any;
  *   before: { steps: any[] };
  *   recentMessages: Array<{ role?: string; content?: string }>;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   actionId?: string | null;
  * }} input
  */
 async function generatePlanWithRepair(provider, input) {
   const request = buildReplanRequest(input);
+  input.logger?.info?.("action replanner inference starting", {
+    actionId: input.actionId ?? null,
+    provider: provider.provider ?? null,
+    model: provider.model ?? null,
+    phase: "initial",
+    timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
+    currentStepCount: input.before.steps.length,
+  });
   const generated = await provider.generateStructuredJson({
     systemPrompt: SYSTEM_PROMPT,
     prompt: JSON.stringify(request),
     schema: REPLAN_SCHEMA,
     maxOutputTokens: 1600,
+    timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
   });
   let normalized = normalizeGeneratedPlan(generated?.json?.plan);
+  input.logger?.info?.("action replanner inference finished", {
+    actionId: input.actionId ?? null,
+    provider: generated?.provider ?? provider.provider ?? null,
+    model: generated?.model ?? provider.model ?? null,
+    phase: "initial",
+    durationMs: generated?.durationMs ?? null,
+    normalized: normalized.ok ? "ok" : normalized.reason,
+  });
   if (normalized.ok) {
     return {
       generated,
@@ -350,13 +395,30 @@ async function generatePlanWithRepair(provider, input) {
     instruction:
       "Return a complete repaired plan. Fix the validation error without changing unrelated current plan decisions or unrelated workflow semantics.",
   };
+  input.logger?.info?.("action replanner inference starting", {
+    actionId: input.actionId ?? null,
+    provider: provider.provider ?? null,
+    model: provider.model ?? null,
+    phase: "repair",
+    timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
+    validationError: normalized.reason,
+  });
   const repaired = await provider.generateStructuredJson({
     systemPrompt: SYSTEM_PROMPT,
     prompt: JSON.stringify(repairRequest),
     schema: REPLAN_SCHEMA,
     maxOutputTokens: 1600,
+    timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
   });
   normalized = normalizeGeneratedPlan(repaired?.json?.plan);
+  input.logger?.info?.("action replanner inference finished", {
+    actionId: input.actionId ?? null,
+    provider: repaired?.provider ?? provider.provider ?? null,
+    model: repaired?.model ?? provider.model ?? null,
+    phase: "repair",
+    durationMs: repaired?.durationMs ?? null,
+    normalized: normalized.ok ? "ok" : normalized.reason,
+  });
   return {
     generated: repaired,
     normalized,
@@ -438,7 +500,7 @@ function normalizeGeneratedPlan(rawPlan) {
       return { ok: false, reason: "duplicate_semantic_key", semanticKey: semantic };
     }
     seen.add(semantic);
-    steps.push({
+    const normalizedStep = normalizeCapabilityBackedStep({
       semanticKey: semantic,
       title,
       description: safeText(raw?.description, 260) || title,
@@ -448,6 +510,7 @@ function normalizeGeneratedPlan(rawPlan) {
         ? raw.dependsOn.map((/** @type {any} */ item) => semanticKey(item)).filter(Boolean)
         : [],
     });
+    steps.push(normalizedStep);
   }
   if (!steps.length) return { ok: false, reason: "no_valid_steps" };
   const semanticKeys = new Set(steps.map((step) => step.semanticKey));
@@ -469,6 +532,35 @@ function normalizeGeneratedPlan(rawPlan) {
       steps,
     },
   };
+}
+
+/** @param {any} step */
+function normalizeCapabilityBackedStep(step) {
+  if (step.capabilityRef === "execute:shopify_inventory_transfer:restock") {
+    return {
+      ...step,
+      title: transferStep().title,
+      description: transferStep().description,
+    };
+  }
+  if (step.capabilityRef === "merchant_action:external_purchase_order") {
+    return {
+      ...step,
+      title: purchaseOrderStep().title,
+      description: purchaseOrderStep().description,
+    };
+  }
+  if (
+    step.capabilityRef === "assist:merchant_checklist" &&
+    step.semanticKey === "check_supplier_lead_time"
+  ) {
+    return {
+      ...step,
+      title: supplierLeadTimeStep().title,
+      description: supplierLeadTimeStep().description,
+    };
+  }
+  return step;
 }
 
 /**
@@ -510,6 +602,36 @@ function preserveOmittedSteps(plan, before, merchantInstruction) {
 }
 
 /**
+ * If a generated plan keeps an existing semantic step, keep the row's stable
+ * execution identity unless the semantic key itself changed. This lets the LLM
+ * choose the desired structure and display text without letting it accidentally
+ * rewrite canonical assist steps into merchant actions.
+ *
+ * @param {{ goal: string; steps: any[] }} plan
+ * @param {{ steps: any[] }} before
+ */
+function preserveExistingStepIdentity(plan, before) {
+  const existingByKey = new Map(before.steps.map((step) => [step.semanticKey, step]));
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      const existing = existingByKey.get(step.semanticKey);
+      if (!existing) return step;
+      const keepExistingText = step.semanticKey === "build_replenishment_proposal";
+      return {
+        ...step,
+        title: keepExistingText ? existing.title || step.title : step.title || existing.title,
+        description: keepExistingText
+          ? existing.description || step.description || existing.title || step.title
+          : step.description || existing.description || step.title || existing.title,
+        mode: existing.mode || step.mode,
+        capabilityRef: existing.capabilityRef || step.capabilityRef,
+      };
+    }),
+  };
+}
+
+/**
  * Keep common high-signal merchant corrections deterministic after the model has
  * produced a complete plan. The model still handles open-ended structure, but
  * explicit replacements/removals should not depend on a particular phrasing.
@@ -526,6 +648,7 @@ function applyExplicitInstructionOverrides(plan, before, merchantInstruction) {
   const wantsPurchaseOrder = /\b(purchase order|purchase orders|po|pos)\b/.test(
     instruction,
   );
+  const rejectsSupplierEmail = rejectsSupplierCommunication(instruction);
   const wantsTransfer = /\b(shopify transfer|stock transfer|inventory transfer|transfer)\b/.test(
     instruction,
   );
@@ -573,12 +696,17 @@ function applyExplicitInstructionOverrides(plan, before, merchantInstruction) {
     );
   }
 
-  if (wantsPurchaseOrder) {
+  if (wantsPurchaseOrder && !removeIntent) {
     steps = steps.filter((step) => step.semanticKey !== "create_shopify_transfer");
+    if (rejectsSupplierEmail) {
+      steps = steps.filter(
+        (step) => step.semanticKey !== "draft_supplier_communication",
+      );
+    }
     steps = upsertFinalStep(steps, purchaseOrderStep());
   }
 
-  if (wantsTransfer && !wantsPurchaseOrder) {
+  if (wantsTransfer && !wantsPurchaseOrder && !removeIntent) {
     steps = steps.filter((step) => step.semanticKey !== "create_purchase_order");
     steps = upsertFinalStep(steps, transferStep());
   }
@@ -653,6 +781,14 @@ function shouldPreserveOmittedStep(step, existing, desired, merchantInstruction)
   ) {
     return false;
   }
+  if (
+    semantic === "draft_supplier_communication" &&
+    desiredKeys.has("create_purchase_order") &&
+    /\b(purchase order|purchase orders|po|pos)\b/.test(instruction) &&
+    rejectsSupplierCommunication(instruction)
+  ) {
+    return false;
+  }
 
   const removeIntent =
     /\b(remove|delete|scrap|forget|drop|dont need|do not need|not useful|wrong)\b/.test(
@@ -713,6 +849,7 @@ function fallbackPlanFromInstruction(before, merchantInstruction) {
   const wantsPurchaseOrder = /\b(purchase order|purchase orders|po|pos)\b/.test(
     instruction,
   );
+  const rejectsSupplierEmail = rejectsSupplierCommunication(instruction);
   const wantsTransfer = /\b(shopify transfer|stock transfer|inventory transfer|transfer)\b/.test(
     instruction,
   );
@@ -765,6 +902,11 @@ function fallbackPlanFromInstruction(before, merchantInstruction) {
 
   if (wantsPurchaseOrder) {
     steps = steps.filter((step) => step.semanticKey !== "create_shopify_transfer");
+    if (rejectsSupplierEmail) {
+      steps = steps.filter(
+        (step) => step.semanticKey !== "draft_supplier_communication",
+      );
+    }
     steps = upsertFinalStep(steps, purchaseOrderStep());
     return {
       goal: "Prepare the replenishment and raise a purchase order.",
@@ -782,6 +924,24 @@ function fallbackPlanFromInstruction(before, merchantInstruction) {
   }
 
   return null;
+}
+
+/** @param {string} instruction */
+function rejectsSupplierCommunication(instruction) {
+  return (
+    /\b(dont|don t|do not|skip|rather than|instead of|not|no|without)\b.{0,60}\b(email|supplier communication|supplier email|email supplier)\b/.test(
+      instruction,
+    ) ||
+    /\b(email|supplier communication|supplier email|email supplier)\b.{0,60}\b(dont|don t|do not|skip|rather than|instead of|not|no|without)\b/.test(
+      instruction,
+    ) ||
+    /\b(replace|swap|change)\b.{0,40}\b(supplier email|supplier communication|email step|email)\b.{0,80}\b(purchase order|po|pos)\b/.test(
+      instruction,
+    ) ||
+    /\b(purchase order|po|pos)\b.{0,80}\b(replace|instead of|rather than)\b.{0,40}\b(supplier email|supplier communication|email step|email)\b/.test(
+      instruction,
+    )
+  );
 }
 
 /**

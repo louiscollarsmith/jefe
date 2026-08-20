@@ -17,6 +17,10 @@ import {
   resolveActionContext,
 } from "./resolved-action-context.server.js";
 import { planSchemaForAgent } from "./action-plan-schema.server.js";
+import {
+  buildActionWorkspace,
+  workspacePlanItems,
+} from "./action-workspace.server.js";
 
 /** @typedef {"available" | "blocked" | "running" | "complete" | "needs_input" | "needs_attention" | "needs_updating" | "skipped"} WorkState */
 
@@ -44,10 +48,13 @@ export async function resolveActionState(prisma, input) {
     }),
   ]);
 
-  const steps = orderedSteps([
-    ...(Array.isArray(action.workflow?.steps) ? action.workflow.steps : []),
-    ...(Array.isArray(action.displaySteps) ? action.displaySteps : []),
-  ]).filter(
+  const workflowSteps = Array.isArray(action.workflow?.steps)
+    ? action.workflow.steps
+    : [];
+  const displaySteps = Array.isArray(action.displaySteps)
+    ? action.displaySteps
+    : [];
+  const steps = orderedSteps(workflowSteps.length > 0 ? workflowSteps : displaySteps).filter(
     (step) =>
       String(step?.status ?? "") !== ACTION_STEP_STATUS.superseded &&
       String(step?.status ?? "") !== "superseded",
@@ -168,7 +175,7 @@ export async function resolveActionState(prisma, input) {
       current: !row.stale && row.state === "complete",
     }));
 
-  return {
+  const baseState = {
     action: {
       id: action.id,
       title: action.title ?? null,
@@ -181,7 +188,10 @@ export async function resolveActionState(prisma, input) {
     planSchema: planSchemaForAgent(action),
     constraints: resolved?.constraints ?? [],
     constraintVersion,
+    scopeVersion,
+    evidenceVersion,
     scope: resolved?.scope ?? { items: [], excluded: [] },
+    canonicalProposal: resolved?.canonicalProposal ?? null,
     inputHash,
     work,
     nextUsefulWork,
@@ -196,6 +206,17 @@ export async function resolveActionState(prisma, input) {
         }
       : null,
     currentStep: action.currentStep ?? null,
+  };
+  const workspace = buildActionWorkspace(action, {
+    work,
+    artifacts,
+    currentChangeSet: baseState.currentChangeSet,
+  });
+  return {
+    ...baseState,
+    workspace,
+    currentFocus: workspace?.currentFocus ?? null,
+    actionState: workspace?.actionState ?? baseState.lifecycle,
   };
 }
 
@@ -220,6 +241,9 @@ export function buildAgentStateContext(state) {
       .slice(0, 12)
       .map((/** @type {any} */ item) => ({
       title: item.title,
+      productId: item.productId ?? null,
+      variantId: item.variantId ?? null,
+      vendor: item.vendor ?? null,
       recommendedUnits: item.recommendedUnits ?? null,
       toType: item.toType ?? null,
       fromType: item.fromType ?? null,
@@ -241,6 +265,30 @@ export function buildAgentStateContext(state) {
       blockers: row.blockers,
     })),
     artifacts: state.artifacts ?? [],
+    workspace: state.workspace
+      ? {
+          actionState: state.workspace.actionState,
+          currentFocus: state.workspace.currentFocus,
+          items: (state.workspace.items ?? []).map((/** @type {any} */ item) => ({
+            id: item.id,
+            title: item.title,
+            kind: item.kind,
+            state: item.state,
+            showInPlan: item.showInPlan !== false,
+          })),
+        }
+      : null,
+    canonicalProposal: state.canonicalProposal
+      ? {
+          revision: state.canonicalProposal.revision ?? null,
+          coverDays: state.canonicalProposal.coverDays ?? null,
+          inputFingerprint: state.canonicalProposal.inputFingerprint ?? null,
+          items: (state.canonicalProposal.items ?? []).map((/** @type {any} */ item) => ({
+            title: item.title,
+            recommendedUnits: item.recommendedUnits ?? null,
+          })),
+        }
+      : null,
     currentChangeSet: state.currentChangeSet,
     currentStep: state.currentStep
       ? {
@@ -448,6 +496,12 @@ export function applyWorkProjectionToAction(serialized, state) {
     artifacts: state.artifacts ?? [],
     planSchema: state.planSchema ?? null,
   };
+  if (state.workspace) {
+    serialized.workspace = state.workspace;
+    serialized.currentFocus = state.currentFocus ?? state.workspace.currentFocus;
+    serialized.actionState = state.actionState ?? state.workspace.actionState;
+    serialized.displaySteps = workspacePlanItems(state.workspace);
+  }
   serialized.displaySteps = mergeSteps(serialized.displaySteps);
   if (serialized.workflow?.steps) {
     serialized.workflow = {

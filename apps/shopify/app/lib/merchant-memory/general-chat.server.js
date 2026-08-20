@@ -320,16 +320,18 @@ export async function sendGeneralChatMessage(prisma, input) {
     candidates: /** @type {any[]} */ ([]),
   };
   try {
-    const processed = await (
-      input.messageDecisionProcessor ?? processPassiveMemoryMessage
-    )(prisma, {
-      messageId: persisted.message.id,
-      logger: input.logger ?? log,
-    });
-    decision = {
-      action: processed.action ?? "general_chat",
-      candidates: processed.candidates ?? [],
-    };
+    if (!focusedAction) {
+      const processed = await (
+        input.messageDecisionProcessor ?? processPassiveMemoryMessage
+      )(prisma, {
+        messageId: persisted.message.id,
+        logger: input.logger ?? log,
+      });
+      decision = {
+        action: processed.action ?? "general_chat",
+        candidates: processed.candidates ?? [],
+      };
+    }
   } catch (error) {
     (input.logger ?? log).warn(
       "Merchant message decision failed; continuing with general chat",
@@ -924,13 +926,7 @@ async function generateGroundedReply(input) {
         merchantContext: input.context,
       }),
       schema,
-      // Do not pass a Groq-sized request cap. Chat is Groq-first with Gemini
-      // fallback (`LLM_CHAT_*`, `LLM_GROQ_MAX_INPUT_TOKENS=6000`,
-      // `LLM_CHAT_MAX_INPUT_TOKENS=18000`). A shared cap tighter than Gemini's
-      // budget throws LlmInputLimitError on Groq and skips fallback. Each
-      // provider enforces its own precondition; Groq over-size or any
-      // fallbackable error goes to Gemini.
-      maxOutputTokens: 900,
+      maxOutputTokens: input.actionChat ? 600 : 450,
     });
     const reply = String(result.json?.reply ?? "").trim();
     const citedContextIds = Array.isArray(result.json?.citedContextIds)

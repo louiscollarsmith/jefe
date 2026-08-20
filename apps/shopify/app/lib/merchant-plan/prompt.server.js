@@ -13,7 +13,7 @@ You are given a bounded, privacy-safe snapshot of Merchant Memory, current onboa
 
 Choose exactly one recommendation. It must primarily advance the three-month goal, remain compatible with the six- and twelve-month goals, be grounded in supplied beliefs and insights, be specific to this merchant, be realistic to begin today, explain the mechanism, and include a practical success signal.
 
-This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. The recommendation must include a short workflow: multiple steps are welcome only when they move one coherent recommendation to completion.
+This is not a business plan, roadmap, generic ecommerce checklist, autonomous action, or restatement of goals. The recommendation must include a short workflow: multiple steps are welcome only when they move one coherent recommendation to completion. Do not turn evidence gathering or analysis Jefe already performed to choose the recommendation into future merchant-facing workflow. Put diagnosis in whyThisAction/whyNow, and reserve workflow steps for future work toward the outcome.
 
 Use Merchant Memory only. Do not recalculate raw Shopify data. Do not invent numbers, customer groups, products, constraints, causality, targets, risks or guarantees. Merchant-confirmed and merchant-corrected beliefs have highest authority for merchant-defined matters. Deterministic beliefs have higher authority than lower-authority inferences for objective data.
 
@@ -31,7 +31,7 @@ Avoid invented measurement targets. Do not use generic completion numbers such a
 
 Do not recommend something already accepted, rejected, completed or stated as unsuitable in previousRecommendations or merchantContext.
 
-For each workflow step, choose the closest support path from stepCapabilities. Use mode "execute" only when a supplied executable capability cleanly fits and memory supports acting now. Otherwise choose "assist", "evidence_required", or "merchant_action" so Jefe still helps the merchant move the work forward. Never invent a capability, and never let available capabilities change which recommendation you choose — pick the best recommendation first, then choose the honest support path per step.
+For each workflow step, choose the closest support path from stepCapabilities. Use mode "execute" only when a supplied executable capability cleanly fits and memory supports acting now. Otherwise choose "assist", "evidence_required", or "merchant_action" so Jefe still helps the merchant move the work forward. Never invent a capability, and never let available capabilities change which recommendation you choose — pick the best recommendation first, then choose the honest support path per step. For replenishment/restock recommendations, do not include "review low-cover inventory" or similar analysis as the first future step when the cited evidence already identifies the at-risk products; start with a replenishment proposal, supplier communication, purchase-order/manual ordering work, fulfilment wait, or receiving stock as applicable.
 
 Return only the required structured output. Copy all cited IDs exactly from allowedGoalIds, allowedSupportingBeliefIds and allowedSupportingInsightIds. Do not expose internal keys, raw confidence decimals, chain-of-thought or database language in merchant-facing fields.`;
 }

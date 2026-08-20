@@ -182,6 +182,9 @@ type WorkflowStepDisplay =
       workStale?: boolean | null;
       blockers?: Array<{ type?: string; reason?: string | null }> | null;
       done?: boolean | null;
+      statusLabel?: string | null;
+      itemKind?: string | null;
+      workspaceState?: string | null;
     };
 
 type StepTreatment = "completed" | "current" | "future";
@@ -204,6 +207,12 @@ type MerchantActionView = {
   currentStep?: WorkflowStepDisplay | null;
   workflow?: { steps?: WorkflowStepDisplay[] | null } | null;
   displaySteps?: WorkflowStepDisplay[];
+  workspace?: {
+    actionState?: string | null;
+    currentFocus?: ActionWorkspaceFocus | null;
+  } | null;
+  currentFocus?: ActionWorkspaceFocus | null;
+  actionState?: string | null;
   workProjection?: {
     work?: Array<{ step?: { id?: string | null }; state?: string; stale?: boolean }>;
     nextUsefulWork?: { step?: { id?: string | null }; state?: string } | null;
@@ -221,6 +230,15 @@ type MerchantActionView = {
   currentSignal?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+};
+
+type ActionWorkspaceFocus = {
+  kind?: string | null;
+  eyebrow?: string | null;
+  headline?: string | null;
+  reason?: string | null;
+  stepId?: string | null;
+  itemKind?: string | null;
 };
 
 type MerchantAttentionItem = {
@@ -2085,6 +2103,7 @@ function FocusedActionLifecyclePanel({
   conversationId?: string | null;
 }) {
   const currentStep = normalizedCurrentStep(action);
+  const workspaceFocus = action.currentFocus ?? action.workspace?.currentFocus ?? null;
   const proposed = action.status === "proposed";
   const completionWork = Array.isArray(action.workProjection?.work)
     ? action.workProjection?.work
@@ -2155,18 +2174,19 @@ function FocusedActionLifecyclePanel({
   const attention = currentStep.attention && Object.keys(currentStep.attention).length
     ? currentStep.attention
     : null;
-  const eyebrow =
-    derivedWorkState === "running"
+  const eyebrow = workspaceFocus?.eyebrow
+    ? workspaceFocus.eyebrow.toUpperCase()
+    : derivedWorkState === "running"
       ? mode === "execute"
         ? "JEFE IS WORKING"
-        : "CURRENT STEP"
+        : "CURRENT FOCUS"
       : derivedWorkState === "needs_input"
         ? "YOUR NEXT STEP"
         : derivedWorkState === "needs_attention"
           ? "NEEDS ATTENTION"
           : derivedWorkState === "needs_updating"
             ? "NEEDS UPDATING"
-          : "NEXT STEP";
+          : "CURRENT FOCUS";
   const tone =
     derivedWorkState === "needs_attention"
       ? "attention"
@@ -2187,9 +2207,9 @@ function FocusedActionLifecyclePanel({
             </span>
           </span>
         </div>
-        <h2 style={currentStepTitleStyle}>{displayStepLabel(currentStep, 0)}</h2>
+        <h2 style={currentStepTitleStyle}>{workspaceFocus?.headline || displayStepLabel(currentStep, 0)}</h2>
         <p style={currentStepDetailStyle}>
-          {stepDetail(currentStep)}
+          {workspaceFocus?.reason || stepDetail(currentStep)}
         </p>
         {currentStep.statusReason ? (
           <p style={currentStepReasonStyle}>{currentStep.statusReason}</p>
@@ -2343,6 +2363,17 @@ function WorkflowStatusSummary({
 }
 
 function actionStatusLabel(action: MerchantActionView) {
+  if (action.actionState) {
+    const labels: Record<string, string> = {
+      needs_attention: "Needs attention",
+      needs_merchant: "Needs your input",
+      jefe_working: "Jefe is working",
+      waiting_external: "Waiting externally",
+      on_track: "On track",
+      completed: "Completed",
+    };
+    return labels[action.actionState] ?? (action.statusLabel || statusLabelForAction(action.status));
+  }
   if (action.status === "accepted") {
     const current = normalizedCurrentStep(action);
     if (current && typeof current !== "string") {
@@ -3394,6 +3425,7 @@ function normalizeDisplayToken(value: unknown) {
 
 function displayStepStatus(step: WorkflowStepDisplay) {
   if (typeof step === "string") return "proposed";
+  if (step.statusLabel) return step.statusLabel;
   const workState = String(step.workState ?? "").trim();
   if (workState) {
     switch (normalizeDisplayToken(workState)) {

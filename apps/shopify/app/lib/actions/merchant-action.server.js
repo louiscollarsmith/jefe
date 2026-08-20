@@ -11,6 +11,10 @@ import {
   resolveActionState,
   applyWorkProjectionToAction,
 } from "./action-state.server.js";
+import {
+  buildActionWorkspace,
+  workspacePlanItems,
+} from "./action-workspace.server.js";
 
 const log = baseLogger.child({ component: "merchant-action" });
 
@@ -29,6 +33,9 @@ export const MERCHANT_CURRENT_FOCUS_KIND = Object.freeze({
   merchantInput: "merchant_input",
   actionProblem: "action_problem",
   actionReady: "action_ready",
+  artifactReview: "artifact_review",
+  externalWait: "external_wait",
+  jefeWorking: "jefe_working",
   recommendation: "recommendation",
   progress: "progress",
   empty: "empty",
@@ -690,7 +697,21 @@ export function serializeMerchantAction(row) {
   const progress = jsonObject(row.progress);
   const executionSummary = jsonObject(execution?.proposalSummary);
   const workflow = workflowView(workflowFromRecommendation(source));
-  const display = displaySteps(progress, source);
+  const actionType =
+    execution?.actionType ??
+    jsonObject(progress).actionType ??
+    inferActionTypeFromWorkflow(source) ??
+    null;
+  const workspace = buildActionWorkspace({
+    ...row,
+    progress,
+    workflow,
+    sourceRecommendation: source,
+    actionType,
+  });
+  const display = workspace
+    ? workspacePlanItems(workspace)
+    : displaySteps(progress, source);
   const currentStep = currentDisplayWorkflowStep(display);
   return {
     id: row.id,
@@ -711,11 +732,7 @@ export function serializeMerchantAction(row) {
       ? sourceRecommendationView(source)
       : sourceRecommendationFromSummary(executionSummary),
     actionRunId: row.currentActionRunId ?? execution?.runId ?? null,
-    actionType:
-      execution?.actionType ??
-      jsonObject(progress).actionType ??
-      inferActionTypeFromWorkflow(source) ??
-      null,
+    actionType,
     executable:
       execution?.actionType && execution?.resolvedMode !== "recommend"
         ? isActionExecuteEnabled(execution.actionType)
@@ -729,6 +746,9 @@ export function serializeMerchantAction(row) {
     },
     previewItems: previewItemsFromExecution(execution),
     plan: jsonObject(row.plan),
+    workspace,
+    currentFocus: workspace?.currentFocus ?? null,
+    actionState: workspace?.actionState ?? null,
     constraints: Array.isArray(row.constraints)
       ? row.constraints.map((/** @type {any} */ item) => ({
           id: item.id,
@@ -780,6 +800,14 @@ export function getMerchantCurrentFocuses(input = {}) {
     : Array.isArray(input.actions)
       ? input.actions
       : [];
+  /** @type {any[]} */
+  const workspaceFocuses = actions
+    .filter(isWorkingActionForFocus)
+    .map(focusFromWorkspaceFocus)
+    .filter((focus) => Boolean(focus));
+  if (workspaceFocuses.length > 0) {
+    return workspaceFocuses.sort((left, right) => left.priority - right.priority);
+  }
   const working = actions.filter(isWorkingActionForFocus);
   const proposed = getMerchantProposedActions(input);
 
@@ -923,6 +951,13 @@ function merchantActionDataFromRecommendation(recommendation) {
   const execution = currentExecutionFromRecommendation(recommendation);
   const currentActionRunId =
     execution?.runId ?? recommendation.currentActionRunId ?? null;
+  const progress = progressFromRecommendation(recommendation);
+  const workspace = buildActionWorkspace({
+    title: recommendation.title,
+    summary: recommendation.summary,
+    progress,
+    sourceRecommendation: recommendation,
+  });
   return {
     merchantId: recommendation.merchantId,
     shopId: recommendation.shopId,
@@ -931,7 +966,7 @@ function merchantActionDataFromRecommendation(recommendation) {
     status: deriveMerchantActionStatus({ recommendation, execution }),
     sourceRecommendationId: recommendation.id,
     currentActionRunId,
-    progress: progressFromRecommendation(recommendation),
+    progress: workspace ? { ...progress, workspace } : progress,
     outcome: jsonObject(execution?.outcome ?? recommendation?.outcome),
     createdAt: recommendation.createdAt ?? new Date(),
     updatedAt: recommendation.updatedAt ?? new Date(),
@@ -945,12 +980,19 @@ function merchantActionUpdateFromRecommendation(recommendation) {
   const execution = currentExecutionFromRecommendation(recommendation);
   const currentActionRunId =
     execution?.runId ?? recommendation.currentActionRunId ?? null;
+  const progress = progressFromRecommendation(recommendation);
+  const workspace = buildActionWorkspace({
+    title: recommendation.title,
+    summary: recommendation.summary,
+    progress,
+    sourceRecommendation: recommendation,
+  });
   return {
     title: safeText(recommendation.title, 180) || "Review Jefe's next move",
     summary: safeText(recommendation.summary, 700),
     status: deriveMerchantActionStatus({ recommendation, execution }),
     currentActionRunId,
-    progress: progressFromRecommendation(recommendation),
+    progress: workspace ? { ...progress, workspace } : progress,
     outcome: jsonObject(execution?.outcome ?? recommendation?.outcome),
   };
 }
@@ -1442,6 +1484,38 @@ function focusFromAttentionItem(item) {
     ctaIntent: item.ctaIntent,
     action: item.action,
   };
+}
+
+/** @param {any} action */
+function focusFromWorkspaceFocus(action) {
+  const source = action?.currentFocus ?? action?.workspace?.currentFocus ?? null;
+  if (!source || source.kind === "on_track") return null;
+  /** @type {Record<string, string>} */
+  const kindMap = {
+    failure: MERCHANT_CURRENT_FOCUS_KIND.actionProblem,
+    merchant_attention: MERCHANT_CURRENT_FOCUS_KIND.merchantInput,
+    artifact_review: MERCHANT_CURRENT_FOCUS_KIND.artifactReview,
+    jefe_working: MERCHANT_CURRENT_FOCUS_KIND.jefeWorking,
+    external_wait: MERCHANT_CURRENT_FOCUS_KIND.externalWait,
+    optional_work: MERCHANT_CURRENT_FOCUS_KIND.progress,
+    completed: MERCHANT_CURRENT_FOCUS_KIND.progress,
+  };
+  const kind = kindMap[source.kind] ?? MERCHANT_CURRENT_FOCUS_KIND.progress;
+  return focusFromAction(action, {
+    kind,
+    priority: Number(source.priority ?? 50),
+    headline:
+      safeText(source.headline, 180) ||
+      safeText(action?.title, 180) ||
+      "Review this action",
+    eyebrow: safeText(source.eyebrow, 80) || "Current focus",
+    reason:
+      safeText(source.reason, 260) ||
+      safeText(action?.summary, 260) ||
+      "This is the current focus for the action.",
+    ctaLabel: "Talk this through",
+    ctaIntent: "chat.focus.start",
+  });
 }
 
 /** @param {{ merchantActions?: any[]; actions?: any[] }} input */

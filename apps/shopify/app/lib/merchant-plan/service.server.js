@@ -17,6 +17,7 @@ import {
   ensureMerchantActionForRecommendation,
   updateMerchantActionForRecommendation,
 } from "../actions/merchant-action.server.js";
+import { prepareWorkflowStepsForWorkspaceV2 } from "../actions/action-workspace.server.js";
 import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
 import { buildMerchantPlanSnapshot } from "./candidates.server.js";
@@ -46,6 +47,7 @@ import {
 } from "./proposal-creation-invariant.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
+const MERCHANT_PLAN_GENERATION_TIMEOUT_MS = 60_000;
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -346,7 +348,7 @@ export async function generateMerchantPlan(prisma, input) {
             workflows: [
               {
                 ...persistedWorkflow,
-                steps: recommendation.workflow?.steps ?? [],
+                steps: persistedWorkflow.steps ?? recommendation.workflow?.steps ?? [],
               },
             ],
           },
@@ -494,7 +496,7 @@ async function generateValidatedPlan(provider, input) {
       schema: MERCHANT_PLAN_OUTPUT_SCHEMA,
       maxInputTokens: 18000,
       maxOutputTokens: 3600,
-      timeoutMs: 15_000,
+      timeoutMs: MERCHANT_PLAN_GENERATION_TIMEOUT_MS,
     });
     lastResult = llmResult;
     const parsed = parseAndValidateMerchantPlanOutput(llmResult.json, {
@@ -878,7 +880,7 @@ function serializeWorkflow(workflow) {
 }
 
 async function persistRecommendationWorkflow(tx, { merchantId, shopId, recommendation, workflow }) {
-  const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  const steps = prepareWorkflowStepsForWorkspaceV2(workflow?.steps, recommendation);
   const persistedWorkflow = await tx.merchantRecommendationWorkflow.upsert({
     where: {
       recommendationId_version: {
@@ -904,32 +906,33 @@ async function persistRecommendationWorkflow(tx, { merchantId, shopId, recommend
   await tx.merchantRecommendationStep.deleteMany({
     where: { workflowId: persistedWorkflow.id, status: "draft" },
   });
-  if (steps.length === 0) return persistedWorkflow;
+  if (steps.length === 0) return { ...persistedWorkflow, steps: [] };
   // Map LLM-generated placeholder IDs (e.g. "step_1") to real UUIDs so that
   // dependsOnStepIds references resolve against actual DB rows.
   const { randomUUID } = await import("crypto");
   const llmIdToUuid = new Map(steps.map((step) => [String(step.id ?? ""), randomUUID()]));
+  const persistedSteps = steps.map((step, index) => ({
+    id: llmIdToUuid.get(String(step.id ?? "")),
+    workflowId: persistedWorkflow.id,
+    recommendationId: recommendation.id,
+    merchantId,
+    shopId,
+    orderIndex: index,
+    title: step.title,
+    description: step.description,
+    completionCriteria: step.completionCriteria ?? null,
+    status: "draft",
+    mode: step.mode,
+    capabilityRef: step.capabilityRef ?? null,
+    dependsOnStepIds: (step.dependsOnStepIds ?? [])
+      .map((id) => llmIdToUuid.get(String(id)) ?? null)
+      .filter(Boolean),
+    evidenceIds: [],
+  }));
   await tx.merchantRecommendationStep.createMany({
-    data: steps.map((step, index) => ({
-      id: llmIdToUuid.get(String(step.id ?? "")),
-      workflowId: persistedWorkflow.id,
-      recommendationId: recommendation.id,
-      merchantId,
-      shopId,
-      orderIndex: index,
-      title: step.title,
-      description: step.description,
-      completionCriteria: step.completionCriteria ?? null,
-      status: "draft",
-      mode: step.mode,
-      capabilityRef: step.capabilityRef ?? null,
-      dependsOnStepIds: (step.dependsOnStepIds ?? [])
-        .map((id) => llmIdToUuid.get(String(id)) ?? null)
-        .filter(Boolean),
-      evidenceIds: [],
-    })),
+    data: persistedSteps,
   });
-  return persistedWorkflow;
+  return { ...persistedWorkflow, steps: persistedSteps };
 }
 
 async function emitExecutableWorkflowSteps(tx, { merchantId, shopId, recommendation, logger }) {

@@ -59,7 +59,7 @@ type FastExperience = {
   insight: InsightView | null;
   recommendation: RecommendationView | null;
   queueItems: Array<{ id: string; title: string; status: string }>;
-  failure: { type: string; message: string } | null;
+  failure: { type: string; message: string; retryTarget?: string | null } | null;
   fullLearning: { state: string; label: string; detail: string };
   handoff: { id: string; token: string } | null;
   devToolsEnabled: boolean;
@@ -404,7 +404,11 @@ function ContextScene({
         <div className="jf-honest-state">
           <Text as="p">{failure.message}</Text>
           {failure.type !== "insufficient" ? (
-            <Form method="post"><input type="hidden" name="intent" value="onboarding.retry" /><Button submit>Try again</Button></Form>
+            <Form method="post">
+              <input type="hidden" name="intent" value="onboarding.retry" />
+              {failure.retryTarget ? <input type="hidden" name="target" value={failure.retryTarget} /> : null}
+              <Button submit>Try again</Button>
+            </Form>
           ) : null}
         </div>
       ) : null}

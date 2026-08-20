@@ -63,6 +63,7 @@ import {
   extractPlanScopeItems,
 } from "./plan-chat.server.js";
 import { resolveActionContext } from "./resolved-action-context.server.js";
+import { persistCanonicalReplenishmentState } from "./action-scope.server.js";
 import {
   validatePlanPatch,
   describePlanRevision,
@@ -489,6 +490,8 @@ async function runRevisePlan(prisma, input) {
     actionId: input.action.id,
   });
   await invalidateDownstreamFromCurrentFocus(prisma, input);
+  const resolvedAfterPlan = await resolveActionContext(prisma, input);
+  await persistCanonicalReplenishmentState(prisma, input, resolvedAfterPlan);
 
   let reviseResult = null;
   if (

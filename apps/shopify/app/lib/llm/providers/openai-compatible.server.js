@@ -17,6 +17,7 @@ import {
   LlmProviderHttpError,
   estimateTokens,
 } from "../errors.server.js";
+import { assertExternalLlmCallAllowed } from "../external-call-guard.server.js";
 import { parseAndValidateStructuredOperation } from "../structured-operation-schema.server.js";
 
 const STRUCTURED_RESPONSE_NAME = "jefe_structured_response";
@@ -35,6 +36,7 @@ const STRUCTURED_RESPONSE_NAME = "jefe_structured_response";
 export function createOpenAiCompatibleProvider(input) {
   const logger = input.logger ?? console;
   const fetchImpl = input.fetchImpl ?? fetch;
+  const hasInjectedTransport = Boolean(input.fetchImpl);
   const providerName = input.providerName;
   const chatUrl = `${input.baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
@@ -46,6 +48,7 @@ export function createOpenAiCompatibleProvider(input) {
      * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
      */
     async generateStructuredOperation(request) {
+      assertExternalLlmCallAllowed({ hasInjectedTransport });
       const result = await generateStructuredJson({
         providerName,
         chatUrl,
@@ -74,6 +77,7 @@ export function createOpenAiCompatibleProvider(input) {
      * @param {{ systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number }} request
      */
     async generateStructuredJson(request) {
+      assertExternalLlmCallAllowed({ hasInjectedTransport });
       return generateStructuredJson({
         providerName,
         chatUrl,
@@ -95,13 +99,14 @@ export function createOpenAiCompatibleProvider(input) {
  *   config: any;
  *   fetchImpl: typeof fetch;
  *   logger: Pick<Console, "info" | "warn" | "error">;
- *   request: { systemPrompt: string; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number };
+ *   request: { systemPrompt: string|string[]; prompt: string; schema: any; maxInputTokens?: number; maxOutputTokens?: number; timeoutMs?: number };
  * }} input
  */
 async function generateStructuredJson(input) {
   const startedAt = Date.now();
   const { providerName } = input;
-  const promptText = `${input.request.systemPrompt}\n\n${input.request.prompt}`;
+  const systemPrompt = normalizePrompt(input.request.systemPrompt);
+  const promptText = `${systemPrompt}\n\n${input.request.prompt}`;
   const estimatedInputTokens = estimateTokens(promptText);
   const maxInputTokens =
     input.request.maxInputTokens ?? input.config.maxInputTokens;
@@ -116,47 +121,91 @@ async function generateStructuredJson(input) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      input.request.timeoutMs ?? input.config.timeoutMs,
-    );
+    const timeoutMs = input.request.timeoutMs ?? input.config.timeoutMs;
 
     try {
-      const response = await input.fetchImpl(input.chatUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${input.apiKey}`,
+      const body = {
+        model: input.config.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: input.request.prompt },
+        ],
+        store: false,
+        n: 1,
+        max_completion_tokens:
+          input.request.maxOutputTokens ?? input.config.maxOutputTokens,
+        reasoning_effort: "low",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: STRUCTURED_RESPONSE_NAME,
+            schema: toJsonSchema(input.request.schema),
+          },
         },
-        body: JSON.stringify({
-          model: input.config.model,
-          messages: [
-            { role: "system", content: input.request.systemPrompt },
-            { role: "user", content: input.request.prompt },
-          ],
+      };
+      if (providerName !== "openai") {
+        Object.assign(body, {
           temperature: 0,
           top_p: 0.1,
-          n: 1,
-          max_completion_tokens:
-            input.request.maxOutputTokens ?? input.config.maxOutputTokens,
-          reasoning_effort: "low",
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: STRUCTURED_RESPONSE_NAME,
-              schema: toJsonSchema(input.request.schema),
-            },
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        throw await buildHttpError(response, providerName);
+        });
       }
 
-      const payload = await response.json();
+      input.logger.info?.("LLM structured operation attempt started", {
+        provider: providerName,
+        model: input.config.model,
+        attempt,
+        timeoutMs,
+        estimatedInputTokens,
+        maxInputTokens,
+        maxOutputTokens:
+          input.request.maxOutputTokens ?? input.config.maxOutputTokens,
+      });
+
+      const response = /** @type {Response} */ (await withDeadline(
+        input.fetchImpl(input.chatUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${input.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+        {
+          controller,
+          timeoutMs,
+          providerName,
+          phase: "request",
+          logger: input.logger,
+        },
+      ));
+      input.logger.info?.("LLM structured operation response headers received", {
+        provider: providerName,
+        model: input.config.model,
+        attempt,
+        status: response.status,
+      });
+
+      if (!response.ok) {
+        throw await buildHttpError(response, providerName, {
+          controller,
+          timeoutMs,
+          logger: input.logger,
+        });
+      }
+
+      const payload = await withDeadline(response.json(), {
+        controller,
+        timeoutMs,
+        providerName,
+        phase: "response_body",
+        logger: input.logger,
+      });
+      input.logger.info?.("LLM structured operation response body parsed", {
+        provider: providerName,
+        model: input.config.model,
+        attempt,
+      });
       const content = extractContent(payload);
       const json = parseJson(content);
       if (json === null) {
@@ -166,6 +215,8 @@ async function generateStructuredJson(input) {
       const durationMs = Date.now() - startedAt;
       const usage = {
         inputTokens: payload?.usage?.prompt_tokens ?? null,
+        cachedInputTokens:
+          payload?.usage?.prompt_tokens_details?.cached_tokens ?? null,
         outputTokens: payload?.usage?.completion_tokens ?? null,
         totalTokens: payload?.usage?.total_tokens ?? null,
         estimatedInputTokens,
@@ -191,7 +242,6 @@ async function generateStructuredJson(input) {
         durationMs,
       };
     } catch (error) {
-      clearTimeout(timeout);
       lastError = error;
       if (attempt >= maxAttempts || !isRetryableError(error)) {
         const durationMs = Date.now() - startedAt;
@@ -204,6 +254,7 @@ async function generateStructuredJson(input) {
           usage: {
             estimatedInputTokens,
             inputTokens: null,
+            cachedInputTokens: null,
             outputTokens: null,
             totalTokens: null,
           },
@@ -213,6 +264,11 @@ async function generateStructuredJson(input) {
           error: safeErrorName(error),
           statusCode:
             /** @type {{ status?: unknown }} */ (error ?? {}).status ?? null,
+          providerCode:
+            /** @type {{ code?: unknown }} */ (error ?? {}).code ?? null,
+          providerMessage:
+            /** @type {{ providerMessage?: unknown }} */ (error ?? {})
+              .providerMessage ?? null,
         });
         throw error;
       }
@@ -223,6 +279,43 @@ async function generateStructuredJson(input) {
   throw lastError instanceof Error
     ? lastError
     : new Error(`${providerName} request failed.`);
+}
+
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {{ controller: AbortController; timeoutMs: number; providerName: string; phase: string; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ * @returns {Promise<T>}
+ */
+function withDeadline(promise, input) {
+  let timeout = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      input.logger.warn?.("LLM structured operation timed out", {
+        provider: input.providerName,
+        phase: input.phase,
+        timeoutMs: input.timeoutMs,
+      });
+      input.controller.abort();
+      reject(
+        new DOMException(
+          `${input.providerName} ${input.phase} timed out after ${input.timeoutMs}ms.`,
+          "AbortError",
+        ),
+      );
+    }, input.timeoutMs);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+/** @param {string|string[]|unknown} prompt */
+function normalizePrompt(prompt) {
+  if (Array.isArray(prompt)) {
+    return prompt.map((part) => String(part ?? "")).join("\n");
+  }
+  return String(prompt ?? "");
 }
 
 /**
@@ -282,19 +375,60 @@ function normalizeSchemaType(type) {
   return value;
 }
 
-/** @param {Response} response @param {string} providerName */
-async function buildHttpError(response, providerName) {
+/**
+ * @param {Response} response
+ * @param {string} providerName
+ * @param {{ controller: AbortController; timeoutMs: number; logger: Pick<Console, "info" | "warn" | "error"> }} input
+ */
+async function buildHttpError(response, providerName, input) {
   const retryAfter = response.headers.get("retry-after");
   let code = /** @type {string | number | null} */ (null);
+  let providerMessage = /** @type {string | null} */ (null);
+  if (response.status === 429) {
+    try {
+      await response.body?.cancel?.();
+    } catch {
+      // The body is irrelevant for rate-limit routing.
+    }
+    return new LlmProviderHttpError(
+      `${providerName} request failed with HTTP ${response.status}.`,
+      {
+        provider: providerName,
+        status: response.status,
+        code: "rate_limit",
+        retryAfter,
+        providerMessage: null,
+      },
+    );
+  }
   try {
-    const payload = await response.json();
+    const payload = await withDeadline(response.json(), {
+      controller: input.controller,
+      timeoutMs: input.timeoutMs,
+      providerName,
+      phase: "error_body",
+      logger: input.logger,
+    });
     code = payload?.error?.code ?? payload?.error?.type ?? null;
-  } catch {
+    providerMessage =
+      typeof payload?.error?.message === "string"
+        ? payload.error.message.slice(0, 500)
+        : null;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
     // Keep provider failures sanitized; status + code are enough for routing.
   }
   return new LlmProviderHttpError(
     `${providerName} request failed with HTTP ${response.status}.`,
-    { provider: providerName, status: response.status, code, retryAfter },
+    {
+      provider: providerName,
+      status: response.status,
+      code,
+      retryAfter,
+      providerMessage,
+    },
   );
 }
 

@@ -19,6 +19,8 @@ import {
   MERCHANT_BOOTSTRAP_JOB_TYPE,
   retryFailedBackfillJobs,
 } from "../../services/shopify-backfill-status.server.js";
+import { ensureMerchantPlanQueued } from "../merchant-plan/service.server.js";
+import { PLAN_RUN_STATUS } from "../merchant-plan/constants.server.js";
 
 export const ONBOARDING_CONTEXT_OPTIONS = Object.freeze([
   { value: "revenue", label: "Grow revenue", echo: "revenue comes first" },
@@ -34,7 +36,7 @@ const MILESTONES = new Set([
 ]);
 
 export async function getFastOnboardingExperience(prisma, input) {
-  const [shop, bootstrapStatus, bootstrapJob, priority, recommendations, fullStatuses, fullJobs] = await Promise.all([
+  const [shop, bootstrapStatus, bootstrapJob, priority, recommendations, latestPlanRun, fullStatuses, fullJobs] = await Promise.all([
     prisma.shop.findUniqueOrThrow({
       where: { id: input.shopId },
       select: { onboardingCompletedAt: true, onboardingMetadata: true, backfillCompletedAt: true },
@@ -66,6 +68,25 @@ export async function getFastOnboardingExperience(prisma, input) {
         ...recommendationWorkflowInclude(),
       },
     }),
+    prisma.merchantPlanRun?.findFirst
+      ? prisma.merchantPlanRun.findFirst({
+          where: {
+            merchantId: input.merchantId,
+            shopId: input.shopId,
+            sourceMode: { in: ["bootstrap", "full"] },
+          },
+          select: {
+            id: true,
+            status: true,
+            sourceMode: true,
+            safeErrorCode: true,
+            lastError: true,
+            failedAt: true,
+            updatedAt: true,
+          },
+          orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        })
+      : null,
     prisma.shopBackfillStatus.findMany({
       where: {
         shopId: input.shopId,
@@ -115,6 +136,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     hasSurfaceableRecommendation: Boolean(selected),
     inAppHandoff: Boolean(handoff),
     fullLearningState: fullLearning.state,
+    latestPlanRun,
   });
   let stage = "connect";
   if (handoff) stage = "app";
@@ -341,6 +363,16 @@ export async function retryFastOnboarding(prisma, input) {
       jobTypes: FULL_BACKFILL_JOB_TYPES,
     });
     return { ok: true, retried: retried.retried };
+  }
+  if (input.target === "merchant_plan") {
+    await ensureMerchantPlanQueued(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      resetAttempts: true,
+      proposalTrigger: "merchant_onboarding",
+    });
+    await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
+    return { ok: true };
   }
   await ensureMerchantBootstrapQueued(prisma, { ...input, reset: true });
   await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
@@ -669,6 +701,28 @@ export function shapeFullLearning(statuses, jobs) {
 export function classifyFailure(status, job, experience = {}) {
   const failed = status?.status === "failed" || job?.status === "failed";
   if (!failed) {
+    if (
+      experience.contextAnswered === true &&
+      experience.hasSurfaceableRecommendation !== true &&
+      [PLAN_RUN_STATUS.failed, PLAN_RUN_STATUS.modelDisabled].includes(
+        experience.latestPlanRun?.status,
+      )
+    ) {
+      if (experience.latestPlanRun.status === PLAN_RUN_STATUS.modelDisabled) {
+        return {
+          type: "retryable",
+          retryTarget: "merchant_plan",
+          message:
+            "I can’t generate the first recommendation while AI generation is disabled. Turn AI generation back on and I can retry from the same durable evidence.",
+        };
+      }
+      return {
+        type: "retryable",
+        retryTarget: "merchant_plan",
+        message:
+          "I couldn’t safely turn the store evidence into a recommendation. I can retry the generation from the same durable evidence.",
+      };
+    }
     const phase =
       stringValue(experience.bootstrapPhase) ??
       stringValue(jsonObject(status?.metadata).phase);

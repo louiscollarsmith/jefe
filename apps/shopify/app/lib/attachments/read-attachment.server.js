@@ -147,10 +147,14 @@ export async function readAttachment(input) {
 
   const config = getLlmConfig();
   const injected = Boolean(input.client);
-  if ((!config.enabled || !config.geminiApiKey) && !injected) {
+  if ((!config.enabled || (!config.openAiApiKey && !config.geminiApiKey)) && !injected) {
     return { ok: false, reason: "I can't read files just now — try telling me what's in it." };
   }
   assertExternalLlmCallAllowed({ hasInjectedTransport: injected });
+
+  if (!injected && config.openAiApiKey) {
+    return readAttachmentWithOpenAi(input, config);
+  }
 
   const model = config.fallbackModel || "gemini-flash-lite-latest";
   const client = input.client ?? new GoogleGenAI({ apiKey: config.geminiApiKey });
@@ -220,6 +224,106 @@ export async function readAttachment(input) {
     return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
   }
 
+  return { ok: true, text, filename: safeFilename(input.filename) };
+}
+
+/**
+ * @param {Parameters<typeof readAttachment>[0]} input
+ * @param {ReturnType<typeof getLlmConfig>} config
+ * @returns {Promise<{ ok: true, text: string, filename: string | null } | { ok: false, reason: string }>}
+ */
+async function readAttachmentWithOpenAi(input, config) {
+  const model = config.model || "gpt-5.6-luna";
+  const startedAt = Date.now();
+  let payload;
+  try {
+    const response = await fetch(
+      `${config.openAiBaseUrl.replace(/\/+$/, "")}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.openAiApiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          store: false,
+          messages: [
+            {
+              role: "system",
+              content: READ_PROMPT,
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:${input.mimeType};base64,${input.base64}`,
+                  },
+                },
+              ],
+            },
+          ],
+          max_completion_tokens: 600,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`openai_attachment_read_http_${response.status}`);
+    }
+    payload = await response.json();
+  } catch (error) {
+    input.logger?.warn?.("Attachment could not be read", {
+      merchantId: input.merchantId ?? null,
+      shopId: input.shopId ?? null,
+      mimeType: input.mimeType,
+      provider: "openai",
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    if (input.prisma) {
+      await recordLlmUsage(input.prisma, {
+        provider: "openai",
+        model,
+        feature: "attachment_read",
+        runType: "vision",
+        status: "error",
+        merchantId: input.merchantId ?? null,
+        shopId: input.shopId ?? null,
+        usage: null,
+        latencyMs: Date.now() - startedAt,
+      }).catch(() => {});
+    }
+    return { ok: false, reason: "I couldn't make that file out — tell me what's in it and I'll take it from there." };
+  }
+
+  if (input.prisma) {
+    await recordLlmUsage(input.prisma, {
+      provider: "openai",
+      model,
+      feature: "attachment_read",
+      runType: "vision",
+      status: "ok",
+      merchantId: input.merchantId ?? null,
+      shopId: input.shopId ?? null,
+      usage: {
+        inputTokens: payload?.usage?.prompt_tokens ?? null,
+        cachedInputTokens:
+          payload?.usage?.prompt_tokens_details?.cached_tokens ?? null,
+        outputTokens: payload?.usage?.completion_tokens ?? null,
+        totalTokens: payload?.usage?.total_tokens ?? null,
+      },
+      latencyMs: Date.now() - startedAt,
+    }).catch(() => {});
+  }
+  const raw = extractOpenAiText(payload).trim();
+  if (!raw) {
+    return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
+  }
+  const text = sanitizeMemoryText(raw).slice(0, MAX_EXTRACT_CHARS).trim();
+  if (!text) {
+    return { ok: false, reason: "That file looked empty to me — worth checking it sent properly." };
+  }
   return { ok: true, text, filename: safeFilename(input.filename) };
 }
 
@@ -314,4 +418,18 @@ function extractText(response) {
   const parts = response?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return "";
   return parts.map((/** @type {any} */ p) => (typeof p?.text === "string" ? p.text : "")).join(" ");
+}
+
+/** @param {any} payload */
+function extractOpenAiText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((/** @type {any} */ part) => {
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part?.content === "string") return part.content;
+      return "";
+    })
+    .join(" ");
 }
