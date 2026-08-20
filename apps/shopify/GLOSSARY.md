@@ -122,6 +122,9 @@ typed adapters write to Shopify or another external system.
 - **Capability availability** — The deterministic execution truth for a provider action, separate from business ownership. Examples include `AVAILABLE`, `NEEDS_AUTHORIZATION`, `NEEDS_CONFIGURATION`, `NEEDS_INPUT`, `PROVIDER_PREVIEW`, `UNSUPPORTED_BY_JEFE` and `UNSUPPORTED_BY_PROVIDER`.
 - **Intended actor** — The party that should carry out a workflow item in the desired business process: `JEFE`, `MERCHANT` or `EXTERNAL`. A missing Jefe integration does not automatically change the intended actor to the merchant.
 - **Shopify action capability catalog** — The source of truth for Shopify operations Jefe may reason about, including provider support, API surface/version, required scopes, Jefe implementation state, approval policy and idempotency expectations.
+- **Shopify capability catalogue** — The versioned catalogue of Shopify Admin GraphQL operations Jefe can discover and semantically reason about. It names Shopify primitives such as `inventoryTransferCreate` and keeps them separate from Jefe business use cases such as restock or clearance.
+- **Capability manifest** — One machine-readable Shopify operation contract. It separates technical API facts from semantic interpretation, required evidence, safety admission, scopes, executor support and version provenance.
+- **Qualification plan** — The generic evidence checklist derived from a capability manifest before Jefe can turn a Shopify operation into an actionable opportunity. It asks what must be true, such as source stock existing for a transfer, without hardcoding a recommendation scenario.
 - **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 

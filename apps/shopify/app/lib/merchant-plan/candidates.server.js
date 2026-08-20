@@ -18,6 +18,16 @@ import { expandBeliefRowsForContext } from "../merchant-memory/context-retriever
 import { retrieveMerchantContext } from "../merchant-memory/merchant-context.server.js";
 import { inspectActionIntentOpportunity } from "../actions/action-resolution.server.js";
 import { listExecutableStepCapabilities } from "./step-capabilities.server.js";
+import {
+  getShopifyCapabilityManifest,
+  parseScopeList,
+  resolveShopifyCapabilityAvailability,
+} from "../shopify/capabilities/catalog.server.js";
+import {
+  buildShopifyCapabilityQualificationPlan,
+  evaluateShopifyCapabilityQualification,
+} from "../shopify/capabilities/qualification.server.js";
+import { searchShopifyCapabilities } from "../shopify/capabilities/search.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -258,21 +268,132 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
 
 async function buildGroundedOpportunityCandidates(prisma, input) {
   const executable = listExecutableStepCapabilities();
+  const executableByProviderRef = groupBy(
+    executable.filter((capability) => capability.providerRef),
+    (capability) => capability.providerRef,
+  );
+  const executorRefs = executable
+    .map((capability) => capability.executorRef)
+    .filter(Boolean);
+  const declaredScopes = parseScopeList(process.env.SCOPES);
   const opportunities = [];
   const diagnostics = [];
-  for (const capability of executable) {
+  const searched = new Set();
+  const storeConditions = [
+    ...deriveStoreConditions(input.beliefs),
+    ...(await deriveObjectiveStoreConditions(prisma, input)),
+  ];
+  for (const storeCondition of dedupeBy(storeConditions, (condition) => condition.id)) {
+    const retrieved = searchShopifyCapabilities(storeCondition.text, {
+      writeOnly: true,
+      limit: 5,
+    });
+    for (const retrievedCapability of retrieved) {
+      if (searched.has(`${storeCondition.id}:${retrievedCapability.providerRef}`)) continue;
+      searched.add(`${storeCondition.id}:${retrievedCapability.providerRef}`);
+      const manifest = getShopifyCapabilityManifest(retrievedCapability.providerRef);
+      if (!manifest) continue;
+      const executorCandidates = executableByProviderRef.get(manifest.providerRef) ?? [];
+      if (executorCandidates.length === 0) {
+        diagnostics.push(dynamicCapabilityDiagnostic({
+          storeCondition,
+          manifest,
+          retrievedCapability,
+          gateResult: "rejected",
+          rejectionReason: "no_jefe_executor_binding",
+          suppliedToLuna: false,
+        }));
+        continue;
+      }
+      for (const capability of executorCandidates) {
+        const built = await inspectDynamicCapabilityOpportunity(prisma, {
+          ...input,
+          storeCondition,
+          manifest,
+          retrievedCapability,
+          capability,
+          declaredScopes,
+          executorRefs,
+        });
+        diagnostics.push(built.diagnostic);
+        if (built.opportunity) opportunities.push(built.opportunity);
+      }
+    }
+  }
+  // Compatibility fallback for capabilities whose fact condition has not yet
+  // been expressed by deriveStoreConditions. Diagnostics mark these as legacy so
+  // Task 2 can remove the fallback once every condition source is dynamic.
+  if (opportunities.length === 0) {
+    for (const capability of executable) {
+      const manifest = capability.providerRef
+        ? getShopifyCapabilityManifest(capability.providerRef)
+        : null;
+      if (!manifest) continue;
+      const built = await inspectDynamicCapabilityOpportunity(prisma, {
+        ...input,
+        storeCondition: {
+          id: `compatibility_${capability.actionType}_${capability.targetKind}`,
+          text: capability.description,
+          source: "legacy_execute_capability_fallback",
+          supportingBeliefIds: [],
+        },
+        manifest,
+        retrievedCapability: {
+          providerRef: manifest.providerRef,
+          operation: manifest.operation,
+          matchedTerms: [],
+          qualificationRequirements: manifest.semantic.qualificationRequirements,
+        },
+        capability,
+        declaredScopes,
+        executorRefs,
+      });
+      built.diagnostic.legacyFallback = true;
+      diagnostics.push(built.diagnostic);
+      if (built.opportunity) opportunities.push(built.opportunity);
+    }
+  }
+  const deduped = dedupeOpportunities(opportunities);
+  const selected = deduped.slice(0, 8);
+  const selectedIds = new Set(selected.map((opportunity) => opportunity.id));
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.candidateId && !selectedIds.has(diagnostic.candidateId)) {
+      diagnostic.suppliedToLuna = false;
+      diagnostic.gateResult = "rejected";
+      diagnostic.rejectionReason = "candidate_limit_exceeded";
+    }
+  }
+  return { opportunities: selected, diagnostics };
+}
+
+async function inspectDynamicCapabilityOpportunity(prisma, input) {
+  const { capability, manifest, storeCondition, retrievedCapability } = input;
     const intent = {
       actionType: capability.actionType,
       targetKind: capability.targetKind,
     };
-    const diagnostic = {
+  const availability = resolveShopifyCapabilityAvailability(manifest, {
+    apiVersion: process.env.SHOPIFY_API_VERSION ?? "2026-07",
+    declaredScopes: input.declaredScopes,
+    grantedScopes: capability.requiredScopes ?? [],
+    executorRefs: input.executorRefs,
+  });
+  const diagnostic = {
+      storeCondition,
+      providerRef: manifest.providerRef,
+      operation: manifest.operation,
+      capabilityId: manifest.id,
+      semanticEffects: manifest.semantic.semanticEffects,
+      retrievedTerms: retrievedCapability.matchedTerms ?? [],
       capabilityRef: capability.ref,
       actionType: capability.actionType,
       targetKind: capability.targetKind,
       writeEnabled: capability.writeEnabled === true,
       requiredScopes: capability.requiredScopes ?? [],
       registryResolution: capability.ref,
+      availability,
       dryRun: null,
+      qualification: null,
       gateResult: "rejected",
       rejectionReason: null,
       suppliedToLuna: false,
@@ -280,8 +401,7 @@ async function buildGroundedOpportunityCandidates(prisma, input) {
     };
     if (capability.writeEnabled !== true) {
       diagnostic.rejectionReason = "capability_write_disabled";
-      diagnostics.push(diagnostic);
-      continue;
+      return { opportunity: null, diagnostic };
     }
     let result;
     try {
@@ -292,8 +412,7 @@ async function buildGroundedOpportunityCandidates(prisma, input) {
       });
     } catch {
       diagnostic.rejectionReason = "capability_resolver_threw";
-      diagnostics.push(diagnostic);
-      continue;
+      return { opportunity: null, diagnostic };
     }
     diagnostic.dryRun = {
       status: result.status,
@@ -304,36 +423,288 @@ async function buildGroundedOpportunityCandidates(prisma, input) {
       diagnostic.rejectionReason = result.reason
         ? `${result.status}:${result.reason}`
         : result.status;
-      diagnostics.push(diagnostic);
-      continue;
+      return { opportunity: null, diagnostic };
     }
+  const qualificationPlan = buildShopifyCapabilityQualificationPlan(manifest);
+  const qualificationEvidence = qualificationEvidenceFromResolvedCapability({
+    manifest,
+    result,
+  });
+  const qualification = evaluateShopifyCapabilityQualification(
+    qualificationPlan,
+    qualificationEvidence,
+  );
+  diagnostic.qualification = {
+    status: qualification.status,
+    checks: qualification.checks.map((check) => ({
+      id: check.id,
+      evidenceKey: check.evidenceKey,
+      status: check.status,
+      reason: check.reason,
+    })),
+  };
+  if (qualification.status !== "qualified") {
+    diagnostic.rejectionReason = `qualification_${qualification.status}`;
+    return { opportunity: null, diagnostic };
+  }
     const opportunity = opportunityFromResolvedCapability({
       capability,
+      manifest,
+      storeCondition,
+      qualification,
       result,
       beliefs: input.beliefs,
       intent,
     });
-    if (opportunity) {
+    const enrichedOpportunity = opportunity
+      ? {
+          ...opportunity,
+          storeCondition,
+          selectedCapability: capabilityForOpportunity(capability, manifest),
+          qualification: {
+            source: "shopify_capability_manifest",
+            capabilityId: manifest.id,
+            providerRef: manifest.providerRef,
+            operation: manifest.operation,
+            status: qualification.status,
+            checks: qualification.checks.map((check) => ({
+              id: check.id,
+              evidenceKey: check.evidenceKey,
+              status: check.status,
+              reason: check.reason,
+            })),
+          },
+        }
+      : null;
+    if (enrichedOpportunity) {
       diagnostic.gateResult = "accepted";
       diagnostic.rejectionReason = null;
       diagnostic.suppliedToLuna = true;
-      diagnostic.candidateId = opportunity.id;
-      opportunities.push(opportunity);
+      diagnostic.candidateId = enrichedOpportunity.id;
     } else {
       diagnostic.rejectionReason = "ready_but_missing_candidate_contract";
     }
-    diagnostics.push(diagnostic);
-  }
-  const selected = opportunities.slice(0, 8);
-  const selectedIds = new Set(selected.map((opportunity) => opportunity.id));
-  for (const diagnostic of diagnostics) {
-    if (diagnostic.candidateId && !selectedIds.has(diagnostic.candidateId)) {
-      diagnostic.suppliedToLuna = false;
-      diagnostic.gateResult = "rejected";
-      diagnostic.rejectionReason = "candidate_limit_exceeded";
+  return { opportunity: enrichedOpportunity, diagnostic };
+}
+
+function deriveStoreConditions(beliefs) {
+  const conditions = [];
+  for (const belief of beliefs ?? []) {
+    const key = String(belief?.key ?? "");
+    const label = safeText(belief?.label ?? key, 120);
+    if (key === "inventory.low_cover_products.trailing_30d") {
+      conditions.push({
+        id: "condition_inventory_low_cover",
+        source: "merchant_memory_belief",
+        supportingBeliefIds: [belief.id].filter(Boolean),
+        text:
+          "inventory stock shortage low cover unavailable at selling location, possible replenishment or transfer using existing stock at another location",
+      });
+      continue;
+    }
+    if (key === "products.dead_stock.trailing_90d") {
+      conditions.push({
+        id: "condition_dead_stock",
+        source: "merchant_memory_belief",
+        supportingBeliefIds: [belief.id].filter(Boolean),
+        text:
+          "slow moving dead stock clearance markdown price variants tied up inventory capital",
+      });
+      continue;
+    }
+    if (/range_composition|catalogue|product_type|taxonomy/.test(key)) {
+      conditions.push({
+        id: `condition_${slug(key)}`,
+        source: "merchant_memory_belief",
+        supportingBeliefIds: [belief.id].filter(Boolean),
+        text: `product catalogue metadata taxonomy presentation ${label}`,
+      });
+      continue;
+    }
+    if (/inventory|product|catalog|margin|discount|customer|order/.test(key)) {
+      conditions.push({
+        id: `condition_${slug(key)}`,
+        source: "merchant_memory_belief",
+        supportingBeliefIds: [belief.id].filter(Boolean),
+        text: `${belief.cat ?? ""} ${key} ${label} ${JSON.stringify(belief.val ?? {}).slice(0, 500)}`,
+      });
     }
   }
-  return { opportunities: selected, diagnostics };
+  return dedupeBy(conditions, (condition) => condition.id).slice(0, 24);
+}
+
+async function deriveObjectiveStoreConditions(prisma, input) {
+  const conditions = [];
+  try {
+    if (prisma?.product?.findMany) {
+      const products = await prisma.product.findMany({
+        where: { merchantId: input.merchantId, shopId: input.shopId },
+        select: {
+          id: true,
+          externalId: true,
+          title: true,
+          status: true,
+          productType: true,
+          variants: {
+            select: {
+              id: true,
+              externalId: true,
+              unitCost: true,
+              inventoryLevels: { select: { available: true } },
+            },
+          },
+        },
+        take: 80,
+      });
+      const stockedCostedProducts = products.filter((product) =>
+        (product.variants ?? []).some((variant) => {
+          const stock = (variant.inventoryLevels ?? []).reduce(
+            (sum, level) => sum + (Number(level.available) || 0),
+            0,
+          );
+          return stock > 0 && Number(variant.unitCost) > 0;
+        }),
+      );
+      if (stockedCostedProducts.length > 0) {
+        conditions.push({
+          id: "condition_stocked_costed_catalogue_items",
+          source: "canonical_shopify_records",
+          supportingBeliefIds: [],
+          text:
+            "stocked costed catalogue items with possible slow moving inventory capital and price intervention options",
+        });
+      }
+      const untypedProducts = products.filter((product) => !safeText(product.productType, 120));
+      if (untypedProducts.length > 0) {
+        conditions.push({
+          id: "condition_catalogue_metadata_missing_product_type",
+          source: "canonical_shopify_records",
+          supportingBeliefIds: [],
+          text:
+            "product catalogue metadata taxonomy presentation products missing product type",
+        });
+      }
+    }
+  } catch {
+    return conditions;
+  }
+  return conditions;
+}
+
+function qualificationEvidenceFromResolvedCapability({ manifest, result }) {
+  const summary = result?.summary ?? {};
+  if (summary.qualification?.status === "qualified") {
+    return evidenceFromQualificationSummary(summary.qualification);
+  }
+  const evidence = {
+    "product.exists": true,
+    "variant.ids.present": true,
+    "target.field.differs": true,
+    "pricing.floor.available": true,
+    "policy.field.safe_to_update": true,
+  };
+  if (manifest.providerRef === "shopify.product.update") {
+    evidence["product.exists"] = Number(summary.productCount ?? 0) > 0 || Array.isArray(summary.reasons);
+    evidence["target.field.differs"] = true;
+    evidence["policy.field.safe_to_update"] = true;
+  }
+  if (manifest.providerRef === "shopify.product_variants.bulk_update") {
+    evidence["variant.ids.present"] = Array.isArray(summary.topItems)
+      ? summary.topItems.map((item) => item?.variantId ?? item?.productId ?? item?.title).filter(Boolean)
+      : Number(summary.variantCount ?? 0) > 0
+        ? { variantCount: summary.variantCount }
+        : [];
+    evidence["target.field.differs"] = true;
+    evidence["pricing.floor.available"] = true;
+  }
+  if (manifest.providerRef === "shopify.inventory_transfer.create") {
+    const firstLine = Array.isArray(summary.lineItems) ? summary.lineItems[0] : null;
+    evidence["inventory.item.tracked"] = true;
+    evidence["inventory.destination.need_quantity"] = Number(firstLine?.quantity ?? summary.lineItemCount ?? 0);
+    evidence["inventory.source.available_quantity"] = Number(firstLine?.sourceAvailable ?? 0);
+    evidence["inventory.locations.different"] =
+      typeof summary.originLocationId === "string" &&
+      typeof summary.destinationLocationId === "string" &&
+      summary.originLocationId !== summary.destinationLocationId;
+    evidence["inventory.transfer.identities"] = {
+      sourceLocationId: summary.originLocationId,
+      destinationLocationId: summary.destinationLocationId,
+      inventoryItemId: firstLine?.inventoryItemId,
+      quantity: firstLine?.quantity,
+    };
+  }
+  return evidence;
+}
+
+function evidenceFromQualificationSummary(qualification) {
+  const evidence = {};
+  for (const line of qualification.lineItems ?? []) {
+    for (const check of line.checks ?? []) {
+      if (check.value !== undefined && evidence[check.evidenceKey] === undefined) {
+        evidence[check.evidenceKey] = check.value;
+      }
+    }
+  }
+  return evidence;
+}
+
+function dynamicCapabilityDiagnostic({
+  storeCondition,
+  manifest,
+  retrievedCapability,
+  gateResult,
+  rejectionReason,
+  suppliedToLuna,
+}) {
+  return {
+    storeCondition,
+    providerRef: manifest.providerRef,
+    operation: manifest.operation,
+    capabilityId: manifest.id,
+    semanticEffects: manifest.semantic.semanticEffects,
+    retrievedTerms: retrievedCapability.matchedTerms ?? [],
+    capabilityRef: null,
+    actionType: null,
+    targetKind: null,
+    writeEnabled: false,
+    requiredScopes: manifest.requiredScopes,
+    registryResolution: null,
+    availability: null,
+    dryRun: null,
+    qualification: null,
+    gateResult,
+    rejectionReason,
+    suppliedToLuna,
+    candidateId: null,
+  };
+}
+
+function dedupeOpportunities(opportunities) {
+  return dedupeBy(opportunities, (opportunity) => opportunity.id);
+}
+
+function groupBy(rows, keyFor) {
+  const map = new Map();
+  for (const row of rows ?? []) {
+    const key = keyFor(row);
+    if (!key) continue;
+    const list = map.get(key) ?? [];
+    list.push(row);
+    map.set(key, list);
+  }
+  return map;
+}
+
+function dedupeBy(rows, keyFor) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows ?? []) {
+    const key = keyFor(row);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 function summarizeCapabilityDryRun(summary) {
@@ -356,193 +727,259 @@ function summarizeCapabilityDryRun(summary) {
   };
 }
 
-function opportunityFromResolvedCapability({ capability, result, beliefs, intent }) {
-  const ref = capability.ref;
+function opportunityFromResolvedCapability({ capability, manifest, storeCondition, qualification, result, beliefs, intent }) {
   const summary = result.summary ?? {};
-  if (ref === "execute:listing_copy:missing_product_type") {
-    const reasons = Array.isArray(summary.reasons) ? summary.reasons : [];
-    if (reasons.length === 0) return null;
-    return {
-      id: "opportunity_listing_copy_missing_product_type",
-      opportunityType: "catalogue_taxonomy_gap",
-      actionIntent: intent,
-      title: "Categorise uncategorised Shopify products",
-      evidence: reasons.slice(0, 8).map((item, index) => ({
-        id: `listing_copy_evidence_${index + 1}`,
-        source: "shopify_product_records",
-        summary: safeText(
-          `${item.title ?? item.productId} has no product type; proposed ${item.proposedType} because ${item.because}.`,
-          240,
-        ),
-        entityIds: [safeIdentifier(item.productId)].filter(Boolean),
-      })),
-      affectedEntities: reasons.slice(0, 20).map((item) => ({
-        kind: "product",
-        id: safeIdentifier(item.productId),
-        title: safeText(item.title, 160),
-      })),
-      initialProposal: {
-        kind: "product_type_updates",
-        productCount: numberOrNull(summary.productCount) ?? reasons.length,
-        updates: reasons.slice(0, 20).map((item) => ({
-          productId: safeIdentifier(item.productId),
-          title: safeText(item.title, 160),
-          proposedType: safeText(item.proposedType, 120),
-          reason: safeText(item.because, 220),
-        })),
-        unresolvedCount: numberOrNull(summary.unresolvedCount),
-      },
-      potentialCapabilities: [capabilityForOpportunity(capability)],
-      measurableOutcome:
-        "Product type coverage improves on the affected products after Jefe applies the approved updates.",
-    };
-  }
-  if (ref === "execute:price_markdown:dead_stock") {
-    const topItems = Array.isArray(summary.topItems) ? summary.topItems : [];
-    if (topItems.length === 0) return null;
-    const belief = findBelief(beliefs, "products.dead_stock.trailing_90d");
-    return {
-      id: "opportunity_price_markdown_dead_stock",
-      opportunityType: "dead_stock_clearance",
-      actionIntent: intent,
-      title: "Clear dead stock with a floored markdown",
-      evidence: [
-        belief
-          ? {
-              id: belief.id,
-              source: "merchant_memory_belief",
-              summary: safeText(`${belief.label}: ${JSON.stringify(belief.val)}`, 260),
-              entityIds: [],
-            }
-          : null,
-        ...topItems.slice(0, 8).map((item, index) => ({
-          id: `dead_stock_evidence_${index + 1}`,
-          source: "shopify_product_inventory_and_orders",
-          summary: safeText(
-            `${item.title ?? "Product"} has ${item.unitsOnHand ?? "stock"} units on hand and no recent sale in the clearance window.`,
-            240,
-          ),
-          entityIds: [],
-        })),
-      ].filter(Boolean),
-      affectedEntities: topItems.slice(0, 20).map((item) => ({
-        kind: "variant_or_product",
-        id: safeIdentifier(item.variantId ?? item.productId ?? item.title),
-        title: safeText(item.title, 160),
-      })),
-      initialProposal: {
-        kind: "floored_markdown",
-        variantCount: numberOrNull(summary.variantCount),
-        markdownPercent: numberOrNull(summary.markdownPercent),
-        totalTrappedCapital: numberOrNull(summary.totalTrappedCapital),
-        totalProjectedRecovery: numberOrNull(summary.totalProjectedRecovery),
-        topItems: topItems.slice(0, 20),
-      },
-      potentialCapabilities: [capabilityForOpportunity(capability)],
-      measurableOutcome:
-        "Jefe measures whether the marked-down dead-stock variants sell after the approved price change.",
-    };
-  }
-  if (ref === "execute:tidy_up:stale_listing") {
-    const reasons = Array.isArray(summary.reasons) ? summary.reasons : [];
-    if (reasons.length === 0) return null;
-    return {
-      id: "opportunity_tidy_up_stale_listing",
-      opportunityType: "stale_storefront_listing",
-      actionIntent: intent,
-      title: "Archive unbuyable stale storefront products",
-      evidence: reasons.slice(0, 8).map((item, index) => ({
-        id: `tidy_up_evidence_${index + 1}`,
-        source: "shopify_product_inventory_and_orders",
-        summary: safeText(`${item.title ?? item.productId}: ${item.because}.`, 240),
-        entityIds: [safeIdentifier(item.productId)].filter(Boolean),
-      })),
-      affectedEntities: reasons.slice(0, 20).map((item) => ({
-        kind: "product",
-        id: safeIdentifier(item.productId),
-        title: safeText(item.title, 160),
-      })),
-      initialProposal: {
-        kind: "archive_products",
-        productCount: numberOrNull(summary.productCount),
-        windowDays: numberOrNull(summary.windowDays),
-        products: reasons.slice(0, 20),
-      },
-      potentialCapabilities: [capabilityForOpportunity(capability)],
-      measurableOutcome:
-        "Buyable active product coverage improves after Jefe archives the approved stale products.",
-    };
-  }
-  if (ref === "execute:shopify_inventory_transfer:restock") {
-    const lineItems = Array.isArray(summary.lineItems) ? summary.lineItems : [];
-    if (lineItems.length === 0) return null;
-    const belief = findBelief(beliefs, "inventory.low_cover_products.trailing_30d");
-    return {
-      id: "opportunity_inventory_transfer_low_cover_restock",
-      opportunityType: "low_cover_restock",
-      actionIntent: intent,
-      title: "Replenish products with proven recent demand",
-      evidence: [
-        belief
-          ? {
-              id: belief.id,
-              source: "merchant_memory_belief",
-              summary: safeText(`${belief.label}: ${JSON.stringify(belief.val)}`, 320),
-              entityIds: lineItems
-                .map((item) => safeIdentifier(item.productId))
-                .filter(Boolean),
-            }
-          : null,
-        ...lineItems.slice(0, 8).map((item, index) => ({
-          id: `low_cover_restock_evidence_${index + 1}`,
-          source: "shopify_orders_inventory_and_catalogue",
-          summary: safeText(
-            `${item.title ?? item.productId} sold ${item.unitsSold ?? "recent"} unit(s) in the evidence window, has ${item.available ?? 0} available, and is proposed for ${item.quantity} replenishment unit(s).`,
-            260,
-          ),
-          entityIds: [
-            safeIdentifier(item.productId),
-            safeIdentifier(item.variantExternalId ?? item.variantId),
-            safeIdentifier(item.inventoryItemId),
-          ].filter(Boolean),
-        })),
-      ].filter(Boolean),
-      affectedEntities: lineItems.slice(0, 20).map((item) => ({
-        kind: "variant",
-        id: safeIdentifier(item.variantExternalId ?? item.variantId ?? item.inventoryItemId),
-        productId: safeIdentifier(item.productExternalId ?? item.productId),
-        title: safeText(item.title, 160),
-      })),
-      initialProposal: {
-        kind: "shopify_inventory_transfer",
-        coverDays: numberOrNull(summary.coverDays),
-        lineItemCount: numberOrNull(summary.lineItemCount),
-        originLocationId: safeIdentifier(summary.originLocationId),
-        destinationLocationId: safeIdentifier(summary.destinationLocationId),
-        lineItems: lineItems.slice(0, 20).map((item) => ({
-          productId: safeIdentifier(item.productExternalId ?? item.productId),
-          variantId: safeIdentifier(item.variantExternalId ?? item.variantId),
-          inventoryItemId: safeIdentifier(item.inventoryItemId),
-          title: safeText(item.title, 160),
-          sku: safeText(item.sku, 80),
-          quantity: numberOrNull(item.quantity),
-          available: numberOrNull(item.available),
-          dailyVelocity: numberOrNull(item.dailyVelocity),
-          daysOfCover: numberOrNull(item.daysOfCover),
-          unitsSold: numberOrNull(item.unitsSold),
-        })),
-      },
-      potentialCapabilities: [capabilityForOpportunity(capability)],
-      measurableOutcome:
-        "Jefe measures whether the approved Shopify inventory transfer is created for the low-cover items and whether stock cover improves after receipt.",
-    };
-  }
-  return null;
+  const evidence = opportunityEvidenceFromSummary({
+    manifest,
+    summary,
+    beliefs,
+  });
+  const affectedEntities = opportunityEntitiesFromSummary(manifest, summary);
+  if (evidence.length === 0 && affectedEntities.length === 0) return null;
+
+  return {
+    id: capabilityOpportunityId(manifest, summary),
+    opportunityType: `shopify_${slug(manifest.domain || manifest.operation)}`,
+    actionIntent: intent,
+    title: capabilityOpportunityTitle(manifest, summary),
+    evidence,
+    affectedEntities,
+    initialProposal: opportunityInitialProposalFromSummary(manifest, summary),
+    potentialCapabilities: [capabilityForOpportunity(capability, manifest)],
+    measurableOutcome:
+      manifest.semantic?.outcomes?.[0] ??
+      "Jefe measures whether the approved Shopify operation completed and changed the intended store state.",
+    discovery: {
+      source: "shopify_capability_manifest",
+      storeCondition,
+      qualificationStatus: qualification?.status ?? null,
+      semanticEffects: manifest.semantic?.semanticEffects ?? [],
+    },
+  };
 }
 
-function capabilityForOpportunity(capability) {
+function capabilityOpportunityId(manifest, summary) {
+  const discriminator = createHash("sha256")
+    .update(
+      stableStringify({
+        providerRef: manifest.providerRef,
+        operation: manifest.operation,
+        productCount: numberOrNull(summary.productCount),
+        variantCount: numberOrNull(summary.variantCount),
+        lineItemCount: numberOrNull(summary.lineItemCount),
+        reasonKeys: summaryRows(summary.reasons, "reason").map((item) => [
+          item.productId,
+          item.proposedType ? "target_field" : "status_field",
+        ]),
+        lineKeys: summaryRows(summary.lineItems, "line_item").map((item) => [
+          item.inventoryItemId,
+          item.quantity,
+        ]),
+        topKeys: summaryRows(summary.topItems, "item").map((item) => [
+          item.variantId ?? item.productId ?? item.title,
+        ]),
+      }),
+    )
+    .digest("hex")
+    .slice(0, 8);
+  return `opportunity_${slug(manifest.providerRef)}_${discriminator}`;
+}
+
+function opportunityEvidenceFromSummary({ manifest, summary, beliefs }) {
+  const evidence = [];
+  const supportingBeliefIds = new Set();
+  for (const belief of beliefs ?? []) {
+    const keyText = `${belief?.category ?? ""}.${belief?.key ?? ""} ${belief?.label ?? ""}`.toLowerCase();
+    const matchesCapability = (manifest.semantic?.tags ?? []).some((tag) =>
+      keyText.includes(String(tag).replace(/_/g, " ").toLowerCase()),
+    );
+    if (matchesCapability && belief?.id && !supportingBeliefIds.has(belief.id)) {
+      supportingBeliefIds.add(belief.id);
+      evidence.push({
+        id: belief.id,
+        source: "merchant_memory_belief",
+        summary: safeText(`${belief.label ?? belief.key}: ${JSON.stringify(belief.val ?? {})}`, 320),
+        entityIds: [],
+      });
+    }
+  }
+  const rows = [
+    ...summaryRows(summary.reasons, "reason"),
+    ...summaryRows(summary.topItems, "item"),
+    ...summaryRows(summary.lineItems, "line_item"),
+    ...summaryRows(summary.products, "product"),
+    ...summaryRows(summary.updates, "update"),
+  ];
+  for (const [index, item] of rows.slice(0, 8).entries()) {
+    evidence.push({
+      id: `${slug(manifest.operation)}_evidence_${index + 1}`,
+      source: "shopify_capability_resolver",
+      summary: capabilityEvidenceSentence(manifest, item),
+      entityIds: entityIdsForSummaryItem(item),
+    });
+  }
+  if (evidence.length === 0 && summary.productCount + summary.variantCount + summary.lineItemCount > 0) {
+    evidence.push({
+      id: `${slug(manifest.operation)}_evidence_1`,
+      source: "shopify_capability_resolver",
+      summary: safeText(`${manifest.operation} resolved eligible store records for this capability.`, 220),
+      entityIds: [],
+    });
+  }
+  return evidence;
+}
+
+function opportunityEntitiesFromSummary(manifest, summary) {
+  const rows = [
+    ...summaryRows(summary.lineItems, "line_item"),
+    ...summaryRows(summary.topItems, "item"),
+    ...summaryRows(summary.reasons, "reason"),
+    ...summaryRows(summary.products, "product"),
+    ...summaryRows(summary.updates, "update"),
+  ];
+  return rows.slice(0, 20).map((item) => ({
+    kind: entityKindForCapability(manifest, item),
+    id: safeIdentifier(
+      item.variantExternalId ??
+        item.variantId ??
+        item.productExternalId ??
+        item.productId ??
+        item.inventoryItemId ??
+        item.id ??
+        item.title,
+    ),
+    productId: safeIdentifier(item.productExternalId ?? item.productId),
+    title: safeText(item.title ?? item.productTitle ?? item.productId ?? item.inventoryItemId, 160),
+  }));
+}
+
+function opportunityInitialProposalFromSummary(manifest, summary) {
+  const kind = opportunitySummaryKind(manifest, summary);
+  const base = {
+    kind,
+    providerRef: manifest.providerRef,
+    operation: manifest.operation,
+    productCount: numberOrNull(summary.productCount),
+    variantCount: numberOrNull(summary.variantCount),
+    lineItemCount: numberOrNull(summary.lineItemCount),
+  };
+  if (Array.isArray(summary.lineItems)) {
+    return {
+      ...base,
+      coverDays: numberOrNull(summary.coverDays),
+      originLocationId: safeIdentifier(summary.originLocationId),
+      destinationLocationId: safeIdentifier(summary.destinationLocationId),
+      lineItems: summary.lineItems.slice(0, 20).map((item) => ({
+        productId: safeIdentifier(item.productExternalId ?? item.productId),
+        variantId: safeIdentifier(item.variantExternalId ?? item.variantId),
+        inventoryItemId: safeIdentifier(item.inventoryItemId),
+        title: safeText(item.title, 160),
+        sku: safeText(item.sku, 80),
+        quantity: numberOrNull(item.quantity),
+        available: numberOrNull(item.available),
+        sourceAvailable: numberOrNull(item.sourceAvailable),
+        dailyVelocity: numberOrNull(item.dailyVelocity),
+        daysOfCover: numberOrNull(item.daysOfCover),
+        unitsSold: numberOrNull(item.unitsSold),
+      })),
+    };
+  }
+  if (Array.isArray(summary.topItems)) {
+    return {
+      ...base,
+      markdownPercent: numberOrNull(summary.markdownPercent),
+      totalTrappedCapital: numberOrNull(summary.totalTrappedCapital),
+      totalProjectedRecovery: numberOrNull(summary.totalProjectedRecovery),
+      topItems: summary.topItems.slice(0, 20),
+    };
+  }
+  if (Array.isArray(summary.reasons)) {
+    return {
+      ...base,
+      updates: summary.reasons.slice(0, 20).map((item) => ({
+        productId: safeIdentifier(item.productId),
+        title: safeText(item.title, 160),
+        proposedType: safeText(item.proposedType, 120),
+        reason: safeText(item.because, 220),
+      })),
+      products: summary.reasons.slice(0, 20),
+      unresolvedCount: numberOrNull(summary.unresolvedCount),
+      windowDays: numberOrNull(summary.windowDays),
+    };
+  }
+  return base;
+}
+
+function opportunitySummaryKind(manifest, summary) {
+  if (summary.kind) return String(summary.kind);
+  if (Array.isArray(summary.lineItems)) return `shopify_${slug(manifest.operation)}`;
+  if (Array.isArray(summary.topItems)) return "variant_updates";
+  if (Array.isArray(summary.reasons)) {
+    const hasProposedType = summary.reasons.some((item) => item?.proposedType);
+    if (hasProposedType) return "product_type_updates";
+    return "product_status_updates";
+  }
+  return `shopify_${slug(manifest.operation)}`;
+}
+
+function capabilityOpportunityTitle(manifest, summary) {
+  const count = numberOrNull(summary.lineItemCount ?? summary.variantCount ?? summary.productCount);
+  const entity =
+    (manifest.semantic?.affectedEntities ?? []).find((item) => item !== "InventoryTransfer") ??
+    manifest.domain ??
+    "store record";
+  const verb = String(manifest.operation ?? "Shopify operation")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+  const prefix = count ? `${verb} for ${count} ${entity}${count === 1 ? "" : "s"}` : verb;
+  return sentenceCase(prefix);
+}
+
+function capabilityEvidenceSentence(manifest, item) {
+  const title = item.title ?? item.productTitle ?? item.productId ?? item.inventoryItemId ?? manifest.operation;
+  const details = [
+    item.because,
+    item.proposedType ? `proposed value ${item.proposedType}` : null,
+    item.quantity != null ? `quantity ${item.quantity}` : null,
+    item.sourceAvailable != null ? `source available ${item.sourceAvailable}` : null,
+    item.available != null ? `available ${item.available}` : null,
+    item.unitsSold != null ? `sold ${item.unitsSold}` : null,
+  ].filter(Boolean);
+  return safeText(`${title}${details.length ? `: ${details.join(", ")}.` : " is eligible for the resolved Shopify capability."}`, 260);
+}
+
+function entityKindForCapability(manifest, item) {
+  if (item.inventoryItemId) return "inventory_item";
+  if (item.variantExternalId || item.variantId) return "variant";
+  if (item.productExternalId || item.productId) return "product";
+  return safeText(manifest.semantic?.affectedEntities?.[0] ?? manifest.domain ?? "entity", 80);
+}
+
+function entityIdsForSummaryItem(item) {
+  return [
+    safeIdentifier(item.productExternalId ?? item.productId),
+    safeIdentifier(item.variantExternalId ?? item.variantId),
+    safeIdentifier(item.inventoryItemId),
+  ].filter(Boolean);
+}
+
+function summaryRows(value, source) {
+  return Array.isArray(value)
+    ? value.filter(Boolean).map((item) => ({ ...item, source }))
+    : [];
+}
+
+function sentenceCase(value) {
+  const text = safeText(value, 180);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Review Shopify capability";
+}
+
+function capabilityForOpportunity(capability, manifest = null) {
   return {
     ref: capability.ref,
+    providerRef: manifest?.providerRef ?? capability.providerRef ?? null,
+    capabilityId: manifest?.id ?? null,
+    operation: manifest?.operation ?? null,
     mode: capability.mode,
     actionType: capability.actionType,
     targetKind: capability.targetKind,
@@ -553,10 +990,6 @@ function capabilityForOpportunity(capability) {
       : [],
     description: safeText(capability.description, 220),
   };
-}
-
-function findBelief(beliefs, key) {
-  return (beliefs ?? []).find((belief) => belief.key === key) ?? null;
 }
 
 /** @param {any} item */
@@ -776,6 +1209,14 @@ function safeIdentifier(value, max = 180) {
   const text = String(value).replace(/\s+/g, " ").trim();
   if (!text) return null;
   return text.slice(0, max);
+}
+
+function slug(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
 }
 
 function hashSnapshot(snapshot) {

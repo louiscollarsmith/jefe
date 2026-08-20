@@ -46,6 +46,11 @@ import {
   previewInventoryTransfer,
 } from "./inventory-transfer-adapter.server.js";
 import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
+import { getShopifyCapabilityManifest } from "../shopify/capabilities/catalog.server.js";
+import {
+  buildShopifyCapabilityQualificationPlan,
+  evaluateShopifyCapabilityQualification,
+} from "../shopify/capabilities/qualification.server.js";
 
 export { buildActionRaise };
 
@@ -412,11 +417,17 @@ async function resolveLowCoverInventoryTransfer(prisma, input) {
   const locationRanks = rankLocations(inventoryLevels);
   if (locationRanks.length < 2) return null;
 
+  const transferLocations = chooseInventoryTransferLocations({
+    levels: inventoryLevels,
+    variants,
+    lowCoverProductIds: productIds,
+    requestedOriginLocationId: stringOrNull(input.intent?.params?.originLocationId),
+    requestedDestinationLocationId: stringOrNull(input.intent?.params?.destinationLocationId),
+  });
   const destinationLocationId =
-    stringOrNull(input.intent?.params?.destinationLocationId) ??
-    locationRanks[0].locationExternalId;
+    transferLocations.destinationLocationId ?? locationRanks[0].locationExternalId;
   const originLocationId =
-    stringOrNull(input.intent?.params?.originLocationId) ??
+    transferLocations.originLocationId ??
     locationRanks.find((location) => location.locationExternalId !== destinationLocationId)
       ?.locationExternalId;
   if (!originLocationId || !destinationLocationId || originLocationId === destinationLocationId) {
@@ -425,6 +436,10 @@ async function resolveLowCoverInventoryTransfer(prisma, input) {
 
   const coverDays = positiveInteger(input.intent?.params?.coverDays) ?? 120;
   let rawLines = [];
+  const transferManifest = getShopifyCapabilityManifest("shopify.inventory_transfer.create");
+  const transferQualificationPlan = transferManifest
+    ? buildShopifyCapabilityQualificationPlan(transferManifest)
+    : null;
   for (const item of items) {
     const productId = stringOrNull(item?.productId);
     if (!productId || !productsById.has(productId)) continue;
@@ -437,6 +452,33 @@ async function resolveLowCoverInventoryTransfer(prisma, input) {
     const dailyVelocity = numberOrNull(item?.dailyVelocity);
     const quantity = recommendedPurchaseUnits({ available, dailyVelocity }, coverDays);
     if (quantity === null || quantity <= 0) continue;
+    const sourceAvailable = availableAtLocation(inventoryLevels, {
+      inventoryItemExternalId: variant.inventoryItemExternalId,
+      locationExternalId: originLocationId,
+    });
+    const destinationAvailable = availableAtLocation(inventoryLevels, {
+      inventoryItemExternalId: variant.inventoryItemExternalId,
+      locationExternalId: destinationLocationId,
+    });
+    const identities = {
+      sourceLocationId: originLocationId,
+      destinationLocationId,
+      inventoryItemId: variant.inventoryItemExternalId,
+      quantity,
+    };
+    const qualification = transferQualificationPlan
+      ? evaluateShopifyCapabilityQualification(transferQualificationPlan, {
+          "inventory.item.tracked":
+            typeof variant.rawPayload?.inventoryItem?.tracked === "boolean"
+              ? variant.rawPayload.inventoryItem.tracked
+              : true,
+          "inventory.destination.need_quantity": quantity,
+          "inventory.source.available_quantity": sourceAvailable,
+          "inventory.locations.different": originLocationId !== destinationLocationId,
+          "inventory.transfer.identities": identities,
+        })
+      : { status: "qualified", checks: [] };
+    if (qualification.status !== "qualified") continue;
     rawLines.push({
       inventoryItemId: variant.inventoryItemExternalId,
       title: productsById.get(productId)?.title ?? item?.title ?? variant.title ?? null,
@@ -454,6 +496,9 @@ async function resolveLowCoverInventoryTransfer(prisma, input) {
       dailyVelocity,
       daysOfCover: numberOrNull(item?.daysOfCover),
       unitsSold: numberOrNull(item?.unitsSold),
+      sourceAvailable,
+      destinationAvailable,
+      qualification,
     });
   }
   rawLines = await filterInventoryTransferTrackedLines(prisma, {
@@ -505,7 +550,20 @@ async function resolveLowCoverInventoryTransfer(prisma, input) {
         dailyVelocity: line.dailyVelocity,
         daysOfCover: line.daysOfCover,
         unitsSold: line.unitsSold,
+        sourceAvailable: line.sourceAvailable,
+        destinationAvailable: line.destinationAvailable,
       })),
+      qualification: {
+        source: "shopify_capability_manifest",
+        capabilityId: transferManifest?.id ?? null,
+        providerRef: transferManifest?.providerRef ?? "shopify.inventory_transfer.create",
+        status: "qualified",
+        lineItems: rawLines.map((line) => ({
+          inventoryItemId: line.inventoryItemId,
+          status: line.qualification.status,
+          checks: line.qualification.checks,
+        })),
+      },
     },
     magnitude: { lineItemCount: previewed.preview.lineItems.length },
   };
@@ -635,6 +693,76 @@ function rankLocations(levels) {
       b.available - a.available ||
       a.locationExternalId.localeCompare(b.locationExternalId),
   );
+}
+
+/**
+ * @param {Array<{ inventoryItemExternalId?: string | null; locationExternalId?: string | null; available?: number | null }>} levels
+ * @param {{ inventoryItemExternalId: string; locationExternalId: string }} input
+ */
+function availableAtLocation(levels, input) {
+  return (levels ?? []).reduce((sum, level) => {
+    if (stringOrNull(level?.inventoryItemExternalId) !== input.inventoryItemExternalId) return sum;
+    if (stringOrNull(level?.locationExternalId) !== input.locationExternalId) return sum;
+    return sum + (Number(level?.available) || 0);
+  }, 0);
+}
+
+/**
+ * Pick transfer endpoints from inventory evidence, not from a restock rule. The
+ * capability semantics require a source with available stock and a different
+ * destination with need; this helper only derives the most plausible endpoint
+ * identities for the adapter input.
+ *
+ * @param {{
+ *   levels: any[];
+ *   variants: any[];
+ *   lowCoverProductIds: string[];
+ *   requestedOriginLocationId?: string | null;
+ *   requestedDestinationLocationId?: string | null;
+ * }} input
+ */
+function chooseInventoryTransferLocations(input) {
+  if (input.requestedOriginLocationId || input.requestedDestinationLocationId) {
+    return {
+      originLocationId: input.requestedOriginLocationId ?? null,
+      destinationLocationId: input.requestedDestinationLocationId ?? null,
+    };
+  }
+  const relevantInventoryItems = new Set(
+    input.variants
+      .filter((variant) => input.lowCoverProductIds.includes(variant.productId))
+      .map((variant) => stringOrNull(variant.inventoryItemExternalId))
+      .filter(Boolean),
+  );
+  const totals = new Map();
+  for (const level of input.levels ?? []) {
+    const locationExternalId = stringOrNull(level?.locationExternalId);
+    const inventoryItemExternalId = stringOrNull(level?.inventoryItemExternalId);
+    if (!locationExternalId || !relevantInventoryItems.has(inventoryItemExternalId)) continue;
+    const current = totals.get(locationExternalId) ?? { locationExternalId, available: 0, rowCount: 0 };
+    current.available += Number(level.available) || 0;
+    current.rowCount += 1;
+    totals.set(locationExternalId, current);
+  }
+  const ranked = [...totals.values()].sort(
+    (left, right) =>
+      right.available - left.available ||
+      right.rowCount - left.rowCount ||
+      left.locationExternalId.localeCompare(right.locationExternalId),
+  );
+  const origin = ranked.find((location) => location.available > 0) ?? ranked[0] ?? null;
+  const destination = [...ranked]
+    .filter((location) => location.locationExternalId !== origin?.locationExternalId)
+    .sort(
+      (left, right) =>
+        left.available - right.available ||
+        right.rowCount - left.rowCount ||
+        left.locationExternalId.localeCompare(right.locationExternalId),
+    )[0] ?? null;
+  return {
+    originLocationId: origin?.locationExternalId ?? null,
+    destinationLocationId: destination?.locationExternalId ?? null,
+  };
 }
 
 /** @param {any[]} variants @param {any} lowCoverItem */
@@ -935,7 +1063,7 @@ export async function inspectActionIntentOpportunity(prisma, input) {
  *   | { status: "ready"; intent: any; primitive: PrimitiveBinding; resolved: { preview: any; summary: any; magnitude: Record<string, number|undefined> } }
  *   | { status: "invalid"; reason: string }
  *   | { status: "unsupported"; reason: string }
- *   | { status: "no_opportunity" }
+ *   | { status: "no_opportunity"; reason?: string }
  * >}
  */
 async function resolveActionIntentOpportunity(prisma, input) {
@@ -952,9 +1080,148 @@ async function resolveActionIntentOpportunity(prisma, input) {
     intent,
     sourceRecommendation: input.sourceRecommendation,
   });
-  if (!resolved) return { status: "no_opportunity" };
+  if (!resolved) {
+    const reason = await explainNoOpportunity(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      intent,
+    });
+    return reason
+      ? { status: "no_opportunity", reason }
+      : { status: "no_opportunity" };
+  }
 
   return { status: "ready", intent, primitive, resolved };
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; intent: any }} input
+ */
+async function explainNoOpportunity(prisma, input) {
+  if (
+    input.intent?.actionType !== "shopify_inventory_transfer" ||
+    input.intent?.targetKind !== "restock"
+  ) {
+    return null;
+  }
+  try {
+    return await explainLowCoverTransferNoOpportunity(prisma, input);
+  } catch {
+    return "read_failed";
+  }
+}
+
+/**
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; intent: any }} input
+ */
+async function explainLowCoverTransferNoOpportunity(prisma, input) {
+  if (
+    !prisma?.merchantMemoryBelief?.findFirst ||
+    !prisma?.product?.findMany ||
+    !prisma?.variant?.findMany ||
+    !prisma?.inventoryLevel?.findMany
+  ) {
+    return "read_unavailable";
+  }
+  const belief = await prisma.merchantMemoryBelief.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      key: "inventory.low_cover_products.trailing_30d",
+      supersededAt: null,
+    },
+    select: { value: true },
+  });
+  const items = Array.isArray(belief?.value?.items) ? belief.value.items : [];
+  if (items.length === 0) return "no_low_cover_items";
+  const productIds = items
+    .map((/** @type {any} */ item) => stringOrNull(item?.productId))
+    .filter(Boolean);
+  if (productIds.length === 0) return "low_cover_items_missing_product_ids";
+
+  const [products, variants, inventoryLevels] = await Promise.all([
+    prisma.product.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        id: { in: productIds },
+        status: "ACTIVE",
+      },
+      select: { id: true },
+    }),
+    prisma.variant.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        productId: { in: productIds },
+      },
+      select: {
+        id: true,
+        productId: true,
+        externalId: true,
+        title: true,
+        inventoryItemExternalId: true,
+      },
+    }),
+    prisma.inventoryLevel.findMany({
+      where: { merchantId: input.merchantId, shopId: input.shopId },
+      select: {
+        inventoryItemExternalId: true,
+        locationExternalId: true,
+        available: true,
+      },
+    }),
+  ]);
+  if (products.length === 0) return "low_cover_products_not_active";
+  if (variants.length === 0) return "low_cover_products_missing_variants";
+  if (rankLocations(inventoryLevels).length < 2) return "not_enough_inventory_locations";
+
+  const variantsByProduct = groupBy(
+    variants,
+    (/** @type {any} */ variant) => variant.productId,
+  );
+  let needsTransfer = 0;
+  let missingInventoryItem = 0;
+  let sourceStockedLines = 0;
+  for (const item of items) {
+    const productId = stringOrNull(item?.productId);
+    if (!productId) continue;
+    const variant = chooseVariantForLowCoverItem(
+      variantsByProduct.get(productId) ?? [],
+      item,
+    );
+    if (!variant?.inventoryItemExternalId) {
+      missingInventoryItem += 1;
+      continue;
+    }
+    const quantity = recommendedPurchaseUnits(
+      {
+        available: numberOrNull(item?.available),
+        dailyVelocity: numberOrNull(item?.dailyVelocity),
+      },
+      positiveInteger(input.intent?.params?.coverDays) ?? 120,
+    );
+    if (quantity === null || quantity <= 0) continue;
+    needsTransfer += 1;
+    const totalAvailable = inventoryLevels.reduce((/** @type {number} */ sum, /** @type {any} */ level) => {
+      if (
+        stringOrNull(level?.inventoryItemExternalId) !==
+        variant.inventoryItemExternalId
+      ) {
+        return sum;
+      }
+      return sum + (Number(level?.available) || 0);
+    }, 0);
+    if (totalAvailable > 0) sourceStockedLines += 1;
+  }
+  if (missingInventoryItem > 0 && missingInventoryItem === items.length) {
+    return "low_cover_variants_missing_inventory_item_ids";
+  }
+  if (needsTransfer === 0) return "no_positive_restock_quantity";
+  if (sourceStockedLines === 0) return "no_source_stock_for_low_cover_items";
+  return "no_qualified_transfer_lines";
 }
 
 /** Round to 2 decimals (mirrors the clearance sizing math). @param {unknown} n */

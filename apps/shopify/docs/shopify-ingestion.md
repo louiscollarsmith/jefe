@@ -5,7 +5,7 @@ Shopify ingestion provides the source evidence used by Merchant Memory. It curre
 The configured Shopify scope set is:
 
 ```text
-read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations
+read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,write_inventory_transfers,read_locations
 ```
 
 Write scopes are configured for future approved action work and synthetic/disposable-store tooling. The current merchant UI must not directly execute Shopify writes.

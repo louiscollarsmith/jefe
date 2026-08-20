@@ -167,7 +167,7 @@ const SCENARIOS = [
     assert: [
       assertCanonicalCover(120),
       assertProductQuantity("Ash Path Listan", 12),
-      assertReplyMentions(/purchase-order capability|purchase-order execution is not available|No purchase-order execution capability|No purchase-order capability|no available capability to create a purchase order|unsupported operation|cannot be converted|cannot substitute/i),
+      assertReplyMentions(/purchase-order capability|purchase-order execution is not available|No (?:direct )?purchase-order execution capability|No purchase-order capability|no available capability to create a purchase order|unsupported operation|cannot be converted|cannot substitute/i),
       assertNoInternalValidationLeak,
       assertNoCrossRevisionQuantityMix,
     ],
@@ -1034,7 +1034,7 @@ function assertExactReplanJourney({ turns, finalState }) {
   ]);
   assertPlanCover(turns[3].stateAfter, 90, "turn 4 must preserve 90 days");
   assertStablePrefix(turns[0].stateBefore, turns[3].stateAfter, 2);
-  assertReplyMatches(turns[3], /reachable Jefe Shopify execution|unsupported|purchase-order execution is not available|No purchase-order execution capability|cannot be converted|not.*purchase order/i);
+  assertReplyMatches(turns[3], /reachable Jefe Shopify execution|unsupported|purchase-order execution is not available|No (?:direct )?purchase-order execution capability|cannot be converted|not.*purchase order/i);
 
   assertStepOrder(turns[4].stateAfter, [
     /replenishment.*proposal/i,

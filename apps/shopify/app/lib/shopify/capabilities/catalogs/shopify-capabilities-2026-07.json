@@ -1,0 +1,659 @@
+{
+  "schemaVersion": "2026-08-20.1",
+  "catalogId": "shopify-capabilities:2026-07",
+  "provider": "SHOPIFY",
+  "apiSurface": "Admin GraphQL",
+  "apiVersion": "2026-07",
+  "generatedAt": "2026-08-20T00:00:00.000Z",
+  "semanticPromptVersion": "shopify-capability-semantic-v1",
+  "sources": [
+    {
+      "kind": "official_docs",
+      "label": "Shopify Admin GraphQL 2026-07",
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-07"
+    },
+    {
+      "kind": "app_config",
+      "label": "Jefe Shopify declared OAuth scopes",
+      "path": "apps/shopify/shopify.app.toml"
+    }
+  ],
+  "operations": [
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.productUpdate",
+      "providerRef": "shopify.product.update",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "productUpdate",
+      "operationKind": "MUTATION",
+      "domain": "products",
+      "description": "Updates a product.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/productUpdate",
+      "requiredScopes": ["write_products"],
+      "technical": {
+        "inputType": "ProductUpdateInput",
+        "outputType": "ProductUpdatePayload",
+        "arguments": [{ "name": "product", "type": "ProductUpdateInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": {
+          "kind": "seeded_semantic_interpretation",
+          "promptVersion": "shopify-capability-semantic-v1",
+          "source": "official_docs"
+        },
+        "semanticEffects": ["changes mutable product catalogue fields such as title, status, vendor, taxonomy, handles, options and descriptive metadata"],
+        "affectedEntities": ["Product"],
+        "requiredEntities": ["Product"],
+        "qualificationRequirements": [
+          { "id": "product_exists", "evidenceKey": "product.exists", "operator": "equals_true", "reason": "The product must exist in Shopify." },
+          { "id": "target_field_differs", "evidenceKey": "target.field.differs", "operator": "equals_true", "reason": "The proposed product state must differ from the current state." },
+          { "id": "field_is_safe_to_update", "evidenceKey": "policy.field.safe_to_update", "operator": "equals_true", "reason": "The specific field must be admitted by Jefe's safety policy before execution." }
+        ],
+        "autoResolvableInputs": ["product id", "current product state from canonical mirror", "blank or deterministic target fields"],
+        "merchantDecisionInputs": ["brand-sensitive copy changes", "status changes that remove products from sale", "taxonomy choices when evidence is ambiguous"],
+        "outcomes": ["target field coverage", "storefront product visibility", "catalogue consistency"],
+        "tags": ["catalogue", "product_metadata", "status", "taxonomy", "storefront"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "MEDIUM",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "PARTIAL",
+        "jefeExecutor": "product-status-adapter/listing-copy-adapter",
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.productVariantsBulkUpdate",
+      "providerRef": "shopify.product_variants.bulk_update",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "productVariantsBulkUpdate",
+      "operationKind": "MUTATION",
+      "domain": "products",
+      "description": "Updates multiple variants in a single product.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/productVariantsBulkUpdate",
+      "requiredScopes": ["write_products"],
+      "technical": {
+        "inputType": "ProductVariantsBulkInput",
+        "outputType": "ProductVariantsBulkUpdatePayload",
+        "arguments": [
+          { "name": "productId", "type": "ID!", "required": true },
+          { "name": "variants", "type": "[ProductVariantsBulkInput!]!", "required": true }
+        ],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["changes product variant fields such as price, option values, inventory policy or barcode for variants that belong to one product"],
+        "affectedEntities": ["Product", "ProductVariant"],
+        "requiredEntities": ["Product", "ProductVariant"],
+        "qualificationRequirements": [
+          { "id": "variants_exist", "evidenceKey": "variant.ids.present", "operator": "all_present", "reason": "Every proposed variant must resolve to a live Shopify variant id." },
+          { "id": "price_floor_available", "evidenceKey": "pricing.floor.available", "operator": "equals_true", "reason": "Price changes need a deterministic floor before Jefe can execute them." },
+          { "id": "target_state_differs", "evidenceKey": "target.field.differs", "operator": "equals_true", "reason": "The proposed variant state must differ from the current state." }
+        ],
+        "autoResolvableInputs": ["product id", "variant ids", "current variant prices", "deterministic price floor"],
+        "merchantDecisionInputs": ["discount magnitude", "copy or option wording"],
+        "outcomes": ["variant price changed", "units sold after change", "gross margin protected"],
+        "tags": ["catalogue", "variants", "price", "markdown", "clearance"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "HIGH",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "IMPLEMENTED",
+        "jefeExecutor": "clearance-adapter",
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.inventoryTransferCreate",
+      "providerRef": "shopify.inventory_transfer.create",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "inventoryTransferCreate",
+      "operationKind": "MUTATION",
+      "domain": "inventory",
+      "description": "Creates a draft inventory transfer to move inventory items between Shopify locations.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/inventoryTransferCreate",
+      "requiredScopes": ["write_inventory_transfers"],
+      "technical": {
+        "inputType": "InventoryTransferCreateInput",
+        "outputType": "InventoryTransferCreatePayload",
+        "arguments": [{ "name": "input", "type": "InventoryTransferCreateInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["creates a Shopify transfer record for moving existing inventory quantities from one location to another"],
+        "affectedEntities": ["InventoryTransfer", "InventoryItem", "Location"],
+        "requiredEntities": ["InventoryItem", "Location"],
+        "qualificationRequirements": [
+          { "id": "inventory_item_tracked", "evidenceKey": "inventory.item.tracked", "operator": "equals_true", "reason": "The item must be tracked inventory." },
+          { "id": "destination_need_exists", "evidenceKey": "inventory.destination.need_quantity", "operator": "positive_number", "reason": "A destination needs stock before a transfer is useful." },
+          { "id": "source_inventory_exists", "evidenceKey": "inventory.source.available_quantity", "operator": "positive_number", "reason": "A transfer can only move stock that exists at another Shopify location." },
+          { "id": "locations_are_different", "evidenceKey": "inventory.locations.different", "operator": "equals_true", "reason": "Origin and destination locations must be different." },
+          { "id": "identities_resolved", "evidenceKey": "inventory.transfer.identities", "operator": "all_present", "reason": "Jefe must resolve source, destination, inventory item and quantity." }
+        ],
+        "autoResolvableInputs": ["inventory item id", "origin location id", "destination location id", "available quantity by location"],
+        "merchantDecisionInputs": ["whether to approve the movement", "priority when several destinations need stock"],
+        "outcomes": ["transfer created", "destination stock restored", "transfer completed"],
+        "tags": ["inventory", "locations", "transfer", "restock", "stock_shortage", "replenishment"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "MEDIUM",
+        "reversible": false,
+        "idempotency": { "required": true, "strategy": "shopify_idempotent_directive" },
+        "jefeSupport": "IMPLEMENTED_FLAG_OFF",
+        "jefeExecutor": "inventory-transfer-adapter",
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.inventoryItemUpdate",
+      "providerRef": "shopify.inventory_item.update",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "inventoryItemUpdate",
+      "operationKind": "MUTATION",
+      "domain": "inventory",
+      "description": "Updates an inventory item's properties including tracking, cost, SKU and shipping requirement.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/inventoryItemUpdate",
+      "requiredScopes": ["write_inventory"],
+      "technical": {
+        "inputType": "InventoryItemInput",
+        "outputType": "InventoryItemUpdatePayload",
+        "arguments": [{ "name": "input", "type": "InventoryItemInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["changes operational inventory attributes for an item, including whether Shopify tracks quantity and the item's unit cost"],
+        "affectedEntities": ["InventoryItem"],
+        "requiredEntities": ["InventoryItem"],
+        "qualificationRequirements": [
+          { "id": "inventory_item_exists", "evidenceKey": "inventory.item.exists", "operator": "equals_true", "reason": "The inventory item must exist." },
+          { "id": "target_state_differs", "evidenceKey": "target.field.differs", "operator": "equals_true", "reason": "The proposed inventory item state must differ from the current state." },
+          { "id": "merchant_source_for_cost", "evidenceKey": "merchant.cost.confirmed", "operator": "equals_true", "reason": "Cost changes need merchant or source-system support." }
+        ],
+        "autoResolvableInputs": ["inventory item id", "current tracked/SKU/shipping state"],
+        "merchantDecisionInputs": ["cost value", "whether inventory should be tracked"],
+        "outcomes": ["cost coverage improved", "tracked inventory coverage improved"],
+        "tags": ["inventory", "cost", "sku", "tracking", "margin"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "HIGH",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.inventoryActivate",
+      "providerRef": "shopify.inventory.activate",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "inventoryActivate",
+      "operationKind": "MUTATION",
+      "domain": "inventory",
+      "description": "Activates an inventory item at a location by creating an inventory level.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/inventoryActivate",
+      "requiredScopes": ["write_inventory"],
+      "technical": {
+        "inputType": "InventoryActivateInput",
+        "outputType": "InventoryActivatePayload",
+        "arguments": [
+          { "name": "inventoryItemId", "type": "ID!", "required": true },
+          { "name": "locationId", "type": "ID!", "required": true }
+        ],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["enables an inventory item to be managed at a specific location"],
+        "affectedEntities": ["InventoryItem", "InventoryLevel", "Location"],
+        "requiredEntities": ["InventoryItem", "Location"],
+        "qualificationRequirements": [
+          { "id": "inventory_item_exists", "evidenceKey": "inventory.item.exists", "operator": "equals_true", "reason": "The inventory item must exist." },
+          { "id": "location_exists", "evidenceKey": "location.exists", "operator": "equals_true", "reason": "The target location must exist." },
+          { "id": "not_already_active", "evidenceKey": "inventory.level.exists", "operator": "equals_false", "reason": "Activation is useful only if the inventory item is not already active at that location." }
+        ],
+        "autoResolvableInputs": ["inventory item id", "location id", "current inventory level presence"],
+        "merchantDecisionInputs": ["which location should stock the item"],
+        "outcomes": ["inventory level created", "item can be stocked at location"],
+        "tags": ["inventory", "locations", "activation", "tracking"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "MEDIUM",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.discountCodeBasicCreate",
+      "providerRef": "shopify.discount_code.basic_create",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "discountCodeBasicCreate",
+      "operationKind": "MUTATION",
+      "domain": "discounts",
+      "description": "Creates an amount-off discount that applies at checkout when a customer enters a code.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/discountCodeBasicCreate",
+      "requiredScopes": ["write_discounts"],
+      "technical": {
+        "inputType": "DiscountCodeBasicInput",
+        "outputType": "DiscountCodeBasicCreatePayload",
+        "arguments": [{ "name": "basicCodeDiscount", "type": "DiscountCodeBasicInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["creates a checkout discount code with eligibility, value, timing and usage constraints"],
+        "affectedEntities": ["DiscountCodeNode", "Customer", "Product", "Collection"],
+        "requiredEntities": ["DiscountCode"],
+        "qualificationRequirements": [
+          { "id": "discount_goal_exists", "evidenceKey": "promotion.goal.exists", "operator": "equals_true", "reason": "A discount needs a business reason and audience." },
+          { "id": "discount_value_bounded", "evidenceKey": "promotion.value.within_policy", "operator": "equals_true", "reason": "Discount value must fit margin and brand rules." },
+          { "id": "starts_and_ends_known", "evidenceKey": "promotion.window.present", "operator": "equals_true", "reason": "Jefe needs a start/end window before creating a code." }
+        ],
+        "autoResolvableInputs": ["eligible product or collection ids when deterministic", "store currency"],
+        "merchantDecisionInputs": ["discount code", "discount amount", "audience", "start/end dates"],
+        "outcomes": ["code created", "orders using code", "discounted margin"],
+        "tags": ["discounts", "promotion", "checkout", "campaign", "conversion"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "HIGH_RISK",
+        "approvalRisk": "HIGH",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NEEDS_SCOPE_AND_ADAPTER",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.collectionCreate",
+      "providerRef": "shopify.collection.create",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "collectionCreate",
+      "operationKind": "MUTATION",
+      "domain": "collections",
+      "description": "Creates a collection.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/collectionCreate",
+      "requiredScopes": ["write_products"],
+      "technical": {
+        "inputType": "CollectionInput",
+        "outputType": "CollectionCreatePayload",
+        "arguments": [{ "name": "input", "type": "CollectionInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["creates a manual or rule-based grouping of products for merchandising and navigation"],
+        "affectedEntities": ["Collection", "Product"],
+        "requiredEntities": ["Collection"],
+        "qualificationRequirements": [
+          { "id": "collection_purpose_exists", "evidenceKey": "collection.purpose.exists", "operator": "equals_true", "reason": "A collection needs a merchandising or navigation purpose." },
+          { "id": "product_set_resolved", "evidenceKey": "collection.products.present", "operator": "all_present", "reason": "Jefe must know which products or rules define the collection." },
+          { "id": "duplicate_absent", "evidenceKey": "collection.duplicate.exists", "operator": "equals_false", "reason": "Avoid creating duplicate storefront groupings." }
+        ],
+        "autoResolvableInputs": ["candidate product ids", "existing collection names"],
+        "merchantDecisionInputs": ["collection title", "manual vs rule-based grouping", "storefront publication"],
+        "outcomes": ["collection created", "products grouped", "navigation coverage"],
+        "tags": ["collections", "merchandising", "navigation", "catalogue"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "MEDIUM",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.orderEditBegin",
+      "providerRef": "shopify.order_edit.begin",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "orderEditBegin",
+      "operationKind": "MUTATION",
+      "domain": "orders",
+      "description": "Begins editing an order.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/orderEditBegin",
+      "requiredScopes": ["write_orders"],
+      "technical": {
+        "inputType": "ID",
+        "outputType": "OrderEditBeginPayload",
+        "arguments": [{ "name": "id", "type": "ID!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["opens a calculated order edit session so later mutations can alter line items, discounts or shipping before commit"],
+        "affectedEntities": ["Order", "CalculatedOrder"],
+        "requiredEntities": ["Order"],
+        "qualificationRequirements": [
+          { "id": "order_exists", "evidenceKey": "order.exists", "operator": "equals_true", "reason": "The order must exist." },
+          { "id": "order_edit_reason_exists", "evidenceKey": "order.edit.reason.exists", "operator": "equals_true", "reason": "Jefe needs a concrete order correction reason." },
+          { "id": "merchant_authorized_customer_impact", "evidenceKey": "merchant.customer_impact.approved", "operator": "equals_true", "reason": "Order edits can affect customer-facing records." }
+        ],
+        "autoResolvableInputs": ["order id", "current order state"],
+        "merchantDecisionInputs": ["whether to change an existing customer order", "exact correction intent"],
+        "outcomes": ["calculated order created", "order edit committed or abandoned"],
+        "tags": ["orders", "correction", "customer_impact", "post_purchase"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "HIGH_RISK",
+        "approvalRisk": "HIGH",
+        "reversible": false,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.fulfillmentCreate",
+      "providerRef": "shopify.fulfillment.create",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "fulfillmentCreate",
+      "operationKind": "MUTATION",
+      "domain": "fulfillment",
+      "description": "Creates a fulfillment for one or more fulfillment orders.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/fulfillmentCreate",
+      "requiredScopes": ["write_merchant_managed_fulfillment_orders"],
+      "technical": {
+        "inputType": "FulfillmentInput",
+        "outputType": "FulfillmentCreatePayload",
+        "arguments": [{ "name": "fulfillment", "type": "FulfillmentInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["marks fulfillment-order line items as fulfilled and can notify customers with tracking information"],
+        "affectedEntities": ["Fulfillment", "FulfillmentOrder", "Order"],
+        "requiredEntities": ["FulfillmentOrder"],
+        "qualificationRequirements": [
+          { "id": "fulfillment_order_exists", "evidenceKey": "fulfillment_order.exists", "operator": "equals_true", "reason": "A fulfillment order must exist." },
+          { "id": "items_ready_to_ship", "evidenceKey": "fulfillment.items.ready", "operator": "equals_true", "reason": "Items must be ready before marking them fulfilled." },
+          { "id": "tracking_decision_made", "evidenceKey": "fulfillment.tracking.decision_present", "operator": "equals_true", "reason": "Customer notification and tracking choices must be explicit." }
+        ],
+        "autoResolvableInputs": ["fulfillment order id", "line item quantities when fully ready"],
+        "merchantDecisionInputs": ["tracking information", "whether to notify customer", "partial vs full fulfillment"],
+        "outcomes": ["fulfillment created", "customer notified", "order fulfillment status changed"],
+        "tags": ["fulfillment", "shipping", "orders", "customer_notification"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "HIGH_RISK",
+        "approvalRisk": "HIGH",
+        "reversible": false,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NEEDS_SCOPE_AND_ADAPTER",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.customerUpdate",
+      "providerRef": "shopify.customer.update",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "customerUpdate",
+      "operationKind": "MUTATION",
+      "domain": "customers",
+      "description": "Updates a customer's information.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/customerUpdate",
+      "requiredScopes": ["write_customers"],
+      "technical": {
+        "inputType": "CustomerInput",
+        "outputType": "CustomerUpdatePayload",
+        "arguments": [{ "name": "input", "type": "CustomerInput!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["changes customer profile data such as tags, notes, addresses or marketing-related fields"],
+        "affectedEntities": ["Customer"],
+        "requiredEntities": ["Customer"],
+        "qualificationRequirements": [
+          { "id": "customer_exists", "evidenceKey": "customer.exists", "operator": "equals_true", "reason": "The customer must exist." },
+          { "id": "target_field_differs", "evidenceKey": "target.field.differs", "operator": "equals_true", "reason": "The proposed customer state must differ from the current state." },
+          { "id": "pii_policy_allows", "evidenceKey": "policy.customer_data.safe_to_update", "operator": "equals_true", "reason": "Customer data changes need explicit safe handling." }
+        ],
+        "autoResolvableInputs": ["customer id", "current tags and non-sensitive metadata"],
+        "merchantDecisionInputs": ["customer notes", "PII changes", "marketing consent-sensitive changes"],
+        "outcomes": ["customer profile updated", "segmentation tag coverage"],
+        "tags": ["customers", "crm", "segmentation", "pii"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "HIGH_RISK",
+        "approvalRisk": "HIGH",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.metafieldsSet",
+      "providerRef": "shopify.metafields.set",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "metafieldsSet",
+      "operationKind": "MUTATION",
+      "domain": "metafields",
+      "description": "Sets metafields on Shopify resources.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/mutations/metafieldsSet",
+      "requiredScopes": ["write_products"],
+      "technical": {
+        "inputType": "MetafieldsSetInput",
+        "outputType": "MetafieldsSetPayload",
+        "arguments": [{ "name": "metafields", "type": "[MetafieldsSetInput!]!", "required": true }],
+        "returnsUserErrors": true,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["writes structured custom data onto Shopify resources for operational or storefront use"],
+        "affectedEntities": ["Product", "ProductVariant", "Customer", "Order", "Metafield"],
+        "requiredEntities": ["OwnerResource", "MetafieldDefinition"],
+        "qualificationRequirements": [
+          { "id": "owner_resource_exists", "evidenceKey": "metafield.owner.exists", "operator": "equals_true", "reason": "The owner resource must exist." },
+          { "id": "namespace_key_allowed", "evidenceKey": "metafield.definition.allowed", "operator": "equals_true", "reason": "Namespace, key and type need a known contract." },
+          { "id": "value_valid_for_type", "evidenceKey": "metafield.value.valid", "operator": "equals_true", "reason": "The value must match the metafield type." }
+        ],
+        "autoResolvableInputs": ["owner id", "existing metafield definitions"],
+        "merchantDecisionInputs": ["new namespace/key contracts", "merchant-facing custom content"],
+        "outcomes": ["metafield value set", "custom data coverage"],
+        "tags": ["metafields", "custom_data", "catalogue", "structured_metadata"]
+      },
+      "admission": {
+        "sideEffect": true,
+        "status": "REQUIRES_APPROVAL",
+        "approvalRisk": "MEDIUM",
+        "reversible": true,
+        "idempotency": { "required": true, "strategy": "jefe_action_execution_key" },
+        "jefeSupport": "NOT_IMPLEMENTED",
+        "jefeExecutor": null,
+        "genericExecutorSupported": false
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.inventoryItems",
+      "providerRef": "shopify.inventory_items.read",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "inventoryItems",
+      "operationKind": "QUERY",
+      "domain": "inventory",
+      "description": "Returns a list of inventory items.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/queries/inventoryItems",
+      "requiredScopes": ["read_inventory"],
+      "technical": {
+        "inputType": "InventoryItemConnection",
+        "outputType": "InventoryItemConnection",
+        "arguments": [
+          { "name": "first", "type": "Int", "required": false },
+          { "name": "query", "type": "String", "required": false }
+        ],
+        "returnsUserErrors": false,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["reads inventory items and their tracking, SKU and location inventory relationships"],
+        "affectedEntities": ["InventoryItem", "InventoryLevel", "Location"],
+        "requiredEntities": [],
+        "qualificationRequirements": [],
+        "autoResolvableInputs": ["SKU filter", "inventory item id filter"],
+        "merchantDecisionInputs": [],
+        "outcomes": ["evidence for inventory tracking and location availability"],
+        "tags": ["read", "inventory", "stock", "sku", "locations"]
+      },
+      "admission": {
+        "sideEffect": false,
+        "status": "SAFE_TO_SUPPORT",
+        "approvalRisk": "LOW",
+        "reversible": true,
+        "idempotency": { "required": false, "strategy": "read_only" },
+        "jefeSupport": "CANONICAL_MIRROR_FIRST",
+        "jefeExecutor": "canonical-shopify-mirror",
+        "genericExecutorSupported": true
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.locations",
+      "providerRef": "shopify.locations.read",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "locations",
+      "operationKind": "QUERY",
+      "domain": "locations",
+      "description": "Returns store locations.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/queries/locations",
+      "requiredScopes": ["read_locations"],
+      "technical": {
+        "inputType": "LocationConnection",
+        "outputType": "LocationConnection",
+        "arguments": [{ "name": "first", "type": "Int", "required": false }],
+        "returnsUserErrors": false,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["reads Shopify locations used for inventory, fulfillment and transfer decisions"],
+        "affectedEntities": ["Location"],
+        "requiredEntities": [],
+        "qualificationRequirements": [],
+        "autoResolvableInputs": ["location name", "active location status"],
+        "merchantDecisionInputs": [],
+        "outcomes": ["evidence for location identity and transfer routing"],
+        "tags": ["read", "locations", "inventory", "fulfillment", "transfer"]
+      },
+      "admission": {
+        "sideEffect": false,
+        "status": "SAFE_TO_SUPPORT",
+        "approvalRisk": "LOW",
+        "reversible": true,
+        "idempotency": { "required": false, "strategy": "read_only" },
+        "jefeSupport": "CANONICAL_MIRROR_FIRST",
+        "jefeExecutor": "canonical-shopify-mirror",
+        "genericExecutorSupported": true
+      }
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.products",
+      "providerRef": "shopify.products.read",
+      "provider": "SHOPIFY",
+      "apiVersion": "2026-07",
+      "apiSurface": "Admin GraphQL",
+      "operation": "products",
+      "operationKind": "QUERY",
+      "domain": "products",
+      "description": "Returns products.",
+      "officialDocsUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/queries/products",
+      "requiredScopes": ["read_products"],
+      "technical": {
+        "inputType": "ProductConnection",
+        "outputType": "ProductConnection",
+        "arguments": [
+          { "name": "first", "type": "Int", "required": false },
+          { "name": "query", "type": "String", "required": false }
+        ],
+        "returnsUserErrors": false,
+        "deprecated": false
+      },
+      "semantic": {
+        "provenance": { "kind": "seeded_semantic_interpretation", "promptVersion": "shopify-capability-semantic-v1", "source": "official_docs" },
+        "semanticEffects": ["reads product catalogue, product status, taxonomy and variant relationships"],
+        "affectedEntities": ["Product", "ProductVariant"],
+        "requiredEntities": [],
+        "qualificationRequirements": [],
+        "autoResolvableInputs": ["product query", "status filter", "vendor/type filters"],
+        "merchantDecisionInputs": [],
+        "outcomes": ["evidence for catalogue actions and product conditions"],
+        "tags": ["read", "products", "catalogue", "variants", "taxonomy"]
+      },
+      "admission": {
+        "sideEffect": false,
+        "status": "SAFE_TO_SUPPORT",
+        "approvalRisk": "LOW",
+        "reversible": true,
+        "idempotency": { "required": false, "strategy": "read_only" },
+        "jefeSupport": "CANONICAL_MIRROR_FIRST",
+        "jefeExecutor": "canonical-shopify-mirror",
+        "genericExecutorSupported": true
+      }
+    }
+  ]
+}

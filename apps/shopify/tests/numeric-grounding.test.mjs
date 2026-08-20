@@ -187,7 +187,7 @@ test("(d) goal validation rejects an ungrounded target number and accepts a grou
 test("(e) plan validation allows 100% only for cited bounded coverage metrics", () => {
   const coverageBelief = {
     id: "belief-coverage",
-    key: "products.cost_coverage",
+    key: "products.product_type_coverage",
     val: {
       percentage: 0,
       ratio: 0,
@@ -197,47 +197,57 @@ test("(e) plan validation allows 100% only for cited bounded coverage metrics", 
   };
   const goal = {
     id: "goal-1",
-    title: "Establish profit visibility",
-    description: "Build margin visibility from current cost coverage.",
+    title: "Establish catalogue visibility",
+    description: "Build catalogue visibility from current product type coverage.",
   };
   const insight = {
     id: "insight-1",
-    title: "Costs are missing",
-    finding: "Cost coverage is currently 0% across 30 active variants.",
+    title: "Product types are missing",
+    finding: "Product type coverage is currently 0% across 30 active variants.",
   };
   const plan = {
     candidates: [
-      candidate("candidate_1", "Populate cost-per-item data"),
+      candidate("candidate_1", "Fill missing product types"),
       candidate("candidate_2", "Audit inventory records"),
       candidate("candidate_3", "Review product categorisation"),
     ],
     selectedRecommendation: {
       candidateId: "candidate_1",
-      title: "Populate cost-per-item data",
-      summary: "Add missing cost data for the active variants.",
+      opportunityId: "opportunity_candidate_1",
+      title: "Fill missing product types",
+      summary: "Add missing product types for the active variants.",
       primaryGoalId: "goal-1",
       supportingGoalIds: [],
       whyThisAction:
-        "Cost coverage is at 0%, so adding costs creates the baseline for profit visibility.",
-      whyNow: "This is the foundation for margin decisions.",
-      startToday: "Start with the active variants that are missing cost data.",
+        "Product type coverage is at 0%, so adding types creates the baseline for catalogue visibility.",
+      whyNow: "This is the foundation for catalogue decisions.",
+      startToday: "Start with the active variants that are missing product types.",
       workflow: {
         steps: [
           {
             id: "step_1",
-            title: "Gather costs",
-            description: "Collect unit costs for the active variants.",
-            completionCriteria: "The missing costs are ready to enter.",
-            mode: "merchant_action",
-            capabilityRef: null,
+            title: "Review missing product types",
+            description: "Review the active variants that need product types.",
+            completionCriteria: "The missing product types are ready to apply.",
+            mode: "assist",
+            capabilityRef: "assist:merchant_checklist",
+          },
+          {
+            id: "step_2",
+            title: "Apply product types",
+            description: "Set product types on the active variants that are missing them.",
+            completionCriteria: "The missing product types are applied in Shopify.",
+            mode: "execute",
+            capabilityRef: "execute:listing_copy:missing_product_type",
+            dependsOnStepIds: ["step_1"],
           },
         ],
       },
       successSignal: {
-        description: "Cost coverage moves from 0% toward 100%.",
-        timeframe: "As costs are entered.",
+        description: "Product type coverage moves from 0% toward 100%.",
+        timeframe: "As product types are entered.",
       },
-      expectedBenefit: "Jefe can reason from profit instead of revenue alone.",
+      expectedBenefit: "Jefe can reason from product categories instead of uncategorised variants.",
       supportingBeliefIds: ["belief-coverage"],
       supportingInsightIds: ["insight-1"],
       confidence: "strong",
@@ -269,6 +279,7 @@ test("(e) plan validation allows 100% only for cited bounded coverage metrics", 
 function candidate(id, action) {
   return {
     id,
+    opportunityId: `opportunity_${id}`,
     action,
     goalAlignment: "Supports the current goal.",
     whyRelevant: "The supplied memory makes this relevant.",

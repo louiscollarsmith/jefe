@@ -334,19 +334,113 @@ test("Plan snapshot turns low-cover evidence into a grounded inventory-transfer 
     shopId: "shop-1",
   });
   const opportunity = snapshot.snapshot.opportunityCandidates.find(
-    (item) => item.id === "opportunity_inventory_transfer_low_cover_restock",
+    (item) => item.selectedCapability?.operation === "inventoryTransferCreate",
   );
   const diagnostic = snapshot.snapshot.opportunityCandidateDiagnostics.find(
     (item) => item.capabilityRef === "execute:shopify_inventory_transfer:restock",
   );
 
   assert.ok(opportunity);
-  assert.equal(opportunity.initialProposal.kind, "shopify_inventory_transfer");
+  assert.equal(opportunity.initialProposal.kind, "low_cover_restock_transfer");
   assert.equal(opportunity.initialProposal.lineItemCount, 2);
   assert.equal(opportunity.initialProposal.lineItems[0].quantity, 114);
   assert.equal(opportunity.potentialCapabilities[0].writeEnabled, true);
   assert.equal(diagnostic.gateResult, "accepted");
   assert.equal(diagnostic.suppliedToLuna, true);
+});
+
+test("Dynamic capability qualification rejects inventory transfer when no source stock exists", async () => {
+  const beliefs = [
+    beliefFixture({
+      id: "belief-low-cover",
+      key: "inventory.low_cover_products.trailing_30d",
+      category: "inventory",
+      valueType: "structured",
+      value: {
+        items: [
+          {
+            productId: "product-1",
+            title: "Pear Skin Sipon",
+            unitsSold: 30,
+            available: 0,
+            dailyVelocity: 0.1,
+            daysOfCover: 0,
+          },
+        ],
+      },
+      evidenceSummary: "Pear has demand and no available stock at the selling location.",
+    }),
+  ];
+  const prisma = planSnapshotMock({
+    beliefs,
+    goalBeliefIds: ["belief-low-cover"],
+    insightBeliefIds: ["belief-low-cover"],
+    products: [
+      {
+        id: "product-1",
+        externalId: "gid://shopify/Product/pear",
+        title: "Pear Skin Sipon",
+        vendor: "Acme",
+        productType: "Wine",
+        status: "ACTIVE",
+      },
+    ],
+    variants: [
+      {
+        id: "variant-1",
+        productId: "product-1",
+        externalId: "gid://shopify/ProductVariant/pear",
+        title: "Single bottle",
+        sku: "PEAR",
+        inventoryItemExternalId: "gid://shopify/InventoryItem/pear",
+      },
+    ],
+    inventoryLevels: [
+      {
+        variantId: "variant-1",
+        inventoryItemExternalId: "gid://shopify/InventoryItem/pear",
+        locationExternalId: "gid://shopify/Location/warehouse",
+        available: 0,
+      },
+      {
+        variantId: "variant-1",
+        inventoryItemExternalId: "gid://shopify/InventoryItem/pear",
+        locationExternalId: "gid://shopify/Location/selling",
+        available: 0,
+      },
+    ],
+  });
+
+  const snapshot = await buildMerchantPlanSnapshot(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+  });
+  assert.equal(
+    snapshot.snapshot.opportunityCandidates.some(
+      (item) => item.selectedCapability?.operation === "inventoryTransferCreate",
+    ),
+    false,
+  );
+  const transferDiagnostic = snapshot.snapshot.opportunityCandidateDiagnostics.find(
+    (item) => item.operation === "inventoryTransferCreate",
+  );
+  assert.ok(transferDiagnostic);
+  assert.equal(
+    transferDiagnostic.rejectionReason,
+    "no_opportunity:no_source_stock_for_low_cover_items",
+  );
+  assert.equal(transferDiagnostic.dryRun.reason, "no_source_stock_for_low_cover_items");
+
+  const directProbe = await inspectActionIntentOpportunity(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    intent: {
+      actionType: "shopify_inventory_transfer",
+      targetKind: "restock",
+    },
+  });
+  assert.equal(directProbe.status, "no_opportunity");
+  assert.equal(directProbe.reason, "no_source_stock_for_low_cover_items");
 });
 
 test("Plan structured validation rejects unsupported IDs, generic plans and missing success signals", () => {
@@ -556,7 +650,7 @@ test("Plan validation keeps registry-valid workflow capabilities and rejects uns
     },
     {
       ...validationContext(),
-      allowedOpportunityIds: new Set(["opportunity_listing_copy_missing_product_type"]),
+      allowedOpportunityIds: new Set(["opportunity_shopify_product_update_fixture_a"]),
     },
   );
   assert.equal(inventedProvenDemand.ok, false);
@@ -890,10 +984,13 @@ test("merchant Plan generation persists exactly one recommendation", async (t) =
     assert.equal(evidenceSnapshot.snapshotVersion, "plan_evidence_snapshot_v1");
     assert.equal(Array.isArray(evidenceSnapshot.blocksJson), true);
     assert.ok(snapshot.opportunityCandidates.length >= 1);
-    assert.equal(snapshot.opportunityCandidates[0].id, "opportunity_listing_copy_missing_product_type");
+    assert.equal(
+      snapshot.opportunityCandidates[0].selectedCapability.operation,
+      "productUpdate",
+    );
     assert.equal(snapshot.opportunityCandidates[0].affectedEntities.length, 1);
     assert.equal(snapshot.opportunityCandidates[0].initialProposal.kind, "product_type_updates");
-    assert.equal(run.result.selectedOpportunityId, "opportunity_listing_copy_missing_product_type");
+    assert.equal(run.result.selectedOpportunityId, snapshot.opportunityCandidates[0].id);
     assert.equal(run.result.selectedOpportunity.initialProposal.kind, "product_type_updates");
     assert.ok(action);
     assert.equal(action.progress.selectedOpportunity.initialProposal.kind, "product_type_updates");
@@ -930,6 +1027,7 @@ test("Plan acceptance emits executable workflow steps → proposed clearance row
         shopId: shop.id,
         externalId: `deadprod-${suffix}`,
         title: "Dusty Parka",
+        productType: "Outerwear",
         status: "ACTIVE",
         variants: {
           create: [
@@ -1131,12 +1229,12 @@ function planOutputFixture({
   goalId = "goal-3",
   supportingGoalId = "goal-6",
   opportunityIds = [
-    "opportunity_listing_copy_missing_product_type",
-    "opportunity_price_markdown_dead_stock",
-    "opportunity_tidy_up_stale_listing",
+    "opportunity_shopify_product_update_fixture_a",
+    "opportunity_shopify_product_variants_bulk_update_fixture_b",
+    "opportunity_shopify_product_update_fixture_c",
   ],
 } = {}) {
-  const opportunityId = opportunityIds[0] ?? "opportunity_listing_copy_missing_product_type";
+  const opportunityId = opportunityIds[0] ?? "opportunity_shopify_product_update_fixture_a";
   return {
     candidates: opportunityIds.slice(0, 5).map((id, index) =>
       candidateFixture(`candidate_${index + 1}`, id, actionForOpportunity(id), beliefId, insightId),
@@ -1190,7 +1288,9 @@ function planOutputFixture({
 }
 
 function clearancePlanOutputFixture(options = {}) {
-  const opportunityId = "opportunity_price_markdown_dead_stock";
+  const opportunityId = options.opportunityIds?.find((id) =>
+    id.startsWith("opportunity_shopify_product_variants_bulk_update"),
+  ) ?? "opportunity_shopify_product_variants_bulk_update_fixture_b";
   const opportunityIds = [
     opportunityId,
     ...((options.opportunityIds ?? []).filter((id) => id !== opportunityId)),
@@ -1258,10 +1358,10 @@ function candidateFixture(id, opportunityId, action, beliefId, insightId) {
 }
 
 function actionForOpportunity(opportunityId) {
-  if (opportunityId === "opportunity_price_markdown_dead_stock") {
+  if (opportunityId.startsWith("opportunity_shopify_product_variants_bulk_update")) {
     return "Clear dead stock with a floored markdown";
   }
-  if (opportunityId === "opportunity_tidy_up_stale_listing") {
+  if (opportunityId.endsWith("_fixture_c")) {
     return "Archive unbuyable stale products";
   }
   return "Categorise uncategorised products";
@@ -1273,9 +1373,9 @@ function validationContext() {
     allowedInsightIds: new Set(["insight-1"]),
     allowedGoalIds: new Set(["goal-3", "goal-6", "goal-12"]),
     allowedOpportunityIds: new Set([
-      "opportunity_listing_copy_missing_product_type",
-      "opportunity_price_markdown_dead_stock",
-      "opportunity_tidy_up_stale_listing",
+      "opportunity_shopify_product_update_fixture_a",
+      "opportunity_shopify_product_variants_bulk_update_fixture_b",
+      "opportunity_shopify_product_update_fixture_c",
     ]),
     suppliedBeliefs: [
       {

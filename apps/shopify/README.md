@@ -48,7 +48,7 @@ Common local `.env` values:
 ```shell
 DATABASE_URL="postgresql://jefe:jefe@localhost:55432/jefe_dev?schema=public"
 SHOPIFY_API_VERSION="2026-07"
-SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,read_locations
+SCOPES=read_products,write_products,read_orders,write_orders,read_all_orders,read_customers,write_customers,read_inventory,write_inventory,write_inventory_transfers,read_locations
 ENABLE_DEV_TOOLS=true
 ENABLE_SHOPIFY_BACKFILL_LOOP=true
 SHOPIFY_BACKFILL_INITIAL_DELAY_MS=5000
