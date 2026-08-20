@@ -73,6 +73,7 @@ export const APPLICABILITY_DIMENSIONS = /** @type {const} */ ({
  * @property {string} primitive      The typed executor that owns resolution + the write path.
  * @property {string} [executeFlag]  The env var that must equal "true" for this action to WRITE — its deliberate go-live switch (e.g. "CLEARANCE_EXECUTE_ENABLED"). Absent = not yet wired for execution.
  * @property {string[]} [requiredScopes]  Shopify OAuth scopes the merchant must have granted for this action to WRITE (e.g. ["write_products"]). The execution gate + the scope-nudge read use this; empty/absent = no write scope needed.
+ * @property {string} [shopifyCapabilityProviderRef]  Compatibility bridge to the discovered Shopify capability manifest. Recommendation reasoning should consume the manifest; this old action type remains the executor binding.
  * @property {ActionApplicability} [applicability]  WHICH BUSINESSES this suits, dimensionally. See APPLICABILITY_DIMENSIONS.
  * @property {ActionOutcomeSpec} [outcome]  WHAT SUCCESS IS for this action — the per-type half of the Observe→Learn contract. Each type declares its success criteria here; ONE shared executor runs them (co-locate the definition, share the runner — chat 10's ruling, so an action and its success criteria can never drift apart).
  */
@@ -108,6 +109,7 @@ export const ACTION_REGISTRY = {
     targetKinds: ["missing_product_type"],
     reversible: true,
     primitive: "listing-copy-adapter",
+    shopifyCapabilityProviderRef: "shopify.product.update",
     executeFlag: "LISTING_COPY_EXECUTE_ENABLED",
     requiredScopes: ["write_products"],
     applicability: {
@@ -137,6 +139,7 @@ export const ACTION_REGISTRY = {
     targetKinds: ["dead_stock"],
     reversible: true,
     primitive: "clearance-adapter",
+    shopifyCapabilityProviderRef: "shopify.product_variants.bulk_update",
     executeFlag: "CLEARANCE_EXECUTE_ENABLED",
     requiredScopes: ["write_products"],
     applicability: {
@@ -201,6 +204,7 @@ export const ACTION_REGISTRY = {
     targetKinds: ["restock"],
     reversible: false,
     primitive: "inventory-transfer-adapter",
+    shopifyCapabilityProviderRef: "shopify.inventory_transfer.create",
     executeFlag: "INVENTORY_TRANSFER_EXECUTE_ENABLED",
     requiredScopes: ["write_inventory_transfers"],
     applicability: {
@@ -225,6 +229,7 @@ export const ACTION_REGISTRY = {
     targetKinds: ["stale_listing"],
     reversible: true,
     primitive: "product-status-adapter",
+    shopifyCapabilityProviderRef: "shopify.product.update",
     executeFlag: "PRODUCT_STATUS_EXECUTE_ENABLED",
     requiredScopes: ["write_products"],
     applicability: {

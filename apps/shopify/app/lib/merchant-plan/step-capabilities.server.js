@@ -1,6 +1,7 @@
 // @ts-check
 
 import {
+  getActionDefinition,
   getRequiredScopes,
   isActionExecuteEnabled,
   listActionCapabilities,
@@ -100,17 +101,22 @@ const MERCHANT_ACTION_CAPABILITIES = [
  */
 export function listExecutableStepCapabilities(env = process.env) {
   return listActionCapabilities().flatMap((capability) =>
-    capability.targetKinds.map((targetKind) => ({
-      ref: `execute:${capability.actionType}:${targetKind}`,
-      mode: WORKFLOW_STEP_MODES.execute,
-      label: capability.description,
-      description: capability.description,
-      actionType: capability.actionType,
-      targetKind,
-      write: true,
-      writeEnabled: isActionExecuteEnabled(capability.actionType, env),
-      requiredScopes: getRequiredScopes(capability.actionType),
-    })),
+    capability.targetKinds.map((targetKind) => {
+      const definition = getActionDefinition(capability.actionType);
+      return {
+        ref: `execute:${capability.actionType}:${targetKind}`,
+        mode: WORKFLOW_STEP_MODES.execute,
+        label: capability.description,
+        description: capability.description,
+        actionType: capability.actionType,
+        targetKind,
+        write: true,
+        writeEnabled: isActionExecuteEnabled(capability.actionType, env),
+        requiredScopes: getRequiredScopes(capability.actionType),
+        executorRef: definition?.primitive ?? null,
+        providerRef: definition?.shopifyCapabilityProviderRef ?? null,
+      };
+    }),
   );
 }
 

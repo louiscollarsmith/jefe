@@ -323,9 +323,10 @@ test("approval and step lifecycle remain wired through governed action forms", (
   assert.doesNotMatch(beforeChat, /value="action\.step\.start"/);
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
   assert.match(chatSource, /value="action\.accept_plan"/);
-  assert.match(chatSource, /value="action\.step\.start"/);
-  assert.match(chatSource, /value="action\.step\.stop"/);
-  assert.match(chatSource, /value="action\.step\.complete"/);
+  assert.match(chatSource, /value=\{intent\}/);
+  assert.match(chatSource, /return "action\.step\.start"/);
+  assert.match(chatSource, /return "action\.step\.stop"/);
+  assert.match(chatSource, /return "action\.step\.complete"/);
   assert.match(chatSource, /value="action\.defer"/);
   assert.match(chatSource, /action\.status !== "proposed"/);
   assert.match(chatSource, /name="focusedActionId"/);

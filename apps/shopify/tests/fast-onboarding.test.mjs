@@ -607,7 +607,7 @@ test("bootstrap-insufficient onboarding waits while full learning is still activ
   assert.equal(experience.failure, null);
 });
 
-test("ready bootstrap with only a superseded recommendation keeps onboarding polling after full learning", async () => {
+test("ready bootstrap with only a superseded recommendation stops polling after full learning", async () => {
   const prisma = {
     shop: {
       findUniqueOrThrow: async () => ({
@@ -671,7 +671,8 @@ test("ready bootstrap with only a superseded recommendation keeps onboarding pol
 
   assert.equal(experience.stage, "context");
   assert.equal(experience.recommendation, null);
-  assert.equal(experience.failure, null);
+  assert.equal(experience.failure.type, "insufficient");
+  assert.match(experience.failure.message, /grounded Shopify action/);
 });
 
 test("first-run onboarding surfaces a full-memory recommendation when bootstrap has none", async () => {
@@ -1109,7 +1110,7 @@ test("invalid model output is a retryable generation failure", () => {
   assert.match(bootstrapSource, /invalid_model_output/);
 });
 
-test("thin first-read evidence keeps onboarding polling instead of showing a no-insight dead end", () => {
+test("thin first-read evidence waits only while recommendation work is active", () => {
   assert.equal(
     classifyFailure(
       { status: "complete", metadata: { phase: "insufficient_evidence" } },
@@ -1117,7 +1118,7 @@ test("thin first-read evidence keeps onboarding polling instead of showing a no-
       {
         contextAnswered: true,
         hasSurfaceableRecommendation: false,
-        fullLearningState: "complete",
+        fullLearningState: "learning",
       },
     ),
     null,
@@ -1130,6 +1131,42 @@ test("thin first-read evidence keeps onboarding polling instead of showing a no-
         contextAnswered: true,
         hasSurfaceableRecommendation: false,
         inAppHandoff: false,
+        fullLearningState: "complete",
+        latestPlanRun: { status: "running" },
+      },
+    ),
+    null,
+  );
+  const insufficientEvidenceFailure = classifyFailure(
+    { status: "complete", metadata: { phase: "insufficient_evidence" } },
+    { status: "succeeded" },
+    {
+      contextAnswered: true,
+      hasSurfaceableRecommendation: false,
+      fullLearningState: "complete",
+    },
+  );
+  assert.equal(insufficientEvidenceFailure.type, "insufficient");
+  assert.match(insufficientEvidenceFailure.message, /grounded Shopify action/);
+  const readyFailure = classifyFailure(
+    { status: "complete", metadata: { phase: "ready" } },
+    { status: "succeeded" },
+    {
+      contextAnswered: true,
+      hasSurfaceableRecommendation: false,
+      inAppHandoff: false,
+      fullLearningState: "complete",
+    },
+  );
+  assert.equal(readyFailure.type, "insufficient");
+  assert.equal(
+    classifyFailure(
+      { status: "complete", metadata: { phase: "ready" } },
+      { status: "succeeded" },
+      {
+        contextAnswered: true,
+        hasSurfaceableRecommendation: false,
+        inAppHandoff: true,
         fullLearningState: "complete",
       },
     ),

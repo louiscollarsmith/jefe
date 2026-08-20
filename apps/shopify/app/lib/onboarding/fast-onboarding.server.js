@@ -701,6 +701,20 @@ export function shapeFullLearning(statuses, jobs) {
 export function classifyFailure(status, job, experience = {}) {
   const failed = status?.status === "failed" || job?.status === "failed";
   if (!failed) {
+    const activePlanGeneration = [
+      PLAN_RUN_STATUS.queued,
+      PLAN_RUN_STATUS.running,
+    ].includes(experience.latestPlanRun?.status);
+    const shouldKeepWaitingForRecommendation =
+      experience.contextAnswered === true &&
+      experience.hasSurfaceableRecommendation !== true &&
+      experience.inAppHandoff !== true &&
+      (
+        activePlanGeneration ||
+        !["complete", "failed", "access_failure"].includes(
+          stringValue(experience.fullLearningState),
+        )
+      );
     if (
       experience.contextAnswered === true &&
       experience.hasSurfaceableRecommendation !== true &&
@@ -752,10 +766,15 @@ export function classifyFailure(status, job, experience = {}) {
         };
       }
       // Recommendation rows can land just after the bootstrap phase flips. Treat
-      // thin evidence as "keep checking" in onboarding rather than a terminal
-      // merchant-facing dead end; a manual refresh should never be required to
-      // reveal an insight that already exists.
-      return null;
+      // thin evidence as "keep checking" while learning or plan generation is
+      // active. Once the read is terminal, stop polling and show the honest
+      // no-grounded-action fallback.
+      if (shouldKeepWaitingForRecommendation) return null;
+      return {
+        type: "insufficient",
+        message:
+          "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
+      };
     }
     if (
       phase === "ready" &&
@@ -763,7 +782,12 @@ export function classifyFailure(status, job, experience = {}) {
       experience.hasSurfaceableRecommendation === false &&
       experience.inAppHandoff !== true
     ) {
-      return null;
+      if (shouldKeepWaitingForRecommendation) return null;
+      return {
+        type: "insufficient",
+        message:
+          "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
+      };
     }
     return null;
   }

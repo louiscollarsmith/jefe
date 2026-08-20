@@ -1,5 +1,7 @@
 // @ts-check
 
+import { getShopifyCapabilityManifest } from "../shopify/capabilities/catalog.server.js";
+
 export const CAPABILITY_AVAILABILITY = Object.freeze({
   available: "AVAILABLE",
   needsAuthorization: "NEEDS_AUTHORIZATION",
@@ -19,6 +21,7 @@ export const INTENDED_ACTOR = Object.freeze({
 export const SHOPIFY_ACTION_CAPABILITIES = [
   {
     ref: "shopify.inventory_transfer.create",
+    sourceCapabilityId: "shopify.admin_graphql.2026-07.mutation.inventoryTransferCreate",
     provider: "SHOPIFY",
     domain: "inventory",
     operation: "inventory_transfer.create",
@@ -36,6 +39,7 @@ export const SHOPIFY_ACTION_CAPABILITIES = [
   },
   {
     ref: "shopify.inventory_purchase_order.read",
+    sourceCapabilityId: null,
     provider: "SHOPIFY",
     domain: "inventory",
     operation: "inventory_purchase_order.read",
@@ -53,6 +57,7 @@ export const SHOPIFY_ACTION_CAPABILITIES = [
   },
   {
     ref: "shopify.inventory_purchase_order.create",
+    sourceCapabilityId: null,
     provider: "SHOPIFY",
     domain: "inventory",
     operation: "inventory_purchase_order.create",
@@ -71,13 +76,14 @@ export const SHOPIFY_ACTION_CAPABILITIES = [
 ];
 
 export function listShopifyActionCapabilities() {
-  return SHOPIFY_ACTION_CAPABILITIES.map((row) => ({ ...row }));
+  return SHOPIFY_ACTION_CAPABILITIES.map((row) => enrichWithDiscoveredCapability(row));
 }
 
 /** @param {unknown} ref */
 export function getShopifyActionCapability(ref) {
   const key = String(ref ?? "").trim();
-  return SHOPIFY_ACTION_CAPABILITIES.find((row) => row.ref === key) ?? null;
+  const row = SHOPIFY_ACTION_CAPABILITIES.find((item) => item.ref === key);
+  return row ? enrichWithDiscoveredCapability(row) : null;
 }
 
 /** @param {any} step */
@@ -90,4 +96,25 @@ export function resolveStepCapabilityTruth(step) {
     return getShopifyActionCapability("shopify.inventory_transfer.create");
   }
   return null;
+}
+
+/** @param {any} row */
+function enrichWithDiscoveredCapability(row) {
+  const discovered = row.sourceCapabilityId
+    ? getShopifyCapabilityManifest(row.sourceCapabilityId)
+    : null;
+  return {
+    ...row,
+    discoveredCapability: discovered
+      ? {
+          id: discovered.id,
+          operation: discovered.operation,
+          operationKind: discovered.operationKind,
+          requiredScopes: discovered.requiredScopes,
+          admissionStatus: discovered.admission.status,
+          semanticEffects: discovered.semantic.semanticEffects,
+          qualificationRequirements: discovered.semantic.qualificationRequirements,
+        }
+      : null,
+  };
 }
