@@ -24,6 +24,7 @@
     "analytics": "node scripts/analytics-report.mjs",
     "alert:test": "node scripts/alert-test.mjs",
     "activity-digest": "node scripts/activity-digest.mjs",
+    "eval:focused-action-live": "node scripts/eval-focused-action-live.mjs",
     "actions:reseed": "node scripts/reseed-dev-action-state.mjs",
     "shopify": "shopify",
     "prisma": "prisma",

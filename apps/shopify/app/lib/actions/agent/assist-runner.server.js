@@ -76,7 +76,7 @@ export function resolveWorkChain(state, targetStepId) {
     // state (LLM-generated placeholder IDs that were never resolved to DB UUIDs
     // on legacy actions), fall back to treating all preceding steps as implicit
     // dependencies so a stale upstream cannot be skipped.
-    const unresolvedDeps = declaredDeps.filter((depId) => !byId.has(String(depId)));
+    const unresolvedDeps = declaredDeps.filter((/** @type {string} */ depId) => !byId.has(String(depId)));
     if (unresolvedDeps.length > 0 && declaredDeps.length === unresolvedDeps.length) {
       // ALL deps are unresolved — use orderIndex to derive predecessors
       const currentIndex = Number(row.step.orderIndex ?? 0);
@@ -343,6 +343,7 @@ export async function runAssistStepById(prisma, input) {
  *   capabilityRef: string;
  *   actor?: string | null;
  *   conversationId?: string | null;
+ *   provider?: any;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  * }} input
  */

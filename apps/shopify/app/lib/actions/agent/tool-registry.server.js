@@ -15,7 +15,10 @@
  *    is what makes "Done." with no work impossible to emit.
  */
 
-import { logger as baseLogger } from "../../observability/logger.server.js";
+import {
+  logger as baseLogger,
+  serializeError,
+} from "../../observability/logger.server.js";
 import { ACTION_COMMAND } from "../action-command.server.js";
 import { resolveActionState } from "../action-state.server.js";
 import { allowedPlanFields } from "../action-plan-schema.server.js";
@@ -41,6 +44,17 @@ export const TOOL_EFFECT = Object.freeze({
   artifact: "artifact",
   externalWrite: "external_write",
 });
+
+/** @param {unknown} message */
+function looksLikeWorkflowRemoval(message) {
+  const text = String(message ?? "").toLowerCase();
+  return (
+    /\b(remove|delete|scrap|forget|drop)\b/.test(text) &&
+    /\b(step\s+\d+|final step|last step|that step|this step|workflow|plan)\b/.test(
+      text,
+    )
+  );
+}
 
 /**
  * @typedef {Object} ToolResult
@@ -80,7 +94,8 @@ const TOOLS = {
   inspect_scope: {
     effect: TOOL_EFFECT.read,
     kinds: "*",
-    description: "List which products are currently in scope and which are excluded, and why.",
+    description:
+      "List which products are currently in scope and which are excluded, and why.",
     args: {},
     async run(/** @type {any} */ ctx) {
       const state = await ctx.reloadState();
@@ -119,7 +134,6 @@ const TOOLS = {
           message: emptyProposalMessage(state),
           facts: {
             proposal: null,
-            scopeStatus: state?.scope?.status ?? null,
             ...planFacts(state),
           },
         });
@@ -128,7 +142,11 @@ const TOOLS = {
         effect: TOOL_EFFECT.read,
         message: proposal.summary,
         facts: { proposal: proposal.lines, ...planFacts(state) },
-        artifact: { type: proposal.type, title: proposal.title, lines: proposal.lines },
+        artifact: {
+          type: proposal.type,
+          title: proposal.title,
+          lines: proposal.lines,
+        },
       });
     },
   },
@@ -168,16 +186,26 @@ const TOOLS = {
           if (change?.field === "coverDays" && change.from != null) {
             original.coverDays = change.from;
           }
-          if (change?.field === "excluded" && typeof change.added === "string") {
+          if (
+            change?.field === "excluded" &&
+            typeof change.added === "string"
+          ) {
             const title = change.added;
-            original.excluded = (original.excluded ?? []).filter((t) => t !== title);
+            original.excluded = (original.excluded ?? []).filter(
+              (/** @type {string} */ t) => t !== title,
+            );
             original.included = Array.isArray(original.included)
               ? [...new Set([...(original.included ?? []), title])]
               : [title];
           }
-          if (change?.field === "included" && typeof change.added === "string") {
+          if (
+            change?.field === "included" &&
+            typeof change.added === "string"
+          ) {
             const title = change.added;
-            original.included = (original.included ?? []).filter((t) => t !== title);
+            original.included = (original.included ?? []).filter(
+              (/** @type {string} */ t) => t !== title,
+            );
             original.excluded = Array.isArray(original.excluded)
               ? [...new Set([...(original.excluded ?? []), title])]
               : [title];
@@ -185,12 +213,16 @@ const TOOLS = {
         }
       }
 
-      const includedList = Array.isArray(original.included) ? original.included.join(" + ") : "";
+      const includedList = Array.isArray(original.included)
+        ? original.included.join(" + ")
+        : "";
       const currentIncludedList = Array.isArray(current.included)
         ? current.included.join(" + ")
         : "";
-      const originalCover = original.coverDays != null ? Number(original.coverDays) : null;
-      const currentCover = current.coverDays != null ? Number(current.coverDays) : null;
+      const originalCover =
+        original.coverDays != null ? Number(original.coverDays) : null;
+      const currentCover =
+        current.coverDays != null ? Number(current.coverDays) : null;
 
       const narrativeParts = [];
       narrativeParts.push(
@@ -207,12 +239,19 @@ const TOOLS = {
         for (const change of changes) {
           if (change?.field === "coverDays") {
             const to = change.to;
-            if (to != null) narrativeParts.push(`You moved to ${to}-day cover.`);
+            if (to != null)
+              narrativeParts.push(`You moved to ${to}-day cover.`);
           }
-          if (change?.field === "excluded" && typeof change.added === "string") {
+          if (
+            change?.field === "excluded" &&
+            typeof change.added === "string"
+          ) {
             narrativeParts.push(`You removed ${change.added}.`);
           }
-          if (change?.field === "included" && typeof change.added === "string") {
+          if (
+            change?.field === "included" &&
+            typeof change.added === "string"
+          ) {
             narrativeParts.push(`You added ${change.added} back into scope.`);
           }
         }
@@ -223,7 +262,9 @@ const TOOLS = {
           `The current proposal is ${currentIncludedList} at ${currentCover}-day cover.`,
         );
       } else if (currentCover != null) {
-        narrativeParts.push(`The current proposal uses ${currentCover}-day cover.`);
+        narrativeParts.push(
+          `The current proposal uses ${currentCover}-day cover.`,
+        );
       }
 
       return ok("inspect_history", {
@@ -240,8 +281,18 @@ const TOOLS = {
     description:
       "Work out what a different plan value would produce WITHOUT saving it. Use for 'what would X look like', 'what if', and any request that says not to change anything yet.",
     args: {
-      coverDays: { type: "number", min: 1, max: 730, kinds: ["restock", "generic"] },
-      markdownPercent: { type: "number", min: 0, max: 90, kinds: ["markdown", "generic"] },
+      coverDays: {
+        type: "number",
+        min: 1,
+        max: 730,
+        kinds: ["restock", "generic"],
+      },
+      markdownPercent: {
+        type: "number",
+        min: 0,
+        max: 90,
+        kinds: ["markdown", "generic"],
+      },
     },
     requiresOneOf: ["coverDays", "markdownPercent"],
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
@@ -250,7 +301,8 @@ const TOOLS = {
       if (!simulated) {
         return fail("simulate_plan", {
           code: "NOTHING_TO_SIMULATE",
-          message: "I don't have inventory figures to simulate against for this action.",
+          message:
+            "I don't have inventory figures to simulate against for this action.",
         });
       }
       return ok("simulate_plan", {
@@ -261,7 +313,11 @@ const TOOLS = {
           simulatedWith: args,
           persistedPlanUnchanged: planFacts(state),
         },
-        artifact: { type: "simulation", title: simulated.title, lines: simulated.lines },
+        artifact: {
+          type: "simulation",
+          title: simulated.title,
+          lines: simulated.lines,
+        },
       });
     },
   },
@@ -272,8 +328,18 @@ const TOOLS = {
     description:
       "Persist a change to this action's plan values. Only use when the merchant wants the change kept.",
     args: {
-      coverDays: { type: "number", min: 1, max: 730, kinds: ["restock", "generic"] },
-      markdownPercent: { type: "number", min: 0, max: 90, kinds: ["markdown", "generic"] },
+      coverDays: {
+        type: "number",
+        min: 1,
+        max: 730,
+        kinds: ["restock", "generic"],
+      },
+      markdownPercent: {
+        type: "number",
+        min: 0,
+        max: 90,
+        kinds: ["markdown", "generic"],
+      },
       maxProducts: { type: "number", min: 1, max: 500 },
     },
     requiresOneOf: ["coverDays", "markdownPercent", "maxProducts"],
@@ -295,7 +361,11 @@ const TOOLS = {
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
       const resolvedTitle = ctx.resolveProductTitle(args.productTitle);
       if (resolvedTitle.ambiguous) {
-        return needsClarification("exclude_product", resolvedTitle.question, resolvedTitle.candidates);
+        return needsClarification(
+          "exclude_product",
+          resolvedTitle.question,
+          resolvedTitle.candidates,
+        );
       }
       if (!resolvedTitle.title) {
         return fail("exclude_product", {
@@ -303,10 +373,17 @@ const TOOLS = {
           message: `I couldn't find "${args.productTitle}" among the products on this action.`,
         });
       }
-      return ctx.runCommandWithDiff("exclude_product", ACTION_COMMAND.ADD_CONSTRAINT, {
-        scopeModification: { intent: "exclude_product", title: resolvedTitle.title },
+      return ctx.runCommandWithDiff(
+        "exclude_product",
+        ACTION_COMMAND.ADD_CONSTRAINT,
+        {
+          scopeModification: {
+            intent: "exclude_product",
+            title: resolvedTitle.title,
+          },
         productTitle: resolvedTitle.title,
-      });
+        },
+      );
     },
   },
 
@@ -331,10 +408,17 @@ const TOOLS = {
           message: `I couldn't find "${args.productTitle}" among the products on this action.`,
         });
       }
-      return ctx.runCommandWithDiff("restrict_to_products", ACTION_COMMAND.ADD_CONSTRAINT, {
-        scopeModification: { intent: "include_only", title: resolvedTitle.title },
+      return ctx.runCommandWithDiff(
+        "restrict_to_products",
+        ACTION_COMMAND.ADD_CONSTRAINT,
+        {
+          scopeModification: {
+            intent: "include_only",
+            title: resolvedTitle.title,
+          },
         productTitle: resolvedTitle.title,
-      });
+        },
+      );
     },
   },
 
@@ -346,7 +430,9 @@ const TOOLS = {
     args: { productTitle: { type: "string" } },
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
       const excluded = excludedTitles(ctx.state);
-      let title = args.productTitle ? ctx.resolveProductTitle(args.productTitle).title : null;
+      let title = args.productTitle
+        ? ctx.resolveProductTitle(args.productTitle).title
+        : null;
       if (!title && excluded.length === 1) title = excluded[0];
       if (!title) {
         return fail("include_product_again", {
@@ -363,10 +449,14 @@ const TOOLS = {
           message: `${title} is already in scope.`,
         });
       }
-      return ctx.runCommandWithDiff("include_product_again", ACTION_COMMAND.REMOVE_CONSTRAINT, {
+      return ctx.runCommandWithDiff(
+        "include_product_again",
+        ACTION_COMMAND.REMOVE_CONSTRAINT,
+        {
         constraintId: constraint.id,
         productTitle: title,
-      });
+        },
+      );
     },
   },
 
@@ -399,19 +489,28 @@ const TOOLS = {
     description: "Remove an existing scope rule by its id.",
     args: { constraintId: { type: "string", required: true } },
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
-      return ctx.runCommandWithDiff("remove_rule", ACTION_COMMAND.REMOVE_CONSTRAINT, {
+      return ctx.runCommandWithDiff(
+        "remove_rule",
+        ACTION_COMMAND.REMOVE_CONSTRAINT,
+        {
         constraintId: args.constraintId,
-      });
+        },
+      );
     },
   },
 
   accept_plan: {
     effect: TOOL_EFFECT.stateChange,
     kinds: "*",
-    description: "Accept the proposed plan so work can begin. Only when the merchant clearly agrees.",
+    description:
+      "Accept the proposed plan so work can begin. Only when the merchant clearly agrees.",
     args: {},
     async run(/** @type {any} */ ctx) {
-      return ctx.runCommandWithDiff("accept_plan", ACTION_COMMAND.ACCEPT_PLAN, {});
+      return ctx.runCommandWithDiff(
+        "accept_plan",
+        ACTION_COMMAND.ACCEPT_PLAN,
+        {},
+      );
     },
   },
 
@@ -419,10 +518,22 @@ const TOOLS = {
     effect: TOOL_EFFECT.stateChange,
     kinds: "*",
     description:
-      "Mark a piece of work as skipped because the merchant will handle it themselves or does not want it.",
+      "Mark a current executable/work item as skipped because the merchant will handle it themselves. Do not use this for deleting, removing, replacing, or reordering plan steps; use replan_action for 'remove step 4', 'delete the final step', or similar workflow edits.",
     args: { stepId: { type: "string" } },
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
-      return ctx.runCommandWithDiff("skip_work", ACTION_COMMAND.SKIP_STEP, { stepId: args.stepId });
+      if (!args.stepId && looksLikeWorkflowRemoval(ctx.message)) {
+        return ctx.runCommandWithDiff(
+          "replan_action",
+          ACTION_COMMAND.REPLAN_ACTION,
+          {
+            merchantInstruction: ctx.message,
+            reason: "skip_work_redirect_for_workflow_edit",
+          },
+        );
+      }
+      return ctx.runCommandWithDiff("skip_work", ACTION_COMMAND.SKIP_STEP, {
+        stepId: args.stepId,
+      });
     },
   },
 
@@ -435,7 +546,10 @@ const TOOLS = {
       "Run the inventory review that works out reorder quantities from cover target, velocity and stock on hand.",
     args: {},
     async run(/** @type {any} */ ctx) {
-      return ctx.reachCapabilityTool("calculate_replenishment", "assist:inventory_review");
+      return ctx.reachCapabilityTool(
+        "calculate_replenishment",
+        "assist:inventory_review",
+      );
     },
   },
 
@@ -460,7 +574,10 @@ const TOOLS = {
       "Draft the supplier message for the current proposal. Automatically rebuilds the proposal first if it is out of date.",
     args: {},
     async run(/** @type {any} */ ctx) {
-      return ctx.reachCapabilityTool("draft_supplier_email", "assist:supplier_email_draft");
+      return ctx.reachCapabilityTool(
+        "draft_supplier_email",
+        "assist:supplier_email_draft",
+      );
     },
   },
 
@@ -482,7 +599,8 @@ const TOOLS = {
       if (!discovered.ok) {
         return fail("discover_product_type_scope", {
           code: "DISCOVERY_UNAVAILABLE",
-          message: "I couldn't read the product catalog to discover missing product types.",
+          message:
+            "I couldn't read the product catalog to discover missing product types.",
         });
       }
 
@@ -496,7 +614,8 @@ const TOOLS = {
       if (!persisted.ok) {
         return fail("discover_product_type_scope", {
           code: "PERSIST_FAILED",
-          message: "I found products but couldn't save the discovered scope for this action.",
+          message:
+            "I found products but couldn't save the discovered scope for this action.",
         });
       }
 
@@ -517,7 +636,6 @@ const TOOLS = {
           effect: TOOL_EFFECT.stateChange,
           message: `I checked the current catalog and found no eligible products missing product types.${historyNote}`,
           facts: {
-            scopeStatus: state?.scope?.status ?? null,
             unresolved: discovered.unresolved,
             discovery: discovered.discovery,
             ...after,
@@ -530,14 +648,17 @@ const TOOLS = {
         effect: TOOL_EFFECT.stateChange,
         message: `Found ${proposal.lines.length} product${proposal.lines.length === 1 ? "" : "s"} missing product types.${historyNote} ${formatListingCopyProposalSummary(proposal.lines)}`,
         facts: {
-          scopeStatus: state?.scope?.status ?? null,
           proposal: proposal.lines,
           unresolved: discovered.unresolved,
           discovery: discovered.discovery,
           ...after,
         },
         changes,
-        artifact: { type: proposal.type, title: proposal.title, lines: proposal.lines },
+        artifact: {
+          type: proposal.type,
+          title: proposal.title,
+          lines: proposal.lines,
+        },
       });
     },
   },
@@ -554,12 +675,20 @@ const TOOLS = {
       if (ctx.kind === "listing_copy") {
         const current = ctx.state ?? (await ctx.reloadState());
         if (current?.scope?.status === SCOPE_STATUS.unresolved) {
-          const discovered = await runTool(ctx, "discover_product_type_scope", {});
+          const discovered = await runTool(
+            ctx,
+            "discover_product_type_scope",
+            {},
+          );
           if (!discovered.ok) return discovered;
           await ctx.reloadState();
         }
       }
-      return ctx.runCommandWithDiff("build_change_set", ACTION_COMMAND.CREATE_CHANGESET, {});
+      return ctx.runCommandWithDiff(
+        "build_change_set",
+        ACTION_COMMAND.CREATE_CHANGESET,
+        {},
+      );
     },
   },
 
@@ -605,13 +734,18 @@ const TOOLS = {
   report_execution: {
     effect: TOOL_EFFECT.read,
     kinds: "*",
-    description: "Read what was actually executed against Shopify and what the result was.",
+    description:
+      "Read what was actually executed against Shopify and what the result was.",
     args: {},
     async run(/** @type {any} */ ctx) {
-      const executed = await ctx.runCommand(ACTION_COMMAND.REPORT_EXECUTION, {});
+      const executed = await ctx.runCommand(
+        ACTION_COMMAND.REPORT_EXECUTION,
+        {},
+      );
       return ok("report_execution", {
         effect: TOOL_EFFECT.read,
-        message: executed.reply ?? "No execution has been recorded for this action.",
+        message:
+          executed.reply ?? "No execution has been recorded for this action.",
         facts: { execution: executed.result ?? null },
       });
     },
@@ -633,7 +767,11 @@ const TOOLS = {
         conversationId: ctx.conversationId,
         logger: ctx.logger,
       });
-      return assistResultToTool("run_work_item", result, await ctx.reloadState());
+      return assistResultToTool(
+        "run_work_item",
+        result,
+        await ctx.reloadState(),
+      );
     },
   },
 
@@ -641,20 +779,45 @@ const TOOLS = {
     effect: TOOL_EFFECT.stateChange,
     kinds: "*",
     description:
-      "Add a new step to this action's plan. Use when the merchant wants to extend the workflow with an additional piece of work — for example 'add a step to create a Shopify transfer'. The step is persisted to the plan, not simulated.",
+      "Add a fully-specified new step to this action's plan. Prefer replan_action for natural-language structural workflow changes; use this only when the application already has a concrete title/mode/capability.",
     args: {
-      title: { type: "string", required: true },
+      title: { type: "string" },
       description: { type: "string" },
       capabilityRef: { type: "string" },
       mode: { type: "string" },
     },
     async run(/** @type {any} */ ctx, /** @type {any} */ args) {
-      return ctx.runCommandWithDiff("add_plan_step", ACTION_COMMAND.ADD_PLAN_STEP, {
-        title: args.title,
-        description: args.description,
-        capabilityRef: args.capabilityRef,
-        mode: args.mode,
-      });
+      return ctx.runCommandWithDiff(
+        "add_plan_step",
+        ACTION_COMMAND.ADD_PLAN_STEP,
+        {
+          title: args.title,
+          description: args.description,
+          capabilityRef: args.capabilityRef,
+          mode: args.mode,
+        },
+      );
+    },
+  },
+
+  replan_action: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: "*",
+    description:
+      "Rebuild this action's workflow from the merchant's semantic instruction. Use for structural workflow changes: adding/removing/replacing steps, Shopify transfers, purchase orders, approval steps, warehouse movement, supplier phone calls, prerequisites, or unnecessary workflow steps. The replanner generates titles, modes, dependencies and capability refs.",
+    args: {
+      merchantInstruction: { type: "string" },
+      reason: { type: "string" },
+    },
+    async run(/** @type {any} */ ctx, /** @type {any} */ args) {
+      return ctx.runCommandWithDiff(
+        "replan_action",
+        ACTION_COMMAND.REPLAN_ACTION,
+        {
+          merchantInstruction: args.merchantInstruction || ctx.message,
+          reason: args.reason,
+        },
+      );
     },
   },
 };
@@ -709,7 +872,11 @@ export function toolCatalogueForKind(kind) {
 export function validateToolCall(name, args, kind) {
   const def = TOOLS[name];
   if (!def) {
-    return { ok: false, code: "UNKNOWN_TOOL", message: `There is no tool called "${name}".` };
+    return {
+      ok: false,
+      code: "UNKNOWN_TOOL",
+      message: `There is no tool called "${name}".`,
+    };
   }
   if (def.kinds !== "*" && !def.kinds.includes(kind)) {
     return {
@@ -769,13 +936,21 @@ export function validateToolCall(name, args, kind) {
   // Belt and braces: a plan field that leaked past the arg spec still cannot
   // reach a plan write for the wrong action type.
   for (const key of ["coverDays", "markdownPercent", "maxProducts"]) {
-    if (key in clean && (def.args ?? {})[key] && !planFields.has(key) && name === "update_plan") {
+    if (
+      key in clean &&
+      (def.args ?? {})[key] &&
+      !planFields.has(key) &&
+      name === "update_plan"
+    ) {
       delete clean[key];
       rejected.push(key);
     }
   }
 
-  if (Array.isArray(def.requiresOneOf) && !def.requiresOneOf.some((/** @type {string} */ key) => key in clean)) {
+  if (
+    Array.isArray(def.requiresOneOf) &&
+    !def.requiresOneOf.some((/** @type {string} */ key) => key in clean)
+  ) {
     return {
       ok: false,
       code: "MISSING_ARGUMENT",
@@ -823,11 +998,12 @@ export async function runTool(ctx, name, args) {
     ctx.logger?.error?.("action tool threw", {
       tool: name,
       actionId: ctx.actionId,
-      error: error instanceof Error ? error.name : "UnknownError",
+      error: serializeError(error),
     });
     return fail(name, {
       code: "TOOL_THREW",
-      message: "Something went wrong on my side running that. Nothing was changed.",
+      message:
+        "Something went wrong on my side running that. Nothing was changed.",
       retryable: true,
     });
   }
@@ -872,7 +1048,11 @@ export function fail(tool, error) {
     facts: {},
     changes: [],
     artifact: null,
-    error: { code: error.code, message: error.message, retryable: error.retryable === true },
+    error: {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable === true,
+    },
     blocked: null,
   };
 }
@@ -888,14 +1068,22 @@ export function blockedResult(tool, blocked) {
     changes: [],
     artifact: null,
     error: null,
-    blocked: { code: blocked.code, message: blocked.message, needs: blocked.needs ?? null },
+    blocked: {
+      code: blocked.code,
+      message: blocked.message,
+      needs: blocked.needs ?? null,
+    },
   };
 }
 
 /** @param {string} tool @param {string} question @param {any[]} candidates @returns {ToolResult} */
 function needsClarification(tool, question, candidates) {
   return {
-    ...blockedResult(tool, { code: "AMBIGUOUS", message: question, needs: candidates }),
+    ...blockedResult(tool, {
+      code: "AMBIGUOUS",
+      message: question,
+      needs: candidates,
+    }),
     // Surfaced by the loop as NEEDS_CLARIFICATION rather than a failure.
     facts: { clarificationQuestion: question, candidates },
   };
@@ -979,16 +1167,26 @@ export function buildCurrentProposal(state) {
   if (kind === "restock") {
     const lines = items
       .filter((/** @type {any} */ row) => row.units != null)
-      .map((/** @type {any} */ row) => ({ title: row.title, units: row.units }));
-    const title = values.coverDays != null ? `Proposal (${values.coverDays}-day cover)` : "Proposal";
+      .map((/** @type {any} */ row) => ({
+        title: row.title,
+        units: row.units,
+      }));
+    const title =
+      values.coverDays != null
+        ? `Proposal (${values.coverDays}-day cover)`
+        : "Proposal";
     return {
       type: "replenishment_proposal",
       title,
       lines,
       summary: lines.length
         ? `Current proposal: ${lines
-            .map((/** @type {any} */ row) => `${row.title} — ${row.units} units`)
-            .join("; ")}${values.coverDays != null ? ` at ${values.coverDays}-day cover` : ""}.`
+            .map(
+              (/** @type {any} */ row) => `${row.title} — ${row.units} units`,
+            )
+            .join(
+              "; ",
+            )}${values.coverDays != null ? ` at ${values.coverDays}-day cover` : ""}.`
         : "There is nothing to reorder in the current scope.",
     };
   }
@@ -1020,11 +1218,16 @@ export function buildCurrentProposal(state) {
   }));
   return {
     type: "change_preview",
-    title: values.markdownPercent != null ? `Proposal (${values.markdownPercent}% off)` : "Proposal",
+    title:
+      values.markdownPercent != null
+        ? `Proposal (${values.markdownPercent}% off)`
+        : "Proposal",
     lines,
     summary: lines.length
       ? `Current proposal covers ${lines.length} product${lines.length === 1 ? "" : "s"}${
-          values.markdownPercent != null ? ` at ${values.markdownPercent}% off` : ""
+          values.markdownPercent != null
+            ? ` at ${values.markdownPercent}% off`
+            : ""
         }.`
       : "There is nothing in the current proposal.",
   };
@@ -1056,7 +1259,9 @@ export function simulateProposal(state, args) {
       lines,
       summary: `At ${coverDays} days of cover: ${lines
         .map((/** @type {any} */ row) => `${row.title} — ${row.units} units`)
-        .join("; ")}.${current != null ? ` The saved plan is still ${current} days.` : ""}`,
+        .join(
+          "; ",
+        )}.${current != null ? ` The saved plan is still ${current} days.` : ""}`,
     };
   }
 
@@ -1067,7 +1272,11 @@ export function simulateProposal(state, args) {
       const to = Number.isFinite(from)
         ? Math.round(from * (1 - markdownPercent / 100) * 100) / 100
         : null;
-      return { title: item.title ?? "Item", fromPrice: item.fromPrice ?? null, toPrice: to };
+      return {
+        title: item.title ?? "Item",
+        fromPrice: item.fromPrice ?? null,
+        toPrice: to,
+      };
     });
     const current = state?.plan?.values?.markdownPercent ?? null;
     return {
@@ -1103,18 +1312,38 @@ export function diffFacts(before, after) {
   const removedExclusions = (before.excluded ?? []).filter(
     (/** @type {string} */ title) => !(after.excluded ?? []).includes(title),
   );
-  for (const title of addedExclusions) changes.push({ field: "excluded", added: title });
-  for (const title of removedExclusions) changes.push({ field: "included", added: title });
+  for (const title of addedExclusions)
+    changes.push({ field: "excluded", added: title });
+  for (const title of removedExclusions)
+    changes.push({ field: "included", added: title });
   if (before.lifecycle !== after.lifecycle && after.lifecycle) {
-    changes.push({ field: "status", from: before.lifecycle ?? null, to: after.lifecycle });
+    changes.push({
+      field: "status",
+      from: before.lifecycle ?? null,
+      to: after.lifecycle,
+    });
   }
   const beforeSteps = before.workStepTitles ?? [];
   const afterSteps = after.workStepTitles ?? [];
-  for (const title of afterSteps.filter((/** @type {string} */ t) => !beforeSteps.includes(t))) {
+  for (const title of afterSteps.filter(
+    (/** @type {string} */ t) => !beforeSteps.includes(t),
+  )) {
     changes.push({ field: "plan_step_added", added: title });
   }
-  for (const title of beforeSteps.filter((/** @type {string} */ t) => !afterSteps.includes(t))) {
+  for (const title of beforeSteps.filter(
+    (/** @type {string} */ t) => !afterSteps.includes(t),
+  )) {
     changes.push({ field: "plan_step_removed", removed: title });
+  }
+  if (
+    changes.every(
+      (change) =>
+        !["plan_step_added", "plan_step_removed"].includes(change.field),
+    ) &&
+    beforeSteps.length === afterSteps.length &&
+    JSON.stringify(beforeSteps) !== JSON.stringify(afterSteps)
+  ) {
+    changes.push({ field: "plan_step_reordered", to: afterSteps });
   }
   return changes;
 }
@@ -1123,14 +1352,23 @@ export function diffFacts(before, after) {
 export function describeChanges(changes) {
   return changes
     .map((change) => {
-      if (change.field === "coverDays") return `cover target is now ${change.to} days`;
-      if (change.field === "markdownPercent") return `markdown is now ${change.to}%`;
-      if (change.field === "maxProducts") return `scope is now the top ${change.to} products`;
+      if (change.field === "coverDays")
+        return `cover target is now ${change.to} days`;
+      if (change.field === "markdownPercent")
+        return `markdown is now ${change.to}%`;
+      if (change.field === "maxProducts")
+        return `scope is now the top ${change.to} products`;
       if (change.field === "excluded") return `${change.added} is excluded`;
-      if (change.field === "included") return `${change.added} is back in scope`;
-      if (change.field === "status") return `the action is now ${String(change.to).replace(/_/g, " ")}`;
-      if (change.field === "plan_step_added") return `added "${change.added}" to the plan`;
-      if (change.field === "plan_step_removed") return `removed "${change.removed}" from the plan`;
+      if (change.field === "included")
+        return `${change.added} is back in scope`;
+      if (change.field === "status")
+        return `the action is now ${String(change.to).replace(/_/g, " ")}`;
+      if (change.field === "plan_step_added")
+        return `added "${change.added}" to the plan`;
+      if (change.field === "plan_step_removed")
+        return `removed "${change.removed}" from the plan`;
+      if (change.field === "plan_step_reordered")
+        return "reordered the plan steps";
       return null;
     })
     .filter(Boolean);
@@ -1144,7 +1382,10 @@ export function describeChanges(changes) {
  */
 export function assistResultToTool(tool, result, state) {
   if (!result.ok) {
-    if (result.code === "MERCHANT_INPUT_REQUIRED" || result.code === "PLAN_NOT_ACCEPTED") {
+    if (
+      result.code === "MERCHANT_INPUT_REQUIRED" ||
+      result.code === "PLAN_NOT_ACCEPTED"
+    ) {
       return blockedResult(tool, {
         code: result.code,
         message: result.message,
@@ -1172,7 +1413,10 @@ export function assistResultToTool(tool, result, state) {
 
   const proposal = buildCurrentProposal(state);
   const ranTitles = (result.ran ?? [])
-    .filter((/** @type {any} */ row) => row.ok && !row.alreadyCurrent && !row.deduplicated)
+    .filter(
+      (/** @type {any} */ row) =>
+        row.ok && !row.alreadyCurrent && !row.deduplicated,
+    )
     .map((/** @type {any} */ row) => row.title)
     .filter(Boolean);
 
@@ -1234,7 +1478,11 @@ export function normalizeArtifact(artifact) {
  */
 function normalizeArtifactLine(row) {
   if (!row || typeof row !== "object") return row;
-  const units = row.units ?? row.recommendedUnits ?? row.recommendedUnitsAtDefaultCover ?? null;
+  const units =
+    row.units ??
+    row.recommendedUnits ??
+    row.recommendedUnitsAtDefaultCover ??
+    null;
   return {
     title: row.title ?? row.productTitle ?? "Item",
     ...(units != null ? { units } : {}),
@@ -1243,4 +1491,10 @@ function normalizeArtifactLine(row) {
   };
 }
 
-export { TOOLS as ACTION_AGENT_TOOL_DEFINITIONS, log as toolLogger, normalizeMatch, resolveActionState, reachCapability };
+export {
+  TOOLS as ACTION_AGENT_TOOL_DEFINITIONS,
+  log as toolLogger,
+  normalizeMatch,
+  resolveActionState,
+  reachCapability,
+};

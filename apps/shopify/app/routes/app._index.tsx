@@ -167,8 +167,10 @@ import {
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
-import { getHomeProposalGenerationState } from "../lib/merchant-plan/home-proposal-generation.server.js";
-import { requestHomeProposalGeneration } from "../lib/merchant-plan/home-proposal-generation.server.js";
+import {
+  getHomeProposalGenerationState,
+  requestHomeProposalGeneration,
+} from "../lib/merchant-plan/home-proposal-generation.server.js";
 import { enqueueMerchantMemoryRefresh } from "../lib/merchant-memory/jobs.server";
 import { renderBeliefStatement } from "../lib/merchant-memory/belief-statement.server.js";
 import {

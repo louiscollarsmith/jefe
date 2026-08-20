@@ -16,7 +16,12 @@ const session = { shop: "mock.myshopify.com" };
 
 test("every executable action type is wired", () => {
   const types = listExecutableActionTypes().sort();
-  assert.deepEqual(types, ["listing_copy", "price_markdown", "tidy_up"]);
+  assert.deepEqual(types, [
+    "listing_copy",
+    "price_markdown",
+    "shopify_inventory_transfer",
+    "tidy_up",
+  ]);
 });
 
 test("a tidy-up approval reaches its own wire, not clearance's", async () => {

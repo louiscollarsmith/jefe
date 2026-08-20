@@ -8,10 +8,26 @@ import { generateSemanticArtifact } from "../generate-artifact.server.js";
 export async function runSupplierEmailDraftAssist(context) {
   const provider = context.provider ?? null;
 
-  // Draft from the current, structured replenishment proposal inputs.
-  // Never reuse prior step artifacts for quantities, because coverDays/scope
-  // can change and dependent results must rebuild from current state.
-  const items = Array.isArray(context.lowCoverProducts) ? context.lowCoverProducts : [];
+  // Prefer the current, structured replenishment proposal inputs. Older direct
+  // assist contexts only carry the prior inventory-review artifact, so keep that
+  // as a back-compat grounding source when current items are absent.
+  const currentItems = Array.isArray(context.lowCoverProducts)
+    ? context.lowCoverProducts
+    : [];
+  const priorReviewItems =
+    currentItems.length === 0 && Array.isArray(context.priorStepArtifacts)
+      ? context.priorStepArtifacts
+          .filter(
+            (/** @type {any} */ artifact) =>
+              artifact?.progress?.artifactType === "inventory_review",
+          )
+          .flatMap((/** @type {any} */ artifact) =>
+            Array.isArray(artifact?.progress?.items)
+              ? artifact.progress.items
+              : [],
+          )
+      : [];
+  const items = currentItems.length > 0 ? currentItems : priorReviewItems;
 
   const stepTitle =
     context.step?.title ??
@@ -102,7 +118,7 @@ export async function runSupplierEmailDraftAssist(context) {
           coverDays: context.targetCoverDays ?? context?.resolvedContext?.plan?.values?.coverDays ?? null,
           items: groundingItems,
           excludedTitles: Array.isArray(context.resolvedContext?.scope?.excluded)
-            ? context.resolvedContext.scope.excluded.map((e) => String(e?.title ?? "").trim()).filter(Boolean)
+            ? context.resolvedContext.scope.excluded.map((/** @type {any} */ e) => String(e?.title ?? "").trim()).filter(Boolean)
             : [],
         },
         schema: draftSchema,
@@ -128,8 +144,8 @@ export async function runSupplierEmailDraftAssist(context) {
     detail: String(used.detail ?? fallbackDraft.detail),
     body: String(used.body ?? fallbackDraft.body),
     items: groundingItems
-      .filter((row) => row.title)
-      .map((row) => ({
+      .filter((/** @type {{ title: string }} */ row) => row.title)
+      .map((/** @type {{ title: string; units: number | null }} */ row) => ({
         title: row.title,
         recommendedUnitsAtDefaultCover: row.units ?? null,
       })),
@@ -151,7 +167,7 @@ function validateDraftMatchesGrounding(draft, groundingItems) {
 
   const expected = new Map(groundingItems.map((row) => [row.title, row.units]));
   for (const [title, expectedUnits] of expected.entries()) {
-    const found = outItems.find((row) => String(row?.title ?? "") === title);
+    const found = outItems.find((/** @type {any} */ row) => String(row?.title ?? "") === title);
     if (!found) return false;
     const foundUnits = found?.units ?? null;
     if (expectedUnits == null) continue;

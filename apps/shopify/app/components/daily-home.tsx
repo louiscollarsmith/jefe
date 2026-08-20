@@ -2453,20 +2453,6 @@ function stepAssistArtifact(step: WorkflowStepDisplay) {
   return artifactType && summary ? progress : null;
 }
 
-function findStepWithAssistArtifact(
-  currentStep: WorkflowStepDisplay | null | undefined,
-  steps: WorkflowStepDisplay[],
-) {
-  void steps;
-  if (currentStep && typeof currentStep !== "string") {
-    const currentArtifact = stepAssistArtifact(currentStep);
-    if (currentArtifact) {
-      return { step: currentStep, artifact: currentArtifact };
-    }
-  }
-  return null;
-}
-
 function AssistStepArtifactPanel({
   step,
   artifact,
@@ -2551,7 +2537,10 @@ function CurrentArtifactsPanel({
     artifact: Record<string, unknown>;
   }> = [];
 
-  const pushCardForStep = (step: Exclude<WorkflowStepDisplay, string>, entry: any) => {
+  const pushCardForStep = (
+    step: Exclude<WorkflowStepDisplay, string>,
+    entry: Record<string, unknown>,
+  ) => {
     const artifact = stepAssistArtifact(step);
     if (!artifact) return;
     const artifactType = String(entry?.artifactType ?? artifact.artifactType ?? "");

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-20
+
+### Fixed
+
+- **Focused action chat now rebuilds the workflow when a merchant explains how the work is really done.** A merchant can say “We use Shopify transfers for this” or “We call the supplier instead of emailing” and Jefe now sends that semantic instruction through a dedicated action replanner. The replanner generates step titles, dependencies and capabilities itself, preserves current plan decisions such as 90-day cover, and hides low-level tool validation like `add_plan_step needs "title"` from the merchant. Added a dev-only live Gemini evaluator for these focused-action journeys. `app/lib/actions/{action-replanner,action-command,action-state,merchant-action}.server.js`, `app/lib/actions/agent/{agent-loop,tool-registry}.server.js`, `app/lib/merchant-plan/step-capabilities.server.js`, `GLOSSARY.md`, `scripts/eval-focused-action-live.mjs`, `tests/focused-action-semantic-evaluations.test.mjs`.
+
 ## 2026-08-19
 
 ### Fixed

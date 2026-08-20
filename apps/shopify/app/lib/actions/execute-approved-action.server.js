@@ -12,6 +12,7 @@
 // Fail-closed: an unknown type executes NOTHING rather than falling back to clearance.
 
 import { wireClearanceExecution } from "./wire-clearance-execution.server.js";
+import { wireInventoryTransferExecution } from "./wire-inventory-transfer-execution.server.js";
 import { wireListingCopyExecution } from "./wire-listing-copy-execution.server.js";
 import { wireTidyUpExecution } from "./wire-tidy-up-execution.server.js";
 
@@ -19,6 +20,7 @@ import { wireTidyUpExecution } from "./wire-tidy-up-execution.server.js";
 const WIRES = {
   price_markdown: wireClearanceExecution,
   listing_copy: wireListingCopyExecution,
+  shopify_inventory_transfer: wireInventoryTransferExecution,
   tidy_up: wireTidyUpExecution,
 };
 

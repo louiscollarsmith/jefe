@@ -75,7 +75,7 @@ export async function produceAssistStepArtifact(prisma, input) {
 
 /**
  * @param {any} prisma
- * @param {{ stepRunId: string; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; completeActionStepRun?: typeof import("../action-step-lifecycle.server.js").completeActionStepRun; resolvedContext?: any }} input
+ * @param {{ stepRunId: string; actionId: string; conversationId?: string | null; logger?: Pick<Console, "info" | "warn" | "error">; completeActionStepRun?: typeof import("../action-step-lifecycle.server.js").completeActionStepRun; resolvedContext?: any; provider?: any }} input
  */
 export async function executeStartedAssistStepRun(prisma, input) {
   const logger = input.logger ?? log;

@@ -205,13 +205,13 @@ export function composeGroundedReply(input) {
     Boolean(artifactBlock) &&
     Boolean(modelReply) &&
     /(REPLENISHMENT PROPOSAL|Could we please place a replenishment order|Please confirm lead time|^Hi[,]|^Thanks[,])/i.test(
-      modelReply,
+      String(modelReply ?? ""),
     );
   const useModel =
     Boolean(modelReply) &&
     !isBareSuccess(modelReply) &&
     proseCoversTokens(modelReply, tokens) &&
-    !claimsUngroundedShopifyWrite(modelReply ?? "", parts) &&
+    !claimsUngroundedShopifyWrite(String(modelReply ?? ""), parts) &&
     !looksLikeArtifactEcho;
 
   const head = useModel ? modelReply : deterministic.head;

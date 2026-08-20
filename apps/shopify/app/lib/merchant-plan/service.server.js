@@ -414,8 +414,6 @@ export async function generateMerchantPlan(prisma, input) {
       return { status: persistResult.reason, runId: run.id };
     }
 
-    const persistedRecommendation = persistResult.value;
-
     logger.info("Merchant Plan generated", {
       merchantId: input.merchantId,
       shopId: input.shopId,

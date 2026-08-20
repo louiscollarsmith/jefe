@@ -103,6 +103,7 @@ typed adapters write to Shopify or another external system.
 - **Recommendation step** — One unit of work inside a recommendation workflow; Jefe may execute it, assist it, ask for evidence, or leave it as a merchant action.
 - **Action Step** — The current merchant-facing recommendation step inside a Merchant Action lifecycle. Proposed actions have a plan but no executable current step; accepting a recommendation or plan immediately unlocks the first eligible step to `ready` (or `needs_merchant` if the merchant owns it). Later steps stay `waiting` until the current one completes.
 - **Action Interpreter** — The focused-chat semantic layer that turns a merchant message plus current Action Runtime state into a structured plan of commands. The model understands intent; application code validates and executes. It never writes to Shopify or flips workflow status itself.
+- **Action Replanner** — The focused-action service that rebuilds a recommendation workflow when the merchant changes how the work should be carried out, preserving confirmed plan values while adding, removing, replacing or reordering steps.
 - **Resolved Action Context** — The one canonical current state of a Merchant Action: latest plan values, active constraints, current step, and eligible scope. Chat, Change Sets, assist artifacts and execution all read this so a merchant revision cannot exist in conversation and disappear when the step runs.
 - **Step Run** — One auditable attempt to start and complete an Action Step. A Step Run records the actor, idempotency key, the input snapshot it executed against, linked execution run when one exists, timestamps, result and error metadata.
 - **Needs Attention** — The lifecycle state for a step or action that cannot honestly be treated as completed, usually because execution partially applied, failed validation, needs merchant evidence, or needs a review before Jefe can continue.
@@ -112,6 +113,7 @@ typed adapters write to Shopify or another external system.
 - **Action type** — The primitive that names a class of action, such as `price_markdown`, `listing_copy` or `tidy_up`.
 - **Capability** — Whether Jefe has a safe write path, scope, adapter and measurement loop for an action type.
 - **Capability state** — `DONE`, `BUILDABLE`, `NEEDS_SCOPE` or `NO_PATH`: the honest status of whether Jefe can do an action.
+- **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 
 ## Execution Safety

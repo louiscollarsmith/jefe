@@ -166,7 +166,7 @@ export async function shouldDeferAutonomousProposalCreation(client, input) {
  * Persist a new PROPOSED recommendation under the shop-wide invariant.
  * @param {any} client
  * @param {{ merchantId: string; shopId: string; trigger: ProposalCreationTrigger }} input
- * @param {() => Promise<T>} persist
+ * @param {(client: any) => Promise<T>} persist
  * @returns {Promise<{ ok: true; value: T } | { ok: false; reason: string }>}
  * @template T
  */
@@ -181,6 +181,7 @@ export async function persistProposedRecommendationIfAllowed(client, input, pers
   });
 }
 
+/** @type {Readonly<Record<string, number>>} */
 const SOURCE_MODE_RANK = Object.freeze({ full: 2, home: 2, bootstrap: 1 });
 
 /**

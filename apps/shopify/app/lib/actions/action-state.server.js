@@ -47,7 +47,11 @@ export async function resolveActionState(prisma, input) {
   const steps = orderedSteps([
     ...(Array.isArray(action.workflow?.steps) ? action.workflow.steps : []),
     ...(Array.isArray(action.displaySteps) ? action.displaySteps : []),
-  ]);
+  ]).filter(
+    (step) =>
+      String(step?.status ?? "") !== ACTION_STEP_STATUS.superseded &&
+      String(step?.status ?? "") !== "superseded",
+  );
   const byId = new Map(steps.map((step) => [String(step.id), step]));
   const planVersion = resolved?.plan?.version ?? null;
   const constraintVersion = resolved?.constraintVersion ?? null;
@@ -57,7 +61,9 @@ export async function resolveActionState(prisma, input) {
 
   /** @type {any[]} */
   const work = steps.map((step) => {
-    const deps = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
+    const deps = Array.isArray(step.dependsOnStepIds)
+      ? step.dependsOnStepIds
+      : [];
     const depsSatisfied = deps.every((/** @type {string} */ id) => {
       const dep = byId.get(String(id));
       if (!dep) return true;
@@ -146,7 +152,9 @@ export async function resolveActionState(prisma, input) {
   });
 
   const nextUsefulWork =
-    work.find((row) => row.state === "available" || row.state === "needs_updating") ??
+    work.find(
+      (row) => row.state === "available" || row.state === "needs_updating",
+    ) ??
     work.find((row) => row.state === "running") ??
     null;
 
@@ -182,7 +190,9 @@ export async function resolveActionState(prisma, input) {
       ? {
           id: changeSet.id ?? null,
           status: changeSet.status ?? null,
-          itemCount: Array.isArray(changeSet.items) ? changeSet.items.length : 0,
+          itemCount: Array.isArray(changeSet.items)
+            ? changeSet.items.length
+            : 0,
         }
       : null,
     currentStep: action.currentStep ?? null,
@@ -206,7 +216,9 @@ export function buildAgentStateContext(state) {
       kind: row.kind,
       label: row.label,
     })),
-    scope: (state.scope?.items ?? []).slice(0, 12).map((/** @type {any} */ item) => ({
+    scope: (state.scope?.items ?? [])
+      .slice(0, 12)
+      .map((/** @type {any} */ item) => ({
       title: item.title,
       recommendedUnits: item.recommendedUnits ?? null,
       toType: item.toType ?? null,
@@ -214,7 +226,9 @@ export function buildAgentStateContext(state) {
     })),
     scopeStatus: state.scope?.status ?? null,
     originalEvidence: state.scope?.originalEvidence ?? null,
-    excluded: (state.scope?.excluded ?? []).slice(0, 8).map((/** @type {any} */ item) => ({
+    excluded: (state.scope?.excluded ?? [])
+      .slice(0, 8)
+      .map((/** @type {any} */ item) => ({
       title: item.title,
       reason: item.reason ?? null,
     })),
@@ -246,13 +260,21 @@ export function listAvailableOutcomes(state) {
   /** @type {string[]} */
   const outcomes = ["inspect_scope", "inspect_proposal"];
   if (kind === "restock") {
-    outcomes.push("inventory_review", "replenishment_proposal", "supplier_draft");
+    outcomes.push(
+      "inventory_review",
+      "replenishment_proposal",
+      "supplier_draft",
+    );
   }
   if (kind === "markdown") {
     outcomes.push("changeset_preview", "apply_changes");
   }
   if (kind === "listing_copy") {
-    outcomes.push("product_type_discovery", "changeset_preview", "apply_changes");
+    outcomes.push(
+      "product_type_discovery",
+      "changeset_preview",
+      "apply_changes",
+    );
   }
   return outcomes;
 }
@@ -264,7 +286,9 @@ export function listAvailableOutcomes(state) {
 export function findStepForOutcome(state, outcome) {
   const ref = outcomeCapabilityRef(outcome);
   if (!ref) return null;
-  const row = (state?.work ?? []).find((/** @type {any} */ item) => item.step.capabilityRef === ref);
+  const row = (state?.work ?? []).find(
+    (/** @type {any} */ item) => item.step.capabilityRef === ref,
+  );
   return row?.step ?? null;
 }
 
@@ -298,8 +322,13 @@ export function workNeedsExecution(workRow) {
 /** @param {any} step @param {{ planVersion?: string | null; constraintVersion?: string | null; inputHash?: string | null; scopeVersion?: string | null; evidenceVersion?: string | null }} versions */
 export function isArtifactStale(step, versions) {
   const progress = step?.progress;
-  if (!progress || typeof progress !== "object" || !progress.artifactType) return false;
-  if (progress.inputHash && versions.inputHash && progress.inputHash !== versions.inputHash) {
+  if (!progress || typeof progress !== "object" || !progress.artifactType)
+    return false;
+  if (
+    progress.inputHash &&
+    versions.inputHash &&
+    progress.inputHash !== versions.inputHash
+  ) {
     return true;
   }
   if (
@@ -343,7 +372,9 @@ function dependencyBlockers(deps, byId, versions) {
       return isArtifactStale(step, versions);
     })
     .map((step) => ({
-      type: isArtifactStale(step, versions) ? "STEP_RESULT_STALE" : "STEP_RESULT_REQUIRED",
+      type: isArtifactStale(step, versions)
+        ? "STEP_RESULT_STALE"
+        : "STEP_RESULT_REQUIRED",
       stepId: step.id,
       title: step.title ?? null,
       reason: isArtifactStale(step, versions)
@@ -373,7 +404,10 @@ function orderedSteps(steps) {
       seen.add(id);
       return true;
     })
-    .sort((left, right) => Number(left.orderIndex ?? 0) - Number(right.orderIndex ?? 0));
+    .sort(
+      (left, right) =>
+        Number(left.orderIndex ?? 0) - Number(right.orderIndex ?? 0),
+    );
 }
 
 /**
@@ -385,7 +419,10 @@ function orderedSteps(steps) {
 export function applyWorkProjectionToAction(serialized, state) {
   if (!serialized || !state) return serialized;
   const workByStepId = new Map(
-    (state.work ?? []).map((/** @type {any} */ row) => [String(row.step.id), row]),
+    (state.work ?? []).map((/** @type {any} */ row) => [
+      String(row.step.id),
+      row,
+    ]),
   );
   /** @param {any[]} steps */
   const mergeSteps = (steps) =>
@@ -398,7 +435,10 @@ export function applyWorkProjectionToAction(serialized, state) {
         workState: work.state,
         workStale: work.stale === true,
         blockers: work.blockers ?? [],
-        done: work.state === "complete" || work.state === "skipped" || step.done === true,
+        done:
+          work.state === "complete" ||
+          work.state === "skipped" ||
+          step.done === true,
       };
     });
 

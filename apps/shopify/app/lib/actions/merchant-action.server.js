@@ -3,8 +3,14 @@
 import { isActionExecuteEnabled } from "./action-intent.server.js";
 import { buildActionRaise } from "./action-raise.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
-import { healInconsistentWorkflow, unlockActiveWorkflowIfNeeded } from "./action-step-lifecycle.server.js";
-import { resolveActionState, applyWorkProjectionToAction } from "./action-state.server.js";
+import {
+  healInconsistentWorkflow,
+  unlockActiveWorkflowIfNeeded,
+} from "./action-step-lifecycle.server.js";
+import {
+  resolveActionState,
+  applyWorkProjectionToAction,
+} from "./action-state.server.js";
 
 const log = baseLogger.child({ component: "merchant-action" });
 
@@ -50,7 +56,9 @@ export function deriveMerchantActionStatus(input) {
   const workflow = workflowFromRecommendation(recommendation);
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
   const hasNeedsAttention = steps.some((/** @type {any} */ step) =>
-    ["blocked", "failed", "needs_attention"].includes(normalizeToken(step?.status)),
+    ["blocked", "failed", "needs_attention"].includes(
+      normalizeToken(step?.status),
+    ),
   );
   const hasRunningStep = steps.some((/** @type {any} */ step) =>
     ["in_progress", "running"].includes(normalizeToken(step?.status)),
@@ -58,11 +66,17 @@ export function deriveMerchantActionStatus(input) {
   const actionStatus = normalizeToken(input.action?.status);
   const executionStatus = normalizeToken(execution?.status);
   const reviewStatus = normalizeToken(recommendation?.reviewStatus);
-  if (actionStatus === MERCHANT_ACTION_STATUS.deferred) return MERCHANT_ACTION_STATUS.deferred;
-  if (actionStatus === MERCHANT_ACTION_STATUS.declined) return MERCHANT_ACTION_STATUS.declined;
-  if (actionStatus === MERCHANT_ACTION_STATUS.superseded) return MERCHANT_ACTION_STATUS.superseded;
-  const hasIncompleteSteps = steps.some((/** @type {any} */ step) =>
-    !["completed", "skipped", "superseded"].includes(normalizeToken(step?.status)),
+  if (actionStatus === MERCHANT_ACTION_STATUS.deferred)
+    return MERCHANT_ACTION_STATUS.deferred;
+  if (actionStatus === MERCHANT_ACTION_STATUS.declined)
+    return MERCHANT_ACTION_STATUS.declined;
+  if (actionStatus === MERCHANT_ACTION_STATUS.superseded)
+    return MERCHANT_ACTION_STATUS.superseded;
+  const hasIncompleteSteps = steps.some(
+    (/** @type {any} */ step) =>
+      !["completed", "skipped", "superseded"].includes(
+        normalizeToken(step?.status),
+      ),
   );
   if (
     actionStatus === MERCHANT_ACTION_STATUS.completed ||
@@ -78,7 +92,10 @@ export function deriveMerchantActionStatus(input) {
     }
     return MERCHANT_ACTION_STATUS.completed;
   }
-  if (hasNeedsAttention || actionStatus === MERCHANT_ACTION_STATUS.needsAttention) {
+  if (
+    hasNeedsAttention ||
+    actionStatus === MERCHANT_ACTION_STATUS.needsAttention
+  ) {
     return MERCHANT_ACTION_STATUS.needsAttention;
   }
   if (
@@ -91,7 +108,10 @@ export function deriveMerchantActionStatus(input) {
   if (["rejected", "reverted"].includes(executionStatus)) {
     return MERCHANT_ACTION_STATUS.declined;
   }
-  if (reviewStatus === "accepted" && recommendationHasStartedWorkflowStep(recommendation)) {
+  if (
+    reviewStatus === "accepted" &&
+    recommendationHasStartedWorkflowStep(recommendation)
+  ) {
     return MERCHANT_ACTION_STATUS.inProgress;
   }
   if (actionStatus === MERCHANT_ACTION_STATUS.accepted) {
@@ -197,7 +217,10 @@ export async function syncMerchantActionsForShop(prisma, input) {
       });
     }
 
-    return { synced: true, count: recommendations.length + orphanExecutions.length };
+    return {
+      synced: true,
+      count: recommendations.length + orphanExecutions.length,
+    };
   } catch (error) {
     logger.warn("merchant action sync failed", {
       merchantId: input.merchantId,
@@ -242,11 +265,15 @@ export async function ensureMerchantActionForExecution(prisma, input) {
         currentActionRunId: input.actionRunId,
       }),
       update: {
-        title: safeText(recommendation?.title, 180) || "Review Jefe's next move",
+        title:
+          safeText(recommendation?.title, 180) || "Review Jefe's next move",
         summary: safeText(recommendation?.summary, 600),
         status: deriveMerchantActionStatus({
           recommendation,
-          execution: input.execution ?? { runId: input.actionRunId, status: "proposed" },
+          execution: input.execution ?? {
+            runId: input.actionRunId,
+            status: "proposed",
+          },
         }),
         currentActionRunId: input.actionRunId,
         progress: progressFromRecommendation(recommendation),
@@ -340,7 +367,10 @@ export async function updateMerchantActionForRecommendation(prisma, input) {
       }),
       ...(recommendation.title == null
         ? {}
-        : { title: safeText(recommendation.title, 180) || "Review Jefe's next move" }),
+        : {
+            title:
+              safeText(recommendation.title, 180) || "Review Jefe's next move",
+          }),
       ...(recommendation.summary == null
         ? {}
         : { summary: safeText(recommendation.summary, 700) }),
@@ -371,13 +401,17 @@ export async function updateMerchantActionForExecution(prisma, input) {
         shopId: input.shopId,
         OR: [
           { currentActionRunId: input.actionRunId },
-          ...(execution.merchantActionId ? [{ id: execution.merchantActionId }] : []),
+          ...(execution.merchantActionId
+            ? [{ id: execution.merchantActionId }]
+            : []),
         ],
       },
       data: {
         status: deriveMerchantActionStatus({ execution }),
         currentActionRunId: input.actionRunId,
-        ...(execution.outcome == null ? {} : { outcome: jsonObject(execution.outcome) }),
+        ...(execution.outcome == null
+          ? {}
+          : { outcome: jsonObject(execution.outcome) }),
       },
     });
     return { updated: result.count > 0, count: result.count };
@@ -405,7 +439,9 @@ export async function listMerchantActions(prisma, input) {
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      ...(input.includeInactive ? {} : { status: { in: [...ACTIVE_STATUSES] } }),
+      ...(input.includeInactive
+        ? {}
+        : { status: { in: [...ACTIVE_STATUSES] } }),
     },
     include: {
       sourceRecommendation: recommendationWorkflowInclude(),
@@ -431,14 +467,18 @@ export async function listMerchantActions(prisma, input) {
   if (!unlocked) {
     const serialized = rows.map(serializeMerchantAction);
     return Promise.all(
-      serialized.map((/** @type {any} */ row) => attachWorkProjection(prisma, input, row)),
+      serialized.map((/** @type {any} */ row) =>
+        attachWorkProjection(prisma, input, row),
+      ),
     );
   }
   const refreshed = await prisma.merchantAction.findMany({
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      ...(input.includeInactive ? {} : { status: { in: [...ACTIVE_STATUSES] } }),
+      ...(input.includeInactive
+        ? {}
+        : { status: { in: [...ACTIVE_STATUSES] } }),
     },
     include: {
       sourceRecommendation: recommendationWorkflowInclude(),
@@ -453,7 +493,9 @@ export async function listMerchantActions(prisma, input) {
   });
   const serialized = refreshed.map(serializeMerchantAction);
   return Promise.all(
-    serialized.map((/** @type {any} */ row) => attachWorkProjection(prisma, input, row)),
+    serialized.map((/** @type {any} */ row) =>
+      attachWorkProjection(prisma, input, row),
+    ),
   );
 }
 
@@ -639,7 +681,11 @@ async function attachWorkProjection(prisma, input, serialized) {
 export function serializeMerchantAction(row) {
   const source = row.sourceRecommendation ?? null;
   const execution = row.currentExecution ?? row.executions?.[0] ?? null;
-  const status = deriveMerchantActionStatus({ action: row, recommendation: source, execution });
+  const status = deriveMerchantActionStatus({
+    action: row,
+    recommendation: source,
+    execution,
+  });
   const summary = safeText(row.summary || source?.summary, 700);
   const progress = jsonObject(row.progress);
   const executionSummary = jsonObject(execution?.proposalSummary);
@@ -648,18 +694,22 @@ export function serializeMerchantAction(row) {
   const currentStep = currentDisplayWorkflowStep(display);
   return {
     id: row.id,
-    title: safeText(row.title || source?.title, 180) || "Review Jefe's next move",
+    title:
+      safeText(row.title || source?.title, 180) || "Review Jefe's next move",
     summary,
     status,
     statusLabel: statusLabel(status, execution),
     statusTone:
       status === MERCHANT_ACTION_STATUS.inProgress
         ? "green"
-        : status === MERCHANT_ACTION_STATUS.needsAttention || status === MERCHANT_ACTION_STATUS.proposed
+        : status === MERCHANT_ACTION_STATUS.needsAttention ||
+            status === MERCHANT_ACTION_STATUS.proposed
           ? "yellow"
           : "neutral",
     sourceRecommendationId: row.sourceRecommendationId ?? source?.id ?? null,
-    sourceRecommendation: source ? sourceRecommendationView(source) : sourceRecommendationFromSummary(executionSummary),
+    sourceRecommendation: source
+      ? sourceRecommendationView(source)
+      : sourceRecommendationFromSummary(executionSummary),
     actionRunId: row.currentActionRunId ?? execution?.runId ?? null,
     actionType:
       execution?.actionType ??
@@ -722,7 +772,9 @@ export function getMerchantCurrentFocus(input = {}) {
  */
 export function getMerchantCurrentFocuses(input = {}) {
   /** @type {any[]} */
-  const attention = getMerchantAttentionItems(input).map(focusFromAttentionItem);
+  const attention = getMerchantAttentionItems(input).map(
+    focusFromAttentionItem,
+  );
   const actions = Array.isArray(input.merchantActions)
     ? input.merchantActions
     : Array.isArray(input.actions)
@@ -732,44 +784,60 @@ export function getMerchantCurrentFocuses(input = {}) {
   const proposed = getMerchantProposedActions(input);
 
   for (const action of proposed) {
-    attention.push(focusFromAction(action, {
+    attention.push(
+      focusFromAction(action, {
       kind: MERCHANT_CURRENT_FOCUS_KIND.recommendation,
       priority: 4,
       headline: "Here's what I'd do next.",
       eyebrow: "Recommended",
-      reason: action.summary || "This is the next useful move Jefe has found.",
+        reason:
+          action.summary || "This is the next useful move Jefe has found.",
       ctaLabel: "Talk this through",
       ctaIntent: "chat.focus.start",
-    }));
+      }),
+    );
   }
 
   if (attention.length > 0) return attention;
 
-  const progress = working.find((action) => action.status === MERCHANT_ACTION_STATUS.inProgress) ?? working[0] ?? null;
+  const progress =
+    working.find(
+      (action) => action.status === MERCHANT_ACTION_STATUS.inProgress,
+    ) ??
+    working[0] ??
+    null;
   if (progress) {
-    return [focusFromAction(progress, {
+    return [
+      focusFromAction(progress, {
       kind: MERCHANT_CURRENT_FOCUS_KIND.progress,
       priority: 5,
       headline: "Nothing needs your attention right now.",
       eyebrow: "In progress",
-      reason: progress.currentSignal || progress.successText || "Jefe is working on this and will report back when there is an outcome.",
+        reason:
+          progress.currentSignal ||
+          progress.successText ||
+          "Jefe is working on this and will report back when there is an outcome.",
       ctaLabel: "Talk this through",
       ctaIntent: "chat.focus.start",
-    })];
+      }),
+    ];
   }
 
-  return [{
+  return [
+    {
     kind: MERCHANT_CURRENT_FOCUS_KIND.empty,
     priority: 99,
     headline: "Nothing needs your attention right now.",
     eyebrow: "All clear",
-    reason: "When there is a grounded action to review, start, or fix, it will appear here.",
+      reason:
+        "When there is a grounded action to review, start, or fix, it will appear here.",
     actionId: null,
     actionRunId: null,
     ctaLabel: null,
     ctaIntent: null,
     action: null,
-  }];
+    },
+  ];
 }
 
 /**
@@ -785,7 +853,10 @@ export function getMerchantAttentionItems(input = {}) {
   /** @type {any[]} */
   const items = [];
   const seen = new Set();
-  const pushItem = (/** @type {any} */ action, /** @type {any} */ attention) => {
+  const pushItem = (
+    /** @type {any} */ action,
+    /** @type {any} */ attention,
+  ) => {
     const item = attentionItemFromAction(action, attention);
     const key = focusKey(item);
     if (seen.has(key)) return;
@@ -850,7 +921,8 @@ export function getMerchantCompletedActions(input = {}) {
  */
 function merchantActionDataFromRecommendation(recommendation) {
   const execution = currentExecutionFromRecommendation(recommendation);
-  const currentActionRunId = execution?.runId ?? recommendation.currentActionRunId ?? null;
+  const currentActionRunId =
+    execution?.runId ?? recommendation.currentActionRunId ?? null;
   return {
     merchantId: recommendation.merchantId,
     shopId: recommendation.shopId,
@@ -871,7 +943,8 @@ function merchantActionDataFromRecommendation(recommendation) {
  */
 function merchantActionUpdateFromRecommendation(recommendation) {
   const execution = currentExecutionFromRecommendation(recommendation);
-  const currentActionRunId = execution?.runId ?? recommendation.currentActionRunId ?? null;
+  const currentActionRunId =
+    execution?.runId ?? recommendation.currentActionRunId ?? null;
   return {
     title: safeText(recommendation.title, 180) || "Review Jefe's next move",
     summary: safeText(recommendation.summary, 700),
@@ -947,7 +1020,9 @@ function recommendationWorkflowInclude() {
 
 /** @param {any} recommendation */
 function workflowFromRecommendation(recommendation) {
-  return Array.isArray(recommendation?.workflows) ? recommendation.workflows[0] ?? null : null;
+  return Array.isArray(recommendation?.workflows)
+    ? (recommendation.workflows[0] ?? null)
+    : null;
 }
 
 /** @param {any} row */
@@ -959,9 +1034,13 @@ function workflowNeedsUnlock(row) {
     : [];
   if (steps.length === 0) return false;
   const hasLive = steps.some((/** @type {any} */ step) =>
-    ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
-      normalizeToken(step?.status),
-    ),
+    [
+      "ready",
+      "running",
+      "needs_merchant",
+      "needs_attention",
+      "needs_updating",
+    ].includes(normalizeToken(step?.status)),
   );
   if (hasLive) return false;
   return steps.some((/** @type {any} */ step) =>
@@ -974,9 +1053,15 @@ function recommendationHasStartedWorkflowStep(recommendation) {
   const workflow = workflowFromRecommendation(recommendation);
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
   return steps.some((/** @type {any} */ step) =>
-    ["blocked", "completed", "failed", "in_progress", "needs_attention", "needs_merchant", "running"].includes(
-      normalizeToken(step?.status),
-    ),
+    [
+      "blocked",
+      "completed",
+      "failed",
+      "in_progress",
+      "needs_attention",
+      "needs_merchant",
+      "running",
+    ].includes(normalizeToken(step?.status)),
   );
 }
 
@@ -984,7 +1069,11 @@ function recommendationHasStartedWorkflowStep(recommendation) {
 function currentExecutionFromRecommendation(recommendation) {
   const workflow = workflowFromRecommendation(recommendation);
   const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
-  return steps.map((/** @type {any} */ step) => step.actionExecutions?.[0]).find(Boolean) ?? null;
+  return (
+    steps
+      .map((/** @type {any} */ step) => step.actionExecutions?.[0])
+      .find(Boolean) ?? null
+  );
 }
 
 /** @param {any} workflow */
@@ -996,17 +1085,25 @@ function workflowView(workflow) {
     status: workflow.status ?? null,
     source: workflow.source ?? null,
     steps: Array.isArray(workflow.steps)
-      ? workflow.steps.map((/** @type {any} */ step) => ({
+      ? workflow.steps
+          .filter(isCurrentWorkflowStep)
+          .map((/** @type {any} */ step) => ({
           id: step.id ?? null,
-          orderIndex: Number.isFinite(Number(step.orderIndex)) ? Number(step.orderIndex) : 0,
+            orderIndex: Number.isFinite(Number(step.orderIndex))
+              ? Number(step.orderIndex)
+              : 0,
           title: safeText(step.title, 120),
           description: safeText(step.description, 260),
           completionCriteria: safeText(step.completionCriteria, 220) || null,
           status: step.status ?? null,
           mode: step.mode ?? null,
           capabilityRef: step.capabilityRef ?? null,
-          dependsOnStepIds: Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [],
-          evidenceIds: Array.isArray(step.evidenceIds) ? step.evidenceIds : [],
+            dependsOnStepIds: Array.isArray(step.dependsOnStepIds)
+              ? step.dependsOnStepIds
+              : [],
+            evidenceIds: Array.isArray(step.evidenceIds)
+              ? step.evidenceIds
+              : [],
           statusReason: safeText(step.statusReason, 240) || null,
           progress: jsonObject(step.progress),
           attention: jsonObject(step.attention),
@@ -1028,7 +1125,10 @@ function displaySteps(progress, source) {
     : Array.isArray(progress?.workflow?.steps)
       ? progress.workflow.steps
       : [];
-  return raw.slice(0, 4).map((/** @type {any} */ step, index) => ({
+  return raw
+    .filter(isCurrentWorkflowStep)
+    .slice(0, 4)
+    .map((/** @type {any} */ step, index) => ({
     id: step?.id ?? null,
     label:
       safeText(step?.title || step?.label || step?.description, 160) ||
@@ -1047,6 +1147,11 @@ function displaySteps(progress, source) {
   }));
 }
 
+/** @param {any} step */
+function isCurrentWorkflowStep(step) {
+  return normalizeToken(step?.status) !== "superseded";
+}
+
 /** @param {any[]} steps */
 function currentDisplayWorkflowStep(steps) {
   const active = steps.find((step) =>
@@ -1054,7 +1159,13 @@ function currentDisplayWorkflowStep(steps) {
       normalizeToken(step?.status),
     ),
   );
-  return active ?? steps.find((step) => !step?.done && normalizeToken(step?.status) !== "completed") ?? null;
+  return (
+    active ??
+    steps.find(
+      (step) => !step?.done && normalizeToken(step?.status) !== "completed",
+    ) ??
+    null
+  );
 }
 
 /**
@@ -1074,7 +1185,8 @@ function successText(progress, source) {
 /** @param {any[]} changeSets */
 function serializeCurrentChangeSet(changeSets) {
   const rows = Array.isArray(changeSets) ? changeSets : [];
-  const live = rows.find((/** @type {any} */ row) =>
+  const live =
+    rows.find((/** @type {any} */ row) =>
     ["ready", "approved", "applying"].includes(String(row?.status ?? "")),
   ) ?? rows[0];
   if (!live) return null;
@@ -1095,17 +1207,28 @@ function previewItemsFromExecution(execution) {
   const changes = Array.isArray(preview.changes) ? preview.changes : [];
   const summaryItems = Array.isArray(summary.topItems) ? summary.topItems : [];
   const rows = changes.length ? changes : summaryItems;
-  return rows.slice(0, 12).map((/** @type {any} */ item) => ({
-    title: safeText(item?.title ?? item?.productTitle ?? item?.variantId, 180),
+  return rows
+    .slice(0, 12)
+    .map((/** @type {any} */ item) => ({
+      title: safeText(
+        item?.title ?? item?.productTitle ?? item?.variantId,
+        180,
+      ),
     productId: typeof item?.productId === "string" ? item.productId : null,
     toType: typeof item?.toType === "string" ? item.toType : null,
-    proposedType: typeof item?.proposedType === "string" ? item.proposedType : null,
-    fromPrice: Number.isFinite(Number(item?.fromPrice)) ? Number(item.fromPrice) : null,
-    toPrice: Number.isFinite(Number(item?.toPrice)) ? Number(item.toPrice) : null,
+      proposedType:
+        typeof item?.proposedType === "string" ? item.proposedType : null,
+      fromPrice: Number.isFinite(Number(item?.fromPrice))
+        ? Number(item.fromPrice)
+        : null,
+      toPrice: Number.isFinite(Number(item?.toPrice))
+        ? Number(item.toPrice)
+        : null,
     discountPercent: Number.isFinite(Number(item?.discountPercent))
       ? Number(item.discountPercent)
       : null,
-  })).filter((/** @type {any} */ item) => item.title);
+    }))
+    .filter((/** @type {any} */ item) => item.title);
 }
 
 /**
@@ -1115,7 +1238,8 @@ function previewItemsFromExecution(execution) {
 function statusLabel(status, execution) {
   if (status === MERCHANT_ACTION_STATUS.proposed) return "Proposed";
   if (status === MERCHANT_ACTION_STATUS.accepted) return "Accepted";
-  if (status === MERCHANT_ACTION_STATUS.needsAttention) return "Needs attention";
+  if (status === MERCHANT_ACTION_STATUS.needsAttention)
+    return "Needs attention";
   if (status === MERCHANT_ACTION_STATUS.inProgress) {
     const approved = execution?.approvedAt ?? execution?.appliedAt;
     return approved ? `Approved ${shortDate(approved)}` : "In progress";
@@ -1150,8 +1274,7 @@ function actionNeedsMerchantInput(action) {
 /** @param {any} action */
 function actionHasProblem(action) {
   if (normalizeToken(action?.executionStatus) === "failed") return true;
-  return workflowStepsForFocus(action).some(
-    (/** @type {any} */ step) =>
+  return workflowStepsForFocus(action).some((/** @type {any} */ step) =>
       ["blocked", "needs_attention"].includes(normalizeToken(step.status)),
   );
 }
@@ -1178,26 +1301,40 @@ function currentWorkflowStep(action) {
   const projected = action?.workProjection?.nextUsefulWork?.step;
   if (projected?.id) {
     const steps = workflowStepsForFocus(action);
-    const match = steps.find((/** @type {any} */ step) => step?.id === projected.id);
+    const match = steps.find(
+      (/** @type {any} */ step) => step?.id === projected.id,
+    );
     if (match) return match;
   }
-  return workflowStepsForFocus(action).find((/** @type {any} */ step) => {
+  return (
+    workflowStepsForFocus(action).find((/** @type {any} */ step) => {
     const workState = normalizeToken(step.workState);
-    if (workState === "available" || workState === "needs_updating" || workState === "running") {
+      if (
+        workState === "available" ||
+        workState === "needs_updating" ||
+        workState === "running"
+      ) {
       return true;
     }
     const status = normalizeToken(step.status);
     return !["completed", "skipped", "superseded"].includes(status);
-  }) ?? null;
+    }) ?? null
+  );
 }
 
 /** @param {any} action */
 function workflowStepsForFocus(action) {
   if (Array.isArray(action?.displaySteps)) {
-    return action.displaySteps.filter((/** @type {any} */ step) => step && typeof step === "object");
+    return action.displaySteps.filter(
+      (/** @type {any} */ step) => step && typeof step === "object",
+    );
   }
   const steps = action?.progress?.workflow?.steps;
-  return Array.isArray(steps) ? steps.filter((/** @type {any} */ step) => step && typeof step === "object") : [];
+  return Array.isArray(steps)
+    ? steps.filter(
+        (/** @type {any} */ step) => step && typeof step === "object",
+      )
+    : [];
 }
 
 /** @param {any} action */
@@ -1254,10 +1391,7 @@ function focusFromAction(action, focus) {
 /** @param {any} focus */
 function focusKey(focus) {
   return (
-    focus.actionId ??
-    focus.actionRunId ??
-    focus.action?.title ??
-    focus.kind
+    focus.actionId ?? focus.actionRunId ?? focus.action?.title ?? focus.kind
   );
 }
 
@@ -1321,20 +1455,28 @@ function actionsFromInput(input = {}) {
 
 /** @param {unknown} value */
 function normalizeToken(value) {
-  return String(value ?? "").trim().toLowerCase();
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
 }
 
 /**
  * @param {any} source
  */
 function inferActionTypeFromWorkflow(source) {
-  const steps = Array.isArray(source?.workflows?.[0]?.steps) ? source.workflows[0].steps : [];
+  const steps = Array.isArray(source?.workflows?.[0]?.steps)
+    ? source.workflows[0].steps
+    : [];
   const haystack = steps
-    .map((/** @type {any} */ step) => `${step?.title ?? ""} ${step?.capabilityRef ?? ""}`)
+    .map(
+      (/** @type {any} */ step) =>
+        `${step?.title ?? ""} ${step?.capabilityRef ?? ""}`,
+    )
     .join(" ")
     .toLowerCase();
   if (/\blisting_copy\b/.test(haystack)) return "listing_copy";
-  if (/\bprice_markdown\b/.test(haystack) || /\bmarkdown\b/.test(haystack)) return "price_markdown";
+  if (/\bprice_markdown\b/.test(haystack) || /\bmarkdown\b/.test(haystack))
+    return "price_markdown";
   if (/\btidy_up\b/.test(haystack)) return "tidy_up";
   return null;
 }
@@ -1382,7 +1524,10 @@ function baselineSignal(summary) {
  */
 function currentSignal(execution, summary) {
   const outcome = jsonObject(execution?.outcome);
-  if (execution?.outcomeStatus === "measured" && Number(outcome?.variantsSold) > 0) {
+  if (
+    execution?.outcomeStatus === "measured" &&
+    Number(outcome?.variantsSold) > 0
+  ) {
     return `${Number(outcome.variantsSold)} sold since the move`;
   }
   return baselineSignal(summary);
@@ -1403,7 +1548,9 @@ function jsonObject(value) {
  * @param {number} max
  */
 function safeText(value, max = 500) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
@@ -1413,5 +1560,8 @@ function safeText(value, max = 500) {
 function shortDate(value) {
   const date = value instanceof Date ? value : new Date(String(value ?? ""));
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+  }).format(date);
 }

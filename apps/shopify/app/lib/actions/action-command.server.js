@@ -31,7 +31,10 @@ import {
   serializeConstraint,
   normalizeChatText,
 } from "./action-constraint.server.js";
-import { inspectRestockEvidence, recommendedPurchaseUnits } from "./action-capability.server.js";
+import {
+  inspectRestockEvidence,
+  recommendedPurchaseUnits,
+} from "./action-capability.server.js";
 import {
   applyActionChangeSet,
   createActionChangeSet,
@@ -60,9 +63,19 @@ import {
   extractPlanScopeItems,
 } from "./plan-chat.server.js";
 import { resolveActionContext } from "./resolved-action-context.server.js";
-import { validatePlanPatch, describePlanRevision } from "./action-plan-schema.server.js";
-import { reachCapability, runAssistStepById } from "./agent/assist-runner.server.js";
-import { outcomeCapabilityRef, resolveActionState } from "./action-state.server.js";
+import {
+  validatePlanPatch,
+  describePlanRevision,
+} from "./action-plan-schema.server.js";
+import { replanAction } from "./action-replanner.server.js";
+import {
+  reachCapability,
+  runAssistStepById,
+} from "./agent/assist-runner.server.js";
+import {
+  outcomeCapabilityRef,
+  resolveActionState,
+} from "./action-state.server.js";
 import {
   advanceCurrentActionStep,
   goBackActionSteps,
@@ -96,6 +109,7 @@ export const ACTION_COMMAND = Object.freeze({
   REPORT_EXECUTION: "REPORT_EXECUTION",
   ACHIEVE_OUTCOME: "ACHIEVE_OUTCOME",
   ADD_PLAN_STEP: "ADD_PLAN_STEP",
+  REPLAN_ACTION: "REPLAN_ACTION",
 });
 
 /** @type {Set<string>} */
@@ -117,9 +131,11 @@ const MUTATION_COMMANDS = new Set([
   ACTION_COMMAND.CONFIRM_MERCHANT_STEP,
   ACTION_COMMAND.ACHIEVE_OUTCOME,
   ACTION_COMMAND.ADD_PLAN_STEP,
+  ACTION_COMMAND.REPLAN_ACTION,
 ]);
 
-const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
+const COMMAND_ALIASES = Object.freeze(
+  /** @type {Record<string, string>} */ ({
   accept: ACTION_COMMAND.ACCEPT_PLAN,
   start: ACTION_COMMAND.START_STEP,
   stop: ACTION_COMMAND.STOP_STEP,
@@ -131,7 +147,8 @@ const COMMAND_ALIASES = Object.freeze(/** @type {Record<string, string>} */ ({
   recap: ACTION_COMMAND.ANSWER,
   status: ACTION_COMMAND.ANSWER,
   question: ACTION_COMMAND.ANSWER,
-}));
+  }),
+);
 
 /**
  * Normalize an LLM-proposed command. Unknown types become ANSWER.
@@ -144,16 +161,28 @@ export function parseProposedCommand(raw) {
   return {
     type,
     params: {
-      markdownPercent: finiteOrNull(raw.markdownPercent ?? raw.params?.markdownPercent),
+      markdownPercent: finiteOrNull(
+        raw.markdownPercent ?? raw.params?.markdownPercent,
+      ),
       coverDays: finiteOrNull(raw.coverDays ?? raw.params?.coverDays),
       maxProducts: finiteOrNull(raw.maxProducts ?? raw.params?.maxProducts),
-      constraintKind: stringOrNull(raw.constraintKind ?? raw.params?.constraintKind),
-      collectionTitle: stringOrNull(raw.collectionTitle ?? raw.params?.collectionTitle),
+      constraintKind: stringOrNull(
+        raw.constraintKind ?? raw.params?.constraintKind,
+      ),
+      collectionTitle: stringOrNull(
+        raw.collectionTitle ?? raw.params?.collectionTitle,
+      ),
       tag: stringOrNull(raw.tag ?? raw.params?.tag),
-      productTitle: stringOrNull(raw.productTitle ?? raw.params?.productTitle ?? raw.params?.title),
+      productTitle: stringOrNull(
+        raw.productTitle ?? raw.params?.productTitle ?? raw.params?.title,
+      ),
       minInventory: finiteOrNull(raw.minInventory ?? raw.params?.minInventory),
-      minPrice: finiteOrNull(raw.minPrice ?? raw.params?.minPrice ?? raw.params?.amount),
-      constraintLabel: stringOrNull(raw.constraintLabel ?? raw.params?.constraintLabel),
+      minPrice: finiteOrNull(
+        raw.minPrice ?? raw.params?.minPrice ?? raw.params?.amount,
+      ),
+      constraintLabel: stringOrNull(
+        raw.constraintLabel ?? raw.params?.constraintLabel,
+      ),
       constraintId: stringOrNull(raw.constraintId ?? raw.params?.constraintId),
       stepId: stringOrNull(raw.stepId ?? raw.params?.stepId),
       constraints: Array.isArray(raw.constraints) ? raw.constraints : undefined,
@@ -178,8 +207,11 @@ export function isMutationCommand(type) {
  *   actionId: string;
  *   actor?: string | null;
  *   conversationId?: string | null;
+ *   recentMessages?: Array<{ role?: string; content?: string }>;
  *   session?: { shop: string } | null;
  *   executeDeps?: any;
+ *   provider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
+ *   replanProvider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
  *   message?: string | null;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  * }} input
@@ -241,7 +273,12 @@ export async function executeActionCommand(prisma, input) {
     case ACTION_COMMAND.GO_TO_STEP:
       return runGoToStep(prisma, { ...input, action, params, logger });
     case ACTION_COMMAND.NEEDS_CLARIFICATION:
-      return runNeedsClarification(prisma, { ...input, action, params, logger });
+      return runNeedsClarification(prisma, {
+        ...input,
+        action,
+        params,
+        logger,
+      });
     case ACTION_COMMAND.DEFER_ACTION:
       return runDeferAction(prisma, { ...input, action, logger });
     case ACTION_COMMAND.REJECT_ACTION:
@@ -262,6 +299,8 @@ export async function executeActionCommand(prisma, input) {
       return runAchieveOutcome(prisma, { ...input, action, params, logger });
     case ACTION_COMMAND.ADD_PLAN_STEP:
       return runAddPlanStep(prisma, { ...input, action, params, logger });
+    case ACTION_COMMAND.REPLAN_ACTION:
+      return runReplanAction(prisma, { ...input, action, params, logger });
     default:
       return runAnswer(prisma, { ...input, action, params, logger });
   }
@@ -357,7 +396,8 @@ function composeActionPlanResult(results) {
     result: { operations: results },
     results,
     action: last?.action,
-    changeSet: [...results].reverse().find((row) => row.changeSet)?.changeSet ?? null,
+    changeSet:
+      [...results].reverse().find((row) => row.changeSet)?.changeSet ?? null,
     commands,
   };
 }
@@ -373,7 +413,9 @@ function composeActionPlanReply(results) {
   const failed = results.find((row) => !row.ok);
   const parts = [...summaries];
   if (failed?.reply) parts.push(String(failed.reply));
-  return parts.join(" ").trim() || String(results[results.length - 1]?.reply ?? "");
+  return (
+    parts.join(" ").trim() || String(results[results.length - 1]?.reply ?? "")
+  );
 }
 
 /** @param {unknown} reply */
@@ -409,12 +451,21 @@ async function runAcceptPlan(prisma, input) {
 async function runRevisePlan(prisma, input) {
   const reopened = await reopenForRevision(prisma, input);
   if (!reopened.ok) {
-    return { ...reopened, command: ACTION_COMMAND.REVISE_PLAN };
+    return {
+      ...reopened,
+      command: ACTION_COMMAND.REVISE_PLAN,
+      reply: reopened.reply ?? "I couldn't revise this action.",
+    };
   }
   const rawPatch = planPatchFromParams(input.params);
-  const { patch: planPatch, rejected } = validatePlanPatch(input.action, rawPatch);
+  const { patch: planPatch, rejected } = validatePlanPatch(
+    input.action,
+    rawPatch,
+  );
   if (rejected.length > 0 && Object.keys(planPatch).length === 0) {
-    const kind = isRestockAction(input.action) ? "cover days" : "markdown percent";
+    const kind = isRestockAction(input.action)
+      ? "cover days"
+      : "markdown percent";
     return {
       ok: false,
       command: ACTION_COMMAND.REVISE_PLAN,
@@ -427,7 +478,8 @@ async function runRevisePlan(prisma, input) {
       ok: false,
       command: ACTION_COMMAND.REVISE_PLAN,
       reason: "no_revision",
-      reply: "Tell me which number to change — for example the markdown percent, cover days, or how many products.",
+      reply:
+        "Tell me which number to change — for example the markdown percent, cover days, or how many products.",
     };
   }
   await persistActionPlan(prisma, input, planPatch);
@@ -439,14 +491,21 @@ async function runRevisePlan(prisma, input) {
   await invalidateDownstreamFromCurrentFocus(prisma, input);
 
   let reviseResult = null;
-  if (input.action.actionRunId && (planPatch.markdownPercent != null || planPatch.maxProducts != null)) {
+  if (
+    input.action.actionRunId &&
+    (planPatch.markdownPercent != null || planPatch.maxProducts != null)
+  ) {
     try {
       reviseResult = await reviseAction(prisma, {
         merchantId: input.merchantId,
         actionRunId: input.action.actionRunId,
         params: {
-          ...(planPatch.markdownPercent != null ? { markdownPercent: planPatch.markdownPercent } : {}),
-          ...(planPatch.maxProducts != null ? { maxProducts: planPatch.maxProducts } : {}),
+          ...(planPatch.markdownPercent != null
+            ? { markdownPercent: planPatch.markdownPercent }
+            : {}),
+          ...(planPatch.maxProducts != null
+            ? { maxProducts: planPatch.maxProducts }
+            : {}),
         },
       });
     } catch {
@@ -465,7 +524,11 @@ async function runRevisePlan(prisma, input) {
   return {
     ok: true,
     command: ACTION_COMMAND.REVISE_PLAN,
-    result: { plan: planPatch, revise: reviseResult, changeSet: createdChangeSet(changeSet) },
+    result: {
+      plan: planPatch,
+      revise: reviseResult,
+      changeSet: createdChangeSet(changeSet),
+    },
     reply: buildReviseReply(fresh ?? input.action, planPatch, changeSet),
     action: fresh ?? input.action,
     changeSet: createdChangeSet(changeSet),
@@ -479,12 +542,15 @@ async function runRevisePlan(prisma, input) {
  * @param {any} prisma @param {any} input
  */
 async function runAddPlanStep(prisma, input) {
-  const { listStepCapabilities, resolveWorkflowStepCapability } = await import(
-    "../merchant-plan/step-capabilities.server.js"
-  );
+  const { resolveWorkflowStepCapability } =
+    await import("../merchant-plan/step-capabilities.server.js");
   const steps = [
-    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
-    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+    ...(Array.isArray(input.action?.workflow?.steps)
+      ? input.action.workflow.steps
+      : []),
+    ...(Array.isArray(input.action?.displaySteps)
+      ? input.action.displaySteps
+      : []),
   ];
   const workflowId =
     input.action?.workflow?.id ??
@@ -504,21 +570,41 @@ async function runAddPlanStep(prisma, input) {
     };
   }
 
-  const title = String(input.params?.title ?? "").trim().slice(0, 120);
-  const description = String(input.params?.description ?? "").trim().slice(0, 260);
+  const title = String(input.params?.title ?? "")
+    .trim()
+    .slice(0, 120);
+  const description = String(input.params?.description ?? "")
+    .trim()
+    .slice(0, 260);
   const capabilityRefRaw = String(input.params?.capabilityRef ?? "").trim();
   const modeRaw = input.params?.mode;
 
   if (!title) {
-    return {
-      ok: false,
-      command: ACTION_COMMAND.ADD_PLAN_STEP,
-      reason: "missing_title",
-      reply: "What should the new step be called? Give it a title.",
-    };
+    const merchantInstruction = String(
+      input.params?.merchantInstruction ??
+        input.params?.reason ??
+        input.message ??
+        "",
+    ).trim();
+    if (!merchantInstruction) {
+      return {
+        ok: false,
+        command: ACTION_COMMAND.ADD_PLAN_STEP,
+        reason: "missing_title",
+        reply: 'Tell me what step to add, for example "Create Shopify transfer".',
+      };
+    }
+    return runReplanAction(prisma, {
+      ...input,
+      command: ACTION_COMMAND.REPLAN_ACTION,
+      params: { merchantInstruction },
+    });
   }
 
-  const capability = resolveWorkflowStepCapability(capabilityRefRaw || null, modeRaw || null);
+  const capability = resolveWorkflowStepCapability(
+    capabilityRefRaw || null,
+    modeRaw || null,
+  );
   const maxOrderIndex = steps.reduce(
     (/** @type {number} */ max, /** @type {any} */ step) =>
       Math.max(max, Number(step?.orderIndex ?? 0)),
@@ -526,18 +612,21 @@ async function runAddPlanStep(prisma, input) {
   );
 
   // Build dependency chain from declared deps or attach to the current last step.
-  const rawDeps = Array.isArray(input.params?.dependsOnStepIds) ? input.params.dependsOnStepIds : [];
-  const existingIds = new Set(steps.map((/** @type {any} */ s) => String(s.id ?? "")));
+  const rawDeps = Array.isArray(input.params?.dependsOnStepIds)
+    ? input.params.dependsOnStepIds
+    : [];
+  const existingIds = new Set(
+    steps.map((/** @type {any} */ s) => String(s.id ?? "")),
+  );
   // Only reference deps that actually exist in the workflow.
-  const resolvedDeps = rawDeps.filter((/** @type {any} */ id) => existingIds.has(String(id)));
+  const resolvedDeps = rawDeps.filter((/** @type {any} */ id) =>
+    existingIds.has(String(id)),
+  );
   // Default: depend on the last step so the chain is coherent.
-  const fallbackLast = steps.length > 0 ? String(steps[steps.length - 1]?.id ?? "") : null;
+  const fallbackLast =
+    steps.length > 0 ? String(steps[steps.length - 1]?.id ?? "") : null;
   const dependsOnStepIds =
-    resolvedDeps.length > 0
-      ? resolvedDeps
-      : fallbackLast
-        ? [fallbackLast]
-        : [];
+    resolvedDeps.length > 0 ? resolvedDeps : fallbackLast ? [fallbackLast] : [];
 
   const { randomUUID } = await import("crypto");
   const newStepId = randomUUID();
@@ -564,8 +653,42 @@ async function runAddPlanStep(prisma, input) {
   return {
     ok: true,
     command: ACTION_COMMAND.ADD_PLAN_STEP,
-    result: { stepId: newStepId, title, mode: capability.mode, capabilityRef: capability.capabilityRef },
+    result: {
+      stepId: newStepId,
+      title,
+      mode: capability.mode,
+      capabilityRef: capability.capabilityRef,
+    },
     reply: `Added "${title}" as a new step to this action's plan.`,
+    action: fresh ?? input.action,
+  };
+}
+
+/** @param {any} prisma @param {any} input */
+async function runReplanAction(prisma, input) {
+  const result = await replanAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    merchantInstruction: String(
+      input.params?.merchantInstruction ??
+        input.params?.reason ??
+        input.message ??
+        "",
+    ),
+    actor: input.actor ?? input.merchantId,
+    conversationId: input.conversationId ?? null,
+    recentMessages: input.recentMessages ?? [],
+    provider: input.replanProvider ?? input.provider ?? null,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.REPLAN_ACTION,
+    reason: result.ok ? null : result.reason,
+    result,
+    reply: result.reply,
     action: fresh ?? input.action,
   };
 }
@@ -587,10 +710,12 @@ async function nextJefeOwnedStepId(prisma, input) {
   const next =
     rows.find(
       (/** @type {any} */ row) =>
-        row.step.mode === "assist" && (row.state === "available" || row.state === "needs_updating"),
+        row.step.mode === "assist" &&
+        (row.state === "available" || row.state === "needs_updating"),
     ) ??
     rows.find(
-      (/** @type {any} */ row) => row.state === "available" || row.state === "needs_updating",
+      (/** @type {any} */ row) =>
+        row.state === "available" || row.state === "needs_updating",
     ) ??
     null;
   return next?.step?.id ?? null;
@@ -598,8 +723,11 @@ async function nextJefeOwnedStepId(prisma, input) {
 
 /** @param {any} prisma @param {any} input */
 async function runAchieveOutcome(prisma, input) {
-  const outcome = input.params?.outcome ?? input.params?.targetHint ?? "supplier_draft";
-  const capabilityRef = outcomeCapabilityRef(String(outcome).toLowerCase().replace(/\s+/g, "_"));
+  const outcome =
+    input.params?.outcome ?? input.params?.targetHint ?? "supplier_draft";
+  const capabilityRef = outcomeCapabilityRef(
+    String(outcome).toLowerCase().replace(/\s+/g, "_"),
+  );
   if (!capabilityRef) {
     return {
       ok: false,
@@ -621,11 +749,11 @@ async function runAchieveOutcome(prisma, input) {
   return {
     ok: Boolean(result.ok),
     command: ACTION_COMMAND.ACHIEVE_OUTCOME,
-    reason: result.ok ? null : result.code ?? null,
+    reason: result.ok ? null : (result.code ?? null),
     result,
     reply: result.ok
       ? `Completed "${result.title ?? "that work"}".`
-      : result.message ?? "I couldn't reach that outcome just now.",
+      : (result.message ?? "I couldn't reach that outcome just now."),
     action: fresh ?? input.action,
   };
 }
@@ -652,7 +780,11 @@ async function reopenForRevision(prisma, input) {
     };
   }
   await prisma.merchantAction.updateMany({
-    where: { id: action.id, merchantId: input.merchantId, shopId: input.shopId },
+    where: {
+      id: action.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
     data: { status: "in_progress" },
   });
   action.status = "in_progress";
@@ -662,7 +794,11 @@ async function reopenForRevision(prisma, input) {
 /** @param {any} action */
 function hasExternalExecution(action) {
   const executions = Array.isArray(action?.executions) ? action.executions : [];
-  if (executions.some((/** @type {any} */ row) => String(row?.status ?? "") === "succeeded")) {
+  if (
+    executions.some(
+      (/** @type {any} */ row) => String(row?.status ?? "") === "succeeded",
+    )
+  ) {
     return true;
   }
   const changeSets = Array.isArray(action?.changeSets) ? action.changeSets : [];
@@ -686,7 +822,8 @@ async function runAddConstraint(prisma, input) {
       ok: false,
       command: ACTION_COMMAND.ADD_CONSTRAINT,
       reason: "no_constraint",
-      reply: "I understood that as a rule, but I couldn’t turn it into a precise constraint. Try “don’t touch archived products” or “exclude collection Summer Essentials”.",
+      reply:
+        "I understood that as a rule, but I couldn’t turn it into a precise constraint. Try “don’t touch archived products” or “exclude collection Summer Essentials”.",
     };
   }
   const added = [];
@@ -747,7 +884,8 @@ async function runScopeModification(prisma, input) {
       ok: false,
       command: ACTION_COMMAND.ADD_CONSTRAINT,
       reason: "no_constraint",
-      reply: "I understood that as a scope change, but I couldn't turn it into a precise constraint.",
+      reply:
+        "I understood that as a scope change, but I couldn't turn it into a precise constraint.",
     };
   }
   if (modification.intent === "include_again") {
@@ -809,7 +947,8 @@ async function runScopeModification(prisma, input) {
       ok: false,
       command: ACTION_COMMAND.ADD_CONSTRAINT,
       reason: "no_constraint",
-      reply: "I understood that as a scope change, but I couldn't match it to products on this action.",
+      reply:
+        "I understood that as a scope change, but I couldn't match it to products on this action.",
     };
   }
   return runAddConstraint(prisma, {
@@ -824,7 +963,9 @@ function buildConstraintAddedReply(added, message) {
   const scopeMod = parseScopeModificationFromMessage(String(message ?? ""));
   if (scopeMod?.intent === "include_only") {
     const excluded = added
-      .map((item) => item.label?.replace(/^Exclude\s+/i, "") ?? item.params?.title)
+      .map(
+        (item) => item.label?.replace(/^Exclude\s+/i, "") ?? item.params?.title,
+      )
       .filter(Boolean);
     const included = scopeMod.title;
     if (excluded.length === 1) {
@@ -928,7 +1069,8 @@ async function runStartStep(prisma, input) {
   // Jefe-owned work runs by step id off derived availability. The old path
   // asked the persisted cursor for permission, which is why "Start this"
   // refused work whose prerequisites were already complete.
-  const targetStepId = input.params?.stepId ?? (await nextJefeOwnedStepId(prisma, input));
+  const targetStepId =
+    input.params?.stepId ?? (await nextJefeOwnedStepId(prisma, input));
   if (targetStepId) {
     const assistRun = await runAssistStepById(prisma, {
       merchantId: input.merchantId,
@@ -944,11 +1086,12 @@ async function runStartStep(prisma, input) {
       return {
         ok: Boolean(assistRun.ok),
         command: ACTION_COMMAND.START_STEP,
-        reason: assistRun.ok ? null : assistRun.code ?? null,
+        reason: assistRun.ok ? null : (assistRun.code ?? null),
         result: assistRun,
         reply: assistRun.ok
-          ? assistRun.chatReply ?? `Completed "${assistRun.title ?? "that step"}".`
-          : assistRun.message ?? "I couldn't start that.",
+          ? (assistRun.chatReply ??
+            `Completed "${assistRun.title ?? "that step"}".`)
+          : (assistRun.message ?? "I couldn't start that."),
         action: refreshed ?? input.action,
       };
     }
@@ -1083,8 +1226,12 @@ async function runGoBack(prisma, input) {
 /** @param {any} prisma @param {any} input */
 async function runGoToStep(prisma, input) {
   const steps = uniqueStepsById([
-    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
-    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+    ...(Array.isArray(input.action?.workflow?.steps)
+      ? input.action.workflow.steps
+      : []),
+    ...(Array.isArray(input.action?.displaySteps)
+      ? input.action.displaySteps
+      : []),
   ]);
   let targetStepId = input.params?.stepId ?? null;
   if (!targetStepId && input.params?.targetHint) {
@@ -1201,7 +1348,9 @@ async function runRejectAction(prisma, input) {
       ok: Boolean(deferred.ok),
       command: ACTION_COMMAND.REJECT_ACTION,
       result: deferred,
-      reply: buildPlanDeclineReply({ status: deferred.ok ? "rejected" : "failed" }),
+      reply: buildPlanDeclineReply({
+        status: deferred.ok ? "rejected" : "failed",
+      }),
     };
   }
   const result = await rejectAction(prisma, {
@@ -1240,7 +1389,8 @@ async function runCreateChangeSet(prisma, input) {
           : "I couldn’t build an exact change set just now.",
     };
   }
-  const restock = result.changeSet?.actionType === "restock" || isRestockAction(input.action);
+  const restock =
+    result.changeSet?.actionType === "restock" || isRestockAction(input.action);
   return {
     ok: true,
     command: ACTION_COMMAND.CREATE_CHANGESET,
@@ -1395,12 +1545,17 @@ async function runReportExecution(prisma, input) {
     };
   }
   const items = extractPlanScopeItems(input.action);
-  if (input.action.executionStatus === "applied" || input.action.executionStatus === "partially_applied") {
+  if (
+    input.action.executionStatus === "applied" ||
+    input.action.executionStatus === "partially_applied"
+  ) {
     return {
       ok: true,
       command: ACTION_COMMAND.REPORT_EXECUTION,
       reply: `The last run finished as ${String(input.action.executionStatus).replaceAll("_", " ")}.${
-        items.length ? ` It targeted ${items.length} item${items.length === 1 ? "" : "s"}.` : ""
+        items.length
+          ? ` It targeted ${items.length} item${items.length === 1 ? "" : "s"}.`
+          : ""
       }`,
     };
   }
@@ -1419,10 +1574,18 @@ async function runAnswer(prisma, input) {
   const kind = input.params?.questionKind;
   const action = input.action;
   if (kind === PLAN_CHAT_INTENT.status) {
-    return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanStatusReply(action) };
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ANSWER,
+      reply: buildPlanStatusReply(action),
+    };
   }
   if (kind === PLAN_CHAT_INTENT.recap) {
-    return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanRecapReply(action) };
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ANSWER,
+      reply: buildPlanRecapReply(action),
+    };
   }
   if (kind === PLAN_CHAT_INTENT.scope) {
     return runInspectScope(prisma, input);
@@ -1442,10 +1605,14 @@ async function runSimulate(prisma, input) {
     conversationId: input.conversationId ?? null,
     logger: input.logger,
   });
-  const currentCover = Number(resolved?.plan?.values?.coverDays ?? input.action?.plan?.coverDays);
+  const currentCover = Number(
+    resolved?.plan?.values?.coverDays ?? input.action?.plan?.coverDays,
+  );
   const coverDays = Number(input.params?.coverDays);
   const markdown = Number(input.params?.markdownPercent);
-  const items = Array.isArray(resolved?.scope?.items) ? resolved.scope.items : [];
+  const items = Array.isArray(resolved?.scope?.items)
+    ? resolved.scope.items
+    : [];
   if (Number.isFinite(coverDays) && coverDays > 0) {
     const lines = items.map((/** @type {any} */ item) => {
       const units = recommendedPurchaseUnits(
@@ -1478,7 +1645,8 @@ async function runSimulate(prisma, input) {
   return {
     ok: true,
     command: ACTION_COMMAND.ANSWER,
-    reply: "I can show a hypothetical, but I need a cover period or markdown percent to calculate from.",
+    reply:
+      "I can show a hypothetical, but I need a cover period or markdown percent to calculate from.",
   };
 }
 
@@ -1505,8 +1673,12 @@ async function runInspectProposal(prisma, input) {
     logger: input.logger,
   });
   if (created.ok) {
-    const items = Array.isArray(created.changeSet?.items) ? created.changeSet.items : [];
-    const excluded = Array.isArray(created.changeSet?.excluded) ? created.changeSet.excluded : [];
+    const items = Array.isArray(created.changeSet?.items)
+      ? created.changeSet.items
+      : [];
+    const excluded = Array.isArray(created.changeSet?.excluded)
+      ? created.changeSet.excluded
+      : [];
     if (items.length > 0 || excluded.length > 0) {
       return {
         ok: true,
@@ -1537,7 +1709,9 @@ async function runReportConstraints(prisma, input) {
     shopId: input.shopId,
     actionId: input.action.id,
   });
-  const excluded = constraints.filter((/** @type {any} */ row) => row.kind === "exclude_product");
+  const excluded = constraints.filter(
+    (/** @type {any} */ row) => row.kind === "exclude_product",
+  );
   if (excluded.length === 0) {
     return {
       ok: true,
@@ -1546,7 +1720,10 @@ async function runReportConstraints(prisma, input) {
     };
   }
   const lines = excluded
-    .map((/** @type {any} */ row) => row.label?.replace(/^Exclude\s+/i, "") ?? row.params?.title)
+    .map(
+      (/** @type {any} */ row) =>
+        row.label?.replace(/^Exclude\s+/i, "") ?? row.params?.title,
+    )
     .filter(Boolean);
   return {
     ok: true,
@@ -1574,30 +1751,49 @@ async function answerFocusedAction(prisma, input) {
   // inconsistency, name the contradiction directly instead of giving a generic recap.
   if (/\b(waiting|blocked|stuck|why.{0,20}step|which step)\b/i.test(text)) {
     const allSteps = [
-      ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
-      ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+      ...(Array.isArray(input.action?.workflow?.steps)
+        ? input.action.workflow.steps
+        : []),
+      ...(Array.isArray(input.action?.displaySteps)
+        ? input.action.displaySteps
+        : []),
     ];
     const byId = new Map(allSteps.map((s) => [String(s.id), s]));
     const contradictions = allSteps.filter((step) => {
       if (String(step.status ?? "") !== "waiting") return false;
-      const deps = Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [];
-      return deps.length > 0 && deps.every((/** @type {string} */ id) =>
-        ["completed", "skipped", "superseded"].includes(String(byId.get(String(id))?.status ?? "")),
+      const deps = Array.isArray(step.dependsOnStepIds)
+        ? step.dependsOnStepIds
+        : [];
+      return (
+        deps.length > 0 &&
+        deps.every((/** @type {string} */ id) =>
+          ["completed", "skipped", "superseded"].includes(
+            String(byId.get(String(id))?.status ?? ""),
+          ),
+        )
       );
     });
     if (contradictions.length > 0) {
       const lines = contradictions.map((step) => {
-        const deps = (Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : [])
+        const deps = (
+          Array.isArray(step.dependsOnStepIds) ? step.dependsOnStepIds : []
+        )
           .map((/** @type {string} */ id) => byId.get(String(id)))
           .filter(Boolean);
-        const depNames = deps.map((/** @type {any} */ d) => `"${d.title ?? d.id}"`).join(" and ");
+        const depNames = deps
+          .map((/** @type {any} */ d) => `"${d.title ?? d.id}"`)
+          .join(" and ");
         return (
           `"${step.title ?? step.id}" is currently marked as waiting. ` +
           `It depends on ${depNames}, which ${deps.length === 1 ? "is" : "are"} already complete — ` +
           `so that state is inconsistent. I'll repair it automatically next time you interact with the action.`
         );
       });
-      return { ok: true, command: ACTION_COMMAND.ANSWER, reply: lines.join("\n\n") };
+      return {
+        ok: true,
+        command: ACTION_COMMAND.ANSWER,
+        reply: lines.join("\n\n"),
+      };
     }
   }
 
@@ -1609,33 +1805,51 @@ async function answerFocusedAction(prisma, input) {
     const planValues = resolved.plan?.values ?? {};
     const coverDays = planValues.coverDays ?? null;
     const markdownPercent = planValues.markdownPercent ?? null;
-    const scopeItems = Array.isArray(resolved.scope?.items) ? resolved.scope.items : [];
-    const excluded = Array.isArray(resolved.scope?.excluded) ? resolved.scope.excluded : [];
+    const scopeItems = Array.isArray(resolved.scope?.items)
+      ? resolved.scope.items
+      : [];
+    const excluded = Array.isArray(resolved.scope?.excluded)
+      ? resolved.scope.excluded
+      : [];
 
     // Cover-period / replenishment window questions
     if (
-      /\b(cover|window|period|days?|how long|replenishment window|days? of (cover|stock))\b/i.test(text) &&
+      /\b(cover|window|period|days?|how long|replenishment window|days? of (cover|stock))\b/i.test(
+        text,
+      ) &&
       !/\bproduct|which|scope|what.?s included\b/i.test(text)
     ) {
       if (coverDays != null) {
         const lines = [];
         lines.push(`${coverDays} days of cover.`);
         if (scopeItems.length > 0) {
-          const ordered = scopeItems.slice(0, 6).map((item) => {
+          const ordered = scopeItems
+            .slice(0, 6)
+            .map((item) => {
             const title = item.title ?? item.productTitle ?? null;
             const units = item.recommendedUnits ?? item.after ?? null;
-            return title && units != null ? `${title}: ${units} units` : title;
-          }).filter(Boolean);
+              return title && units != null
+                ? `${title}: ${units} units`
+                : title;
+            })
+            .filter(Boolean);
           if (ordered.length > 0) {
             lines.push(`Current recommendation: ${ordered.join(", ")}.`);
           }
         }
-        return { ok: true, command: ACTION_COMMAND.ANSWER, reply: lines.join(" ") };
+        return {
+          ok: true,
+          command: ACTION_COMMAND.ANSWER,
+          reply: lines.join(" "),
+        };
       }
     }
 
     // Markdown percent questions
-    if (/\b(markdown|discount|percent|%|price drop)\b/i.test(text) && markdownPercent != null) {
+    if (
+      /\b(markdown|discount|percent|%|price drop)\b/i.test(text) &&
+      markdownPercent != null
+    ) {
       return {
         ok: true,
         command: ACTION_COMMAND.ANSWER,
@@ -1647,15 +1861,24 @@ async function answerFocusedAction(prisma, input) {
     if (/\bwhy\b/i.test(text)) {
       const parts = [];
       if (coverDays != null) parts.push(`Cover target: ${coverDays} days.`);
-      if (markdownPercent != null) parts.push(`Markdown target: ${markdownPercent}%.`);
+      if (markdownPercent != null)
+        parts.push(`Markdown target: ${markdownPercent}%.`);
       if (scopeItems.length > 0) {
-        const titles = scopeItems.slice(0, 6).map((/** @type {any} */ item) => item.title).filter(Boolean);
+        const titles = scopeItems
+          .slice(0, 6)
+          .map((/** @type {any} */ item) => item.title)
+          .filter(Boolean);
         if (titles.length) {
-          parts.push(`In scope: ${titles.join(", ")}${scopeItems.length > 6 ? ` (+${scopeItems.length - 6} more)` : ""}.`);
+          parts.push(
+            `In scope: ${titles.join(", ")}${scopeItems.length > 6 ? ` (+${scopeItems.length - 6} more)` : ""}.`,
+          );
         }
       }
       if (excluded.length > 0) {
-        const exTitles = excluded.slice(0, 4).map((/** @type {any} */ item) => item.title ?? item.reason).filter(Boolean);
+        const exTitles = excluded
+          .slice(0, 4)
+          .map((/** @type {any} */ item) => item.title ?? item.reason)
+          .filter(Boolean);
         if (exTitles.length) parts.push(`Excluded: ${exTitles.join(", ")}.`);
       }
       if (resolved.constraints?.length) {
@@ -1664,12 +1887,20 @@ async function answerFocusedAction(prisma, input) {
         );
       }
       if (parts.length > 0) {
-        return { ok: true, command: ACTION_COMMAND.ANSWER, reply: parts.join(" ") };
+        return {
+          ok: true,
+          command: ACTION_COMMAND.ANSWER,
+          reply: parts.join(" "),
+        };
       }
     }
   }
 
-  return { ok: true, command: ACTION_COMMAND.ANSWER, reply: buildPlanRecapReply(input.action) };
+  return {
+    ok: true,
+    command: ACTION_COMMAND.ANSWER,
+    reply: buildPlanRecapReply(input.action),
+  };
 }
 
 /**
@@ -1696,7 +1927,10 @@ export async function deferMerchantAction(prisma, input) {
     },
     data: { status },
   });
-  if (action.sourceRecommendationId && prisma.merchantPlanRecommendation?.updateMany) {
+  if (
+    action.sourceRecommendationId &&
+    prisma.merchantPlanRecommendation?.updateMany
+  ) {
     await prisma.merchantPlanRecommendation.updateMany({
       where: {
         id: action.sourceRecommendationId,
@@ -1712,7 +1946,8 @@ export async function deferMerchantAction(prisma, input) {
         merchantId: input.merchantId,
         shopId: input.shopId,
         merchantActionId: action.id,
-        eventType: status === "declined" ? "action_rejected" : "action_deferred",
+        eventType:
+          status === "declined" ? "action_rejected" : "action_deferred",
         metadata: { actor: input.actor ?? input.merchantId },
       },
     });
@@ -1739,13 +1974,19 @@ export async function listActionRuntimeContext(prisma, input) {
 export function parsePlanRevision(text) {
   const normalized = normalizeChatText(text);
   const markdown =
-    normalized.match(/\b(\d+(?:\.\d+)?)\s*%\s+(?:instead|rather than|markdown)\b/i) ||
-    normalized.match(/\b(?:use|make (?:it|this)|at)\s+(?:a\s+)?(\d+(?:\.\d+)?)\s*%/i) ||
+    normalized.match(
+      /\b(\d+(?:\.\d+)?)\s*%\s+(?:instead|rather than|markdown)\b/i,
+    ) ||
+    normalized.match(
+      /\b(?:use|make (?:it|this)|at)\s+(?:a\s+)?(\d+(?:\.\d+)?)\s*%/i,
+    ) ||
     normalized.match(/\bmarkdown(?: of)?\s+(\d+(?:\.\d+)?)\s*%/i);
   const cover =
     normalized.match(/\b(\d+)\s*days?\s+(?:of\s+)?cover\b/i) ||
     normalized.match(/\bcover\s+(?:of\s+)?(\d+)\s*days?\b/i) ||
-    normalized.match(/\b(?:use|make it|actually use|change (?:cover )?to)\s+(\d+)\s*days?\b/i);
+    normalized.match(
+      /\b(?:use|make it|actually use|change (?:cover )?to)\s+(\d+)\s*days?\b/i,
+    );
   const maxProducts =
     normalized.match(/\b(?:top|only|just)\s+(\d+)\s+products?\b/i) ||
     normalized.match(/\bonly do(?: the)?\s+(\d+)\b/i);
@@ -1816,7 +2057,9 @@ function buildReviseReply(action, patch, changeSet) {
   const restock = isRestockAction(action)
     ? " I'll recalculate recommended quantities from that cover."
     : "";
-  const table = changeSet?.ok ? `\n\n${formatChangeSetReply(changeSet.changeSet)}` : "";
+  const table = changeSet?.ok
+    ? `\n\n${formatChangeSetReply(changeSet.changeSet)}`
+    : "";
   return `${summary}${restock}${table}`;
 }
 
@@ -1854,12 +2097,19 @@ function buildStartReply(action, stepStart) {
       ...(Array.isArray(action?.workflow?.steps) ? action.workflow.steps : []),
       ...(Array.isArray(action?.displaySteps) ? action.displaySteps : []),
     ];
-    const deps = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
+    const deps = Array.isArray(step?.dependsOnStepIds)
+      ? step.dependsOnStepIds
+      : [];
     if (deps.length > 0) {
       const depTitles = deps
-        .map((/** @type {string} */ id) => allSteps.find((/** @type {any} */ s) => s.id === id))
+        .map((/** @type {string} */ id) =>
+          allSteps.find((/** @type {any} */ s) => s.id === id),
+        )
         .filter(Boolean)
-        .filter((/** @type {any} */ s) => !["completed", "skipped"].includes(String(s.status ?? "")))
+        .filter(
+          (/** @type {any} */ s) =>
+            !["completed", "skipped"].includes(String(s.status ?? "")),
+        )
         .map((/** @type {any} */ s) => `"${s.title ?? s.label}"`)
         .slice(0, 2);
       if (depTitles.length > 0) {
@@ -1896,7 +2146,8 @@ function productHintMatchesConstraint(hint, constraint) {
   const wanted = normalizeMatch(hint);
   if (!wanted) return false;
   const title = normalizeMatch(
-    constraint?.params?.title ?? String(constraint?.label ?? "").replace(/^exclude\s+/i, ""),
+    constraint?.params?.title ??
+      String(constraint?.label ?? "").replace(/^exclude\s+/i, ""),
   );
   if (!title) return false;
   return title === wanted || title.includes(wanted) || wanted.includes(title);
@@ -1943,7 +2194,11 @@ export function isExplicitGeneralStoreQuestion(message) {
     /\ball (?:my )?products (?:in the store|overall|in total)\b/i,
   ];
   if (!generalPatterns.some((pattern) => pattern.test(text))) return false;
-  if (/\b(this|the|current) (?:action|plan|step|proposal|replenishment)\b/i.test(text)) {
+  if (
+    /\b(this|the|current) (?:action|plan|step|proposal|replenishment)\b/i.test(
+      text,
+    )
+  ) {
     return false;
   }
   if (/\b(?:proposing|replenish|restock|markdown|in scope)\b/i.test(text)) {
@@ -1954,7 +2209,7 @@ export function isExplicitGeneralStoreQuestion(message) {
 
 /** @param {{ ok: boolean; changeSet?: any }} result */
 function createdChangeSet(result) {
-  return result.ok ? result.changeSet ?? null : null;
+  return result.ok ? (result.changeSet ?? null) : null;
 }
 
 /** @param {unknown} value */
@@ -1965,7 +2220,8 @@ function normalizeCommandType(value) {
     return ACTION_COMMAND[/** @type {keyof typeof ACTION_COMMAND} */ (raw)];
   }
   const upper = raw.toUpperCase();
-  if ((/** @type {string[]} */ (Object.values(ACTION_COMMAND))).includes(upper)) return upper;
+  if (/** @type {string[]} */ (Object.values(ACTION_COMMAND)).includes(upper))
+    return upper;
   const aliased = COMMAND_ALIASES[raw.toLowerCase()];
   return aliased ?? null;
 }
@@ -2015,13 +2271,14 @@ async function clearPendingNavigation(prisma, input) {
 /** @param {any} prisma @param {any} input */
 async function invalidateDownstreamFromCurrentFocus(prisma, input) {
   const steps = [
-    ...(Array.isArray(input.action?.workflow?.steps) ? input.action.workflow.steps : []),
-    ...(Array.isArray(input.action?.displaySteps) ? input.action.displaySteps : []),
+    ...(Array.isArray(input.action?.workflow?.steps)
+      ? input.action.workflow.steps
+      : []),
+    ...(Array.isArray(input.action?.displaySteps)
+      ? input.action.displaySteps
+      : []),
   ];
-  const workflowId =
-    input.action?.workflow?.id ??
-    steps[0]?.workflowId ??
-    null;
+  const workflowId = input.action?.workflow?.id ?? steps[0]?.workflowId ?? null;
   if (!workflowId) return;
   // Prefer the active step as the invalidation origin. When every step is
   // completed (plan changed after full run), fall back to the first step so
@@ -2029,9 +2286,13 @@ async function invalidateDownstreamFromCurrentFocus(prisma, input) {
   // graph can rebuild coherently.
   const current =
     steps.find((step) =>
-      ["ready", "running", "needs_merchant", "needs_attention", "needs_updating"].includes(
-        String(step?.status ?? ""),
-      ),
+      [
+        "ready",
+        "running",
+        "needs_merchant",
+        "needs_attention",
+        "needs_updating",
+      ].includes(String(step?.status ?? "")),
     ) ??
     steps.find((step) => step?.progress?.artifactType) ??
     steps[0] ??

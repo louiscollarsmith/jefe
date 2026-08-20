@@ -737,7 +737,12 @@ test("buildEligibilityRecord tolerates a missing or malformed autonomy result wi
 // caller treats an unbound type as "cannot do this", never "fall back to clearance".
 
 test("listResolvableActionTypes reports what this layer can actually propose", () => {
-  assert.deepEqual(listResolvableActionTypes().sort(), ["listing_copy", "price_markdown", "tidy_up"]);
+  assert.deepEqual(listResolvableActionTypes().sort(), [
+    "listing_copy",
+    "price_markdown",
+    "shopify_inventory_transfer",
+    "tidy_up",
+  ]);
 });
 
 test("an action type with no binding is unsupported — no row is ever created", async () => {

@@ -40,6 +40,10 @@ import {
   computeClearanceAutoEligibility,
   resolveAutonomyMode,
 } from "./clearance-adapter.server.js";
+import {
+  TRANSFER_BLAST_RADIUS_CAP,
+  previewInventoryTransfer,
+} from "./inventory-transfer-adapter.server.js";
 
 export { buildActionRaise };
 
@@ -277,6 +281,119 @@ function listingCopyScopeNudge({ summary }) {
   };
 }
 
+const DEFAULT_INVENTORY_TRANSFER_CAPS = Object.freeze({
+  lineItemCount: TRANSFER_BLAST_RADIUS_CAP,
+});
+
+/**
+ * Inventory transfer proposals require concrete locations and line items. Generic action
+ * discovery should therefore return null; workflow replanning can still add the transfer
+ * step, and runtime input collection can build this preview once the merchant supplies
+ * the exact transfer parameters.
+ *
+ * @param {any} _prisma
+ * @param {{ intent?: any }} input
+ */
+async function resolveInventoryTransfer(_prisma, { intent }) {
+  const params = intent?.params ?? {};
+  const hasConcreteTransfer =
+    typeof params.originLocationId === "string" ||
+    typeof params.destinationLocationId === "string" ||
+    Array.isArray(params.lineItems);
+  if (!hasConcreteTransfer) return null;
+
+  const previewed = previewInventoryTransfer({
+    originLocationId: params.originLocationId,
+    destinationLocationId: params.destinationLocationId,
+    lineItems: Array.isArray(params.lineItems) ? params.lineItems : [],
+  });
+  if (!previewed.ok) return null;
+
+  return {
+    preview: previewed.preview,
+    summary: {
+      lineItemCount: previewed.preview.lineItems.length,
+      refusedCount: previewed.refused.length,
+      topItems: previewed.preview.lineItems.slice(0, 5).map((item) => ({
+        title: item.title ?? item.inventoryItemId,
+        quantity: item.quantity,
+      })),
+    },
+    magnitude: { lineItemCount: previewed.preview.lineItems.length },
+  };
+}
+
+/**
+ * @param {any} preview
+ * @param {number} _confidence
+ * @param {{ lineItemCount?: number }} [caps]
+ */
+function computeInventoryTransferEligibility(preview, _confidence, caps = DEFAULT_INVENTORY_TRANSFER_CAPS) {
+  const lineItemCount = Array.isArray(preview?.lineItems)
+    ? preview.lineItems.length
+    : 0;
+  const cap = Number(caps.lineItemCount ?? TRANSFER_BLAST_RADIUS_CAP);
+  const withinCap = lineItemCount > 0 && lineItemCount <= cap;
+  return {
+    autoEligible: false,
+    reversible: false,
+    withinCap,
+    confident: true,
+    reasons: [
+      ...(withinCap ? [] : ["outside_transfer_cap"]),
+      "inventory_transfers_are_irreversible",
+    ],
+  };
+}
+
+/** @param {{ summary: any, preview: any, runId: string, executable: boolean }} input */
+function inventoryTransferProposeCard({ summary, preview, runId, executable }) {
+  const n = Number(summary?.lineItemCount ?? preview?.lineItems?.length ?? 0);
+  return {
+    actionRunId: runId,
+    actionType: "shopify_inventory_transfer",
+    headline: `Create a Shopify inventory transfer for ${n} item${n === 1 ? "" : "s"}.`,
+    keyNumbers: [{ label: "Items", value: n }],
+    topItems: (summary?.topItems ?? []).slice(0, 5).map((/** @type {any} */ item) => ({
+      title: item.title ?? "Inventory item",
+      detail: `${Number(item.quantity) || 0} units`,
+    })),
+    executable,
+  };
+}
+
+/** @param {{ summary: any; preview: any; currency: string }} input */
+function inventoryTransferReadCard({ summary, preview }) {
+  const n = Number(summary?.lineItemCount ?? preview?.lineItems?.length ?? 0);
+  if (!(n > 0)) return null;
+  return {
+    headline: `Create a Shopify inventory transfer for ${n} item${n === 1 ? "" : "s"}.`,
+    keyNumbers: [{ label: "Items", value: n }],
+    topItems: (summary?.topItems ?? []).slice(0, 5).map((/** @type {any} */ item) => ({
+      title: item.title ?? "Inventory item",
+      detail: `${Number(item.quantity) || 0} units`,
+    })),
+  };
+}
+
+/** @param {string} status @param {number} count */
+function inventoryTransferExecutedHeadline(status, count) {
+  const noun = `${count} item${count === 1 ? "" : "s"}`;
+  if (status === "rejected") return `Left the Shopify transfer uncreated for ${noun}`;
+  if (status === "reverted") return `Marked the Shopify transfer for ${noun} as reverted`;
+  return `Created the Shopify transfer for ${noun}`;
+}
+
+/** @param {{ summary: any, currency: string, missingScopes: string[] }} input */
+function inventoryTransferScopeNudge({ summary }) {
+  const n = Number(summary?.lineItemCount) || 0;
+  if (n < 1) return null;
+  return {
+    lineItemCount: n,
+    headline: `Jefe can create the Shopify inventory transfer for ${n} item${n === 1 ? "" : "s"} — grant "Inventory transfers" access to let it act.`,
+  };
+}
+
 /**
  * Find live products that nobody can buy — no stock left anywhere, nothing sold for months —
  * and propose archiving them. Returns null (→ "no_opportunity") when there is nothing stale,
@@ -394,6 +511,16 @@ const PRIMITIVES = {
     readCard: clearanceReadCard,
     executedHeadline: clearanceExecutedHeadline,
     scopeNudge: clearanceScopeNudge,
+  },
+  shopify_inventory_transfer: {
+    resolve: resolveInventoryTransfer,
+    caps: DEFAULT_INVENTORY_TRANSFER_CAPS,
+    computeEligibility: computeInventoryTransferEligibility,
+    actionKindFor: (targetKind) => (targetKind === "restock" ? "inventory_transfer" : targetKind),
+    card: inventoryTransferProposeCard,
+    readCard: inventoryTransferReadCard,
+    executedHeadline: inventoryTransferExecutedHeadline,
+    scopeNudge: inventoryTransferScopeNudge,
   },
   tidy_up: {
     resolve: resolveTidyUp,

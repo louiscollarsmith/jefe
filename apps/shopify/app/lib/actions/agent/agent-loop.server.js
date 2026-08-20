@@ -21,9 +21,15 @@
 
 import { Type } from "@google/genai";
 import { logger as baseLogger } from "../../observability/logger.server.js";
-import { ACTION_COMMAND, executeActionCommand } from "../action-command.server.js";
+import {
+  ACTION_COMMAND,
+  executeActionCommand,
+} from "../action-command.server.js";
 import { resolveActionState } from "../action-state.server.js";
-import { listActionConstraints, normalizeMatch } from "../action-constraint.server.js";
+import {
+  listActionConstraints,
+  normalizeMatch,
+} from "../action-constraint.server.js";
 import { reachCapability } from "./assist-runner.server.js";
 import {
   TOOL_EFFECT,
@@ -57,21 +63,31 @@ export const ACTION_AGENT_PROMPT_VERSION = "2";
 export const MAX_AGENT_ITERATIONS = 6;
 export const MAX_TOOL_CALLS_PER_TURN = 12;
 
+/** @param {unknown} message */
 function merchantAsksForNextAction(message) {
   const text = String(message ?? "").toLowerCase();
-  return /\bwhat should i do next\b/.test(text) || /\bwhat next\b/.test(text) || /\bnext step\b/.test(text);
+  return (
+    /\bwhat should i do next\b/.test(text) ||
+    /\bwhat next\b/.test(text) ||
+    /\bnext step\b/.test(text)
+  );
 }
 
+/** @param {any} state */
 function suggestNextActionFromState(state) {
   const next = state?.nextUsefulWork ?? null;
   const work = Array.isArray(state?.work) ? state.work : [];
   const artifacts = Array.isArray(state?.artifacts) ? state.artifacts : [];
 
   const supplierCurrent = artifacts.find(
-    (a) => String(a?.artifactType ?? "") === "supplier_email_draft" && a?.current === true,
+    (/** @type {any} */ a) =>
+      String(a?.artifactType ?? "") === "supplier_email_draft" &&
+      a?.current === true,
   );
   const proposalCurrent = artifacts.find(
-    (a) => String(a?.artifactType ?? "") === "replenishment_proposal" && a?.current === true,
+    (/** @type {any} */ a) =>
+      String(a?.artifactType ?? "") === "replenishment_proposal" &&
+      a?.current === true,
   );
 
   if (next?.step?.capabilityRef === "assist:supplier_email_draft") {
@@ -85,7 +101,7 @@ function suggestNextActionFromState(state) {
     return "Next, I can review the low-cover inventory inputs and rebuild the proposal.";
   }
 
-  const needsInput = work.find((row) => row.state === "needs_input");
+  const needsInput = work.find((/** @type {any} */ row) => row.state === "needs_input");
   if (needsInput?.step?.title) {
     return `To continue, I need: ${needsInput.step.title}.`;
   }
@@ -100,9 +116,12 @@ function suggestNextActionFromState(state) {
   return null;
 }
 
+/** @param {unknown} text */
 function isBareSuccessish(text) {
   if (typeof text !== "string") return false;
-  return /^(?:ok(?:ay)?|done|updated|applied|built|changed)\b[.!\s—-]*$/i.test(text.trim());
+  return /^(?:ok(?:ay)?|done|updated|applied|built|changed)\b[.!\s—-]*$/i.test(
+    text.trim(),
+  );
 }
 
 /**
@@ -124,6 +143,8 @@ const TOOL_ARGUMENTS_SCHEMA = {
     minInventory: { type: Type.NUMBER, nullable: true },
     minPrice: { type: Type.NUMBER, nullable: true },
     stepId: { type: Type.STRING, nullable: true },
+    merchantInstruction: { type: Type.STRING, nullable: true },
+    reason: { type: Type.STRING, nullable: true },
   },
 };
 
@@ -148,7 +169,11 @@ export const AGENT_TURN_SCHEMA = {
     finalReply: { type: Type.STRING, nullable: true },
     requiresClarification: { type: Type.BOOLEAN, nullable: true },
     clarificationQuestion: { type: Type.STRING, nullable: true },
-    routing: { type: Type.STRING, enum: ["focused", "general_store"], nullable: true },
+    routing: {
+      type: Type.STRING,
+      enum: ["focused", "general_store"],
+      nullable: true,
+    },
     confidence: { type: Type.NUMBER, nullable: true },
   },
 };
@@ -172,12 +197,17 @@ const SYSTEM_PROMPT = [
   "- 'Use 90 days' persists: update_plan.",
   "- 'What would 60 days look like?', 'what if', 'don't change it yet' simulate: simulate_plan. Never update_plan for a hypothetical.",
   "- A later 'yeah, use that' refers to the value you just simulated: then update_plan.",
+  "- Structural questions are hypothetical too. 'What would adding a Shopify transfer step involve?' asks for an explanation only; call no mutating tool. A later 'yeah, let's do that' adopts the structural change: then call replan_action.",
   "",
   "Negation is a first-class instruction:",
   "- 'but don't draft the email' means you must not call draft_supplier_email in this turn.",
   "- 'don't change it', 'don't touch Shopify yet' mean no persisting tool and no apply.",
   "",
   "Questions and commands together: answer the question in finalReply AND run the requested tools.",
+  "Structural workflow changes: if the merchant says how the action should be carried out changes — Shopify transfers, purchase orders, approval steps, warehouse movement, supplier phone calls instead of email, prerequisites, reordering, replacement, removal, or unnecessary steps — call replan_action with their instruction. Do not ask the merchant for a step title, step type, dependency ID, or capability reference.",
+  "- Corrections are structural changes when they alter the workflow: 'I meant purchase orders sorry', 'actually we raise POs', 'scrap that transfer', 'remove step 4', and 'make that final' should call replan_action.",
+  "- 'Remove step N', 'delete the last/final step', and 'scrap that step' edit the canonical workflow. They are not skip_work.",
+  "- Runtime inputs are not structural changes: location names, quantities to put into an already-existing transfer, supplier email address, or execution parameters should update/run the existing step rather than replan.",
   "",
   "Ambiguity: if a reference genuinely could mean two things, set requiresClarification with one narrow question and call no mutating tools.",
   "",
@@ -199,6 +229,7 @@ const SYSTEM_PROMPT = [
  *   session?: { shop: string } | null;
  *   executeDeps?: any;
  *   provider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
+ *   replanProvider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
  *   recentMessages?: Array<{ role?: string; content?: string }>;
  *   pendingClarification?: any;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
@@ -221,7 +252,10 @@ export async function runFocusedActionAgent(prisma, input) {
     };
   }
 
-  if (!provider?.enabled || typeof provider.generateStructuredJson !== "function") {
+  if (
+    !provider?.enabled ||
+    typeof provider.generateStructuredJson !== "function"
+  ) {
     return {
       ok: false,
       unavailable: true,
@@ -238,7 +272,7 @@ export async function runFocusedActionAgent(prisma, input) {
   const availableTools = toolNamesForKind(kind);
   const catalogue = toolCatalogueForKind(kind);
   const stateBeforeTurn = state;
-  const trace = startAgentTrace({
+  const trace = /** @type {any} */ (startAgentTrace({
     merchantMessageId: input.merchantMessageId ?? null,
     conversationId: input.conversationId ?? null,
     focusedActionId: input.actionId,
@@ -249,12 +283,14 @@ export async function runFocusedActionAgent(prisma, input) {
     promptVersion: ACTION_AGENT_PROMPT_VERSION,
     toolSchemaVersion: TOOL_SCHEMA_VERSION,
     stateBefore: snapshotFacts(state),
-  });
+  }));
 
   /** @type {import("./tool-registry.server.js").ToolResult[]} */
   const ledger = [];
   /** @type {Set<string>} */
   const executedCalls = new Set();
+  /** @type {Map<string, import("./tool-registry.server.js").ToolResult>} */
+  const executedResults = new Map();
   let modelReply = /** @type {string | null} */ (null);
   let clarificationQuestion = /** @type {string | null} */ (null);
   let routing = "focused";
@@ -287,8 +323,22 @@ export async function runFocusedActionAgent(prisma, input) {
         actionId: input.actionId,
         iteration,
         error: error instanceof Error ? error.name : "UnknownError",
+        statusCode:
+          /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {})
+            .status ??
+          /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {})
+            .code ??
+          null,
       });
       trace.plannerError = error instanceof Error ? error.name : "UnknownError";
+      trace.plannerErrorMessage =
+        error instanceof Error ? error.message : String(error);
+      trace.plannerErrorStatus =
+        /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {})
+          .status ??
+        /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {})
+          .code ??
+        null;
       break;
     }
 
@@ -307,7 +357,8 @@ export async function runFocusedActionAgent(prisma, input) {
     }
 
     if (turn.requiresClarification && ledger.length === 0) {
-      clarificationQuestion = turn.clarificationQuestion || "Which did you mean?";
+      clarificationQuestion =
+        turn.clarificationQuestion || "Which did you mean?";
       break;
     }
 
@@ -335,10 +386,13 @@ export async function runFocusedActionAgent(prisma, input) {
     for (const call of calls) {
       const signature = `${call.tool}:${stableJson(call.arguments)}`;
       if (executedCalls.has(signature)) {
+        const previous = executedResults.get(signature);
         ledger.push(
           fail(call.tool, {
             code: "ALREADY_RUN",
-            message: `${call.tool} already ran with those arguments this turn — its result is above.`,
+            message: previous?.ok
+              ? "That request has already been handled in this turn."
+              : "That request already failed earlier in this turn.",
           }),
         );
         continue;
@@ -352,6 +406,7 @@ export async function runFocusedActionAgent(prisma, input) {
       }
 
       const result = await runTool(ctx, call.tool, call.arguments);
+      executedResults.set(signature, result);
       ledger.push(result);
 
       if (result.ok && result.effect !== TOOL_EFFECT.read) {
@@ -366,8 +421,20 @@ export async function runFocusedActionAgent(prisma, input) {
   }
 
   if (routing === "general_store") {
-    recordAgentTrace(prisma, input, { ...trace, routing, outcome: "GENERAL_STORE" }, logger);
-    return { ok: true, routing: "general_store", reply: "", ledger, outcome: TURN_OUTCOME.noAction, trace };
+    recordAgentTrace(
+      prisma,
+      input,
+      { ...trace, routing, outcome: "GENERAL_STORE" },
+      logger,
+    );
+    return {
+      ok: true,
+      routing: "general_store",
+      reply: "",
+      ledger,
+      outcome: TURN_OUTCOME.noAction,
+      trace,
+    };
   }
 
   const outcome = clarificationQuestion
@@ -376,7 +443,10 @@ export async function runFocusedActionAgent(prisma, input) {
 
   const stateAfter = await resolveActionState(prisma, input);
 
-  if (outcome === TURN_OUTCOME.noAction && merchantAsksForNextAction(input.message)) {
+  if (
+    outcome === TURN_OUTCOME.noAction &&
+    merchantAsksForNextAction(input.message)
+  ) {
     // Avoid the generic "tell me what you want me to do" fallback.
     if (!modelReply || isBareSuccessish(modelReply)) {
       const suggestion = suggestNextActionFromState(stateAfter);
@@ -391,7 +461,14 @@ export async function runFocusedActionAgent(prisma, input) {
     clarificationQuestion,
   });
 
-  await recordRevisions(prisma, input, ledger, stateBeforeTurn, stateAfter, logger);
+  await recordRevisions(
+    prisma,
+    input,
+    ledger,
+    stateBeforeTurn,
+    stateAfter,
+    logger,
+  );
 
   trace.stateAfter = snapshotFacts(stateAfter);
   trace.ledger = ledger.map(publicToolResult);
@@ -420,7 +497,8 @@ export async function runFocusedActionAgent(prisma, input) {
   });
 
   return {
-    ok: outcome === TURN_OUTCOME.success ||
+    ok:
+      outcome === TURN_OUTCOME.success ||
       outcome === TURN_OUTCOME.partialSuccess ||
       outcome === TURN_OUTCOME.noAction ||
       outcome === TURN_OUTCOME.needsClarification,
@@ -505,6 +583,9 @@ async function buildToolContext(prisma, input, extra) {
         conversationId: input.conversationId ?? null,
         session: input.session ?? null,
         executeDeps: input.executeDeps,
+        provider: input.provider ?? null,
+        replanProvider: input.replanProvider ?? input.provider ?? null,
+        recentMessages: input.recentMessages ?? [],
         message: input.message,
         logger: extra.logger,
       });
@@ -555,16 +636,24 @@ async function buildToolContext(prisma, input, extra) {
       }
 
       const proposal = buildCurrentProposal(after);
+      const commandFacts =
+        command === ACTION_COMMAND.REPLAN_ACTION
+          ? { replan: executed.result ?? null }
+          : {};
 
       return ok(tool, {
         effect,
         message: executed.reply ?? "",
-        facts: { ...afterFacts, proposal: proposal.lines },
+        facts: { ...afterFacts, proposal: proposal.lines, ...commandFacts },
         changes,
         artifact:
           effect === TOOL_EFFECT.stateChange
             ? null
-            : { type: proposal.type, title: proposal.title, lines: proposal.lines },
+            : {
+                type: proposal.type,
+                title: proposal.title,
+                lines: proposal.lines,
+              },
       });
     },
 
@@ -594,12 +683,20 @@ async function buildToolContext(prisma, input, extra) {
       const wanted = normalizeMatch(hint ?? "");
       if (!wanted) return { title: null, ambiguous: false };
       const pool = [
-        ...(ctx.state?.scope?.items ?? []).map((/** @type {any} */ item) => item.title),
-        ...(ctx.state?.scope?.excluded ?? []).map((/** @type {any} */ item) => item.title),
+        ...(ctx.state?.scope?.items ?? []).map(
+          (/** @type {any} */ item) => item.title,
+        ),
+        ...(ctx.state?.scope?.excluded ?? []).map(
+          (/** @type {any} */ item) => item.title,
+        ),
       ]
         .map((title) => String(title ?? "").trim())
         .filter(Boolean);
-      const unique = [...new Map(pool.map((title) => [normalizeMatch(title), title])).values()];
+      const unique = [
+        ...new Map(
+          pool.map((title) => [normalizeMatch(title), title]),
+        ).values(),
+      ];
       const exact = unique.filter((title) => normalizeMatch(title) === wanted);
       if (exact.length === 1) return { title: exact[0], ambiguous: false };
       const partial = unique.filter((title) => {
@@ -611,7 +708,10 @@ async function buildToolContext(prisma, input, extra) {
         return {
           title: null,
           ambiguous: true,
-          question: `Did you mean ${partial.slice(0, 3).map((title) => `"${title}"`).join(" or ")}?`,
+          question: `Did you mean ${partial
+            .slice(0, 3)
+            .map((title) => `"${title}"`)
+            .join(" or ")}?`,
           candidates: partial.slice(0, 4).map((title) => ({ label: title })),
         };
       }
@@ -624,7 +724,11 @@ async function buildToolContext(prisma, input, extra) {
       return (
         ctx.constraints.find((/** @type {any} */ row) => {
           const target = normalizeMatch(row.params?.title ?? row.label ?? "");
-          return target === wanted || target.includes(wanted) || wanted.includes(target);
+          return (
+            target === wanted ||
+            target.includes(wanted) ||
+            wanted.includes(target)
+          );
         }) ?? null
       );
     },
@@ -664,21 +768,39 @@ async function safeListConstraints(prisma, input) {
  * @param {any} stateAfter
  * @param {any} logger
  */
-async function recordRevisions(prisma, input, ledger, stateBefore, stateAfter, logger) {
-  const changes = ledger.filter((row) => row.ok).flatMap((row) => row.changes ?? []);
+async function recordRevisions(
+  prisma,
+  input,
+  ledger,
+  /** @type {any} */ stateBefore,
+  stateAfter,
+  logger,
+) {
+  const changes = ledger
+    .filter((row) => row.ok)
+    .flatMap((row) => row.changes ?? []);
   if (changes.length === 0) return;
-  if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.update) return;
+  if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.update)
+    return;
   try {
     const row = await prisma.merchantAction.findFirst({
-      where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+      where: {
+        id: input.actionId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
       select: { id: true, progress: true },
     });
     if (!row) return;
     const progress =
-      row.progress && typeof row.progress === "object" && !Array.isArray(row.progress)
+      row.progress &&
+      typeof row.progress === "object" &&
+      !Array.isArray(row.progress)
         ? row.progress
         : {};
-    const revisions = Array.isArray(progress.revisions) ? progress.revisions : [];
+    const revisions = Array.isArray(progress.revisions)
+      ? progress.revisions
+      : [];
     revisions.push({
       at: new Date().toISOString(),
       changes,
@@ -701,14 +823,22 @@ async function recordRevisions(prisma, input, ledger, stateBefore, stateAfter, l
 async function loadActionHistory(prisma, input) {
   try {
     const row = await prisma.merchantAction.findFirst({
-      where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+      where: {
+        id: input.actionId,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+      },
       select: { progress: true },
     });
     const progress =
-      row?.progress && typeof row.progress === "object" && !Array.isArray(row.progress)
+      row?.progress &&
+      typeof row.progress === "object" &&
+      !Array.isArray(row.progress)
         ? row.progress
         : {};
-    const revisions = Array.isArray(progress.revisions) ? progress.revisions : [];
+    const revisions = Array.isArray(progress.revisions)
+      ? progress.revisions
+      : [];
     return revisions.map((/** @type {any} */ revision) => ({
       at: revision.at,
       changes: revision.changes,
@@ -725,8 +855,10 @@ async function loadActionHistory(prisma, input) {
 function summarizeRevision(revision) {
   const resulting = revision?.resulting ?? {};
   const bits = [];
-  if (resulting.coverDays != null) bits.push(`${resulting.coverDays}-day cover`);
-  if (resulting.markdownPercent != null) bits.push(`${resulting.markdownPercent}% markdown`);
+  if (resulting.coverDays != null)
+    bits.push(`${resulting.coverDays}-day cover`);
+  if (resulting.markdownPercent != null)
+    bits.push(`${resulting.markdownPercent}% markdown`);
   if (Array.isArray(resulting.included) && resulting.included.length) {
     bits.push(resulting.included.join(" + "));
   }
@@ -777,7 +909,8 @@ function publicToolResult(result) {
 export function parseAgentTurn(raw, availableTools) {
   const empty = {
     intent: null,
-    toolCalls: /** @type {Array<{ tool: string; arguments: Record<string, any> }>} */ ([]),
+    toolCalls:
+      /** @type {Array<{ tool: string; arguments: Record<string, any> }>} */ ([]),
     rejectedTools: /** @type {string[]} */ ([]),
     done: true,
     finalReply: null,
@@ -802,7 +935,9 @@ export function parseAgentTurn(raw, availableTools) {
     toolCalls.push({
       tool,
       arguments:
-        row?.arguments && typeof row.arguments === "object" && !Array.isArray(row.arguments)
+        row?.arguments &&
+        typeof row.arguments === "object" &&
+        !Array.isArray(row.arguments)
           ? stripNulls(row.arguments)
           : {},
     });
@@ -813,14 +948,20 @@ export function parseAgentTurn(raw, availableTools) {
     toolCalls,
     rejectedTools,
     done: raw.done === true,
-    finalReply: typeof raw.finalReply === "string" && raw.finalReply.trim() ? raw.finalReply.trim() : null,
+    finalReply:
+      typeof raw.finalReply === "string" && raw.finalReply.trim()
+        ? raw.finalReply.trim()
+        : null,
     requiresClarification: raw.requiresClarification === true,
     clarificationQuestion:
-      typeof raw.clarificationQuestion === "string" && raw.clarificationQuestion.trim()
+      typeof raw.clarificationQuestion === "string" &&
+      raw.clarificationQuestion.trim()
         ? raw.clarificationQuestion.trim()
         : null,
     routing: raw.routing === "general_store" ? "general_store" : "focused",
-    confidence: Number.isFinite(Number(raw.confidence)) ? Number(raw.confidence) : 0.5,
+    confidence: Number.isFinite(Number(raw.confidence))
+      ? Number(raw.confidence)
+      : 0.5,
   };
 }
 

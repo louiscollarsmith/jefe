@@ -77,6 +77,12 @@ const MERCHANT_ACTION_CAPABILITIES = [
     description: "The merchant completes an external supplier step that Jefe cannot execute yet.",
   },
   {
+    ref: "merchant_action:external_purchase_order",
+    mode: WORKFLOW_STEP_MODES.merchantAction,
+    label: "Merchant creates purchase order",
+    description: "The merchant creates or raises a purchase order outside Jefe.",
+  },
+  {
     ref: "merchant_action:manual_inventory_update",
     mode: WORKFLOW_STEP_MODES.merchantAction,
     label: "Merchant updates inventory manually",
