@@ -3,7 +3,10 @@
 import { Type } from "@google/genai";
 import { numericTextIsGrounded } from "../llm/numeric-grounding.server.js";
 import { PLAN_CONFIDENCE } from "./constants.server.js";
-import { resolveWorkflowStepCapability } from "./step-capabilities.server.js";
+import {
+  hasJefeExecutableWriteStep,
+  resolveWorkflowStepCapability,
+} from "./step-capabilities.server.js";
 
 export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
   type: Type.OBJECT,
@@ -15,6 +18,7 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         type: Type.OBJECT,
         required: [
           "id",
+          "opportunityId",
           "action",
           "goalAlignment",
           "whyRelevant",
@@ -25,6 +29,7 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
         ],
         properties: {
           id: { type: Type.STRING },
+          opportunityId: { type: Type.STRING },
           action: { type: Type.STRING },
           goalAlignment: { type: Type.STRING },
           whyRelevant: { type: Type.STRING },
@@ -51,6 +56,7 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
       type: Type.OBJECT,
       required: [
         "candidateId",
+        "opportunityId",
         "title",
         "summary",
         "primaryGoalId",
@@ -67,6 +73,7 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
       ],
       properties: {
         candidateId: { type: Type.STRING },
+        opportunityId: { type: Type.STRING },
         title: { type: Type.STRING },
         summary: { type: Type.STRING },
         primaryGoalId: { type: Type.STRING },
@@ -134,15 +141,21 @@ export const MERCHANT_PLAN_OUTPUT_SCHEMA = {
 
 /**
  * @param {unknown} raw
- * @param {{ allowedBeliefIds: Set<string>; allowedInsightIds: Set<string>; allowedGoalIds: Set<string>; suppliedBeliefs?: any[]; suppliedInsights?: any[]; suppliedGoals?: any[]; previousRecommendations?: any[] }} context
+ * @param {{ allowedBeliefIds: Set<string>; allowedInsightIds: Set<string>; allowedGoalIds: Set<string>; allowedOpportunityIds?: Set<string>; suppliedBeliefs?: any[]; suppliedInsights?: any[]; suppliedGoals?: any[]; previousRecommendations?: any[] }} context
  */
 export function parseAndValidateMerchantPlanOutput(raw, context) {
   const parsed = typeof raw === "string" ? parseJson(raw) : raw;
   const object = asRecord(parsed);
   if (!object) return invalid("Model output must be a JSON object.");
   if (!Array.isArray(object.candidates)) return invalid("Model output must include candidates.");
-  if (object.candidates.length < 3 || object.candidates.length > 5) {
-    return invalid("Plan generation must include three to five internal candidates.");
+  const minimumCandidates = Math.min(
+    3,
+    Math.max(1, context.allowedOpportunityIds?.size ?? 3),
+  );
+  if (object.candidates.length < minimumCandidates || object.candidates.length > 5) {
+    return invalid(
+      `Plan generation must include ${minimumCandidates} to five supplied opportunity candidates.`,
+    );
   }
 
   const candidates = [];
@@ -163,6 +176,15 @@ export function parseAndValidateMerchantPlanOutput(raw, context) {
   if (!recommendation.ok) return recommendation;
   if (!candidateIds.has(recommendation.recommendation.candidateId)) {
     return invalid("Selected recommendation must reference one supplied candidate.");
+  }
+  const selectedCandidate = candidates.find(
+    (candidate) => candidate.id === recommendation.recommendation.candidateId,
+  );
+  if (
+    selectedCandidate &&
+    recommendation.recommendation.opportunityId !== selectedCandidate.opportunityId
+  ) {
+    return invalid("Selected recommendation must use the selected candidate's opportunity.");
   }
   if (looksGeneric(recommendation.recommendation)) {
     return invalid("Recommendation is too generic.");
@@ -189,6 +211,7 @@ function normalizeCandidate(value, context) {
   if (!item) return invalid("Every candidate must be an object.");
   const candidate = {
     id: cleanText(item.id, 50),
+    opportunityId: cleanText(item.opportunityId, 120),
     action: cleanText(item.action, 180),
     goalAlignment: cleanText(item.goalAlignment, 220),
     whyRelevant: cleanText(item.whyRelevant, 260),
@@ -199,8 +222,14 @@ function normalizeCandidate(value, context) {
     assumption: cleanText(item.assumption, 180, true),
     respectedConstraints: uniqueStrings(item.respectedConstraints).slice(0, 5),
   };
-  if (!candidate.id || !candidate.action || !candidate.goalAlignment || !candidate.whyRelevant) {
-    return invalid("Every candidate needs an id, action, goal alignment and relevance.");
+  if (!candidate.id || !candidate.opportunityId || !candidate.action || !candidate.goalAlignment || !candidate.whyRelevant) {
+    return invalid("Every candidate needs an id, opportunity id, action, goal alignment and relevance.");
+  }
+  if (
+    context.allowedOpportunityIds instanceof Set &&
+    !context.allowedOpportunityIds.has(candidate.opportunityId)
+  ) {
+    return invalid("Candidate referenced an opportunity that was not supplied to the model.");
   }
   if (!candidate.expectedEffort || !candidate.timeToUsefulSignal) {
     return invalid("Every candidate needs effort and time to useful signal.");
@@ -224,6 +253,7 @@ function normalizeRecommendation(value, context) {
   const successSignal = normalizeSuccessSignal(item.successSignal);
   const recommendation = {
     candidateId: cleanText(item.candidateId, 50),
+    opportunityId: cleanText(item.opportunityId, 120),
     title: cleanText(item.title, 90),
     summary: cleanText(item.summary, 320),
     primaryGoalId: cleanText(item.primaryGoalId, 80),
@@ -242,6 +272,7 @@ function normalizeRecommendation(value, context) {
   };
   for (const field of [
     "candidateId",
+    "opportunityId",
     "title",
     "summary",
     "primaryGoalId",
@@ -251,6 +282,12 @@ function normalizeRecommendation(value, context) {
     "expectedBenefit",
   ]) {
     if (!recommendation[field]) return invalid(`Recommendation needs ${field}.`);
+  }
+  if (
+    context.allowedOpportunityIds instanceof Set &&
+    !context.allowedOpportunityIds.has(recommendation.opportunityId)
+  ) {
+    return invalid("Recommendation referenced an opportunity that was not supplied to the model.");
   }
   if (!context.allowedGoalIds.has(recommendation.primaryGoalId)) {
     return invalid("Recommendation cited a goal that was not supplied to the model.");
@@ -265,6 +302,15 @@ function normalizeRecommendation(value, context) {
   if (recommendation.supportingBeliefIds.length === 0) {
     return invalid("Recommendation must cite at least one belief.");
   }
+  if (!hasJefeExecutableWriteStep(recommendation.workflow.steps)) {
+    return invalid(
+      "Recommendation must include at least one valid Jefe-owned Shopify execute capability.",
+    );
+  }
+  const workflowInvariant = validateWorkflowExecutionInvariants(
+    recommendation.workflow.steps,
+  );
+  if (!workflowInvariant.ok) return invalid(workflowInvariant.reason);
   for (const beliefId of recommendation.supportingBeliefIds) {
     if (!context.allowedBeliefIds.has(beliefId)) {
       return invalid("Recommendation cited a belief that was not supplied to the model.");
@@ -279,6 +325,73 @@ function normalizeRecommendation(value, context) {
     return invalid("Recommendation used an unsupported confidence label.");
   }
   return { ok: true, recommendation };
+}
+
+function validateWorkflowExecutionInvariants(steps) {
+  if (hasDependencyCycle(steps)) {
+    return { ok: false, reason: "Recommendation workflow cannot contain dependency cycles." };
+  }
+  const hasInventoryTransfer = steps.some(isInventoryTransferExecuteStep);
+  if (!hasInventoryTransfer) return { ok: true };
+  const purchaseOrderStep = steps.find(
+    (step) => step.capabilityRef === "merchant_action:external_purchase_order",
+  );
+  if (purchaseOrderStep) {
+    return {
+      ok: false,
+      reason:
+        "Merchant approval is not merchant work; inventory-transfer recommendations must not add a merchant purchase-order prerequisite.",
+    };
+  }
+  const approvalAsMerchantWork = steps.find(
+    (step) =>
+      step.mode === "merchant_action" &&
+      /\b(approve|approval|confirm|permission)\b/i.test(
+        `${step.title ?? ""} ${step.description ?? ""}`,
+      ),
+  );
+  if (approvalAsMerchantWork) {
+    return {
+      ok: false,
+      reason:
+        "Merchant approval must remain attached to the Jefe-owned execute step, not become a merchant_action step.",
+    };
+  }
+  return { ok: true };
+}
+
+function isInventoryTransferExecuteStep(step) {
+  return (
+    step?.mode === "execute" &&
+    step?.capabilityRef === "execute:shopify_inventory_transfer:restock"
+  );
+}
+
+function hasDependencyCycle(steps) {
+  const byId = new Map(
+    (Array.isArray(steps) ? steps : [])
+      .filter((step) => step?.id)
+      .map((step) => [String(step.id), step]),
+  );
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (id) => {
+    if (visiting.has(id)) return true;
+    if (visited.has(id)) return false;
+    visiting.add(id);
+    const step = byId.get(id);
+    const deps = Array.isArray(step?.dependsOnStepIds)
+      ? step.dependsOnStepIds
+      : [];
+    for (const dep of deps) {
+      const depId = String(dep);
+      if (byId.has(depId) && visit(depId)) return true;
+    }
+    visiting.delete(id);
+    visited.add(id);
+    return false;
+  };
+  return [...byId.keys()].some((id) => visit(id));
 }
 
 function normalizeWorkflowSteps(workflow) {

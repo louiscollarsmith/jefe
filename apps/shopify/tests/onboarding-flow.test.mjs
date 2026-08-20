@@ -3,6 +3,8 @@ import fs from "node:fs";
 import test from "node:test";
 
 import { ONBOARDING_STEPS } from "../app/lib/onboarding/steps.js";
+import { classifyFailure } from "../app/lib/onboarding/fast-onboarding.server.js";
+import { PLAN_RUN_STATUS } from "../app/lib/merchant-plan/constants.js";
 
 const appIndexSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
@@ -109,6 +111,16 @@ test("Context wait state explains generation is still happening", () => {
   assert.match(fastOnboardingSource, /this page will move on by itself/);
   assert.match(fastOnboardingSource, /Trying again to find your first recommendation/);
   assert.doesNotMatch(fastOnboardingSource, /Let me finish the last check/);
+});
+
+test("Context wait state stops when grounded Plan generation has insufficient data", () => {
+  const failure = classifyFailure(null, null, {
+    contextAnswered: true,
+    hasSurfaceableRecommendation: false,
+    latestPlanRun: { status: PLAN_RUN_STATUS.insufficientData },
+  });
+  assert.equal(failure.type, "insufficient");
+  assert.match(failure.message, /grounded Shopify action/);
 });
 
 test("onboarding insight copy avoids developer phrasing", () => {

@@ -5,25 +5,43 @@
 // the flag defaults off until inventory-transfer execution is explicitly launched.
 
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 import {
   executeInventoryTransfer,
   isInventoryTransferExecuteEnabled,
 } from "./inventory-transfer-adapter.server.js";
+import { createInventoryTransferShopifyClient } from "./inventory-transfer-shopify-client.server.js";
 import { updateMerchantActionForExecution } from "./merchant-action.server.js";
 
 const log = baseLogger.child({ component: "inventory-transfer-execution" });
 
 /**
+ * Load the merchant's offline Shopify token for a shop — same pattern as the other wires.
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {string} shop
+ */
+async function loadOfflineToken(prisma, shop) {
+  const session = await prisma.session.findFirst({
+    where: { shop, isOnline: false },
+    orderBy: { expires: "desc" },
+  });
+  if (!session?.accessToken) {
+    throw new Error(`No offline Shopify session token for shop ${shop}`);
+  }
+  return session.accessToken;
+}
+
+/**
  * Record approval + (only when execution is enabled) run the transfer write.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ shop: string }} _session
+ * @param {{ shop: string }} session
  * @param {{ merchantId: string; actionRunId: string; mode: "approve" | "auto" }} input
- * @param {{ shopifyClient?: { createInventoryTransfer: (input: any) => Promise<any> } }} [deps]
+ * @param {{ shopifyClient?: { createInventoryTransfer: (input: any) => Promise<any> }; createGqlClient?: (opts: any) => { request: (q: string, v?: any) => Promise<any> }; loadOfflineToken?: (prisma: any, shop: string) => Promise<string> }} [deps]
  */
 export async function wireInventoryTransferExecution(
   prisma,
-  _session,
+  session,
   input,
   deps = {},
 ) {
@@ -95,17 +113,29 @@ export async function wireInventoryTransferExecution(
     return { ok: true, executed: false, reason: "execution_disabled", status: "approved" };
   }
 
-  if (!deps.shopifyClient) {
-    return { ok: false, executed: false, reason: "missing_shopify_client", status: "approved" };
+  let shopifyClient = deps.shopifyClient;
+  if (!shopifyClient) {
+    const loadToken = deps.loadOfflineToken ?? loadOfflineToken;
+    const accessToken = await loadToken(prisma, session.shop);
+    const createGqlClient =
+      deps.createGqlClient ?? ((opts) => new ShopifyAdminGraphqlClient(opts));
+    const gqlClient = createGqlClient({
+      shopDomain: session.shop,
+      accessToken,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+      logger: log,
+    });
+    shopifyClient = createInventoryTransferShopifyClient(gqlClient);
   }
 
   const result = await executeInventoryTransfer(prisma, {
     actionId: row.merchantActionId ?? row.runId,
+    executionId: row.id,
     merchantId: row.merchantId,
     shopId: row.shopId,
     idempotencyKey: `${row.runId}:inventory_transfer`,
     preview,
-    shopifyClient: deps.shopifyClient,
+    shopifyClient,
     actor: approvedBy,
     logger: log,
   });

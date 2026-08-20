@@ -1,10 +1,10 @@
 // @ts-check
 
 export const MERCHANT_PLAN_JOB_TYPE = "merchant_plan_generate";
-export const MERCHANT_PLAN_PROMPT_VERSION = "merchant-plan-v3-context";
-export const MERCHANT_PLAN_SCHEMA_VERSION = "merchant-plan-schema-v1";
+export const MERCHANT_PLAN_PROMPT_VERSION = "merchant-plan-v4-actionable";
+export const MERCHANT_PLAN_SCHEMA_VERSION = "merchant-plan-schema-v2-actionable";
 export const MERCHANT_PLAN_SNAPSHOT_VERSION =
-  "merchant-plan-snapshot-v2-context";
+  "merchant-plan-snapshot-v3-opportunities";
 
 export const PLAN_RUN_STATUS = {
   queued: "queued",

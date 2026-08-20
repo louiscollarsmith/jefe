@@ -1,3 +1,4 @@
+/* global process */
 /**
  * Regression tests for canonical action-state propagation.
  *
@@ -285,17 +286,22 @@ test("executeInventoryTransfer deduplicates on second call with same idempotency
     let calls = 0;
     const fakePrisma = {
       actionExecutionWrite: {
-        findFirst: async ({ where }) => {
-          if (where.idempotencyKey === "idem-key-1" && where.status === "applied") {
-            return { idempotencyKey: "idem-key-1", status: "applied", externalId: "t-shopify-1", result: {} };
-          }
-          return null;
+        upsert: async ({ where }) => {
+          assert.equal(
+            where.executionId_targetRef_targetValueKey.targetValueKey,
+            "idempotency:idem-key-1",
+          );
+          return {
+            id: "write-1",
+            status: "applied",
+            targetValue: { shopifyTransferId: "t-shopify-1" },
+          };
         },
-        create: async () => { calls++; return {}; },
       },
     };
     const result = await executeInventoryTransfer(fakePrisma, {
       actionId: "a1",
+      executionId: "execution-1",
       merchantId: "m1",
       shopId: "s1",
       idempotencyKey: "idem-key-1",
@@ -362,7 +368,6 @@ test("ADD_PLAN_STEP returns error when title is missing", async () => {
 
 /** Build a minimal prisma mock for action-state projection tests. */
 function buildPrismaForStateTest() {
-  const planVersion = "hash-90";  // current plan is now 90 days
   const stepsInDb = [
     {
       id: "db-uuid-step-1",

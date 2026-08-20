@@ -11,7 +11,10 @@ import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.
 import { recordEvidence } from "../merchant-memory/service.server.js";
 import { enqueueBackfillJob } from "../../services/shopify-backfill-status.server.js";
 import { completePlanOnboarding } from "../../services/onboarding.server.js";
-import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
+import {
+  inspectActionIntentOpportunity,
+  proposeActionFromIntent,
+} from "../actions/action-resolution.server.js";
 import { isActionExecuteEnabled } from "../actions/action-intent.server.js";
 import {
   ensureMerchantActionForRecommendation,
@@ -34,6 +37,7 @@ import {
   MERCHANT_PLAN_OUTPUT_SCHEMA,
   parseAndValidateMerchantPlanOutput,
 } from "./schema.server.js";
+import { actionIntentFromExecutableCapabilityRef } from "./step-capabilities.server.js";
 import {
   buildMerchantPlanPrompt,
   buildMerchantPlanSystemPrompt,
@@ -226,17 +230,20 @@ export async function generateMerchantPlan(prisma, input) {
     });
     return { status: "deferred_initial_proposal_exists", runId: run.id };
   }
-  if (!snapshot.hasGoals || snapshot.candidateCount < MIN_PLAN_BELIEFS) {
+  if (!snapshot.hasGoals || snapshot.candidateCount < MIN_PLAN_BELIEFS || snapshot.opportunityCount < 1) {
     await prisma.merchantPlanRun.update({
       where: { id: run.id },
       data: {
         status: PLAN_RUN_STATUS.insufficientData,
         completedAt: new Date(),
         result: {
-          reason: snapshot.hasGoals
-            ? "insufficient_supported_beliefs"
-            : "missing_completed_goals",
+          reason: !snapshot.hasGoals
+            ? "missing_completed_goals"
+            : snapshot.opportunityCount < 1
+              ? "no_grounded_executable_opportunity"
+              : "insufficient_supported_beliefs",
           candidateCount: snapshot.candidateCount,
+          opportunityCount: snapshot.opportunityCount,
         },
       },
     });
@@ -286,8 +293,19 @@ export async function generateMerchantPlan(prisma, input) {
     const { llmResult, parsed } = await generateValidatedPlan(provider, {
       snapshot,
       logger,
+      validateParsed: (candidate) =>
+        validatePlanRecommendationActionability(prisma, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          recommendation: candidate.recommendation,
+          opportunityCandidates: snapshot.snapshot.opportunityCandidates ?? [],
+        }),
     });
     const recommendation = parsed.recommendation;
+    const selectedOpportunity = findOpportunityById(
+      snapshot.snapshot.opportunityCandidates ?? [],
+      recommendation.opportunityId,
+    );
 
     const persistResult = await persistProposedRecommendationIfAllowed(
       prisma,
@@ -345,6 +363,7 @@ export async function generateMerchantPlan(prisma, input) {
         await ensureMerchantActionForRecommendation(tx, {
           recommendation: {
             ...persistedRecommendation,
+            selectedOpportunity,
             workflows: [
               {
                 ...persistedWorkflow,
@@ -380,8 +399,11 @@ export async function generateMerchantPlan(prisma, input) {
             lastError: null,
             result: {
               selectedCandidateId: recommendation.candidateId,
+              selectedOpportunityId: recommendation.opportunityId,
+              selectedOpportunity,
               candidateSummaries: parsed.candidates.map((candidate) => ({
                 id: candidate.id,
+                opportunityId: candidate.opportunityId,
                 action: candidate.action,
                 expectedEffort: candidate.expectedEffort,
                 timeToUsefulSignal: candidate.timeToUsefulSignal,
@@ -438,6 +460,10 @@ export async function generateMerchantPlan(prisma, input) {
   }
 }
 
+function findOpportunityById(opportunities, id) {
+  return (opportunities ?? []).find((item) => item.id === id) ?? null;
+}
+
 /**
  * Hand an accepted workflow step's action-intent to the typed action lane. The intent is
  * advisory (the LLM picked the verb); proposeActionFromIntent re-resolves it against
@@ -484,6 +510,9 @@ async function generateValidatedPlan(provider, input) {
   const allowedBeliefIds = new Set(input.snapshot.beliefIds);
   const allowedInsightIds = new Set(input.snapshot.insightIds);
   const allowedGoalIds = new Set(input.snapshot.goalIds);
+  const allowedOpportunityIds = new Set(
+    (input.snapshot.snapshot.opportunityCandidates ?? []).map((item) => item.id),
+  );
   let validationError = null;
   let lastResult = null;
 
@@ -503,14 +532,28 @@ async function generateValidatedPlan(provider, input) {
       allowedBeliefIds,
       allowedInsightIds,
       allowedGoalIds,
+      allowedOpportunityIds,
       suppliedBeliefs: input.snapshot.snapshot.beliefs,
       suppliedInsights: input.snapshot.snapshot.insights,
       suppliedGoals: input.snapshot.snapshot.goals,
       previousRecommendations: input.snapshot.snapshot.previousRecommendations,
     });
-    if (parsed.ok) return { llmResult, parsed };
+    if (parsed.ok) {
+      const actionability =
+        typeof input.validateParsed === "function"
+          ? await input.validateParsed(parsed)
+          : { ok: true };
+      if (actionability.ok) return { llmResult, parsed };
+      validationError = actionability.error;
+      if (attempt < 3) {
+        input.logger.warn("Merchant Plan output failed actionability; retrying", {
+          error: actionability.error,
+        });
+      }
+      continue;
+    }
     validationError = parsed.error;
-    if (attempt < 2) {
+    if (attempt < 3) {
       input.logger.warn("Merchant Plan output failed validation; retrying", {
         error: parsed.error,
       });
@@ -521,6 +564,85 @@ async function generateValidatedPlan(provider, input) {
     validationError ??
       `Plan generation failed validation after ${lastResult ? "model output" : "request"}.`,
   );
+}
+
+async function validatePlanRecommendationActionability(prisma, input) {
+  const steps = input.recommendation?.workflow?.steps ?? [];
+  const opportunity = (input.opportunityCandidates ?? []).find(
+    (item) => item.id === input.recommendation?.opportunityId,
+  );
+  if (!opportunity) {
+    return {
+      ok: false,
+      error: "Selected recommendation does not map to a supplied opportunity.",
+    };
+  }
+  const grounding = validateOpportunityGrounding(opportunity);
+  if (!grounding.ok) return grounding;
+  const opportunityCapabilityRefs = new Set(
+    (opportunity.potentialCapabilities ?? [])
+      .map((capability) => capability?.ref)
+      .filter(Boolean),
+  );
+  const executeSteps = steps.filter((step) => step?.mode === "execute");
+  const failures = [];
+  for (const step of executeSteps) {
+    if (!opportunityCapabilityRefs.has(step.capabilityRef)) {
+      failures.push(`${step.capabilityRef ?? "missing"}:not_bound_to_selected_opportunity`);
+      continue;
+    }
+    const intent = actionIntentFromExecutableCapabilityRef(step.capabilityRef);
+    if (!intent) {
+      failures.push(`${step.capabilityRef ?? "missing"}:invalid_capability`);
+      continue;
+    }
+    if (!isActionExecuteEnabled(intent.actionType)) {
+      failures.push(`${step.capabilityRef}:write_disabled`);
+      continue;
+    }
+    const result = await inspectActionIntentOpportunity(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      intent,
+      sourceRecommendation: input.recommendation,
+    });
+    if (result.status === "ready") return { ok: true };
+    failures.push(
+      `${step.capabilityRef}:${result.status}${result.reason ? `:${result.reason}` : ""}`,
+    );
+  }
+  return {
+    ok: false,
+    error: `Selected recommendation has no reachable Shopify write opportunity (${failures.join(", ") || "no execute step"}).`,
+  };
+}
+
+function validateOpportunityGrounding(opportunity) {
+  if (!Array.isArray(opportunity.evidence) || opportunity.evidence.length < 1) {
+    return { ok: false, error: "Selected opportunity has no grounding evidence." };
+  }
+  if (
+    !Array.isArray(opportunity.affectedEntities) ||
+    opportunity.affectedEntities.length < 1
+  ) {
+    return { ok: false, error: "Selected opportunity has no concrete affected scope." };
+  }
+  if (
+    !opportunity.initialProposal ||
+    typeof opportunity.initialProposal !== "object" ||
+    Array.isArray(opportunity.initialProposal)
+  ) {
+    return { ok: false, error: "Selected opportunity has no initial proposal state." };
+  }
+  if (
+    !Array.isArray(opportunity.potentialCapabilities) ||
+    !opportunity.potentialCapabilities.some(
+      (capability) => capability?.write === true && capability?.writeEnabled === true,
+    )
+  ) {
+    return { ok: false, error: "Selected opportunity has no enabled Jefe Shopify write capability." };
+  }
+  return { ok: true };
 }
 
 /**
@@ -817,6 +939,7 @@ function recommendationInclude() {
   return {
     recommendation: {
       include: {
+        run: { select: { result: true } },
         workflows: {
           orderBy: { version: "desc" },
           take: 1,
@@ -839,6 +962,10 @@ function serializeRecommendation(recommendation) {
     whyNow: recommendation.whyNow,
     startToday: recommendation.startToday,
     workflow,
+    selectedOpportunity:
+      recommendation.selectedOpportunity ??
+      recommendation.run?.result?.selectedOpportunity ??
+      null,
     successSignal:
       recommendation.successSignal &&
       typeof recommendation.successSignal === "object" &&
@@ -954,12 +1081,7 @@ async function emitExecutableWorkflowSteps(tx, { merchantId, shopId, recommendat
 }
 
 function actionIntentFromCapabilityRef(ref) {
-  const parts = String(ref ?? "").split(":");
-  if (parts.length !== 3 || parts[0] !== "execute") return null;
-  return {
-    actionType: parts[1],
-    targetKind: parts[2],
-  };
+  return actionIntentFromExecutableCapabilityRef(ref);
 }
 
 function planGenerationFailure(error) {

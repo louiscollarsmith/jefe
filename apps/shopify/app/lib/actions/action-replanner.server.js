@@ -26,14 +26,21 @@ import { resolveActionState } from "./action-state.server.js";
 const log = baseLogger.child({ component: "action-replanner" });
 
 export const ACTION_REPLANNER_VERSION = "1";
+export const ACTION_REPLANNER_PROMPT_VERSION = "action_replanner:v3";
 const ACTION_REPLANNER_TIMEOUT_MS = 15_000;
 
 const REPLAN_SCHEMA = {
   type: Type.OBJECT,
-  required: ["plan"],
   properties: {
+    status: {
+      type: Type.STRING,
+      enum: ["REPLANNED", "UNPROGRESSABLE"],
+      nullable: true,
+    },
+    reason: { type: Type.STRING, nullable: true },
     plan: {
       type: Type.OBJECT,
+      nullable: true,
       required: ["goal", "steps"],
       properties: {
         goal: { type: Type.STRING },
@@ -61,19 +68,24 @@ const REPLAN_SCHEMA = {
   },
 };
 
-const SYSTEM_PROMPT = [
-  "You are Jefe's bounded action replanner.",
+export const ACTION_REPLANNER_SYSTEM_PROMPT = [
+  "You are replanning an existing Shopify Action.",
   "Return schema-constrained JSON only.",
   "",
   "Your job:",
-  "- Given the current action, current canonical plan, current workflow, and a merchant instruction, produce the complete revised workflow plan.",
+  "- Given the current action, current canonical plan, current workflow, and a merchant instruction, produce the complete desired semantic workflow after applying that information.",
+  "- Do not emit database operations such as ADD_STEP, REMOVE_STEP, MOVE_STEP or UPDATE_STEP.",
   "- The merchant instruction is semantic context. Generate every step title, mode, capabilityRef, semanticKey and dependency yourself.",
   "- Preserve existing merchant decisions in currentPlanValues. Do not reset coverDays, markdownPercent, scope, or quantities to defaults.",
   "- Preserve semantically equivalent existing steps unless the merchant changes or removes them.",
   "- Add, remove, or replace steps when the instruction changes how the work should be carried out.",
-  "- Only use capabilityRef values that appear in availableCapabilities. If no executable/assist capability fits, leave capabilityRef null and use mode merchant_action.",
-  "- Purchase orders are not Shopify transfers. If no purchase-order execution capability is listed, model purchase orders as merchant_action or a listed merchant_action capability.",
+  "- Only use capabilityRef values that appear in availableCapabilities.",
+  "- Do not invent capabilities or remember capabilities from another action.",
+  "- Do not convert an unsupported Jefe operation into a merchant-owned task.",
+  "- Purchase orders are not Shopify transfers. Use a purchase-order capability only if it appears in availableCapabilities.",
+  "- If the requested workflow cannot satisfy the MVP requirement of at least one reachable Jefe Shopify execution, return status UNPROGRESSABLE with a short reason instead of plan.",
   "- Missing execution inputs do not block planning. Add the step if we know WHAT should happen; runtime can ask for exact inputs later.",
+  "- If the workflow is progressable, return status REPLANNED and the complete plan.",
   "",
   "Ordering rules:",
   "- Return plan.steps in the exact user-visible workflow order.",
@@ -83,7 +95,8 @@ const SYSTEM_PROMPT = [
   "",
   "Correction and removal rules:",
   "- Use recentConversation to resolve references such as that, this, last one, I meant, actually, undo that, scrap it, remove step 4.",
-  "- A correction like 'I meant purchase orders sorry' normally replaces the recently discussed transfer workflow with a purchase-order workflow.",
+  "- A correction like 'I meant purchase orders sorry' replaces the transfer only when a purchase-order execution capability appears in availableCapabilities.",
+  "- If no purchase-order execution capability is available, return UNPROGRESSABLE instead of adding a merchant-owned purchase-order step.",
   "- A removal like 'remove step 4' removes the step currently displayed at position 4, unless the merchant's wording clearly points elsewhere.",
   "- Undoing runtime input is not the same as removing a workflow step; keep unchanged workflow semantics when the merchant only withdraws an execution parameter.",
   "",
@@ -195,6 +208,25 @@ export async function replanAction(prisma, input) {
   }
 
   if (!generation.normalized.ok) {
+    if (generation.normalized.reason === "unprogressable") {
+      logger.warn("action replanner returned unprogressable workflow", {
+        actionId: input.actionId,
+        provider: generation.generated?.provider ?? planner.provider ?? null,
+        model: generation.generated?.model ?? planner.model ?? null,
+        unprogressableReason: generation.normalized.message ?? null,
+      });
+      return {
+        ok: false,
+        reason: "unprogressable",
+        reply:
+          generation.normalized.message ||
+          "I can't safely revise this workflow because the requested path would not leave Jefe with a reachable Shopify execution.",
+        result: {
+          validation: generation.normalized,
+          repairAttempted: generation.repairAttempted,
+        },
+      };
+    }
     const fallback = fallbackPlanFromInstruction(before, input.merchantInstruction);
     if (fallback) {
       generation = {
@@ -242,6 +274,32 @@ export async function replanAction(prisma, input) {
     before,
     input.merchantInstruction,
   );
+  const actionability = validateReplannedWorkflowActionability(
+    before,
+    planForApply,
+    input.merchantInstruction,
+  );
+  if (!actionability.ok) {
+    logger.warn("action replanner produced unprogressable workflow after overrides", {
+      actionId: input.actionId,
+      provider: generated?.provider ?? planner.provider ?? null,
+      model: generated?.model ?? planner.model ?? null,
+      reason: actionability.reason,
+    });
+    return {
+      ok: false,
+      reason: "unprogressable",
+      reply: `I couldn't make that change. ${actionability.message}`,
+      result: {
+        validation: actionability,
+        repairAttempted: generation.repairAttempted,
+        replanRequest: generation.request,
+        rawStructuredPlan: generation.rawPlan,
+        plan: planForApply,
+        before,
+      },
+    };
+  }
 
   let applied;
   try {
@@ -362,13 +420,15 @@ async function generatePlanWithRepair(provider, input) {
     currentStepCount: input.before.steps.length,
   });
   const generated = await provider.generateStructuredJson({
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: ACTION_REPLANNER_SYSTEM_PROMPT,
     prompt: JSON.stringify(request),
     schema: REPLAN_SCHEMA,
     maxOutputTokens: 1600,
     timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
   });
-  let normalized = normalizeGeneratedPlan(generated?.json?.plan);
+  let normalized = normalizeGeneratedPlan(generated?.json, {
+    requireJefeExecution: workflowHasJefeExecution(input.before.steps),
+  });
   input.logger?.info?.("action replanner inference finished", {
     actionId: input.actionId ?? null,
     provider: generated?.provider ?? provider.provider ?? null,
@@ -382,7 +442,16 @@ async function generatePlanWithRepair(provider, input) {
       generated,
       normalized,
       request,
-      rawPlan: generated?.json?.plan ?? null,
+      rawPlan: generated?.json ?? null,
+      repairAttempted: false,
+    };
+  }
+  if (normalized.reason === "unprogressable") {
+    return {
+      generated,
+      normalized,
+      request,
+      rawPlan: generated?.json ?? null,
       repairAttempted: false,
     };
   }
@@ -391,7 +460,7 @@ async function generatePlanWithRepair(provider, input) {
     ...request,
     task: "action_replan_repair",
     validationError: normalized,
-    invalidPlan: generated?.json?.plan ?? null,
+    invalidPlan: generated?.json ?? null,
     instruction:
       "Return a complete repaired plan. Fix the validation error without changing unrelated current plan decisions or unrelated workflow semantics.",
   };
@@ -404,13 +473,15 @@ async function generatePlanWithRepair(provider, input) {
     validationError: normalized.reason,
   });
   const repaired = await provider.generateStructuredJson({
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: ACTION_REPLANNER_SYSTEM_PROMPT,
     prompt: JSON.stringify(repairRequest),
     schema: REPLAN_SCHEMA,
     maxOutputTokens: 1600,
     timeoutMs: ACTION_REPLANNER_TIMEOUT_MS,
   });
-  normalized = normalizeGeneratedPlan(repaired?.json?.plan);
+  normalized = normalizeGeneratedPlan(repaired?.json, {
+    requireJefeExecution: workflowHasJefeExecution(input.before.steps),
+  });
   input.logger?.info?.("action replanner inference finished", {
     actionId: input.actionId ?? null,
     provider: repaired?.provider ?? provider.provider ?? null,
@@ -423,9 +494,9 @@ async function generatePlanWithRepair(provider, input) {
     generated: repaired,
     normalized,
     request,
-    rawPlan: repaired?.json?.plan ?? null,
+    rawPlan: repaired?.json ?? null,
     repairAttempted: true,
-    invalidPlan: generated?.json?.plan ?? null,
+    invalidPlan: generated?.json ?? null,
   };
 }
 
@@ -441,6 +512,7 @@ function buildReplanRequest(input) {
   return {
     task: "action_replan",
     version: ACTION_REPLANNER_VERSION,
+    promptVersion: ACTION_REPLANNER_PROMPT_VERSION,
     merchantInstruction: input.merchantInstruction,
     recentConversation: recentConversationView(input.recentMessages),
     action: input.state.action,
@@ -465,10 +537,20 @@ function recentConversationView(messages) {
 
 /**
  * @param {any} rawPlan
+ * @param {{ requireJefeExecution?: boolean }} [options]
  * @returns {{ ok: true; plan: { goal: string; steps: any[] } } | { ok: false; reason: string; [key: string]: any }}
  */
-function normalizeGeneratedPlan(rawPlan) {
-  const rawSteps = Array.isArray(rawPlan?.steps) ? rawPlan.steps : [];
+function normalizeGeneratedPlan(rawPlan, options = {}) {
+  if (String(rawPlan?.status ?? "").toUpperCase() === "UNPROGRESSABLE") {
+    return {
+      ok: false,
+      reason: "unprogressable",
+      message: safeText(rawPlan?.reason, 260) ||
+        "The requested workflow is not reachable with Jefe's current Shopify execution capabilities.",
+    };
+  }
+  const plan = rawPlan?.plan && typeof rawPlan.plan === "object" ? rawPlan.plan : rawPlan;
+  const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
   if (!rawSteps.length) return { ok: false, reason: "missing_steps" };
 
   /** @type {any[]} */
@@ -525,13 +607,67 @@ function normalizeGeneratedPlan(rawPlan) {
       };
     }
   }
+  if (options.requireJefeExecution && !workflowHasJefeExecution(steps)) {
+    return {
+      ok: false,
+      reason: "unprogressable",
+      message:
+        "That workflow would remove the reachable Jefe Shopify execution, so I haven't changed the plan.",
+    };
+  }
   return {
     ok: true,
     plan: {
-      goal: safeText(rawPlan?.goal, 220) || "Carry out this action.",
+      goal: safeText(plan?.goal, 220) || "Carry out this action.",
       steps,
     },
   };
+}
+
+/** @param {Array<{ mode?: string | null; capabilityRef?: string | null }>} steps */
+function workflowHasJefeExecution(steps) {
+  return (Array.isArray(steps) ? steps : []).some((step) => {
+    const resolved = resolveWorkflowStepCapability(
+      step?.capabilityRef ?? null,
+      step?.mode ?? null,
+    );
+    return Boolean(resolved.actionIntent);
+  });
+}
+
+/**
+ * @param {{ steps: any[] }} before
+ * @param {{ steps: any[] }} plan
+ * @param {string} merchantInstruction
+ * @returns {{ ok: true } | { ok: false; reason: string; message: string }}
+ */
+function validateReplannedWorkflowActionability(before, plan, merchantInstruction) {
+  const instruction = normalizeTitle(merchantInstruction);
+  const wantsPurchaseOrder =
+    /\b(purchase order|purchase orders|po|pos)\b/.test(instruction) &&
+    !/\b(remove|delete|scrap|forget|drop)\b/.test(instruction);
+  const hasPurchaseOrderStep = plan.steps.some(
+    (step) =>
+      step.semanticKey === "create_purchase_order" ||
+      step.capabilityRef === "merchant_action:external_purchase_order",
+  );
+  if (wantsPurchaseOrder && hasPurchaseOrderStep) {
+    return {
+      ok: false,
+      reason: "unsupported_purchase_order_execution",
+      message:
+        "Jefe has no available capability to create a purchase order directly, and a Shopify inventory transfer cannot substitute for a purchase order.",
+    };
+  }
+  if (workflowHasJefeExecution(before.steps) && !workflowHasJefeExecution(plan.steps)) {
+    return {
+      ok: false,
+      reason: "removed_jefe_execution",
+      message:
+        "That workflow would remove the reachable Jefe Shopify execution, so I haven't changed the plan.",
+    };
+  }
+  return { ok: true };
 }
 
 /** @param {any} step */

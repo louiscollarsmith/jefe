@@ -12,6 +12,7 @@
  *   systemPrompt: string[];
  *   objective: string;
  *   artifactType: string;
+ *   promptVersion?: string;
  *   grounding: any;
  *   schema: any;
  *   maxOutputTokens?: number;
@@ -26,6 +27,7 @@ export async function generateSemanticArtifact(provider, input) {
     systemPrompt: input.systemPrompt,
     prompt: JSON.stringify({
       artifactType: input.artifactType,
+      promptVersion: input.promptVersion ?? null,
       objective: input.objective,
       grounding: input.grounding,
     }),
@@ -35,4 +37,3 @@ export async function generateSemanticArtifact(provider, input) {
 
   return generated?.json ?? null;
 }
-

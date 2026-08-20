@@ -98,6 +98,72 @@ test("workspace projects heterogeneous restock items instead of status steps", (
   assert.equal(workspace.currentFocus.kind, "integration_limitation");
 });
 
+test("inventory transfer approval is not materialised as merchant purchase-order work", () => {
+  const steps = [
+    step({
+      id: "measure",
+      title: "Confirm stock recovery",
+      mode: "assist",
+      capabilityRef: "assist:inventory_review",
+      dependsOnStepIds: ["transfer"],
+    }),
+    step({
+      id: "approval",
+      title: "Approve the replenishment proposal",
+      mode: "merchant_action",
+      capabilityRef: "merchant_action:external_purchase_order",
+      dependsOnStepIds: [],
+      description:
+        "Confirm that Jefe may use the supplied origin location, destination location, product and proposed replenishment quantity.",
+    }),
+    step({
+      id: "transfer",
+      title: "Create Shopify inventory transfer",
+      mode: "execute",
+      capabilityRef: "execute:shopify_inventory_transfer:restock",
+      dependsOnStepIds: ["measure", "approval"],
+    }),
+  ];
+
+  const prepared = prepareWorkflowStepsForWorkspaceV2(steps, {
+    title: "Restore availability for Pear Skin Sipon",
+    summary: "Approve the supplied replenishment proposal and have Jefe create the transfer.",
+  });
+
+  assert.deepEqual(
+    prepared.map((item) => item.title),
+    ["Confirm stock recovery", "Create Shopify inventory transfer"],
+  );
+  assert.deepEqual(
+    prepared.find((item) => item.id === "transfer").dependsOnStepIds,
+    [],
+  );
+
+  const workspace = buildActionWorkspace(
+    restockAction({ steps }),
+    {
+      work: [
+        work("measure", "blocked", null),
+        work("transfer", "available", null),
+      ],
+    },
+  );
+
+  assert.equal(
+    workspace.items.some((item) => item.semanticKey === "create_purchase_order"),
+    false,
+  );
+  const transfer = workspace.items.find(
+    (item) => item.capabilityRef === "execute:shopify_inventory_transfer:restock",
+  );
+  assert.equal(transfer.kind, "execution");
+  assert.equal(transfer.intendedActor, "JEFE");
+  assert.equal(transfer.approvalRequired, true);
+  assert.equal(transfer.state, "approval_required");
+  assert.equal(workspace.currentFocus.kind, "merchant_attention");
+  assert.equal(workspace.currentFocus.itemKind, "execution");
+});
+
 test("workspace plan items carry semantic labels and no raw status badge", () => {
   const workspace = buildActionWorkspace(
     restockAction({
