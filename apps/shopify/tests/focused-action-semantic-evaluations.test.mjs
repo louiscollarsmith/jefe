@@ -622,19 +622,19 @@ test("structural replanning preserves order, corrections, removals, identity and
     "Review low-cover inventory",
     "Build replenishment proposal",
     "Draft supplier email",
-    "Create purchase order",
+    "Create Shopify inventory transfer",
   ]);
   assert.deepEqual(
     currentSteps(prisma).slice(0, 3).map((step) => step.id),
     initialIds,
-    "unchanged steps must preserve IDs when transfer is replaced by PO",
+    "unchanged steps must preserve IDs when unsupported PO is rejected",
   );
   assert.deepEqual(currentModes(prisma).slice(0, 3), initialModes);
   assert.equal(prisma.state.action.plan.coverDays, 90);
   assert.equal(
-    prisma.state.steps.find((step) => step.id === transferId)?.status,
-    "superseded",
-    "replaced transfer step must leave a superseded history row",
+    prisma.state.steps.find((step) => step.id === transferId)?.status ?? null,
+    "waiting",
+    "unsupported PO correction must preserve the existing transfer step",
   );
   assert.ok(
     observedReplans.at(-1)?.recentConversation?.some((message) =>
@@ -642,41 +642,33 @@ test("structural replanning preserves order, corrections, removals, identity and
     ),
     "correction replanning must receive recent conversation context",
   );
-  const firstPurchaseId = currentSteps(prisma)[3].id;
 
   await say("Remove the final step (Create purchase order).");
   assert.deepEqual(currentTitles(prisma), [
     "Review low-cover inventory",
     "Build replenishment proposal",
     "Draft supplier email",
+    "Create Shopify inventory transfer",
   ]);
-  assert.deepEqual(currentSteps(prisma).map((step) => step.id), initialIds);
-  assert.equal(
-    prisma.state.steps.find((step) => step.id === firstPurchaseId)?.status,
-    "superseded",
-  );
+  assert.equal(currentSteps(prisma)[3].id, transferId);
 
   await say("Add the purchase order back at the end.");
   assert.deepEqual(currentTitles(prisma), [
     "Review low-cover inventory",
     "Build replenishment proposal",
     "Draft supplier email",
-    "Create purchase order",
+    "Create Shopify inventory transfer",
   ]);
-  assert.equal(currentSteps(prisma)[3].title, "Create purchase order");
-  assert.notEqual(
-    currentSteps(prisma)[3].id,
-    firstPurchaseId,
-    "a previously removed step should remain historical when re-added",
-  );
+  assert.equal(currentSteps(prisma)[3].id, transferId);
 
   await say("Remove step 4.");
   assert.deepEqual(currentTitles(prisma), [
     "Review low-cover inventory",
     "Build replenishment proposal",
     "Draft supplier email",
+    "Create Shopify inventory transfer",
   ]);
-  assert.deepEqual(currentSteps(prisma).map((step) => step.id), initialIds);
+  assert.equal(currentSteps(prisma)[3].id, transferId);
   assert.equal(prisma.state.action.plan.coverDays, 90);
 });
 

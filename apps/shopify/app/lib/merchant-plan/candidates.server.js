@@ -16,6 +16,8 @@ import {
 } from "./constants.server.js";
 import { expandBeliefRowsForContext } from "../merchant-memory/context-retriever.server.js";
 import { retrieveMerchantContext } from "../merchant-memory/merchant-context.server.js";
+import { inspectActionIntentOpportunity } from "../actions/action-resolution.server.js";
+import { listExecutableStepCapabilities } from "./step-capabilities.server.js";
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -173,6 +175,12 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
     completedAt: item.completedAt?.toISOString?.() ?? null,
     supersededAt: item.run?.supersededAt?.toISOString?.() ?? null,
   }));
+  const opportunityBuild = await buildGroundedOpportunityCandidates(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    beliefs: selectedBeliefs,
+  });
+  const opportunityCandidates = opportunityBuild.opportunities;
 
   const snapshot = {
     snapshotVersion: MERCHANT_PLAN_SNAPSHOT_VERSION,
@@ -230,6 +238,8 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
         })),
     ],
     previousRecommendations,
+    opportunityCandidates,
+    opportunityCandidateDiagnostics: opportunityBuild.diagnostics,
   };
   const snapshotHash = hashSnapshot(snapshot);
   return {
@@ -239,10 +249,314 @@ export async function buildMerchantPlanSnapshot(prisma, input) {
     goalIds: [...allowedGoalIds],
     insightIds: [...allowedInsightIds],
     candidateCount: selectedBeliefs.length,
+    opportunityCount: opportunityCandidates.length,
     goalRunId: goalRun?.id ?? null,
     insightRunId: insightRun?.id ?? null,
     hasGoals: goals.length === 3,
   };
+}
+
+async function buildGroundedOpportunityCandidates(prisma, input) {
+  const executable = listExecutableStepCapabilities();
+  const opportunities = [];
+  const diagnostics = [];
+  for (const capability of executable) {
+    const intent = {
+      actionType: capability.actionType,
+      targetKind: capability.targetKind,
+    };
+    const diagnostic = {
+      capabilityRef: capability.ref,
+      actionType: capability.actionType,
+      targetKind: capability.targetKind,
+      writeEnabled: capability.writeEnabled === true,
+      requiredScopes: capability.requiredScopes ?? [],
+      registryResolution: capability.ref,
+      dryRun: null,
+      gateResult: "rejected",
+      rejectionReason: null,
+      suppliedToLuna: false,
+      candidateId: null,
+    };
+    if (capability.writeEnabled !== true) {
+      diagnostic.rejectionReason = "capability_write_disabled";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    let result;
+    try {
+      result = await inspectActionIntentOpportunity(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        intent,
+      });
+    } catch {
+      diagnostic.rejectionReason = "capability_resolver_threw";
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    diagnostic.dryRun = {
+      status: result.status,
+      reason: result.reason ?? null,
+      summary: summarizeCapabilityDryRun(result.summary),
+    };
+    if (result.status !== "ready") {
+      diagnostic.rejectionReason = result.reason
+        ? `${result.status}:${result.reason}`
+        : result.status;
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    const opportunity = opportunityFromResolvedCapability({
+      capability,
+      result,
+      beliefs: input.beliefs,
+      intent,
+    });
+    if (opportunity) {
+      diagnostic.gateResult = "accepted";
+      diagnostic.rejectionReason = null;
+      diagnostic.suppliedToLuna = true;
+      diagnostic.candidateId = opportunity.id;
+      opportunities.push(opportunity);
+    } else {
+      diagnostic.rejectionReason = "ready_but_missing_candidate_contract";
+    }
+    diagnostics.push(diagnostic);
+  }
+  const selected = opportunities.slice(0, 8);
+  const selectedIds = new Set(selected.map((opportunity) => opportunity.id));
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.candidateId && !selectedIds.has(diagnostic.candidateId)) {
+      diagnostic.suppliedToLuna = false;
+      diagnostic.gateResult = "rejected";
+      diagnostic.rejectionReason = "candidate_limit_exceeded";
+    }
+  }
+  return { opportunities: selected, diagnostics };
+}
+
+function summarizeCapabilityDryRun(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  return {
+    kind: safeText(summary.kind, 80),
+    productCount: numberOrNull(summary.productCount),
+    variantCount: numberOrNull(summary.variantCount),
+    lineItemCount: numberOrNull(summary.lineItemCount),
+    coverDays: numberOrNull(summary.coverDays),
+    topItems: Array.isArray(summary.topItems)
+      ? summary.topItems.slice(0, 5).map((item) => ({
+          title: safeText(item?.title, 120),
+          quantity: numberOrNull(item?.quantity),
+          available: numberOrNull(item?.available),
+          daysOfCover: numberOrNull(item?.daysOfCover),
+          unitsSold: numberOrNull(item?.unitsSold),
+        }))
+      : [],
+  };
+}
+
+function opportunityFromResolvedCapability({ capability, result, beliefs, intent }) {
+  const ref = capability.ref;
+  const summary = result.summary ?? {};
+  if (ref === "execute:listing_copy:missing_product_type") {
+    const reasons = Array.isArray(summary.reasons) ? summary.reasons : [];
+    if (reasons.length === 0) return null;
+    return {
+      id: "opportunity_listing_copy_missing_product_type",
+      opportunityType: "catalogue_taxonomy_gap",
+      actionIntent: intent,
+      title: "Categorise uncategorised Shopify products",
+      evidence: reasons.slice(0, 8).map((item, index) => ({
+        id: `listing_copy_evidence_${index + 1}`,
+        source: "shopify_product_records",
+        summary: safeText(
+          `${item.title ?? item.productId} has no product type; proposed ${item.proposedType} because ${item.because}.`,
+          240,
+        ),
+        entityIds: [safeIdentifier(item.productId)].filter(Boolean),
+      })),
+      affectedEntities: reasons.slice(0, 20).map((item) => ({
+        kind: "product",
+        id: safeIdentifier(item.productId),
+        title: safeText(item.title, 160),
+      })),
+      initialProposal: {
+        kind: "product_type_updates",
+        productCount: numberOrNull(summary.productCount) ?? reasons.length,
+        updates: reasons.slice(0, 20).map((item) => ({
+          productId: safeIdentifier(item.productId),
+          title: safeText(item.title, 160),
+          proposedType: safeText(item.proposedType, 120),
+          reason: safeText(item.because, 220),
+        })),
+        unresolvedCount: numberOrNull(summary.unresolvedCount),
+      },
+      potentialCapabilities: [capabilityForOpportunity(capability)],
+      measurableOutcome:
+        "Product type coverage improves on the affected products after Jefe applies the approved updates.",
+    };
+  }
+  if (ref === "execute:price_markdown:dead_stock") {
+    const topItems = Array.isArray(summary.topItems) ? summary.topItems : [];
+    if (topItems.length === 0) return null;
+    const belief = findBelief(beliefs, "products.dead_stock.trailing_90d");
+    return {
+      id: "opportunity_price_markdown_dead_stock",
+      opportunityType: "dead_stock_clearance",
+      actionIntent: intent,
+      title: "Clear dead stock with a floored markdown",
+      evidence: [
+        belief
+          ? {
+              id: belief.id,
+              source: "merchant_memory_belief",
+              summary: safeText(`${belief.label}: ${JSON.stringify(belief.val)}`, 260),
+              entityIds: [],
+            }
+          : null,
+        ...topItems.slice(0, 8).map((item, index) => ({
+          id: `dead_stock_evidence_${index + 1}`,
+          source: "shopify_product_inventory_and_orders",
+          summary: safeText(
+            `${item.title ?? "Product"} has ${item.unitsOnHand ?? "stock"} units on hand and no recent sale in the clearance window.`,
+            240,
+          ),
+          entityIds: [],
+        })),
+      ].filter(Boolean),
+      affectedEntities: topItems.slice(0, 20).map((item) => ({
+        kind: "variant_or_product",
+        id: safeIdentifier(item.variantId ?? item.productId ?? item.title),
+        title: safeText(item.title, 160),
+      })),
+      initialProposal: {
+        kind: "floored_markdown",
+        variantCount: numberOrNull(summary.variantCount),
+        markdownPercent: numberOrNull(summary.markdownPercent),
+        totalTrappedCapital: numberOrNull(summary.totalTrappedCapital),
+        totalProjectedRecovery: numberOrNull(summary.totalProjectedRecovery),
+        topItems: topItems.slice(0, 20),
+      },
+      potentialCapabilities: [capabilityForOpportunity(capability)],
+      measurableOutcome:
+        "Jefe measures whether the marked-down dead-stock variants sell after the approved price change.",
+    };
+  }
+  if (ref === "execute:tidy_up:stale_listing") {
+    const reasons = Array.isArray(summary.reasons) ? summary.reasons : [];
+    if (reasons.length === 0) return null;
+    return {
+      id: "opportunity_tidy_up_stale_listing",
+      opportunityType: "stale_storefront_listing",
+      actionIntent: intent,
+      title: "Archive unbuyable stale storefront products",
+      evidence: reasons.slice(0, 8).map((item, index) => ({
+        id: `tidy_up_evidence_${index + 1}`,
+        source: "shopify_product_inventory_and_orders",
+        summary: safeText(`${item.title ?? item.productId}: ${item.because}.`, 240),
+        entityIds: [safeIdentifier(item.productId)].filter(Boolean),
+      })),
+      affectedEntities: reasons.slice(0, 20).map((item) => ({
+        kind: "product",
+        id: safeIdentifier(item.productId),
+        title: safeText(item.title, 160),
+      })),
+      initialProposal: {
+        kind: "archive_products",
+        productCount: numberOrNull(summary.productCount),
+        windowDays: numberOrNull(summary.windowDays),
+        products: reasons.slice(0, 20),
+      },
+      potentialCapabilities: [capabilityForOpportunity(capability)],
+      measurableOutcome:
+        "Buyable active product coverage improves after Jefe archives the approved stale products.",
+    };
+  }
+  if (ref === "execute:shopify_inventory_transfer:restock") {
+    const lineItems = Array.isArray(summary.lineItems) ? summary.lineItems : [];
+    if (lineItems.length === 0) return null;
+    const belief = findBelief(beliefs, "inventory.low_cover_products.trailing_30d");
+    return {
+      id: "opportunity_inventory_transfer_low_cover_restock",
+      opportunityType: "low_cover_restock",
+      actionIntent: intent,
+      title: "Replenish products with proven recent demand",
+      evidence: [
+        belief
+          ? {
+              id: belief.id,
+              source: "merchant_memory_belief",
+              summary: safeText(`${belief.label}: ${JSON.stringify(belief.val)}`, 320),
+              entityIds: lineItems
+                .map((item) => safeIdentifier(item.productId))
+                .filter(Boolean),
+            }
+          : null,
+        ...lineItems.slice(0, 8).map((item, index) => ({
+          id: `low_cover_restock_evidence_${index + 1}`,
+          source: "shopify_orders_inventory_and_catalogue",
+          summary: safeText(
+            `${item.title ?? item.productId} sold ${item.unitsSold ?? "recent"} unit(s) in the evidence window, has ${item.available ?? 0} available, and is proposed for ${item.quantity} replenishment unit(s).`,
+            260,
+          ),
+          entityIds: [
+            safeIdentifier(item.productId),
+            safeIdentifier(item.variantExternalId ?? item.variantId),
+            safeIdentifier(item.inventoryItemId),
+          ].filter(Boolean),
+        })),
+      ].filter(Boolean),
+      affectedEntities: lineItems.slice(0, 20).map((item) => ({
+        kind: "variant",
+        id: safeIdentifier(item.variantExternalId ?? item.variantId ?? item.inventoryItemId),
+        productId: safeIdentifier(item.productExternalId ?? item.productId),
+        title: safeText(item.title, 160),
+      })),
+      initialProposal: {
+        kind: "shopify_inventory_transfer",
+        coverDays: numberOrNull(summary.coverDays),
+        lineItemCount: numberOrNull(summary.lineItemCount),
+        originLocationId: safeIdentifier(summary.originLocationId),
+        destinationLocationId: safeIdentifier(summary.destinationLocationId),
+        lineItems: lineItems.slice(0, 20).map((item) => ({
+          productId: safeIdentifier(item.productExternalId ?? item.productId),
+          variantId: safeIdentifier(item.variantExternalId ?? item.variantId),
+          inventoryItemId: safeIdentifier(item.inventoryItemId),
+          title: safeText(item.title, 160),
+          sku: safeText(item.sku, 80),
+          quantity: numberOrNull(item.quantity),
+          available: numberOrNull(item.available),
+          dailyVelocity: numberOrNull(item.dailyVelocity),
+          daysOfCover: numberOrNull(item.daysOfCover),
+          unitsSold: numberOrNull(item.unitsSold),
+        })),
+      },
+      potentialCapabilities: [capabilityForOpportunity(capability)],
+      measurableOutcome:
+        "Jefe measures whether the approved Shopify inventory transfer is created for the low-cover items and whether stock cover improves after receipt.",
+    };
+  }
+  return null;
+}
+
+function capabilityForOpportunity(capability) {
+  return {
+    ref: capability.ref,
+    mode: capability.mode,
+    actionType: capability.actionType,
+    targetKind: capability.targetKind,
+    write: capability.write === true,
+    writeEnabled: capability.writeEnabled === true,
+    requiredScopes: Array.isArray(capability.requiredScopes)
+      ? capability.requiredScopes
+      : [],
+    description: safeText(capability.description, 220),
+  };
+}
+
+function findBelief(beliefs, key) {
+  return (beliefs ?? []).find((belief) => belief.key === key) ?? null;
 }
 
 /** @param {any} item */
@@ -454,6 +768,14 @@ export function safeText(value, max) {
       /^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[redacted]",
     )
     .slice(0, max);
+}
+
+/** @param {unknown} value @param {number} [max] */
+function safeIdentifier(value, max = 180) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.slice(0, max);
 }
 
 function hashSnapshot(snapshot) {

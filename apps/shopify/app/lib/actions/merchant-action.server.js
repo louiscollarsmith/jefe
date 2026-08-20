@@ -1030,8 +1030,13 @@ function merchantActionDataFromExecution(execution) {
  */
 function progressFromRecommendation(recommendation) {
   const workflow = workflowFromRecommendation(recommendation);
+  const selectedOpportunity =
+    recommendation?.selectedOpportunity ??
+    recommendation?.run?.result?.selectedOpportunity ??
+    null;
   return {
     workflow: workflowView(workflow),
+    selectedOpportunity: jsonObject(selectedOpportunity),
     successSignal: jsonObject(recommendation?.successSignal),
     reviewStatus: recommendation?.reviewStatus ?? null,
   };

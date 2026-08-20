@@ -1,3 +1,4 @@
+/* global process */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -45,6 +46,90 @@ test("a listing-copy approval does not get handed to the clearance wire", async 
     { loadOfflineToken: async () => "tok", createGqlClient: () => ({ async request() { return {}; } }) },
   );
   assert.notEqual(result.reason, "wrong_primitive:listing_copy");
+});
+
+test("an inventory-transfer approval builds the Shopify client and executes through its wire", async () => {
+  const previousFlag = process.env.INVENTORY_TRANSFER_EXECUTE_ENABLED;
+  process.env.INVENTORY_TRANSFER_EXECUTE_ENABLED = "true";
+  let capturedVariables = null;
+  try {
+    const prisma = {
+      actionExecution: {
+        async findUnique() {
+          return {
+            runId: "run-1",
+            merchantId: "m1",
+            shopId: "s1",
+            merchantActionId: "action-1",
+            actionType: "shopify_inventory_transfer",
+            actionKind: "inventory_transfer",
+            status: "approved",
+            resolvedMode: "approve",
+            preview: {
+              originLocationId: "gid://shopify/Location/1",
+              destinationLocationId: "gid://shopify/Location/2",
+              lineItems: [
+                {
+                  inventoryItemId: "gid://shopify/InventoryItem/1",
+                  title: "Pear Skin Sipon",
+                  quantity: 3,
+                },
+              ],
+            },
+          };
+        },
+      },
+      actionExecutionWrite: {
+        async findFirst() {
+          return null;
+        },
+        async create() {
+          return {};
+        },
+      },
+    };
+
+    const result = await executeApprovedAction(
+      prisma,
+      session,
+      { merchantId: "m1", actionRunId: "run-1", mode: "approve" },
+      {
+        loadOfflineToken: async () => "tok",
+        createGqlClient: () => ({
+          async request(_query, variables) {
+            capturedVariables = variables;
+            return {
+              inventoryTransferCreate: {
+                inventoryTransfer: {
+                  id: "gid://shopify/InventoryTransfer/1",
+                  status: "OPEN",
+                },
+                userErrors: [],
+              },
+            };
+          },
+        }),
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.executed, true);
+    assert.equal(
+      result.result.shopifyTransferId,
+      "gid://shopify/InventoryTransfer/1",
+    );
+    assert.equal(result.result.status, "OPEN");
+    assert.equal(
+      capturedVariables.idempotencyKey,
+      "run-1:inventory_transfer",
+    );
+  } finally {
+    if (previousFlag !== undefined) {
+      process.env.INVENTORY_TRANSFER_EXECUTE_ENABLED = previousFlag;
+    } else {
+      delete process.env.INVENTORY_TRANSFER_EXECUTE_ENABLED;
+    }
+  }
 });
 
 test("an unknown action type executes nothing rather than falling back to clearance", async () => {

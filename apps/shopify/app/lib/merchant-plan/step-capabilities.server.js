@@ -1,6 +1,11 @@
 // @ts-check
 
-import { listActionCapabilities, validateActionIntent } from "../actions/action-intent.server.js";
+import {
+  getRequiredScopes,
+  isActionExecuteEnabled,
+  listActionCapabilities,
+  validateActionIntent,
+} from "../actions/action-intent.server.js";
 
 export const WORKFLOW_STEP_MODES = /** @type {const} */ ({
   execute: "execute",
@@ -90,8 +95,11 @@ const MERCHANT_ACTION_CAPABILITIES = [
   },
 ];
 
-export function listStepCapabilities() {
-  const executable = listActionCapabilities().flatMap((capability) =>
+/**
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function listExecutableStepCapabilities(env = process.env) {
+  return listActionCapabilities().flatMap((capability) =>
     capability.targetKinds.map((targetKind) => ({
       ref: `execute:${capability.actionType}:${targetKind}`,
       mode: WORKFLOW_STEP_MODES.execute,
@@ -99,14 +107,46 @@ export function listStepCapabilities() {
       description: capability.description,
       actionType: capability.actionType,
       targetKind,
+      write: true,
+      writeEnabled: isActionExecuteEnabled(capability.actionType, env),
+      requiredScopes: getRequiredScopes(capability.actionType),
     })),
   );
+}
+
+export function listWorkflowSupportCapabilities() {
   return [
-    ...executable,
     ...ASSIST_CAPABILITIES,
     ...EVIDENCE_CAPABILITIES,
     ...MERCHANT_ACTION_CAPABILITIES,
   ];
+}
+
+export function listStepCapabilities() {
+  const executable = listExecutableStepCapabilities();
+  return [
+    ...executable,
+    ...listWorkflowSupportCapabilities(),
+  ];
+}
+
+/** @param {unknown} ref */
+export function actionIntentFromExecutableCapabilityRef(ref) {
+  const parts = String(ref ?? "").split(":");
+  if (parts.length !== 3 || parts[0] !== "execute") return null;
+  const validation = validateActionIntent({
+    actionType: parts[1],
+    targetKind: parts[2],
+  });
+  return validation.ok ? validation.intent : null;
+}
+
+/** @param {Array<{ mode?: string | null; capabilityRef?: string | null }>} steps */
+export function hasJefeExecutableWriteStep(steps) {
+  return steps.some((step) => {
+    if (step?.mode !== WORKFLOW_STEP_MODES.execute) return false;
+    return Boolean(actionIntentFromExecutableCapabilityRef(step?.capabilityRef));
+  });
 }
 
 /**

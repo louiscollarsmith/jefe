@@ -183,6 +183,8 @@ type WorkflowStepDisplay =
       blockers?: Array<{ type?: string; reason?: string | null }> | null;
       done?: boolean | null;
       statusLabel?: string | null;
+      intendedActor?: string | null;
+      approvalRequired?: boolean | null;
       itemKind?: string | null;
       workspaceState?: string | null;
     };
@@ -2241,8 +2243,16 @@ function FocusedActionLifecyclePanel({
         {canStartCurrentStep(currentStep) ? (
           <div style={currentStepActionRowStyle}>
             <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
-              <input type="hidden" name="intent" value="action.step.start" />
+              <input
+                type="hidden"
+                name="intent"
+                value={currentStepStartIntent(currentStep, action)}
+              />
               <input type="hidden" name="actionId" value={action.id} />
+              {currentStepStartIntent(currentStep, action) === "action.approve" &&
+              action.actionRunId ? (
+                <input type="hidden" name="actionRunId" value={action.actionRunId} />
+              ) : null}
               {conversationId ? (
                 <input type="hidden" name="conversationId" value={conversationId} />
               ) : null}
@@ -2444,6 +2454,10 @@ function stepDetail(step: Exclude<WorkflowStepDisplay, string>) {
 
 function stepCta(step: Exclude<WorkflowStepDisplay, string>) {
   const title = displayStepLabel(step, 0).toLowerCase();
+  if (isApprovalRequiredJefeExecution(step)) {
+    if (/inventory transfer|transfer/.test(title)) return "Approve & create transfer";
+    return "Approve";
+  }
   if (stepAssistArtifact(step)) return "Review proposals";
   if (/apply|write|update/.test(title)) return "Apply changes";
   if (/review|approve/.test(title)) return "Review proposals";
@@ -2454,6 +2468,9 @@ function stepCta(step: Exclude<WorkflowStepDisplay, string>) {
 function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   if (!step || typeof step === "string") return false;
   const workState = String(step.workState ?? "");
+  if (normalizeDisplayToken(workState) === "approval_required") {
+    return isApprovalRequiredJefeExecution(step);
+  }
   if (workState === "available" || workState === "needs_updating") return true;
   const status = String(step.status ?? "");
   const mode = String(step.mode ?? "");
@@ -2463,6 +2480,7 @@ function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
 
 function canCompleteCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   if (!step || typeof step === "string") return false;
+  if (isApprovalRequiredJefeExecution(step)) return false;
   const mode = String(step.mode ?? "");
   const workState = String(step.workState ?? "");
   const normalizedWorkState = normalizeDisplayToken(workState);
@@ -2473,6 +2491,24 @@ function canCompleteCurrentStep(step: WorkflowStepDisplay | null | undefined) {
   const status = String(step.status ?? "");
   if (status !== "needs_merchant") return false;
   return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
+}
+
+function currentStepStartIntent(
+  step: Exclude<WorkflowStepDisplay, string>,
+  action: MerchantActionView,
+) {
+  return isApprovalRequiredJefeExecution(step) && action.actionRunId
+    ? "action.approve"
+    : "action.step.start";
+}
+
+function isApprovalRequiredJefeExecution(step: WorkflowStepDisplay | null | undefined) {
+  if (!step || typeof step === "string") return false;
+  const intendedActor = String(step.intendedActor ?? "").toUpperCase();
+  return (
+    step.approvalRequired === true &&
+    (workflowStepMode(step) === "execute" || intendedActor === "JEFE")
+  );
 }
 
 function stepAssistArtifact(step: WorkflowStepDisplay) {
@@ -3388,6 +3424,9 @@ function currentStepStatusLabel(step: WorkflowStepDisplay) {
   if (["needs_attention", "blocked", "failed"].includes(workState)) {
     return "Needs attention";
   }
+  if (workState === "approval_required") {
+    return "Approval required";
+  }
   if (
     workState === "needs_input" ||
     ["merchant_action", "evidence_required"].includes(mode)
@@ -3466,6 +3505,11 @@ function workflowStepMode(step: WorkflowStepDisplay) {
 }
 
 function workflowStepOwnerBadge(step: WorkflowStepDisplay) {
+  if (typeof step !== "string") {
+    const intendedActor = String(step.intendedActor ?? "").toUpperCase();
+    if (intendedActor === "JEFE") return "JEFE";
+    if (intendedActor === "MERCHANT") return "MERCHANT";
+  }
   switch (workflowStepMode(step)) {
     case "execute":
     case "assist":
@@ -3480,6 +3524,9 @@ function workflowStepOwnerBadge(step: WorkflowStepDisplay) {
 }
 
 function currentStepOwnerLabel(step: Exclude<WorkflowStepDisplay, string>) {
+  const intendedActor = String(step.intendedActor ?? "").toUpperCase();
+  if (intendedActor === "JEFE") return "Jefe can do this";
+  if (intendedActor === "MERCHANT") return "Needs you";
   switch (workflowStepMode(step)) {
     case "execute":
     case "assist":

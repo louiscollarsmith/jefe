@@ -704,7 +704,11 @@ export function classifyFailure(status, job, experience = {}) {
     if (
       experience.contextAnswered === true &&
       experience.hasSurfaceableRecommendation !== true &&
-      [PLAN_RUN_STATUS.failed, PLAN_RUN_STATUS.modelDisabled].includes(
+      [
+        PLAN_RUN_STATUS.failed,
+        PLAN_RUN_STATUS.insufficientData,
+        PLAN_RUN_STATUS.modelDisabled,
+      ].includes(
         experience.latestPlanRun?.status,
       )
     ) {
@@ -714,6 +718,13 @@ export function classifyFailure(status, job, experience = {}) {
           retryTarget: "merchant_plan",
           message:
             "I can’t generate the first recommendation while AI generation is disabled. Turn AI generation back on and I can retry from the same durable evidence.",
+        };
+      }
+      if (experience.latestPlanRun.status === PLAN_RUN_STATUS.insufficientData) {
+        return {
+          type: "insufficient",
+          message:
+            "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
         };
       }
       return {

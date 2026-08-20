@@ -24,6 +24,7 @@ import {
 } from "./listing-copy-adapter.server.js";
 import { buildStaleListingTidyUpProposal } from "./stale-listing-tidy-up.server.js";
 import { buildActionRaise } from "./action-raise.server.js";
+import { recommendedPurchaseUnits } from "./action-capability.server.js";
 import {
   DEFAULT_PRODUCT_STATUS_CAPS,
   buildProductStatusPreview,
@@ -44,6 +45,7 @@ import {
   TRANSFER_BLAST_RADIUS_CAP,
   previewInventoryTransfer,
 } from "./inventory-transfer-adapter.server.js";
+import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 
 export { buildActionRaise };
 
@@ -291,16 +293,18 @@ const DEFAULT_INVENTORY_TRANSFER_CAPS = Object.freeze({
  * step, and runtime input collection can build this preview once the merchant supplies
  * the exact transfer parameters.
  *
- * @param {any} _prisma
- * @param {{ intent?: any }} input
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; intent?: any }} input
  */
-async function resolveInventoryTransfer(_prisma, { intent }) {
+async function resolveInventoryTransfer(prisma, { merchantId, shopId, intent }) {
   const params = intent?.params ?? {};
   const hasConcreteTransfer =
     typeof params.originLocationId === "string" ||
     typeof params.destinationLocationId === "string" ||
     Array.isArray(params.lineItems);
-  if (!hasConcreteTransfer) return null;
+  if (!hasConcreteTransfer) {
+    return resolveLowCoverInventoryTransfer(prisma, { merchantId, shopId, intent });
+  }
 
   const previewed = previewInventoryTransfer({
     originLocationId: params.originLocationId,
@@ -324,6 +328,261 @@ async function resolveInventoryTransfer(_prisma, { intent }) {
 }
 
 /**
+ * Build a first-pass Shopify inventory transfer from low-cover product evidence.
+ * Read-only: this prepares concrete transfer inputs for the existing adapter.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; intent?: any }} input
+ */
+async function resolveLowCoverInventoryTransfer(prisma, input) {
+  if (
+    !prisma?.merchantMemoryBelief?.findFirst ||
+    !prisma?.product?.findMany ||
+    !prisma?.variant?.findMany ||
+    !prisma?.inventoryLevel?.findMany
+  ) {
+    return null;
+  }
+  const belief = await prisma.merchantMemoryBelief.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      key: "inventory.low_cover_products.trailing_30d",
+      supersededAt: null,
+    },
+    select: { id: true, value: true, confidence: true, status: true },
+  });
+  const items = Array.isArray(belief?.value?.items) ? belief.value.items : [];
+  if (items.length === 0) return null;
+
+  const productIds = items
+    .map((/** @type {any} */ item) => stringOrNull(item?.productId))
+    .filter(Boolean);
+  if (productIds.length === 0) return null;
+
+  const [products, variants, inventoryLevels] = await Promise.all([
+    prisma.product.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        id: { in: productIds },
+        status: "ACTIVE",
+      },
+      select: {
+        id: true,
+        externalId: true,
+        title: true,
+        vendor: true,
+        productType: true,
+      },
+    }),
+    prisma.variant.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        productId: { in: productIds },
+      },
+      select: {
+        id: true,
+        productId: true,
+        externalId: true,
+        title: true,
+        sku: true,
+        inventoryItemExternalId: true,
+        rawPayload: true,
+      },
+    }),
+    prisma.inventoryLevel.findMany({
+      where: { merchantId: input.merchantId, shopId: input.shopId },
+      select: {
+        variantId: true,
+        inventoryItemExternalId: true,
+        locationExternalId: true,
+        available: true,
+      },
+    }),
+  ]);
+  const productsById = new Map(
+    products.map((/** @type {any} */ product) => [product.id, product]),
+  );
+  const variantsByProduct = groupBy(
+    variants,
+    (/** @type {any} */ variant) => variant.productId,
+  );
+  const locationRanks = rankLocations(inventoryLevels);
+  if (locationRanks.length < 2) return null;
+
+  const destinationLocationId =
+    stringOrNull(input.intent?.params?.destinationLocationId) ??
+    locationRanks[0].locationExternalId;
+  const originLocationId =
+    stringOrNull(input.intent?.params?.originLocationId) ??
+    locationRanks.find((location) => location.locationExternalId !== destinationLocationId)
+      ?.locationExternalId;
+  if (!originLocationId || !destinationLocationId || originLocationId === destinationLocationId) {
+    return null;
+  }
+
+  const coverDays = positiveInteger(input.intent?.params?.coverDays) ?? 120;
+  let rawLines = [];
+  for (const item of items) {
+    const productId = stringOrNull(item?.productId);
+    if (!productId || !productsById.has(productId)) continue;
+    const variant = chooseVariantForLowCoverItem(
+      variantsByProduct.get(productId) ?? [],
+      item,
+    );
+    if (!variant?.inventoryItemExternalId) continue;
+    const available = numberOrNull(item?.available);
+    const dailyVelocity = numberOrNull(item?.dailyVelocity);
+    const quantity = recommendedPurchaseUnits({ available, dailyVelocity }, coverDays);
+    if (quantity === null || quantity <= 0) continue;
+    rawLines.push({
+      inventoryItemId: variant.inventoryItemExternalId,
+      title: productsById.get(productId)?.title ?? item?.title ?? variant.title ?? null,
+      quantity,
+      productId,
+      productExternalId: productsById.get(productId)?.externalId ?? null,
+      variantId: variant.id,
+      variantExternalId: variant.externalId,
+      sku: variant.sku,
+      inventoryTracked:
+        typeof variant.rawPayload?.inventoryItem?.tracked === "boolean"
+          ? variant.rawPayload.inventoryItem.tracked
+          : null,
+      available,
+      dailyVelocity,
+      daysOfCover: numberOrNull(item?.daysOfCover),
+      unitsSold: numberOrNull(item?.unitsSold),
+    });
+  }
+  rawLines = await filterInventoryTransferTrackedLines(prisma, {
+    shopId: input.shopId,
+    rawLines,
+  });
+  if (rawLines.length === 0) return null;
+
+  const previewed = previewInventoryTransfer({
+    originLocationId,
+    destinationLocationId,
+    lineItems: rawLines.map((line) => ({
+      inventoryItemId: line.inventoryItemId,
+      title: line.title,
+      quantity: line.quantity,
+    })),
+  });
+  if (!previewed.ok) return null;
+
+  return {
+    preview: previewed.preview,
+    summary: {
+      kind: "low_cover_restock_transfer",
+      beliefId: belief.id,
+      lineItemCount: previewed.preview.lineItems.length,
+      coverDays,
+      originLocationId,
+      destinationLocationId,
+      refusedCount: previewed.refused.length,
+      lowCoverProductCount: items.length,
+      topItems: rawLines.slice(0, 5).map((line) => ({
+        title: line.title,
+        quantity: line.quantity,
+        available: line.available,
+        dailyVelocity: line.dailyVelocity,
+        daysOfCover: line.daysOfCover,
+        unitsSold: line.unitsSold,
+      })),
+      lineItems: rawLines.map((line) => ({
+        productId: line.productId,
+        productExternalId: line.productExternalId,
+        variantId: line.variantId,
+        variantExternalId: line.variantExternalId,
+        inventoryItemId: line.inventoryItemId,
+        title: line.title,
+        sku: line.sku,
+        quantity: line.quantity,
+        available: line.available,
+        dailyVelocity: line.dailyVelocity,
+        daysOfCover: line.daysOfCover,
+        unitsSold: line.unitsSold,
+      })),
+    },
+    magnitude: { lineItemCount: previewed.preview.lineItems.length },
+  };
+}
+
+const INVENTORY_TRACKING_QUERY = `#graphql
+  query InventoryTransferTrackingCheck($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on InventoryItem {
+        id
+        tracked
+      }
+    }
+  }`;
+
+/**
+ * Shopify refuses inventory transfers for untracked inventory items. The local
+ * catalogue mirror predates storing `InventoryItem.tracked`, so when a real
+ * offline session is available this read-only check proves the transfer scope
+ * is executable before Luna sees it.
+ *
+ * @param {any} prisma
+ * @param {{ shopId: string; rawLines: any[] }} input
+ */
+async function filterInventoryTransferTrackedLines(prisma, input) {
+  if (
+    input.rawLines.length > 0 &&
+    input.rawLines.every((line) => typeof line.inventoryTracked === "boolean")
+  ) {
+    return input.rawLines.filter((line) => line.inventoryTracked === true);
+  }
+  if (!input.rawLines.length || !prisma?.session?.findFirst || !prisma?.shop?.findFirst) {
+    return input.rawLines;
+  }
+  const inventoryItemIds = [
+    ...new Set(
+      input.rawLines
+        .map((line) => stringOrNull(line.inventoryItemId))
+        .filter(Boolean),
+    ),
+  ];
+  if (inventoryItemIds.length === 0) return [];
+  try {
+    const shop = await prisma.shop.findFirst({
+      where: { id: input.shopId },
+      select: { shopDomain: true },
+    });
+    if (!shop?.shopDomain) return input.rawLines;
+    const session = await prisma.session.findFirst({
+      where: { shop: shop.shopDomain, isOnline: false },
+      orderBy: { expires: "desc" },
+      select: { accessToken: true },
+    });
+    if (!session?.accessToken) return input.rawLines;
+    const client = new ShopifyAdminGraphqlClient({
+      shopDomain: shop.shopDomain,
+      accessToken: session.accessToken,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+    });
+    const data = await client.request(INVENTORY_TRACKING_QUERY, {
+      ids: inventoryItemIds,
+    });
+    const trackedById = new Map(
+      (Array.isArray(data?.nodes) ? data.nodes : [])
+        .filter((/** @type {any} */ node) => typeof node?.id === "string")
+        .map((/** @type {any} */ node) => [node.id, node.tracked === true]),
+    );
+    if (trackedById.size === 0) return [];
+    return input.rawLines.filter(
+      (line) => trackedById.get(line.inventoryItemId) === true,
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * @param {any} preview
  * @param {number} _confidence
  * @param {{ lineItemCount?: number }} [caps]
@@ -344,6 +603,74 @@ function computeInventoryTransferEligibility(preview, _confidence, caps = DEFAUL
       "inventory_transfers_are_irreversible",
     ],
   };
+}
+
+/** @param {any[]} rows @param {(row: any) => string | null | undefined} keyFor */
+function groupBy(rows, keyFor) {
+  const map = new Map();
+  for (const row of rows ?? []) {
+    const key = keyFor(row);
+    if (!key) continue;
+    const list = map.get(key) ?? [];
+    list.push(row);
+    map.set(key, list);
+  }
+  return map;
+}
+
+/** @param {Array<{ locationExternalId?: string | null; available?: number | null }>} levels */
+function rankLocations(levels) {
+  const byLocation = new Map();
+  for (const level of levels ?? []) {
+    const id = stringOrNull(level?.locationExternalId);
+    if (!id) continue;
+    const current = byLocation.get(id) ?? { locationExternalId: id, rowCount: 0, available: 0 };
+    current.rowCount += 1;
+    current.available += Number(level.available) || 0;
+    byLocation.set(id, current);
+  }
+  return [...byLocation.values()].sort(
+    (a, b) =>
+      b.rowCount - a.rowCount ||
+      b.available - a.available ||
+      a.locationExternalId.localeCompare(b.locationExternalId),
+  );
+}
+
+/** @param {any[]} variants @param {any} lowCoverItem */
+function chooseVariantForLowCoverItem(variants, lowCoverItem) {
+  const requestedVariantId = stringOrNull(lowCoverItem?.variantId);
+  if (requestedVariantId) {
+    const exact = variants.find(
+      (variant) =>
+        variant.id === requestedVariantId ||
+        variant.externalId === requestedVariantId,
+    );
+    if (exact) return exact;
+  }
+  return (
+    variants.find((variant) => /single|default/i.test(String(variant.title ?? ""))) ??
+    variants[0] ??
+    null
+  );
+}
+
+/** @param {unknown} value */
+function stringOrNull(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+/** @param {unknown} value */
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/** @param {unknown} value */
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 /** @param {{ summary: any, preview: any, runId: string, executable: boolean }} input */
@@ -580,6 +907,54 @@ function getPrimitive(actionType) {
 /** Action types this layer can actually propose — the binding table, not the registry. */
 export function listResolvableActionTypes() {
   return Object.keys(PRIMITIVES);
+}
+
+/**
+ * Read-only actionability probe for recommendation-time validation. This runs the same
+ * deterministic primitive resolver that proposal creation uses, but does not create an
+ * ActionExecution row and never writes to Shopify.
+ *
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; intent: any; sourceRecommendation?: any }} input
+ */
+export async function inspectActionIntentOpportunity(prisma, input) {
+  const opportunity = await resolveActionIntentOpportunity(prisma, input);
+  if (opportunity.status !== "ready") return opportunity;
+  return {
+    status: "ready",
+    actionType: opportunity.intent.actionType,
+    targetKind: opportunity.intent.targetKind,
+    summary: opportunity.resolved.summary,
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; intent: any; sourceRecommendation?: any }} input
+ * @returns {Promise<
+ *   | { status: "ready"; intent: any; primitive: PrimitiveBinding; resolved: { preview: any; summary: any; magnitude: Record<string, number|undefined> } }
+ *   | { status: "invalid"; reason: string }
+ *   | { status: "unsupported"; reason: string }
+ *   | { status: "no_opportunity" }
+ * >}
+ */
+async function resolveActionIntentOpportunity(prisma, input) {
+  const validation = validateActionIntent(input.intent);
+  if (!validation.ok) return { status: "invalid", reason: validation.reason };
+  const intent = validation.intent;
+
+  const primitive = getPrimitive(intent.actionType);
+  if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
+
+  const resolved = await primitive.resolve(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    intent,
+    sourceRecommendation: input.sourceRecommendation,
+  });
+  if (!resolved) return { status: "no_opportunity" };
+
+  return { status: "ready", intent, primitive, resolved };
 }
 
 /** Round to 2 decimals (mirrors the clearance sizing math). @param {unknown} n */
@@ -842,23 +1217,21 @@ export async function proposeActionFromIntent(prisma, input) {
   if (!validation.ok) return { status: "invalid", reason: validation.reason };
   const intent = validation.intent;
 
-  // The BINDING, not the registry, is what makes an action proposable — and it carries the
-  // caps, eligibility calculator and presenters this function used to hardcode to clearance.
-  const primitive = getPrimitive(intent.actionType);
-  if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
-
   const existing = await findExistingProposal(prisma, input);
   if (existing) {
+    const primitive = getPrimitive(intent.actionType);
+    if (!primitive) return { status: "unsupported", reason: `no_resolver:${intent.actionType}` };
     return existingProposal(primitive, existing, input.writeEnabled === true);
   }
 
-  const resolved = await primitive.resolve(prisma, {
+  const opportunity = await resolveActionIntentOpportunity(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     intent,
     sourceRecommendation: input.sourceRecommendation,
   });
-  if (!resolved) return { status: "no_opportunity" };
+  if (opportunity.status !== "ready") return opportunity;
+  const { primitive, resolved } = opportunity;
   const { preview, summary: proposalSummary, magnitude } = resolved;
 
   // Deterministic proposal: the numbers are facts (only costed variants, floored at
@@ -1456,7 +1829,7 @@ export async function reviseAction(prisma, input) {
     writeEnabled: isActionExecuteEnabled(existing.actionType), // this action's own flag, not clearance's
     sourceRecommendation: /** @type {any} */ (existing.proposalSummary)?.sourceRecommendation ?? null,
   });
-  if (reproposed.status !== "proposed") {
+  if (reproposed.status !== "proposed" || !("execution" in reproposed)) {
     // No safe revision (e.g. the opportunity is gone) — leave the original in place.
     return { status: reproposed.status, reason: "reason" in reproposed ? reproposed.reason : undefined };
   }

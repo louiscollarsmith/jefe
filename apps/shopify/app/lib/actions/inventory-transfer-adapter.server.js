@@ -1,5 +1,7 @@
 // @ts-check
 
+import { createHash } from "node:crypto";
+
 /**
  * Inventory transfer adapter — the typed, idempotent write primitive for
  * `inventoryTransferCreate` on Shopify.
@@ -107,6 +109,7 @@ export function previewInventoryTransfer(input) {
  * @param {any} prisma
  * @param {{
  *   actionId: string;
+ *   executionId?: string | null;
  *   merchantId: string;
  *   shopId: string;
  *   idempotencyKey: string;
@@ -127,23 +130,6 @@ export async function executeInventoryTransfer(prisma, input) {
     };
   }
 
-  // Idempotency: if a write row with this key already succeeded, return it.
-  const existing = await prisma.actionExecutionWrite?.findFirst?.({
-    where: {
-      idempotencyKey: input.idempotencyKey,
-      status: "applied",
-    },
-  });
-  if (existing) {
-    return {
-      ok: true,
-      deduplicated: true,
-      idempotencyKey: input.idempotencyKey,
-      shopifyTransferId: existing.externalId ?? null,
-      result: existing.result ?? null,
-    };
-  }
-
   // Validate preview one more time at gate (compare-and-set: reject if the input
   // has drifted from what was approved).
   const validated = previewInventoryTransfer(input.preview);
@@ -151,11 +137,52 @@ export async function executeInventoryTransfer(prisma, input) {
     return { ok: false, reason: validated.reason, message: validated.message };
   }
 
+  const transferTargetRef = "shopify:inventory_transfer";
+  const targetValueKey = `idempotency:${input.idempotencyKey}`;
+  let write = null;
+  if (input.executionId && prisma.actionExecutionWrite?.upsert) {
+    write = await prisma.actionExecutionWrite.upsert({
+      where: {
+        executionId_targetRef_targetValueKey: {
+          executionId: input.executionId,
+          targetRef: transferTargetRef,
+          targetValueKey,
+        },
+      },
+      create: {
+        executionId: input.executionId,
+        targetRef: transferTargetRef,
+        targetValueKey,
+        expectedFrom: null,
+        targetValue: {
+          kind: "inventory_transfer",
+          idempotencyKey: input.idempotencyKey,
+          inputHash: hashPayload(validated.preview),
+          originLocationId: validated.preview.originLocationId,
+          destinationLocationId: validated.preview.destinationLocationId,
+          lineItems: validated.preview.lineItems,
+        },
+        status: "pending",
+      },
+      update: {},
+    });
+    if (write.status === "applied") {
+      return {
+        ok: true,
+        deduplicated: true,
+        idempotencyKey: input.idempotencyKey,
+        shopifyTransferId: write.targetValue?.shopifyTransferId ?? null,
+        result: write.targetValue ?? null,
+      };
+    }
+  }
+
   let shopifyResult;
   try {
     shopifyResult = await input.shopifyClient.createInventoryTransfer({
       originLocationId: validated.preview.originLocationId,
       destinationLocationId: validated.preview.destinationLocationId,
+      idempotencyKey: input.idempotencyKey,
       lineItems: validated.preview.lineItems.map((item) => ({
         inventoryItemId: item.inventoryItemId,
         quantity: item.quantity,
@@ -176,10 +203,24 @@ export async function executeInventoryTransfer(prisma, input) {
     };
   }
 
-  const transferId = shopifyResult?.transfer?.id ?? shopifyResult?.id ?? null;
-  const transferStatus = shopifyResult?.transfer?.status ?? shopifyResult?.status ?? null;
+  const transfer =
+    shopifyResult?.transfer ?? shopifyResult?.inventoryTransfer ?? shopifyResult;
+  const transferId = transfer?.id ?? null;
+  const transferStatus = transfer?.status ?? null;
 
   if (shopifyResult?.userErrors?.length > 0) {
+    if (write?.id && prisma.actionExecutionWrite?.update) {
+      await prisma.actionExecutionWrite.update({
+        where: { id: write.id },
+        data: {
+          status: "failed",
+          targetValue: {
+            ...write.targetValue,
+            userErrors: shopifyResult.userErrors,
+          },
+        },
+      });
+    }
     return {
       ok: false,
       reason: "shopify_user_errors",
@@ -189,19 +230,18 @@ export async function executeInventoryTransfer(prisma, input) {
   }
 
   // Durably persist the external result.
-  if (prisma.actionExecutionWrite?.create) {
+  if (write?.id && prisma.actionExecutionWrite?.update) {
     try {
-      await prisma.actionExecutionWrite.create({
+      await prisma.actionExecutionWrite.update({
+        where: { id: write.id },
         data: {
-          idempotencyKey: input.idempotencyKey,
-          actionId: input.actionId,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          targetRef: `shopify:inventoryTransfer:${transferId ?? "unknown"}`,
-          externalId: transferId,
+          targetValue: {
+            ...write.targetValue,
+            shopifyTransferId: transferId,
+            shopifyStatus: transferStatus,
+            result: shopifyResult,
+          },
           status: "applied",
-          actor: input.actor ?? input.merchantId,
-          result: shopifyResult,
           appliedAt: new Date(),
         },
       });
@@ -216,6 +256,15 @@ export async function executeInventoryTransfer(prisma, input) {
         error: writeError instanceof Error ? writeError.message : "UnknownError",
       });
     }
+  }
+  if (input.executionId && prisma.actionExecution?.update) {
+    await prisma.actionExecution.update({
+      where: { id: input.executionId },
+      data: {
+        status: "applied",
+        appliedAt: new Date(),
+      },
+    });
   }
 
   logger.info("inventory transfer created", {
@@ -235,4 +284,12 @@ export async function executeInventoryTransfer(prisma, input) {
     status: transferStatus,
     lineItemCount: validated.preview.lineItems.length,
   };
+}
+
+/** @param {unknown} value */
+function hashPayload(value) {
+  return createHash("sha256")
+    .update(JSON.stringify(value))
+    .digest("hex")
+    .slice(0, 16);
 }

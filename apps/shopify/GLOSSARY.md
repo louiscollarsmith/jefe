@@ -98,6 +98,7 @@ typed adapters write to Shopify or another external system.
 ## Recommendations And Actions
 
 - **Insight** — A grounded observation about the business, shown with supporting evidence.
+- **Grounded opportunity** — A deterministic, capability-aware candidate for Jefe's next recommendation. It is prepared before Luna prioritises the Plan and carries evidence, affected entities, initial proposal/state and the executable Shopify capability Jefe can bind to.
 - **Recommendation** — Jefe's proposed business move, now shaped as a route to completion rather than only a single action.
 - **Recommendation workflow** — The ordered steps Jefe proposes for completing one recommendation.
 - **Recommendation step** — One unit of work inside a recommendation workflow; Jefe may execute it, assist it, ask for evidence, or leave it as a merchant action.

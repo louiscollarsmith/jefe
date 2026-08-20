@@ -208,9 +208,26 @@ export async function resolveShopifyProductReference(prisma, input) {
  * Restock evidence from Merchant Memory — assist only, no Shopify write.
  *
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string }} input
+ * @param {{ merchantId: string; shopId: string; action?: any }} input
  */
 export async function inspectRestockEvidence(prisma, input) {
+  const proposalItems =
+    input?.action?.progress?.selectedOpportunity?.initialProposal?.lineItems;
+  if (Array.isArray(proposalItems) && proposalItems.length > 0) {
+    return proposalItems.slice(0, 40).map((/** @type {any} */ item) => ({
+      title: String(item?.title ?? "").trim() || "Untitled product",
+      productId: typeof item?.productId === "string" ? item.productId : null,
+      variantId: typeof item?.variantId === "string" ? item.variantId : null,
+      inventoryItemId:
+        typeof item?.inventoryItemId === "string" ? item.inventoryItemId : null,
+      available: numberOrNull(item?.available),
+      dailyVelocity: numberOrNull(item?.dailyVelocity),
+      daysOfCover: numberOrNull(item?.daysOfCover),
+      recommendedUnits: numberOrNull(item?.quantity),
+      recommendedUnitsAtDefaultCover: numberOrNull(item?.quantity),
+      source: "selected_opportunity",
+    }));
+  }
   if (!prisma?.merchantMemoryBelief?.findFirst) return [];
   try {
     const belief = await prisma.merchantMemoryBelief.findFirst({

@@ -4,6 +4,9 @@ import { Type } from "@google/genai";
 import { formatAssistArtifactForChat } from "../format.server.js";
 import { generateSemanticArtifact } from "../generate-artifact.server.js";
 
+export const SUPPLIER_EMAIL_ARTIFACT_PROMPT_VERSION =
+  "artifact_supplier_email:v2";
+
 /** @param {any} context */
 export async function runSupplierEmailDraftAssist(context) {
   const provider = context.provider ?? null;
@@ -106,7 +109,13 @@ export async function runSupplierEmailDraftAssist(context) {
 
   const objective = "Draft a supplier replenishment communication email.";
   const systemPrompt = [
-    "You draft a supplier email using provided grounding only.",
+    "Generate the requested supplier email artifact from the supplied CURRENT canonical Action inputs.",
+    "Do not change the Action.",
+    "Do not alter quantities, scope, constraints or decisions.",
+    "Do not infer values from historical artifacts.",
+    "Only use the supplied current proposal and supporting facts.",
+    "If required information is missing, make the missing input clear rather than inventing it.",
+    "The artifact must faithfully reflect the supplied action revision.",
     "Do not invent products, quantities, or units; echo exactly what grounding provides.",
     "Write in a professional, concise tone.",
     "Return only JSON matching the schema.",
@@ -119,6 +128,7 @@ export async function runSupplierEmailDraftAssist(context) {
       draft = await generateSemanticArtifact(provider, {
         systemPrompt,
         artifactType: "supplier_email_draft",
+        promptVersion: SUPPLIER_EMAIL_ARTIFACT_PROMPT_VERSION,
         objective,
         grounding: {
           coverDays: context.targetCoverDays ?? context?.resolvedContext?.plan?.values?.coverDays ?? null,
@@ -157,6 +167,7 @@ export async function runSupplierEmailDraftAssist(context) {
       })),
     derivedFromProposalRevision: canonicalProposal?.revision ?? null,
     derivedFromProposalFingerprint: canonicalProposal?.inputFingerprint ?? null,
+    promptVersion: SUPPLIER_EMAIL_ARTIFACT_PROMPT_VERSION,
     targetCoverDays: canonicalProposal?.coverDays ?? context.targetCoverDays ?? null,
     nextPrompt: String(used.nextPrompt ?? fallbackDraft.nextPrompt),
   };

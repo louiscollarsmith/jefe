@@ -53,6 +53,8 @@ const RESTOCK_EVIDENCE_REFS = new Set(["assist:inventory_review"]);
  *   statusLabel?: string | null;
  *   legacyMode?: string | null;
  *   capabilityRef?: string | null;
+ *   intendedActor?: string | null;
+ *   approvalRequired?: boolean;
  *   capabilityAvailability?: string | null;
  *   workState?: string | null;
  *   artifact?: any;
@@ -67,7 +69,10 @@ const RESTOCK_EVIDENCE_REFS = new Set(["assist:inventory_review"]);
 export function buildActionWorkspace(action, projection = {}) {
   const existing = normalizeWorkspace(action?.progress?.workspace);
   const kind = actionKind(action);
-  const steps = workflowSteps(action);
+  const steps = prepareWorkflowStepsForWorkspaceV2(workflowSteps(action), {
+    title: action?.title,
+    summary: action?.summary,
+  });
   if (existing && existing.version === ACTION_WORKSPACE_VERSION && kind !== "restock") {
     return refreshWorkspace(existing, action, projection);
   }
@@ -77,7 +82,9 @@ export function buildActionWorkspace(action, projection = {}) {
     return existing ? refreshWorkspace(existing, action, projection) : null;
   }
   const projectedItems = steps
-    .map((step, index) => workspaceItemFromStep(step, { kind, index }))
+    .map((/** @type {any} */ step, /** @type {number} */ index) =>
+      workspaceItemFromStep(step, { kind, index }),
+    )
     .filter(Boolean);
 
   const workspace = {
@@ -104,33 +111,39 @@ export function buildActionWorkspace(action, projection = {}) {
  */
 export function prepareWorkflowStepsForWorkspaceV2(steps, recommendation = {}) {
   const rows = Array.isArray(steps) ? steps : [];
+  const hasInventoryTransfer = rows.some(isInventoryTransferExecuteStep);
   const restock = isRestockText(
     `${recommendation.title ?? ""} ${recommendation.summary ?? ""} ${rows
       .map((step) => `${step?.title ?? ""} ${step?.capabilityRef ?? ""}`)
       .join(" ")}`,
   );
   if (!restock) return rows;
-  const hasProposal = rows.some(
-    (step) => step?.capabilityRef === "assist:replenishment_proposal",
+  let preparedRows = hasInventoryTransfer
+    ? removeInventoryTransferMerchantWork(rows)
+    : rows;
+  const hasProposal = preparedRows.some(
+    (/** @type {any} */ step) => step?.capabilityRef === "assist:replenishment_proposal",
   );
-  if (!hasProposal) return rows;
+  if (!hasProposal) return preparedRows;
 
   const removed = new Set(
-    rows
-      .filter((step) => RESTOCK_EVIDENCE_REFS.has(String(step?.capabilityRef ?? "")))
-      .map((step) => String(step?.id ?? ""))
+    preparedRows
+      .filter((/** @type {any} */ step) =>
+        RESTOCK_EVIDENCE_REFS.has(String(step?.capabilityRef ?? "")),
+      )
+      .map((/** @type {any} */ step) => String(step?.id ?? ""))
       .filter(Boolean),
   );
-  if (removed.size === 0) return rows;
+  if (removed.size === 0) return preparedRows;
 
-  return rows
-    .filter((step) => !removed.has(String(step?.id ?? "")))
-    .map((step) => ({
+  return preparedRows
+    .filter((/** @type {any} */ step) => !removed.has(String(step?.id ?? "")))
+    .map((/** @type {any} */ step) => ({
       ...step,
       dependsOnStepIds: /** @type {any[]} */ (Array.isArray(step?.dependsOnStepIds)
         ? step.dependsOnStepIds
         : []
-      ).filter((id) => !removed.has(String(id))),
+      ).filter((/** @type {any} */ id) => !removed.has(String(id))),
     }));
 }
 
@@ -300,6 +313,8 @@ export function workspacePlanItems(workspace) {
       statusLabel: item.statusLabel ?? stateLabel(item),
       mode: item.legacyMode ?? null,
       capabilityRef: item.capabilityRef ?? null,
+      intendedActor: item.intendedActor ?? null,
+      approvalRequired: item.approvalRequired === true,
       itemKind: item.kind,
       workspaceState: item.state,
       workState: item.workState ?? item.state,
@@ -324,6 +339,35 @@ export function normalizeWorkspace(workspace) {
     items: Array.isArray(workspace.items) ? workspace.items : [],
     artifacts: Array.isArray(workspace.artifacts) ? workspace.artifacts : [],
   };
+}
+
+/** @param {any[]} rows */
+function removeInventoryTransferMerchantWork(rows) {
+  const removedIds = new Set(
+    rows
+      .filter((/** @type {any} */ step) => step?.capabilityRef === "merchant_action:external_purchase_order")
+      .map((/** @type {any} */ step) => String(step?.id ?? ""))
+      .filter(Boolean),
+  );
+  const retained = rows.filter((/** @type {any} */ step) => !removedIds.has(String(step?.id ?? "")));
+  const byId = new Map(retained.map((/** @type {any} */ step) => [String(step?.id ?? ""), step]));
+  return retained.map((/** @type {any} */ step) => {
+    const deps = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
+    const dependsOnStepIds = deps.filter((/** @type {any} */ id) => {
+      const depId = String(id);
+      if (removedIds.has(depId)) return false;
+      const dependency = byId.get(depId);
+      if (!dependency) return false;
+      if (isInventoryTransferExecuteStep(step)) {
+        return [
+          "assist:replenishment_proposal",
+          "evidence:confirm_quantities",
+        ].includes(String(dependency?.capabilityRef ?? ""));
+      }
+      return true;
+    });
+    return { ...step, dependsOnStepIds };
+  });
 }
 
 /**
@@ -424,11 +468,19 @@ function workspaceItemFromStep(step, input) {
     };
   }
   if (step?.mode === "execute") {
+    const capability = resolveStepCapabilityTruth(step);
+    const approvalRequired =
+      capability?.approvalPolicy?.startsWith("MERCHANT_REQUIRED") === true;
     return {
       ...common,
       kind: WORKSPACE_ITEM_KIND.execution,
-      state: "ready",
-      statusLabel: "Ready",
+      state: approvalRequired ? "approval_required" : "ready",
+      statusLabel: approvalRequired ? "Approval required" : "Ready",
+      intendedActor: capability?.intendedActor ?? INTENDED_ACTOR.jefe,
+      approvalRequired,
+      capabilityAvailability:
+        capability?.availability ?? CAPABILITY_AVAILABILITY.available,
+      capabilityTruth: capability,
     };
   }
   if (step?.mode === "merchant_action" || step?.mode === "evidence_required") {
@@ -482,6 +534,21 @@ function refreshWorkspaceItem(item, input) {
   ) {
     state = "integration_limitation";
   }
+  if (item.kind === WORKSPACE_ITEM_KIND.execution && item.approvalRequired === true) {
+    const executionStatus = normalizeToken(
+      input.action?.currentExecution?.status ?? input.action?.executionStatus,
+    );
+    if (["applied", "partially_applied"].includes(executionStatus)) {
+      state = "completed";
+    } else if (executionStatus === "approved") {
+      state = "running";
+    } else if (
+      ["", "proposed"].includes(executionStatus) &&
+      ["ready", "available", "approval_required"].includes(state)
+    ) {
+      state = "approval_required";
+    }
+  }
 
   return {
     ...item,
@@ -512,11 +579,15 @@ function mergeWorkspaceItems(projectedItems, existingItems) {
       bySemanticKey.get(String(item.semanticKey ?? "")) ??
       null;
     if (!prior) return item;
+    const resetApprovalExecution =
+      item.kind === WORKSPACE_ITEM_KIND.execution && item.approvalRequired === true;
     return {
       ...prior,
       ...item,
-      state: prior.state ?? item.state,
-      workState: prior.workState ?? item.workState ?? null,
+      state: resetApprovalExecution ? item.state : (prior.state ?? item.state),
+      workState: resetApprovalExecution
+        ? (item.workState ?? null)
+        : (prior.workState ?? item.workState ?? null),
       artifact: jsonObject(prior.artifact ?? item.artifact),
       summary: prior.summary ?? item.summary ?? null,
       statusLabel: item.statusLabel ?? prior.statusLabel ?? null,
@@ -687,6 +758,19 @@ function isRestockText(text) {
   return /\b(restock|replenish(?:ment)?|reorder|stock cover|supplier order|purchase order|\bpo\b)\b/i.test(
     text,
   );
+}
+
+/** @param {any} step */
+function isInventoryTransferExecuteStep(step) {
+  return (
+    step?.mode === "execute" &&
+    step?.capabilityRef === "execute:shopify_inventory_transfer:restock"
+  );
+}
+
+/** @param {unknown} value */
+function normalizeToken(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
 /** @param {any} step */
