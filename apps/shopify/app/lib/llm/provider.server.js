@@ -9,9 +9,14 @@ import {
 } from "./errors.server.js";
 import { createGeminiProvider } from "./providers/gemini.server.js";
 import { createGroqProvider } from "./providers/groq.server.js";
+import { createOpenAiProvider } from "./providers/openai.server.js";
 import { createOpenAiCompatibleProvider } from "./providers/openai-compatible.server.js";
 import { logger as baseLogger } from "../observability/logger.server.js";
-import { recordLlmUsage } from "./usage-recorder.server.js";
+import {
+  finishLlmUsageAttempt,
+  recordLlmUsage,
+  startLlmUsageAttempt,
+} from "./usage-recorder.server.js";
 import { recordLlmFallback } from "../observability/llm-provider-health.server.js";
 
 /**
@@ -69,6 +74,11 @@ function createProviderForTarget(input) {
       ? createGeminiProvider({ config: targetConfig, logger })
       : null;
   }
+  if (provider === "openai") {
+    return config.openAiApiKey
+      ? createOpenAiProvider({ config: targetConfig, logger })
+      : null;
+  }
   if (provider === "groq") {
     return config.groqApiKey
       ? createGroqProvider({ config: targetConfig, logger })
@@ -116,6 +126,9 @@ function createFallbackProvider(config, logger) {
  * @param {string} provider
  */
 function missingApiKeyError(provider) {
+  if (provider === "openai") {
+    return new Error("OPENAI_API_KEY is required when LLM_PROVIDER=openai or LLM_CHAT_PROVIDER=openai.");
+  }
   if (provider === "groq") {
     return new Error("GROQ_API_KEY is required when LLM_ENABLED=true.");
   }
@@ -287,6 +300,7 @@ export function withUsageRecording(provider, ctx) {
     // costs a merchant their wait — recording that as null made the expensive
     // cases the invisible ones.
     const askedAt = Date.now();
+    const attemptId = await startLlmUsageAttempt(ctx.prisma, base);
     try {
       const result = await method(request);
       if (result.fallback) {
@@ -299,7 +313,7 @@ export function withUsageRecording(provider, ctx) {
           status: "error",
         });
       }
-      void recordLlmUsage(ctx.prisma, {
+      void finishLlmUsageAttempt(ctx.prisma, attemptId, {
         ...base,
         provider: result.provider ?? base.provider,
         model: result.model ?? base.model,
@@ -316,7 +330,7 @@ export function withUsageRecording(provider, ctx) {
       const elapsedMs = Date.now() - askedAt;
       if (fallbackAttempt) {
         const primaryMs = fallbackAttempt.failedAfterMs ?? null;
-        void recordLlmUsage(ctx.prisma, {
+        void finishLlmUsageAttempt(ctx.prisma, attemptId, {
           ...base,
           provider: fallbackAttempt.fromProvider,
           model: fallbackAttempt.fromModel,
@@ -338,11 +352,11 @@ export function withUsageRecording(provider, ctx) {
           status: "error",
         });
       } else {
-        void recordLlmUsage(ctx.prisma, {
+        void finishLlmUsageAttempt(ctx.prisma, attemptId, {
           ...base,
           usage: null,
           latencyMs: elapsedMs,
-          status: "error",
+          status: isTimeoutError(error) ? "timed_out" : "error",
         });
       }
       throw error;
@@ -357,6 +371,15 @@ export function withUsageRecording(provider, ctx) {
       ? wrap(provider.generateStructuredJson.bind(provider))
       : undefined,
   };
+}
+
+/** @param {unknown} error */
+function isTimeoutError(error) {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  if (error instanceof Error && /abort|timeout|timed out/i.test(error.message)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -455,6 +478,7 @@ export function createMockLlmProvider(input) {
  *     operation: any;
  *     usage: {
  *       inputTokens?: number | null;
+ *       cachedInputTokens?: number | null;
  *       outputTokens?: number | null;
  *       totalTokens?: number | null;
  *       estimatedInputTokens: number;
@@ -476,6 +500,7 @@ export function createMockLlmProvider(input) {
  *     json: any;
  *     usage: {
  *       inputTokens?: number | null;
+ *       cachedInputTokens?: number | null;
  *       outputTokens?: number | null;
  *       totalTokens?: number | null;
  *       estimatedInputTokens: number;

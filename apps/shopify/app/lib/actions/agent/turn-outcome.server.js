@@ -51,11 +51,14 @@ const SUCCESS_ASSERTION =
 export function summarizeLedger(ledger) {
   const rows = Array.isArray(ledger) ? ledger : [];
   const effectful = rows.filter((row) => EFFECTFUL.has(row.effect));
+  const fatalFailures = rows.filter(
+    (row) => !row.ok && row.error && row.error.code !== "ALREADY_RUN",
+  );
   return {
     all: rows,
     reads: rows.filter((row) => row.effect === TOOL_EFFECT.read),
     succeeded: effectful.filter((row) => row.ok),
-    failed: rows.filter((row) => !row.ok && row.error),
+    failed: fatalFailures,
     blocked: rows.filter((row) => !row.ok && row.blocked),
     clarifications: rows.filter((row) => row.blocked?.code === "AMBIGUOUS"),
     changes: effectful.filter((row) => row.ok).flatMap((row) => row.changes ?? []),

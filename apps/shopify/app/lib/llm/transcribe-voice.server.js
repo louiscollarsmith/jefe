@@ -4,18 +4,19 @@
 // its own GoogleGenAI client from config and sends the audio as an inline part, so it doesn't
 // touch the shared text-only provider. Metered through the cost ledger (feature "voice_feedback").
 //
-// Model: defaults to the Gemini fallback model, overridable via VOICE_TRANSCRIBE_MODEL. The shared
-// text model may be Groq-only and may not accept audio input. VERIFY the chosen Gemini model
-// transcribes audio before flipping ENABLE_VOICE_FEEDBACK (a go-live step); until then this is
-// dark/unused.
+// Model: defaults to a Gemini audio-capable model, overridable via VOICE_TRANSCRIBE_MODEL. The
+// shared text model may be OpenAI/Groq-only and may not accept audio input. VERIFY the chosen
+// Gemini model transcribes audio before flipping ENABLE_VOICE_FEEDBACK (a go-live step); until then
+// this is dark/unused.
 
 import { GoogleGenAI } from "@google/genai";
-import { DEFAULT_LLM_FALLBACK_MODEL, getLlmConfig } from "./config.server.js";
+import { getLlmConfig } from "./config.server.js";
 import { assertExternalLlmCallAllowed } from "./external-call-guard.server.js";
 import { recordLlmUsage } from "./usage-recorder.server.js";
 
 const TRANSCRIBE_PROMPT =
   "Transcribe this voice note from a Shopify merchant into plain text, verbatim. Output only the transcript — no preamble, no commentary.";
+const DEFAULT_VOICE_TRANSCRIBE_MODEL = "gemini-3.1-flash-lite";
 
 /** @param {NodeJS.ProcessEnv} [env] */
 export function getVoiceTranscribeModel(env = process.env) {
@@ -23,7 +24,7 @@ export function getVoiceTranscribeModel(env = process.env) {
     env.VOICE_TRANSCRIBE_MODEL ||
     env.LLM_FALLBACK_MODEL ||
     getLlmConfig({ env }).fallbackModel ||
-    DEFAULT_LLM_FALLBACK_MODEL
+    DEFAULT_VOICE_TRANSCRIBE_MODEL
   );
 }
 

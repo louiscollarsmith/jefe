@@ -644,7 +644,7 @@ test("structural replanning preserves order, corrections, removals, identity and
   );
   const firstPurchaseId = currentSteps(prisma)[3].id;
 
-  await say("Actually remove that final step.");
+  await say("Remove the final step (Create purchase order).");
   assert.deepEqual(currentTitles(prisma), [
     "Review low-cover inventory",
     "Build replenishment proposal",

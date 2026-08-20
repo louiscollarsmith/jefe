@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Development-only live Gemini evaluator for the focused-action runtime.
+ * Development-only live LLM evaluator for the focused-action runtime.
  *
  * This is intentionally outside `npm test`: it makes real model calls, uses a
  * local development database fixture, and exercises the same
@@ -15,11 +15,7 @@ import { PrismaClient } from "@prisma/client";
 
 import { loadLocalEnv } from "./load-env.mjs";
 import { createLlmProvider } from "../app/lib/llm/provider.server.js";
-import {
-  getLlmConfig,
-  DEFAULT_LLM_CHAT_FALLBACK_MODEL,
-  DEFAULT_LLM_FALLBACK_MODEL,
-} from "../app/lib/llm/config.server.js";
+import { getLlmConfig } from "../app/lib/llm/config.server.js";
 import { handleFocusedActionMessage } from "../app/lib/actions/agent/focused-action-turn.server.js";
 import { resolveActionState } from "../app/lib/actions/action-state.server.js";
 import { logger as baseLogger } from "../app/lib/observability/logger.server.js";
@@ -37,6 +33,7 @@ const REPORT_PATH = resolve(
 const logger = baseLogger.child({ component: "focused-action-live-eval" });
 
 const prisma = new PrismaClient();
+const EVAL_RUN_ID = randomUUID();
 
 const SCENARIOS = [
   {
@@ -151,9 +148,29 @@ const SCENARIOS = [
       "I meant purchase orders sorry.",
       "Actually remove that final step.",
       "Add the purchase order back at the end.",
-      "Remove step 4.",
+      "Remove step 3.",
     ],
     assert: [assertExactReplanJourney],
+  },
+  {
+    key: "S",
+    title: "Dynamic scope, canonical proposal, artifact coherence, PO capability truth",
+    turns: [
+      "Make the proposal 240 days of cover.",
+      "Ash Path Listan also comes from the same supplier, can you add this to the plan too and work out how much we need for 240 days given our current stock holding?",
+      "Actually make it 120 days again.",
+      "Update the supplier email for the new proposal.",
+      "We don't actually email the supplier; we create a purchase order directly.",
+    ],
+    assert: [
+      assertCanonicalCover(120),
+      assertProductQuantity("Ash Path Listan", 12),
+      assertStepAbsent(/supplier communication|email/i),
+      assertStepPresent(/purchase order|\bpo\b/i),
+      assertPurchaseOrderCapabilityTruth,
+      assertNoInternalValidationLeak,
+      assertNoCrossRevisionQuantityMix,
+    ],
   },
   {
     key: "Q1",
@@ -180,13 +197,7 @@ const SCENARIOS = [
 
 async function main() {
   assertLocalDatabase();
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error(
-      "GEMINI_API_KEY is required for npm run eval:focused-action-live.",
-    );
-  }
-
-  const provider = createGeminiEvalProvider();
+  const provider = createConfiguredEvalProvider();
   const results = [];
   const selectedScenarios = scenarioSelection();
   const scenarios = SCENARIOS.filter((scenario) =>
@@ -201,14 +212,14 @@ async function main() {
     process.stdout.write(`# scenario ${scenario.key}: ${scenario.title}\n`);
     const result = await runScenario(provider, scenario);
     results.push(result);
-    await writeReport(buildReport(provider, results));
+    await writeReport(await buildReport(provider, results));
     process.stdout.write(
       result.ok ? "ok\n" : `not ok: ${result.failure?.message}\n`,
     );
   }
 
   const failed = results.filter((result) => !result.ok);
-  await writeReport(buildReport(provider, results));
+  await writeReport(await buildReport(provider, results));
 
   if (failed.length > 0) {
     process.stderr.write(
@@ -218,27 +229,22 @@ async function main() {
   }
 }
 
-function createGeminiEvalProvider() {
+function createConfiguredEvalProvider() {
   const chat = getLlmConfig({ feature: "general_chat" });
-  const model =
-    process.env.LLM_FOCUSED_ACTION_EVAL_MODEL ||
-    (chat.provider === "gemini"
-      ? chat.model
-      : chat.fallbackProvider === "gemini"
-        ? chat.fallbackModel
-        : DEFAULT_LLM_CHAT_FALLBACK_MODEL);
+  const providerName = process.env.LLM_FOCUSED_ACTION_EVAL_PROVIDER || chat.provider;
+  const model = process.env.LLM_FOCUSED_ACTION_EVAL_MODEL || chat.model;
   return createLlmProvider({
     config: {
       ...chat,
       enabled: true,
-      provider: "gemini",
+      provider: providerName,
       model,
-      fallbackProvider: "gemini",
+      fallbackProvider:
+        process.env.LLM_FOCUSED_ACTION_EVAL_FALLBACK_PROVIDER ??
+        chat.fallbackProvider,
       fallbackModel:
-        process.env.LLM_FOCUSED_ACTION_EVAL_FALLBACK_MODEL ||
-        (model === chat.fallbackModel
-          ? DEFAULT_LLM_FALLBACK_MODEL
-          : chat.fallbackModel),
+        process.env.LLM_FOCUSED_ACTION_EVAL_FALLBACK_MODEL ??
+        chat.fallbackModel,
       timeoutMs: positiveInteger(
         process.env.LLM_FOCUSED_ACTION_EVAL_TIMEOUT_MS,
         chat.timeoutMs,
@@ -251,21 +257,35 @@ function createGeminiEvalProvider() {
       shopId: SHOP_ID,
       feature: "focused_action_live_eval",
       runType: "development_eval",
-      runId: randomUUID(),
+      runId: EVAL_RUN_ID,
     },
   });
 }
 
-function buildReport(provider, results) {
+async function buildReport(provider, results) {
   const failed = results.filter((result) => !result.ok);
+  const usage = await loadEvalUsage();
+  const turnCount = results.reduce(
+    (sum, result) => sum + (Array.isArray(result.turns) ? result.turns.length : 0),
+    0,
+  );
   return {
     generatedAt: new Date().toISOString(),
+    runId: EVAL_RUN_ID,
     provider: provider.provider,
     model: provider.model,
     fallbackProvider: provider.fallbackProvider ?? null,
     fallbackModel: provider.fallbackModel ?? null,
     passed: results.length - failed.length,
     failed: failed.length,
+    usage: {
+      ...usage,
+      turnCount,
+      averageCallsPerTurn: turnCount > 0 ? round6(usage.calls / turnCount) : 0,
+      averageCostPerTurn: turnCount > 0 ? round6(usage.costUsd / turnCount) : 0,
+      estimatedCostPer100ActionChatMessages:
+        turnCount > 0 ? round6((usage.costUsd / turnCount) * 100) : 0,
+    },
     results,
   };
 }
@@ -305,6 +325,7 @@ async function runScenario(provider, scenario) {
 
   for (const [index, message] of scenario.turns.entries()) {
     const before = await inspect(fixture.actionId);
+    const usageCursor = new Date();
     const startedAt = Date.now();
     let result;
     let error = null;
@@ -329,6 +350,8 @@ async function runScenario(provider, scenario) {
         trace: null,
       };
     }
+    await waitForUsageFlush();
+    const usage = await loadEvalUsage({ since: usageCursor });
     const after = await inspect(fixture.actionId);
     const turn = {
       turn: index + 1,
@@ -349,6 +372,7 @@ async function runScenario(provider, scenario) {
         .map((row) => row.tool),
       ledger: result.ledger ?? [],
       structuralSnapshots: structuralSnapshots(result, before, after),
+      usage,
       stateBefore: before,
       stateAfter: after,
       error: error ? errorReport(error) : null,
@@ -368,6 +392,7 @@ async function runScenario(provider, scenario) {
         initialState: stateBeforeScenario,
       });
     }
+    assertNoInventoryReview({ finalState });
     return {
       key: scenario.key,
       title: scenario.title,
@@ -386,6 +411,98 @@ async function runScenario(provider, scenario) {
       failure: errorReport(error),
     };
   }
+}
+
+/** @param {{ since?: Date }} [input] */
+async function loadEvalUsage(input = {}) {
+  const rows = await prisma.llmUsageEvent.findMany({
+    where: {
+      runId: EVAL_RUN_ID,
+      ...(input.since ? { createdAt: { gte: input.since } } : {}),
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: {
+      provider: true,
+      model: true,
+      feature: true,
+      status: true,
+      inputTokens: true,
+      cachedInputTokens: true,
+      outputTokens: true,
+      totalTokens: true,
+      costUsd: true,
+      latencyMs: true,
+    },
+  });
+  return summarizeUsageRows(rows);
+}
+
+/** @param {Array<any>} rows */
+function summarizeUsageRows(rows) {
+  const byModel = new Map();
+  const totals = {
+    calls: rows.length,
+    okCalls: rows.filter((row) => row.status === "ok").length,
+    errorCalls: rows.filter((row) => row.status !== "ok").length,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    latencyMs: 0,
+  };
+  for (const row of rows) {
+    const key = `${row.provider}:${row.model}:${row.status}`;
+    const bucket =
+      byModel.get(key) ??
+      {
+        provider: row.provider,
+        model: row.model,
+        status: row.status,
+        calls: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+        latencyMs: 0,
+      };
+    bucket.calls += 1;
+    for (const field of [
+      "inputTokens",
+      "cachedInputTokens",
+      "outputTokens",
+      "totalTokens",
+      "latencyMs",
+    ]) {
+      const value = Number(row[field] ?? 0);
+      bucket[field] += value;
+      totals[field] += value;
+    }
+    const cost = Number(row.costUsd ?? 0);
+    bucket.costUsd += cost;
+    totals.costUsd += cost;
+    byModel.set(key, bucket);
+  }
+  return {
+    ...totals,
+    costUsd: round6(totals.costUsd),
+    averageCostPerCall:
+      rows.length > 0 ? round6(totals.costUsd / Math.max(1, totals.calls)) : 0,
+    byModel: [...byModel.values()].map((row) => ({
+      ...row,
+      costUsd: round6(row.costUsd),
+    })),
+  };
+}
+
+function waitForUsageFlush() {
+  return new Promise((resolve) => setTimeout(resolve, 100));
+}
+
+/** @param {number} value */
+function round6(value) {
+  return Math.round(value * 1e6) / 1e6;
 }
 
 async function resetFixture(scenarioKey) {
@@ -409,9 +526,8 @@ async function resetFixture(scenarioKey) {
   const workflowId = randomUUID();
   const actionId = randomUUID();
   const conversationId = randomUUID();
-  const step1 = randomUUID();
-  const step2 = randomUUID();
-  const step3 = randomUUID();
+  const proposalStepId = randomUUID();
+  const supplierStepId = randomUUID();
 
   await prisma.merchantMemoryBelief.create({
     data: {
@@ -437,6 +553,48 @@ async function resetFixture(scenarioKey) {
             available: 0,
             dailyVelocity: 0.1,
             daysOfCover: 0,
+          },
+        ],
+      },
+    },
+  });
+
+  const ashProductId = randomUUID();
+  const ashVariantId = randomUUID();
+  await prisma.product.create({
+    data: {
+      id: ashProductId,
+      merchantId: MERCHANT_ID,
+      shopId: SHOP_ID,
+      externalId: "gid://shopify/Product/ash-path-listan",
+      title: "Ash Path Listan",
+      handle: "ash-path-listan",
+      status: "ACTIVE",
+      vendor: "Eval Supplier",
+      productType: "Wine",
+      rawPayload: { dailyVelocity: 0.1 },
+      variants: {
+        create: [
+          {
+            id: ashVariantId,
+            merchantId: MERCHANT_ID,
+            shopId: SHOP_ID,
+            externalId: "gid://shopify/ProductVariant/ash-path-listan-750",
+            title: "750ml",
+            sku: "ASH-PATH-750",
+            inventoryItemExternalId: "gid://shopify/InventoryItem/ash-path-listan",
+            rawPayload: {},
+            inventoryLevels: {
+              create: [
+                {
+                  merchantId: MERCHANT_ID,
+                  shopId: SHOP_ID,
+                  inventoryItemExternalId: "gid://shopify/InventoryItem/ash-path-listan",
+                  locationExternalId: "gid://shopify/Location/main",
+                  available: 0,
+                },
+              ],
+            },
           },
         ],
       },
@@ -469,8 +627,7 @@ async function resetFixture(scenarioKey) {
       whyThisAction:
         "Pear Skin Sipon and Picnic Xinomavro are below target cover.",
       whyNow: "The current stock position is below target.",
-      startToday:
-        "Review the low-cover products and prepare replenishment quantities.",
+      startToday: "Prepare replenishment quantities for the low-cover products.",
       expectedBenefit: "Reduce stockout risk.",
       successSignal: {
         description: "Low-cover products have a current replenishment plan.",
@@ -493,31 +650,22 @@ async function resetFixture(scenarioKey) {
   await prisma.merchantRecommendationStep.createMany({
     data: [
       stepData(
-        step1,
+        proposalStepId,
         workflowId,
         recommendationId,
         0,
-        "Review low-cover inventory",
-        "assist:inventory_review",
+        "Build replenishment proposal",
+        "assist:replenishment_proposal",
         [],
       ),
       stepData(
-        step2,
+        supplierStepId,
         workflowId,
         recommendationId,
         1,
-        "Build replenishment proposal",
-        "assist:replenishment_proposal",
-        [step1],
-      ),
-      stepData(
-        step3,
-        workflowId,
-        recommendationId,
-        2,
         "Draft supplier communication",
         "assist:supplier_email_draft",
-        [step2],
+        [proposalStepId],
       ),
     ],
   });
@@ -608,10 +756,57 @@ async function inspect(actionId) {
       dependsOn: row.dependsOn,
     })),
     artifacts: state?.artifacts ?? [],
+    artifactDetails: (state?.work ?? [])
+      .filter((row) => row.validResult?.artifactType)
+      .map((row) => ({
+        stepId: row.step.id,
+        title: row.step.title,
+        artifactType: row.validResult.artifactType,
+        targetCoverDays: row.validResult.targetCoverDays ?? null,
+        inputFingerprint: row.validResult.inputFingerprint ?? null,
+        derivedFromProposalRevision:
+          row.validResult.derivedFromProposalRevision ?? null,
+        derivedFromProposalFingerprint:
+          row.validResult.derivedFromProposalFingerprint ?? null,
+        items: Array.isArray(row.validResult.items)
+          ? row.validResult.items.map((item) => ({
+              title: item.title,
+              units:
+                item.recommendedUnitsAtDefaultCover ??
+                item.recommendedUnits ??
+                item.units ??
+                null,
+            }))
+          : [],
+      })),
     proposal: (state?.scope?.items ?? []).map((item) => ({
       title: item.title,
       recommendedUnits: item.recommendedUnits ?? null,
     })),
+    canonicalProposal: state?.canonicalProposal
+      ? {
+          revision: state.canonicalProposal.revision ?? null,
+          coverDays: state.canonicalProposal.coverDays ?? null,
+          inputFingerprint: state.canonicalProposal.inputFingerprint ?? null,
+          items: (state.canonicalProposal.items ?? []).map((item) => ({
+            title: item.title,
+            recommendedUnits: item.recommendedUnits ?? null,
+          })),
+        }
+      : null,
+    workspace: state?.workspace
+      ? {
+          actionState: state.workspace.actionState ?? null,
+          currentFocus: state.workspace.currentFocus ?? null,
+          items: (state.workspace.items ?? []).map((item) => ({
+            title: item.title,
+            kind: item.kind,
+            state: item.state,
+            intendedActor: item.intendedActor ?? null,
+            capabilityAvailability: item.capabilityAvailability ?? null,
+          })),
+        }
+      : null,
     actionRevision: revisions.length,
   };
 }
@@ -695,6 +890,24 @@ function assertQuantities(expected) {
   };
 }
 
+function assertProductQuantity(title, expected) {
+  return ({ finalState }) => {
+    const item = finalState.proposal.find((row) => row.title === title);
+    if (!item) throw new Error(`Expected ${title} in current proposal.`);
+    if (Number(item.recommendedUnits) !== expected) {
+      throw new Error(
+        `Expected ${title} quantity ${expected}, got ${item.recommendedUnits}.`,
+      );
+    }
+    const canonical = finalState.canonicalProposal?.items?.find(
+      (row) => row.title === title,
+    );
+    if (!canonical || Number(canonical.recommendedUnits) !== expected) {
+      throw new Error(`Canonical proposal does not match ${title} quantity ${expected}.`);
+    }
+  };
+}
+
 function assertReplyMentions(pattern) {
   return ({ turns }) => {
     if (!pattern.test(turns.at(-1)?.assistantResponse ?? "")) {
@@ -747,14 +960,62 @@ function assertStepAbsent(pattern) {
   };
 }
 
+function assertNoInventoryReview({ finalState }) {
+  assertNoStep(finalState, /review.*low-cover|low-cover.*inventory/i);
+}
+
 function assertNoInternalValidationLeak({ turns }) {
   const text = turns.map((turn) => turn.assistantResponse).join("\n");
   if (
-    /add_plan_step|needs "title"|step title|capability reference|dependency id/i.test(
+    /add_plan_step|needs "title"|step title|capability reference|dependency id|already handled in this turn|duplicate operation|tool already ran/i.test(
       text,
     )
   ) {
     throw new Error("Assistant leaked internal tool/schema metadata.");
+  }
+}
+
+function assertPurchaseOrderCapabilityTruth({ finalState }) {
+  const item = finalState.workspace?.items?.find((row) =>
+    /purchase order|\bpo\b/i.test(row.title ?? ""),
+  );
+  if (!item) throw new Error("Expected workspace purchase-order item.");
+  if (item.intendedActor && item.intendedActor !== "JEFE") {
+    throw new Error(`Expected purchase order intended actor JEFE, got ${item.intendedActor}.`);
+  }
+  if (item.capabilityAvailability !== "UNSUPPORTED_BY_PROVIDER") {
+    throw new Error(
+      `Expected purchase order capability UNSUPPORTED_BY_PROVIDER, got ${item.capabilityAvailability}.`,
+    );
+  }
+  if (String(item.state ?? "") === "needs_merchant") {
+    throw new Error("Purchase-order capability limitation collapsed into needs_merchant.");
+  }
+}
+
+function assertNoCrossRevisionQuantityMix({ finalState }) {
+  const proposal = finalState.canonicalProposal;
+  const email = finalState.artifactDetails.find(
+    (artifact) => artifact.artifactType === "supplier_email_draft",
+  );
+  if (!email) return;
+  if (
+    email.derivedFromProposalFingerprint &&
+    proposal?.inputFingerprint &&
+    email.derivedFromProposalFingerprint !== proposal.inputFingerprint
+  ) {
+    throw new Error("Supplier email is derived from a different proposal fingerprint.");
+  }
+  const expected = new Map(
+    (proposal?.items ?? []).map((item) => [item.title, Number(item.recommendedUnits)]),
+  );
+  for (const row of email.items ?? []) {
+    if (!expected.has(row.title)) continue;
+    if (Number(row.units) !== expected.get(row.title)) {
+      throw new Error(
+        `Supplier email quantity for ${row.title} (${row.units}) does not match current proposal (${expected.get(row.title)}).`,
+      );
+    }
   }
 }
 
@@ -778,7 +1039,6 @@ function assertExactReplanJourney({ turns, initialState, finalState }) {
   assertPlanCover(turns[0].stateAfter, 120, "turn 1 must stay hypothetical");
   assertPlanCover(turns[1].stateAfter, 90, "turn 2 must persist 90-day cover");
   assertStepOrder(turns[2].stateAfter, [
-    /review.*low-cover|low-cover.*inventory/i,
     /replenishment.*proposal/i,
     /supplier.*(email|communication)/i,
     /(shopify|stock|inventory).*transfer|transfer.*shopify/i,
@@ -786,35 +1046,31 @@ function assertExactReplanJourney({ turns, initialState, finalState }) {
   assertPlanCover(turns[2].stateAfter, 90, "turn 3 must preserve 90 days");
 
   assertStepOrder(turns[3].stateAfter, [
-    /review.*low-cover|low-cover.*inventory/i,
     /replenishment.*proposal/i,
     /supplier.*(email|communication)/i,
     /purchase order|\bpo\b/i,
   ]);
   assertPlanCover(turns[3].stateAfter, 90, "turn 4 must preserve 90 days");
   assertNoStep(turns[3].stateAfter, /(shopify|stock|inventory).*transfer|transfer.*shopify/i);
-  assertStablePrefix(turns[0].stateBefore, turns[3].stateAfter, 3);
+  assertStablePrefix(turns[0].stateBefore, turns[3].stateAfter, 2);
 
   assertStepOrder(turns[4].stateAfter, [
-    /review.*low-cover|low-cover.*inventory/i,
     /replenishment.*proposal/i,
     /supplier.*(email|communication)/i,
   ]);
-  assertStablePrefix(turns[0].stateBefore, turns[4].stateAfter, 3);
+  assertStablePrefix(turns[0].stateBefore, turns[4].stateAfter, 2);
 
   assertStepOrder(turns[5].stateAfter, [
-    /review.*low-cover|low-cover.*inventory/i,
     /replenishment.*proposal/i,
     /supplier.*(email|communication)/i,
     /purchase order|\bpo\b/i,
   ]);
 
   assertStepOrder(turns[6].stateAfter, [
-    /review.*low-cover|low-cover.*inventory/i,
     /replenishment.*proposal/i,
     /supplier.*(email|communication)/i,
   ]);
-  assertStablePrefix(turns[0].stateBefore, turns[6].stateAfter, 3);
+  assertStablePrefix(turns[0].stateBefore, turns[6].stateAfter, 2);
   assertPlanCover(finalState, 90, "final state must preserve 90-day cover");
   assertNoInternalValidationLeak({ turns });
 

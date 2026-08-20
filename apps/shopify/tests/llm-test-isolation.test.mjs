@@ -5,6 +5,7 @@ import { LlmDisabledError } from "../app/lib/llm/errors.server.js";
 import { externalLlmCallsDisabled } from "../app/lib/llm/external-call-guard.server.js";
 import { createGeminiProvider } from "../app/lib/llm/providers/gemini.server.js";
 import { createGroqProvider } from "../app/lib/llm/providers/groq.server.js";
+import { createOpenAiProvider } from "../app/lib/llm/providers/openai.server.js";
 import { transcribeVoiceNote } from "../app/lib/llm/transcribe-voice.server.js";
 import { embedMerchantMemoryText } from "../app/lib/merchant-memory/embedding.server.js";
 
@@ -16,6 +17,8 @@ const config = {
   fallbackModel: "gemini-3.5-flash-lite",
   groqApiKey: "must-not-be-used",
   geminiApiKey: "must-not-be-used",
+  openAiApiKey: "must-not-be-used",
+  openAiBaseUrl: "https://api.openai.test/v1",
   timeoutMs: 1000,
   maxInputTokens: 6000,
   maxOutputTokens: 64,
@@ -35,6 +38,17 @@ test("Node test execution disables configured LLM and embedding providers", () =
 
 test("Groq cannot use its real network transport from a test", async () => {
   const provider = createGroqProvider({ config, logger: quietLogger() });
+  await assert.rejects(
+    provider.generateStructuredJson(request),
+    LlmDisabledError,
+  );
+});
+
+test("OpenAI cannot use its real network transport from a test", async () => {
+  const provider = createOpenAiProvider({
+    config: { ...config, provider: "openai", model: "gpt-5.6-luna" },
+    logger: quietLogger(),
+  });
   await assert.rejects(
     provider.generateStructuredJson(request),
     LlmDisabledError,

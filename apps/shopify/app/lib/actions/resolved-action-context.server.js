@@ -19,6 +19,11 @@ import {
   inspectRestockEvidence,
   recommendedPurchaseUnits,
 } from "./action-capability.server.js";
+import {
+  actionScopeFromProgress,
+  buildCanonicalReplenishmentProposal,
+  mergeCurrentScopeCandidates,
+} from "./action-scope.server.js";
 import { deriveScopeStatus } from "./listing-copy-scope.server.js";
 
 const log = baseLogger.child({ component: "resolved-action-context" });
@@ -125,6 +130,20 @@ export async function resolveActionContext(prisma, input) {
     },
   });
   const evidenceVersion = hashPayload({ kind, candidates });
+  const canonicalProposal =
+    kind === "restock"
+      ? buildCanonicalReplenishmentProposal({
+          progress: {
+            ...jsonObject(action?.progress),
+            actionScope: actionScopeFromProgress(action),
+          },
+          planValues: plan.values,
+          scopeItems: scope.items,
+          inputHash,
+          scopeVersion,
+          evidenceVersion,
+        })
+      : null;
   const currentStep = action.currentStep ?? null;
   const context = {
     action,
@@ -135,6 +154,7 @@ export async function resolveActionContext(prisma, input) {
     constraintVersion,
     scopeVersion,
     scope,
+    canonicalProposal,
     evidence: {
       kind,
       loadedAt: new Date().toISOString(),
@@ -251,6 +271,7 @@ export function resolveActionScope(input) {
       title: change.title ?? change.productTitle ?? null,
       productId: change.productId ?? null,
       variantId: change.variantId ?? null,
+      inventoryItemId: change.inventoryItemId ?? null,
       targetRef: change.variantId ?? change.productId ?? null,
       available,
       inventory: available,
@@ -271,6 +292,7 @@ export function resolveActionScope(input) {
           : change.reason ?? null,
       tags: Array.isArray(change.tags) ? change.tags : [],
       status: change.status ?? null,
+      vendor: change.vendor ?? null,
     };
   });
   const status = deriveScopeStatus({
@@ -383,7 +405,8 @@ export function assertRunMatchesResolvedContext(snapshot, context) {
  */
 async function loadScopeCandidates(prisma, input) {
   if (input.kind === "restock") {
-    return inspectRestockEvidence(prisma, input);
+    const initial = await inspectRestockEvidence(prisma, input);
+    return mergeCurrentScopeCandidates(input.action, initial);
   }
   const preview = jsonObject(input.action?.progress?.preview);
   const changes = Array.isArray(preview.changes) ? preview.changes : [];
@@ -418,6 +441,7 @@ function candidateToChange(item) {
     title: item?.title ?? item?.productTitle ?? null,
     productId: item?.productId ?? null,
     variantId: item?.variantId ?? null,
+    inventoryItemId: item?.inventoryItemId ?? null,
     targetRef: item?.targetRef ?? item?.variantId ?? item?.productId ?? null,
     available: item?.available ?? item?.inventory ?? null,
     inventory: item?.available ?? item?.inventory ?? null,
@@ -433,6 +457,7 @@ function candidateToChange(item) {
     reason: item?.reason ?? null,
     tags: Array.isArray(item?.tags) ? item.tags : [],
     status: item?.status ?? null,
+    vendor: item?.vendor ?? null,
     collections: Array.isArray(item?.collections) ? item.collections : [],
   };
 }
@@ -503,6 +528,7 @@ function normalizeMatch(value) {
  *     discovery?: Record<string, any> | null;
  *     originalEvidence?: Record<string, any> | null;
  *   };
+ *   canonicalProposal?: any;
  *   evidence: { kind: string; loadedAt: string; candidateCount: number };
  *   evidenceVersion: string;
  *   inputHash: string;

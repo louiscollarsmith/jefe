@@ -111,6 +111,100 @@ export async function inspectCandidates(prisma, input) {
 }
 
 /**
+ * Resolve a merchant's product reference against the local Shopify mirror.
+ * The LLM supplies the reference; this function supplies identity. It never
+ * invents Shopify IDs and it asks for clarification when a reference is broad.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; reference: string; supplierHint?: string | null }} input
+ */
+export async function resolveShopifyProductReference(prisma, input) {
+  const wanted = normalizeMatch(input.reference);
+  if (!wanted) return { ok: false, reason: "empty_reference", matches: [] };
+  if (!prisma?.product?.findMany) {
+    return { ok: false, reason: "catalog_unavailable", matches: [] };
+  }
+
+  const products = await prisma.product.findMany({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+    select: {
+      id: true,
+      externalId: true,
+      title: true,
+      handle: true,
+      status: true,
+      vendor: true,
+      productType: true,
+      rawPayload: true,
+      variants: {
+        select: {
+          id: true,
+          externalId: true,
+          title: true,
+          sku: true,
+          inventoryItemExternalId: true,
+          rawPayload: true,
+          inventoryLevels: { select: { available: true } },
+        },
+      },
+    },
+  });
+
+  const velocityByProduct = await loadVelocityByProduct(prisma, input);
+  const supplier = normalizeMatch(input.supplierHint ?? "");
+  const scored = [];
+  for (const product of products) {
+    const base = productMatchScore(product, wanted);
+    if (base <= 0) continue;
+    const supplierBoost =
+      supplier && normalizeMatch(product.vendor).includes(supplier) ? 6 : 0;
+    const variants = Array.isArray(product.variants) ? product.variants : [];
+    const inventory = variants.reduce(
+      (/** @type {number} */ sum, /** @type {any} */ variant) =>
+        sum + (inventoryFromLevels(variant.inventoryLevels) ?? 0),
+      0,
+    );
+    const payload = jsonObject(product.rawPayload);
+    const dailyVelocity =
+      numberOrNull(payload.dailyVelocity) ??
+      numberOrNull(payload.trailing30DailyVelocity) ??
+      velocityByProduct.get(product.id) ??
+      null;
+    scored.push({
+      score: base + supplierBoost,
+      item: {
+        title: product.title,
+        productId: product.externalId,
+        variantId: variants.length === 1 ? variants[0]?.externalId ?? null : null,
+        inventoryItemId:
+          variants.length === 1 ? variants[0]?.inventoryItemExternalId ?? null : null,
+        available: inventory,
+        dailyVelocity,
+        daysOfCover:
+          dailyVelocity && dailyVelocity > 0 ? Math.floor(inventory / dailyVelocity) : null,
+        vendor: product.vendor ?? null,
+        productType: product.productType ?? null,
+        status: product.status ?? null,
+        source: "merchant_added",
+      },
+    });
+  }
+
+  scored.sort((left, right) => right.score - left.score);
+  const strong = scored.filter((row) => row.score >= 90);
+  const plausible = scored.filter((row) => row.score >= 50);
+  const matches = (strong.length ? strong : plausible).map((row) => row.item);
+  if (strong.length === 1) return { ok: true, item: strong[0].item, matches };
+  if (strong.length > 1) return { ok: false, reason: "ambiguous", matches };
+  if (plausible.length === 1) return { ok: true, item: plausible[0].item, matches };
+  if (plausible.length > 1) return { ok: false, reason: "ambiguous", matches };
+  return { ok: false, reason: "not_found", matches: [] };
+}
+
+/**
  * Restock evidence from Merchant Memory — assist only, no Shopify write.
  *
  * @param {any} prisma
@@ -214,6 +308,56 @@ function inventoryFromLevels(levels) {
   return levels.reduce((sum, row) => sum + (Number(row?.available) || 0), 0);
 }
 
+/** @param {any} prisma @param {{ merchantId: string; shopId: string }} input */
+async function loadVelocityByProduct(prisma, input) {
+  const map = new Map();
+  if (!prisma?.orderLineItem?.groupBy) return map;
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const rows = await prisma.orderLineItem.groupBy({
+      by: ["productId"],
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        productId: { not: null },
+        order: { processedAt: { gte: since } },
+      },
+      _sum: { quantity: true },
+    });
+    for (const row of rows ?? []) {
+      if (row.productId) map.set(row.productId, Number(row._sum?.quantity ?? 0) / 30);
+    }
+  } catch {
+    return map;
+  }
+  return map;
+}
+
+/** @param {any} product @param {string} wanted */
+function productMatchScore(product, wanted) {
+  const fields = [
+    product?.title,
+    product?.handle,
+    product?.vendor,
+    ...(Array.isArray(product?.variants)
+      ? product.variants.flatMap((/** @type {any} */ variant) => [variant?.title, variant?.sku])
+      : []),
+  ]
+    .map(normalizeMatch)
+    .filter(Boolean);
+  if (fields.some((field) => field === wanted)) return 100;
+  if (fields.some((field) => field.includes(wanted))) return 80;
+  if (fields.some((field) => wanted.includes(field) && field.length > 3)) return 70;
+  const wantedTokens = new Set(wanted.split(/\s+/).filter((token) => token.length > 2));
+  let best = 0;
+  for (const field of fields) {
+    const tokens = field.split(/\s+/).filter((token) => token.length > 2);
+    const overlap = tokens.filter((token) => wantedTokens.has(token)).length;
+    if (overlap > 0) best = Math.max(best, Math.round((overlap / wantedTokens.size) * 60));
+  }
+  return best;
+}
+
 /** @param {unknown[]} values */
 function uniqueStrings(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.trim()))];
@@ -223,6 +367,16 @@ function uniqueStrings(values) {
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+/** @param {unknown} value */
+function normalizeMatch(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** @param {unknown} value */

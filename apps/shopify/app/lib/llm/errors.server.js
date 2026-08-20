@@ -43,11 +43,12 @@ export class LlmProviderHttpError extends Error {
    *   provider?: string;
    *   status?: number | null;
    *   code?: string | number | null;
-   *   retryAfter?: string | null;
-   *   rateLimitRemainingTokens?: number | null;
-   *   rateLimitResetTokens?: string | null;
-   * }} [metadata]
-   */
+ *   retryAfter?: string | null;
+ *   rateLimitRemainingTokens?: number | null;
+ *   rateLimitResetTokens?: string | null;
+ *   providerMessage?: string | null;
+ * }} [metadata]
+ */
   constructor(message, metadata = {}) {
     super(message);
     this.name = "LlmProviderHttpError";
@@ -58,6 +59,7 @@ export class LlmProviderHttpError extends Error {
     this.rateLimitRemainingTokens =
       metadata.rateLimitRemainingTokens ?? null;
     this.rateLimitResetTokens = metadata.rateLimitResetTokens ?? null;
+    this.providerMessage = metadata.providerMessage ?? null;
   }
 }
 

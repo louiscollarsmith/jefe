@@ -101,7 +101,12 @@ typed adapters write to Shopify or another external system.
 - **Recommendation** — Jefe's proposed business move, now shaped as a route to completion rather than only a single action.
 - **Recommendation workflow** — The ordered steps Jefe proposes for completing one recommendation.
 - **Recommendation step** — One unit of work inside a recommendation workflow; Jefe may execute it, assist it, ask for evidence, or leave it as a merchant action.
-- **Action Step** — The current merchant-facing recommendation step inside a Merchant Action lifecycle. Proposed actions have a plan but no executable current step; accepting a recommendation or plan immediately unlocks the first eligible step to `ready` (or `needs_merchant` if the merchant owns it). Later steps stay `waiting` until the current one completes.
+- **Action Workspace** — The outcome-oriented projection of an accepted Merchant Action. It groups the work into decisions, artifacts, executions, external waits, evidence and merchant-owned actions so Jefe can show what matters now without pretending every item is a linear lifecycle step.
+- **Workspace item** — One typed item inside an Action Workspace, such as a replenishment proposal, supplier communication draft, purchase-order handoff or supplier fulfilment wait.
+- **Current Focus** — The resolved next meaningful focus for a Merchant Action or workspace: a problem, merchant input, artifact review, Jefe work in progress, external wait, optional work, completion or on-track state.
+- **Action scope** — The current set of products, variants or other entities a Merchant Action is acting on. The recommendation evidence seeds it, but merchant collaboration can add, remove, restore or narrow scope without rewriting the historical reason the action started.
+- **Canonical replenishment proposal** — The current collaborative replenishment decision for a restock action: cover target, included products, inventory and velocity inputs, calculated quantities, overrides and an input fingerprint. Derived artifacts such as supplier emails must point back to the proposal revision they used.
+- **Action Step** — The legacy-compatible workflow step inside a Merchant Action lifecycle. Workflow rows still power step runs and replanning, but the merchant-facing surface can project them through an Action Workspace when a richer outcome model is available.
 - **Action Interpreter** — The focused-chat semantic layer that turns a merchant message plus current Action Runtime state into a structured plan of commands. The model understands intent; application code validates and executes. It never writes to Shopify or flips workflow status itself.
 - **Action Replanner** — The focused-action service that rebuilds a recommendation workflow when the merchant changes how the work should be carried out, preserving confirmed plan values while adding, removing, replacing or reordering steps.
 - **Resolved Action Context** — The one canonical current state of a Merchant Action: latest plan values, active constraints, current step, and eligible scope. Chat, Change Sets, assist artifacts and execution all read this so a merchant revision cannot exist in conversation and disappear when the step runs.
@@ -113,6 +118,9 @@ typed adapters write to Shopify or another external system.
 - **Action type** — The primitive that names a class of action, such as `price_markdown`, `listing_copy` or `tidy_up`.
 - **Capability** — Whether Jefe has a safe write path, scope, adapter and measurement loop for an action type.
 - **Capability state** — `DONE`, `BUILDABLE`, `NEEDS_SCOPE` or `NO_PATH`: the honest status of whether Jefe can do an action.
+- **Capability availability** — The deterministic execution truth for a provider action, separate from business ownership. Examples include `AVAILABLE`, `NEEDS_AUTHORIZATION`, `NEEDS_CONFIGURATION`, `NEEDS_INPUT`, `PROVIDER_PREVIEW`, `UNSUPPORTED_BY_JEFE` and `UNSUPPORTED_BY_PROVIDER`.
+- **Intended actor** — The party that should carry out a workflow item in the desired business process: `JEFE`, `MERCHANT` or `EXTERNAL`. A missing Jefe integration does not automatically change the intended actor to the merchant.
+- **Shopify action capability catalog** — The source of truth for Shopify operations Jefe may reason about, including provider support, API surface/version, required scopes, Jefe implementation state, approval policy and idempotency expectations.
 - **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 

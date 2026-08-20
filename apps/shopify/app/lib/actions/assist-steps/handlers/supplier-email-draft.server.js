@@ -7,13 +7,19 @@ import { generateSemanticArtifact } from "../generate-artifact.server.js";
 /** @param {any} context */
 export async function runSupplierEmailDraftAssist(context) {
   const provider = context.provider ?? null;
+  const canonicalProposal = context.resolvedContext?.canonicalProposal ?? null;
 
   // Prefer the current, structured replenishment proposal inputs. Older direct
   // assist contexts only carry the prior inventory-review artifact, so keep that
   // as a back-compat grounding source when current items are absent.
-  const currentItems = Array.isArray(context.lowCoverProducts)
-    ? context.lowCoverProducts
-    : [];
+  const currentItems = Array.isArray(canonicalProposal?.items)
+    ? canonicalProposal.items.map((/** @type {any} */ item) => ({
+        ...item,
+        recommendedUnitsAtDefaultCover: item.recommendedUnits ?? null,
+      }))
+    : Array.isArray(context.lowCoverProducts)
+      ? context.lowCoverProducts
+      : [];
   const priorReviewItems =
     currentItems.length === 0 && Array.isArray(context.priorStepArtifacts)
       ? context.priorStepArtifacts
@@ -149,6 +155,9 @@ export async function runSupplierEmailDraftAssist(context) {
         title: row.title,
         recommendedUnitsAtDefaultCover: row.units ?? null,
       })),
+    derivedFromProposalRevision: canonicalProposal?.revision ?? null,
+    derivedFromProposalFingerprint: canonicalProposal?.inputFingerprint ?? null,
+    targetCoverDays: canonicalProposal?.coverDays ?? context.targetCoverDays ?? null,
     nextPrompt: String(used.nextPrompt ?? fallbackDraft.nextPrompt),
   };
 

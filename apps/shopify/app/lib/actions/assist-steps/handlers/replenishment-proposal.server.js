@@ -4,7 +4,15 @@ import { formatAssistArtifactForChat } from "../format.server.js";
 
 /** @param {any} context */
 export async function runReplenishmentProposalAssist(context) {
-  const items = Array.isArray(context.lowCoverProducts) ? context.lowCoverProducts : [];
+  const canonical = context.resolvedContext?.canonicalProposal ?? null;
+  const items = Array.isArray(canonical?.items)
+    ? canonical.items.map((/** @type {any} */ item) => ({
+        ...item,
+        recommendedUnitsAtDefaultCover: item.recommendedUnits ?? null,
+      }))
+    : Array.isArray(context.lowCoverProducts)
+      ? context.lowCoverProducts
+      : [];
   const coverDays = Number(context.targetCoverDays) > 0 ? Number(context.targetCoverDays) : 120;
   const excluded = Array.isArray(context.resolvedContext?.scope?.excluded)
     ? context.resolvedContext.scope.excluded
@@ -20,6 +28,8 @@ export async function runReplenishmentProposalAssist(context) {
         "There are no eligible low-cover products in scope. Review the inventory step or adjust constraints.",
       items: [],
       targetCoverDays: coverDays,
+      proposalRevision: canonical?.revision ?? null,
+      inputFingerprint: canonical?.inputFingerprint ?? null,
       excluded,
       nextPrompt: "Tell me which products to include, or adjust the cover target.",
     };
@@ -33,6 +43,8 @@ export async function runReplenishmentProposalAssist(context) {
       "Recommended reorder quantities based on your current plan and constraints. Copy or edit before contacting the supplier.",
     items,
     targetCoverDays: coverDays,
+    proposalRevision: canonical?.revision ?? null,
+    inputFingerprint: canonical?.inputFingerprint ?? null,
     excluded,
     nextPrompt:
       "Does this look right? Once you confirm, I'll draft the supplier communication in the next step.",

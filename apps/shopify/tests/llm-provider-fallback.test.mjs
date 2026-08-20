@@ -51,50 +51,68 @@ function baseConfig(overrides = {}) {
   };
 }
 
-test("createLlmProvider defaults to Groq with Gemini fallback configured", () => {
-  const provider = createLlmProvider({ config: baseConfig(), logger });
-  assert.equal(provider.provider, "groq");
-  assert.equal(provider.model, "openai/gpt-oss-120b");
-  assert.equal(provider.fallbackProvider, "gemini");
-  assert.equal(provider.fallbackModel, "gemini-3.5-flash-lite");
+function openAiDefaultConfig(overrides = {}) {
+  return {
+    ...baseConfig(),
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    fallbackProvider: "",
+    fallbackModel: "",
+    openAiApiKey: "openai-test-key",
+    openAiBaseUrl: "https://api.openai.test/v1",
+    ...overrides,
+  };
+}
+
+test("createLlmProvider defaults to OpenAI Luna without weak fallback", () => {
+  const provider = createLlmProvider({ config: openAiDefaultConfig(), logger });
+  assert.equal(provider.provider, "openai");
+  assert.equal(provider.model, "gpt-5.6-luna");
+  assert.equal(provider.fallbackProvider, undefined);
+  assert.equal(provider.fallbackModel, undefined);
 });
 
-test("createLlmProvider uses Gemini fallback when Groq key is absent", () => {
+test("createLlmProvider uses configured fallback when primary key is absent", () => {
   const provider = createLlmProvider({
-    config: baseConfig({ groqApiKey: "" }),
+    config: openAiDefaultConfig({
+      openAiApiKey: "",
+      fallbackProvider: "gemini",
+      fallbackModel: "gemini-3.5-flash-lite",
+    }),
     logger,
   });
   assert.equal(provider.provider, "gemini");
   assert.equal(provider.model, "gemini-3.5-flash-lite");
 });
 
-test("getLlmConfig routes chat to Groq and memory-grade work to Gemini", () => {
+test("getLlmConfig routes chat and memory-grade text work to OpenAI Luna", () => {
   const env = {
     LLM_ENABLED: "true",
+    OPENAI_API_KEY: "openai-key",
     GROQ_API_KEY: "groq-key",
     GEMINI_API_KEY: "gemini-key",
-    LLM_PROVIDER: "gemini",
-    LLM_MODEL: "gemini-3.5-flash-lite",
-    LLM_FALLBACK_PROVIDER: "gemini",
-    LLM_FALLBACK_MODEL: "gemini-3.1-flash-lite",
-    LLM_CHAT_PROVIDER: "groq",
-    LLM_CHAT_MODEL: "openai/gpt-oss-120b",
-    LLM_CHAT_FALLBACK_PROVIDER: "gemini",
-    LLM_CHAT_FALLBACK_MODEL: "gemini-3.5-flash-lite",
+    LLM_PROVIDER: "openai",
+    LLM_MODEL: "gpt-5.6-luna",
+    LLM_FALLBACK_PROVIDER: "",
+    LLM_FALLBACK_MODEL: "",
+    LLM_CHAT_PROVIDER: "openai",
+    LLM_CHAT_MODEL: "gpt-5.6-luna",
+    LLM_CHAT_FALLBACK_PROVIDER: "",
+    LLM_CHAT_FALLBACK_MODEL: "",
   };
   const chat = getLlmConfig({ feature: "general_chat", env });
   assert.equal(chat.slice, "chat");
-  assert.equal(chat.provider, "groq");
-  assert.equal(chat.model, "openai/gpt-oss-120b");
-  assert.equal(chat.fallbackProvider, "gemini");
-  assert.equal(chat.fallbackModel, "gemini-3.5-flash-lite");
+  assert.equal(chat.provider, "openai");
+  assert.equal(chat.model, "gpt-5.6-luna");
+  assert.equal(chat.fallbackProvider, "");
+  assert.equal(chat.fallbackModel, "");
 
   const memory = getLlmConfig({ feature: "onboarding_bootstrap", env });
   assert.equal(memory.slice, "memory");
-  assert.equal(memory.provider, "gemini");
-  assert.equal(memory.model, "gemini-3.5-flash-lite");
-  assert.equal(memory.fallbackProvider, "gemini");
-  assert.equal(memory.fallbackModel, "gemini-3.1-flash-lite");
+  assert.equal(memory.provider, "openai");
+  assert.equal(memory.model, "gpt-5.6-luna");
+  assert.equal(memory.fallbackProvider, "");
+  assert.equal(memory.fallbackModel, "");
 });
 
 test("Groq provider sends JSON schema requests and maps usage", async () => {
@@ -565,9 +583,15 @@ test("fallback records the failed primary and bills the provider that answered",
   // Groq-outage day bills at the Gemini rate, not undercounted as Groq. (record
   // is fire-and-forget, so let the microtask flush.)
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 3);
   assert.deepEqual(
-    rows.map((row) => [row.provider, row.model, row.status]),
+    rows.slice(0, 1).map((row) => [row.provider, row.model, row.status]),
+    [["groq", "openai/gpt-oss-120b", "started"]],
+  );
+  assert.deepEqual(
+    rows
+      .filter((row) => row.status !== "started")
+      .map((row) => [row.provider, row.model, row.status]),
     [
       ["groq", "openai/gpt-oss-120b", "error"],
       ["gemini", "gemini-3.1-flash-lite", "ok"],
@@ -610,6 +634,7 @@ test("a failed fallback records both provider attempts with their real models", 
   assert.deepEqual(
     rows.map((row) => [row.provider, row.model, row.status]),
     [
+      ["groq", "openai/gpt-oss-120b", "started"],
       ["groq", "openai/gpt-oss-120b", "error"],
       ["gemini", "gemini-3.5-flash-lite", "error"],
     ],
@@ -693,8 +718,9 @@ test("a call that fails outright still records what it cost", async () => {
   );
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].status, "error");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].status, "started");
+  assert.equal(rows[1].status, "error");
   // ⚠️ Tolerance is deliberate — do NOT tighten this back to `>= 40`.
   // The wait above is `setTimeout(40)` but the recorder measures with `Date.now()` deltas
   // (provider.server.js), and those two clocks are not guaranteed to agree: setTimeout can
@@ -704,8 +730,8 @@ test("a call that fails outright still records what it cost", async () => {
   // What this test is actually for is that a FAILED call still records the time it cost
   // rather than 0 or null; a few ms of slack costs that nothing.
   assert.ok(
-    rows[0].latencyMs >= 30,
-    `a failed call still cost a wait, got ${rows[0].latencyMs}`,
+    rows[1].latencyMs >= 30,
+    `a failed call still cost a wait, got ${rows[1].latencyMs}`,
   );
 });
 

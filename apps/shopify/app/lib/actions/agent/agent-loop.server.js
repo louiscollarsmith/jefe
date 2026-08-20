@@ -60,7 +60,7 @@ const log = baseLogger.child({ component: "action-agent" });
 
 export const ACTION_AGENT_VERSION = "2";
 export const ACTION_AGENT_PROMPT_VERSION = "2";
-export const MAX_AGENT_ITERATIONS = 6;
+export const MAX_AGENT_ITERATIONS = 4;
 export const MAX_TOOL_CALLS_PER_TURN = 12;
 
 /** @param {unknown} message */
@@ -136,6 +136,7 @@ const TOOL_ARGUMENTS_SCHEMA = {
     markdownPercent: { type: Type.NUMBER, nullable: true },
     maxProducts: { type: Type.NUMBER, nullable: true },
     productTitle: { type: Type.STRING, nullable: true },
+    productReference: { type: Type.STRING, nullable: true },
     constraintKind: { type: Type.STRING, nullable: true },
     constraintId: { type: Type.STRING, nullable: true },
     collectionTitle: { type: Type.STRING, nullable: true },
@@ -191,6 +192,7 @@ const SYSTEM_PROMPT = [
   "Outcomes, not step ceremony:",
   "- 'Draft the supplier email', 'show me the proposal', 'move on', 'carry on', 'finish this' are requests for a RESULT. Call the tool that produces that result — it runs any missing prerequisites itself.",
   "- For product-type actions, if scopeStatus is 'unresolved', call discover_product_type_scope (or build_change_set, which discovers first) before answering what would change.",
+  "- For replenishment actions, the current scope can grow beyond the original recommendation. If the merchant asks to add/include a Shopify product that is not already in scope, call add_product_to_scope with the merchant's product reference. Do not substitute a different product.",
   "- Never tell the merchant to start a step manually when a tool can do the work.",
   "",
   "Persist vs simulate:",
@@ -300,6 +302,7 @@ export async function runFocusedActionAgent(prisma, input) {
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const ctx = await buildToolContext(prisma, input, { state, kind, logger });
+    let effectfulSucceededThisIteration = false;
 
     let turn;
     try {
@@ -315,7 +318,7 @@ export async function runFocusedActionAgent(prisma, input) {
           iteration,
         }),
         schema: AGENT_TURN_SCHEMA,
-        maxOutputTokens: 900,
+        maxOutputTokens: 700,
       });
       turn = parseAgentTurn(generated.json, availableTools);
     } catch (error) {
@@ -388,12 +391,18 @@ export async function runFocusedActionAgent(prisma, input) {
       if (executedCalls.has(signature)) {
         const previous = executedResults.get(signature);
         ledger.push(
-          fail(call.tool, {
-            code: "ALREADY_RUN",
-            message: previous?.ok
-              ? "That request has already been handled in this turn."
-              : "That request already failed earlier in this turn.",
-          }),
+          previous?.ok
+            ? fail(call.tool, {
+                code: "ALREADY_RUN",
+                message:
+                  "That exact operation already succeeded earlier in this turn; do not repeat it.",
+                retryable: false,
+              })
+            : fail(call.tool, {
+                code: "ALREADY_FAILED",
+                message:
+                  "That exact operation already failed earlier in this turn; choose a different recovery step.",
+              }),
         );
         continue;
       }
@@ -410,6 +419,7 @@ export async function runFocusedActionAgent(prisma, input) {
       ledger.push(result);
 
       if (result.ok && result.effect !== TOOL_EFFECT.read) {
+        effectfulSucceededThisIteration = true;
         state = await resolveActionState(prisma, input);
         ctx.state = state;
       }
@@ -418,6 +428,7 @@ export async function runFocusedActionAgent(prisma, input) {
     state = await resolveActionState(prisma, input);
 
     if (iteration === maxIterations - 1) bounded = true;
+    if (effectfulSucceededThisIteration) break;
   }
 
   if (routing === "general_store") {
