@@ -767,6 +767,7 @@ export function serializeMerchantAction(row) {
     },
     previewItems: previewItemsFromExecution(execution),
     plan: jsonObject(row.plan),
+    outcome: jsonObject(row.outcome),
     workspace,
     currentFocus: workspace?.currentFocus ?? null,
     actionState: workspace?.actionState ?? null,

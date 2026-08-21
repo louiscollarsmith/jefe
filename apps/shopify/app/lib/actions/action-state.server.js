@@ -39,13 +39,14 @@ export async function resolveActionState(prisma, input) {
   const action = await getMerchantAction(prisma, baseInput);
   if (!action) return null;
 
-  const [resolved, changeSet] = await Promise.all([
+  const [resolved, changeSet, operationHistory] = await Promise.all([
     resolveActionContext(prisma, baseInput),
     getCurrentChangeSet(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: input.actionId,
     }),
+    loadShopifyOperationHistory(prisma, input),
   ]);
 
   const kind = actionRuntimeKind(action);
@@ -186,8 +187,10 @@ export async function resolveActionState(prisma, input) {
       actionType: action.actionType ?? null,
       kind,
       semanticAction: resolved?.semanticAction ?? semanticActionFromAction(action),
+      outcome: action.outcome ?? null,
     },
     lifecycle: action.status ?? null,
+    outcome: action.outcome ?? null,
     plan: resolved?.plan ?? { values: {}, version: null },
     planSchema: planSchemaForAgent(action),
     constraints: resolved?.constraints ?? [],
@@ -201,6 +204,7 @@ export async function resolveActionState(prisma, input) {
     work,
     nextUsefulWork,
     artifacts,
+    operationHistory,
     currentChangeSet: changeSet
       ? {
           id: changeSet.id ?? null,
@@ -297,6 +301,10 @@ export function buildAgentStateContext(state) {
           })),
         }
       : null,
+    outcome: compactOutcome(state.outcome ?? state.action?.outcome),
+    shopifyOperations: Array.isArray(state.operationHistory)
+      ? state.operationHistory
+      : [],
     canonicalProposal: state.canonicalProposal
       ? {
           revision: state.canonicalProposal.revision ?? null,
@@ -319,6 +327,79 @@ export function buildAgentStateContext(state) {
       : null,
     outcomes: listAvailableOutcomes(state),
   };
+}
+
+/** @param {any} prisma @param {{ merchantId: string; shopId: string; actionId: string }} input */
+async function loadShopifyOperationHistory(prisma, input) {
+  if (!prisma?.shopifyOperationCall?.findMany) return [];
+  try {
+    const rows = await prisma.shopifyOperationCall.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        merchantActionId: input.actionId,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    return rows.map(serializeShopifyOperationCall).reverse();
+  } catch {
+    return [];
+  }
+}
+
+/** @param {any} row */
+function serializeShopifyOperationCall(row) {
+  return {
+    id: row.id ?? null,
+    operationName: row.operationName ?? null,
+    operationKind: row.operationKind ?? null,
+    status: row.status ?? null,
+    gatewayDecision: row.gatewayDecision ?? null,
+    acceptedActionRevision: row.acceptedActionRevision ?? null,
+    idempotencyKey: row.idempotencyKey ?? null,
+    purpose: row.purpose ?? "",
+    expectedEffect: row.expectedEffect ?? "",
+    resourceIds: Array.isArray(row.resourceIds) ? row.resourceIds.slice(0, 20) : [],
+    responseSummary: compactValue(row.responseSummary),
+    error: row.error ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.createdAt ?? null,
+  };
+}
+
+/** @param {unknown} value */
+function compactOutcome(value) {
+  const outcome = jsonObject(value);
+  const verification = jsonObject(outcome.verification);
+  return {
+    verified: verification.verified === true,
+    progressSummary:
+      typeof outcome.progressSummary === "string"
+        ? outcome.progressSummary
+        : null,
+    verification: Object.keys(verification).length > 0
+      ? {
+          verified: verification.verified === true,
+          evidence: Array.isArray(verification.evidence)
+            ? verification.evidence.slice(0, 8)
+            : [],
+          remaining: Array.isArray(verification.remaining)
+            ? verification.remaining.slice(0, 8)
+            : [],
+        }
+      : null,
+  };
+}
+
+/** @param {unknown} value @returns {unknown} */
+function compactValue(value) {
+  if (!value || typeof value !== "object") return value ?? null;
+  if (Array.isArray(value)) return value.slice(0, 12).map(compactValue);
+  return Object.fromEntries(
+    Object.entries(/** @type {Record<string, unknown>} */ (value))
+      .slice(0, 16)
+      .map(([key, item]) => [key, compactValue(item)]),
+  );
 }
 
 /** @param {any} state */

@@ -352,6 +352,127 @@ test("agentic chat acceptance creates accepted revision and starts post-acceptan
   assert.equal(prisma.operationCalls.some((row) => row.operationName === "collectionCreate"), true);
 });
 
+test("completed agentic Action projects accepted verified outcome and Shopify history to Luna", async () => {
+  const prisma = fakePrisma();
+  const { action, semanticAction } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: {
+      ...semanticCollectionRecommendation(),
+      title: "Create an in-stock Cases & Bundles collection",
+      outcome: "Add a clear storefront buying path for larger wine purchases.",
+      scope: {
+        items: [
+          {
+            title: "Borderlands Discovery Four",
+            productId: "gid://shopify/Product/10375207780648",
+            reason: "Active Wine Bundle with 61 available units.",
+          },
+        ],
+      },
+      materialExpectedEffects: [
+        "Create the Cases & Bundles collection",
+        "Add Borderlands Discovery Four",
+      ],
+      verificationPlan: "Read the collection back and confirm membership.",
+    },
+  });
+  prisma.actions[0].status = "completed";
+  prisma.actions[0].progress.agentic.acceptedActionRevision = semanticAction.revision;
+  prisma.actions[0].progress.agentic.acceptedAt = "2026-08-21T16:19:25.535Z";
+  prisma.actions[0].outcome = {
+    verification: {
+      verified: true,
+      evidence: [
+        "Created collection Cases & Bundles.",
+        "Read-back confirmed Borderlands Discovery Four is the only product.",
+      ],
+      remaining: [],
+    },
+    progressSummary:
+      "Created the Cases & Bundles collection with Borderlands Discovery Four.",
+  };
+  prisma.operationCalls.push(
+    operationCall({
+      operationName: "collectionCreate",
+      operationKind: "MUTATION",
+      status: "OK",
+      acceptedActionRevision: semanticAction.revision,
+      idempotencyKey: `${semanticAction.revision}:create-collection:cases-bundles`,
+      resourceIds: ["gid://shopify/Collection/514617803048"],
+      purpose: "Create the accepted Cases & Bundles collection.",
+      expectedEffect: "Create a collection containing Borderlands Discovery Four.",
+    }),
+    operationCall({
+      operationName: "collection",
+      operationKind: "QUERY",
+      status: "OK",
+      acceptedActionRevision: semanticAction.revision,
+      resourceIds: [
+        "gid://shopify/Collection/514617803048",
+        "gid://shopify/Product/10375207780648",
+      ],
+      purpose: "Verify the created collection membership.",
+      expectedEffect: "Confirm the collection contains Borderlands Discovery Four.",
+    }),
+  );
+
+  const provider = scriptedProvider((payload) => {
+    assert.equal(payload.action.status, "completed");
+    assert.equal(payload.action.lifecycle.status, "completed");
+    assert.equal(payload.action.lifecycle.accepted, true);
+    assert.equal(payload.action.lifecycle.acceptedActionRevision, semanticAction.revision);
+    assert.equal(payload.action.outcome.verified, true);
+    assert.match(payload.action.outcome.progressSummary, /Cases & Bundles/);
+    assert.equal(
+      payload.action.shopifyOperations.some(
+        (row) => row.operationName === "collectionCreate" && row.status === "OK",
+      ),
+      true,
+    );
+
+    if (payload.iteration === 0) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [{ tool: "inspect_action_history", arguments: {} }],
+      };
+    }
+
+    const history = payload.toolResults.find(
+      (row) => row.tool === "inspect_action_history",
+    );
+    assert.equal(
+      history.facts.shopifyOperations.some(
+        (row) => row.operationName === "collection" && row.status === "OK",
+      ),
+      true,
+    );
+    return {
+      status: "ANSWER",
+      finalReply:
+        "Nothing is required for this Action. The Cases & Bundles collection was created and verified successfully.",
+    };
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "What shall I do now?",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /Nothing is required/);
+  assert.doesNotMatch(result.reply, /retry/i);
+  assert.doesNotMatch(result.reply, /unaccepted/i);
+});
+
 test("Luna can recommend an unseen collection Action using generated Shopify API retrieval and reads", async () => {
   const provider = scriptedProvider((payload) => {
     if (payload.iteration === 0) {
@@ -1132,9 +1253,24 @@ function fakePrisma() {
     },
     shopifyOperationCall: {
       create: async ({ data }) => {
-        prisma.operationCalls.push(data);
-        return data;
+        const row = {
+          id: `operation-call-${prisma.operationCalls.length + 1}`,
+          createdAt: new Date(),
+          ...data,
+        };
+        prisma.operationCalls.push(row);
+        return row;
       },
+      findMany: async ({ where, take } = {}) =>
+        prisma.operationCalls
+          .filter(
+            (row) =>
+              (!where?.merchantId || row.merchantId === where.merchantId) &&
+              (!where?.shopId || row.shopId === where.shopId) &&
+              (!where?.merchantActionId ||
+                row.merchantActionId === where.merchantActionId),
+          )
+          .slice(0, take ?? prisma.operationCalls.length),
     },
   };
   return prisma;
@@ -1148,3 +1284,32 @@ function matchesStatus(actual, filter) {
 }
 
 const quietLogger = { info() {}, warn() {}, error() {} };
+
+function operationCall(overrides) {
+  return {
+    id: `operation-call-fixture-${overrides.operationName}-${overrides.status}`,
+    merchantId,
+    shopId,
+    merchantActionId: "action-1",
+    actionExecutionId: null,
+    acceptedActionRevision: null,
+    shopDomain,
+    apiVersion: "2026-07",
+    operationId: overrides.operationName,
+    operationName: overrides.operationName,
+    operationKind: overrides.operationKind,
+    purpose: overrides.purpose ?? "",
+    expectedEffect: overrides.expectedEffect ?? "",
+    idempotencyKey: overrides.idempotencyKey ?? null,
+    variables: {},
+    variablesHash: "",
+    gatewayDecision: overrides.gatewayDecision ?? "provider_result",
+    status: overrides.status,
+    userErrors: [],
+    resourceIds: overrides.resourceIds ?? [],
+    responseSummary: overrides.responseSummary ?? {},
+    error: overrides.error ?? null,
+    createdAt: overrides.createdAt ?? new Date(),
+    ...overrides,
+  };
+}

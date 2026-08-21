@@ -394,10 +394,14 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
       orderBy: { createdAt: "desc" },
       take: 12,
     });
+    const shopifyOperations = await readShopifyOperationHistory(prisma, input);
     return toolOk(tool, {
       effect: TOOL_EFFECT.read,
-      message: `${Array.isArray(events) ? events.length : 0} recent Action events found.`,
-      facts: { events: compactEvents(events) },
+      message: `${Array.isArray(events) ? events.length : 0} recent Action events and ${shopifyOperations.length} Shopify operation calls found.`,
+      facts: {
+        events: compactEvents(events),
+        shopifyOperations,
+      },
     });
   }
   if (tool === SHOPIFY_AGENT_TOOL.retrieveOperations) {
@@ -705,6 +709,11 @@ function mergeConstraints(existing, added) {
 /** @param {any} state */
 function publicActionState(state) {
   const semanticAction = state?.semanticAction ?? {};
+  const acceptedActionRevision =
+    semanticAction.acceptedActionRevision ??
+    state?.action?.semanticAction?.acceptedActionRevision ??
+    null;
+  const outcome = publicOutcome(state?.outcome ?? state?.action?.outcome);
   return {
     id: state?.action?.id ?? null,
     title: state?.action?.title ?? semanticAction.title ?? null,
@@ -712,10 +721,11 @@ function publicActionState(state) {
     kind: state?.action?.kind ?? null,
     lifecycle: {
       status: state?.lifecycle ?? null,
-      accepted: Boolean(semanticAction.acceptedActionRevision),
+      accepted: Boolean(acceptedActionRevision),
       currentActionRevision: semanticAction.revision ?? null,
-      acceptedActionRevision: semanticAction.acceptedActionRevision ?? null,
+      acceptedActionRevision,
     },
+    outcome,
     semanticAction: {
       title: semanticAction.title ?? null,
       summary: semanticAction.summary ?? null,
@@ -728,6 +738,9 @@ function publicActionState(state) {
       whyNow: semanticAction.whyNow ?? null,
       revision: semanticAction.revision ?? null,
     },
+    shopifyOperations: Array.isArray(state?.operationHistory)
+      ? state.operationHistory.slice(-12)
+      : [],
     workspace: state?.workspace
       ? {
           kind: state.workspace.kind,
@@ -742,6 +755,75 @@ function publicActionState(state) {
       : null,
     work: [],
   };
+}
+
+/** @param {unknown} value */
+function publicOutcome(value) {
+  const outcome = asRecord(value) ?? {};
+  const verification = asRecord(outcome.verification) ?? {};
+  return {
+    verified: verification.verified === true,
+    progressSummary: stringOrNull(outcome.progressSummary),
+    verification: Object.keys(verification).length
+      ? {
+          verified: verification.verified === true,
+          evidence: Array.isArray(verification.evidence)
+            ? verification.evidence.slice(0, 8).map(String)
+            : [],
+          remaining: Array.isArray(verification.remaining)
+            ? verification.remaining.slice(0, 8).map(String)
+            : [],
+        }
+      : null,
+  };
+}
+
+/** @param {any} prisma @param {{ merchantId: string; shopId: string; actionId: string }} input */
+async function readShopifyOperationHistory(prisma, input) {
+  if (!prisma?.shopifyOperationCall?.findMany) return [];
+  try {
+    const rows = await prisma.shopifyOperationCall.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        merchantActionId: input.actionId,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    return rows.map(compactShopifyOperation).reverse();
+  } catch {
+    return [];
+  }
+}
+
+/** @param {any} row */
+function compactShopifyOperation(row) {
+  return {
+    operationName: row.operationName ?? null,
+    operationKind: row.operationKind ?? null,
+    status: row.status ?? null,
+    gatewayDecision: row.gatewayDecision ?? null,
+    acceptedActionRevision: row.acceptedActionRevision ?? null,
+    idempotencyKey: row.idempotencyKey ?? null,
+    purpose: row.purpose ?? "",
+    expectedEffect: row.expectedEffect ?? "",
+    resourceIds: Array.isArray(row.resourceIds) ? row.resourceIds.slice(0, 20) : [],
+    responseSummary: compactValue(row.responseSummary),
+    error: row.error ?? null,
+    createdAt: row.createdAt?.toISOString?.() ?? row.createdAt ?? null,
+  };
+}
+
+/** @param {unknown} value @returns {unknown} */
+function compactValue(value) {
+  if (value == null || typeof value !== "object") return value ?? null;
+  if (Array.isArray(value)) return value.slice(0, 12).map(compactValue);
+  return Object.fromEntries(
+    Object.entries(/** @type {Record<string, unknown>} */ (value))
+      .slice(0, 16)
+      .map(([key, item]) => [key, compactValue(item)]),
+  );
 }
 
 /** @param {any[]} ledger */
