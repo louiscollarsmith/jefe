@@ -297,7 +297,7 @@ export function buildActionAgentSystemPrompt(input) {
  *   conversationId?: string | null;
  *   merchantMessageId?: string | null;
  *   actor?: string | null;
- *   session?: { shop: string } | null;
+ *   session?: { shop?: string | null; scope?: string | null } | null;
  *   executeDeps?: any;
  *   provider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
  *   replanProvider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;

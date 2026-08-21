@@ -18,6 +18,7 @@ import {
   contextFromBelief,
   getFastOnboardingExperience,
   recordFastOnboardingMilestone,
+  retryFastOnboarding,
   shapeFullLearning,
   shapeRecommendation,
 } from "../app/lib/onboarding/fast-onboarding.server.js";
@@ -406,10 +407,14 @@ test("the UI keeps the exact beats, one dominant result and honest chrome", () =
   assert.match(componentSource, /setTimeout\(\(\) => setAcknowledgementFinished\(true\), 1700\)/);
   assert.match(componentSource, /const handoffUrl = data\.handoffUrl;[\s\S]*setTimeout\(\(\) => navigate\(handoffUrl, \{ replace: true \}\), 450\)/);
   assert.match(componentSource, /type: "entered_app"[\s\S]*current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
-  assert.match(componentSource, /insight\.evidence\.slice\(0, 3\)/);
+  assert.match(componentSource, /presentation\.evidence\.slice\(0, 3\)/);
+  assert.match(componentSource, /recommendationInvestigationPending/);
   assert.match(componentSource, /Boolean\(experience\.context\)[\s\S]*!experience\.failure/);
   assert.match(componentSource, /I won’t suggest something I can’t back up with your store data/);
-  assert.match(serviceSource, /Track this for me/);
+  assert.match(serviceSource, /Work on this/);
+  assert.match(componentSource, /Opening Action Chat/);
+  assert.doesNotMatch(componentSource, /I’ll track this and tell you when the success signal is ready to review/);
+  assert.doesNotMatch(routeSource, /agentic_execute/);
   assert.doesNotMatch(componentSource, /<Spinner|progress bar|Synchronising|Importing refunds|Processing/i);
   assert.doesNotMatch(componentSource, /\d+\s+of\s+\d+/i);
   assert.doesNotMatch(serviceSource, /\$\{[^}]+\}%/);
@@ -675,6 +680,216 @@ test("ready bootstrap with only a superseded recommendation stops polling after 
   assert.match(experience.failure.message, /grounded Shopify action/);
 });
 
+test("agentic recommendations render without MerchantInsightFinding", async () => {
+  const supportingBeliefIds = ["belief-priority", "belief-white-wine"];
+  let insightLookupCount = 0;
+  const prisma = {
+    shop: {
+      findUniqueOrThrow: async () => ({
+        onboardingCompletedAt: null,
+        onboardingMetadata: {},
+        backfillCompletedAt: new Date(),
+      }),
+    },
+    shopBackfillStatus: {
+      findUnique: async () => ({
+        status: "complete",
+        metadata: { phase: "ready_for_agentic_recommendation", onboardingEpoch: "epoch-1" },
+        startedAt: new Date(),
+      }),
+      findMany: async () =>
+        ["products", "inventory", "orders", "customers", "refunds"].map(
+          (domain) => ({ domain, status: "complete", lastError: null }),
+        ),
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        id: "bootstrap-1",
+        status: "succeeded",
+        payloadJson: { onboardingEpoch: "epoch-1" },
+        resultJson: { phase: "ready_for_agentic_recommendation" },
+      }),
+      findMany: async () => [{ jobType: "backfill_finalize", status: "succeeded" }],
+    },
+    merchantMemoryBelief: {
+      findFirst: async () => ({
+        value: {
+          option: "revenue",
+          label: "Grow revenue",
+          echo: "revenue comes first",
+        },
+      }),
+      findMany: async () => [
+        {
+          id: supportingBeliefIds[1],
+          key: "products.bestseller_by_revenue.trailing_90d",
+          value: { title: "House White" },
+          evidence: [],
+        },
+      ],
+    },
+    merchantPlanRecommendation: {
+      findMany: async () => [
+        {
+          id: "62242f04-30e6-4d57-b5c0-b090fcd35f32",
+          merchantId: "merchant-1",
+          shopId: "shop-1",
+          runId: "ba9d3224-7a3c-4b91-8f7e-cf57fb288ea5",
+          title: "Create a featured collection of proven, in-stock white wines",
+          summary: "Make proven white wines easier to find.",
+          whyThisAction: "In-stock white wines have enough evidence to deserve a storefront collection.",
+          startToday: "Create the collection and add the qualifying products.",
+          expectedBenefit: "Customers can browse a cleaner path to available white wines.",
+          successSignal: { description: "A featured collection exists for proven, in-stock white wines." },
+          confidence: "high",
+          caveat: null,
+          reviewStatus: "proposed",
+          outcomeStatus: "pending",
+          reviewAt: null,
+          sourceMode: "agentic",
+          supportingBeliefIds,
+          supportingInsightIds: [],
+          run: { insightRunId: "insight-run-not-required", result: { status: "RECOMMEND_ACTION" } },
+          evidenceSnapshot: null,
+          actionExecution: null,
+        },
+      ],
+    },
+    merchantPlanRun: {
+      findFirst: async () => ({
+        id: "ba9d3224-7a3c-4b91-8f7e-cf57fb288ea5",
+        status: "completed",
+        sourceMode: "agentic",
+        result: { status: "RECOMMEND_ACTION" },
+      }),
+    },
+    merchantInsightFinding: {
+      findFirst: async () => {
+        insightLookupCount += 1;
+        throw new Error("agentic recommendation must not require a MerchantInsightFinding");
+      },
+    },
+    activityEvent: { create: async ({ data }) => data },
+  };
+
+  const experience = await getFastOnboardingExperience(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "test.myshopify.com",
+  });
+
+  assert.equal(experience.stage, "insight");
+  assert.equal(experience.failure, null);
+  assert.equal(experience.insight, null);
+  assert.equal(experience.recommendation.id, "62242f04-30e6-4d57-b5c0-b090fcd35f32");
+  assert.equal(experience.presentation.source, "recommendation");
+  assert.equal(experience.presentation.headline, "Create a featured collection of proven, in-stock white wines");
+  assert.match(experience.presentation.explanation, /In-stock white wines/);
+  assert.equal(experience.recommendationInvestigationPending, false);
+  assert.equal(insightLookupCount, 0);
+});
+
+test("legacy recommendations keep rendering through supporting MerchantInsightFinding", async () => {
+  const supportingBeliefIds = ["belief-1"];
+  const supportingInsightIds = ["finding-1"];
+  let insightLookupCount = 0;
+  const prisma = {
+    shop: {
+      findUniqueOrThrow: async () => ({
+        onboardingCompletedAt: null,
+        onboardingMetadata: {},
+        backfillCompletedAt: new Date(),
+      }),
+    },
+    shopBackfillStatus: {
+      findUnique: async () => ({
+        status: "complete",
+        metadata: { phase: "ready", onboardingEpoch: "epoch-1" },
+        startedAt: new Date(),
+      }),
+      findMany: async () =>
+        ["products", "inventory", "orders", "customers", "refunds"].map(
+          (domain) => ({ domain, status: "complete", lastError: null }),
+        ),
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        id: "bootstrap-1",
+        status: "succeeded",
+        payloadJson: { onboardingEpoch: "epoch-1" },
+        resultJson: { phase: "ready" },
+      }),
+      findMany: async () => [{ jobType: "backfill_finalize", status: "succeeded" }],
+    },
+    merchantMemoryBelief: {
+      findFirst: async () => ({
+        value: {
+          option: "profit",
+          label: "Improve margin",
+          echo: "margin comes first",
+        },
+      }),
+      findMany: async () => [],
+    },
+    merchantPlanRecommendation: {
+      findMany: async () => [
+        {
+          id: "legacy-recommendation-1",
+          merchantId: "merchant-1",
+          shopId: "shop-1",
+          runId: "legacy-plan-1",
+          title: "Protect Bestseller Stock Levels",
+          summary: "Protect stock levels.",
+          whyThisAction: "Two products are at risk of stocking out.",
+          startToday: "I’ll track the stock signal.",
+          expectedBenefit: "Fewer avoidable stockouts.",
+          successSignal: { description: "The products stay available while demand continues." },
+          reviewStatus: "proposed",
+          outcomeStatus: "pending",
+          reviewAt: null,
+          sourceMode: "bootstrap",
+          supportingBeliefIds,
+          supportingInsightIds,
+          run: { insightRunId: "insight-run-1", result: {} },
+          evidenceSnapshot: null,
+          actionExecution: null,
+        },
+      ],
+    },
+    merchantPlanRun: {
+      findFirst: async () => null,
+    },
+    merchantInsightFinding: {
+      findFirst: async () => {
+        insightLookupCount += 1;
+        return {
+          id: supportingInsightIds[0],
+          runId: "insight-run-1",
+          title: "Stockouts threaten 2 products in the trailing 30 days",
+          finding: "Two products have low cover.",
+          whyItMatters: "Running out would interrupt current demand.",
+          confidence: "medium",
+          caveat: null,
+        };
+      },
+    },
+    activityEvent: { create: async ({ data }) => data },
+  };
+
+  const experience = await getFastOnboardingExperience(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "test.myshopify.com",
+  });
+
+  assert.equal(experience.stage, "insight");
+  assert.equal(experience.recommendation.id, "legacy-recommendation-1");
+  assert.equal(experience.insight.headline, "Stockouts threaten 2 products in the trailing 30 days");
+  assert.equal(experience.presentation.source, "insight");
+  assert.equal(experience.presentation.headline, experience.insight.headline);
+  assert.equal(insightLookupCount, 1);
+});
+
 test("first-run onboarding surfaces a full-memory recommendation when bootstrap has none", async () => {
   const supportingBeliefIds = ["belief-1"];
   const supportingInsightIds = ["finding-1"];
@@ -913,7 +1128,7 @@ test("parallel derivation lanes serialize first belief publication", async () =>
   ]);
 });
 
-test("a late bootstrap publication reconciles after full memory is complete", async () => {
+test("late bootstrap recommendation reconciliation is retired in the agentic runtime", async () => {
   const updates = [];
   const prisma = {
     shopBackfillStatus: {
@@ -941,17 +1156,14 @@ test("a late bootstrap publication reconciles after full memory is complete", as
     shopId: "shop-1",
   });
 
-  assert.equal(result.reconciled, true);
-  assert.equal(result.superseded, 1);
-  assert.deepEqual(updates, [
-    {
-      where: { id: "late-bootstrap-recommendation" },
-      data: { reviewStatus: "superseded" },
-    },
-  ]);
+  assert.deepEqual(result, {
+    reconciled: false,
+    status: "retired_agentic_recommendation_only",
+  });
+  assert.deepEqual(updates, []);
 });
 
-test("an unsupported late bootstrap result becomes a terminal honest fallback", async () => {
+test("late bootstrap results cannot become terminal onboarding recommendation state", async () => {
   const prisma = {
     shopBackfillStatus: {
       findUnique: async () => ({ status: "complete" }),
@@ -978,11 +1190,11 @@ test("an unsupported late bootstrap result becomes a terminal honest fallback", 
       "completed",
       ["unsupported-recommendation"],
     ),
-    "insufficient_evidence",
+    "retired_agentic_recommendation_only",
   );
 });
 
-test("a supported current finding cannot make a superseded alternative look ready", async () => {
+test("bootstrap phase resolution no longer selects supported or superseded alternatives", async () => {
   const recommendations = [
     {
       id: "supported-a",
@@ -1037,9 +1249,9 @@ test("a supported current finding cannot make a superseded alternative look read
     ["unsupported-b"],
   );
 
-  assert.equal(phase, "insufficient_evidence");
+  assert.equal(phase, "retired_agentic_recommendation_only");
   assert.equal(recommendations[0].reviewStatus, "proposed");
-  assert.equal(recommendations[1].reviewStatus, "superseded");
+  assert.equal(recommendations[1].reviewStatus, "proposed");
 });
 
 test("legacy and current priority shapes retain the exact merchant echo", () => {
@@ -1107,7 +1319,153 @@ test("invalid model output is a retryable generation failure", () => {
   );
   assert.equal(failure.type, "retryable");
   assert.match(failure.message, /retry/i);
-  assert.match(bootstrapSource, /invalid_model_output/);
+  assert.doesNotMatch(bootstrapSource, /invalid_model_output/);
+  assert.doesNotMatch(bootstrapSource, /onboarding_bootstrap/);
+  assert.match(bootstrapSource, /ready_for_agentic_recommendation/);
+});
+
+test("retrying a failed agentic recommendation creates a fresh run and requeues the worker with provenance", async () => {
+  const calls = [];
+  const baseSnapshotHash = "base-snapshot-hash";
+  const failedRun = {
+    id: "run-failed",
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    status: "failed",
+    sourceMode: "agentic",
+    snapshotHash: baseSnapshotHash,
+    promptVersion: "agentic-recommendation-snapshot-v1",
+    schemaVersion: "agentic-recommendation-schema-v1",
+    safeErrorCode: "agentic_recommendation_validation_failed",
+    lastError: "Recommendation cited an unsupported belief id.",
+    result: {
+      runtime: "agentic_shopify",
+      status: "VALIDATION_FAILED",
+      blocker: "Recommendation cited an unsupported belief id.",
+      diagnostics: {
+        retrievedOperations: ["collectionCreate", "collectionAddProducts"],
+        shopifyReads: [{ operation: "products", ok: true, status: "OK" }],
+        feasibleInterventions: ["Create a collection"],
+      },
+      trace: {
+        turns: [{ status: "RECOMMEND_ACTION", toolCallCount: 0 }],
+        toolResults: [
+          {
+            tool: "recommendation_validation",
+            ok: false,
+            message: "Recommendation cited an unsupported belief id.",
+            error: { code: "INVALID_RECOMMENDATION" },
+          },
+        ],
+      },
+    },
+    updatedAt: new Date("2026-08-21T13:47:29.905Z"),
+  };
+  const runs = [failedRun];
+  const prisma = {
+    merchantGoalRun: {
+      findFirst: async () => ({
+        id: "goal-run-1",
+        horizons: [
+          { id: "goal-1", horizon: "threeMonths", title: "Grow revenue", description: "Revenue", supportingBeliefIds: ["belief-1"] },
+          { id: "goal-2", horizon: "sixMonths", title: "Improve repeat purchase", description: "Repeat", supportingBeliefIds: ["belief-1"] },
+          { id: "goal-3", horizon: "twelveMonths", title: "Improve merchandising", description: "Merchandising", supportingBeliefIds: ["belief-1"] },
+        ],
+      }),
+    },
+    merchantInsightRun: {
+      findFirst: async () => ({
+        id: "insight-run-1",
+        findings: [],
+      }),
+    },
+    merchantMemoryBelief: {
+      findMany: async () => [
+        {
+          id: "belief-1",
+          key: "merchant.repeat_purchase_goal",
+          category: "goals",
+          label: "Repeat purchase matters",
+          value: { text: "Repeat purchase matters." },
+          valueType: "structured",
+          status: "inferred",
+          precedence: 40,
+          confidence: "0.9000",
+          evidence: [],
+        },
+      ],
+    },
+    merchantPlanRecommendation: { findMany: async () => [] },
+    merchantPlanRun: {
+      count: async () => runs.length,
+      findFirst: async ({ where }) => {
+        if (where.id) return runs.find((run) => run.id === where.id) ?? null;
+        return runs.find((run) => {
+          if (where.merchantId && run.merchantId !== where.merchantId) return false;
+          if (where.shopId && run.shopId !== where.shopId) return false;
+          if (where.sourceMode && run.sourceMode !== where.sourceMode) return false;
+          if (where.status?.in && !where.status.in.includes(run.status)) return false;
+          return true;
+        }) ?? null;
+      },
+      create: async ({ data }) => {
+        const row = {
+          ...data,
+          id: "run-retry",
+          createdAt: new Date("2026-08-21T14:50:00.000Z"),
+          updatedAt: new Date("2026-08-21T14:50:00.000Z"),
+        };
+        runs.unshift(row);
+        calls.push(["merchantPlanRun.create", row]);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = runs.find((run) => run.id === where.id);
+        Object.assign(row, data);
+        calls.push(["merchantPlanRun.update", { where, data }]);
+        return row;
+      },
+    },
+    backfillJob: {
+      findUnique: async () => ({
+        payloadJson: { onboardingEpoch: "epoch-1" },
+      }),
+      upsert: async (args) => {
+        calls.push(["backfillJob.upsert", args]);
+        return { id: "job-1", ...args.create, ...args.update };
+      },
+    },
+    shop: {
+      findUnique: async () => ({ onboardingMetadata: { fastOnboardingStage: "context" } }),
+      update: async (args) => {
+        calls.push(["shop.update", args]);
+        return args.data;
+      },
+    },
+  };
+
+  const result = await retryFastOnboarding(prisma, {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "jefe-local-store.myshopify.com",
+    target: "merchant_plan",
+  });
+
+  const createdRun = calls.find(([name]) => name === "merchantPlanRun.create")?.[1];
+  const queuedJob = calls.find(([name]) => name === "backfillJob.upsert")?.[1];
+
+  assert.equal(result.ok, true);
+  assert.equal(createdRun.id, "run-retry");
+  assert.notEqual(createdRun.snapshotHash, failedRun.snapshotHash);
+  assert.equal(createdRun.result.retryOfRunId, "run-failed");
+  assert.equal(createdRun.result.onboardingEpoch, "epoch-1");
+  assert.equal(createdRun.result.attemptNumber, 2);
+  assert.equal(createdRun.result.baseSnapshotHash.length, 64);
+  assert.equal(queuedJob.create.payloadJson.runId, "run-retry");
+  assert.equal(queuedJob.create.payloadJson.retryOfRunId, "run-failed");
+  assert.equal(queuedJob.create.payloadJson.onboardingEpoch, "epoch-1");
+  assert.equal(queuedJob.create.payloadJson.attemptNumber, 2);
+  assert.equal(queuedJob.create.payloadJson.reason, "merchant_plan_retry");
 });
 
 test("thin first-read evidence waits only while recommendation work is active", () => {
@@ -1228,6 +1586,256 @@ test("applied or rejected execution rows never render executable approval wordin
     assert.equal(recommendation.executable, false);
     assert.equal(recommendation.approvalLabel, "Track this for me");
   }
+});
+
+test("agentic onboarding CTA opens one unaccepted Action Chat without legacy review or Shopify writes", async () => {
+  const now = new Date("2026-08-21T12:00:00.000Z");
+  const recommendation = {
+    id: "rec-agentic",
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    sourceMode: "agentic",
+    reviewStatus: "proposed",
+    acceptedAt: null,
+    reviewAt: null,
+    title: "Create an Available Proven Wines storefront collection",
+    summary: "Make proven wines easier to browse.",
+    whyThisAction: "Available proven wines are hard to find.",
+    startToday: "Open the editable Action.",
+    expectedBenefit: "A clearer buying path.",
+    successSignal: { description: "A storefront collection exists for available proven wines." },
+    workflows: [],
+  };
+  const action = {
+    id: "action-agentic",
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    title: recommendation.title,
+    summary: recommendation.summary,
+    status: "proposed",
+    sourceRecommendationId: recommendation.id,
+    currentActionRunId: null,
+    progress: {
+      agentic: {
+        currentActionRevision: {
+          outcome: "Create the collection.",
+          scope: { recommendationId: recommendation.id },
+          expectedEffects: ["Customers can browse available proven wines."],
+        },
+      },
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+  let actionRow = null;
+  const state = {
+    conversations: [],
+    messages: [],
+    events: [],
+    activityEvents: [],
+    jobs: [],
+    handoffs: [],
+    operationCalls: [],
+    recommendationUpdates: [],
+    actionCreates: 0,
+    actionUpdates: [],
+    actionReads: 0,
+    nextConversation: 1,
+    nextMessage: 1,
+  };
+  const prisma = {
+    async $transaction(run) {
+      return run({ ...prisma, $transaction: undefined });
+    },
+    merchantPlanRecommendation: {
+      findFirst: async () => recommendation,
+      updateMany: async (args) => {
+        state.recommendationUpdates.push(args);
+        throw new Error("agentic onboarding CTA must not accept the recommendation");
+      },
+      update: async () => {
+        throw new Error("agentic onboarding CTA must not update recommendation status");
+      },
+    },
+    merchantAction: {
+      findFirst: async ({ where }) => {
+        state.actionReads += 1;
+        if (where.sourceRecommendationId) {
+          return where.sourceRecommendationId === recommendation.id ? actionRow : null;
+        }
+        return actionRow &&
+          where.id === actionRow.id &&
+          where.merchantId === actionRow.merchantId &&
+          where.shopId === actionRow.shopId
+          ? actionRow
+          : null;
+      },
+      create: async ({ data }) => {
+        if (actionRow) {
+          throw new Error("agentic onboarding CTA must not create a duplicate Action");
+        }
+        state.actionCreates += 1;
+        actionRow = {
+          ...action,
+          ...data,
+          id: action.id,
+          currentActionRunId: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return { id: action.id };
+      },
+      update: async ({ where, data }) => {
+        assert.equal(where.id, action.id);
+        state.actionUpdates.push(data);
+        actionRow = { ...actionRow, ...data, updatedAt: now };
+        return actionRow;
+      },
+    },
+    merchantMemoryConversation: {
+      findMany: async ({ where }) =>
+        state.conversations.filter(
+          (conversation) =>
+            conversation.merchantId === where.merchantId &&
+            conversation.shopId === where.shopId &&
+            conversation.surface === where.surface &&
+            conversation.status === where.status &&
+            conversation.focusedActionId === where.focusedActionId,
+        ),
+      findFirst: async ({ where }) =>
+        state.conversations.find(
+          (conversation) =>
+            conversation.id === where.id &&
+            conversation.merchantId === where.merchantId &&
+            conversation.shopId === where.shopId,
+        ) ?? null,
+      create: async ({ data }) => {
+        const conversation = {
+          id: `conversation-${state.nextConversation++}`,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          ...data,
+        };
+        state.conversations.push(conversation);
+        return conversation;
+      },
+      update: async ({ where, data }) => {
+        const conversation = state.conversations.find((row) => row.id === where.id);
+        Object.assign(conversation, data, { updatedAt: now });
+        return conversation;
+      },
+    },
+    merchantMemoryConversationMessage: {
+      findFirst: async () => null,
+      create: async ({ data }) => {
+        const message = {
+          id: `message-${state.nextMessage++}`,
+          createdAt: now,
+          updatedAt: now,
+          ...data,
+        };
+        state.messages.push(message);
+        return message;
+      },
+    },
+    merchantMemoryEpisode: {
+      upsert: async () => ({ id: "episode-1" }),
+    },
+    merchantActionEvent: {
+      create: async ({ data }) => {
+        state.events.push(data);
+        return { id: `event-${state.events.length}`, ...data };
+      },
+    },
+    backfillJob: {
+      findUnique: async ({ where }) =>
+        state.jobs.find(
+          (job) =>
+            job.shopId === where.shopId_jobType.shopId &&
+            job.jobType === where.shopId_jobType.jobType,
+        ) ?? null,
+      create: async ({ data }) => {
+        if (data.jobType === "recommendation_review") {
+          throw new Error("agentic onboarding CTA must not queue legacy review");
+        }
+        const job = { id: `job-${state.jobs.length + 1}`, ...data };
+        state.jobs.push(job);
+        return job;
+      },
+      update: async ({ where, data }) => {
+        const job = state.jobs.find((row) => row.id === where.id);
+        Object.assign(job, data);
+        return job;
+      },
+    },
+    shop: {
+      findUnique: async () => ({ onboardingMetadata: {} }),
+      update: async ({ data }) => data,
+    },
+    onboardingHandoff: {
+      create: async ({ data }) => {
+        const handoff = { id: `handoff-${state.handoffs.length + 1}`, ...data };
+        state.handoffs.push(handoff);
+        return handoff;
+      },
+    },
+    shopifyOperationCall: {
+      create: async ({ data }) => {
+        state.operationCalls.push(data);
+        throw new Error("agentic onboarding CTA must not write through Shopify");
+      },
+    },
+    activityEvent: {
+      create: async ({ data }) => {
+        state.activityEvents.push(data);
+        return { id: `activity-${data.dedupeKey}`, ...data };
+      },
+    },
+  };
+
+  const input = {
+    merchantId: "merchant-1",
+    shopId: "shop-1",
+    shopDomain: "jefe-local-store.myshopify.com",
+    recommendationId: recommendation.id,
+  };
+  const first = await approveOnboardingRecommendation(prisma, input);
+  const second = await approveOnboardingRecommendation(prisma, input);
+
+  assert.equal(first.ok, true);
+  assert.equal(first.mode, "agentic_open");
+  assert.equal(first.actionId, action.id);
+  assert.equal(first.recommendationId, recommendation.id);
+  assert.equal(first.conversationId, "conversation-1");
+  assert.equal(second.ok, true);
+  assert.equal(second.conversationId, "conversation-1");
+  assert.equal(state.actionCreates, 1);
+  assert.equal(state.actionUpdates.length, 1);
+  assert.equal(state.conversations.length, 1);
+  assert.equal(state.conversations[0].focusedActionId, action.id);
+  assert.equal(state.conversations[0].context.recommendationId, recommendation.id);
+  assert.equal(state.messages.some((message) => message.recommendationId === recommendation.id), true);
+  assert.equal(actionRow.status, "proposed");
+  assert.equal(actionRow.progress.agentic.runtime, "shopify_admin_api");
+  assert.equal(typeof actionRow.progress.agentic.currentActionRevision, "string");
+  assert.equal(actionRow.progress.agentic.semanticAction.whyThisAction, recommendation.whyThisAction);
+  assert.equal(actionRow.plan.agentic.semanticAction.materialExpectedEffects.length, 0);
+  assert.equal(actionRow.progress.agentic.acceptedActionRevision, undefined);
+  assert.equal(state.recommendationUpdates.length, 0);
+  assert.equal(state.operationCalls.length, 0);
+  assert.equal(
+    state.jobs.some((job) => job.jobType === "recommendation_review"),
+    false,
+  );
+  assert.equal(
+    state.activityEvents.some((event) => event.type === "recommendation_action_opened"),
+    true,
+  );
+  assert.equal(
+    state.activityEvents.some((event) => event.type === "recommendation_approved"),
+    false,
+  );
 });
 
 test("approving a tracked onboarding recommendation unlocks the first workflow step", async () => {

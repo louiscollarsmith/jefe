@@ -1,7 +1,7 @@
 // @ts-check
 // Merchant-triggered proposal generation from the home screen. The merchant clicks
 // "Generate a proposal" / "Generate another proposal"; generation runs through the
-// canonical `generateMerchantPlan` pipeline (via `ensureMerchantPlanQueued`). This
+// canonical agentic recommendation pipeline. This
 // module owns eligibility, the per-merchant-local-day ceiling, and concurrency safety —
 // there is no background scheduler.
 
@@ -187,7 +187,7 @@ async function withHomeProposalGenerationLock(prisma, input, callback) {
 }
 
 /**
- * Merchant clicked Generate — enqueue a plan run through the canonical pipeline.
+ * Merchant clicked Generate — enqueue a recommendation run through the canonical pipeline.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; now?: Date; timeZone?: string | null; cap?: number; ensureQueued?: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
  * @returns {Promise<{ ok: boolean; status?: string; reason?: string | null; remaining?: number }>}
@@ -210,8 +210,8 @@ export async function requestHomeProposalGeneration(
   const queuePlan =
     ensureQueued ??
     (async (client, queueInput) => {
-      const { ensureMerchantPlanQueued } = await import("./service.server.js");
-      return ensureMerchantPlanQueued(client, queueInput);
+      const { ensureAgenticRecommendationQueued } = await import("../shopify/agentic-runtime/recommendation-service.server.js");
+      return ensureAgenticRecommendationQueued(client, queueInput);
     });
 
   return withHomeProposalGenerationLock(prisma, { merchantId, shopId }, async (tx) => {

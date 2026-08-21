@@ -391,6 +391,9 @@ async function loadFocusedMerchantAction(prisma, input) {
  * @param {any} action
  */
 function merchantActionContext(action) {
+  const semanticAction = semanticActionFromFocusedAction(action);
+  const source = action.sourceRecommendation ?? null;
+  const sourceSuccessSignal = asRecord(source?.successSignal) ?? {};
   const workflowSteps = Array.isArray(action.displaySteps)
     ? action.displaySteps.map((/** @type {any} */ step, /** @type {number} */ index) => ({
         orderIndex: index,
@@ -436,7 +439,100 @@ function merchantActionContext(action) {
           id: action.sourceRecommendation.id ?? null,
           title: action.sourceRecommendation.title ?? null,
           summary: action.sourceRecommendation.summary ?? null,
+          whyThisAction: safeText(action.sourceRecommendation.whyThisAction, 700) || null,
+          whyNow: safeText(action.sourceRecommendation.whyNow, 500) || null,
+          successSignal: compactValue(action.sourceRecommendation.successSignal, "successSignal", 0),
+          supportingBeliefIds: Array.isArray(action.sourceRecommendation.supportingBeliefIds)
+            ? action.sourceRecommendation.supportingBeliefIds.slice(0, 12)
+            : [],
+          supportingInsightIds: Array.isArray(action.sourceRecommendation.supportingInsightIds)
+            ? action.sourceRecommendation.supportingInsightIds.slice(0, 12)
+            : [],
           workflowStatus: action.sourceRecommendation.workflow?.status ?? null,
+        }
+      : null,
+    semanticAction: semanticAction
+      ? {
+          title: safeText(semanticAction.title ?? action.title, 180) || null,
+          summary: safeText(semanticAction.summary ?? action.summary, 700) || null,
+          outcome:
+            safeText(
+              semanticAction.outcome ??
+                sourceSuccessSignal.semanticOutcome ??
+                action.sourceRecommendation?.startToday,
+              500,
+            ) || null,
+          rationale: {
+            whyThisAction:
+              safeText(semanticAction.whyThisAction ?? source?.whyThisAction, 700) ||
+              null,
+            whyNow: safeText(semanticAction.whyNow ?? source?.whyNow, 500) || null,
+          },
+          knownCandidateScope: compactValue(
+            semanticAction.scope ?? sourceSuccessSignal.scope,
+            "knownCandidateScope",
+            0,
+          ),
+          constraints: compactValue(
+            semanticAction.constraints ?? sourceSuccessSignal.constraints ?? [],
+            "constraints",
+            0,
+          ),
+          materialExpectedEffects: compactValue(
+            semanticAction.materialExpectedEffects ??
+              sourceSuccessSignal.materialExpectedEffects ??
+              [],
+            "materialExpectedEffects",
+            0,
+          ),
+          verificationPlan:
+            safeText(
+              semanticAction.verificationPlan ??
+                sourceSuccessSignal.description ??
+                source?.expectedBenefit,
+              700,
+            ) || null,
+          evidenceRefs: {
+            supportingBeliefIds: Array.isArray(semanticAction.supportingBeliefIds)
+              ? semanticAction.supportingBeliefIds.slice(0, 12)
+              : [],
+            supportingInsightIds: Array.isArray(semanticAction.supportingInsightIds)
+              ? semanticAction.supportingInsightIds.slice(0, 12)
+              : [],
+          },
+          investigation: compactValue(
+            asRecord(action.progress)?.agentic?.diagnostics,
+            "investigation",
+            0,
+          ),
+          currentActionRevision:
+            safeText(asRecord(asRecord(action.progress)?.agentic)?.currentActionRevision, 160) ||
+            safeText(asRecord(asRecord(action.plan)?.agentic)?.currentActionRevision, 160) ||
+            null,
+          acceptedActionRevision:
+            safeText(asRecord(asRecord(action.progress)?.agentic)?.acceptedActionRevision, 160) ||
+            safeText(asRecord(asRecord(action.plan)?.agentic)?.acceptedActionRevision, 160) ||
+            null,
+        }
+      : null,
+    semanticPlan: Array.isArray(action.displaySteps)
+      ? action.displaySteps.map((/** @type {any} */ step) => ({
+          title: safeText(step?.label ?? step?.title, 180) || null,
+          description: safeText(step?.description, 260) || null,
+          statusLabel: safeText(step?.statusLabel, 80) || null,
+          workspaceState: safeText(step?.workspaceState, 80) || null,
+        }))
+      : [],
+    workspaceProjection: action.workspace
+      ? {
+          actionState: action.workspace.actionState ?? null,
+          currentFocus: compactValue(action.workspace.currentFocus, "currentFocus", 0),
+          candidateScope: compactValue(action.workspace.candidateScope, "candidateScope", 0),
+          materialExpectedEffects: compactValue(
+            action.workspace.materialExpectedEffects,
+            "materialExpectedEffects",
+            0,
+          ),
         }
       : null,
     role: "focused_mutation_target",
@@ -447,6 +543,37 @@ function merchantActionContext(action) {
       mayMutateByDefault: true,
     },
   };
+}
+
+/** @param {any} action */
+function semanticActionFromFocusedAction(action) {
+  const progress = asRecord(action?.progress) ?? {};
+  const plan = asRecord(action?.plan) ?? {};
+  const progressAgentic = asRecord(progress.agentic) ?? {};
+  const planAgentic = asRecord(plan.agentic) ?? {};
+  const progressSemantic = asRecord(progressAgentic.semanticAction);
+  if (progressSemantic) return progressSemantic;
+  const planSemantic = asRecord(planAgentic.semanticAction);
+  if (planSemantic) return planSemantic;
+  const sourceSignal = asRecord(action?.sourceRecommendation?.successSignal) ?? {};
+  if (
+    sourceSignal.semanticOutcome ||
+    sourceSignal.scope ||
+    sourceSignal.materialExpectedEffects
+  ) {
+    return {
+      title: action.title,
+      summary: action.summary,
+      outcome: sourceSignal.semanticOutcome,
+      scope: sourceSignal.scope,
+      constraints: sourceSignal.constraints ?? [],
+      materialExpectedEffects: sourceSignal.materialExpectedEffects ?? [],
+      verificationPlan: sourceSignal.description,
+      whyThisAction: action.sourceRecommendation?.whyThisAction,
+      whyNow: action.sourceRecommendation?.whyNow,
+    };
+  }
+  return null;
 }
 
 /**

@@ -259,12 +259,12 @@ test("terminal lifecycle modules no longer schedule proactive generation", () =>
   }
 });
 
-test("getLatestMerchantPlan surfaces home-triggered runs, not proactive", () => {
+test("getLatestMerchantPlan surfaces agentic and home-triggered runs, not proactive", () => {
   const source = readFileSync(
     new URL("../app/lib/merchant-plan/service.server.js", import.meta.url),
     "utf8",
   );
-  assert.match(source, /sourceMode: \{ in: \["full", "home"\] \}/);
+  assert.match(source, /sourceMode: \{ in: \[AGENTIC_RECOMMENDATION_SOURCE_MODE, "full", "home"\] \}/);
   assert.doesNotMatch(source, /"proactive"/);
 });
 

@@ -31,6 +31,13 @@ runStage("deterministic_capability_and_plan_tests", [
     "execute-approved-action.test.mjs",
   ],
 ]);
+const agenticRuntimeArgs = ["run", "eval:agentic-shopify-runtime"];
+if (args.has("--live-luna") || args.has("--real-shopify")) {
+  agenticRuntimeArgs.push("--");
+  if (args.has("--live-luna")) agenticRuntimeArgs.push("--live-luna");
+  if (args.has("--real-shopify")) agenticRuntimeArgs.push("--real-shopify");
+}
+runStage("agentic_shopify_runtime", ["npm", agenticRuntimeArgs], { blockedExitCode: 2 });
 
 const liveLunaReady = Boolean(process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY);
 const realShopifyReady = Boolean(

@@ -161,11 +161,11 @@ import {
 } from "../lib/merchant-goals/constants.js";
 import {
   acceptMerchantPlanAndCompleteOnboarding,
-  ensureMerchantPlanQueued,
   getLatestMerchantPlan,
   getMerchantPlanExperience,
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
+import { ensureAgenticRecommendationQueued } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import {
   getHomeProposalGenerationState,
@@ -294,8 +294,10 @@ type FastOnboardingActionResult = {
   mode?: string;
   token?: string;
   handoffId?: string;
+  actionId?: string;
   actionRunId?: string;
   recommendationId?: string;
+  conversationId?: string;
   error?: string;
 };
 
@@ -398,6 +400,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       handoffUrl: appPathFromSearch(new URL(request.url).search, {
         step: null,
         handoff: handoff.token,
+        conversation: handoff.conversationId ?? null,
       }),
     };
   }
@@ -710,6 +713,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionRunId,
       recommendationId,
       message: String(formData.get("message") ?? ""),
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {
@@ -942,6 +949,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       conversationId: String(formData.get("conversationId") ?? "") || null,
       focusedActionId: String(formData.get("focusedActionId") ?? "") || null,
       surface: "app",
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {
@@ -970,6 +981,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shopId: shop.id,
       conversationId: String(formData.get("conversationId") ?? "") || null,
       surface: "app",
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {
@@ -1301,7 +1316,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       merchantId: merchant.id,
       shopId: shop.id,
       timeZone: homeTimeZone,
-      ensureQueued: ensureMerchantPlanQueued,
+      ensureQueued: ensureAgenticRecommendationQueued,
     });
     if (!result.ok) {
       const reasonMessages: Record<string, string> = {
@@ -1327,11 +1342,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent.startsWith("plan.")) {
     try {
       if (intent === "plan.retry") {
-        await ensureMerchantPlanQueued(prisma, {
+        await ensureAgenticRecommendationQueued(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
           resetAttempts: true,
-          proposalTrigger: "merchant_onboarding",
         });
         return redirect(
           appPathFromSearch(new URL(request.url).search, {

@@ -160,7 +160,7 @@ async function loadRecentDialogue(prisma, input) {
  * asking for the thing they can SEE, and the tail is that thing.
  *
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; conversationId?: string | null; surface?: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; conversationId?: string | null; surface?: string; shopDomain?: string | null; scopes?: string[]; loadOfflineToken?: (prisma: any, shopDomain: string) => Promise<string>; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  * @returns {Promise<any>}
  */
 export async function retryLastGeneralChatReply(prisma, input) {
@@ -198,7 +198,7 @@ export async function retryLastGeneralChatReply(prisma, input) {
 
 /**
  * @param {any} prisma
- * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; reuseMessageId?: string | null; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId: string; message: string; conversationId?: string | null; surface?: string; externalThreadId?: string | null; externalMessageId?: string | null; reuseMessageId?: string | null; focusedActionId?: string | null; recommendationId?: string | null; actionRunId?: string | null; metadata?: any; shopDomain?: string | null; scopes?: string[]; loadOfflineToken?: (prisma: any, shopDomain: string) => Promise<string>; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  * @returns {Promise<any>}
  */
 export async function sendGeneralChatMessage(prisma, input) {
@@ -377,6 +377,13 @@ export async function sendGeneralChatMessage(prisma, input) {
         merchantMessageId: persisted.message.id,
         actor: input.merchantId,
         provider,
+        session: {
+          shop: input.shopDomain ?? null,
+          scope: Array.isArray(input.scopes) ? input.scopes.join(",") : null,
+        },
+        shopDomain: input.shopDomain ?? null,
+        scopes: input.scopes,
+        loadOfflineToken: input.loadOfflineToken,
         // Dialogue is for resolving "that"/"the other one" only. Domain truth
         // comes from canonical action state, never from transcript prose.
         recentMessages: await loadRecentDialogue(prisma, {
@@ -1200,6 +1207,69 @@ export function buildCurrentActionInput(context) {
   const focusedAction =
     context?.actionEvidence?.focusedAction ?? context?.focusedAction ?? null;
   if (!focusedAction) return null;
+  if (focusedAction.semanticAction || focusedAction.progress?.agentic || focusedAction.plan?.agentic) {
+    return {
+      ...focusedAction,
+      operationalContext: {
+        role: "default_mutation_target",
+        runtime: "agentic_shopify",
+        lifecycle: {
+          status: focusedAction.status ?? null,
+          accepted: Boolean(focusedAction.semanticAction?.acceptedActionRevision),
+          currentActionRevision: focusedAction.semanticAction?.currentActionRevision ?? null,
+          acceptedActionRevision: focusedAction.semanticAction?.acceptedActionRevision ?? null,
+        },
+        recommendation: {
+          id: focusedAction.sourceRecommendationId ?? null,
+          title: focusedAction.sourceRecommendation?.title ?? focusedAction.title ?? null,
+          summary: focusedAction.sourceRecommendation?.summary ?? focusedAction.summary ?? null,
+          whyThisAction:
+            focusedAction.semanticAction?.rationale?.whyThisAction ??
+            focusedAction.sourceRecommendation?.whyThisAction ??
+            null,
+          whyNow:
+            focusedAction.semanticAction?.rationale?.whyNow ??
+            focusedAction.sourceRecommendation?.whyNow ??
+            null,
+        },
+        semanticAction: focusedAction.semanticAction,
+        outcome: focusedAction.semanticAction?.outcome ?? null,
+        knownCandidateScope:
+          focusedAction.semanticAction?.knownCandidateScope ??
+          focusedAction.workspaceProjection?.candidateScope ??
+          null,
+        constraints: Array.isArray(focusedAction.constraints) ? focusedAction.constraints : [],
+        semanticConstraints: focusedAction.semanticAction?.constraints ?? [],
+        materialExpectedEffects:
+          focusedAction.semanticAction?.materialExpectedEffects ??
+          focusedAction.workspaceProjection?.materialExpectedEffects ??
+          [],
+        semanticPlan: focusedAction.semanticPlan ?? [],
+        workspaceProjection: focusedAction.workspaceProjection ?? null,
+        evidence: {
+          refs: focusedAction.semanticAction?.evidenceRefs ?? {},
+          investigation: focusedAction.semanticAction?.investigation ?? null,
+          planEvidenceAtRecommendationTime:
+            context?.planEvidenceAtRecommendationTime ?? null,
+          currentSystemContext: context?.currentSystemContext ?? null,
+        },
+        execution: {
+          providerWriteSuccessIsNotCompletion: true,
+          verificationRule:
+            "After acceptance, Luna must read Shopify back and verify the accepted outcome exists before marking the Action complete.",
+        },
+        primitives: [
+          {
+            ref: "agentic_shopify_runtime",
+            purpose:
+              "Discuss and refine the semantic Action before acceptance. After acceptance, choose Shopify reads/writes dynamically and verify state by reading Shopify back.",
+            authorizationBoundary:
+              "acceptedActionRevision is the merchant authorization boundary; do not treat discussion as approval.",
+          },
+        ],
+      },
+    };
+  }
   const lowCoverItems = lowCoverItemsFromContext(context);
   const coverDays =
     Number(focusedAction.plan?.coverDays) > 0

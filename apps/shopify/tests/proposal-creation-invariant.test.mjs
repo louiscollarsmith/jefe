@@ -115,12 +115,15 @@ test("background callers cannot pass merchant_onboarding through goals service",
   assert.doesNotMatch(goalsSource, /merchantTriggered/);
 });
 
-test("backfill worker only forwards merchant_onboarding from queued job payload", () => {
+test("backfill worker dispatches canonical agentic recommendation jobs", () => {
   const workerSource = readFileSync(
     new URL("../app/services/shopify-backfill-worker.server.js", import.meta.url),
     "utf8",
   );
-  assert.match(workerSource, /payload\.proposalTrigger === "merchant_onboarding"/);
+  assert.match(workerSource, /AGENTIC_RECOMMENDATION_JOB_TYPE/);
+  assert.match(workerSource, /runAgenticRecommendationInvestigation/);
+  assert.match(workerSource, /Legacy merchant_plan_generate is retired/);
+  assert.doesNotMatch(workerSource, /payload\.proposalTrigger === "merchant_onboarding"/);
   assert.doesNotMatch(workerSource, /merchantTriggered/);
 });
 
@@ -195,16 +198,17 @@ test("supersedeDuplicateProposedActions retains full over bootstrap", async () =
   );
 });
 
-test("merchant goals service does not import plan queue without autonomous defer guard in ensureMerchantPlanQueued", () => {
-  const serviceSource = readFileSync(
-    new URL("../app/lib/merchant-plan/service.server.js", import.meta.url),
+test("merchant goals service queues the canonical agentic recommendation path", () => {
+  const goalsSource = readFileSync(
+    new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
     "utf8",
   );
-  assert.match(serviceSource, /shouldDeferAutonomousProposalCreation/);
-  assert.match(serviceSource, /deferred_initial_proposal_exists/);
+  assert.match(goalsSource, /ensureAgenticRecommendationQueued/);
+  assert.doesNotMatch(goalsSource, /ensureMerchantPlanQueued/);
+  assert.doesNotMatch(goalsSource, /MERCHANT_PLAN_JOB_TYPE/);
 });
 
-test("generateMerchantPlan skips LLM when autonomous generation deferred", () => {
+test("legacy generateMerchantPlan remains duplicate-guarded while retired from the worker path", () => {
   const serviceSource = readFileSync(
     new URL("../app/lib/merchant-plan/service.server.js", import.meta.url),
     "utf8",
@@ -213,13 +217,15 @@ test("generateMerchantPlan skips LLM when autonomous generation deferred", () =>
   assert.match(serviceSource, /persistProposedRecommendationIfAllowed/);
 });
 
-test("bootstrap skips background proposal creation after initial proposal", () => {
+test("bootstrap no longer creates background recommendation proposals", () => {
   const bootstrapSource = readFileSync(
     new URL("../app/lib/onboarding/bootstrap.server.js", import.meta.url),
     "utf8",
   );
-  assert.match(bootstrapSource, /shouldDeferAutonomousProposalCreation/);
-  assert.match(bootstrapSource, /checkProposedCreationAllowed/);
+  assert.match(bootstrapSource, /ready_for_agentic_recommendation/);
+  assert.match(bootstrapSource, /retired_agentic_recommendation_only/);
+  assert.doesNotMatch(bootstrapSource, /shouldDeferAutonomousProposalCreation/);
+  assert.doesNotMatch(bootstrapSource, /checkProposedCreationAllowed/);
 });
 
 test("insights and goals services remain free to run after onboarding", () => {
@@ -232,7 +238,8 @@ test("insights and goals services remain free to run after onboarding", () => {
     new URL("../app/lib/merchant-goals/service.server.js", import.meta.url),
     "utf8",
   );
-  assert.match(goalsSource, /ensureMerchantPlanQueued/);
+  assert.match(goalsSource, /ensureAgenticRecommendationQueued/);
+  assert.doesNotMatch(goalsSource, /ensureMerchantPlanQueued/);
 });
 
 test("countProposedMerchantActions and merchantHasProposedAction stay aligned", async () => {

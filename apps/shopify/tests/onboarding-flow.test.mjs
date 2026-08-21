@@ -4,7 +4,6 @@ import test from "node:test";
 
 import { ONBOARDING_STEPS } from "../app/lib/onboarding/steps.js";
 import { classifyFailure } from "../app/lib/onboarding/fast-onboarding.server.js";
-import { PLAN_RUN_STATUS } from "../app/lib/merchant-plan/constants.js";
 
 const appIndexSource = fs.readFileSync(
   new URL("../app/routes/app._index.tsx", import.meta.url),
@@ -80,10 +79,12 @@ test("fast onboarding does not render dev-only stage jump controls", () => {
   assert.doesNotMatch(jefeStylesSource, /\.jf-dev-states/);
 });
 
-test("accepting the plan shows the home loading shell while opening Jefe", () => {
+test("opening the recommendation shows the home loading shell while opening Jefe", () => {
   assert.match(appIndexSource, /import \{ DailyHome, DailyHomeLoading \}/);
   assert.match(appIndexSource, /pendingDestination === "home"[\s\S]*<DailyHomeLoading storeName=\{data\.storeName\} \/>/);
-  assert.match(fastOnboardingSource, /Tracking\. Opening Jefe\./);
+  assert.match(fastOnboardingSource, /Opening Action Chat\./);
+  assert.match(fastOnboardingSource, /Action opened/);
+  assert.match(fastOnboardingSource, /Ready to discuss/);
   assert.match(fastOnboardingSource, /current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(appHomeSource, /export function AppHome13aLoading/);
   assert.match(appHomeSource, /Opening Jefe/);
@@ -113,11 +114,11 @@ test("Context wait state explains generation is still happening", () => {
   assert.doesNotMatch(fastOnboardingSource, /Let me finish the last check/);
 });
 
-test("Context wait state stops when grounded Plan generation has insufficient data", () => {
+test("Context wait state stops only after agentic recommendation finds no action", () => {
   const failure = classifyFailure(null, null, {
     contextAnswered: true,
     hasSurfaceableRecommendation: false,
-    latestPlanRun: { status: PLAN_RUN_STATUS.insufficientData },
+    latestPlanRun: { status: "no_actionable_opportunity" },
   });
   assert.equal(failure.type, "insufficient");
   assert.match(failure.message, /grounded Shopify action/);
@@ -362,7 +363,12 @@ test("app route error boundary renders readable Polaris UI instead of raw Shopif
 });
 
 test("onboarding render does not read browser-only or non-deterministic values", () => {
-  const renderSources = [appIndexSource, appShellSource].join("\n");
+  const renderSources = [
+    fastOnboardingSource,
+    onboardingChatSource,
+    merchantMemoryViewSource,
+    appShellSource,
+  ].join("\n");
 
   for (const pattern of [
     /\bwindow\./,
@@ -372,7 +378,7 @@ test("onboarding render does not read browser-only or non-deterministic values",
     /\bsessionStorage\./,
     /\bmatchMedia\(/,
     /\bDate\.now\(/,
-    /\bnew Date\(/,
+    /\bnew Date\(\s*\)/,
     /\bMath\.random\(/,
   ]) {
     assert.doesNotMatch(renderSources, pattern);

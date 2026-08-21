@@ -250,6 +250,72 @@ test("focus resolver prioritises merchant input before optional work", () => {
   assert.equal(focus.headline, "Create purchase order");
 });
 
+test("agentic Shopify Actions project semantic context as ready to discuss", () => {
+  const action = {
+    id: "action-agentic",
+    title: "Create an Available Proven Wines storefront collection",
+    summary: "Make proven in-stock wines easier to browse.",
+    status: "proposed",
+    sourceRecommendationId: "rec-agentic",
+    sourceRecommendation: {
+      id: "rec-agentic",
+      title: "Create an Available Proven Wines storefront collection",
+      whyThisAction: "Available proven wines are hard to find in the storefront.",
+      whyNow: "The store has enough available proven wines to merit a collection.",
+      successSignal: {
+        description: "A storefront collection exists for available proven wines.",
+      },
+    },
+    plan: {
+      agentic: {
+        runtime: "shopify_admin_api",
+        currentActionRevision: "sar_123",
+        semanticAction: {
+          outcome: "Create a storefront collection for available proven wines.",
+          whyThisAction: "Available proven wines are hard to find in the storefront.",
+          scope: {
+            summary: "Known candidate scope: available wines with recent demand.",
+            items: [
+              { title: "Chateau Test 2020", productId: "gid://shopify/Product/1" },
+              { title: "Barolo Test 2019", productId: "gid://shopify/Product/2" },
+            ],
+          },
+          constraints: [{ kind: "inventory", label: "Only include products with inventory > 0" }],
+          materialExpectedEffects: [
+            { label: "Create or update one Shopify collection for available proven wines." },
+            { label: "Attach the qualifying products to that collection." },
+          ],
+          verificationPlan: "Read Shopify back and confirm the collection and products exist.",
+        },
+      },
+    },
+    progress: {
+      agentic: {
+        runtime: "shopify_admin_api",
+        currentActionRevision: "sar_123",
+      },
+    },
+  };
+
+  const workspace = buildActionWorkspace(action);
+  const rows = workspacePlanItems(workspace);
+
+  assert.equal(workspace.kind, "agentic_shopify");
+  assert.equal(workspace.actionState, "ready_to_discuss");
+  assert.equal(workspace.currentFocus.eyebrow, "Ready to discuss");
+  assert.deepEqual(
+    rows.map((row) => [row.title, row.statusLabel, row.workspaceState]),
+    [
+      ["Review what Jefe found", "Ready to discuss", "planned"],
+      ["Confirm the candidate scope", "Known candidate scope", "planned"],
+      ["Agree constraints", "Editable", "planned"],
+      ["Execute and verify the outcome", "After acceptance", "planned"],
+    ],
+  );
+  assert.match(workspace.candidateScope.summary, /Known candidate scope/);
+  assert.equal(workspace.materialExpectedEffects.length, 2);
+});
+
 function restockAction({ steps }) {
   return {
     id: "action-1",

@@ -84,6 +84,11 @@ import {
   invalidateDownstreamSteps,
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
+import {
+  acceptAndExecuteAgenticShopifyAction,
+  isAgenticShopifyAction,
+} from "../shopify/agentic-runtime/execution-service.server.js";
+import { semanticActionRevision } from "../shopify/agentic-runtime/semantic-action.server.js";
 
 const log = baseLogger.child({ component: "action-command" });
 
@@ -209,7 +214,7 @@ export function isMutationCommand(type) {
  *   actor?: string | null;
  *   conversationId?: string | null;
  *   recentMessages?: Array<{ role?: string; content?: string }>;
- *   session?: { shop: string } | null;
+ *   session?: { shop?: string | null; scope?: string | null } | null;
  *   executeDeps?: any;
  *   provider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
  *   replanProvider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
@@ -322,7 +327,7 @@ export async function executeActionCommand(prisma, input) {
  *   actionId: string;
  *   actor?: string | null;
  *   conversationId?: string | null;
- *   session?: { shop: string } | null;
+ *   session?: { shop?: string | null; scope?: string | null } | null;
  *   executeDeps?: any;
  *   message?: string | null;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
@@ -430,6 +435,38 @@ function firstUsefulSentence(reply) {
 
 /** @param {any} prisma @param {any} input */
 async function runAcceptPlan(prisma, input) {
+  const rawAction = await prisma.merchantAction?.findFirst?.({
+    where: {
+      id: input.action.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+  });
+  if (rawAction && isAgenticShopifyAction(rawAction)) {
+    const result = await acceptAndExecuteAgenticShopifyAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      shopDomain: input.session?.shop,
+      actionId: input.action.id,
+      actor: input.actor ?? input.merchantId,
+      scopes: input.session?.scope ? String(input.session.scope).split(/[,\s]+/).filter(Boolean) : undefined,
+      client: input.executeDeps?.client ?? null,
+      loadOfflineToken: input.executeDeps?.loadOfflineToken,
+      provider: input.provider ?? null,
+      logger: input.logger,
+    });
+    const fresh = await refreshAction(prisma, input);
+    return {
+      ok: Boolean(result.ok),
+      command: ACTION_COMMAND.ACCEPT_PLAN,
+      reason: result.ok ? null : result.reason,
+      result,
+      reply: result.ok
+        ? "Accepted. I made the Shopify change and verified the outcome."
+        : "I accepted the Action, but could not complete the Shopify work yet.",
+      action: fresh ?? input.action,
+    };
+  }
   const result = await acceptMerchantActionPlan(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -848,6 +885,15 @@ async function runAddConstraint(prisma, input) {
       command: ACTION_COMMAND.ADD_CONSTRAINT,
       reason: "not_persisted",
       reply: "I couldn’t save that constraint against this action.",
+    };
+  }
+  if (isAgenticShopifyAction(input.action)) {
+    const revision = await updateAgenticSemanticConstraints(prisma, input, added);
+    return {
+      ok: true,
+      command: ACTION_COMMAND.ADD_CONSTRAINT,
+      result: { constraints: added, currentActionRevision: revision },
+      reply: `${buildConstraintAddedReply(added, input.message)} I’ve updated the Action draft; nothing has been changed in Shopify.`,
     };
   }
   await staleLiveChangeSets(prisma, {
@@ -2246,6 +2292,99 @@ function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, any>} */ (value)
     : {};
+}
+
+/** @param {any} prisma @param {any} input @param {any[]} constraints */
+async function updateAgenticSemanticConstraints(prisma, input, constraints) {
+  const row = await prisma.merchantAction.findFirst?.({
+    where: {
+      id: input.action.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+  });
+  const action = row ?? input.action;
+  const progress = jsonObject(action.progress);
+  const plan = jsonObject(action.plan);
+  const progressAgentic = jsonObject(progress.agentic);
+  const planAgentic = jsonObject(plan.agentic);
+  const currentSemantic = {
+    ...jsonObject(planAgentic.semanticAction),
+    ...jsonObject(progressAgentic.semanticAction),
+  };
+  const mergedConstraints = mergeSemanticConstraints(
+    currentSemantic.constraints,
+    constraints,
+  );
+  /** @type {any} */
+  const semanticAction = {
+    ...currentSemantic,
+    constraints: mergedConstraints,
+  };
+  const revision = semanticActionRevision(semanticAction);
+  semanticAction.revision = revision;
+  const updatedProgress = {
+    ...progress,
+    agentic: {
+      ...progressAgentic,
+      runtime: progressAgentic.runtime ?? planAgentic.runtime ?? "shopify_admin_api",
+      currentActionRevision: revision,
+      semanticAction,
+    },
+  };
+  const updatedPlan = {
+    ...plan,
+    agentic: {
+      ...planAgentic,
+      runtime: planAgentic.runtime ?? progressAgentic.runtime ?? "shopify_admin_api",
+      currentActionRevision: revision,
+      semanticAction,
+    },
+  };
+  await prisma.merchantAction.update?.({
+    where: { id: input.action.id },
+    data: {
+      progress: updatedProgress,
+      plan: updatedPlan,
+      status: progressAgentic.acceptedActionRevision ? action.status : "proposed",
+    },
+  });
+  await prisma.merchantActionEvent?.create?.({
+    data: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      merchantActionId: input.action.id,
+      eventType: "agentic_shopify_action_revised",
+      metadata: {
+        currentActionRevision: revision,
+        constraintCount: mergedConstraints.length,
+      },
+    },
+  });
+  return revision;
+}
+
+/** @param {unknown} existing @param {any[]} added */
+function mergeSemanticConstraints(existing, added) {
+  const rows = [
+    ...(Array.isArray(existing) ? existing : []),
+    ...added.map((row) => ({
+      kind: row.kind,
+      params: jsonObject(row.params),
+      label: row.label,
+    })),
+  ];
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = JSON.stringify({
+      kind: row?.kind ?? null,
+      params: jsonObject(row?.params),
+      label: row?.label ?? null,
+    });
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** @param {any} prisma @param {any} input @param {any} pending */

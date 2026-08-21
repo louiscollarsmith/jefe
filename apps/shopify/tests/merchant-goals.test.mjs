@@ -17,7 +17,7 @@ import {
   GOAL_RUN_STATUS,
   MERCHANT_GOALS_JOB_TYPE,
 } from "../app/lib/merchant-goals/constants.server.js";
-import { MERCHANT_PLAN_JOB_TYPE } from "../app/lib/merchant-plan/constants.server.js";
+import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../app/lib/shopify/agentic-runtime/constants.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -591,18 +591,18 @@ test("goal generation retries once when model cites unsupported belief IDs", asy
       logger: silentLogger,
     });
 
-    const planJob = await prisma.backfillJob.findUnique({
+    const recommendationJob = await prisma.backfillJob.findUnique({
       where: {
         shopId_jobType: {
           shopId: shop.id,
-          jobType: MERCHANT_PLAN_JOB_TYPE,
+          jobType: AGENTIC_RECOMMENDATION_JOB_TYPE,
         },
       },
     });
 
     assert.equal(result.status, GOAL_RUN_STATUS.completed);
     assert.equal(calls, 2);
-    assert.equal(planJob?.status, "queued");
+    assert.equal(recommendationJob?.status, "queued");
   } finally {
     await prisma.merchant.deleteMany({
       where: { name: `Merchant Goals Test ${suffix}` },

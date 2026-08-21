@@ -318,7 +318,7 @@ export async function getActionChatThread(prisma, input) {
  * action context. This keeps the action chat scoped to the move; it does not
  * interpret the message into Merchant Memory and does not write to Shopify.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message: string; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof import("./passive-memory.server.js").processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
+ * @param {{ merchantId: string; shopId?: string | null; recommendationId?: string | null; actionRunId?: string | null; message: string; shopDomain?: string | null; scopes?: string[]; loadOfflineToken?: (prisma: any, shopDomain: string) => Promise<string>; llmProvider?: import("../llm/provider.server.js").LlmProvider; messageDecisionProcessor?: typeof import("./passive-memory.server.js").processPassiveMemoryMessage; logger?: Pick<Console, "info" | "warn" | "error"> }} input
  */
 export async function sendActionChatMessage(prisma, input) {
   const topic = actionConversationTopic(input);
@@ -334,6 +334,9 @@ export async function sendActionChatMessage(prisma, input) {
     focusedActionId,
     recommendationId: input.recommendationId,
     actionRunId: input.actionRunId,
+    shopDomain: input.shopDomain,
+    scopes: input.scopes,
+    loadOfflineToken: input.loadOfflineToken,
     llmProvider: input.llmProvider,
     messageDecisionProcessor: input.messageDecisionProcessor,
     logger: input.logger,

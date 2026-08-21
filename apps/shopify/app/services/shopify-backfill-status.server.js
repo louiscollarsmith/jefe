@@ -9,6 +9,7 @@ import {
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
+import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
 import { DEFAULT_BACKFILL_DAYS } from "../lib/shopify/backfill-window.server.js";
 import { normalizeShopDomain } from "../lib/shopify/admin-graphql.server.js";
 import { trackOnce } from "./analytics/event-log.server.js";
@@ -58,7 +59,8 @@ const JOB_PRIORITIES = {
   [MEMORY_REFRESH_JOB_TYPE]: 80,
   [MERCHANT_INSIGHTS_JOB_TYPE]: 90,
   [MERCHANT_GOALS_JOB_TYPE]: 100,
-  [MERCHANT_PLAN_JOB_TYPE]: 110,
+  [AGENTIC_RECOMMENDATION_JOB_TYPE]: 110,
+  [MERCHANT_PLAN_JOB_TYPE]: 115,
   [RECOMMENDATION_REVIEW_JOB_TYPE]: 120,
 };
 

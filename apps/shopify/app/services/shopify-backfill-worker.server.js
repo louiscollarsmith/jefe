@@ -15,7 +15,6 @@ import {
   BOOTSTRAP_BACKFILL_DOMAIN,
   BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
   enqueueBackfillJob,
-  ensureRecommendationReviewQueued,
   FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS,
   hasReadAllOrders,
   INITIAL_COMMERCE_BACKFILL_DOMAINS,
@@ -42,11 +41,14 @@ import {
 } from "../lib/merchant-goals/service.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import {
-  generateMerchantPlan,
   markMerchantPlanJobFailed,
 } from "../lib/merchant-plan/service.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
-import { repairDuplicateProposedActions } from "../lib/merchant-plan/proposal-creation-invariant.server.js";
+import {
+  markAgenticRecommendationJobFailed,
+  runAgenticRecommendationInvestigation,
+} from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
+import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
 import {
   newCorrelationId,
@@ -54,8 +56,6 @@ import {
 } from "../lib/observability/context.server.js";
 import { track, trackOnce } from "./analytics/event-log.server.js";
 import { generateBootstrapAlternative, runMerchantMemoryBootstrap } from "../lib/onboarding/bootstrap.server.js";
-import { reviewDueRecommendations } from "../lib/onboarding/recommendation-review.server.js";
-import { reconcileBootstrapRecommendationsAfterFullRefresh } from "../lib/onboarding/reconciliation.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
 import { processReadyActionStepRuns } from "../lib/actions/action-step-lifecycle.server.js";
@@ -106,10 +106,10 @@ const JOB_SUCCESS_EVENT = {
     topic: "generation",
     label: "Goals generated",
   },
-  [MERCHANT_PLAN_JOB_TYPE]: {
-    type: "plan_generated",
+  [AGENTIC_RECOMMENDATION_JOB_TYPE]: {
+    type: "agentic_recommendation_generated",
     topic: "generation",
-    label: "Plan generated",
+    label: "Recommendation generated",
   },
   backfill_finalize: {
     type: "backfill_completed",
@@ -508,33 +508,6 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (completed.count !== 1) {
       return { status: "cancelled", jobType: job.jobType, result };
     }
-    if (job.jobType === RECOMMENDATION_REVIEW_JOB_TYPE && !shouldRequeue) {
-      const current = await prisma.backfillJob.findUnique({
-        where: { id: job.id },
-        select: { payloadJson: true },
-      });
-      const currentPayload = jsonObject(current?.payloadJson);
-      const resultRunAfter = stringValue(
-        /** @type {any} */ (result)?.nextRunAfter,
-      );
-      const requestedRunAfter =
-        currentPayload.rescanRequested === true
-          ? stringValue(currentPayload.requestedRunAfter) ??
-            new Date().toISOString()
-          : null;
-      const nextRunAfter = earliestIsoDate(
-        resultRunAfter,
-        requestedRunAfter,
-      );
-      if (nextRunAfter) {
-        await ensureRecommendationReviewQueued(prisma, {
-          merchantId: job.merchantId,
-          shopId: job.shopId,
-          runAfter: nextRunAfter,
-          payload: { reason: "next_tracked_recommendation_review" },
-        });
-      }
-    }
     if (!shouldRequeue) trackJobSuccess(prisma, job);
     await holdQueuedBackfillJobs(prisma, job.shopId, options.holdQueuedJobsUntil);
     return {
@@ -579,6 +552,13 @@ async function runClaimedBackfillJob(prisma, job, options) {
       });
     } else if (job.jobType === MERCHANT_GOALS_JOB_TYPE) {
       await markMerchantGoalsJobFailed(prisma, {
+        merchantId: job.merchantId,
+        shopId: job.shopId,
+        runId: stringValue(jsonObject(job.payloadJson).runId),
+        message,
+      });
+    } else if (job.jobType === AGENTIC_RECOMMENDATION_JOB_TYPE) {
+      await markAgenticRecommendationJobFailed(prisma, {
         merchantId: job.merchantId,
         shopId: job.shopId,
         runId: stringValue(jsonObject(job.payloadJson).runId),
@@ -768,17 +748,19 @@ async function runBackfillJob(prisma, job, options) {
         runId: stringValue(payload.runId),
         logger: context.logger,
       });
-    case MERCHANT_PLAN_JOB_TYPE:
-      return generateMerchantPlan(prisma, {
+    case AGENTIC_RECOMMENDATION_JOB_TYPE:
+      return runAgenticRecommendationInvestigation(prisma, {
         merchantId: context.merchantId,
         shopId: context.shopId,
+        shopDomain: context.shopDomain,
+        accessToken: requireAccessToken(context),
+        scopes: scopes.length ? scopes : undefined,
         runId: stringValue(payload.runId),
-        proposalTrigger:
-          payload.proposalTrigger === "merchant_onboarding"
-            ? "merchant_onboarding"
-            : "background",
+        fetchImpl: context.fetchImpl,
         logger: context.logger,
       });
+    case MERCHANT_PLAN_JOB_TYPE:
+      throw new Error("Legacy merchant_plan_generate is retired from the active worker runtime.");
     case EPISODE_PROCESS_JOB_TYPE: {
       const episode = await processMerchantEpisodeBatch(prisma, {
         merchantId: context.merchantId,
@@ -817,11 +799,7 @@ async function runBackfillJob(prisma, job, options) {
         shopId: context.shopId,
       });
     case RECOMMENDATION_REVIEW_JOB_TYPE:
-      return reviewDueRecommendations(prisma, {
-        merchantId: context.merchantId,
-        shopId: context.shopId,
-        logger: context.logger,
-      });
+      throw new Error("Legacy recommendation_review is retired from the active worker runtime.");
     default:
       return {};
   }
@@ -1291,20 +1269,6 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
     logger: context.logger,
   });
 
-  if (categories.length === 0) {
-    await repairDuplicateProposedActions(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      logger: context.logger,
-    }).catch(() => ({ retained: 0, superseded: 0 }));
-
-    await reconcileBootstrapRecommendationsAfterFullRefresh(prisma, {
-      merchantId: context.merchantId,
-      shopId: context.shopId,
-      logger: context.logger,
-    });
-  }
-
   await upsertBackfillStatus(prisma, {
     merchantId: context.merchantId,
     shopId: context.shopId,
@@ -1327,13 +1291,12 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
 }
 
 /**
- * After a completed FULL Merchant Memory rebuild, start the generated onboarding
+ * After a completed FULL Merchant Memory rebuild, start the generated learning
  * chain by queueing Insights. Completed Insights queue Goals, and completed
- * Goals queue Plan, so each artifact is generated from the upstream artifact the
- * merchant will actually see.
+ * Goals queue the agentic Shopify recommendation investigation.
  *
  * Gated strictly on shop.onboardingCompletedAt: during onboarding the funnel
- * (app._index) already drives Goals and Plan step by step, so this must never
+ * (app._index) already drives Goals and recommendation step by step, so this must never
  * fire mid-onboarding. It only takes over once the merchant has finished.
  *
  * The ensure*Queued helpers key each run on the relevant snapshot hash and reuse
@@ -1630,13 +1593,6 @@ function parseDate(value) {
   if (typeof value !== "string") return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
-}
-
-/** @param {string | null} left @param {string | null} right */
-function earliestIsoDate(left, right) {
-  if (!left) return right;
-  if (!right) return left;
-  return new Date(left) <= new Date(right) ? left : right;
 }
 
 /** @param {unknown} value @param {number} fallback */

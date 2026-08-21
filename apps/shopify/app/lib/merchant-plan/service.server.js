@@ -49,6 +49,9 @@ import {
   resolveProposalTriggerForQueue,
   shouldDeferAutonomousProposalCreation,
 } from "./proposal-creation-invariant.server.js";
+import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/recommendation-service.server.js";
+import { AGENTIC_RECOMMENDATION_SOURCE_MODE } from "../shopify/agentic-runtime/constants.server.js";
+import { acceptAgenticShopifyAction } from "../shopify/agentic-runtime/semantic-action.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
 const MERCHANT_PLAN_GENERATION_TIMEOUT_MS = 60_000;
@@ -188,8 +191,8 @@ export async function getLatestMerchantPlan(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       status: PLAN_RUN_STATUS.completed,
-      // "home" runs are merchant-triggered from the Reading your store card.
-      sourceMode: { in: ["full", "home"] },
+      // "agentic" is the current runtime; "full/home" are historical surfaces.
+      sourceMode: { in: [AGENTIC_RECOMMENDATION_SOURCE_MODE, "full", "home"] },
     },
     include: recommendationInclude(),
     orderBy: { completedAt: "desc" },
@@ -724,12 +727,11 @@ export async function processMerchantPlanMessage(prisma, input) {
     topic: CONVERSATION_TOPICS.onboardingPlan,
     message,
   });
-  await ensureMerchantPlanQueued(prisma, {
+  await ensureAgenticRecommendationQueued(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
     resetAttempts: true,
     runAfter: input.runAfter,
-    proposalTrigger: "merchant_onboarding",
   });
   await addAssistantConversationNote(prisma, {
     merchantId: input.merchantId,
@@ -791,6 +793,55 @@ export async function acceptMerchantPlanAndCompleteOnboarding(prisma, input) {
       shopId: input.shopId,
     },
   });
+  if (existing.sourceMode === AGENTIC_RECOMMENDATION_SOURCE_MODE) {
+    const action = await prisma.merchantAction.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceRecommendationId: existing.id,
+      },
+      select: { id: true },
+    });
+    if (!action) throw new Error("Agentic Action is missing for recommendation.");
+    const accepted = await acceptAgenticShopifyAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.merchantId,
+    });
+    if (!accepted.ok) throw new Error("Agentic Action could not be accepted.");
+    const recommendation = await prisma.merchantPlanRecommendation.update({
+      where: { id: existing.id },
+      data: {
+        reviewStatus: PLAN_REVIEW_STATUS.accepted,
+        acceptedAt: now,
+      },
+    });
+    await recordEvidence(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceType: "agentic_recommendation",
+      sourceReference: `merchant_plan_recommendation:${recommendation.id}`,
+      evidenceType: "agentic_action_accepted",
+      summary: `Merchant accepted Jefe's Action: ${recommendation.title}`,
+      metadata: {
+        recommendationId: recommendation.id,
+        runId: recommendation.runId,
+        actionId: action.id,
+      },
+      observedAt: now,
+    });
+    await completePlanOnboarding(prisma, {
+      shopId: input.shopId,
+      metadata: {
+        planRecommendationId: recommendation.id,
+        planRunId: recommendation.runId,
+        actionId: action.id,
+        runtime: "agentic_shopify",
+      },
+    });
+    return { ok: true, recommendation };
+  }
   const recommendation = await prisma.$transaction(async (tx) => {
     const updated = await tx.merchantPlanRecommendation.update({
       where: { id: existing.id },

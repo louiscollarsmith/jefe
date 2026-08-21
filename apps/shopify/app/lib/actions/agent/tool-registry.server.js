@@ -1228,7 +1228,7 @@ export function snapshotFacts(state) {
 
 /** @param {any} state */
 export function scopeLines(state) {
-  return (state?.scope?.items ?? []).map((/** @type {any} */ item) => ({
+  const items = (state?.scope?.items ?? []).map((/** @type {any} */ item) => ({
     title: item.title ?? item.productTitle ?? "Item",
     productId: item.productId ?? null,
     variantId: item.variantId ?? null,
@@ -1243,6 +1243,39 @@ export function scopeLines(state) {
     confidence: item.confidence ?? null,
     because: item.because ?? item.reason ?? null,
   }));
+  if (items.length > 0) return items;
+  if (
+    state?.action?.kind === "agentic_shopify" &&
+    state?.scope?.status &&
+    state.scope.status !== SCOPE_STATUS.unresolved
+  ) {
+    const summary =
+      state?.scope?.discovery?.summary ??
+      state?.scope?.originalEvidence?.summary ??
+      state?.semanticAction?.scope?.summary ??
+      state?.semanticAction?.outcome ??
+      null;
+    if (summary) {
+      return [
+        {
+          title: String(summary),
+          productId: null,
+          variantId: null,
+          vendor: null,
+          units: null,
+          available: null,
+          dailyVelocity: null,
+          fromPrice: null,
+          toPrice: null,
+          fromType: null,
+          toType: null,
+          confidence: state?.semanticAction?.confidence ?? null,
+          because: state?.semanticAction?.whyThisAction ?? null,
+        },
+      ];
+    }
+  }
+  return items;
 }
 
 /** @param {any} state */
@@ -1317,6 +1350,41 @@ export function buildCurrentProposal(state) {
       summary: lines.length
         ? formatListingCopyProposalSummary(lines)
         : emptyProposalMessage(state),
+    };
+  }
+
+  if (kind === "agentic_shopify") {
+    const semanticAction = state?.semanticAction ?? state?.action?.semanticAction ?? {};
+    const effects = Array.isArray(semanticAction?.materialExpectedEffects)
+      ? semanticAction.materialExpectedEffects
+      : [];
+    const lines = effects
+      .map((/** @type {any} */ effect) => ({
+        title: String(
+          effect?.label ??
+            effect?.description ??
+            effect?.summary ??
+            effect ??
+            "",
+        ).trim(),
+        operation: effect?.operation ?? effect?.shopifyOperation ?? null,
+        resource: effect?.resource ?? effect?.resourceType ?? null,
+      }))
+      .filter((/** @type {any} */ row) => row.title);
+    if (!lines.length && semanticAction?.outcome) {
+      lines.push({
+        title: String(semanticAction.outcome),
+        operation: null,
+        resource: null,
+      });
+    }
+    return {
+      type: "agentic_shopify_semantic_action",
+      title: "Expected Shopify effects",
+      lines,
+      summary: lines.length
+        ? `Current Action expects: ${lines.map((/** @type {any} */ row) => row.title).join("; ")}.`
+        : "Luna will choose Shopify operations after the Action is accepted and verify the outcome by reading Shopify back.",
     };
   }
 

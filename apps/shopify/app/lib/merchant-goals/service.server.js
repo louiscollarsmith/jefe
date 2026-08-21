@@ -43,7 +43,7 @@ import {
   buildMerchantGoalsPrompt,
   buildMerchantGoalsSystemPrompt,
 } from "./prompt.server.js";
-import { ensureMerchantPlanQueued } from "../merchant-plan/service.server.js";
+import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/recommendation-service.server.js";
 
 const ACTIVE_RUN_STATUSES = [GOAL_RUN_STATUS.queued, GOAL_RUN_STATUS.running];
 const log = baseLogger.child({ component: "merchant-goals" });
@@ -381,7 +381,7 @@ export async function generateMerchantGoals(prisma, input) {
       shopId: input.shopId,
       runId: run.id,
     });
-    await ensureMerchantPlanQueued(prisma, {
+    await ensureAgenticRecommendationQueued(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       resetAttempts: true,

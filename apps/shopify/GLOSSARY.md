@@ -92,6 +92,7 @@ typed adapters write to Shopify or another external system.
 - **Focused action** — The one Merchant Action a conversation is currently working on. It is the only action mutation/update tools may target by default from that chat.
 - **Referenced action** — A Merchant Action added to a conversation as read-only context. Jefe may reason from it, but it does not become the chat's write target.
 - **Action chat** — A conversation whose `focusedActionId` points at one Merchant Action, so the merchant and Jefe can talk through that work without making other referenced actions mutable.
+- **Agentic Action Chat** — The pre-acceptance chat runtime for `agentic_shopify` Merchant Actions. Luna can inspect and revise the semantic Action draft, retrieve relevant generated Shopify operation stubs, run Shopify reads through the universal gateway, and accept the Action on clear merchant approval; Shopify writes still require the resulting accepted Action revision.
 - **Store updates** — Store-level signals, proposed work and recent action outcomes shown near chat but kept separate from the current transcript.
 - **Heads-up** — A live store signal Jefe thinks is worth knowing, such as inventory pressure or another standing condition.
 
@@ -125,6 +126,11 @@ typed adapters write to Shopify or another external system.
 - **Shopify capability catalogue** — The versioned catalogue of Shopify Admin GraphQL operations Jefe can discover and semantically reason about. It names Shopify primitives such as `inventoryTransferCreate` and keeps them separate from Jefe business use cases such as restock or clearance.
 - **Capability manifest** — One machine-readable Shopify operation contract. It separates technical API facts from semantic interpretation, required evidence, safety admission, scopes, executor support and version provenance.
 - **Qualification plan** — The generic evidence checklist derived from a capability manifest before Jefe can turn a Shopify operation into an actionable opportunity. It asks what must be true, such as source stock existing for a transfer, without hardcoding a recommendation scenario.
+- **Shopify API stub catalogue** — The generated, versioned Admin GraphQL operation surface. It answers what Shopify can technically read or mutate, what variables the operation accepts, what scopes it requires, and what GraphQL document the server may call. It is Shopify knowledge, not a Jefe feature registry.
+- **Shopify API operation stub** — One generated operation entry in the stub catalogue, such as `products`, `collectionCreate` or `metafieldsSet`.
+- **Shopify tool retrieval** — The runtime helper that returns a small relevant subset of Shopify API operation stubs for the current recommendation, chat or execution task.
+- **Agentic Shopify recommendation loop** — Luna's recommendation run for the universal Shopify runtime: it receives Merchant Memory, bounded store evidence, compact Shopify API stubs and read tools, investigates hypotheses with generated Shopify reads, and returns a semantic recommendation only after feasibility is grounded.
+- **Semantic Action materialisation** — The conversion of a recommendation into a Merchant Action defined by outcome, scope, constraints, material expected effects and verification plan, without pre-authoring a Shopify API sequence or binding a legacy action type executor.
 - **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 
@@ -136,12 +142,20 @@ typed adapters write to Shopify or another external system.
 - **Autonomous** — Jefe executes without asking first, but only through the same typed adapter and safety gate.
 - **Blast-radius cap** — A hard bound on how many records or how much value one action can affect.
 - **Idempotency key** — A stable key that prevents the same action from being applied twice.
+- **Idempotent replay** — The gateway result when a generated Shopify write repeats the same accepted Action revision, operation, variables and idempotency key as a prior successful write. The gateway records the replay and returns the previous resource ids without calling Shopify again.
+- **Mid-action recovery** — A bounded continuation after one step in an accepted multi-call Action fails or is denied. Luna must inspect ledger/tool results and Shopify state, then either correct the next operation within the accepted Action scope or stop with a blocker.
 - **Reversal** — The deterministic undo path for an action that has already written to an external system.
+- **Accepted Action revision** — The semantic Action version the merchant approved. In the agentic Shopify runtime, this is the merchant authorization boundary for mutations; reads may investigate, but writes require a current accepted revision.
+- **Universal Shopify gateway** — The server-side path for generated Shopify API calls. It validates the operation, API version, variables, actual granted scopes, accepted Action revision, accepted intent and blast-radius limits before the app calls Shopify.
+- **Accepted-intent guard** — The generic gateway check that compares a proposed mutation's purpose and expected material effect with the merchant-approved Action. It blocks material drift such as pricing changes during a merchandising Action unless the accepted Action actually authorizes that effect.
+- **Agentic Shopify execution loop** — Luna's post-acceptance execution run for a semantic Shopify Action. It chooses generated Shopify reads and writes through the universal gateway, retrieves more operation stubs as needed, observes provider results, and finishes only after reading Shopify state back to verify the accepted outcome.
+- **Provider-state verification** — The completion rule that a successful Shopify write does not prove an Action is done. The runtime must read Shopify state after the write and verify the accepted outcome exists.
 
 ## Ledger And Learning
 
 - **Action execution** — A step-linked ledger row recording a proposed, approved, applied, declined, reverted or measured action instance. Executions belong to workflow steps; a Merchant Action may point at its current execution for the merchant-facing surface.
 - **Action execution write** — A row recording one external write made by an action execution.
+- **Shopify operation call** — A durable ledger row for one generated Shopify Admin GraphQL operation admitted or denied by the universal gateway, covering reads and writes with operation name, variables, gateway decision, provider result summary, user errors and affected resource ids.
 - **Ledger** — The durable audit trail of proposed actions, approvals, writes, reversals and outcomes.
 - **Outcome** — The measured result of an action, such as units moved, cash recovered or whether a tidy-up landed.
 

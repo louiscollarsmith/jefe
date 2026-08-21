@@ -1,0 +1,787 @@
+{
+  "schemaVersion": "shopify-admin-api-stubs.v1",
+  "catalogId": "shopify-admin-api:2026-07",
+  "provider": "SHOPIFY",
+  "apiSurface": "admin_graphql",
+  "apiVersion": "2026-07",
+  "generatedAt": "2026-08-21T10:30:00.000Z",
+  "generatedFrom": {
+    "kind": "seeded_introspection",
+    "note": "Refresh with npm run shopify:api:generate -- --introspection=path/to/admin-schema.json or live Shopify development credentials."
+  },
+  "operations": [
+    {
+      "id": "shopify.admin_graphql.2026-07.query.currentAppInstallation",
+      "operation": "currentAppInstallation",
+      "operationKind": "QUERY",
+      "domain": "authorization",
+      "description": "Returns the current app installation, including the actual access scopes granted to this shop.",
+      "requiredScopes": [],
+      "arguments": [],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "AppInstallation",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeCurrentAppInstallation { currentAppInstallation { accessScopes { handle } } }",
+      "tags": [
+        "authorization",
+        "scopes",
+        "installation",
+        "oauth"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.products",
+      "operation": "products",
+      "operationKind": "QUERY",
+      "domain": "products",
+      "description": "Reads products and their key catalogue fields so Jefe can investigate merchandising, product status, product type, tags and variants.",
+      "requiredScopes": [
+        "read_products"
+      ],
+      "arguments": [
+        {
+          "name": "first",
+          "type": "Int!",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "String",
+          "required": false
+        },
+        {
+          "name": "after",
+          "type": "String",
+          "required": false
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "ProductConnection",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeProducts($first: Int!, $query: String, $after: String) { products(first: $first, query: $query, after: $after) { edges { cursor node { id title handle status productType vendor tags totalInventory variants(first: 50) { edges { node { id title sku price inventoryQuantity inventoryItem { id tracked } } } } } } pageInfo { hasNextPage endCursor } } }",
+      "tags": [
+        "products",
+        "variants",
+        "catalogue",
+        "merchandising",
+        "status",
+        "product type",
+        "tags"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.collections",
+      "operation": "collections",
+      "operationKind": "QUERY",
+      "domain": "collections",
+      "description": "Reads collections and membership counts to inspect storefront merchandising structure.",
+      "requiredScopes": [
+        "read_products"
+      ],
+      "arguments": [
+        {
+          "name": "first",
+          "type": "Int!",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "String",
+          "required": false
+        },
+        {
+          "name": "after",
+          "type": "String",
+          "required": false
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "CollectionConnection",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeCollections($first: Int!, $query: String, $after: String) { collections(first: $first, query: $query, after: $after) { edges { cursor node { id title handle productsCount { count } updatedAt } } pageInfo { hasNextPage endCursor } } }",
+      "tags": [
+        "collections",
+        "navigation",
+        "merchandising",
+        "storefront",
+        "group products"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.product",
+      "operation": "product",
+      "operationKind": "QUERY",
+      "domain": "products",
+      "description": "Reads one product, including tags, product type, variants and product metafields, so Jefe can verify product-level catalogue or metadata changes.",
+      "requiredScopes": [
+        "read_products"
+      ],
+      "arguments": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "Product",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeProduct($id: ID!) { product(id: $id) { id title handle status productType tags variants(first: 50) { edges { node { id title sku price inventoryQuantity inventoryItem { id tracked } } } } metafields(first: 50) { edges { node { id namespace key type value } } } } }",
+      "tags": [
+        "products",
+        "product",
+        "metafields",
+        "metadata",
+        "verify",
+        "catalogue"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.collection",
+      "operation": "collection",
+      "operationKind": "QUERY",
+      "domain": "collections",
+      "description": "Reads one collection and its product membership to verify merchandising changes.",
+      "requiredScopes": [
+        "read_products"
+      ],
+      "arguments": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "Collection",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeCollection($id: ID!) { collection(id: $id) { id title handle products(first: 100) { edges { node { id title handle status } } } } }",
+      "tags": [
+        "collections",
+        "membership",
+        "verify",
+        "products"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.locations",
+      "operation": "locations",
+      "operationKind": "QUERY",
+      "domain": "inventory",
+      "description": "Reads Shopify locations available for inventory and fulfilment investigation.",
+      "requiredScopes": [
+        "read_locations"
+      ],
+      "arguments": [
+        {
+          "name": "first",
+          "type": "Int!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "LocationConnection",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeLocations($first: Int!) { locations(first: $first) { edges { node { id name isActive fulfillsOnlineOrders } } } }",
+      "tags": [
+        "locations",
+        "inventory",
+        "fulfilment",
+        "stock"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.inventoryItem",
+      "operation": "inventoryItem",
+      "operationKind": "QUERY",
+      "domain": "inventory",
+      "description": "Reads inventory levels for a specific inventory item across locations.",
+      "requiredScopes": [
+        "read_inventory"
+      ],
+      "arguments": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "InventoryItem",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeInventoryItem($id: ID!) { inventoryItem(id: $id) { id tracked inventoryLevels(first: 50) { edges { node { id quantities(names: [\"available\", \"on_hand\", \"committed\"]) { name quantity } location { id name } } } } } }",
+      "tags": [
+        "inventory",
+        "levels",
+        "stock",
+        "locations",
+        "available"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.query.orders",
+      "operation": "orders",
+      "operationKind": "QUERY",
+      "domain": "orders",
+      "description": "Reads bounded order summaries for operational investigation. Use canonical local order evidence first when it is fresh enough.",
+      "requiredScopes": [
+        "read_orders"
+      ],
+      "arguments": [
+        {
+          "name": "first",
+          "type": "Int!",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "String",
+          "required": false
+        },
+        {
+          "name": "after",
+          "type": "String",
+          "required": false
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "OrderConnection",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeOrders($first: Int!, $query: String, $after: String) { orders(first: $first, query: $query, after: $after) { edges { cursor node { id createdAt displayFinancialStatus displayFulfillmentStatus subtotalPriceSet { shopMoney { amount currencyCode } } lineItems(first: 50) { edges { node { quantity product { id title } variant { id title sku } } } } } } pageInfo { hasNextPage endCursor } } }",
+      "tags": [
+        "orders",
+        "sales",
+        "evidence",
+        "fulfilment",
+        "recent"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.collectionCreate",
+      "operation": "collectionCreate",
+      "operationKind": "MUTATION",
+      "domain": "collections",
+      "description": "Creates a Shopify collection for merchandising products together.",
+      "requiredScopes": [
+        "write_products"
+      ],
+      "arguments": [
+        {
+          "name": "input",
+          "type": "CollectionInput!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "CollectionInput": {
+          "fields": [
+            {
+              "name": "title",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "handle",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "descriptionHtml",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "ruleSet",
+              "type": "CollectionRuleSetInput",
+              "required": false
+            },
+            {
+              "name": "products",
+              "type": "[ID!]",
+              "required": false
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "CollectionCreatePayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeCollectionCreate($input: CollectionInput!) { collectionCreate(input: $input) { collection { id title handle productsCount { count } } userErrors { field message } } }",
+      "tags": [
+        "collections",
+        "create",
+        "navigation",
+        "merchandising",
+        "group products",
+        "storefront"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.collectionAddProducts",
+      "operation": "collectionAddProducts",
+      "operationKind": "MUTATION",
+      "domain": "collections",
+      "description": "Adds products to an existing manual collection.",
+      "requiredScopes": [
+        "write_products"
+      ],
+      "arguments": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        },
+        {
+          "name": "productIds",
+          "type": "[ID!]!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "CollectionAddProductsPayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeCollectionAddProducts($id: ID!, $productIds: [ID!]!) { collectionAddProducts(id: $id, productIds: $productIds) { collection { id title productsCount { count } } userErrors { field message } } }",
+      "tags": [
+        "collections",
+        "products",
+        "membership",
+        "merchandising",
+        "populate"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.productUpdate",
+      "operation": "productUpdate",
+      "operationKind": "MUTATION",
+      "domain": "products",
+      "description": "Updates product catalogue fields such as title, product type, tags, status, vendor and description.",
+      "requiredScopes": [
+        "write_products"
+      ],
+      "arguments": [
+        {
+          "name": "product",
+          "type": "ProductUpdateInput!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "ProductUpdateInput": {
+          "fields": [
+            {
+              "name": "id",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "title",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "productType",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "tags",
+              "type": "[String!]",
+              "required": false
+            },
+            {
+              "name": "status",
+              "type": "ProductStatus",
+              "required": false
+            },
+            {
+              "name": "descriptionHtml",
+              "type": "String",
+              "required": false
+            },
+            {
+              "name": "vendor",
+              "type": "String",
+              "required": false
+            }
+          ]
+        }
+      },
+      "enumTypes": {
+        "ProductStatus": [
+          "ACTIVE",
+          "ARCHIVED",
+          "DRAFT"
+        ]
+      },
+      "returnType": "ProductUpdatePayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeProductUpdate($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id title handle status productType tags updatedAt } userErrors { field message } } }",
+      "tags": [
+        "products",
+        "catalogue",
+        "status",
+        "product type",
+        "tags",
+        "copy",
+        "tidy"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.productVariantsBulkUpdate",
+      "operation": "productVariantsBulkUpdate",
+      "operationKind": "MUTATION",
+      "domain": "products",
+      "description": "Updates one or more variants for a product, including pricing and SKU fields when permitted.",
+      "requiredScopes": [
+        "write_products"
+      ],
+      "arguments": [
+        {
+          "name": "productId",
+          "type": "ID!",
+          "required": true
+        },
+        {
+          "name": "variants",
+          "type": "[ProductVariantsBulkInput!]!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "ProductVariantsBulkInput": {
+          "fields": [
+            {
+              "name": "id",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "price",
+              "type": "Money",
+              "required": false
+            },
+            {
+              "name": "compareAtPrice",
+              "type": "Money",
+              "required": false
+            },
+            {
+              "name": "sku",
+              "type": "String",
+              "required": false
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "ProductVariantsBulkUpdatePayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeProductVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId: $productId, variants: $variants) { product { id } productVariants { id price compareAtPrice sku } userErrors { field message } } }",
+      "tags": [
+        "products",
+        "variants",
+        "price",
+        "markdown",
+        "sku",
+        "catalogue"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.metafieldsSet",
+      "operation": "metafieldsSet",
+      "operationKind": "MUTATION",
+      "domain": "metafields",
+      "description": "Creates or updates metafields on Shopify resources.",
+      "requiredScopes": [
+        "write_products"
+      ],
+      "arguments": [
+        {
+          "name": "metafields",
+          "type": "[MetafieldsSetInput!]!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "MetafieldsSetInput": {
+          "fields": [
+            {
+              "name": "ownerId",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "namespace",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "key",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "type",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "value",
+              "type": "String!",
+              "required": true
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "MetafieldsSetPayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeMetafieldsSet($metafields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $metafields) { metafields { id namespace key owner { __typename } } userErrors { field message code } } }",
+      "tags": [
+        "metafields",
+        "metadata",
+        "structured data",
+        "products",
+        "resources"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.inventoryAdjustQuantities",
+      "operation": "inventoryAdjustQuantities",
+      "operationKind": "MUTATION",
+      "domain": "inventory",
+      "description": "Adjusts inventory quantities for inventory items at locations.",
+      "requiredScopes": [
+        "write_inventory"
+      ],
+      "arguments": [
+        {
+          "name": "input",
+          "type": "InventoryAdjustQuantitiesInput!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "InventoryAdjustQuantitiesInput": {
+          "fields": [
+            {
+              "name": "name",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "reason",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "changes",
+              "type": "[InventoryAdjustItemInput!]!",
+              "required": true
+            }
+          ]
+        },
+        "InventoryAdjustItemInput": {
+          "fields": [
+            {
+              "name": "inventoryItemId",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "locationId",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "delta",
+              "type": "Int!",
+              "required": true
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "InventoryAdjustQuantitiesPayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeInventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) { inventoryAdjustQuantities(input: $input) { inventoryAdjustmentGroup { createdAt reason changes { name delta } } userErrors { field message code } } }",
+      "tags": [
+        "inventory",
+        "stock",
+        "quantity",
+        "adjust",
+        "location"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.discountCodeBasicCreate",
+      "operation": "discountCodeBasicCreate",
+      "operationKind": "MUTATION",
+      "domain": "discounts",
+      "description": "Creates a basic discount code. This can affect pricing and customer promotions.",
+      "requiredScopes": [
+        "write_discounts"
+      ],
+      "arguments": [
+        {
+          "name": "basicCodeDiscount",
+          "type": "DiscountCodeBasicInput!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "DiscountCodeBasicInput": {
+          "fields": [
+            {
+              "name": "title",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "code",
+              "type": "String!",
+              "required": true
+            },
+            {
+              "name": "startsAt",
+              "type": "DateTime!",
+              "required": true
+            },
+            {
+              "name": "endsAt",
+              "type": "DateTime",
+              "required": false
+            },
+            {
+              "name": "customerSelection",
+              "type": "DiscountCustomerSelectionInput!",
+              "required": true
+            },
+            {
+              "name": "customerGets",
+              "type": "DiscountCustomerGetsInput!",
+              "required": true
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "DiscountCodeBasicCreatePayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeDiscountCodeBasicCreate($basicCodeDiscount: DiscountCodeBasicInput!) { discountCodeBasicCreate(basicCodeDiscount: $basicCodeDiscount) { codeDiscountNode { id } userErrors { field message code } } }",
+      "tags": [
+        "discounts",
+        "promotion",
+        "price",
+        "customers",
+        "marketing"
+      ]
+    },
+    {
+      "id": "shopify.admin_graphql.2026-07.mutation.refundCreate",
+      "operation": "refundCreate",
+      "operationKind": "MUTATION",
+      "domain": "orders",
+      "description": "Creates a refund for an order. This is financially sensitive and usually outside ordinary merchandising actions.",
+      "requiredScopes": [
+        "write_orders"
+      ],
+      "arguments": [
+        {
+          "name": "input",
+          "type": "RefundInput!",
+          "required": true
+        }
+      ],
+      "inputObjects": {
+        "RefundInput": {
+          "fields": [
+            {
+              "name": "orderId",
+              "type": "ID!",
+              "required": true
+            },
+            {
+              "name": "notify",
+              "type": "Boolean",
+              "required": false
+            },
+            {
+              "name": "note",
+              "type": "String",
+              "required": false
+            }
+          ]
+        }
+      },
+      "enumTypes": {},
+      "returnType": "RefundCreatePayload",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "mutation JefeRefundCreate($input: RefundInput!) { refundCreate(input: $input) { refund { id } userErrors { field message code } } }",
+      "tags": [
+        "refund",
+        "financial",
+        "orders",
+        "destructive",
+        "customer notification"
+      ]
+    }
+  ]
+}

@@ -78,6 +78,7 @@ model Merchant {
   channelVerificationChallenges   ChannelVerificationChallenge[]
   channelMessageDeliveries        ChannelMessageDelivery[]
   notificationPreferences         NotificationPreference[]
+  shopifyOperationCalls           ShopifyOperationCall[]
 
   @@map("merchants")
 }
@@ -157,6 +158,7 @@ model Shop {
   channelMessageDeliveries        ChannelMessageDelivery[]
   emailPreferences                EmailPreference[]
   emailIdentities                 EmailIdentity[]
+  shopifyOperationCalls           ShopifyOperationCall[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -1416,6 +1418,7 @@ model MerchantAction {
   sourceRecommendation   MerchantPlanRecommendation?  @relation(fields: [sourceRecommendationId], references: [id], onDelete: SetNull)
   currentExecution       ActionExecution?             @relation("MerchantActionCurrentExecution", fields: [currentActionRunId], references: [runId], onDelete: SetNull)
   executions             ActionExecution[]            @relation("MerchantActionExecutions")
+  shopifyOperationCalls  ShopifyOperationCall[]
   focusedConversations   MerchantMemoryConversation[]
   events                 MerchantActionEvent[]        @relation("MerchantActionEvents")
   constraints            MerchantActionConstraint[]
@@ -1612,6 +1615,7 @@ model ActionExecution {
   createdAt              DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   writes                 ActionExecutionWrite[]
+  shopifyOperationCalls  ShopifyOperationCall[]
   merchantAction         MerchantAction?                 @relation("MerchantActionExecutions", fields: [merchantActionId], references: [id], onDelete: SetNull)
   currentForActions      MerchantAction[]                @relation("MerchantActionCurrentExecution")
   recommendationStep     MerchantRecommendationStep?     @relation(fields: [recommendationStepId], references: [id], onDelete: SetNull)
@@ -1662,6 +1666,45 @@ model ActionExecutionWrite {
   @@unique([executionId, targetRef, targetValueKey]) // one write per run+target+value
   @@index([executionId, status])
   @@map("action_execution_writes")
+}
+
+/// Universal Shopify Admin GraphQL call ledger. This is deliberately separate
+/// from ActionExecutionWrite: reads also need provenance, and agentic writes are
+/// operation-level calls before they are per-target adapter writes.
+model ShopifyOperationCall {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId             String           @map("merchant_id") @db.Uuid
+  shopId                 String           @map("shop_id") @db.Uuid
+  merchantActionId       String?          @map("merchant_action_id") @db.Uuid
+  actionExecutionId      String?          @map("action_execution_id") @db.Uuid
+  acceptedActionRevision String?          @map("accepted_action_revision")
+  shopDomain             String           @map("shop_domain")
+  apiVersion             String           @map("api_version")
+  operationId            String           @map("operation_id")
+  operationName          String           @map("operation_name")
+  operationKind          String           @map("operation_kind")
+  purpose                String           @default("")
+  expectedEffect         String           @default("") @map("expected_effect")
+  idempotencyKey         String?          @map("idempotency_key")
+  variables              Json             @default("{}") @map("variables_json")
+  variablesHash          String           @default("") @map("variables_hash")
+  gatewayDecision        String           @map("gateway_decision")
+  status                 String
+  userErrors             Json             @default("[]") @map("user_errors_json")
+  resourceIds            Json             @default("[]") @map("resource_ids_json")
+  responseSummary        Json             @default("{}") @map("response_summary_json")
+  error                  String?
+  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  merchant               Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop                   Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  merchantAction         MerchantAction?  @relation(fields: [merchantActionId], references: [id], onDelete: SetNull)
+  actionExecution        ActionExecution? @relation(fields: [actionExecutionId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, shopId, createdAt])
+  @@index([merchantActionId, createdAt])
+  @@index([actionExecutionId, createdAt])
+  @@index([operationName, status])
+  @@map("shopify_operation_calls")
 }
 
 /// The autonomy dial: the merchant's mode per action-type (the 3-mode setting Matt

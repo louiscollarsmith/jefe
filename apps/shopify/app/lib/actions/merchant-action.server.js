@@ -105,6 +105,9 @@ export function deriveMerchantActionStatus(input) {
   ) {
     return MERCHANT_ACTION_STATUS.needsAttention;
   }
+  if (isUnacceptedAgenticShopifyAction(input.action)) {
+    return MERCHANT_ACTION_STATUS.proposed;
+  }
   if (
     hasRunningStep ||
     actionStatus === MERCHANT_ACTION_STATUS.inProgress ||
@@ -131,6 +134,24 @@ export function deriveMerchantActionStatus(input) {
     return MERCHANT_ACTION_STATUS.superseded;
   }
   return MERCHANT_ACTION_STATUS.proposed;
+}
+
+/** @param {any} action */
+function isUnacceptedAgenticShopifyAction(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const progressAgentic = jsonObject(progress.agentic);
+  const planAgentic = jsonObject(plan.agentic);
+  const isAgentic =
+    progressAgentic.runtime === "shopify_admin_api" ||
+    planAgentic.runtime === "shopify_admin_api" ||
+    Boolean(progressAgentic.semanticAction) ||
+    Boolean(planAgentic.semanticAction);
+  if (!isAgentic) return false;
+  return !(
+    safeText(progressAgentic.acceptedActionRevision, 140) ||
+    safeText(planAgentic.acceptedActionRevision, 140)
+  );
 }
 
 /**
@@ -1572,6 +1593,12 @@ function sourceRecommendationView(source) {
     whyThisAction: safeText(source.whyThisAction, 700),
     whyNow: safeText(source.whyNow, 500),
     successSignal: jsonObject(source.successSignal),
+    supportingBeliefIds: Array.isArray(source.supportingBeliefIds)
+      ? source.supportingBeliefIds.slice(0, 12)
+      : [],
+    supportingInsightIds: Array.isArray(source.supportingInsightIds)
+      ? source.supportingInsightIds.slice(0, 12)
+      : [],
     primaryGoalId: source.primaryGoalId ?? null,
     workflow: workflowView(workflowFromRecommendation(source)),
   };
