@@ -29,6 +29,7 @@
     "eval:real-dev-shopify-golden-path": "node scripts/eval-real-dev-shopify-golden-path.mjs",
     "actions:reseed": "node scripts/reseed-dev-action-state.mjs",
     "shopify:capabilities:discover": "node scripts/shopify-capabilities-discover.mjs",
+    "shopify:api:generate": "node scripts/shopify-api-generate.mjs",
     "shopify": "shopify",
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
