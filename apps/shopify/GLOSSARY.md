@@ -128,6 +128,8 @@ typed adapters write to Shopify or another external system.
 - **Shopify API stub catalogue** — The generated, versioned Admin GraphQL operation surface. It answers what Shopify can technically read or mutate, what variables the operation accepts, what scopes it requires, and what GraphQL document the server may call. It is Shopify knowledge, not a Jefe feature registry.
 - **Shopify API operation stub** — One generated operation entry in the stub catalogue, such as `products`, `collectionCreate` or `metafieldsSet`.
 - **Shopify tool retrieval** — The runtime helper that returns a small relevant subset of Shopify API operation stubs for the current recommendation, chat or execution task.
+- **Agentic Shopify recommendation loop** — Luna's recommendation run for the universal Shopify runtime: it receives Merchant Memory, bounded store evidence, compact Shopify API stubs and read tools, investigates hypotheses with generated Shopify reads, and returns a semantic recommendation only after feasibility is grounded.
+- **Semantic Action materialisation** — The conversion of a recommendation into a Merchant Action defined by outcome, scope, constraints, material expected effects and verification plan, without pre-authoring a Shopify API sequence or binding a legacy action type executor.
 - **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 
@@ -143,6 +145,8 @@ typed adapters write to Shopify or another external system.
 - **Accepted Action revision** — The semantic Action version the merchant approved. In the agentic Shopify runtime, this is the merchant authorization boundary for mutations; reads may investigate, but writes require a current accepted revision.
 - **Universal Shopify gateway** — The server-side path for generated Shopify API calls. It validates the operation, API version, variables, actual granted scopes, accepted Action revision, accepted intent and blast-radius limits before the app calls Shopify.
 - **Accepted-intent guard** — The generic gateway check that compares a proposed mutation's purpose and expected material effect with the merchant-approved Action. It blocks material drift such as pricing changes during a merchandising Action unless the accepted Action actually authorizes that effect.
+- **Agentic Shopify execution loop** — Luna's post-acceptance execution run for a semantic Shopify Action. It chooses generated Shopify reads and writes through the universal gateway, retrieves more operation stubs as needed, observes provider results, and finishes only after reading Shopify state back to verify the accepted outcome.
+- **Provider-state verification** — The completion rule that a successful Shopify write does not prove an Action is done. The runtime must read Shopify state after the write and verify the accepted outcome exists.
 
 ## Ledger And Learning
 

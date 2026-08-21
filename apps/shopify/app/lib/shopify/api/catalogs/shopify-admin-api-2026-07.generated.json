@@ -120,6 +120,39 @@
       ]
     },
     {
+      "id": "shopify.admin_graphql.2026-07.query.product",
+      "operation": "product",
+      "operationKind": "QUERY",
+      "domain": "products",
+      "description": "Reads one product, including tags, product type, variants and product metafields, so Jefe can verify product-level catalogue or metadata changes.",
+      "requiredScopes": [
+        "read_products"
+      ],
+      "arguments": [
+        {
+          "name": "id",
+          "type": "ID!",
+          "required": true
+        }
+      ],
+      "inputObjects": {},
+      "enumTypes": {},
+      "returnType": "Product",
+      "deprecation": {
+        "deprecated": false,
+        "reason": null
+      },
+      "document": "query JefeProduct($id: ID!) { product(id: $id) { id title handle status productType tags variants(first: 50) { edges { node { id title sku price inventoryQuantity inventoryItem { id tracked } } } } metafields(first: 50) { edges { node { id namespace key type value } } } } }",
+      "tags": [
+        "products",
+        "product",
+        "metafields",
+        "metadata",
+        "verify",
+        "catalogue"
+      ]
+    },
+    {
       "id": "shopify.admin_graphql.2026-07.query.collection",
       "operation": "collection",
       "operationKind": "QUERY",

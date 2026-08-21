@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   getShopifyApiOperationStub,
@@ -168,6 +169,77 @@ test("gateway returns Shopify userErrors as structured tool results", async () =
   assert.equal(prisma.calls.at(-1).data.status, SHOPIFY_GATEWAY_STATUS.userErrors);
 });
 
+test("gateway replays duplicate idempotent writes without a second provider call", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction() });
+  const client = fakeClient({
+    collectionCreate: {
+      collection: { id: "gid://shopify/Collection/99", title: "London delivery" },
+      userErrors: [],
+    },
+  });
+  const input = {
+    ...baseInput(prisma, client),
+    actionId,
+    acceptedActionRevision: "rev-1",
+    operation: "collectionCreate",
+    variables: { input: { title: "London delivery" } },
+    grantedScopes: ["write_products"],
+    purpose: "Create the accepted merchandising collection",
+    expectedEffect: "Create a Shopify collection",
+    idempotencyKey: "create-london-delivery-collection",
+  };
+
+  const first = await executeShopifyOperation(input);
+  const second = await executeShopifyOperation(input);
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.status, SHOPIFY_GATEWAY_STATUS.idempotentReplay);
+  assert.equal(client.requests.length, 1);
+  assert.equal(prisma.calls.at(-1).data.gatewayDecision, "idempotent_replay");
+});
+
+test("gateway blocks idempotent retries when the previous write result is unknown", async () => {
+  const variables = { input: { title: "London delivery" } };
+  const prisma = fakePrisma({
+    action: acceptedCollectionAction(),
+    calls: [
+      {
+        data: {
+          merchantId,
+          shopId,
+          merchantActionId: actionId,
+          acceptedActionRevision: "rev-1",
+          operationName: "collectionCreate",
+          idempotencyKey: "create-london-delivery-collection",
+          variablesHash: hashForTest(variables),
+          status: "CALLING_PROVIDER",
+          resourceIds: [],
+          responseSummary: {},
+        },
+      },
+    ],
+  });
+  const client = fakeClient({});
+
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, client),
+    actionId,
+    acceptedActionRevision: "rev-1",
+    operation: "collectionCreate",
+    variables,
+    grantedScopes: ["write_products"],
+    purpose: "Create the accepted merchandising collection",
+    expectedEffect: "Create a Shopify collection",
+    idempotencyKey: "create-london-delivery-collection",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsReconciliation);
+  assert.equal(client.requests.length, 0);
+  assert.equal(prisma.calls.at(-1).data.gatewayDecision, "idempotent_write_result_unknown");
+});
+
 function baseInput(prisma, client) {
   return {
     prisma,
@@ -204,9 +276,9 @@ function acceptedCollectionAction(overrides = {}) {
   };
 }
 
-function fakePrisma({ action = null } = {}) {
+function fakePrisma({ action = null, calls = [] } = {}) {
   const prisma = {
-    calls: [],
+    calls: [...calls],
     merchantAction: {
       findFirst: async ({ where }) =>
         action &&
@@ -217,6 +289,23 @@ function fakePrisma({ action = null } = {}) {
           : null,
     },
     shopifyOperationCall: {
+      findFirst: async ({ where }) => {
+        const rows = prisma.calls.map((row, index) => ({ id: `call-${index + 1}`, ...row.data }));
+        return (
+          rows
+            .reverse()
+            .find(
+              (row) =>
+                row.merchantId === where.merchantId &&
+                row.shopId === where.shopId &&
+                row.merchantActionId === where.merchantActionId &&
+                row.acceptedActionRevision === where.acceptedActionRevision &&
+                row.operationName === where.operationName &&
+                row.idempotencyKey === where.idempotencyKey &&
+                row.variablesHash === where.variablesHash,
+            ) ?? null
+        );
+      },
       create: async ({ data }) => {
         const row = { data };
         prisma.calls.push(row);
@@ -225,6 +314,10 @@ function fakePrisma({ action = null } = {}) {
     },
   };
   return prisma;
+}
+
+function hashForTest(value) {
+  return createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
 
 function fakeClient(response) {

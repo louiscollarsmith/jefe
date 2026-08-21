@@ -4,8 +4,8 @@ Catalog: `shopify-admin-api:2026-07`
 API version: `2026-07`
 Generated at: `2026-08-21T10:30:00.000Z`
 
-Operations: 15
-Queries: 7
+Operations: 16
+Queries: 8
 Mutations: 8
 
 ## Diff

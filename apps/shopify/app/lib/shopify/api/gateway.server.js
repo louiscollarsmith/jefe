@@ -19,6 +19,8 @@ export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
   deniedAcceptedRevisionStale: "DENIED_ACCEPTED_REVISION_STALE",
   deniedIntent: "DENIED_OUTSIDE_ACCEPTED_INTENT",
   deniedBlastRadius: "DENIED_BLAST_RADIUS",
+  idempotentReplay: "IDEMPOTENT_REPLAY",
+  needsReconciliation: "NEEDS_RECONCILIATION",
   providerError: "PROVIDER_ERROR",
 });
 
@@ -133,6 +135,12 @@ export async function executeShopifyOperation(input) {
         responseSummary: intent.summary,
       });
     }
+    const idempotency = await resolveIdempotency(input, {
+      ...baseLedger,
+      action,
+      apiVersion,
+    });
+    if (idempotency) return idempotency;
   }
 
   await recordShopifyOperationCall(input, {
@@ -281,12 +289,77 @@ async function verifyActionAuthorization(input) {
   return { ok: true, action };
 }
 
+/**
+ * @param {Parameters<typeof executeShopifyOperation>[0]} input
+ * @param {Record<string, any>} details
+ */
+async function resolveIdempotency(input, details) {
+  if (!input.idempotencyKey || !input.prisma?.shopifyOperationCall?.findFirst) return null;
+  const acceptedActionRevision = getActionRevisionState(details.action).acceptedActionRevision;
+  const variablesHash = hashJson(details.variables ?? input.variables ?? {});
+  const previous = await input.prisma.shopifyOperationCall.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      merchantActionId: input.actionId ?? null,
+      acceptedActionRevision,
+      operationName: details.stub.operation,
+      idempotencyKey: input.idempotencyKey,
+      variablesHash,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!previous) return null;
+  if (previous.status === SHOPIFY_GATEWAY_STATUS.ok || previous.status === SHOPIFY_GATEWAY_STATUS.idempotentReplay) {
+    await recordShopifyOperationCall(input, {
+      ...details,
+      acceptedActionRevision,
+      status: SHOPIFY_GATEWAY_STATUS.idempotentReplay,
+      gatewayDecision: "idempotent_replay",
+      resourceIds: previous.resourceIds ?? [],
+      responseSummary: {
+        ...(asRecord(previous.responseSummary) ?? {}),
+        replayedFromCallId: previous.id ?? null,
+      },
+    });
+    return {
+      ok: true,
+      status: SHOPIFY_GATEWAY_STATUS.idempotentReplay,
+      operation: details.stub.operation,
+      operationKind: details.stub.operationKind,
+      gatewayDecision: "idempotent_replay",
+      data: null,
+      userErrors: [],
+      resourceIds: previous.resourceIds ?? [],
+      actionRevision: acceptedActionRevision,
+    };
+  }
+  if (
+    previous.status === "CALLING_PROVIDER" ||
+    previous.status === SHOPIFY_GATEWAY_STATUS.providerError ||
+    previous.status === SHOPIFY_GATEWAY_STATUS.needsReconciliation
+  ) {
+    return deny(input, {
+      ...details,
+      status: SHOPIFY_GATEWAY_STATUS.needsReconciliation,
+      gatewayDecision: "idempotent_write_result_unknown",
+      error: "A previous write with this idempotency key has an unknown provider result. Read Shopify state before retrying.",
+      responseSummary: { previousCallId: previous.id ?? null, previousStatus: previous.status },
+    });
+  }
+  return null;
+}
+
 /** @param {any} action */
 export function getActionRevisionState(action) {
   const progress = asRecord(action.progress) ?? {};
   const plan = asRecord(action.plan) ?? {};
   const agentic = asRecord(progress.agentic) ?? asRecord(plan.agentic) ?? {};
-  const semanticAction = asRecord(progress.semanticAction) ?? asRecord(plan.semanticAction) ?? {};
+  const semanticAction =
+    asRecord(progress.semanticAction) ??
+    asRecord(plan.semanticAction) ??
+    asRecord(agentic.semanticAction) ??
+    {};
   return {
     currentActionRevision:
       stringOrNull(agentic.currentActionRevision) ??
