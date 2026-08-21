@@ -6,6 +6,7 @@ import {
   getShopifyApiOperationStub,
   validateShopifyOperationVariables,
 } from "./catalog.server.js";
+import { fetchGrantedShopifyScopes } from "../installed-scopes.server.js";
 import { logger as defaultLogger } from "../../observability/logger.server.js";
 
 export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
@@ -27,6 +28,8 @@ export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
 const DEFAULT_MAX_AFFECTED_RESOURCES = 50;
 const DANGEROUS_OPERATION_TERMS = ["delete", "refund", "cancel", "void"];
 const PRICE_TERMS = ["price", "discount", "markdown", "compareatprice"];
+const LIVE_SCOPE_CACHE_TTL_MS = 30_000;
+const liveScopeCache = new WeakMap();
 
 /**
  * @param {{
@@ -87,7 +90,7 @@ export async function executeShopifyOperation(input) {
       error: variableValidation.errors.join("; "),
     });
   }
-  const grantedScopes = input.grantedScopes ?? (await fetchGrantedShopifyScopes(input.client).catch(() => null));
+  const grantedScopes = await resolveGatewayAuthorizationScopes(input, log);
   if (!grantedScopes) {
     return deny(input, {
       ...baseLedger,
@@ -201,15 +204,46 @@ export async function executeShopifyOperation(input) {
   }
 }
 
-/** @param {{ request: (document: string, variables?: Record<string, unknown>) => Promise<any> }} client */
-export async function fetchGrantedShopifyScopes(client) {
-  const data = await client.request(
-    "query JefeCurrentAppInstallation { currentAppInstallation { accessScopes { handle } } }",
-    {},
-  );
-  return (data?.currentAppInstallation?.accessScopes ?? [])
-    .map((/** @type {any} */ scope) => scope?.handle)
-    .filter(Boolean);
+export { fetchGrantedShopifyScopes };
+
+/**
+ * Gateway authorization must use Shopify's installed app scopes, not a local
+ * Session.scope snapshot. The local list can be stale after OAuth refresh or
+ * scope webhooks; use it only as a hint for diagnostics, never as the source
+ * that can deny a call.
+ * @param {Parameters<typeof executeShopifyOperation>[0]} input
+ * @param {Pick<import("../../observability/logger.server.js").Logger, "warn">} log
+ */
+async function resolveGatewayAuthorizationScopes(input, log) {
+  const cached = readLiveScopeCache(input.client);
+  if (cached) return cached;
+  try {
+    const scopes = await fetchGrantedShopifyScopes(input.client);
+    writeLiveScopeCache(input.client, scopes);
+    return scopes;
+  } catch (error) {
+    log.warn("Shopify installed scope probe failed", {
+      shopDomain: input.shopDomain,
+      actionId: input.actionId ?? null,
+      error: error instanceof Error ? error.name : "UnknownError",
+    });
+    return null;
+  }
+}
+
+/** @param {{ request: Function }} client */
+function readLiveScopeCache(client) {
+  const cached = liveScopeCache.get(client);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.scopes;
+}
+
+/** @param {{ request: Function }} client @param {string[]} scopes */
+function writeLiveScopeCache(client, scopes) {
+  liveScopeCache.set(client, {
+    scopes: [...new Set(scopes)].sort(),
+    expiresAt: Date.now() + LIVE_SCOPE_CACHE_TTL_MS,
+  });
 }
 
 /**

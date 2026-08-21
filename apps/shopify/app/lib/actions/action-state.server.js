@@ -48,10 +48,13 @@ export async function resolveActionState(prisma, input) {
     }),
   ]);
 
+  const kind = actionRuntimeKind(action);
   const workflowSteps = Array.isArray(action.workflow?.steps)
     ? action.workflow.steps
     : [];
-  const displaySteps = Array.isArray(action.displaySteps)
+  const displaySteps = kind === "agentic_shopify"
+    ? []
+    : Array.isArray(action.displaySteps)
     ? action.displaySteps
     : [];
   const steps = orderedSteps(workflowSteps.length > 0 ? workflowSteps : displaySteps).filter(
@@ -181,7 +184,8 @@ export async function resolveActionState(prisma, input) {
       title: action.title ?? null,
       status: action.status ?? null,
       actionType: action.actionType ?? null,
-      kind: actionRuntimeKind(action),
+      kind,
+      semanticAction: resolved?.semanticAction ?? semanticActionFromAction(action),
     },
     lifecycle: action.status ?? null,
     plan: resolved?.plan ?? { values: {}, version: null },
@@ -192,6 +196,7 @@ export async function resolveActionState(prisma, input) {
     evidenceVersion,
     scope: resolved?.scope ?? { items: [], excluded: [] },
     canonicalProposal: resolved?.canonicalProposal ?? null,
+    semanticAction: resolved?.semanticAction ?? semanticActionFromAction(action),
     inputHash,
     work,
     nextUsefulWork,
@@ -229,6 +234,20 @@ export function buildAgentStateContext(state) {
   if (!state) return null;
   return {
     action: state.action,
+    semanticAction: state.semanticAction
+      ? {
+          title: state.semanticAction.title ?? null,
+          summary: state.semanticAction.summary ?? null,
+          outcome: state.semanticAction.outcome ?? null,
+          whyThisAction: state.semanticAction.whyThisAction ?? null,
+          whyNow: state.semanticAction.whyNow ?? null,
+          scope: state.semanticAction.scope ?? null,
+          constraints: state.semanticAction.constraints ?? [],
+          materialExpectedEffects: state.semanticAction.materialExpectedEffects ?? [],
+          verificationPlan: state.semanticAction.verificationPlan ?? null,
+          revision: state.semanticAction.revision ?? null,
+        }
+      : null,
     lifecycle: state.lifecycle,
     plan: state.plan?.values ?? {},
     planSchema: state.planSchema,
@@ -322,6 +341,14 @@ export function listAvailableOutcomes(state) {
       "product_type_discovery",
       "changeset_preview",
       "apply_changes",
+    );
+  }
+  if (kind === "agentic_shopify") {
+    outcomes.push(
+      "semantic_action_review",
+      "semantic_scope_review",
+      "expected_shopify_effects",
+      "post_acceptance_verification",
     );
   }
   return outcomes;
@@ -539,6 +566,23 @@ function mapWorkStateToPersistedStatus(workState) {
   if (workState === "needs_updating") return "needs_updating";
   if (workState === "skipped") return "skipped";
   return "ready";
+}
+
+/** @param {any} action */
+function semanticActionFromAction(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const fromProgress = jsonObject(jsonObject(progress.agentic).semanticAction);
+  if (Object.keys(fromProgress).length > 0) return fromProgress;
+  const fromPlan = jsonObject(jsonObject(plan.agentic).semanticAction);
+  return Object.keys(fromPlan).length > 0 ? fromPlan : null;
+}
+
+/** @param {unknown} value */
+function jsonObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, any>} */ (value)
+    : {};
 }
 
 /**

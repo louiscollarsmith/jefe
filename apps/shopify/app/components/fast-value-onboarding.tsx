@@ -34,6 +34,9 @@ type InsightView = {
   caveat: string | null;
   evidence: EvidenceRow[];
 };
+type RecommendationPresentationView = InsightView & {
+  source: "insight" | "recommendation";
+};
 type RecommendationView = {
   id: string;
   runId: string;
@@ -57,9 +60,11 @@ type FastExperience = {
   bootstrapPhase: string;
   context: { value: string; label: string; echo: string } | null;
   insight: InsightView | null;
+  presentation: RecommendationPresentationView | null;
   recommendation: RecommendationView | null;
   queueItems: Array<{ id: string; title: string; status: string }>;
   failure: { type: string; message: string; retryTarget?: string | null } | null;
+  recommendationInvestigationPending: boolean;
   fullLearning: { state: string; label: string; detail: string };
   handoff: { id: string; token: string } | null;
   devToolsEnabled: boolean;
@@ -120,11 +125,11 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
   }, [approvalFetcher.data, navigate]);
 
   useEffect(() => {
-    const insightId = experience.insight?.runId;
+    const presentationId = experience.presentation?.id ?? experience.insight?.runId;
     const recommendationId = experience.recommendation?.id;
     const stage = experience.stage;
     const entries = [
-      stage === "insight" && insightId ? ["first_insight_shown", insightId] : null,
+      stage === "insight" && presentationId ? ["first_insight_shown", presentationId] : null,
       stage === "action" && recommendationId ? ["recommendation_shown", recommendationId] : null,
     ].filter(Boolean) as string[][];
     for (const [type, entityId] of entries) {
@@ -136,7 +141,7 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
         { method: "post" },
       );
     }
-  }, [experience.insight?.runId, experience.recommendation?.id, experience.stage, milestoneFetcher]);
+  }, [experience.insight?.runId, experience.presentation?.id, experience.recommendation?.id, experience.stage, milestoneFetcher]);
 
   useEffect(() => {
     const handoff = experience.handoff;
@@ -253,8 +258,9 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               fullLearning={experience.fullLearning}
             />
           ) : stage === "insight" ? (
-            <InsightScene
-              insight={experience.insight}
+            <RecommendationScene
+              presentation={experience.presentation}
+              investigationPending={experience.recommendationInvestigationPending}
               continueToAction={continueToAction}
               showAlternative={showAlternative}
               allowAlternative={experience.recommendation?.sourceMode === "bootstrap"}
@@ -264,6 +270,7 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
           ) : stage === "action" ? (
             <ActionScene
               insight={experience.insight}
+              presentation={experience.presentation}
               recommendation={experience.recommendation}
               approvedMode={approvedMode}
               approve={approve}
@@ -450,31 +457,46 @@ function onboardingWaitingCopy(
   };
 }
 
-function InsightScene({
-  insight,
+function RecommendationScene({
+  presentation,
+  investigationPending,
   continueToAction,
   showAlternative,
   allowAlternative,
   alternativeMessage,
   alternativeBusy,
 }: {
-  insight: InsightView | null;
+  presentation: RecommendationPresentationView | null;
+  investigationPending: boolean;
   continueToAction: () => void;
   showAlternative: () => void;
   allowAlternative: boolean;
   alternativeMessage: string | null;
   alternativeBusy: boolean;
 }) {
-  if (!insight) return <div className="jf-scene jf-insight-scene"><Kicker>Something jumped out</Kicker><div className="jf-honest-state"><Text as="p">I’m double-checking this before I show you what I’d do. Your answer is saved — nothing else for you to do.</Text></div></div>;
+  if (!presentation) {
+    return (
+      <div className="jf-scene jf-insight-scene">
+        <Kicker>{investigationPending ? "Something jumped out" : "Still checking"}</Kicker>
+        <div className="jf-honest-state">
+          <Text as="p">
+            {investigationPending
+              ? "I’m double-checking this before I show you what I’d do. Your answer is saved — nothing else for you to do."
+              : "I don’t have a recommendation ready to show here yet. I’ll keep learning and only surface one when the evidence supports it."}
+          </Text>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="jf-scene jf-insight-scene">
       <Kicker>Something jumped out</Kicker>
-      <div className="jf-display jf-insight-title">{insight.headline}</div>
-      <div className="jf-insight-copy"><Text as="p">{insight.explanation}</Text></div>
+      <div className="jf-display jf-insight-title">{presentation.headline}</div>
+      <div className="jf-insight-copy"><Text as="p">{presentation.explanation}</Text></div>
       <div className="jf-evidence">
-        {insight.evidence.slice(0, 3).map((row) => <div className="jf-evidence-row" key={`${row.key}:${row.value}`}><span>{row.key}</span><Text as="p">{row.value}</Text></div>)}
+        {presentation.evidence.slice(0, 3).map((row) => <div className="jf-evidence-row" key={`${row.key}:${row.value}`}><span>{row.key}</span><Text as="p">{row.value}</Text></div>)}
       </div>
-      {insight.caveat ? <Text as="p" tone="subdued">{insight.caveat}</Text> : null}
+      {presentation.caveat ? <Text as="p" tone="subdued">{presentation.caveat}</Text> : null}
       <InlineStack gap="500" blockAlign="center" wrap>
         <Button variant="primary" onClick={continueToAction}>Here’s what I’d do →</Button>
         {allowAlternative ? (
@@ -488,19 +510,31 @@ function InsightScene({
 
 function ActionScene({
   insight,
+  presentation,
   recommendation,
   approvedMode,
   approve,
 }: {
   insight: InsightView | null;
+  presentation: RecommendationPresentationView | null;
   recommendation: RecommendationView | null;
   approvedMode: string | null;
   approve: () => void;
 }) {
   if (!recommendation) return <div className="jf-scene jf-action-scene"><div className="jf-honest-state">That recommendation isn’t available any more. I’ll keep learning and bring you the next useful move in Jefe.</div></div>;
+  const isAgenticRecommendation = recommendation.sourceMode === "agentic";
+  const approvedCopy =
+    approvedMode === "agentic_open"
+      ? "Opening Action Chat."
+      : approvedMode === "execute"
+        ? "Approved. Opening Jefe."
+        : "Opening Jefe.";
+  const footnote = isAgenticRecommendation
+    ? "This opens the Action so we can discuss or change it before anything is accepted."
+    : "I’ll keep this on your list and bring it back when it is ready to review.";
   return (
     <div className="jf-scene jf-action-scene">
-      <div className="jf-recap"><span aria-hidden="true" />{insight?.headline ?? "The first supported opportunity"}</div>
+      <div className="jf-recap"><span aria-hidden="true" />{presentation?.headline ?? insight?.headline ?? "The first supported opportunity"}</div>
       <div className="jf-display jf-action-title">Here’s what I’d do: <em>{recommendation.title}</em>.</div>
       <div className="jf-action-card">
         <ActionSection label="Why it matters" copy={recommendation.whyItMatters} />
@@ -508,7 +542,7 @@ function ActionScene({
         <ActionSection label="How we’ll know" copy={recommendation.howWellKnow} />
         <div className="jf-action-divider" />
         {approvedMode ? (
-          <div className="jf-approved"><span aria-hidden="true">✓</span>{approvedMode === "execute" ? "Approved. Opening Jefe." : "Tracking. Opening Jefe."}</div>
+          <div className="jf-approved"><span aria-hidden="true">✓</span>{approvedCopy}</div>
         ) : (
           <InlineStack gap="500" blockAlign="center" wrap>
             <Button variant="primary" onClick={approve}>{recommendation.approvalLabel}</Button>
@@ -520,7 +554,7 @@ function ActionScene({
           </InlineStack>
         )}
       </div>
-      <Text as="p" tone="subdued">I’ll track this and tell you when the success signal is ready to review.</Text>
+      <Text as="p" tone="subdued">{footnote}</Text>
     </div>
   );
 }
@@ -540,21 +574,22 @@ function AppScene({
   recommendation: RecommendationView | null;
   queueItems: FastExperience["queueItems"];
 }) {
+  const isAgenticRecommendation = recommendation?.sourceMode === "agentic";
   return (
     <div className="jf-scene jf-app-scene">
       <div className="jf-display jf-app-title">Here’s what I’m on, <em>{storeName}</em>.</div>
       {recommendation ? (
         <div className="jf-tracked-card">
           <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
-            <span className="jf-card-kicker">Now tracking</span>
-            <span className="jf-status-pill">{trackedStatus(recommendation)}</span>
+            <span className="jf-card-kicker">{isAgenticRecommendation ? "Action opened" : "Now tracking"}</span>
+            <span className="jf-status-pill">{isAgenticRecommendation ? "Ready to discuss" : trackedStatus(recommendation)}</span>
           </InlineStack>
           <div className="jf-tracked-title">{recommendation.title}</div>
-          {recommendation.successMeasure ? <Text as="p">Success signal: {recommendation.successMeasure}</Text> : null}
+          {recommendation.successMeasure ? <Text as="p">{isAgenticRecommendation ? "Outcome" : "Success signal"}: {recommendation.successMeasure}</Text> : null}
           {context?.echo ? <Text as="p" tone="subdued">Because you told me {context.echo}.</Text> : null}
         </div>
       ) : (
-        <div className="jf-honest-state"><Text as="p">You’re in Jefe. I don’t have a recommendation strong enough to track yet, so I’ll keep learning and only surface one when the evidence supports it.</Text></div>
+        <div className="jf-honest-state"><Text as="p">You’re in Jefe. I don’t have a recommendation strong enough to work on yet, so I’ll keep learning and only surface one when the evidence supports it.</Text></div>
       )}
       {queueItems?.length ? (
         <div className="jf-queue">

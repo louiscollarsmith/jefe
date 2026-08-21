@@ -16,6 +16,11 @@ import {
   TURN_OUTCOME,
   runFocusedActionAgent,
 } from "./agent-loop.server.js";
+import { resolveActionState } from "../action-state.server.js";
+import {
+  AGENTIC_ACTION_CHAT_VERSION,
+  runAgenticActionChat,
+} from "../../shopify/agentic-runtime/action-chat.server.js";
 
 const log = baseLogger.child({ component: "focused-action-chat" });
 
@@ -32,7 +37,11 @@ export const AGENT_UNAVAILABLE_REPLY =
  *   conversationId?: string | null;
  *   merchantMessageId?: string | null;
  *   actor?: string | null;
- *   session?: { shop: string } | null;
+ *   session?: { shop?: string | null; scope?: string | null } | null;
+ *   shopDomain?: string | null;
+ *   scopes?: string[];
+ *   client?: { request: (document: string, variables?: Record<string, unknown>) => Promise<unknown> } | null;
+ *   loadOfflineToken?: (prisma: any, shopDomain: string) => Promise<string>;
  *   provider?: any;
  *   recentMessages?: Array<{ role?: string; content?: string }>;
  *   executeDeps?: any;
@@ -44,14 +53,25 @@ export async function handleFocusedActionMessage(prisma, input) {
   const message = normalizeChatText(input.message);
 
   const pending = await readPendingClarification(prisma, input);
+  const state = await resolveActionState(prisma, input);
 
-  const result = await runFocusedActionAgent(prisma, {
-    ...input,
-    message,
-    actor: input.actor ?? input.merchantId,
-    pendingClarification: pending,
-    logger,
-  });
+  /** @type {any} */
+  const result =
+    state?.action?.kind === "agentic_shopify"
+      ? await runAgenticActionChat(prisma, {
+          ...input,
+          message,
+          actor: input.actor ?? input.merchantId,
+          pendingClarification: pending,
+          logger,
+        })
+      : await runFocusedActionAgent(prisma, {
+          ...input,
+          message,
+          actor: input.actor ?? input.merchantId,
+          pendingClarification: pending,
+          logger,
+        });
 
   if (result.unavailable) {
     return {
@@ -99,7 +119,10 @@ export async function handleFocusedActionMessage(prisma, input) {
           : ACTION_COMMAND.ANSWER,
       ok: result.ok,
       reason: null,
-      agentVersion: ACTION_AGENT_VERSION,
+      agentVersion:
+        state?.action?.kind === "agentic_shopify"
+          ? AGENTIC_ACTION_CHAT_VERSION
+          : ACTION_AGENT_VERSION,
       tools: (result.ledger ?? []).map((/** @type {any} */ row) => row.tool),
       outcome: result.outcome,
     },

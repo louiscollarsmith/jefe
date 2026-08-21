@@ -225,6 +225,17 @@ export function parseConstraintsFromMessage(message) {
     });
   }
 
+  if (
+    /\b(?:don'?t|do not|never|exclude|leave out|skip)\b.{0,40}\bout[-\s]?of[-\s]?stock\b/i.test(text) ||
+    /\b(?:only|just)\b.{0,40}\b(?:in[-\s]?stock|available)\b/i.test(text)
+  ) {
+    found.push({
+      kind: CONSTRAINT_KIND.minInventory,
+      params: { min: 0 },
+      label: "Only include products with inventory > 0",
+    });
+  }
+
   const floor = text.match(
     /\b(?:never|don'?t|do not)\s+reduce.{0,24}below\s*£?\s*(\d+(?:\.\d+)?)\b/i,
   ) || text.match(/\b(?:price )?floor\s*(?:of\s*)?£?\s*(\d+(?:\.\d+)?)\b/i);

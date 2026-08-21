@@ -7,6 +7,7 @@ import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.j
 import { labelForBeliefKey } from "../merchant-memory/conversational-belief-registry.server.js";
 import { renderBeliefStatement } from "../merchant-memory/belief-statement.server.js";
 import { ACTIVE_BELIEF_STATUSES } from "../merchant-memory/constants.server.js";
+import { startFocusedActionChat } from "../merchant-memory/focused-action-chat.server.js";
 import { upsertMerchantSuppliedBelief } from "../merchant-memory/service.server.js";
 import { trackOnce } from "../../services/analytics/event-log.server.js";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../../services/shopify-backfill-status.server.js";
 import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/recommendation-service.server.js";
 import { AGENTIC_RECOMMENDATION_SOURCE_MODE } from "../shopify/agentic-runtime/constants.server.js";
+import { semanticActionRevision } from "../shopify/agentic-runtime/semantic-action.server.js";
 import { PLAN_RUN_STATUS } from "../merchant-plan/constants.server.js";
 
 export const ONBOARDING_CONTEXT_OPTIONS = Object.freeze([
@@ -172,18 +174,14 @@ export async function getFastOnboardingExperience(prisma, input) {
 
   const evidence = shapeEvidence(beliefs).slice(0, 3);
   const recommendation = selected ? shapeRecommendation(selected) : null;
-  const insight = finding && selected
-    ? {
-        id: finding.id,
-        runId: selected.run.insightRunId,
-        headline: humanizeOnboardingInsightText(finding.title),
-        explanation: humanizeOnboardingInsightText(finding.finding),
-        whyItMatters: finding.whyItMatters,
-        confidence: finding.confidence,
-        caveat: finding.caveat ? humanizeOnboardingInsightText(finding.caveat) : null,
-        evidence,
-      }
+  const insight = shapeLegacyInsight(selected, finding, evidence);
+  const presentation = selected
+    ? shapeRecommendationPresentation(selected, { insight, evidence })
     : null;
+  const recommendationInvestigationPending =
+    !selected &&
+    Boolean(context) &&
+    [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running].includes(latestPlanRun?.status);
   const queueItems = recommendations
     .filter(
       (row) =>
@@ -203,9 +201,11 @@ export async function getFastOnboardingExperience(prisma, input) {
     bootstrapPhase,
     context,
     insight,
+    presentation,
     recommendation,
     queueItems,
     failure,
+    recommendationInvestigationPending,
     fullLearning,
     handoff: handoff ? { id: handoff.id, token: input.handoffToken } : null,
     devToolsEnabled: process.env.ENABLE_DEV_TOOLS === "true",
@@ -274,20 +274,29 @@ export async function approveOnboardingRecommendation(prisma, input) {
   const recommendation = await ownedRecommendation(prisma, input, true);
   if (!recommendation) return { ok: false, error: "That recommendation is no longer available." };
   if (recommendation.sourceMode === AGENTIC_RECOMMENDATION_SOURCE_MODE) {
-    const action = await prisma.merchantAction.findFirst({
-      where: {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        sourceRecommendationId: recommendation.id,
-      },
-      select: { id: true },
-    });
+    const action = await resolveOnboardingAgenticAction(prisma, input, recommendation);
     if (!action) return { ok: false, error: "That Action is no longer available." };
+    const chat = await startFocusedActionChat(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+    });
+    if (!chat.ok) return { ok: false, error: chat.error ?? "I couldn't open that Action chat." };
+    const conversationId = chat.conversationId ?? chat.chats?.[0]?.id ?? null;
+    if (!conversationId) return { ok: false, error: "I couldn't open that Action chat." };
+    const handoff = await completeRecommendationHandoff(
+      prisma,
+      input,
+      recommendation.id,
+      "agentic_action_opened",
+    );
     return {
+      ...handoff,
       ok: true,
-      mode: "agentic_execute",
+      mode: "agentic_open",
       actionId: action.id,
       recommendationId: recommendation.id,
+      conversationId,
     };
   }
   if (
@@ -320,6 +329,131 @@ export async function approveOnboardingRecommendation(prisma, input) {
     payload: { reason: "tracked_onboarding_recommendation" },
   });
   return completeRecommendationHandoff(prisma, input, recommendation.id, "approved_track_only");
+}
+
+async function resolveOnboardingAgenticAction(prisma, input, recommendation) {
+  const existing = await prisma.merchantAction.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceRecommendationId: recommendation.id,
+    },
+    select: { id: true, status: true, plan: true, progress: true },
+  });
+  if (!prisma?.merchantAction?.create) return null;
+  const { semanticAction, revision } = semanticActionForOnboardingRecommendation(recommendation);
+  if (existing) {
+    const progress = jsonObject(existing.progress);
+    const plan = jsonObject(existing.plan);
+    const progressAgentic = jsonObject(progress.agentic);
+    const planAgentic = jsonObject(plan.agentic);
+    const needsHydration =
+      progressAgentic.runtime !== "shopify_admin_api" ||
+      planAgentic.runtime !== "shopify_admin_api" ||
+      !progressAgentic.semanticAction ||
+      !planAgentic.semanticAction ||
+      typeof progressAgentic.currentActionRevision !== "string" ||
+      typeof planAgentic.currentActionRevision !== "string" ||
+      !progressAgentic.acceptedActionRevision;
+    if (!needsHydration) return existing;
+    await prisma.merchantAction.update({
+      where: { id: existing.id },
+      data: {
+        status: progressAgentic.acceptedActionRevision ? existing.status : "proposed",
+        plan: {
+          ...plan,
+          agentic: {
+            ...planAgentic,
+            runtime: "shopify_admin_api",
+            currentActionRevision: revision,
+            semanticAction,
+          },
+        },
+        progress: {
+          ...progress,
+          agentic: {
+            ...progressAgentic,
+            runtime: "shopify_admin_api",
+            currentActionRevision: revision,
+            semanticAction,
+            diagnostics: progressAgentic.diagnostics ?? jsonObject(recommendation.successSignal).diagnostics ?? {},
+          },
+        },
+      },
+    });
+    return existing;
+  }
+  try {
+    return await prisma.merchantAction.create({
+      data: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceRecommendationId: recommendation.id,
+        title: recommendation.title,
+        summary: recommendation.summary,
+        status: "proposed",
+        plan: {
+          agentic: {
+            runtime: "shopify_admin_api",
+            currentActionRevision: revision,
+            semanticAction,
+          },
+        },
+        progress: {
+          agentic: {
+            runtime: "shopify_admin_api",
+            currentActionRevision: revision,
+            semanticAction,
+            diagnostics: jsonObject(jsonObject(recommendation.successSignal).diagnostics),
+          },
+        },
+        outcome: {},
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (error?.code !== "P2002") throw error;
+    return prisma.merchantAction.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceRecommendationId: recommendation.id,
+      },
+      select: { id: true },
+    });
+  }
+}
+
+function semanticActionForOnboardingRecommendation(recommendation) {
+  const signal = jsonObject(recommendation.successSignal);
+  const scope = jsonObject(signal.scope);
+  const constraints = Array.isArray(signal.constraints) ? signal.constraints : [];
+  const materialExpectedEffects = Array.isArray(signal.materialExpectedEffects)
+    ? signal.materialExpectedEffects
+    : [];
+  const semanticAction = {
+    recommendationId: recommendation.id,
+    outcome: stringValue(signal.semanticOutcome) ?? recommendation.startToday ?? recommendation.title,
+    scope: { recommendationId: recommendation.id, ...scope },
+    constraints,
+    materialExpectedEffects,
+    verificationPlan: stringValue(signal.description) ?? recommendation.expectedBenefit ?? null,
+    title: recommendation.title,
+    summary: recommendation.summary,
+    whyThisAction: recommendation.whyThisAction ?? null,
+    whyNow: recommendation.whyNow ?? null,
+    expectedBenefit: recommendation.expectedBenefit ?? null,
+    sourceRecommendationId: recommendation.id,
+    supportingBeliefIds: Array.isArray(recommendation.supportingBeliefIds)
+      ? recommendation.supportingBeliefIds
+      : [],
+    supportingInsightIds: Array.isArray(recommendation.supportingInsightIds)
+      ? recommendation.supportingInsightIds
+      : [],
+  };
+  const revision = semanticActionRevision(semanticAction);
+  semanticAction.revision = revision;
+  return { semanticAction, revision };
 }
 
 export async function completeExecutedRecommendationHandoff(prisma, input) {
@@ -429,14 +563,19 @@ async function completeRecommendationHandoff(prisma, input, recommendationId, re
     select: { payloadJson: true },
   });
   const onboardingEpoch = bootstrapEpoch(null, bootstrap);
+  const eventType = reason === "agentic_action_opened"
+    ? "recommendation_action_opened"
+    : "recommendation_approved";
   void trackOnce(prisma, {
-    type: "recommendation_approved",
+    type: eventType,
     topic: "onboarding",
     merchantId: input.merchantId,
     shopId: input.shopId,
     shopDomain: input.shopDomain,
-    dedupeKey: `recommendation_approved:${onboardingEpoch}:${recommendationId}`,
-    summary: `Onboarding recommendation approved for ${input.shopDomain}`,
+    dedupeKey: `${eventType}:${onboardingEpoch}:${recommendationId}`,
+    summary: reason === "agentic_action_opened"
+      ? `Onboarding recommendation opened as an Action for ${input.shopDomain}`
+      : `Onboarding recommendation approved for ${input.shopDomain}`,
     properties: { recommendationId, onboardingEpoch },
   });
   const handoff = await createOnboardingHandoff(prisma, input, reason);
@@ -529,8 +668,50 @@ export function shapeRecommendation(row) {
     executable,
     actionRunId: execution?.runId ?? null,
     executionStatus: execution?.status ?? null,
-    approvalLabel: executable ? "Approve — I’ll handle it" : "Track this for me",
+    approvalLabel: row.sourceMode === AGENTIC_RECOMMENDATION_SOURCE_MODE
+      ? "Work on this"
+      : executable ? "Approve — I’ll handle it" : "Track this for me",
     sourceMode: row.sourceMode,
+  };
+}
+
+function shapeLegacyInsight(selected, finding, evidence) {
+  if (!finding || !selected) return null;
+  return {
+    id: finding.id,
+    runId: selected.run.insightRunId,
+    headline: humanizeOnboardingInsightText(finding.title),
+    explanation: humanizeOnboardingInsightText(finding.finding),
+    whyItMatters: finding.whyItMatters,
+    confidence: finding.confidence,
+    caveat: finding.caveat ? humanizeOnboardingInsightText(finding.caveat) : null,
+    evidence,
+  };
+}
+
+function shapeRecommendationPresentation(row, { insight, evidence }) {
+  if (insight) return { ...insight, source: "insight" };
+  if (row.sourceMode !== AGENTIC_RECOMMENDATION_SOURCE_MODE) return null;
+  const success = jsonObject(row.successSignal);
+  return {
+    id: row.id,
+    runId: row.runId,
+    headline: humanizeOnboardingInsightText(row.title),
+    explanation: humanizeOnboardingInsightText(
+      stringValue(row.whyThisAction) ??
+      stringValue(row.summary) ??
+      stringValue(row.startToday) ??
+      "I found a Shopify action worth reviewing.",
+    ),
+    whyItMatters:
+      stringValue(row.whyThisAction) ??
+      stringValue(row.expectedBenefit) ??
+      stringValue(success.description) ??
+      "",
+    confidence: row.confidence ?? "medium",
+    caveat: row.caveat ? humanizeOnboardingInsightText(row.caveat) : null,
+    evidence,
+    source: "recommendation",
   };
 }
 

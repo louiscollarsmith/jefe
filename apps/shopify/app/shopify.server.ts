@@ -18,6 +18,7 @@ import { recordEmailIdentityOnAuth } from "./lib/email/inbound/identity.server.j
 import { logger } from "./lib/observability/logger.server";
 import { notifyShopLifecycleToSlack } from "./lib/observability/lifecycle-slack.server.js";
 import { normalizeShopDomain } from "./lib/shopify/admin-graphql.server";
+import { resolveInstalledShopifyScopes } from "./lib/shopify/installed-scopes.server.js";
 import { track } from "./services/analytics/event-log.server";
 
 const API_VERSIONS_BY_ENV_VALUE: Record<string, ApiVersion> = {
@@ -70,10 +71,12 @@ const shopify = shopifyApp({
         });
       }
 
+      const scopes = await resolveScopesForAuthenticatedSession(session);
+
       await queueInstallShopifyBackfill(prisma, {
         shopDomain: session.shop,
         sessionId: session.id,
-        scopes: splitScopes(session.scope),
+        scopes,
         rawPayload: { source: "oauth_after_auth" },
       });
 
@@ -163,3 +166,32 @@ export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
 
 startShopifyBackfillLoop(prisma);
+
+async function resolveScopesForAuthenticatedSession(session: {
+  shop: string;
+  id?: string;
+  scope?: string | null;
+  accessToken?: string | null;
+}) {
+  const fallbackScopes = splitScopes(session.scope);
+  const resolved = await resolveInstalledShopifyScopes({
+    shopDomain: session.shop,
+    accessToken: session.accessToken,
+    fallbackScopes,
+    logger,
+  });
+  if (resolved.source === "live_shopify") {
+    await prisma.session
+      .updateMany({
+        where: { shop: session.shop },
+        data: { scope: resolved.scopes.join(",") },
+      })
+      .catch((error) => {
+        logger.warn("Shopify session scope sync write failed", {
+          shopDomain: session.shop,
+          error: error instanceof Error ? error.name : "UnknownError",
+        });
+      });
+  }
+  return resolved.scopes;
+}

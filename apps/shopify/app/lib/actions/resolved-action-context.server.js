@@ -32,6 +32,7 @@ export const DEFAULT_RESTOCK_COVER_DAYS = 120;
 
 /** @param {any} action */
 export function actionRuntimeKind(action) {
+  if (isAgenticShopifyActionLike(action)) return "agentic_shopify";
   const type = String(action?.actionType ?? "");
   if (type === "price_markdown") return "markdown";
   if (type === "listing_copy") return "listing_copy";
@@ -85,6 +86,70 @@ export async function resolveActionContext(prisma, input) {
   const kind = actionRuntimeKind(action);
   const constraints = (await listActionConstraints(prisma, input)).map(serializeConstraint);
   const plan = resolvePlanValues(action, kind);
+  if (kind === "agentic_shopify") {
+    const semanticAction = semanticActionForAction(action);
+    const scope = resolveAgenticScope(semanticAction, constraints);
+    const constraintVersion = hashPayload(
+      constraints.map((/** @type {any} */ row) => ({ id: row.id, kind: row.kind, params: row.params })),
+    );
+    const inputHash = hashResolvedActionInput({
+      planValues: plan.values,
+      constraints,
+      scopeKeys: scope.items.map(scopeKey),
+    });
+    const scopeVersion = hashPayload({
+      kind,
+      semanticScope: semanticAction.scope ?? null,
+      constraints,
+    });
+    const evidenceVersion = hashPayload({
+      kind,
+      sourceRecommendationId: action.sourceRecommendationId ?? null,
+      supportingBeliefIds: semanticAction.supportingBeliefIds ?? [],
+      supportingInsightIds: semanticAction.supportingInsightIds ?? [],
+      diagnostics: semanticAction.diagnostics ?? null,
+    });
+    const currentStep = action.currentStep ?? null;
+    const context = {
+      action,
+      workflow: action.workflow ?? null,
+      currentStep,
+      plan,
+      constraints,
+      constraintVersion,
+      scopeVersion,
+      scope,
+      canonicalProposal: buildAgenticProposal(semanticAction, scope),
+      semanticAction,
+      evidence: {
+        kind,
+        loadedAt: new Date().toISOString(),
+        candidateCount: scope.candidateCount,
+        supportingBeliefIds: semanticAction.supportingBeliefIds ?? [],
+        supportingInsightIds: semanticAction.supportingInsightIds ?? [],
+      },
+      evidenceVersion,
+      inputHash,
+      focusedConversationId: input.conversationId ?? null,
+    };
+    logger.info("resolved agentic action context", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actionVersion: action.updatedAt,
+      planVersion: plan.version,
+      constraintVersion,
+      inputHash,
+      scopeVersion,
+      evidenceVersion,
+      kind,
+      scopeCount: scope.items.length,
+      scopeStatus: scope.status,
+      excludedCount: scope.excluded.length,
+      conversationId: input.conversationId ?? null,
+    });
+    return context;
+  }
   const candidates = await loadScopeCandidates(prisma, { ...input, action, kind });
   const catalog = await inspectCandidates(prisma, {
     merchantId: input.merchantId,
@@ -414,6 +479,159 @@ async function loadScopeCandidates(prisma, input) {
   return Array.isArray(input.action?.previewItems) ? input.action.previewItems : [];
 }
 
+/** @param {any} action */
+function isAgenticShopifyActionLike(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const progressAgentic = jsonObject(progress.agentic);
+  const planAgentic = jsonObject(plan.agentic);
+  return (
+    progressAgentic.runtime === "shopify_admin_api" ||
+    planAgentic.runtime === "shopify_admin_api" ||
+    Boolean(progressAgentic.semanticAction) ||
+    Boolean(planAgentic.semanticAction)
+  );
+}
+
+/** @param {any} action */
+function semanticActionForAction(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const source = jsonObject(action?.sourceRecommendation);
+  const signal = jsonObject(source.successSignal);
+  const progressSemantic = jsonObject(jsonObject(progress.agentic).semanticAction);
+  const planSemantic = jsonObject(jsonObject(plan.agentic).semanticAction);
+  return {
+    ...jsonObject(signal.semanticAction),
+    ...planSemantic,
+    ...progressSemantic,
+    title: textValue(progressSemantic.title ?? planSemantic.title ?? action?.title ?? source.title),
+    summary: textValue(progressSemantic.summary ?? planSemantic.summary ?? action?.summary ?? source.summary),
+    outcome: textValue(
+      progressSemantic.outcome ??
+        planSemantic.outcome ??
+        signal.semanticOutcome ??
+        source.startToday ??
+        action?.title,
+    ),
+    whyThisAction: textValue(progressSemantic.whyThisAction ?? planSemantic.whyThisAction ?? source.whyThisAction),
+    whyNow: textValue(progressSemantic.whyNow ?? planSemantic.whyNow ?? source.whyNow),
+    scope: progressSemantic.scope ?? planSemantic.scope ?? jsonObject(signal.scope),
+    constraints:
+      arrayValue(progressSemantic.constraints) ??
+      arrayValue(planSemantic.constraints) ??
+      arrayValue(signal.constraints) ??
+      [],
+    materialExpectedEffects:
+      arrayValue(progressSemantic.materialExpectedEffects) ??
+      arrayValue(planSemantic.materialExpectedEffects) ??
+      arrayValue(signal.materialExpectedEffects) ??
+      [],
+    verificationPlan:
+      progressSemantic.verificationPlan ??
+      planSemantic.verificationPlan ??
+      signal.description ??
+      source.expectedBenefit ??
+      null,
+    supportingBeliefIds:
+      arrayValue(progressSemantic.supportingBeliefIds) ??
+      arrayValue(planSemantic.supportingBeliefIds) ??
+      arrayValue(source.supportingBeliefIds) ??
+      [],
+    supportingInsightIds:
+      arrayValue(progressSemantic.supportingInsightIds) ??
+      arrayValue(planSemantic.supportingInsightIds) ??
+      arrayValue(source.supportingInsightIds) ??
+      [],
+    diagnostics: jsonObject(jsonObject(progress.agentic).diagnostics),
+    revision:
+      textValue(jsonObject(progress.agentic).currentActionRevision) ??
+      textValue(jsonObject(plan.agentic).currentActionRevision) ??
+      progressSemantic.revision ??
+      planSemantic.revision ??
+      null,
+  };
+}
+
+/** @param {any} semanticAction @param {any[]} constraints */
+function resolveAgenticScope(semanticAction, constraints) {
+  const rawScope = semanticAction?.scope;
+  const scope = jsonObject(rawScope);
+  const rows =
+    arrayValue(scope.items) ??
+    arrayValue(scope.products) ??
+    arrayValue(scope.resources) ??
+    [];
+  const items = rows
+    .map((/** @type {any} */ row) => ({
+      title: row?.title ?? row?.productTitle ?? row?.name ?? row?.handle ?? null,
+      productId: row?.productId ?? row?.id ?? null,
+      variantId: row?.variantId ?? null,
+      targetRef: row?.targetRef ?? row?.variantId ?? row?.productId ?? row?.id ?? null,
+      available: numberOrNull(row?.available ?? row?.inventory),
+      inventory: numberOrNull(row?.inventory ?? row?.available),
+      dailyVelocity: numberOrNull(row?.dailyVelocity),
+      confidence: row?.confidence ?? null,
+      because: row?.because ?? row?.reason ?? null,
+      reason: row?.reason ?? row?.because ?? null,
+      vendor: row?.vendor ?? null,
+      resourceType: row?.resourceType ?? scope.resourceType ?? null,
+      operation: row?.operation ?? null,
+    }))
+    .filter((/** @type {any} */ row) => row.title || row.productId || row.variantId || row.targetRef);
+  const summary =
+    textValue(scope.summary ?? scope.description ?? scope.candidateScope) ??
+    (typeof rawScope === "string" ? textValue(rawScope) : null) ??
+    textValue(semanticAction?.outcome);
+  const excluded = constraints
+    .filter((row) => row.kind === "exclude_product")
+    .map((row) => ({ title: row.params?.title ?? row.label, reason: row.label }));
+  return {
+    items,
+    excluded,
+    candidateCount: Number.isFinite(Number(scope.candidateCount))
+      ? Number(scope.candidateCount)
+      : items.length,
+    keptCount: items.length,
+    excludedCount: excluded.length,
+    status: "known_candidate_scope",
+    discovery: {
+      source: "agentic_semantic_action",
+      summary,
+      finalAccepted: false,
+    },
+    originalEvidence: {
+      summary,
+      supportingBeliefIds: semanticAction?.supportingBeliefIds ?? [],
+      supportingInsightIds: semanticAction?.supportingInsightIds ?? [],
+      diagnostics: semanticAction?.diagnostics ?? {},
+    },
+  };
+}
+
+/** @param {any} semanticAction @param {any} scope */
+function buildAgenticProposal(semanticAction, scope) {
+  const effects = arrayValue(semanticAction?.materialExpectedEffects) ?? [];
+  const lines = effects
+    .map((/** @type {any} */ row) => ({
+      title: textValue(row?.label ?? row?.description ?? row?.summary ?? row),
+      operation: textValue(row?.operation ?? row?.shopifyOperation),
+      resource: textValue(row?.resource ?? row?.resourceType),
+    }))
+    .filter((/** @type {any} */ row) => row.title);
+  return {
+    type: "agentic_shopify_semantic_action",
+    title: "Expected Shopify effects",
+    lines,
+    summary: lines.length
+      ? lines.map((/** @type {any} */ row) => row.title).join("; ")
+      : textValue(semanticAction?.verificationPlan) ??
+        textValue(scope?.originalEvidence?.summary) ??
+        "Luna will choose the Shopify operations after the Action is accepted and verify the outcome by reading Shopify back.",
+    revision: semanticAction?.revision ?? null,
+  };
+}
+
 /** @param {any[]} candidates @param {number | undefined} markdownPercent */
 export function applyMarkdownPlan(candidates, markdownPercent) {
   const percent = Number(markdownPercent);
@@ -503,6 +721,16 @@ function jsonObject(value) {
 }
 
 /** @param {unknown} value */
+function arrayValue(value) {
+  return Array.isArray(value) ? value : null;
+}
+
+/** @param {unknown} value */
+function textValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** @param {unknown} value */
 function normalizeMatch(value) {
   return String(value ?? "")
     .trim()
@@ -529,6 +757,7 @@ function normalizeMatch(value) {
  *     originalEvidence?: Record<string, any> | null;
  *   };
  *   canonicalProposal?: any;
+ *   semanticAction?: any;
  *   evidence: { kind: string; loadedAt: string; candidateCount: number };
  *   evidenceVersion: string;
  *   inputHash: string;

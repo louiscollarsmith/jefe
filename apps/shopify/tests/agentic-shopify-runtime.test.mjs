@@ -1,15 +1,356 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
+import {
+  agenticActionChatToolCatalogue,
+  runAgenticActionChat,
+} from "../app/lib/shopify/agentic-runtime/action-chat.server.js";
 import { runAgenticShopifyExecution } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
 import {
   acceptAgenticShopifyAction,
   materializeAgenticShopifyAction,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
+import { resolveActionState } from "../app/lib/actions/action-state.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000011";
 const shopId = "00000000-0000-0000-0000-000000000012";
 const shopDomain = "jefe-local-store.myshopify.com";
+
+test("agentic pre-acceptance chat has no legacy focused-action tools", () => {
+  const names = agenticActionChatToolCatalogue().map((tool) => tool.name);
+
+  assert.ok(names.includes("retrieve_shopify_operations"));
+  assert.ok(names.includes("call_shopify_operation"));
+  assert.equal(names.includes("simulate_plan"), false);
+  assert.equal(names.includes("run_work_item"), false);
+  assert.equal(names.includes("add_plan_step"), false);
+  assert.equal(names.includes("accept_plan"), false);
+});
+
+test("semantic milestones stay display-only for agentic Actions", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  const state = await resolveActionState(prisma, {
+    merchantId,
+    shopId,
+    actionId: action.id,
+  });
+
+  assert.equal(state.action.kind, "agentic_shopify");
+  assert.equal(state.workspace.items.some((item) => item.title === "Review what Jefe found"), true);
+  assert.deepEqual(state.work, []);
+});
+
+test("agentic pre-acceptance chat retrieves Shopify reads and persists concrete semantic scope", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: {
+      ...semanticCollectionRecommendation(),
+      title: "Create an in-stock Cases & Bundles collection",
+      scope: "Active case and bundle products that are currently in stock.",
+    },
+  });
+  const originalRevision = action.progress.agentic.currentActionRevision;
+  const provider = scriptedProvider((payload) => {
+    const toolNames = payload.tools.map((tool) => tool.name);
+    assert.equal(toolNames.includes("simulate_plan"), false);
+    assert.equal(toolNames.includes("run_work_item"), false);
+    if (payload.iteration === 0) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "retrieve_shopify_operations",
+            arguments: {
+              query: "read products inventory status product type tags case bundle",
+              operationKind: "QUERY",
+              limit: 5,
+            },
+          },
+          {
+            tool: "call_shopify_operation",
+            arguments: {
+              operation: "products",
+              variables: { first: 10, query: "case OR bundle" },
+              purpose: "Find active in-stock case and bundle products before refining scope.",
+            },
+          },
+        ],
+      };
+    }
+    assert.ok(payload.toolResults.some((row) => row.tool === "call_shopify_operation" && row.ok));
+    return {
+      status: "ANSWER",
+      finalReply:
+        "I found two qualifying products: London Jacket and London Tote. I updated the Action draft; nothing has been changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Active case and bundle products that are currently in stock.",
+            includedItems: [
+              {
+                title: "London Jacket",
+                productId: "gid://shopify/Product/1",
+                reason: "Active and returned by the current Shopify product read.",
+                status: "ACTIVE",
+                available: 7,
+              },
+              {
+                title: "London Tote",
+                productId: "gid://shopify/Product/2",
+                reason: "Active and returned by the current Shopify product read.",
+                status: "ACTIVE",
+                available: 4,
+              },
+            ],
+            excludedItems: [
+              {
+                title: "London Socks",
+                productId: "gid://shopify/Product/3",
+                reason: "Unavailable in the current Shopify product read.",
+              },
+            ],
+            reason: "Merchant asked Jefe to work out exact products using current Shopify data.",
+          },
+        },
+      ],
+    };
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message:
+      "Go and work out the exact products you would put in this collection now. Use the current Shopify data, but don't change anything in Shopify yet. Give me the products and why each qualifies.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /London Jacket/);
+  assert.equal(prisma.operationCalls.some((row) => row.operationKind === "MUTATION"), false);
+  const updated = prisma.actions[0].progress.agentic.semanticAction;
+  assert.equal(updated.scope.items.length, 2);
+  assert.equal(updated.scope.excluded[0].title, "London Socks");
+  assert.notEqual(updated.revision, originalRevision);
+  assert.equal(prisma.actions[0].progress.agentic.currentActionRevision, updated.revision);
+});
+
+test("agentic pre-acceptance chat scope and constraint turns update only the semantic draft", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I left London Tote out of the draft. Nothing has changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "London delivery products excluding London Tote.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Leave London Tote out.",
+    logger: quietLogger,
+  });
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I put London Tote back and added the no-price-change constraint.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "London delivery products.",
+            includedItems: [
+              { title: "London Jacket", productId: "gid://shopify/Product/1" },
+              { title: "London Tote", productId: "gid://shopify/Product/2" },
+            ],
+            excludedItems: [],
+          },
+        },
+        {
+          tool: "update_action_constraints",
+          arguments: {
+            constraints: [{ kind: "pricing", label: "Do not change any prices." }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Sorry, put London Tote back. Don't change any prices.",
+    logger: quietLogger,
+  });
+
+  const semantic = prisma.actions[0].progress.agentic.semanticAction;
+  assert.deepEqual(
+    semantic.scope.items.map((item) => item.title),
+    ["London Jacket", "London Tote"],
+  );
+  assert.equal(semantic.scope.excluded.length, 0);
+  assert.equal(semantic.constraints.some((row) => /prices/i.test(row.label)), true);
+  assert.equal(prisma.operationCalls.some((row) => row.operationKind === "MUTATION"), false);
+});
+
+test("agentic pre-acceptance Shopify mutation attempts are denied by the universal gateway", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      toolCalls: [
+        {
+          tool: "call_shopify_operation",
+          arguments: {
+            operation: "collectionCreate",
+            variables: { input: { title: "London fast delivery" } },
+            purpose: "This should be denied before acceptance.",
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Create it now without accepting.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(prisma.operationCalls.some((row) => row.status === "DENIED_ACTION_NOT_ACCEPTED"), true);
+});
+
+test("agentic chat acceptance creates accepted revision and starts post-acceptance execution", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const provider = scriptedProvider((payload) => {
+    if (payload.promptVersion === "agentic-action-chat-v1") {
+      return {
+        status: "ANSWER",
+        finalReply: "Accepted. I started the Shopify work.",
+        toolCalls: [{ tool: "accept_action", arguments: {} }],
+      };
+    }
+    const calls = payload.toolResults?.filter((row) => row.tool === "call_shopify_operation") ?? [];
+    if (!calls.some((row) => row.facts?.operation === "products")) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "call_shopify_operation",
+            arguments: {
+              operation: "products",
+              variables: { first: 5, query: "tag:london-delivery" },
+              purpose: "Read qualifying products before creating the accepted collection.",
+            },
+          },
+        ],
+      };
+    }
+    if (!calls.some((row) => row.facts?.operation === "collectionCreate")) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "call_shopify_operation",
+            arguments: {
+              operation: "collectionCreate",
+              variables: { input: { title: "London fast delivery" } },
+              purpose: "Create the accepted collection.",
+              expectedEffect: "Create a Shopify collection for the accepted Action.",
+              idempotencyKey: "chat-accept-collection-create",
+            },
+          },
+        ],
+      };
+    }
+    if (!calls.some((row) => row.facts?.operation === "collection")) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "call_shopify_operation",
+            arguments: {
+              operation: "collection",
+              variables: { id: "gid://shopify/Collection/99" },
+              purpose: "Verify the accepted collection exists.",
+            },
+          },
+        ],
+      };
+    }
+    return {
+      status: "OUTCOME_ACHIEVED",
+      progressSummary: "Created and verified the accepted collection.",
+      verification: { verified: true, evidence: ["Read-back confirmed the collection."], remaining: [] },
+    };
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    loadOfflineToken: async () => "test-token",
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Looks good, go ahead.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(Boolean(prisma.actions[0].progress.agentic.acceptedActionRevision), true);
+  assert.equal(prisma.operationCalls.some((row) => row.operationName === "collectionCreate"), true);
+});
 
 test("Luna can recommend an unseen collection Action using generated Shopify API retrieval and reads", async () => {
   const provider = scriptedProvider((payload) => {
@@ -147,6 +488,89 @@ test("recommendation loop requires Shopify retrieval and read evidence before su
   assert.equal(result.ok, true);
   assert.equal(provider.calls.length, 3);
   assert.ok(result.diagnostics.shopifyReads.some((row) => row.operation === "products"));
+});
+
+test("recommendation retry prompt includes previous validation diagnostics", async () => {
+  const provider = scriptedProvider((payload) => {
+    assert.equal(payload.previousAttemptDiagnostics.runId, "run-failed");
+    assert.equal(payload.previousAttemptDiagnostics.validationErrors[0].code, "INVALID_RECOMMENDATION");
+    return { status: "BLOCKED", blocker: "no repair attempted yet" };
+  });
+
+  await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    previousAttempt: {
+      runId: "run-failed",
+      validationErrors: [
+        { code: "INVALID_RECOMMENDATION", message: "Recommendation cited an unsupported belief id." },
+      ],
+    },
+    maxIterations: 1,
+    logger: quietLogger,
+  });
+
+  assert.equal(provider.calls.length, 1);
+});
+
+test("recommendation loop reports validation failure instead of generic blocked after bounded repair attempts", async () => {
+  const provider = scriptedProvider((payload) => {
+    if (payload.iteration === 0) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "retrieve_shopify_operations",
+            arguments: { query: "create collection add products read products", limit: 5 },
+          },
+        ],
+      };
+    }
+    if (payload.iteration === 1) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: "call_shopify_operation",
+            arguments: {
+              operation: "products",
+              variables: { first: 5 },
+              purpose: "Read product evidence before recommending a collection Action.",
+            },
+          },
+        ],
+      };
+    }
+    return {
+      status: "RECOMMEND_ACTION",
+      recommendation: {
+        ...semanticCollectionRecommendation(),
+        supportingBeliefIds: ["not-in-memory"],
+      },
+    };
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.match(result.blocker, /unsupported belief id/i);
 });
 
 test("accepted semantic Action authorizes Luna to execute multiple generated Shopify operations and verify read-back", async () => {
@@ -554,6 +978,16 @@ function scriptedProvider(script) {
 function fakeShopifyClient() {
   return {
     async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return {
+          currentAppInstallation: {
+            accessScopes: [
+              { handle: "read_products" },
+              { handle: "write_products" },
+            ],
+          },
+        };
+      }
       if (document.includes("products(")) {
         return {
           products: {
@@ -691,6 +1125,10 @@ function fakePrisma() {
         prisma.events.push(data);
         return data;
       },
+      findMany: async () => prisma.events,
+    },
+    actionChangeSet: {
+      findFirst: async () => null,
     },
     shopifyOperationCall: {
       create: async ({ data }) => {

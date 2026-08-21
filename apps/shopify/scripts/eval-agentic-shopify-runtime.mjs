@@ -10,9 +10,21 @@ import { createLlmProvider } from "../app/lib/llm/provider.server.js";
 import { runMerchantMemoryBootstrap } from "../app/lib/onboarding/bootstrap.server.js";
 import { ShopifyAdminGraphqlClient, normalizeShopDomain } from "../app/lib/shopify/admin-graphql.server.js";
 import { executeShopifyOperation, getActionRevisionState } from "../app/lib/shopify/api/gateway.server.js";
-import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
+import {
+  AGENTIC_RECOMMENDATION_PROMPT_VERSION,
+  buildRecommendationSystemPrompt,
+  generateAgenticShopifyRecommendation,
+} from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import { runAgenticRecommendationInvestigation } from "../app/lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { acceptAndExecuteAgenticShopifyAction } from "../app/lib/shopify/agentic-runtime/execution-service.server.js";
+import {
+  AGENTIC_EXECUTION_PROMPT_VERSION,
+  buildExecutionSystemPrompt,
+} from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
+import {
+  AGENTIC_ACTION_CHAT_PROMPT_VERSION,
+  buildAgenticActionChatSystemPrompt,
+} from "../app/lib/shopify/agentic-runtime/action-chat.server.js";
 import {
   materializeAgenticShopifyAction,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
@@ -23,9 +35,11 @@ loadLocalEnv(process.cwd());
 const args = new Set(process.argv.slice(2));
 const reportDir = resolve(process.cwd(), "../../.context/agentic-shopify-runtime");
 const reportPath = resolve(reportDir, "latest.json");
+const promptReportPath = resolve(reportDir, "prompts-latest.json");
 mkdirSync(reportDir, { recursive: true });
 
 const stages = [];
+const promptRecords = [];
 const startedAt = new Date().toISOString();
 let liveLunaRecommendation = null;
 let liveLunaDiagnostics = null;
@@ -69,9 +83,12 @@ async function runLiveLunaFixtureStage() {
     stages.push(blocked("live_luna_unseen_action", "OPENAI_API_KEY or GEMINI_API_KEY is required."));
     return;
   }
-  const provider = createLlmProvider({
-    logger: quietLogger(),
-  });
+  const provider = capturePrompts(
+    createLlmProvider({
+      logger: quietLogger(),
+    }),
+    "live_luna_unseen_action:recommendation_investigation",
+  );
   const client = fixtureShopifyClient();
   const started = Date.now();
   const result = await generateAgenticShopifyRecommendation({
@@ -138,6 +155,10 @@ async function runRealDevShopifyStage() {
       shopDomain: config.shopDomain,
       actor: "agentic-runtime-eval",
       loadOfflineToken: async () => config.accessToken,
+      provider: capturePrompts(
+        createLlmProvider({ logger: quietLogger() }),
+        "real_dev_shopify_agentic_execution:post_acceptance_execution",
+      ),
       logger: quietLogger(),
     });
     for (const collectionId of createdCollectionIdsFromTrace(execution.execution?.trace)) {
@@ -285,6 +306,10 @@ async function runRealDevMerchantOnboardingStage() {
       shopId: shop.id,
       shopDomain: config.shopDomain,
       accessToken: config.accessToken,
+      provider: capturePrompts(
+        createLlmProvider({ logger: quietLogger() }),
+        "actual_dev_merchant_onboarding:recommendation_investigation",
+      ),
       logger: quietLogger(),
     });
     const retrievedCount = result.diagnostics?.retrievedOperations?.length ?? 0;
@@ -655,7 +680,120 @@ function findRecoveryEvidence(calls, collectionId) {
   return { ok: false, reason: "No ledgered multi-call recovery sequence found for the London collection." };
 }
 
+function capturePrompts(provider, scenario) {
+  if (!provider?.generateStructuredJson) return provider;
+  return {
+    ...provider,
+    async generateStructuredJson(request) {
+      promptRecords.push({
+        scenario,
+        capturedAt: new Date().toISOString(),
+        provider: provider.provider ?? null,
+        model: provider.model ?? null,
+        promptVersion: promptVersionFromRequest(request),
+        maxInputTokens: request.maxInputTokens ?? null,
+        maxOutputTokens: request.maxOutputTokens ?? null,
+        timeoutMs: request.timeoutMs ?? null,
+        systemPrompt: request.systemPrompt ?? null,
+        prompt: request.prompt ?? null,
+      });
+      return provider.generateStructuredJson(request);
+    },
+  };
+}
+
+function promptVersionFromRequest(request) {
+  try {
+    return JSON.parse(String(request?.prompt ?? "{}"))?.promptVersion ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writePromptReport() {
+  writeFileSync(
+    promptReportPath,
+    JSON.stringify(
+      {
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        recordCount: promptRecords.length,
+        scenarios: [
+          {
+            scenario: "live_luna_unseen_action:recommendation_investigation",
+            when: "Live Luna forms an unseen semantic Shopify recommendation from Merchant Memory, bounded store evidence, searchable generated API knowledge, retrieved stubs and Shopify reads.",
+          },
+          {
+            scenario: "real_dev_shopify_agentic_execution:post_acceptance_execution",
+            when: "After acceptedActionRevision exists, Luna executes the accepted semantic Action through generated Shopify read/write operations and verifies by reading Shopify state back.",
+          },
+          {
+            scenario: "actual_dev_merchant_onboarding:recommendation_investigation",
+            when: "Dev merchant onboarding reruns recommendation investigation against the real local store and captures hypotheses, reads, retrieved operations, feasibility checks and rejections.",
+          },
+        ],
+        templates: promptTemplateCatalog(),
+        prompts: promptRecords,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+function promptTemplateCatalog() {
+  return [
+    {
+      promptVersion: AGENTIC_RECOMMENDATION_PROMPT_VERSION,
+      scenario: "recommendation_investigation",
+      when: "Luna decides whether to recommend a semantic Shopify Action from Merchant Memory, bounded store evidence and retrieved Shopify reads.",
+      systemPrompt: buildRecommendationSystemPrompt(),
+      promptBodyShape: [
+        "promptVersion",
+        "iteration",
+        "merchantMemory",
+        "boundedStoreEvidence",
+        "searchableShopifyApiKnowledge",
+        "initiallyRetrievedShopifyTools",
+        "previousAttemptDiagnostics",
+        "toolResults",
+      ],
+    },
+    {
+      promptVersion: AGENTIC_ACTION_CHAT_PROMPT_VERSION,
+      scenario: "pre_acceptance_action_chat",
+      when: "The merchant chats on one proposed agentic_shopify Action before acceptance; Luna can inspect/update the semantic draft, run Shopify reads, retrieve more stubs, or accept on clear approval.",
+      systemPrompt: buildAgenticActionChatSystemPrompt(),
+      promptBodyShape: [
+        "promptVersion",
+        "iteration",
+        "merchantMessage",
+        "recentMessages",
+        "pendingClarification",
+        "action",
+        "tools",
+        "toolResults",
+      ],
+    },
+    {
+      promptVersion: AGENTIC_EXECUTION_PROMPT_VERSION,
+      scenario: "post_acceptance_execution",
+      when: "acceptedActionRevision exists and Luna executes the accepted semantic Action through generated Shopify operations, then verifies by reading Shopify state back.",
+      systemPrompt: buildExecutionSystemPrompt(),
+      promptBodyShape: [
+        "promptVersion",
+        "iteration",
+        "acceptedActionRevision",
+        "acceptedAction",
+        "initiallyRetrievedShopifyTools",
+        "toolResults",
+      ],
+    },
+  ];
+}
+
 function finish(exitCode) {
+  writePromptReport();
   const failed = stages.filter((stage) => stage.status === "FAIL");
   const blockedStages = stages.filter((stage) => stage.status === "BLOCKED");
   const status = failed.length ? "FAIL" : blockedStages.length ? "BLOCKED" : "PASS";

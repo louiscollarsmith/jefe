@@ -213,6 +213,14 @@ test("parses stacked constraints from one merchant message", () => {
   assert.equal(parsed[1].params.collectionTitle, "Summer Essentials");
 });
 
+test("parses out-of-stock exclusion as a minimum inventory constraint", () => {
+  const parsed = parseConstraintsFromMessage("Don’t include out of stock products.");
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].kind, CONSTRAINT_KIND.minInventory);
+  assert.equal(parsed[0].params.min, 0);
+  assert.equal(parsed[0].label, "Only include products with inventory > 0");
+});
+
 test("parsePlanRevision reads markdown, cover days, and product caps", () => {
   assert.deepEqual(parsePlanRevision("Make it 20% rather than 25%."), {
     markdownPercent: 20,

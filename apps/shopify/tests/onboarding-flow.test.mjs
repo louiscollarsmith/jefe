@@ -79,10 +79,12 @@ test("fast onboarding does not render dev-only stage jump controls", () => {
   assert.doesNotMatch(jefeStylesSource, /\.jf-dev-states/);
 });
 
-test("accepting the plan shows the home loading shell while opening Jefe", () => {
+test("opening the recommendation shows the home loading shell while opening Jefe", () => {
   assert.match(appIndexSource, /import \{ DailyHome, DailyHomeLoading \}/);
   assert.match(appIndexSource, /pendingDestination === "home"[\s\S]*<DailyHomeLoading storeName=\{data\.storeName\} \/>/);
-  assert.match(fastOnboardingSource, /Tracking\. Opening Jefe\./);
+  assert.match(fastOnboardingSource, /Opening Action Chat\./);
+  assert.match(fastOnboardingSource, /Action opened/);
+  assert.match(fastOnboardingSource, /Ready to discuss/);
   assert.match(fastOnboardingSource, /current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(appHomeSource, /export function AppHome13aLoading/);
   assert.match(appHomeSource, /Opening Jefe/);

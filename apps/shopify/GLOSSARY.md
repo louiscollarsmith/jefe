@@ -92,6 +92,7 @@ typed adapters write to Shopify or another external system.
 - **Focused action** — The one Merchant Action a conversation is currently working on. It is the only action mutation/update tools may target by default from that chat.
 - **Referenced action** — A Merchant Action added to a conversation as read-only context. Jefe may reason from it, but it does not become the chat's write target.
 - **Action chat** — A conversation whose `focusedActionId` points at one Merchant Action, so the merchant and Jefe can talk through that work without making other referenced actions mutable.
+- **Agentic Action Chat** — The pre-acceptance chat runtime for `agentic_shopify` Merchant Actions. Luna can inspect and revise the semantic Action draft, retrieve relevant generated Shopify operation stubs, run Shopify reads through the universal gateway, and accept the Action on clear merchant approval; Shopify writes still require the resulting accepted Action revision.
 - **Store updates** — Store-level signals, proposed work and recent action outcomes shown near chat but kept separate from the current transcript.
 - **Heads-up** — A live store signal Jefe thinks is worth knowing, such as inventory pressure or another standing condition.
 

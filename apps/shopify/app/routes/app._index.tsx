@@ -166,7 +166,6 @@ import {
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
 import { ensureAgenticRecommendationQueued } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
-import { acceptAndExecuteAgenticShopifyAction } from "../lib/shopify/agentic-runtime/execution-service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import {
   getHomeProposalGenerationState,
@@ -298,6 +297,7 @@ type FastOnboardingActionResult = {
   actionId?: string;
   actionRunId?: string;
   recommendationId?: string;
+  conversationId?: string;
   error?: string;
 };
 
@@ -374,37 +374,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     })) as FastOnboardingActionResult;
     if (!approval.ok) return approval;
     let handoff: FastOnboardingActionResult = approval;
-    if (approval.mode === "agentic_execute" && approval.actionId && approval.recommendationId) {
-      const executionResult = await acceptAndExecuteAgenticShopifyAction(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        shopDomain: session.shop,
-        actionId: approval.actionId,
-        actor: merchant.id,
-        scopes: splitScopes(session.scope),
-        loadOfflineToken: (_prisma: unknown, domain: string) => loadFreshOfflineToken(domain),
-        logger: baseLogger.child({ component: "agentic-onboarding-execution" }),
-      });
-      if (!executionResult.ok) {
-        return {
-          ok: false,
-          error: "I accepted the Action, but could not verify the Shopify outcome yet. Nothing outside the accepted Action was authorised.",
-        };
-      }
-      await prisma.merchantPlanRecommendation.update({
-        where: { id: approval.recommendationId },
-        data: {
-          reviewStatus: "accepted",
-          acceptedAt: new Date(),
-        },
-      });
-      handoff = await completeExecutedRecommendationHandoff(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        shopDomain: session.shop,
-        recommendationId: approval.recommendationId,
-      });
-    }
     if (approval.mode === "execute" && approval.actionRunId && approval.recommendationId) {
       const executionResult = await executeApprovedAction(
         prisma,
@@ -431,6 +400,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       handoffUrl: appPathFromSearch(new URL(request.url).search, {
         step: null,
         handoff: handoff.token,
+        conversation: handoff.conversationId ?? null,
       }),
     };
   }
@@ -743,6 +713,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       actionRunId,
       recommendationId,
       message: String(formData.get("message") ?? ""),
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {
@@ -975,6 +949,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       conversationId: String(formData.get("conversationId") ?? "") || null,
       focusedActionId: String(formData.get("focusedActionId") ?? "") || null,
       surface: "app",
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {
@@ -1003,6 +981,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shopId: shop.id,
       conversationId: String(formData.get("conversationId") ?? "") || null,
       surface: "app",
+      shopDomain: session.shop,
+      scopes: splitScopes(session.scope),
+      loadOfflineToken: (_prisma: unknown, domain: string) =>
+        loadFreshOfflineToken(domain),
       logger: actionLog,
     });
     if (!result.ok) {

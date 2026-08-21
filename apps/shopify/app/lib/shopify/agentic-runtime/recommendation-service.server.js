@@ -1,6 +1,6 @@
 // @ts-check
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createLlmProvider } from "../../llm/provider.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
@@ -13,7 +13,10 @@ import {
   PLAN_RUN_STATUS,
 } from "../../merchant-plan/constants.server.js";
 import { supersedeAllProposedRecommendations } from "../../merchant-plan/proposal-creation-invariant.server.js";
-import { enqueueBackfillJob } from "../../../services/shopify-backfill-status.server.js";
+import {
+  enqueueBackfillJob,
+  MERCHANT_BOOTSTRAP_JOB_TYPE,
+} from "../../../services/shopify-backfill-status.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { generateAgenticShopifyRecommendation } from "./recommendation-agent.server.js";
 import {
@@ -34,7 +37,30 @@ const MAX_AGENTIC_BELIEFS = 40;
  * @param {{ merchantId: string; shopId: string; runAfter?: Date; resetAttempts?: boolean }} input
  */
 export async function ensureAgenticRecommendationQueued(prisma, input) {
-  const prepared = await prepareAgenticRecommendationRun(prisma, input);
+  const previousRun = input.resetAttempts
+    ? await findLatestAgenticRecommendationRun(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        statuses: [
+          PLAN_RUN_STATUS.completed,
+          PLAN_RUN_STATUS.failed,
+          PLAN_RUN_STATUS.modelDisabled,
+          PLAN_RUN_STATUS.insufficientData,
+          "no_actionable_opportunity",
+        ],
+      })
+    : null;
+  const [onboardingEpoch, attemptNumber] = await Promise.all([
+    loadOnboardingEpoch(prisma, input),
+    nextAgenticRecommendationAttemptNumber(prisma, input),
+  ]);
+  const prepared = await prepareAgenticRecommendationRun(prisma, {
+    ...input,
+    forceFreshRun: input.resetAttempts === true && Boolean(previousRun),
+    retryOfRunId: previousRun?.id ?? null,
+    onboardingEpoch,
+    attemptNumber,
+  });
   if (prepared.status !== "ready") return prepared;
   if (!prepared.run) throw new Error("Agentic recommendation run was not prepared.");
   const run = prepared.run;
@@ -76,8 +102,12 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
     resetAttempts: input.resetAttempts,
     payload: {
       runId: run.id,
-      snapshotHash: prepared.snapshot.snapshotHash,
-      reason: "merchant_goals_ready",
+      snapshotHash: run.snapshotHash,
+      baseSnapshotHash: prepared.snapshot.snapshotHash,
+      retryOfRunId: previousRun?.id ?? null,
+      onboardingEpoch,
+      attemptNumber,
+      reason: previousRun ? "merchant_plan_retry" : "merchant_goals_ready",
     },
   });
   return { status: "queued", run: queuedRun, snapshot: prepared.snapshot };
@@ -159,6 +189,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       shopDomain: input.shopDomain,
       grantedScopes: input.scopes,
       snapshot: prepared.snapshot.snapshot,
+      previousAttempt: prepared.previousAttempt ?? null,
       logger,
     });
     if (result.ok && result.status === "RECOMMEND_ACTION") {
@@ -189,17 +220,22 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
     }
     const terminalStatus = result.status === "NO_ACTIONABLE_OPPORTUNITY"
       ? "no_actionable_opportunity"
-      : PLAN_RUN_STATUS.failed;
+      : result.status === "INSUFFICIENT_EVIDENCE"
+        ? PLAN_RUN_STATUS.insufficientData
+        : PLAN_RUN_STATUS.failed;
+    const safeErrorCode = agenticRecommendationSafeErrorCode(result.status);
+    const runMetadata = agenticRunMetadata(run);
     await prisma.merchantPlanRun.update({
       where: { id: run.id },
       data: {
         status: terminalStatus,
         completedAt: terminalStatus === "no_actionable_opportunity" ? new Date() : null,
-        failedAt: terminalStatus === PLAN_RUN_STATUS.failed ? new Date() : null,
-        safeErrorCode: result.status === "NO_ACTIONABLE_OPPORTUNITY" ? null : "agentic_recommendation_blocked",
+        failedAt: terminalStatus === PLAN_RUN_STATUS.failed || terminalStatus === PLAN_RUN_STATUS.insufficientData ? new Date() : null,
+        safeErrorCode,
         lastError: result.blocker ?? null,
         result: {
           runtime: "agentic_shopify",
+          ...runMetadata,
           status: result.status,
           blocker: result.blocker ?? null,
           diagnostics: result.diagnostics ?? {},
@@ -248,10 +284,47 @@ export async function markAgenticRecommendationJobFailed(prisma, input) {
   });
 }
 
-/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
+/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; forceFreshRun?: boolean; retryOfRunId?: string | null; onboardingEpoch?: string | null; attemptNumber?: number | null }} input */
 async function prepareAgenticRecommendationRun(prisma, input) {
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
   if (!snapshot.hasGoals) return { status: "missing_completed_goals", snapshot };
+  if (input.forceFreshRun) {
+    const run = await prisma.merchantPlanRun.create({
+      data: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: PLAN_RUN_STATUS.queued,
+        sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+        snapshotVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
+        snapshotHash: retrySnapshotHash(snapshot.snapshotHash),
+        relevantBeliefIds: snapshot.beliefIds,
+        insightRunId: snapshot.insightRunId,
+        goalRunId: snapshot.goalRunId,
+        promptVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
+        schemaVersion: AGENTIC_RECOMMENDATION_SCHEMA_VERSION,
+        result: {
+          runtime: "agentic_shopify",
+          status: "queued",
+          candidateCount: snapshot.beliefIds.length,
+          retryOfRunId: input.retryOfRunId ?? null,
+          baseSnapshotHash: snapshot.snapshotHash,
+          onboardingEpoch: input.onboardingEpoch ?? null,
+          attemptNumber: input.attemptNumber ?? null,
+          attemptReason: "explicit_retry",
+        },
+      },
+    });
+    return {
+      status: "ready",
+      run,
+      snapshot,
+      previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        runId: input.retryOfRunId,
+      }),
+    };
+  }
   const run = await prisma.merchantPlanRun.upsert({
     where: {
       shopId_snapshotHash_promptVersion_schemaVersion: {
@@ -277,6 +350,8 @@ async function prepareAgenticRecommendationRun(prisma, input) {
         runtime: "agentic_shopify",
         status: "queued",
         candidateCount: snapshot.beliefIds.length,
+        onboardingEpoch: input.onboardingEpoch ?? null,
+        attemptNumber: input.attemptNumber ?? null,
       },
     },
     update: {
@@ -300,8 +375,20 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
   });
   if (!run) return prepareAgenticRecommendationRun(prisma, input);
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
-  if (run.snapshotHash !== snapshot.snapshotHash) return prepareAgenticRecommendationRun(prisma, input);
-  return { status: "ready", run, snapshot };
+  const result = jsonObject(run.result);
+  if (run.snapshotHash !== snapshot.snapshotHash && result.baseSnapshotHash !== snapshot.snapshotHash) {
+    return prepareAgenticRecommendationRun(prisma, input);
+  }
+  return {
+    status: "ready",
+    run,
+    snapshot,
+    previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      runId: typeof result.retryOfRunId === "string" ? result.retryOfRunId : null,
+    }),
+  };
 }
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
@@ -433,6 +520,7 @@ async function persistAgenticRecommendation(prisma, input) {
       shopId: input.shopId,
     });
     const recommendation = input.recommendation;
+    const runMetadata = agenticRunMetadata(input.run);
     const semanticAction = semanticActionFromRecommendation(recommendation);
     const persistedRecommendation = await tx.merchantPlanRecommendation.upsert({
       where: { runId: input.run.id },
@@ -564,6 +652,7 @@ async function persistAgenticRecommendation(prisma, input) {
         sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
         result: {
           runtime: "agentic_shopify",
+          ...runMetadata,
           status: "RECOMMEND_ACTION",
           recommendationId: persistedRecommendation.id,
           actionId: action.id,
@@ -575,6 +664,139 @@ async function persistAgenticRecommendation(prisma, input) {
     });
     return { recommendation: persistedRecommendation, action };
   });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; statuses?: string[] }} input
+ */
+async function findLatestAgenticRecommendationRun(prisma, input) {
+  return prisma.merchantPlanRun.findFirst({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      ...(Array.isArray(input.statuses) && input.statuses.length
+        ? { status: { in: input.statuses } }
+        : {}),
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ shopId: string }} input
+ */
+async function loadOnboardingEpoch(prisma, input) {
+  if (typeof prisma.backfillJob?.findUnique !== "function") return null;
+  const bootstrap = await prisma.backfillJob.findUnique({
+    where: {
+      shopId_jobType: {
+        shopId: input.shopId,
+        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
+      },
+    },
+    select: { payloadJson: true },
+  });
+  const payload = jsonObject(bootstrap?.payloadJson);
+  return typeof payload.onboardingEpoch === "string"
+    ? payload.onboardingEpoch
+    : null;
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string }} input
+ */
+async function nextAgenticRecommendationAttemptNumber(prisma, input) {
+  if (typeof prisma.merchantPlanRun?.count !== "function") return null;
+  const priorAttempts = await prisma.merchantPlanRun.count({
+    where: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+    },
+  });
+  return priorAttempts + 1;
+}
+
+/** @param {any} run */
+function agenticRunMetadata(run) {
+  const result = jsonObject(run?.result);
+  return {
+    retryOfRunId: typeof result.retryOfRunId === "string" ? result.retryOfRunId : null,
+    baseSnapshotHash: typeof result.baseSnapshotHash === "string" ? result.baseSnapshotHash : null,
+    onboardingEpoch: typeof result.onboardingEpoch === "string" ? result.onboardingEpoch : null,
+    attemptNumber: Number.isFinite(result.attemptNumber) ? Number(result.attemptNumber) : null,
+    attemptReason: typeof result.attemptReason === "string" ? result.attemptReason : null,
+  };
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ merchantId: string; shopId: string; runId?: string | null }} input
+ */
+async function loadPreviousAttemptDiagnostics(prisma, input) {
+  if (!input.runId) return null;
+  const run = await prisma.merchantPlanRun.findFirst({
+    where: {
+      id: input.runId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+  });
+  if (!run) return null;
+  const result = jsonObject(run.result);
+  const diagnostics = jsonObject(result.diagnostics);
+  const trace = jsonObject(result.trace);
+  const toolResults = Array.isArray(trace.toolResults) ? trace.toolResults : [];
+  const turns = Array.isArray(trace.turns) ? trace.turns : [];
+  return {
+    runId: run.id,
+    status: run.status,
+    resultStatus: typeof result.status === "string" ? result.status : null,
+    safeErrorCode: run.safeErrorCode ?? null,
+    blocker: safeText(result.blocker ?? run.lastError ?? null, 300),
+    validationErrors: toolResults
+      .filter((row) => row?.tool === "recommendation_validation" && row?.ok === false)
+      .map((row) => ({
+        code: safeText(row?.error?.code ?? "VALIDATION_FAILED", 120),
+        message: safeText(row?.message ?? row?.error?.message, 300),
+      }))
+      .slice(-6),
+    retrievedOperations: uniqueStrings(diagnostics.retrievedOperations).slice(0, 12),
+    shopifyReads: Array.isArray(diagnostics.shopifyReads)
+      ? diagnostics.shopifyReads
+          .map((row) => ({
+            operation: safeText(row?.operation, 120),
+            ok: row?.ok === true,
+            status: safeText(row?.status, 80),
+          }))
+          .slice(-12)
+      : [],
+    feasibleInterventions: uniqueStrings(diagnostics.feasibleInterventions).slice(-8),
+    finalTurn: turns.length
+      ? {
+          status: safeText(turns[turns.length - 1]?.status, 80),
+          toolCallCount: Number(turns[turns.length - 1]?.toolCallCount ?? 0),
+        }
+      : null,
+  };
+}
+
+/** @param {string} baseSnapshotHash */
+function retrySnapshotHash(baseSnapshotHash) {
+  return hashJson({ baseSnapshotHash, retryAttemptId: randomUUID() });
+}
+
+/** @param {unknown} status */
+function agenticRecommendationSafeErrorCode(status) {
+  if (status === "NO_ACTIONABLE_OPPORTUNITY") return null;
+  if (status === "VALIDATION_FAILED") return "agentic_recommendation_validation_failed";
+  if (status === "INVESTIGATION_FAILED") return "agentic_recommendation_investigation_failed";
+  if (status === "INSUFFICIENT_EVIDENCE") return "agentic_recommendation_insufficient_evidence";
+  return "agentic_recommendation_blocked";
 }
 
 /** @param {any} row */
@@ -633,6 +855,18 @@ function safeTrace(value) {
 /** @param {unknown} value @param {number} [max] */
 function safeText(value, max = 240) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/** @param {unknown} value */
+function jsonObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, any>} */ (value)
+    : {};
+}
+
+/** @param {unknown} value */
+function uniqueStrings(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((item) => safeText(item, 220)).filter(Boolean))];
 }
 
 /** @param {unknown} value */

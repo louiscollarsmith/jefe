@@ -18,8 +18,10 @@ import { runAgenticShopifyExecution } from "./execution-agent.server.js";
  *   actionId: string;
  *   actor?: string | null;
  *   scopes?: string[];
+ *   client?: { request: (document: string, variables?: Record<string, unknown>) => Promise<unknown> } | null;
  *   fetchImpl?: typeof fetch;
  *   loadOfflineToken?: (prisma: any, shopDomain: string) => Promise<string>;
+ *   provider?: { enabled?: boolean; generateStructuredJson?: Function; model?: string; provider?: string } | null;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  * }} input
  */
@@ -42,26 +44,31 @@ export async function acceptAndExecuteAgenticShopifyAction(prisma, input) {
   if (!accepted.ok) return accepted;
   const accessToken = await input.loadOfflineToken?.(prisma, input.shopDomain);
   if (!accessToken) return { ok: false, reason: "missing_shopify_access_token" };
-  const provider = createLlmProvider({
-    logger: input.logger,
-    usage: {
-      prisma,
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      feature: "agentic_shopify_execution",
-      runType: "MerchantAction",
-      runId: action.id,
-    },
-  });
-  const execution = await runAgenticShopifyExecution({
-    provider,
-    prisma,
-    client: new ShopifyAdminGraphqlClient({
+  const provider =
+    input.provider ??
+    createLlmProvider({
+      logger: input.logger,
+      usage: {
+        prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        feature: "agentic_shopify_execution",
+        runType: "MerchantAction",
+        runId: action.id,
+      },
+    });
+  const client =
+    input.client ??
+    new ShopifyAdminGraphqlClient({
       shopDomain: input.shopDomain,
       accessToken,
       fetchImpl: input.fetchImpl,
       logger: input.logger,
-    }),
+    });
+  const execution = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client,
     merchantId: input.merchantId,
     shopId: input.shopId,
     shopDomain: input.shopDomain,

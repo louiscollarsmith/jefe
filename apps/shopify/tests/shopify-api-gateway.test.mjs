@@ -68,6 +68,52 @@ test("gateway permits reads without accepted Action authorization and ledgers th
   assert.equal(prisma.calls.at(-1).data.gatewayDecision, "provider_result");
 });
 
+test("gateway authorizes products read from live Shopify scopes when local scope snapshot is stale", async () => {
+  const prisma = fakePrisma();
+  const client = fakeClient(
+    { products: { edges: [], pageInfo: { hasNextPage: false } } },
+    { grantedScopes: ["read_products", "write_products"] },
+  );
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, client),
+    operation: "products",
+    variables: { first: 10 },
+    grantedScopes: ["write_products"],
+    purpose: "Investigate current products from Shopify despite stale local scope metadata.",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.ok);
+  assert.equal(
+    client.requests.filter((request) => request.document.includes("currentAppInstallation")).length,
+    1,
+  );
+  assert.equal(prisma.calls.at(-1).data.gatewayDecision, "provider_result");
+});
+
+test("gateway denies required scope when live Shopify installation does not grant it", async () => {
+  const prisma = fakePrisma();
+  const client = fakeClient(
+    { products: { edges: [], pageInfo: { hasNextPage: false } } },
+    { grantedScopes: ["write_products"] },
+  );
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, client),
+    operation: "products",
+    variables: { first: 10 },
+    grantedScopes: ["read_products", "write_products"],
+    purpose: "This must use Shopify's actual installed authorization, not local metadata.",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsAuthorization);
+  assert.deepEqual(result.responseSummary.missingScopes, ["read_products"]);
+  assert.equal(
+    client.requests.filter((request) => !request.document.includes("currentAppInstallation")).length,
+    0,
+  );
+});
+
 test("gateway denies mutations before Action revision acceptance", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction() });
   const result = await executeShopifyOperation({
@@ -111,7 +157,7 @@ test("gateway denies stale accepted Action revisions", async () => {
 test("gateway checks actual granted Shopify scopes", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction() });
   const result = await executeShopifyOperation({
-    ...baseInput(prisma, fakeClient({})),
+    ...baseInput(prisma, fakeClient({}, { grantedScopes: ["read_products"] })),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
@@ -195,7 +241,7 @@ test("gateway replays duplicate idempotent writes without a second provider call
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   assert.equal(second.status, SHOPIFY_GATEWAY_STATUS.idempotentReplay);
-  assert.equal(client.requests.length, 1);
+  assert.equal(operationRequests(client).length, 1);
   assert.equal(prisma.calls.at(-1).data.gatewayDecision, "idempotent_replay");
 });
 
@@ -236,7 +282,7 @@ test("gateway blocks idempotent retries when the previous write result is unknow
 
   assert.equal(result.ok, false);
   assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsReconciliation);
-  assert.equal(client.requests.length, 0);
+  assert.equal(operationRequests(client).length, 0);
   assert.equal(prisma.calls.at(-1).data.gatewayDecision, "idempotent_write_result_unknown");
 });
 
@@ -320,12 +366,24 @@ function hashForTest(value) {
   return createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
 
-function fakeClient(response) {
+function fakeClient(response, options = {}) {
+  const grantedScopes = options.grantedScopes ?? ["read_products", "write_products"];
   return {
     requests: [],
     async request(document, variables) {
       this.requests.push({ document, variables });
+      if (document.includes("currentAppInstallation")) {
+        return {
+          currentAppInstallation: {
+            accessScopes: grantedScopes.map((handle) => ({ handle })),
+          },
+        };
+      }
       return response;
     },
   };
+}
+
+function operationRequests(client) {
+  return client.requests.filter((request) => !request.document.includes("currentAppInstallation"));
 }

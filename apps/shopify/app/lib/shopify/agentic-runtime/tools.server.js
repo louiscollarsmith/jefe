@@ -63,6 +63,7 @@ export const SHOPIFY_AGENT_TOOL_CALL_SCHEMA = {
  *   grantedScopes?: string[];
  *   catalog?: import("../api/catalog.server.js").ShopifyApiCatalog;
  *   recommendationMode?: boolean;
+ *   preAcceptanceMode?: boolean;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  * }} ctx
  * @param {{ tool: string; arguments?: Record<string, any> | null }} call
@@ -102,7 +103,16 @@ export async function runShopifyAgentTool(ctx, call) {
         "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance.",
       );
     }
-    if (!ctx.recommendationMode && !operationLooksRead(operation) && typeof args.idempotencyKey !== "string") {
+    const preAcceptanceDeniedWriteKey =
+      ctx.preAcceptanceMode && !operationLooksRead(operation)
+        ? `preacceptance-denied:${operation}`
+        : null;
+    if (
+      !ctx.recommendationMode &&
+      !ctx.preAcceptanceMode &&
+      !operationLooksRead(operation) &&
+      typeof args.idempotencyKey !== "string"
+    ) {
       return toolFail(
         call.tool,
         "MISSING_IDEMPOTENCY_KEY",
@@ -122,7 +132,10 @@ export async function runShopifyAgentTool(ctx, call) {
       variables: asVariables(args.variables),
       purpose: String(args.purpose ?? args.whyRequiredForAction ?? ""),
       expectedEffect: String(args.expectedEffect ?? ""),
-      idempotencyKey: typeof args.idempotencyKey === "string" ? args.idempotencyKey : null,
+      idempotencyKey:
+        typeof args.idempotencyKey === "string"
+          ? args.idempotencyKey
+          : preAcceptanceDeniedWriteKey,
       grantedScopes: ctx.grantedScopes,
       catalog: ctx.catalog,
       logger: ctx.logger,
@@ -190,8 +203,9 @@ function compactJson(value, depth = 0) {
   if (typeof value === "string") return value.slice(0, 500);
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) {
-    /** @type {unknown[]} */
-    const items = value.slice(0, depth >= 3 ? 4 : 12).map((item) => compactJson(item, depth + 1));
+    /** @type {number} */
+    const limit = isShopifyConnectionEdges(value) ? 50 : depth >= 3 ? 4 : 12;
+    const items = value.slice(0, limit).map((item) => compactJson(item, depth + 1));
     return value.length > items.length
       ? [...items, { omittedItems: value.length - items.length }]
       : items;
@@ -202,6 +216,16 @@ function compactJson(value, depth = 0) {
   const compact = Object.fromEntries(entries.map(([key, item]) => [key, compactJson(item, depth + 1)]));
   const omitted = Object.keys(object).length - entries.length;
   return omitted > 0 ? { ...compact, omittedKeys: omitted } : compact;
+}
+
+/** @param {unknown[]} value */
+function isShopifyConnectionEdges(value) {
+  return value.some(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      "node" in /** @type {Record<string, unknown>} */ (item),
+  );
 }
 
 /**

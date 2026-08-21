@@ -69,6 +69,9 @@ const RESTOCK_EVIDENCE_REFS = new Set(["assist:inventory_review"]);
 export function buildActionWorkspace(action, projection = {}) {
   const existing = normalizeWorkspace(action?.progress?.workspace);
   const kind = actionKind(action);
+  if (kind === "agentic_shopify") {
+    return buildAgenticShopifyWorkspace(action, projection, existing);
+  }
   const steps = prepareWorkflowStepsForWorkspaceV2(workflowSteps(action), {
     title: action?.title,
     summary: action?.summary,
@@ -245,6 +248,26 @@ export function resolveWorkspaceFocus(workspace, action = {}) {
       headline: safeText(running.title, 160) || "Jefe is working",
       reason: running.description || "Jefe is working on this now.",
     });
+  }
+
+  if (
+    String(workspace?.kind ?? "") === "agentic_shopify" &&
+    !acceptedAgenticRevision(action)
+  ) {
+    const first = items.find((item) => item.showInPlan !== false) ?? null;
+    return {
+      kind: WORKSPACE_FOCUS_KIND.onTrack,
+      priority: 45,
+      eyebrow: "Ready to discuss",
+      headline: safeText(action?.title, 160) || "Action ready to discuss",
+      reason:
+        safeText(workspace?.sourceRecommendation?.whyThisAction, 240) ||
+        safeText(workspace?.goal, 240) ||
+        "Jefe has opened this proposed Action for discussion before acceptance.",
+      itemId: first?.id ?? null,
+      stepId: first?.stepId ?? null,
+      itemKind: first?.kind ?? null,
+    };
   }
 
   const waiting = items.find(
@@ -554,7 +577,10 @@ function refreshWorkspaceItem(item, input) {
     ...item,
     state,
     workState: workState ?? item.workState ?? null,
-    statusLabel: stateLabel({ ...item, state }),
+    statusLabel:
+      state === "planned" && item.statusLabel
+        ? item.statusLabel
+        : stateLabel({ ...item, state }),
     artifact,
     summary: artifact.summary ?? item.summary ?? null,
     sourceInputHash: artifact.inputHash ?? null,
@@ -643,6 +669,13 @@ function artifactIndexFromItems(items, projectedArtifacts) {
 function resolveWorkspaceActionState(workspace, action) {
   /** @type {WorkspaceItem[]} */
   const items = Array.isArray(workspace?.items) ? workspace.items : [];
+  if (
+    String(workspace?.kind ?? "") === "agentic_shopify" &&
+    !acceptedAgenticRevision(action) &&
+    String(action?.status ?? "") !== "completed"
+  ) {
+    return "ready_to_discuss";
+  }
   if (String(action?.status ?? "") === "completed") return "completed";
   if (items.some((item) => ["failed", "needs_attention"].includes(String(item.state ?? ""))))
     return "needs_attention";
@@ -698,6 +731,7 @@ function stateLabel(item) {
     stale: "Needs update",
     not_created: "Not created",
     ready: "Ready",
+    planned: "Planned",
     sent: "Sent",
     running: "Running",
     queued: "Queued",
@@ -737,6 +771,7 @@ function workflowSteps(action) {
 
 /** @param {any} action */
 function actionKind(action) {
+  if (isAgenticShopifyActionLike(action)) return "agentic_shopify";
   const type = String(action?.actionType ?? "");
   if (type === "price_markdown") return "markdown";
   if (type === "listing_copy") return "listing_copy";
@@ -751,6 +786,290 @@ function actionKind(action) {
     .toLowerCase();
   if (isRestockText(haystack)) return "restock";
   return "generic";
+}
+
+/**
+ * @param {any} action
+ * @param {{ work?: any[]; artifacts?: any[]; currentChangeSet?: any | null }} projection
+ * @param {any} existing
+ */
+function buildAgenticShopifyWorkspace(action, projection, existing) {
+  const semanticAction = semanticActionForAction(action);
+  const source = jsonObject(action?.sourceRecommendation);
+  const items = agenticWorkspaceItems(action, semanticAction, source);
+  const workspace = {
+    ...(existing ?? {}),
+    version: ACTION_WORKSPACE_VERSION,
+    schemaVersion: 1,
+    source: "agentic_semantic_action",
+    kind: "agentic_shopify",
+    runtime: "shopify_admin_api",
+    goal:
+      safeText(semanticAction?.outcome, 240) ||
+      safeText(action?.title, 180) ||
+      "Carry out this Shopify action.",
+    semanticAction,
+    sourceRecommendation: {
+      id: action?.sourceRecommendationId ?? source.id ?? null,
+      title: safeText(source.title, 180) || safeText(action?.title, 180) || null,
+      whyThisAction: safeText(source.whyThisAction ?? semanticAction?.whyThisAction, 700) || null,
+      whyNow: safeText(source.whyNow ?? semanticAction?.whyNow, 500) || null,
+      successSignal: jsonObject(source.successSignal),
+    },
+    candidateScope: semanticScopeSnapshot(semanticAction),
+    constraints: semanticConstraints(semanticAction),
+    materialExpectedEffects: materialEffectRows(semanticAction),
+    items: mergeWorkspaceItems(items, existing?.items ?? []),
+    artifacts: existing?.artifacts ?? [],
+    currentFocus: null,
+    actionState: "ready_to_discuss",
+    updatedAt: new Date().toISOString(),
+  };
+  return refreshWorkspace(workspace, action, projection);
+}
+
+/**
+ * @param {any} action
+ * @param {any} semanticAction
+ * @param {any} source
+ * @returns {WorkspaceItem[]}
+ */
+function agenticWorkspaceItems(action, semanticAction, source) {
+  const effects = materialEffectRows(semanticAction);
+  const scope = semanticScopeSnapshot(semanticAction);
+  const constraints = semanticConstraints(semanticAction);
+  const evidenceCount =
+    countArray(semanticAction?.supportingBeliefIds) +
+    countArray(semanticAction?.supportingInsightIds) +
+    countArray(source?.supportingBeliefIds) +
+    countArray(source?.supportingInsightIds);
+  const items = [
+    {
+      id: "understand_recommendation",
+      semanticKey: "understand_recommendation",
+      title: "Review what Jefe found",
+      description:
+        safeText(semanticAction?.whyThisAction ?? source?.whyThisAction, 260) ||
+        safeText(action?.summary ?? source?.summary, 260) ||
+        "Review the evidence behind this recommendation.",
+      kind: WORKSPACE_ITEM_KIND.evidence,
+      state: "planned",
+      statusLabel: "Ready to discuss",
+      showInPlan: true,
+      orderIndex: 0,
+      artifact: {
+        recommendationId: action?.sourceRecommendationId ?? source?.id ?? null,
+        evidenceCount,
+      },
+    },
+    {
+      id: "confirm_candidate_scope",
+      semanticKey: "confirm_candidate_scope",
+      title: "Confirm the candidate scope",
+      description:
+        scope.summary ||
+        "Confirm the products, collections or store resources this Action may affect.",
+      kind: WORKSPACE_ITEM_KIND.decision,
+      state: "planned",
+      statusLabel: "Known candidate scope",
+      showInPlan: true,
+      orderIndex: 1,
+      artifact: scope,
+    },
+    {
+      id: "agree_constraints",
+      semanticKey: "agree_constraints",
+      title: "Agree constraints",
+      description:
+        constraints.length > 0
+          ? constraints.map((row) => row.label).join("; ").slice(0, 260)
+          : "Add or change any limits before Jefe executes.",
+      kind: WORKSPACE_ITEM_KIND.decision,
+      state: "planned",
+      statusLabel: "Editable",
+      showInPlan: true,
+      orderIndex: 2,
+      artifact: { constraints },
+    },
+    {
+      id: "execute_and_verify_outcome",
+      semanticKey: "execute_and_verify_outcome",
+      title: "Execute and verify the outcome",
+      description:
+        effects.length > 0
+          ? effects.map((row) => row.label).join("; ").slice(0, 260)
+          : safeText(semanticAction?.verificationPlan, 260) ||
+            "After acceptance, Luna will choose Shopify reads and writes, then read Shopify back to verify the outcome.",
+      kind: WORKSPACE_ITEM_KIND.execution,
+      state: acceptedAgenticRevision(action) ? "ready" : "planned",
+      statusLabel: acceptedAgenticRevision(action) ? "Ready" : "After acceptance",
+      showInPlan: true,
+      orderIndex: 3,
+      artifact: {
+        materialExpectedEffects: effects,
+        verificationPlan: semanticAction?.verificationPlan ?? null,
+      },
+    },
+  ];
+  return items;
+}
+
+/** @param {any} action */
+function isAgenticShopifyActionLike(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const progressAgentic = jsonObject(progress.agentic);
+  const planAgentic = jsonObject(plan.agentic);
+  return (
+    progressAgentic.runtime === "shopify_admin_api" ||
+    planAgentic.runtime === "shopify_admin_api" ||
+    Boolean(progressAgentic.semanticAction) ||
+    Boolean(planAgentic.semanticAction)
+  );
+}
+
+/** @param {any} action */
+function acceptedAgenticRevision(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  return (
+    safeText(jsonObject(progress.agentic).acceptedActionRevision, 120) ||
+    safeText(jsonObject(plan.agentic).acceptedActionRevision, 120)
+  );
+}
+
+/** @param {any} action */
+function semanticActionForAction(action) {
+  const progress = jsonObject(action?.progress);
+  const plan = jsonObject(action?.plan);
+  const source = jsonObject(action?.sourceRecommendation);
+  const signal = jsonObject(source.successSignal);
+  return {
+    ...jsonObject(signal.semanticAction),
+    ...jsonObject(jsonObject(plan.agentic).semanticAction),
+    ...jsonObject(jsonObject(progress.agentic).semanticAction),
+    title: safeText(
+      jsonObject(jsonObject(progress.agentic).semanticAction).title ??
+        jsonObject(jsonObject(plan.agentic).semanticAction).title ??
+        action?.title ??
+        source.title,
+      180,
+    ),
+    summary:
+      safeText(
+        jsonObject(jsonObject(progress.agentic).semanticAction).summary ??
+          jsonObject(jsonObject(plan.agentic).semanticAction).summary ??
+          action?.summary ??
+          source.summary,
+        700,
+      ) || null,
+    outcome:
+      safeText(
+        jsonObject(jsonObject(progress.agentic).semanticAction).outcome ??
+          jsonObject(jsonObject(plan.agentic).semanticAction).outcome ??
+          signal.semanticOutcome ??
+          source.startToday ??
+          action?.title,
+        320,
+      ) || null,
+    whyThisAction:
+      safeText(
+        jsonObject(jsonObject(progress.agentic).semanticAction).whyThisAction ??
+          jsonObject(jsonObject(plan.agentic).semanticAction).whyThisAction ??
+          source.whyThisAction,
+        700,
+      ) || null,
+    whyNow:
+      safeText(
+        jsonObject(jsonObject(progress.agentic).semanticAction).whyNow ??
+          jsonObject(jsonObject(plan.agentic).semanticAction).whyNow ??
+          source.whyNow,
+        500,
+      ) || null,
+    scope:
+      jsonObject(jsonObject(progress.agentic).semanticAction).scope ??
+      jsonObject(jsonObject(plan.agentic).semanticAction).scope ??
+      jsonObject(signal.scope),
+    constraints:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).constraints) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).constraints) ||
+      arrayValue(signal.constraints) ||
+      [],
+    materialExpectedEffects:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).materialExpectedEffects) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).materialExpectedEffects) ||
+      arrayValue(signal.materialExpectedEffects) ||
+      [],
+    verificationPlan:
+      jsonObject(jsonObject(progress.agentic).semanticAction).verificationPlan ??
+      jsonObject(jsonObject(plan.agentic).semanticAction).verificationPlan ??
+      signal.description ??
+      source.expectedBenefit ??
+      null,
+    supportingBeliefIds:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).supportingBeliefIds) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).supportingBeliefIds) ||
+      arrayValue(source.supportingBeliefIds) ||
+      [],
+    supportingInsightIds:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).supportingInsightIds) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).supportingInsightIds) ||
+      arrayValue(source.supportingInsightIds) ||
+      [],
+    revision:
+      safeText(jsonObject(progress.agentic).currentActionRevision, 140) ||
+      safeText(jsonObject(plan.agentic).currentActionRevision, 140) ||
+      null,
+  };
+}
+
+/** @param {any} semanticAction */
+function semanticScopeSnapshot(semanticAction) {
+  const scope = semanticAction?.scope;
+  const rows = arrayValue(scope?.items) || arrayValue(scope?.products) || [];
+  const items = rows
+    .map((row) => ({
+      title: safeText(row?.title ?? row?.productTitle ?? row?.name, 180),
+      productId: safeText(row?.productId ?? row?.id, 120) || null,
+      variantId: safeText(row?.variantId, 120) || null,
+      reason: safeText(row?.reason ?? row?.because, 240) || null,
+    }))
+    .filter((row) => row.title || row.productId || row.variantId);
+  const summary =
+    safeText(scope?.summary ?? scope?.description ?? scope?.candidateScope, 420) ||
+    (typeof scope === "string" ? safeText(scope, 420) : "");
+  return {
+    status: "known_candidate_scope",
+    summary: summary || null,
+    items,
+    candidateCount: Number.isFinite(Number(scope?.candidateCount))
+      ? Number(scope.candidateCount)
+      : items.length,
+    finalAccepted: false,
+    raw: jsonObject(scope),
+  };
+}
+
+/** @param {any} semanticAction */
+function semanticConstraints(semanticAction) {
+  return (arrayValue(semanticAction?.constraints) || [])
+    .map((row) => ({
+      kind: safeText(row?.kind ?? row?.type, 80) || "semantic",
+      label: safeText(row?.label ?? row?.description ?? row?.summary ?? row, 220),
+      params: jsonObject(row?.params),
+    }))
+    .filter((row) => row.label);
+}
+
+/** @param {any} semanticAction */
+function materialEffectRows(semanticAction) {
+  return (arrayValue(semanticAction?.materialExpectedEffects) || [])
+    .map((row) => ({
+      label: safeText(row?.label ?? row?.description ?? row?.summary ?? row, 260),
+      operation: safeText(row?.operation ?? row?.shopifyOperation, 120) || null,
+      resource: safeText(row?.resource ?? row?.resourceType, 120) || null,
+    }))
+    .filter((row) => row.label);
 }
 
 /** @param {string} text */
@@ -825,4 +1144,14 @@ function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, any>} */ (value)
     : {};
+}
+
+/** @param {unknown} value */
+function arrayValue(value) {
+  return Array.isArray(value) ? value : null;
+}
+
+/** @param {unknown} value */
+function countArray(value) {
+  return Array.isArray(value) ? value.length : 0;
 }

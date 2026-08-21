@@ -51,6 +51,22 @@ test("deriveMerchantActionStatus keeps the new lifecycle separate from source st
     }),
     "completed",
   );
+  assert.equal(
+    deriveMerchantActionStatus({
+      action: {
+        status: "proposed",
+        progress: {
+          agentic: {
+            runtime: "shopify_admin_api",
+            currentActionRevision: "sar_123",
+          },
+        },
+      },
+      recommendation: { reviewStatus: "accepted" },
+      execution: { status: "approved" },
+    }),
+    "proposed",
+  );
 });
 
 test("deriveMerchantActionStatus does not surface completed when workflow steps remain", () => {
