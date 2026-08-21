@@ -316,6 +316,63 @@ test("agentic Shopify Actions project semantic context as ready to discuss", () 
   assert.equal(workspace.materialExpectedEffects.length, 2);
 });
 
+test("completed agentic Shopify Actions render semantic milestones as historical plan items", () => {
+  const action = {
+    id: "action-agentic-completed",
+    title: "Create an in-stock Cases & Bundles collection",
+    summary: "Make larger-format purchase easier to discover.",
+    status: "completed",
+    sourceRecommendationId: "rec-agentic",
+    plan: {
+      agentic: {
+        runtime: "shopify_admin_api",
+        currentActionRevision: "sar_done",
+        semanticAction: {
+          outcome: "Create a storefront collection for in-stock bundles.",
+          scope: {
+            summary: "Borderlands Discovery Four is the only eligible product.",
+            items: [
+              {
+                title: "Borderlands Discovery Four",
+                productId: "gid://shopify/Product/1",
+              },
+            ],
+          },
+          constraints: [{ kind: "inventory", label: "Only include products with 3+ available" }],
+          materialExpectedEffects: [{ label: "Create one Shopify collection." }],
+          verificationPlan: "Read Shopify back and confirm collection membership.",
+        },
+      },
+    },
+    progress: {
+      agentic: {
+        runtime: "shopify_admin_api",
+        currentActionRevision: "sar_done",
+        acceptedActionRevision: "sar_done",
+      },
+    },
+    outcome: {
+      verification: { verified: true },
+      progressSummary: "Created and verified the collection.",
+    },
+  };
+
+  const workspace = buildActionWorkspace(action);
+  const rows = workspacePlanItems(workspace);
+
+  assert.equal(workspace.actionState, "completed");
+  assert.equal(workspace.currentFocus.kind, "completed");
+  assert.deepEqual(
+    rows.map((row) => [row.title, row.statusLabel, row.workspaceState, row.suppressStatus]),
+    [
+      ["Review what Jefe found", null, "historical", true],
+      ["Confirm the candidate scope", null, "historical", true],
+      ["Agree constraints", null, "historical", true],
+      ["Execute and verify the outcome", null, "historical", true],
+    ],
+  );
+});
+
 function restockAction({ steps }) {
   return {
     id: "action-1",

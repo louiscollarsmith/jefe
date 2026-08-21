@@ -544,6 +544,20 @@ function semanticActionForAction(action) {
       arrayValue(source.supportingInsightIds) ??
       [],
     diagnostics: jsonObject(jsonObject(progress.agentic).diagnostics),
+    acceptedActionRevision:
+      textValue(jsonObject(progress.agentic).acceptedActionRevision) ??
+      textValue(jsonObject(plan.agentic).acceptedActionRevision) ??
+      progressSemantic.acceptedActionRevision ??
+      planSemantic.acceptedActionRevision ??
+      null,
+    acceptedAt:
+      textValue(jsonObject(progress.agentic).acceptedAt) ??
+      textValue(jsonObject(plan.agentic).acceptedAt) ??
+      null,
+    acceptedBy:
+      textValue(jsonObject(progress.agentic).acceptedBy) ??
+      textValue(jsonObject(plan.agentic).acceptedBy) ??
+      null,
     revision:
       textValue(jsonObject(progress.agentic).currentActionRevision) ??
       textValue(jsonObject(plan.agentic).currentActionRevision) ??

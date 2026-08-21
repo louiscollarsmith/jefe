@@ -187,6 +187,7 @@ type WorkflowStepDisplay =
       approvalRequired?: boolean | null;
       itemKind?: string | null;
       workspaceState?: string | null;
+      suppressStatus?: boolean | null;
     };
 
 type StepTreatment = "completed" | "current" | "future";
@@ -210,6 +211,7 @@ type MerchantActionView = {
   workflow?: { steps?: WorkflowStepDisplay[] | null } | null;
   displaySteps?: WorkflowStepDisplay[];
   workspace?: {
+    kind?: string | null;
     actionState?: string | null;
     currentFocus?: ActionWorkspaceFocus | null;
   } | null;
@@ -980,8 +982,7 @@ function NextMoveSpotlight({
   onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
 }) {
   const steps = action.displaySteps?.slice(0, 4) ?? [];
-  const stepCountLabel =
-    steps.length > 0 ? `${steps.length} ${steps.length === 1 ? "step" : "steps"}` : null;
+  const stepCountLabel = actionPlanItemCountLabel(action, steps.length);
   return (
     <section style={nextMoveCardStyle} aria-label="Your next move">
       <div style={nextMoveTopStyle}>
@@ -1070,8 +1071,7 @@ function AttentionSpotlight({
   }
 
   const steps = action.displaySteps?.slice(0, 4) ?? [];
-  const stepCountLabel =
-    steps.length > 0 ? `${steps.length} ${steps.length === 1 ? "step" : "steps"}` : null;
+  const stepCountLabel = actionPlanItemCountLabel(action, steps.length);
 
   return (
     <section style={nextMoveCardStyle}>
@@ -2357,8 +2357,9 @@ function WorkflowStatusSummary({
   const label = actionStatusLabel(action);
   const steps = actionSteps(action);
   const completed = completedStepCount(steps);
-  const countLabel =
-    action.status === "in_progress" && completed > 0 && steps.length > 0
+  const countLabel = isAgenticActionView(action)
+    ? actionPlanItemCountLabel(action, stepCount)
+    : action.status === "in_progress" && completed > 0 && steps.length > 0
       ? `${completed} of ${steps.length} done`
       : stepCount > 0
         ? `${stepCount} ${stepCount === 1 ? "step" : "steps"}`
@@ -2400,6 +2401,31 @@ function actionStatusLabel(action: MerchantActionView) {
 
 function actionSteps(action: MerchantActionView) {
   return action.displaySteps ?? action.workflow?.steps ?? [];
+}
+
+function isAgenticActionView(action: MerchantActionView) {
+  const progress = action.progress as
+    | { agentic?: { runtime?: string | null } }
+    | null
+    | undefined;
+  return (
+    action.workspace?.kind === "agentic_shopify" ||
+    progress?.agentic?.runtime === "shopify_admin_api"
+  );
+}
+
+function actionPlanItemCountLabel(
+  action: MerchantActionView,
+  count: number,
+) {
+  if (count <= 0) return null;
+  if (!isAgenticActionView(action)) {
+    return `${count} ${count === 1 ? "step" : "steps"}`;
+  }
+  if (action.status === "completed" || action.actionState === "completed") {
+    return null;
+  }
+  return `${count} ${count === 1 ? "milestone" : "milestones"}`;
 }
 
 function completedStepCount(steps: WorkflowStepDisplay[]) {
@@ -3464,6 +3490,7 @@ function normalizeDisplayToken(value: unknown) {
 
 function displayStepStatus(step: WorkflowStepDisplay) {
   if (typeof step === "string") return "proposed";
+  if (step.suppressStatus) return "";
   if (step.statusLabel) return step.statusLabel;
   const workState = String(step.workState ?? "").trim();
   if (workState) {

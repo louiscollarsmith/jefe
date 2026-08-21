@@ -325,6 +325,9 @@ export function resolveWorkspaceFocus(workspace, action = {}) {
 export function workspacePlanItems(workspace) {
   /** @type {WorkspaceItem[]} */
   const items = Array.isArray(workspace?.items) ? workspace.items : [];
+  const completedAgentic =
+    String(workspace?.kind ?? "") === "agentic_shopify" &&
+    String(workspace?.actionState ?? "") === "completed";
   return items
     .filter((item) => item.showInPlan !== false)
     .map((item, index) => ({
@@ -333,18 +336,21 @@ export function workspacePlanItems(workspace) {
       title: item.title || `Item ${index + 1}`,
       description: item.description ?? null,
       status: null,
-      statusLabel: item.statusLabel ?? stateLabel(item),
+      statusLabel: completedAgentic ? null : (item.statusLabel ?? stateLabel(item)),
       mode: item.legacyMode ?? null,
       capabilityRef: item.capabilityRef ?? null,
       intendedActor: item.intendedActor ?? null,
       approvalRequired: item.approvalRequired === true,
       itemKind: item.kind,
-      workspaceState: item.state,
-      workState: item.workState ?? item.state,
+      workspaceState: completedAgentic ? "historical" : item.state,
+      workState: completedAgentic ? null : (item.workState ?? item.state),
       workStale: item.state === "stale",
-      done: ["agreed", "sent", "succeeded", "completed"].includes(
-        String(item.state ?? ""),
-      ),
+      done: completedAgentic
+        ? false
+        : ["agreed", "sent", "succeeded", "completed"].includes(
+            String(item.state ?? ""),
+          ),
+      suppressStatus: completedAgentic,
       progress: item.artifact ?? {},
       attention: {},
       orderIndex: item.orderIndex ?? index,
