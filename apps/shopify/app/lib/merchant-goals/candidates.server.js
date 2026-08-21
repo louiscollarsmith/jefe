@@ -82,6 +82,7 @@ export async function buildMerchantGoalSnapshot(prisma, input) {
     supportingBeliefIds: finding.supportingBeliefIds.filter((beliefId) =>
       allowedBeliefIds.has(beliefId),
     ),
+    generatedBy: "jefe_llm",
   }));
   const snapshot = {
     snapshotVersion: MERCHANT_GOALS_SNAPSHOT_VERSION,

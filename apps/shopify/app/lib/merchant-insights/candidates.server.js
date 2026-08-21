@@ -353,7 +353,7 @@ function normalizeEvidenceSummary(evidence) {
 }
 
 /** @param {number} precedence @param {string} status */
-function authorityLevel(precedence, status) {
+export function authorityLevel(precedence, status) {
   if (status === BELIEF_STATUS.merchantCorrected) return "merchant_corrected";
   if (status === BELIEF_STATUS.merchantConfirmed) return "merchant_confirmed";
   if (precedence >= BELIEF_PRECEDENCE.directObservation) return "deterministic";

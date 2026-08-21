@@ -5,6 +5,7 @@ import { createLlmProvider } from "../../llm/provider.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
 } from "../../merchant-memory/constants.server.js";
+import { authorityLevel } from "../../merchant-insights/candidates.server.js";
 import { retrieveMerchantContext } from "../../merchant-memory/merchant-context.server.js";
 import { GOAL_RUN_STATUS } from "../../merchant-goals/constants.server.js";
 import { INSIGHT_RUN_STATUS } from "../../merchant-insights/constants.server.js";
@@ -393,7 +394,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
 async function buildAgenticRecommendationSnapshot(prisma, input) {
-  const [goalRun, insightRun, beliefs, priorRecommendations, context] = await Promise.all([
+  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence] = await Promise.all([
     prisma.merchantGoalRun.findFirst({
       where: {
         merchantId: input.merchantId,
@@ -450,6 +451,15 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         "Investigate the next concrete Shopify Action that best advances the merchant's goals.",
       tokenBudget: 8000,
     }).catch(() => ({ episodicMemory: [], actionMemory: [] })),
+    (prisma.merchantMemoryEvidence?.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        evidenceType: { in: ["merchant_goal_coaching", "merchant_goal_document_context"] },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    }) ?? Promise.resolve([])).catch(() => []),
   ]);
   const goals = (goalRun?.horizons ?? []).map((/** @type {any} */ goal) => ({
     id: goal.id,
@@ -457,6 +467,8 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     title: safeText(goal.title, 120),
     description: safeText(goal.description, 280),
     supportingBeliefIds: goal.supportingBeliefIds ?? [],
+    generatedBy: "jefe_llm",
+    authority: "jefe_interpretation",
   }));
   const insights = (insightRun?.findings ?? []).map((/** @type {any} */ finding) => ({
     id: finding.id,
@@ -466,6 +478,8 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     category: finding.category,
     confidence: finding.confidence,
     supportingBeliefIds: finding.supportingBeliefIds ?? [],
+    generatedBy: "jefe_llm",
+    authority: "jefe_interpretation",
   }));
   const normalizedBeliefs = beliefs.map(normalizeBelief).filter(Boolean);
   const snapshot = {
@@ -477,6 +491,14 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       excludesCredentialsAndTokens: true,
       excludesFullUploadedDocuments: true,
     },
+    goalCoaching: (coachingEvidence ?? []).map((/** @type {any} */ item) => ({
+      id: item.id,
+      sourceType: item.sourceType,
+      evidenceType: item.evidenceType,
+      summary: safeText(item.summary, 600),
+      observedAt: item.observedAt?.toISOString?.() ?? null,
+      authority: "merchant_stated",
+    })).reverse(),
     goals,
     insights,
     beliefCount: normalizedBeliefs.length,
@@ -811,11 +833,12 @@ function normalizeBelief(row) {
     value: row.value,
     type: row.valueType,
     status: row.status,
-    authority: row.precedence,
+    authority: authorityLevel(row.precedence, row.status),
     confidence: Number(row.confidence ?? 0),
     evidence: (row.evidence ?? []).map((/** @type {any} */ item) => ({
       id: item.id,
       summary: safeText(item.summary, 500),
+      sourceType: item.sourceType,
       evidenceType: item.evidenceType,
       observedAt: item.observedAt?.toISOString?.() ?? null,
     })),

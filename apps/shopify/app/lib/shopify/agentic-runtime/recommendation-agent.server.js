@@ -260,6 +260,20 @@ You have Merchant Memory, bounded commerce evidence, Shopify read tools and a se
 
 Find a specific, evidence-backed outcome that Jefe can plausibly achieve through Shopify after the merchant accepts it. Do not constrain yourself to historical Jefe action types such as dead stock, restock, listing copy, tidy-up or markdown.
 
+## Merchant Memory structure and provenance
+
+Merchant Memory is divided into three provenance layers. Use them to reason correctly about authority and evidence:
+
+**merchantIntent** — What the merchant has directly stated, confirmed, or corrected. Authoritative for desired outcomes and constraints. Do not substitute Jefe-generated strategies for merchant goals.
+
+**storeEvidence** — Deterministic observations derived from Shopify (revenue, inventory, order counts, catalogue metrics). Authoritative for factual store state.
+
+**jefeHypotheses** — Jefe-generated interpretations, goal expansions, and strategic inferences. Useful starting points, but not merchant requirements and not independent evidence. The same hypothesis appearing in goals, insights, and inferredBeliefs is still one underlying inference, not multiple confirmations. Independently verify each hypothesis against merchantIntent and storeEvidence before using it to justify an Action.
+
+A Jefe hypothesis that has been explicitly confirmed by the merchant (belief status merchant_confirmed or merchant_corrected) may be treated as merchant intent. Do not infer confirmation from silence or absence of objection.
+
+## Investigation rules
+
 Use tools when needed:
 - retrieve_shopify_operations finds a compact relevant subset of generated Shopify API stubs.
 - call_shopify_operation may run Shopify reads during recommendation investigation.
@@ -305,14 +319,39 @@ export function buildRecommendationContext(snapshot, catalog) {
   const beliefs = Array.isArray(snapshot?.beliefs) ? snapshot.beliefs : [];
   const goals = Array.isArray(snapshot?.goals) ? snapshot.goals : [];
   const insights = Array.isArray(snapshot?.insights) ? snapshot.insights : [];
+  const goalCoaching = Array.isArray(snapshot?.goalCoaching) ? snapshot.goalCoaching : [];
+
+  const merchantConfirmedBeliefs = beliefs.filter(
+    (b) => b.authority === "merchant_confirmed" || b.authority === "merchant_corrected",
+  );
+  const deterministicBeliefs = beliefs.filter((b) => b.authority === "deterministic");
+  const inferredBeliefs = beliefs.filter(
+    (b) => b.authority === "lower_authority_inference" || b.authority === "system_inference",
+  );
+
   const initialQuery = [
+    ...goalCoaching.map((/** @type {any} */ item) => item.summary),
     ...goals.map((/** @type {any} */ goal) => goal.title),
-    ...beliefs.slice(0, 12).map((/** @type {any} */ belief) => `${belief.label ?? belief.key} ${JSON.stringify(belief.val ?? belief.value ?? "")}`),
+    ...deterministicBeliefs.slice(0, 8).map((/** @type {any} */ belief) => `${belief.label ?? belief.key} ${JSON.stringify(belief.val ?? belief.value ?? "")}`),
   ].join(" ");
+
   return {
     merchantMemory: {
-      goals,
-      insights,
+      merchantIntent: {
+        note: "Direct merchant statements and confirmed/corrected beliefs. Authoritative for desired outcomes and constraints.",
+        goalCoaching,
+        confirmedBeliefs: merchantConfirmedBeliefs,
+      },
+      storeEvidence: {
+        note: "Deterministic Shopify observations. Authoritative for factual store state.",
+        beliefs: deterministicBeliefs,
+      },
+      jefeHypotheses: {
+        note: "Jefe-generated interpretations. Useful leads — not merchant requirements or independent evidence. Independently verify against merchantIntent and storeEvidence before using to justify an Action.",
+        goals,
+        insights,
+        inferredBeliefs,
+      },
       beliefs,
       merchantContext: snapshot?.merchantContext ?? [],
       previousRecommendations: snapshot?.previousRecommendations ?? [],
@@ -394,10 +433,10 @@ function validateSemanticRecommendation(recommendation, context) {
   if (!recommendation.feasibleWriteOperations.length) {
     return { ok: false, error: "Recommendation needs at least one plausible Shopify write operation." };
   }
-  const allowedBeliefs = new Set(context.merchantMemory.beliefs.map((/** @type {any} */ belief) => belief.id));
+  const allowedBeliefs = new Set((context.merchantMemory.beliefs ?? []).map((/** @type {any} */ belief) => belief.id));
   const badBelief = recommendation.supportingBeliefIds.find((/** @type {string} */ id) => !allowedBeliefs.has(id));
   if (badBelief) return { ok: false, error: "Recommendation cited an unsupported belief id." };
-  const allowedInsights = new Set(context.merchantMemory.insights.map((/** @type {any} */ insight) => insight.id));
+  const allowedInsights = new Set((context.merchantMemory.jefeHypotheses?.insights ?? []).map((/** @type {any} */ insight) => insight.id));
   const badInsight = recommendation.supportingInsightIds.find((/** @type {string} */ id) => !allowedInsights.has(id));
   if (badInsight) return { ok: false, error: "Recommendation cited an unsupported insight id." };
   return { ok: true };
