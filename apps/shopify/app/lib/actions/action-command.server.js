@@ -84,6 +84,10 @@ import {
   invalidateDownstreamSteps,
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
+import {
+  acceptAndExecuteAgenticShopifyAction,
+  isAgenticShopifyAction,
+} from "../shopify/agentic-runtime/execution-service.server.js";
 
 const log = baseLogger.child({ component: "action-command" });
 
@@ -430,6 +434,36 @@ function firstUsefulSentence(reply) {
 
 /** @param {any} prisma @param {any} input */
 async function runAcceptPlan(prisma, input) {
+  const rawAction = await prisma.merchantAction?.findFirst?.({
+    where: {
+      id: input.action.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+  });
+  if (rawAction && isAgenticShopifyAction(rawAction)) {
+    const result = await acceptAndExecuteAgenticShopifyAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      shopDomain: input.session?.shop,
+      actionId: input.action.id,
+      actor: input.actor ?? input.merchantId,
+      scopes: input.session?.scope ? String(input.session.scope).split(/[,\s]+/).filter(Boolean) : undefined,
+      loadOfflineToken: input.executeDeps?.loadOfflineToken,
+      logger: input.logger,
+    });
+    const fresh = await refreshAction(prisma, input);
+    return {
+      ok: Boolean(result.ok),
+      command: ACTION_COMMAND.ACCEPT_PLAN,
+      reason: result.ok ? null : result.reason,
+      result,
+      reply: result.ok
+        ? "Accepted. I made the Shopify change and verified the outcome."
+        : "I accepted the Action, but could not complete the Shopify work yet.",
+      action: fresh ?? input.action,
+    };
+  }
   const result = await acceptMerchantActionPlan(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,

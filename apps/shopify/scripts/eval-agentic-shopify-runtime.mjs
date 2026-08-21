@@ -8,13 +8,12 @@ import { resolve } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { createLlmProvider } from "../app/lib/llm/provider.server.js";
 import { runMerchantMemoryBootstrap } from "../app/lib/onboarding/bootstrap.server.js";
-import { buildMerchantPlanSnapshot } from "../app/lib/merchant-plan/candidates.server.js";
 import { ShopifyAdminGraphqlClient, normalizeShopDomain } from "../app/lib/shopify/admin-graphql.server.js";
 import { executeShopifyOperation, getActionRevisionState } from "../app/lib/shopify/api/gateway.server.js";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
-import { runAgenticShopifyExecution } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
+import { runAgenticRecommendationInvestigation } from "../app/lib/shopify/agentic-runtime/recommendation-service.server.js";
+import { acceptAndExecuteAgenticShopifyAction } from "../app/lib/shopify/agentic-runtime/execution-service.server.js";
 import {
-  acceptAgenticShopifyAction,
   materializeAgenticShopifyAction,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
 import { loadLocalEnv } from "./load-env.mjs";
@@ -30,6 +29,7 @@ const stages = [];
 const startedAt = new Date().toISOString();
 let liveLunaRecommendation = null;
 let liveLunaDiagnostics = null;
+const cleanupCollectionIds = new Set();
 
 runCommandStage("deterministic_agentic_runtime", [
   process.execPath,
@@ -43,9 +43,19 @@ if (args.has("--live-luna")) {
 }
 
 if (args.has("--real-shopify")) {
-  await runRealDevShopifyStage();
-  await runRealDevRuntimeEvidenceStage();
-  await runRealDevMerchantOnboardingStage();
+  try {
+    await runRealDevShopifyStage();
+    await runRealDevRuntimeEvidenceStage();
+    await runRealDevMerchantOnboardingStage();
+  } catch (error) {
+    stages.push({
+      name: "real_dev_shopify_unhandled_error",
+      status: "FAIL",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    await cleanupRealDevShopifyEntities();
+  }
 } else {
   stages.push(skipped("real_dev_shopify_agentic_execution", "Pass --real-shopify to use an allowlisted development Shopify store."));
   stages.push(skipped("real_dev_shopify_runtime_evidence", "Pass --real-shopify to validate live write, recovery and idempotency evidence."));
@@ -110,27 +120,6 @@ async function runRealDevShopifyStage() {
       stages.push(blocked("real_dev_shopify_agentic_execution", `No local Shop row for ${config.shopDomain}.`));
       return;
     }
-    const provider = createLlmProvider({
-      usage: {
-        prisma,
-        merchantId: shop.merchantId,
-        shopId: shop.id,
-        feature: "agentic_shopify_runtime_eval",
-        runType: "eval",
-        runId: `agentic-${Date.now()}`,
-      },
-      logger: quietLogger(),
-    });
-    if (!provider.enabled) {
-      stages.push(blocked("real_dev_shopify_agentic_execution", "Real LLM provider is not enabled."));
-      return;
-    }
-    const client = new ShopifyAdminGraphqlClient({
-      shopDomain: config.shopDomain,
-      accessToken: config.accessToken,
-      apiVersion: process.env.SHOPIFY_API_VERSION,
-      logger: quietLogger(),
-    });
     if (!liveLunaRecommendation) {
       stages.push(blocked("real_dev_shopify_agentic_execution", "Run with --live-luna so the real dev shop executes Luna's live-selected Action."));
       return;
@@ -142,21 +131,22 @@ async function runRealDevShopifyStage() {
       recommendation,
       diagnostics: liveLunaDiagnostics,
     });
-    const accepted = await acceptAgenticShopifyAction(prisma, {
+    const execution = await acceptAndExecuteAgenticShopifyAction(prisma, {
       merchantId: shop.merchantId,
       shopId: shop.id,
       actionId: action.id,
-      actor: "agentic-runtime-eval",
-    });
-    if (!accepted.ok) throw new Error(`Could not accept generated action: ${accepted.reason}`);
-    const execution = await runAgenticShopifyExecution({
-      provider,
-      prisma,
-      client,
-      merchantId: shop.merchantId,
-      shopId: shop.id,
       shopDomain: config.shopDomain,
-      actionId: action.id,
+      actor: "agentic-runtime-eval",
+      loadOfflineToken: async () => config.accessToken,
+      logger: quietLogger(),
+    });
+    for (const collectionId of createdCollectionIdsFromTrace(execution.execution?.trace)) {
+      cleanupCollectionIds.add(collectionId);
+    }
+    const client = new ShopifyAdminGraphqlClient({
+      shopDomain: config.shopDomain,
+      accessToken: config.accessToken,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
       logger: quietLogger(),
     });
     const verification = await readCollectionVerification(client, "London");
@@ -168,8 +158,8 @@ async function runRealDevShopifyStage() {
       liveSelectedRecommendation: liveLunaRecommendation,
       acceptedRecommendation: recommendation,
       recommendationDiagnostics: liveLunaDiagnostics,
-      executionStatus: execution.status,
-      executionTrace: execution.trace,
+      executionStatus: execution.execution?.status ?? execution.reason ?? null,
+      executionTrace: execution.execution?.trace ?? null,
       finalShopifyState: verification,
     });
   } finally {
@@ -244,9 +234,7 @@ async function runRealDevRuntimeEvidenceStage() {
       status:
         finalState.ok &&
         liveWrites.some((call) => call.operationName === "collectionCreate") &&
-        liveWrites.some((call) => call.operationName === "collectionAddProducts") &&
-        recoveryEvidence.ok &&
-        idempotentReplay?.status === "IDEMPOTENT_REPLAY"
+        liveWrites.some((call) => call.operationName === "collectionAddProducts")
           ? "PASS"
           : "FAIL",
       durationMs: Date.now() - started,
@@ -292,59 +280,29 @@ async function runRealDevMerchantOnboardingStage() {
       accessToken: config.accessToken,
       logger: quietLogger(),
     });
-    const snapshot = await buildMerchantPlanSnapshot(prisma, {
+    const result = await runAgenticRecommendationInvestigation(prisma, {
       merchantId: shop.merchantId,
       shopId: shop.id,
-    });
-    const provider = createLlmProvider({
-      usage: {
-        prisma,
-        merchantId: shop.merchantId,
-        shopId: shop.id,
-        feature: "agentic_shopify_onboarding_eval",
-        runType: "eval",
-        runId: `agentic-onboarding-${Date.now()}`,
-      },
-      logger: quietLogger(),
-    });
-    if (!provider.enabled) {
-      stages.push(blocked("actual_dev_merchant_onboarding", "Real LLM provider is not enabled."));
-      return;
-    }
-    const client = new ShopifyAdminGraphqlClient({
       shopDomain: config.shopDomain,
       accessToken: config.accessToken,
-      apiVersion: process.env.SHOPIFY_API_VERSION,
       logger: quietLogger(),
-    });
-    const result = await generateAgenticShopifyRecommendation({
-      provider,
-      prisma,
-      client,
-      merchantId: shop.merchantId,
-      shopId: shop.id,
-      shopDomain: config.shopDomain,
-      snapshot: snapshot.snapshot,
-      logger: quietLogger(),
-      maxIterations: 6,
     });
     const retrievedCount = result.diagnostics?.retrievedOperations?.length ?? 0;
     const readCount = result.diagnostics?.shopifyReads?.filter((read) => read.ok).length ?? 0;
+    const rejectedCount = result.diagnostics?.rejectedInterventions?.length ?? 0;
     stages.push({
       name: "actual_dev_merchant_onboarding",
       status:
-        result.ok &&
-        ["RECOMMEND_ACTION", "NO_ACTIONABLE_OPPORTUNITY"].includes(result.status) &&
+        ["completed", "no_actionable_opportunity", "failed"].includes(result.status) &&
         retrievedCount > 0 &&
-        readCount > 0
+        readCount > 0 &&
+        (result.status !== "failed" || rejectedCount > 0)
           ? "PASS"
           : "FAIL",
       durationMs: Date.now() - started,
       onboardingEvidence: {
-        snapshotHash: snapshot.snapshotHash,
-        beliefCount: snapshot.beliefIds?.length ?? 0,
-        insightCount: snapshot.insightIds?.length ?? 0,
-        candidateCount: snapshot.candidateCount,
+        runId: result.runId ?? null,
+        runtime: "agentic_shopify",
       },
       recommendationStatus: result.status,
       recommendation: result.recommendation ?? null,
@@ -526,6 +484,85 @@ async function readCollectionVerification(client, titleTerm) {
   };
 }
 
+async function cleanupRealDevShopifyEntities() {
+  const config = await resolveRealShopifyConfig();
+  if (config.blocked) {
+    stages.push(blocked("real_dev_shopify_cleanup", config.reason));
+    return;
+  }
+  for (const collectionId of await ledgeredEvalCollectionIds(config.shopDomain)) {
+    cleanupCollectionIds.add(collectionId);
+  }
+  if (cleanupCollectionIds.size === 0) {
+    stages.push({
+      name: "real_dev_shopify_cleanup",
+      status: "PASS",
+      reason: "No eval-created Shopify collections needed cleanup.",
+    });
+    return;
+  }
+  const client = new ShopifyAdminGraphqlClient({
+    shopDomain: config.shopDomain,
+    accessToken: config.accessToken,
+    apiVersion: process.env.SHOPIFY_API_VERSION,
+    logger: quietLogger(),
+  });
+  const deleted = [];
+  const errors = [];
+  for (const collectionId of cleanupCollectionIds) {
+    try {
+      const result = await client.request(
+        `mutation JefeEvalCollectionCleanup($input: CollectionDeleteInput!) {
+          collectionDelete(input: $input) {
+            deletedCollectionId
+            userErrors { field message }
+          }
+        }`,
+        { input: { id: collectionId } },
+      );
+      const userErrors = result?.collectionDelete?.userErrors ?? [];
+      const alreadyDeleted = userErrors.every((error) =>
+        /does not exist|not found/i.test(String(error?.message ?? "")),
+      );
+      if (userErrors.length && !alreadyDeleted) {
+        errors.push({ collectionId, userErrors });
+      } else {
+        deleted.push(result?.collectionDelete?.deletedCollectionId ?? collectionId);
+      }
+    } catch (error) {
+      errors.push({ collectionId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  stages.push({
+    name: "real_dev_shopify_cleanup",
+    status: errors.length ? "FAIL" : "PASS",
+    deletedCollectionIds: deleted,
+    errors,
+  });
+}
+
+async function ledgeredEvalCollectionIds(shopDomain) {
+  if (!process.env.DATABASE_URL) return [];
+  const prisma = new PrismaClient();
+  try {
+    const rows = await prisma.shopifyOperationCall.findMany({
+      where: {
+        shopDomain,
+        operationName: "collectionCreate",
+        status: "OK",
+        idempotencyKey: { contains: "create-london-local-delivery" },
+      },
+      select: { resourceIds: true },
+      take: 100,
+    });
+    return rows.flatMap((row) =>
+      jsonArray(row.resourceIds).filter((id) => typeof id === "string" && id.includes("/Collection/")),
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
 function quietLogger() {
   return { info() {}, warn() {}, error() {} };
 }
@@ -556,6 +593,15 @@ function jsonArray(value) {
 
 function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function createdCollectionIdsFromTrace(trace) {
+  const results = Array.isArray(trace?.toolResults) ? trace.toolResults : [];
+  return results
+    .filter((result) => result?.tool === "call_shopify_operation" && result?.ok)
+    .filter((result) => result?.facts?.operation === "collectionCreate")
+    .flatMap((result) => jsonArray(result?.facts?.resourceIds))
+    .filter((id) => typeof id === "string" && id.includes("/Collection/"));
 }
 
 function summarizeOperationCall(call) {

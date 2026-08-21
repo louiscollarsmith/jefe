@@ -201,14 +201,14 @@ export async function executeShopifyOperation(input) {
   }
 }
 
-/** @param {{ request: Function }} client */
+/** @param {{ request: (document: string, variables?: Record<string, unknown>) => Promise<any> }} client */
 export async function fetchGrantedShopifyScopes(client) {
   const data = await client.request(
     "query JefeCurrentAppInstallation { currentAppInstallation { accessScopes { handle } } }",
     {},
   );
   return (data?.currentAppInstallation?.accessScopes ?? [])
-    .map((scope) => scope?.handle)
+    .map((/** @type {any} */ scope) => scope?.handle)
     .filter(Boolean);
 }
 
@@ -482,6 +482,7 @@ async function recordShopifyOperationCall(input, details) {
 
 /** @param {unknown} response */
 function extractUserErrors(response) {
+  /** @type {Array<{ field: string | null; message: string; code: unknown }>} */
   const found = [];
   visit(response, (value) => {
     if (Array.isArray(value)) {

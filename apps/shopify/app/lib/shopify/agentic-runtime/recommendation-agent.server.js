@@ -89,7 +89,7 @@ export const AGENTIC_RECOMMENDATION_SCHEMA = {
  * @param {{
  *   provider: { enabled?: boolean; generateStructuredJson?: Function; provider?: string; model?: string };
  *   prisma?: any;
- *   client: { request: Function };
+ *   client: { request: (document: string, variables?: Record<string, unknown>) => Promise<unknown> };
  *   merchantId: string;
  *   shopId: string;
  *   shopDomain: string;
@@ -127,7 +127,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         toolResults: publicShopifyToolResults(toolResults),
       }),
       schema: AGENTIC_RECOMMENDATION_SCHEMA,
-      maxInputTokens: 22000,
+      maxInputTokens: 32000,
       maxOutputTokens: 2800,
       timeoutMs: 90_000,
     });
@@ -168,7 +168,8 @@ export async function generateAgenticShopifyRecommendation(input) {
         });
         continue;
       }
-      const validation = validateSemanticRecommendation(turn.recommendation, context);
+      const recommendation = turn.recommendation;
+      const validation = validateSemanticRecommendation(recommendation, context);
       if (!validation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
@@ -183,14 +184,14 @@ export async function generateAgenticShopifyRecommendation(input) {
       logger.info("agentic Shopify recommendation selected", {
         merchantId: input.merchantId,
         shopId: input.shopId,
-        title: turn.recommendation.title,
+        title: recommendation?.title ?? null,
         retrievedToolCount: diagnostics.retrievedOperations.length,
         readCount: diagnostics.shopifyReads.length,
       });
       return {
         ok: true,
         status: "RECOMMEND_ACTION",
-        recommendation: turn.recommendation,
+        recommendation,
         diagnostics,
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
@@ -279,8 +280,8 @@ export function buildRecommendationContext(snapshot, catalog) {
   const goals = Array.isArray(snapshot?.goals) ? snapshot.goals : [];
   const insights = Array.isArray(snapshot?.insights) ? snapshot.insights : [];
   const initialQuery = [
-    ...goals.map((goal) => goal.title),
-    ...beliefs.slice(0, 12).map((belief) => `${belief.label ?? belief.key} ${JSON.stringify(belief.val ?? belief.value ?? "")}`),
+    ...goals.map((/** @type {any} */ goal) => goal.title),
+    ...beliefs.slice(0, 12).map((/** @type {any} */ belief) => `${belief.label ?? belief.key} ${JSON.stringify(belief.val ?? belief.value ?? "")}`),
   ].join(" ");
   return {
     merchantMemory: {
@@ -308,9 +309,11 @@ export function buildRecommendationContext(snapshot, catalog) {
 
 /** @param {unknown} raw */
 function normalizeRecommendationTurn(raw) {
-  const object = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const object = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? /** @type {Record<string, any>} */ (raw)
+    : {};
   const toolCalls = (Array.isArray(object.toolCalls) ? object.toolCalls : [])
-    .map((row) => ({
+    .map((/** @type {any} */ row) => ({
       tool: String(row?.tool ?? ""),
       arguments:
         row?.arguments && typeof row.arguments === "object" && !Array.isArray(row.arguments)
@@ -353,6 +356,7 @@ export function normalizeSemanticRecommendation(value) {
   };
 }
 
+/** @param {any} recommendation @param {any} context */
 function validateSemanticRecommendation(recommendation, context) {
   if (!recommendation) return { ok: false, error: "Recommendation is required." };
   for (const field of ["title", "summary", "outcome", "scope", "whyThisAction", "whyNow", "verificationPlan"]) {
@@ -364,18 +368,19 @@ function validateSemanticRecommendation(recommendation, context) {
   if (!recommendation.feasibleWriteOperations.length) {
     return { ok: false, error: "Recommendation needs at least one plausible Shopify write operation." };
   }
-  const allowedBeliefs = new Set(context.merchantMemory.beliefs.map((belief) => belief.id));
-  const badBelief = recommendation.supportingBeliefIds.find((id) => !allowedBeliefs.has(id));
+  const allowedBeliefs = new Set(context.merchantMemory.beliefs.map((/** @type {any} */ belief) => belief.id));
+  const badBelief = recommendation.supportingBeliefIds.find((/** @type {string} */ id) => !allowedBeliefs.has(id));
   if (badBelief) return { ok: false, error: "Recommendation cited an unsupported belief id." };
-  const allowedInsights = new Set(context.merchantMemory.insights.map((insight) => insight.id));
-  const badInsight = recommendation.supportingInsightIds.find((id) => !allowedInsights.has(id));
+  const allowedInsights = new Set(context.merchantMemory.insights.map((/** @type {any} */ insight) => insight.id));
+  const badInsight = recommendation.supportingInsightIds.find((/** @type {string} */ id) => !allowedInsights.has(id));
   if (badInsight) return { ok: false, error: "Recommendation cited an unsupported insight id." };
   return { ok: true };
 }
 
+/** @param {any[]} toolResults */
 function validateInvestigation(toolResults) {
-  const retrieved = toolResults.some((row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok);
-  const read = toolResults.some((row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok);
+  const retrieved = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok);
+  const read = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok);
   if (!retrieved || !read) {
     return {
       ok: false,
@@ -386,14 +391,15 @@ function validateInvestigation(toolResults) {
   return { ok: true };
 }
 
+/** @param {any[]} turns @param {any[]} toolResults */
 function buildRecommendationDiagnostics(turns, toolResults) {
   const retrievedOperations = toolResults
-    .filter((row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok)
-    .flatMap((row) => row.facts?.results ?? [])
-    .map((row) => row.operation);
+    .filter((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok)
+    .flatMap((/** @type {any} */ row) => row.facts?.results ?? [])
+    .map((/** @type {any} */ row) => row.operation);
   const shopifyReads = toolResults
-    .filter((row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation)
-    .map((row) => ({
+    .filter((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation)
+    .map((/** @type {any} */ row) => ({
       operation: row.facts?.operation,
       status: row.facts?.status,
       ok: row.ok,
@@ -403,12 +409,12 @@ function buildRecommendationDiagnostics(turns, toolResults) {
     retrievedOperations: [...new Set(retrievedOperations)],
     shopifyReads,
     feasibleInterventions: turns
-      .filter((turn) => turn.recommendation)
-      .map((turn) => turn.recommendation?.title)
+      .filter((/** @type {any} */ turn) => turn.recommendation)
+      .map((/** @type {any} */ turn) => turn.recommendation?.title)
       .filter(Boolean),
     rejectedInterventions: turns
-      .flatMap((turn) => turn.hypothesesConsidered ?? [])
-      .filter((row) => /reject|not|blocked|insufficient/i.test(String(row.status ?? ""))),
+      .flatMap((/** @type {any} */ turn) => turn.hypothesesConsidered ?? [])
+      .filter((/** @type {any} */ row) => /reject|not|blocked|insufficient/i.test(String(row.status ?? ""))),
   };
 }
 
@@ -417,11 +423,13 @@ function stripNulls(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
 }
 
+/** @param {unknown} value @param {number} max @param {boolean} [nullable] */
 function clean(value, max, nullable = false) {
   if (value == null && nullable) return null;
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+/** @param {unknown} value */
 function uniqueStrings(value) {
-  return [...new Set((Array.isArray(value) ? value : []).map((item) => clean(item, 220)).filter(Boolean))];
+  return [...new Set((Array.isArray(value) ? value : []).map((/** @type {unknown} */ item) => clean(item, 220)).filter(Boolean))];
 }

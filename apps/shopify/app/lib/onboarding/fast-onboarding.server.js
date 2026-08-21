@@ -11,7 +11,6 @@ import { upsertMerchantSuppliedBelief } from "../merchant-memory/service.server.
 import { trackOnce } from "../../services/analytics/event-log.server.js";
 import {
   BOOTSTRAP_BACKFILL_DOMAIN,
-  ensureBootstrapAlternativeQueued,
   ensureMerchantBootstrapQueued,
   ensureRecommendationReviewQueued,
   FULL_BACKFILL_JOB_TYPES,
@@ -19,7 +18,8 @@ import {
   MERCHANT_BOOTSTRAP_JOB_TYPE,
   retryFailedBackfillJobs,
 } from "../../services/shopify-backfill-status.server.js";
-import { ensureMerchantPlanQueued } from "../merchant-plan/service.server.js";
+import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/recommendation-service.server.js";
+import { AGENTIC_RECOMMENDATION_SOURCE_MODE } from "../shopify/agentic-runtime/constants.server.js";
 import { PLAN_RUN_STATUS } from "../merchant-plan/constants.server.js";
 
 export const ONBOARDING_CONTEXT_OPTIONS = Object.freeze([
@@ -59,7 +59,7 @@ export async function getFastOnboardingExperience(prisma, input) {
       where: {
         merchantId: input.merchantId,
         shopId: input.shopId,
-        sourceMode: { in: ["bootstrap", "full"] },
+        sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
       },
       orderBy: [{ createdAt: "desc" }],
       include: {
@@ -73,7 +73,7 @@ export async function getFastOnboardingExperience(prisma, input) {
           where: {
             merchantId: input.merchantId,
             shopId: input.shopId,
-            sourceMode: { in: ["bootstrap", "full"] },
+            sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
           },
           select: {
             id: true,
@@ -231,16 +231,11 @@ export async function answerOnboardingContext(prisma, input) {
   const bootstrap = await prisma.backfillJob.findUnique({
     where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
   });
-  const result = jsonObject(bootstrap?.resultJson);
   const onboardingEpoch = bootstrapEpoch(null, bootstrap);
-  const eligible = stringArray(result.eligibleContracts);
-  if (eligible.length > 0) {
-    await ensureBootstrapAlternativeQueued(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      contractKey: rankContracts(eligible, option.value)[0],
-    });
-  }
+  await ensureAgenticRecommendationQueued(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+  });
   void trackOnce(prisma, {
     type: "context_answered",
     topic: "onboarding",
@@ -266,26 +261,10 @@ export async function continueOnboardingInsight(prisma, input) {
 }
 
 export async function requestOnboardingAlternative(prisma, input) {
-  const bootstrap = await prisma.backfillJob.findUnique({
-    where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
-  });
-  const eligible = stringArray(jsonObject(bootstrap?.resultJson).eligibleContracts);
-  const runs = await prisma.merchantPlanRun.findMany({
-    where: { merchantId: input.merchantId, shopId: input.shopId, sourceMode: "bootstrap" },
-    select: { result: true },
-  });
-  const generated = new Set(runs.map((run) => stringValue(jsonObject(run.result).contractKey)).filter(Boolean));
-  const priority = await prisma.merchantMemoryBelief.findFirst({
-    where: { merchantId: input.merchantId, key: "preferences.optimisation_priority", status: { in: ACTIVE_BELIEF_STATUSES } },
-    orderBy: { updatedAt: "desc" },
-  });
-  const next = rankContracts(eligible, contextFromBelief(priority)?.value ?? "jefe_read_first")
-    .find((contractKey) => !generated.has(contractKey));
-  if (!next) return { ok: true, queued: false, reason: "strongest_supported_finding" };
-  await ensureBootstrapAlternativeQueued(prisma, {
+  await ensureAgenticRecommendationQueued(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
-    contractKey: next,
+    resetAttempts: true,
   });
   await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "insight" });
   return { ok: true, queued: true };
@@ -294,6 +273,23 @@ export async function requestOnboardingAlternative(prisma, input) {
 export async function approveOnboardingRecommendation(prisma, input) {
   const recommendation = await ownedRecommendation(prisma, input, true);
   if (!recommendation) return { ok: false, error: "That recommendation is no longer available." };
+  if (recommendation.sourceMode === AGENTIC_RECOMMENDATION_SOURCE_MODE) {
+    const action = await prisma.merchantAction.findFirst({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        sourceRecommendationId: recommendation.id,
+      },
+      select: { id: true },
+    });
+    if (!action) return { ok: false, error: "That Action is no longer available." };
+    return {
+      ok: true,
+      mode: "agentic_execute",
+      actionId: action.id,
+      recommendationId: recommendation.id,
+    };
+  }
   if (
     isRunnableOnboardingExecution(
       currentExecutionFromRecommendation(recommendation),
@@ -365,12 +361,11 @@ export async function retryFastOnboarding(prisma, input) {
     return { ok: true, retried: retried.retried };
   }
   if (input.target === "merchant_plan") {
-    await ensureMerchantPlanQueued(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      resetAttempts: true,
-      proposalTrigger: "merchant_onboarding",
-    });
+        await ensureAgenticRecommendationQueued(prisma, {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          resetAttempts: true,
+        });
     await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
     return { ok: true };
   }
@@ -490,7 +485,7 @@ async function ownedRecommendation(prisma, input, includeExecution = false) {
       id: input.recommendationId,
       merchantId: input.merchantId,
       shopId: input.shopId,
-      sourceMode: { in: ["bootstrap", "full"] },
+      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
     },
     include: includeExecution ? recommendationWorkflowInclude() : undefined,
   });
@@ -722,6 +717,7 @@ export function classifyFailure(status, job, experience = {}) {
         PLAN_RUN_STATUS.failed,
         PLAN_RUN_STATUS.insufficientData,
         PLAN_RUN_STATUS.modelDisabled,
+        "no_actionable_opportunity",
       ].includes(
         experience.latestPlanRun?.status,
       )
@@ -735,6 +731,14 @@ export function classifyFailure(status, job, experience = {}) {
         };
       }
       if (experience.latestPlanRun.status === PLAN_RUN_STATUS.insufficientData) {
+        return {
+          type: "retryable",
+          retryTarget: "merchant_plan",
+          message:
+            "I haven't run the Shopify investigation for this store yet. I can start that now from the same durable evidence.",
+        };
+      }
+      if (experience.latestPlanRun.status === "no_actionable_opportunity") {
         return {
           type: "insufficient",
           message:
@@ -919,18 +923,6 @@ function bootstrapEpoch(status, job) {
   );
 }
 
-function rankContracts(contracts, priority) {
-  const preference = {
-    slow_inventory: ["stockout_protection", "discount_review", "sales_concentration"],
-    profit: ["stockout_protection", "discount_review", "sales_concentration"],
-    revenue: ["stockout_protection", "sales_concentration", "discount_review"],
-    growth: ["stockout_protection", "sales_concentration", "discount_review"],
-    retention: ["stockout_protection", "sales_concentration", "discount_review"],
-    jefe_read_first: ["stockout_protection", "sales_concentration", "discount_review"],
-  }[priority] ?? ["stockout_protection", "sales_concentration", "discount_review"];
-  return [...contracts].sort((a, b) => preference.indexOf(a) - preference.indexOf(b));
-}
-
 function queueStatus(row) {
   if (row.reviewStatus === "accepted") return "TRACKING";
   if (row.reviewStatus === "deferred") return "ON YOUR LIST";
@@ -943,10 +935,6 @@ function hashToken(token) {
 
 function jsonObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function stringArray(value) {
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item) : [];
 }
 
 function stringValue(value) {

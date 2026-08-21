@@ -14,7 +14,7 @@ import {
 const log = baseLogger.child({ component: "agentic-shopify-execution" });
 
 export const AGENTIC_EXECUTION_PROMPT_VERSION = "agentic-shopify-execution-v1";
-export const MAX_EXECUTION_ITERATIONS = 8;
+export const MAX_EXECUTION_ITERATIONS = 10;
 
 export const AGENTIC_EXECUTION_SCHEMA = {
   type: Type.OBJECT,
@@ -51,7 +51,7 @@ export const AGENTIC_EXECUTION_SCHEMA = {
  * @param {{
  *   provider: { enabled?: boolean; generateStructuredJson?: Function; provider?: string; model?: string };
  *   prisma?: any;
- *   client: { request: Function };
+ *   client: { request: (document: string, variables?: Record<string, unknown>) => Promise<unknown> };
  *   merchantId: string;
  *   shopId: string;
  *   shopDomain: string;
@@ -236,7 +236,7 @@ After every write, read Shopify state back before OUTCOME_ACHIEVED. Prefer the s
  * @param {ReturnType<typeof getActionRevisionState>} revision
  */
 export function buildExecutionSemanticAction(action, revision) {
-  const contract = revision.semanticContract ?? {};
+  const contract = /** @type {Record<string, any>} */ (revision.semanticContract ?? {});
   return {
     title: action.title,
     summary: action.summary,
@@ -254,9 +254,11 @@ export function buildExecutionSemanticAction(action, revision) {
 
 /** @param {unknown} raw */
 function normalizeExecutionTurn(raw) {
-  const object = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const object = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? /** @type {Record<string, any>} */ (raw)
+    : {};
   const toolCalls = (Array.isArray(object.toolCalls) ? object.toolCalls : [])
-    .map((row) => ({
+    .map((/** @type {any} */ row) => ({
       tool: String(row?.tool ?? ""),
       arguments:
         row?.arguments && typeof row.arguments === "object" && !Array.isArray(row.arguments)
@@ -279,13 +281,14 @@ function normalizeExecutionTurn(raw) {
     progressSummary: typeof object.progressSummary === "string" ? object.progressSummary : null,
     verification:
       object.verification && typeof object.verification === "object" && !Array.isArray(object.verification)
-        ? object.verification
+        ? /** @type {Record<string, any>} */ (object.verification)
         : null,
     blocker: typeof object.blocker === "string" ? object.blocker : null,
     merchantMessage: typeof object.merchantMessage === "string" ? object.merchantMessage : null,
   };
 }
 
+/** @param {any[]} toolResults */
 function hasReadAfterWrite(toolResults) {
   let wrote = false;
   let readAfterWrite = false;
@@ -299,20 +302,22 @@ function hasReadAfterWrite(toolResults) {
   return wrote ? readAfterWrite : true;
 }
 
+/** @param {any[]} toolResults */
 function lastRetrievedOperations(toolResults) {
   for (let index = toolResults.length - 1; index >= 0; index -= 1) {
     const result = toolResults[index];
     if (result.tool !== SHOPIFY_AGENT_TOOL.retrieveOperations || !Array.isArray(result.facts?.results)) continue;
-    return result.facts.results.map((operation) => operation.operation).slice(0, 8);
+    return result.facts.results.map((/** @type {any} */ operation) => operation.operation).slice(0, 8);
   }
   return [];
 }
 
+/** @param {any[]} toolResults */
 function findRepeatedEmptyRead(toolResults) {
   const reads = toolResults
-    .filter((result) => result.tool === SHOPIFY_AGENT_TOOL.callOperation && result.ok)
-    .filter((result) => !operationLooksWrite(String(result.facts?.operation ?? "")))
-    .map((result) => ({
+    .filter((/** @type {any} */ result) => result.tool === SHOPIFY_AGENT_TOOL.callOperation && result.ok)
+    .filter((/** @type {any} */ result) => !operationLooksWrite(String(result.facts?.operation ?? "")))
+    .map((/** @type {any} */ result) => ({
       operation: String(result.facts?.operation ?? ""),
       key: `${result.facts?.operation ?? ""}:${JSON.stringify(readVariablesFromResult(result))}`,
       empty: Array.isArray(result.facts?.resourceIds) && result.facts.resourceIds.length === 0,
@@ -328,14 +333,17 @@ function findRepeatedEmptyRead(toolResults) {
   return null;
 }
 
+/** @param {any} result */
 function readVariablesFromResult(result) {
   return result.facts?.variables ?? null;
 }
 
+/** @param {string} operation */
 function operationLooksWrite(operation) {
   return /(create|update|delete|set|add|remove|adjust|refund|cancel|bulk)/i.test(operation);
 }
 
+/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input */
 async function loadAction(prisma, input) {
   if (!prisma?.merchantAction?.findFirst) return null;
   return prisma.merchantAction.findFirst({
@@ -343,6 +351,7 @@ async function loadAction(prisma, input) {
   });
 }
 
+/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {{ status: string; outcome: any }} data */
 async function markActionExecutionOutcome(prisma, input, data) {
   if (!prisma?.merchantAction?.updateMany) return;
   await prisma.merchantAction.updateMany({

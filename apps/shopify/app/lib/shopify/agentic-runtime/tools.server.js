@@ -53,7 +53,7 @@ export const SHOPIFY_AGENT_TOOL_CALL_SCHEMA = {
 /**
  * @param {{
  *   prisma?: any;
- *   client: { request: Function };
+ *   client: { request: (document: string, variables?: Record<string, unknown>) => Promise<unknown> };
  *   merchantId: string;
  *   shopId: string;
  *   shopDomain: string;
@@ -109,7 +109,7 @@ export async function runShopifyAgentTool(ctx, call) {
         "Shopify writes during execution require a stable idempotencyKey.",
       );
     }
-    const result = await executeShopifyOperation({
+    const result = /** @type {any} */ (await executeShopifyOperation({
       prisma: ctx.prisma,
       client: ctx.client,
       merchantId: ctx.merchantId,
@@ -126,7 +126,7 @@ export async function runShopifyAgentTool(ctx, call) {
       grantedScopes: ctx.grantedScopes,
       catalog: ctx.catalog,
       logger: ctx.logger,
-    });
+    }));
     return {
       tool: call.tool,
       ok: result.ok,
@@ -156,7 +156,7 @@ export async function runShopifyAgentTool(ctx, call) {
 
 /** @param {any[] | undefined} values */
 export function publicShopifyToolResults(values) {
-  return (values ?? []).map((row) => ({
+  return (values ?? []).slice(-16).map((row) => ({
     tool: row.tool,
     ok: row.ok,
     message: row.message,
@@ -181,10 +181,27 @@ function asVariables(value) {
 /** @param {unknown} data */
 function summarizeProviderData(data) {
   if (!data || typeof data !== "object") return data ?? null;
-  return {
-    topLevelKeys: Object.keys(data).slice(0, 12),
-    ...data,
-  };
+  return compactJson(data);
+}
+
+/** @param {unknown} value @param {number} [depth] @returns {unknown} */
+function compactJson(value, depth = 0) {
+  if (value == null) return value;
+  if (typeof value === "string") return value.slice(0, 500);
+  if (typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    /** @type {unknown[]} */
+    const items = value.slice(0, depth >= 3 ? 4 : 12).map((item) => compactJson(item, depth + 1));
+    return value.length > items.length
+      ? [...items, { omittedItems: value.length - items.length }]
+      : items;
+  }
+  const object = /** @type {Record<string, unknown>} */ (value);
+  const entries = Object.entries(object).slice(0, depth >= 3 ? 8 : 16);
+  /** @type {Record<string, unknown>} */
+  const compact = Object.fromEntries(entries.map(([key, item]) => [key, compactJson(item, depth + 1)]));
+  const omitted = Object.keys(object).length - entries.length;
+  return omitted > 0 ? { ...compact, omittedKeys: omitted } : compact;
 }
 
 /**
@@ -198,6 +215,7 @@ function operationLooksRead(operation) {
 }
 
 /** @returns {ShopifyAgentToolResult} */
+/** @param {string} tool @param {string} code @param {string} message */
 function toolFail(tool, code, message) {
   return {
     tool,

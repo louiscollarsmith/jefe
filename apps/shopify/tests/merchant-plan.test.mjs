@@ -20,6 +20,7 @@ import {
   PLAN_REVIEW_STATUS,
   PLAN_RUN_STATUS,
 } from "../app/lib/merchant-plan/constants.server.js";
+import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../app/lib/shopify/agentic-runtime/constants.server.js";
 import { upsertDerivedBelief } from "../app/lib/merchant-memory/service.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -890,14 +891,15 @@ test("getLatestMerchantPlan reads the latest completed run without a snapshot or
   assert.deepEqual(empty, { selectedRun: null });
 });
 
-test("Plan generation is wired to the async worker and not browser page load", () => {
-  assert.equal(MERCHANT_PLAN_JOB_TYPE, "merchant_plan_generate");
-  assert.match(workerSource, /MERCHANT_PLAN_JOB_TYPE/);
-  assert.match(workerSource, /generateMerchantPlan/);
-  assert.match(routeSource, /intent === "plan\.retry"[\s\S]*ensureMerchantPlanQueued/);
+test("Agentic recommendation generation is wired to the async worker and not browser page load", () => {
+  assert.equal(AGENTIC_RECOMMENDATION_JOB_TYPE, "agentic_recommendation_generate");
+  assert.match(workerSource, /AGENTIC_RECOMMENDATION_JOB_TYPE/);
+  assert.match(workerSource, /runAgenticRecommendationInvestigation/);
+  assert.doesNotMatch(workerSource, /generateMerchantPlan/);
+  assert.match(routeSource, /intent === "plan\.retry"[\s\S]*ensureAgenticRecommendationQueued/);
   assert.doesNotMatch(
     routeSource,
-    /activeStep === "plan"[\s\S]{0,240}ensureMerchantPlanQueued/,
+    /activeStep === "plan"[\s\S]{0,240}ensureAgenticRecommendationQueued/,
   );
   assert.doesNotMatch(routeSource, /generateMerchantPlan\(/);
 });
@@ -1187,7 +1189,7 @@ test("Plan refinement records evidence, marks the current Plan and queues regene
       where: {
         merchantId: merchant.id,
         shopId: shop.id,
-        jobType: MERCHANT_PLAN_JOB_TYPE,
+        jobType: AGENTIC_RECOMMENDATION_JOB_TYPE,
         status: "queued",
       },
     });

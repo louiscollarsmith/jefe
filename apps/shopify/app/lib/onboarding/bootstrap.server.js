@@ -1,6 +1,5 @@
 // @ts-nocheck
 
-import crypto from "node:crypto";
 import { ShopifyAdminGraphqlClient } from "../shopify/admin-graphql.server.js";
 import {
   BOOTSTRAP_ACTIVE_PRODUCTS_QUERY,
@@ -21,28 +20,7 @@ import { refreshBeliefs } from "../merchant-memory/service.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
   BOOTSTRAP_SAFE_BELIEF_KEYS,
-  MEMORY_BACKFILL_DOMAIN,
 } from "../merchant-memory/constants.server.js";
-import { createLlmProvider } from "../llm/provider.server.js";
-import {
-  isActionExecuteEnabled,
-  listActionCapabilities,
-  listActionTypes,
-} from "../actions/action-intent.server.js";
-import { proposeActionFromIntent } from "../actions/action-resolution.server.js";
-import { ensureMerchantActionForRecommendation } from "../actions/merchant-action.server.js";
-import { advanceActionWorkflow } from "../actions/action-step-lifecycle.server.js";
-import { buildPlanEvidenceSnapshot } from "../merchant-memory/context-retriever.server.js";
-import {
-  acquireProposalCreationLock,
-  checkProposedCreationAllowed,
-  PROPOSAL_CREATION_TRIGGERS,
-  repairDuplicateProposedActions,
-  shouldDeferAutonomousProposalCreation,
-  supersedeAllProposedRecommendations,
-} from "../merchant-plan/proposal-creation-invariant.server.js";
-import { BOOTSTRAP_OUTPUT_SCHEMA, parseBootstrapOutput } from "./bootstrap-schema.server.js";
-import { buildBootstrapPrompt, buildBootstrapSystemPrompt } from "./bootstrap-prompt.server.js";
 import {
   BOOTSTRAP_BACKFILL_DOMAIN,
   upsertBackfillStatus,
@@ -53,10 +31,6 @@ export const BOOTSTRAP_INITIAL_ORDER_LIMIT = 50;
 export const BOOTSTRAP_SECOND_PASS_LIMIT = 100;
 export const BOOTSTRAP_LOOKBACK_DAYS = 90;
 export const BOOTSTRAP_CONNECTION_PAGE_SIZE = 250;
-export const BOOTSTRAP_PROMPT_VERSION = "bootstrap-v2";
-export const BOOTSTRAP_SCHEMA_VERSION = "bootstrap-v1";
-export const BOOTSTRAP_SNAPSHOT_VERSION = "bootstrap-v1";
-
 const ACTIVE_CATALOG_KEYS = [
   "catalog.active_product_count",
   "catalog.total_variant_count",
@@ -323,25 +297,11 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
     preferenceOption(merchantPriority?.value),
   );
 
-  await setPhase(prisma, input, "choosing_first_move", {
+  await setPhase(prisma, input, "ready_for_agentic_recommendation", {
     eligibleContracts: contracts.map((contract) => contract.key),
   });
-  const generated = await generateAndPersistBootstrapOpportunities(prisma, input, {
-    beliefs: memory.beliefs,
-    contracts: [contracts[0]],
-    scope,
-  });
-  const generatedPhase = await resolveBootstrapGenerationPhase(
-    prisma,
-    input,
-    generated.status,
-    generated.recommendationIds,
-  );
-  if (generatedPhase === "completed") {
-    trackFirstInsightReady(prisma, input, generated);
-  }
   const result = {
-    phase: generatedPhase === "completed" ? "ready" : generatedPhase,
+    phase: "ready_for_agentic_recommendation",
     passCount,
     observedOrderIds: orders.map((order) => stringValue(order.id)).filter(Boolean),
     referencedProductIds: productIds,
@@ -364,11 +324,11 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
       beliefs: memory.beliefs.length,
     },
     ...bootstrapMetadata,
-    selectedContract: generated.selectedContract ?? null,
-    insightRunId: generated.insightRunId ?? null,
-    insightRunIds: generated.insightRunId ? [generated.insightRunId] : [],
-    planRunIds: generated.planRunIds ?? [],
-    recommendationIds: generated.recommendationIds ?? [],
+    selectedContract: null,
+    insightRunId: null,
+    insightRunIds: [],
+    planRunIds: [],
+    recommendationIds: [],
     onboardingEpoch: input.onboardingEpoch ?? null,
   };
   await setPhase(prisma, input, result.phase, result, "complete");
@@ -390,192 +350,30 @@ export async function runMerchantMemoryBootstrap(prisma, input) {
 }
 
 /** Generate one requested alternative from the already-captured bootstrap scope. */
-export async function generateBootstrapAlternative(prisma, input) {
-  const bootstrapJob = await prisma.backfillJob.findUnique({
-    where: { shopId_jobType: { shopId: input.shopId, jobType: "merchant_memory_bootstrap" } },
-  });
-  const result = jsonObject(bootstrapJob?.resultJson);
-  const generationInput = {
-    ...input,
-    onboardingEpoch: stringValue(result.onboardingEpoch),
-  };
-  const contractKey = stringValue(input.contractKey);
-  if (!contractKey || !Array.isArray(result.eligibleContracts) || !result.eligibleContracts.includes(contractKey)) {
-    return { status: "no_alternative" };
-  }
-  const scope = {
-    source: "bootstrap",
-    orderExternalIds: stringArray(result.observedOrderIds),
-    productExternalIds: stringArray(result.referencedProductIds),
-    variantExternalIds: stringArray(result.referencedVariantIds),
-    inventoryComplete: result.inventoryComplete === true,
-    lineItemsComplete: result.lineItemsComplete === true,
-    ordersComplete: result.ordersComplete === true,
-    activeCatalogComplete: result.activeCatalogComplete === true,
-    lineItemCount: Number(result.lineItemCount) || 0,
-    activeProductCount: Number(result.activeProductCount) || 0,
-    inventoryLevelCount: Number(result.inventoryLevelCount) || 0,
-    completeRequestedWindow: result.completeRequestedWindow === true,
-    observedFrom: stringValue(result.observedFrom),
-    observedTo: stringValue(result.observedTo),
-    passCount: Number(result.passCount) || 1,
-    truncated: result.truncated === true,
-  };
-  const beliefKeys = [...new Set([...ACTIVE_CATALOG_KEYS, ...STOCKOUT_KEYS, ...COMPLETE_WINDOW_KEYS])];
-  const beliefs = await prisma.merchantMemoryBelief.findMany({
-    where: {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      key: { in: beliefKeys },
-      status: { in: ACTIVE_BELIEF_STATUSES },
-    },
-    include: { evidence: { orderBy: { createdAt: "desc" }, take: 1 } },
-  });
-  const selected = buildEvidenceContracts(beliefs, scope).find((candidate) => candidate.key === contractKey);
-  if (!selected) return { status: "no_longer_supported" };
-  const generated = await generateAndPersistBootstrapOpportunities(prisma, {
-    ...generationInput,
-    proposalTrigger: PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING,
-  }, {
-    beliefs,
-    contracts: [selected],
-    scope,
-  });
-  if (generated.status === "completed") {
-    const generatedPhase = await resolveBootstrapGenerationPhase(
-      prisma,
-      generationInput,
-      generated.status,
-      generated.recommendationIds,
-    );
-    const surfaceable = generatedPhase === "completed";
-    if (!surfaceable) {
-      return { ...generated, status: "no_longer_supported" };
-    }
-    trackFirstInsightReady(prisma, generationInput, generated);
-    const status = await prisma.shopBackfillStatus.findUnique({
-      where: { shopId_domain: { shopId: input.shopId, domain: BOOTSTRAP_BACKFILL_DOMAIN } },
-      select: { metadata: true },
-    });
-    const statusMetadata = jsonObject(status?.metadata);
-    await upsertBackfillStatus(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      domain: BOOTSTRAP_BACKFILL_DOMAIN,
-      status: "complete",
-      completedAt: new Date(),
-      lastError: null,
-      metadata: {
-        ...statusMetadata,
-        phase: "ready",
-        insightRunId: generated.insightRunId ?? null,
-        insightRunIds: uniqueStrings([
-          ...stringArray(statusMetadata.insightRunIds),
-          generated.insightRunId,
-        ]),
-        planRunIds: uniqueStrings([
-          ...stringArray(statusMetadata.planRunIds),
-          ...(generated.planRunIds ?? []),
-        ]),
-        recommendationIds: uniqueStrings([
-          ...stringArray(statusMetadata.recommendationIds),
-          ...(generated.recommendationIds ?? []),
-        ]),
-        selectedContract: contractKey,
-      },
-    });
-    await prisma.backfillJob.update({
-      where: { id: bootstrapJob.id },
-      data: {
-        resultJson: {
-          ...result,
-          phase: "ready",
-          selectedContract: contractKey,
-          insightRunId: generated.insightRunId ?? null,
-          insightRunIds: uniqueStrings([
-            ...stringArray(result.insightRunIds),
-            generated.insightRunId,
-          ]),
-          planRunIds: uniqueStrings([
-            ...stringArray(result.planRunIds),
-            ...(generated.planRunIds ?? []),
-          ]),
-          recommendationIds: uniqueStrings([
-            ...stringArray(result.recommendationIds),
-            ...(generated.recommendationIds ?? []),
-          ]),
-        },
-      },
-    });
-  }
-  return generated;
+export async function generateBootstrapAlternative(_prisma, _input) {
+  void _prisma;
+  void _input;
+  return { status: "retired_agentic_recommendation_only" };
 }
 
 export async function resolveBootstrapGenerationPhase(
-  prisma,
-  input,
+  _prisma,
+  _input,
   generationStatus,
-  recommendationIds = [],
+  _recommendationIds = [],
 ) {
-  if (generationStatus !== "completed") return generationStatus;
-  await reconcileBootstrapIfFullMemoryReady(prisma, input);
-  return (await hasSurfaceableBootstrapRecommendation(
-    prisma,
-    input,
-    recommendationIds,
-  ))
-    ? "completed"
-    : "insufficient_evidence";
+  void _prisma;
+  void _input;
+  void _recommendationIds;
+  return generationStatus === "completed"
+    ? "retired_agentic_recommendation_only"
+    : generationStatus;
 }
 
-async function hasSurfaceableBootstrapRecommendation(
-  prisma,
-  input,
-  recommendationIds,
-) {
-  const ids = uniqueStrings(recommendationIds);
-  if (ids.length === 0) return false;
-  const recommendation = await prisma.merchantPlanRecommendation.findFirst({
-    where: {
-      id: { in: ids },
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      sourceMode: "bootstrap",
-      reviewStatus: "proposed",
-    },
-    select: { id: true },
-  });
-  return Boolean(recommendation);
-}
-
-/**
- * Close the ordering gap where a complete memory rebuild can reconcile before
- * a still-running bootstrap generation publishes its recommendation.
- */
-export async function reconcileBootstrapIfFullMemoryReady(prisma, input) {
-  const memoryStatus = await prisma.shopBackfillStatus.findUnique({
-    where: {
-      shopId_domain: {
-        shopId: input.shopId,
-        domain: MEMORY_BACKFILL_DOMAIN,
-      },
-    },
-    select: { status: true },
-  });
-  if (memoryStatus?.status !== "complete") {
-    return { reconciled: false };
-  }
-
-  // Dynamic import avoids a module-initialisation cycle: reconciliation uses
-  // the bootstrap contract definitions to evaluate the completed memory.
-  const { reconcileBootstrapRecommendationsAfterFullRefresh } = await import(
-    "./reconciliation.server.js"
-  );
-  const result = await reconcileBootstrapRecommendationsAfterFullRefresh(
-    prisma,
-    input,
-  );
-  return { reconciled: true, ...result };
+export async function reconcileBootstrapIfFullMemoryReady(_prisma, _input) {
+  void _prisma;
+  void _input;
+  return { reconciled: false, status: "retired_agentic_recommendation_only" };
 }
 
 async function fetchRecentOrders(client, input) {
@@ -913,433 +711,6 @@ function contract(key, beliefs, priority) {
   };
 }
 
-async function generateAndPersistBootstrapOpportunities(prisma, input, prepared) {
-  await repairDuplicateProposedActions(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    logger: input.logger,
-  }).catch(() => ({ retained: 0, superseded: 0 }));
-
-  const snapshotHash = hashJson({
-    scope: prepared.scope,
-    contracts: prepared.contracts,
-    beliefs: prepared.beliefs.map((belief) => ({
-      id: belief.id,
-      key: belief.key,
-      value: belief.value,
-      derivationVersion: belief.derivationVersion ?? null,
-    })),
-  });
-  const existing = await prisma.merchantInsightRun.findUnique({
-    where: {
-      shopId_beliefSnapshotHash_promptVersion_schemaVersion: {
-        shopId: input.shopId,
-        beliefSnapshotHash: snapshotHash,
-        promptVersion: BOOTSTRAP_PROMPT_VERSION,
-        schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
-      },
-    },
-    include: { findings: true },
-  });
-  if (existing?.status === "completed") {
-    const recommendations = await prisma.merchantPlanRecommendation.findMany({
-      where: { shopId: input.shopId, sourceMode: "bootstrap", supportingInsightIds: { hasSome: existing.findings.map((finding) => finding.id) } },
-      select: { id: true, runId: true, run: { select: { result: true } } },
-    });
-    const reused = {
-      status: "completed",
-      selectedContract: stringValue(jsonObject(recommendations[0]?.run?.result).contractKey),
-      insightRunId: existing.id,
-      planRunIds: recommendations.map((row) => row.runId),
-      recommendationIds: recommendations.map((row) => row.id),
-    };
-    return reused;
-  }
-
-  const insightRun = existing
-    ? await prisma.merchantInsightRun.update({
-        where: { id: existing.id },
-        data: { status: "running", sourceMode: "bootstrap", startedAt: new Date(), failedAt: null, safeErrorCode: null, lastError: null },
-      })
-    : await prisma.merchantInsightRun.create({
-        data: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: "running",
-          sourceMode: "bootstrap",
-          beliefSnapshotVersion: BOOTSTRAP_SNAPSHOT_VERSION,
-          beliefSnapshotHash: snapshotHash,
-          relevantBeliefIds: prepared.beliefs.map((belief) => belief.id),
-          promptVersion: BOOTSTRAP_PROMPT_VERSION,
-          schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
-          startedAt: new Date(),
-        },
-      });
-  const provider = createLlmProvider({
-    logger: input.logger,
-    usage: {
-      prisma,
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      feature: "onboarding_bootstrap",
-      runType: "MerchantInsightRun",
-      runId: insightRun.id,
-    },
-  });
-  if (!provider.enabled || !provider.generateStructuredJson) {
-    await prisma.merchantInsightRun.update({
-      where: { id: insightRun.id },
-      data: { status: "model_disabled", completedAt: new Date(), safeErrorCode: "llm_disabled", result: { reason: "llm_disabled" } },
-    });
-    return { status: "model_disabled", selectedContract: null, insightRunId: insightRun.id, planRunIds: [], recommendationIds: [] };
-  }
-  await prisma.merchantInsightRun.update({
-    where: { id: insightRun.id },
-    data: { provider: provider.provider, modelIdentifier: provider.model },
-  });
-  const priority = await prisma.merchantMemoryBelief.findFirst({
-    where: { merchantId: input.merchantId, key: "preferences.optimisation_priority", status: { in: ACTIVE_BELIEF_STATUSES } },
-    orderBy: { updatedAt: "desc" },
-  });
-  const runtimeCapabilities = new Map(listActionTypes().map((capability) => [capability.actionType, capability]));
-  const capabilities = listActionCapabilities().map((capability) => ({
-    ...capability,
-    live: runtimeCapabilities.get(capability.actionType)?.live === true,
-    requiredScopes: runtimeCapabilities.get(capability.actionType)?.requiredScopes ?? [],
-  }));
-  const suppliedBeliefs = prepared.beliefs.map((belief) => ({
-    id: belief.id,
-    key: belief.key,
-    value: belief.value,
-    confidence: belief.confidence,
-    evidence: belief.evidence?.[0]?.metadata?.evidenceScope ?? null,
-  }));
-  let parsed = null;
-  let lastResult = null;
-  let validationError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    lastResult = await provider.generateStructuredJson({
-      systemPrompt: buildBootstrapSystemPrompt(),
-      prompt: buildBootstrapPrompt({
-        merchantPriority: preferenceOption(priority?.value),
-        capabilities,
-        contracts: prepared.contracts,
-        beliefs: suppliedBeliefs,
-      }, validationError),
-      schema: BOOTSTRAP_OUTPUT_SCHEMA,
-      maxInputTokens: 10000,
-      maxOutputTokens: 2400,
-      timeoutMs: 15000,
-    });
-    const candidate = parseBootstrapOutput(lastResult.json, {
-      contracts: prepared.contracts,
-      beliefs: suppliedBeliefs,
-      capabilities,
-    });
-    if (candidate.ok) { parsed = candidate; break; }
-    validationError = candidate.error;
-  }
-  if (!parsed) {
-    await prisma.merchantInsightRun.update({
-      where: { id: insightRun.id },
-      data: {
-        status: "failed",
-        completedAt: null,
-        failedAt: new Date(),
-        safeErrorCode: "invalid_model_output",
-        lastError: null,
-        result: { reason: "invalid_model_output", validationError },
-      },
-    });
-    return { status: "generation_failed", selectedContract: null, insightRunId: insightRun.id, planRunIds: [], recommendationIds: [] };
-  }
-
-  const proposalTrigger =
-    input.proposalTrigger === PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING
-      ? PROPOSAL_CREATION_TRIGGERS.MERCHANT_ONBOARDING
-      : PROPOSAL_CREATION_TRIGGERS.BACKGROUND;
-  if (
-    proposalTrigger === "background" &&
-    (await shouldDeferAutonomousProposalCreation(prisma, input))
-  ) {
-    await prisma.merchantInsightRun.update({
-      where: { id: insightRun.id },
-      data: {
-        status: "completed",
-        completedAt: new Date(),
-        result: {
-          sourceMode: "bootstrap",
-          skipped: "deferred_initial_proposal_exists",
-          opportunityCount: 0,
-        },
-      },
-    });
-    input.logger?.info?.("Bootstrap proposal skipped — initial proposal already exists", {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      insightRunId: insightRun.id,
-    });
-    return {
-      status: "deferred_initial_proposal_exists",
-      selectedContract: null,
-      insightRunId: insightRun.id,
-      planRunIds: [],
-      recommendationIds: [],
-    };
-  }
-
-  const recommendationIds = [];
-  const planRunIds = [];
-  const actionCandidates = [];
-  let proposalGateReason = null;
-  await prisma.$transaction(async (tx) => {
-    await acquireProposalCreationLock(tx, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-    });
-    const gate = await checkProposedCreationAllowed(tx, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      trigger: proposalTrigger,
-    });
-    if (!gate.allowed) {
-      if (proposalTrigger === "merchant_onboarding" && gate.reason === "proposed_exists") {
-        await supersedeAllProposedRecommendations(tx, {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-        });
-        const retryGate = await checkProposedCreationAllowed(tx, {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          trigger: proposalTrigger,
-        });
-        if (!retryGate.allowed) proposalGateReason = retryGate.reason;
-      } else {
-        proposalGateReason = gate.reason;
-      }
-    }
-    await tx.merchantInsightFinding.deleteMany({ where: { runId: insightRun.id } });
-    for (let index = 0; index < parsed.opportunities.length; index += 1) {
-      if (proposalGateReason) break;
-      const opportunity = parsed.opportunities[index];
-      const finding = await tx.merchantInsightFinding.create({
-        data: {
-          runId: insightRun.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          orderIndex: index,
-          title: opportunity.headline,
-          finding: opportunity.explanation,
-          whyItMatters: opportunity.whyItMatters,
-          confidence: opportunity.confidence,
-          category: contractCategory(opportunity.contractKey),
-          caveat: opportunity.caveat,
-          supportingBeliefIds: opportunity.supportingBeliefIds,
-        },
-      });
-      const planHash = hashJson({ snapshotHash, contractKey: opportunity.contractKey });
-      const planRun = await tx.merchantPlanRun.upsert({
-        where: { shopId_snapshotHash_promptVersion_schemaVersion: { shopId: input.shopId, snapshotHash: planHash, promptVersion: BOOTSTRAP_PROMPT_VERSION, schemaVersion: BOOTSTRAP_SCHEMA_VERSION } },
-        create: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: "completed",
-          sourceMode: "bootstrap",
-          snapshotVersion: BOOTSTRAP_SNAPSHOT_VERSION,
-          snapshotHash: planHash,
-          relevantBeliefIds: opportunity.supportingBeliefIds,
-          insightRunId: insightRun.id,
-          promptVersion: BOOTSTRAP_PROMPT_VERSION,
-          schemaVersion: BOOTSTRAP_SCHEMA_VERSION,
-          provider: provider.provider,
-          modelIdentifier: provider.model,
-          completedAt: new Date(),
-          result: { contractKey: opportunity.contractKey, rankIndex: index },
-        },
-        update: { status: "completed", sourceMode: "bootstrap", completedAt: new Date(), result: { contractKey: opportunity.contractKey, rankIndex: index } },
-      });
-      const reviewAt = new Date(Date.now() + 14 * 86400000);
-      planRunIds.push(planRun.id);
-      const recommendation = await tx.merchantPlanRecommendation.upsert({
-        where: { runId: planRun.id },
-        create: {
-          runId: planRun.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          title: opportunity.recommendationHeadline,
-          summary: opportunity.explanation,
-          primaryGoalId: null,
-          whyThisAction: opportunity.whyItMatters,
-          whyNow: opportunity.whyItMatters,
-          startToday: opportunity.whatIllDo,
-          successSignal: { description: opportunity.howWellKnow, timeframe: "14 days" },
-          expectedBenefit: opportunity.expectedBenefit,
-          supportingBeliefIds: opportunity.supportingBeliefIds,
-          supportingInsightIds: [finding.id],
-          confidence: opportunity.confidence,
-          caveat: opportunity.caveat,
-          sourceMode: "bootstrap",
-          reviewAt,
-          outcomeStatus: "pending",
-          reviewStatus: "proposed",
-        },
-        update: {
-          title: opportunity.recommendationHeadline,
-          summary: opportunity.explanation,
-          whyThisAction: opportunity.whyItMatters,
-          whyNow: opportunity.whyItMatters,
-          startToday: opportunity.whatIllDo,
-          successSignal: { description: opportunity.howWellKnow, timeframe: "14 days" },
-          expectedBenefit: opportunity.expectedBenefit,
-          supportingBeliefIds: opportunity.supportingBeliefIds,
-          supportingInsightIds: [finding.id],
-          confidence: opportunity.confidence,
-          caveat: opportunity.caveat,
-          reviewAt,
-        },
-      });
-      recommendationIds.push(recommendation.id);
-      const workflow = await tx.merchantRecommendationWorkflow.upsert({
-        where: {
-          recommendationId_version: {
-            recommendationId: recommendation.id,
-            version: 1,
-          },
-        },
-        create: {
-          recommendationId: recommendation.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          version: 1,
-          status: "active",
-          source: "bootstrap_generation",
-        },
-        update: {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          status: "active",
-          source: "bootstrap_generation",
-        },
-      });
-      await tx.merchantRecommendationStep.deleteMany({
-        where: { workflowId: workflow.id, status: { in: ["draft", "pending"] } },
-      });
-      const step = await tx.merchantRecommendationStep.create({
-        data: {
-          workflowId: workflow.id,
-          recommendationId: recommendation.id,
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          orderIndex: 0,
-          title: opportunity.actionIntent ? "Review and approve the Shopify action" : "Track the signal",
-          description: opportunity.whatIllDo,
-          completionCriteria: opportunity.howWellKnow,
-          status: "draft",
-          mode: opportunity.actionIntent ? "execute" : "assist",
-          capabilityRef: opportunity.actionIntent
-            ? `execute:${opportunity.actionIntent.actionType}:${opportunity.actionIntent.targetKind}`
-            : null,
-          dependsOnStepIds: [],
-          evidenceIds: [],
-        },
-      });
-      const recommendationWithWorkflow = {
-        ...recommendation,
-        workflows: [{ ...workflow, steps: [step] }],
-      };
-      const action = await ensureMerchantActionForRecommendation(tx, {
-        recommendation: recommendationWithWorkflow,
-      });
-      await advanceActionWorkflow(tx, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        actionId: action?.id ?? null,
-        workflowId: workflow.id,
-      });
-      if (opportunity.actionIntent) {
-        actionCandidates.push({
-          recommendation: recommendationWithWorkflow,
-          intent: opportunity.actionIntent,
-          recommendationStepId: step.id,
-        });
-      }
-      await buildPlanEvidenceSnapshot(tx, {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        recommendation,
-        sourceSnapshotHash: snapshotHash,
-        snapshotSource: "bootstrap_generation",
-        logger: input.logger,
-      });
-    }
-    await tx.merchantInsightRun.update({
-      where: { id: insightRun.id },
-      data: {
-        status: "completed",
-        completedAt: new Date(),
-        result: {
-          sourceMode: "bootstrap",
-          opportunityCount: proposalGateReason ? 0 : parsed.opportunities.length,
-          skipped: proposalGateReason,
-          durationMs: lastResult?.durationMs ?? null,
-          usage: lastResult?.usage ?? null,
-        },
-      },
-    });
-  });
-  if (proposalGateReason) {
-    return {
-      status: proposalGateReason,
-      selectedContract: null,
-      insightRunId: insightRun.id,
-      planRunIds,
-      recommendationIds,
-    };
-  }
-  for (const candidate of actionCandidates) {
-    const proposal = await proposeActionFromIntent(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      intent: candidate.intent,
-      writeEnabled: isActionExecuteEnabled(candidate.intent.actionType),
-      sourceRecommendation: candidate.recommendation,
-      recommendationStepId: candidate.recommendationStepId,
-    });
-    input.logger.info("Bootstrap recommendation action resolved", {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-      recommendationId: candidate.recommendation.id,
-      actionType: candidate.intent.actionType,
-      status: proposal.status,
-      actionRunId: proposal.execution?.runId ?? null,
-    });
-  }
-  return {
-    status: "completed",
-    selectedContract: parsed.opportunities[0]?.contractKey ?? null,
-    insightRunId: insightRun.id,
-    planRunIds,
-    recommendationIds,
-  };
-}
-
-function trackFirstInsightReady(prisma, input, generated) {
-  void trackOnce(prisma, {
-    type: "first_insight_ready",
-    topic: "onboarding",
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    shopDomain: input.shopDomain,
-    dedupeKey: `first_insight_ready:${input.shopId}:${input.onboardingEpoch ?? "legacy"}`,
-    summary: `First insight ready for ${input.shopDomain}`,
-    properties: {
-      insightRunId: generated.insightRunId,
-      recommendationCount: generated.recommendationIds?.length ?? 0,
-      onboardingEpoch: input.onboardingEpoch ?? null,
-    },
-  });
-}
-
 async function setPhase(prisma, input, phase, metadata = {}, status = "running") {
   const current = await prisma.shopBackfillStatus.findUnique({
     where: {
@@ -1452,16 +823,6 @@ function percentageValue(belief) {
   return Number.isFinite(raw) ? raw : 0;
 }
 
-function contractCategory(key) {
-  return key === "stockout_protection"
-    ? "inventory"
-    : key === "discount_review"
-      ? "business"
-      : key === "catalog_health"
-        ? "catalog"
-        : "products";
-}
-
 function rankEligibleContracts(contracts, priority) {
   const secondary = priority === "profit"
     ? ["discount_review", "sales_concentration"]
@@ -1488,10 +849,6 @@ function preferenceOption(value) {
   );
 }
 
-function hashJson(value) {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
 function dedupeById(items) {
   return [...new Map(items.map((item) => [stringValue(item.id), item])).values()].filter((item) => stringValue(item.id));
 }
@@ -1503,12 +860,4 @@ export const __bootstrapTestHooks = {
 
 function stringValue(value) {
   return typeof value === "string" && value ? value : null;
-}
-
-function stringArray(value) {
-  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item) : [];
-}
-
-function uniqueStrings(values) {
-  return [...new Set(values.filter((value) => typeof value === "string" && value))];
 }

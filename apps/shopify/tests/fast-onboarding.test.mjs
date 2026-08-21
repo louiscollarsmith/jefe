@@ -913,7 +913,7 @@ test("parallel derivation lanes serialize first belief publication", async () =>
   ]);
 });
 
-test("a late bootstrap publication reconciles after full memory is complete", async () => {
+test("late bootstrap recommendation reconciliation is retired in the agentic runtime", async () => {
   const updates = [];
   const prisma = {
     shopBackfillStatus: {
@@ -941,17 +941,14 @@ test("a late bootstrap publication reconciles after full memory is complete", as
     shopId: "shop-1",
   });
 
-  assert.equal(result.reconciled, true);
-  assert.equal(result.superseded, 1);
-  assert.deepEqual(updates, [
-    {
-      where: { id: "late-bootstrap-recommendation" },
-      data: { reviewStatus: "superseded" },
-    },
-  ]);
+  assert.deepEqual(result, {
+    reconciled: false,
+    status: "retired_agentic_recommendation_only",
+  });
+  assert.deepEqual(updates, []);
 });
 
-test("an unsupported late bootstrap result becomes a terminal honest fallback", async () => {
+test("late bootstrap results cannot become terminal onboarding recommendation state", async () => {
   const prisma = {
     shopBackfillStatus: {
       findUnique: async () => ({ status: "complete" }),
@@ -978,11 +975,11 @@ test("an unsupported late bootstrap result becomes a terminal honest fallback", 
       "completed",
       ["unsupported-recommendation"],
     ),
-    "insufficient_evidence",
+    "retired_agentic_recommendation_only",
   );
 });
 
-test("a supported current finding cannot make a superseded alternative look ready", async () => {
+test("bootstrap phase resolution no longer selects supported or superseded alternatives", async () => {
   const recommendations = [
     {
       id: "supported-a",
@@ -1037,9 +1034,9 @@ test("a supported current finding cannot make a superseded alternative look read
     ["unsupported-b"],
   );
 
-  assert.equal(phase, "insufficient_evidence");
+  assert.equal(phase, "retired_agentic_recommendation_only");
   assert.equal(recommendations[0].reviewStatus, "proposed");
-  assert.equal(recommendations[1].reviewStatus, "superseded");
+  assert.equal(recommendations[1].reviewStatus, "proposed");
 });
 
 test("legacy and current priority shapes retain the exact merchant echo", () => {
@@ -1107,7 +1104,9 @@ test("invalid model output is a retryable generation failure", () => {
   );
   assert.equal(failure.type, "retryable");
   assert.match(failure.message, /retry/i);
-  assert.match(bootstrapSource, /invalid_model_output/);
+  assert.doesNotMatch(bootstrapSource, /invalid_model_output/);
+  assert.doesNotMatch(bootstrapSource, /onboarding_bootstrap/);
+  assert.match(bootstrapSource, /ready_for_agentic_recommendation/);
 });
 
 test("thin first-read evidence waits only while recommendation work is active", () => {

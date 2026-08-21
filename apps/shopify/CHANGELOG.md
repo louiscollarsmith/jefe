@@ -10,7 +10,15 @@
 
 ### Changed
 
+- **Browser onboarding now uses Luna's agentic Shopify recommendation runtime as the canonical first-move path.** Completing merchant goals now queues `agentic_recommendation_generate`; the worker runs Luna with Merchant Memory, bounded evidence, searchable Shopify API stubs and live Shopify reads, then persists one semantic recommendation and Merchant Action without pre-authored workflow steps or legacy `actionType` routing. Fast onboarding now surfaces only `sourceMode: "agentic"` recommendations, accepts the linked semantic Action revision, and executes through the agentic Shopify execution service. `app/lib/{merchant-goals/service,onboarding/fast-onboarding,merchant-plan/service}.server.js`, `app/lib/shopify/agentic-runtime/**`, `app/routes/app._index.tsx`, `app/services/{shopify-backfill-status,shopify-backfill-worker}.server.js`, `tests/merchant-goals.test.mjs`.
+
+- **The old bootstrap recommendation generator and worker recommendation-review/reconciliation dispatch are retired from the active runtime.** `merchant_memory_bootstrap` now captures evidence and stops at `ready_for_agentic_recommendation`; legacy bootstrap alternative/reconciliation helpers return retired compatibility statuses, and the worker explicitly rejects active `merchant_plan_generate` and `recommendation_review` jobs instead of running the old recommendation architecture. `app/lib/onboarding/bootstrap.server.js`, `app/services/shopify-backfill-worker.server.js`.
+
 - **The agentic Shopify runtime evaluator now proves the live dev-store path end to end.** It captures Luna's live-selected collection recommendation, materialises that same semantic Action for `jefe-local-store.myshopify.com`, accepts only the `acceptedActionRevision`, lets Luna execute through generated Shopify stubs and the universal gateway, verifies the final Shopify collection by read-back, records live write/recovery/idempotent-replay evidence, and reruns the dev merchant onboarding investigation to show Luna retrieving broader Shopify reads from real Merchant Memory. `scripts/eval-agentic-shopify-runtime.mjs`, `app/lib/shopify/agentic-runtime/{execution-agent,recommendation-agent,tools}.server.js`, `app/lib/shopify/api/gateway.server.js`, `tests/agentic-shopify-runtime.test.mjs`, `GLOSSARY.md`.
+
+### Fixed
+
+- **New agentic recommendation runs now enqueue their backfill job instead of self-reusing a just-created queued run.** The queue helper now only reuses an active agentic run when a non-terminal `agentic_recommendation_generate` job already exists, which fixes the goals-to-recommendation handoff. `app/lib/shopify/agentic-runtime/recommendation-service.server.js`, `tests/merchant-goals.test.mjs`.
 
 ## 2026-08-20
 

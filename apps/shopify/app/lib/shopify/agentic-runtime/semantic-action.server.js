@@ -162,12 +162,13 @@ function asRecord(value) {
     : null;
 }
 
-/** @param {any} value */
+/** @param {unknown} value @returns {string} */
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (!value || typeof value !== "object") return JSON.stringify(value ?? null);
-  return `{${Object.keys(value)
+  const object = /** @type {Record<string, unknown>} */ (value);
+  return `{${Object.keys(object)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
     .join(",")}}`;
 }

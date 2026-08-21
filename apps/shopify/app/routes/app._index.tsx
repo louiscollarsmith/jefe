@@ -161,11 +161,12 @@ import {
 } from "../lib/merchant-goals/constants.js";
 import {
   acceptMerchantPlanAndCompleteOnboarding,
-  ensureMerchantPlanQueued,
   getLatestMerchantPlan,
   getMerchantPlanExperience,
   processMerchantPlanMessage,
 } from "../lib/merchant-plan/service.server.js";
+import { ensureAgenticRecommendationQueued } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
+import { acceptAndExecuteAgenticShopifyAction } from "../lib/shopify/agentic-runtime/execution-service.server.js";
 import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import {
   getHomeProposalGenerationState,
@@ -294,6 +295,7 @@ type FastOnboardingActionResult = {
   mode?: string;
   token?: string;
   handoffId?: string;
+  actionId?: string;
   actionRunId?: string;
   recommendationId?: string;
   error?: string;
@@ -372,6 +374,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     })) as FastOnboardingActionResult;
     if (!approval.ok) return approval;
     let handoff: FastOnboardingActionResult = approval;
+    if (approval.mode === "agentic_execute" && approval.actionId && approval.recommendationId) {
+      const executionResult = await acceptAndExecuteAgenticShopifyAction(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
+        actionId: approval.actionId,
+        actor: merchant.id,
+        scopes: splitScopes(session.scope),
+        loadOfflineToken: (_prisma: unknown, domain: string) => loadFreshOfflineToken(domain),
+        logger: baseLogger.child({ component: "agentic-onboarding-execution" }),
+      });
+      if (!executionResult.ok) {
+        return {
+          ok: false,
+          error: "I accepted the Action, but could not verify the Shopify outcome yet. Nothing outside the accepted Action was authorised.",
+        };
+      }
+      await prisma.merchantPlanRecommendation.update({
+        where: { id: approval.recommendationId },
+        data: {
+          reviewStatus: "accepted",
+          acceptedAt: new Date(),
+        },
+      });
+      handoff = await completeExecutedRecommendationHandoff(prisma, {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        shopDomain: session.shop,
+        recommendationId: approval.recommendationId,
+      });
+    }
     if (approval.mode === "execute" && approval.actionRunId && approval.recommendationId) {
       const executionResult = await executeApprovedAction(
         prisma,
@@ -1301,7 +1334,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       merchantId: merchant.id,
       shopId: shop.id,
       timeZone: homeTimeZone,
-      ensureQueued: ensureMerchantPlanQueued,
+      ensureQueued: ensureAgenticRecommendationQueued,
     });
     if (!result.ok) {
       const reasonMessages: Record<string, string> = {
@@ -1327,11 +1360,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent.startsWith("plan.")) {
     try {
       if (intent === "plan.retry") {
-        await ensureMerchantPlanQueued(prisma, {
+        await ensureAgenticRecommendationQueued(prisma, {
           merchantId: merchant.id,
           shopId: shop.id,
           resetAttempts: true,
-          proposalTrigger: "merchant_onboarding",
         });
         return redirect(
           appPathFromSearch(new URL(request.url).search, {
