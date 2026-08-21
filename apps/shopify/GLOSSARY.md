@@ -141,6 +141,8 @@ typed adapters write to Shopify or another external system.
 - **Autonomous** — Jefe executes without asking first, but only through the same typed adapter and safety gate.
 - **Blast-radius cap** — A hard bound on how many records or how much value one action can affect.
 - **Idempotency key** — A stable key that prevents the same action from being applied twice.
+- **Idempotent replay** — The gateway result when a generated Shopify write repeats the same accepted Action revision, operation, variables and idempotency key as a prior successful write. The gateway records the replay and returns the previous resource ids without calling Shopify again.
+- **Mid-action recovery** — A bounded continuation after one step in an accepted multi-call Action fails or is denied. Luna must inspect ledger/tool results and Shopify state, then either correct the next operation within the accepted Action scope or stop with a blocker.
 - **Reversal** — The deterministic undo path for an action that has already written to an external system.
 - **Accepted Action revision** — The semantic Action version the merchant approved. In the agentic Shopify runtime, this is the merchant authorization boundary for mutations; reads may investigate, but writes require a current accepted revision.
 - **Universal Shopify gateway** — The server-side path for generated Shopify API calls. It validates the operation, API version, variables, actual granted scopes, accepted Action revision, accepted intent and blast-radius limits before the app calls Shopify.

@@ -469,6 +469,7 @@ test("execution loop refuses completion when Luna skips provider-state verificat
               variables: { input: { title: "London fast delivery" } },
               purpose: "Create the accepted collection.",
               expectedEffect: "Create a Shopify collection.",
+              idempotencyKey: "collection-create-without-readback",
             },
           },
         ],

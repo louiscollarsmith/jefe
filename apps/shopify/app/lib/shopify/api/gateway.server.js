@@ -421,7 +421,9 @@ export function evaluateAcceptedIntent(input) {
     }
   }
   const noPricing = /do not (alter|change|modify|reduce|discount).*pric|no pric|without changing pric/.test(acceptedText);
-  const requestedPricing = PRICE_TERMS.some((term) => requestedText.includes(term));
+  const requestedPricing =
+    PRICE_TERMS.some((term) => requestedText.includes(term)) &&
+    !/do not .*pric|does not .*pric|without .*pric|no pric|not .*pric/.test(requestedText);
   const acceptedPricing = PRICE_TERMS.some((term) => acceptedText.includes(term));
   if (requestedPricing && (noPricing || !acceptedPricing)) {
     return {

@@ -102,6 +102,13 @@ export async function runShopifyAgentTool(ctx, call) {
         "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance.",
       );
     }
+    if (!ctx.recommendationMode && !operationLooksRead(operation) && typeof args.idempotencyKey !== "string") {
+      return toolFail(
+        call.tool,
+        "MISSING_IDEMPOTENCY_KEY",
+        "Shopify writes during execution require a stable idempotencyKey.",
+      );
+    }
     const result = await executeShopifyOperation({
       prisma: ctx.prisma,
       client: ctx.client,
@@ -128,6 +135,7 @@ export async function runShopifyAgentTool(ctx, call) {
         : `${operation} did not complete: ${result.status}.`,
       facts: {
         operation,
+        variables: asVariables(args.variables),
         status: result.status,
         gatewayDecision: result.gatewayDecision ?? null,
         userErrors: result.userErrors ?? [],

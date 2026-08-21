@@ -8,6 +8,10 @@
 
 - **Jefe now has a universal Shopify operation gateway for the agentic runtime rebuild.** The new generated Admin GraphQL API stub catalogue, retrieval helper and gateway let Luna work from Shopify operations rather than Jefe feature executors: reads can run for investigation, mutations are denied unless a current accepted Action revision authorises them, variables and granted scopes are validated before provider calls, obvious intent drift is blocked, and every admitted or denied operation is written to the new `shopify_operation_calls` ledger. Existing typed adapters remain in place while the recommendation and execution agents migrate onto this substrate. `app/lib/shopify/api/**`, `scripts/shopify-api-generate.mjs`, `prisma/schema.prisma`, `prisma/migrations/20260821113000_shopify_operation_call_ledger/migration.sql`, `app/routes/health.tsx`, `tests/shopify-api-gateway.test.mjs`, `docs/ops/agentic-shopify-runtime-v1.md`, `GLOSSARY.md`.
 
+### Changed
+
+- **The agentic Shopify runtime evaluator now proves the live dev-store path end to end.** It captures Luna's live-selected collection recommendation, materialises that same semantic Action for `jefe-local-store.myshopify.com`, accepts only the `acceptedActionRevision`, lets Luna execute through generated Shopify stubs and the universal gateway, verifies the final Shopify collection by read-back, records live write/recovery/idempotent-replay evidence, and reruns the dev merchant onboarding investigation to show Luna retrieving broader Shopify reads from real Merchant Memory. `scripts/eval-agentic-shopify-runtime.mjs`, `app/lib/shopify/agentic-runtime/{execution-agent,recommendation-agent,tools}.server.js`, `app/lib/shopify/api/gateway.server.js`, `tests/agentic-shopify-runtime.test.mjs`, `GLOSSARY.md`.
+
 ## 2026-08-20
 
 ### Added
