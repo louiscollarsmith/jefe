@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-22
+
+### Changed
+
+- **Deterministic Shopify-derived facts now correctly land in `storeEvidence` rather than `jefeHypotheses`.** All 40 beliefs for the investigated wine merchant were being normalised as `system_inference` (precedence 20), including revenue-share percentages, inventory availability and order metrics that are mechanically calculated from Shopify data. The root cause was `shopify-derivations.server.js` hardcoding `BELIEF_PRECEDENCE.systemInference` instead of `directObservation`. Fix: source precedence corrected to `directObservation` (new rows); exported `authorityLevel` extended with an optional `evidence` parameter that promotes historical rows when their linked evidence carries `evidenceType: "deterministic_calculation"`. After the fix: 36 deterministic beliefs land in `storeEvidence` (was 0), 3 genuine inferences remain in `jefeHypotheses`, and runtime blocking dropped from 60% to 0% across 5 sanity-check runs. 13 regression tests added; all 33 provenance and candidate-bound tests still pass. `app/lib/merchant-memory/shopify-derivations.server.js`, `app/lib/merchant-insights/candidates.server.js`, `app/lib/shopify/agentic-runtime/recommendation-service.server.js`, `.context/agentic-anchoring/run-diagnostic.mjs`, `tests/recommendation-deterministic-provenance.test.mjs`, `docs/diagnostics/deterministic-evidence-provenance-validation.md`.
+
 ## 2026-08-21
 
 ### Added

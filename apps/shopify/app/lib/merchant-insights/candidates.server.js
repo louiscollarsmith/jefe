@@ -337,7 +337,7 @@ function normalizeBeliefCandidate(belief) {
     type: belief.valueType,
     conf: Number.isFinite(confidence) ? Number(confidence.toFixed(2)) : null,
     status,
-    authority: authorityLevel(precedence, status),
+    authority: authorityLevel(precedence, status, evidence),
     sources: [...sourceTypes].sort(),
     evidence: evidenceSummary,
     caveat: importantCaveat(belief, confidence),
@@ -352,11 +352,15 @@ function normalizeEvidenceSummary(evidence) {
   return safeText(evidence.summary, 90);
 }
 
-/** @param {number} precedence @param {string} status */
-export function authorityLevel(precedence, status) {
+/** @param {number} precedence @param {string} status @param {any[]} [evidence] */
+export function authorityLevel(precedence, status, evidence = []) {
   if (status === BELIEF_STATUS.merchantCorrected) return "merchant_corrected";
   if (status === BELIEF_STATUS.merchantConfirmed) return "merchant_confirmed";
   if (precedence >= BELIEF_PRECEDENCE.directObservation) return "deterministic";
+  // Read-time reclassification: historical rows written by shopify-derivations carry
+  // evidenceType "deterministic_calculation" even if their stored precedence predates
+  // the directObservation convention.
+  if (Array.isArray(evidence) && evidence.some((e) => e?.evidenceType === "deterministic_calculation")) return "deterministic";
   if (precedence <= BELIEF_PRECEDENCE.llmInference)
     return "lower_authority_inference";
   return "system_inference";

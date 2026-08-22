@@ -833,7 +833,7 @@ function normalizeBelief(row) {
     value: row.value,
     type: row.valueType,
     status: row.status,
-    authority: authorityLevel(row.precedence, row.status),
+    authority: authorityLevel(row.precedence, row.status, row.evidence ?? []),
     confidence: Number(row.confidence ?? 0),
     evidence: (row.evidence ?? []).map((/** @type {any} */ item) => ({
       id: item.id,

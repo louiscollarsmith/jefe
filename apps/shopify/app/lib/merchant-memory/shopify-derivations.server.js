@@ -3771,7 +3771,7 @@ function belief(merchantId, shopId, definition, seed) {
     valueType: definition.valueType,
     confidence: seed.confidence,
     confidenceReason: seed.confidenceReason,
-    precedence: BELIEF_PRECEDENCE.systemInference,
+    precedence: BELIEF_PRECEDENCE.directObservation,
     derivationVersion,
     observedAt: seed.observedAt ?? seed.now,
     evaluatedAt: seed.now,
