@@ -4,7 +4,10 @@ import test from "node:test";
 import {
   buildInvestigationState,
   buildRecommendationContext,
+  findExistingRead,
+  generateAgenticShopifyRecommendation,
   normalizeSemanticRecommendation,
+  validateInvestigation,
   validateSemanticRecommendation,
 } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import { SHOPIFY_AGENT_TOOL } from "../app/lib/shopify/agentic-runtime/tools.server.js";
@@ -317,4 +320,325 @@ test("buildInvestigationState: read only (no retrieve) is not complete", () => {
   const state = buildInvestigationState([makeReadResult("products")]);
   assert.equal(state.investigationComplete, false);
   assert.ok(state.successfulReads.some((r) => r.operation === "products"));
+});
+
+test("buildInvestigationState: lastCandidate and lastValidationError survive a repair turn", () => {
+  const candidate = makeRec({ supportingBeliefIds: ["bad-belief-id"] });
+  const toolResults = [
+    makeRetrieveResult(),
+    makeReadResult("products"),
+    makeValidationError("UNSUPPORTED_BELIEF_ID", {
+      field: "supportingBeliefIds",
+      invalidValues: ["bad-belief-id"],
+      allowedValues: ["b-valid-1"],
+      repairInstruction: "Replace only the invalid id.",
+    }),
+  ];
+  const state = buildInvestigationState(toolResults, { lastCandidate: candidate });
+  assert.equal(state.investigationComplete, true);
+  assert.equal(state.lastCandidate.diagnosedProblem, candidate.diagnosedProblem);
+  assert.equal(state.lastCandidate.mechanism, candidate.mechanism);
+  assert.equal(state.lastValidationError.errorCode, "UNSUPPORTED_BELIEF_ID");
+  assert.equal(state.lastValidationError.field, "supportingBeliefIds");
+  assert.deepEqual(state.lastValidationError.invalidValues, ["bad-belief-id"]);
+  assert.ok(state.lastValidationError.allowedValues.includes("b-valid-1"));
+});
+
+// ---------------------------------------------------------------------------
+// findExistingRead — duplicate vs genuine new read
+// ---------------------------------------------------------------------------
+
+test("Test D: findExistingRead matches identical successful operation+variables", () => {
+  const existing = findExistingRead(
+    [makeReadResult("products")],
+    { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation: "products", variables: {} } },
+  );
+  assert.ok(existing);
+  assert.equal(existing.facts.operation, "products");
+});
+
+test("Test D: findExistingRead ignores ALREADY_AVAILABLE rows when looking for a source read", () => {
+  const existing = findExistingRead(
+    [makeAlreadyAvailableResult("products")],
+    { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation: "products" } },
+  );
+  assert.equal(existing, null);
+});
+
+test("Test E: findExistingRead allows a different operation", () => {
+  const existing = findExistingRead(
+    [makeReadResult("products")],
+    { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation: "collections", variables: {} } },
+  );
+  assert.equal(existing, null);
+});
+
+test("Test E: findExistingRead allows the same operation with different variables", () => {
+  const prior = {
+    ...makeReadResult("products"),
+    facts: { operation: "products", status: "SUCCESS", variables: { first: 5 }, data: {} },
+  };
+  const existing = findExistingRead(
+    [prior],
+    { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation: "products", variables: { first: 50, query: "tag:organic" } } },
+  );
+  assert.equal(existing, null);
+});
+
+test("findExistingRead does not reuse a failed first read", () => {
+  const failed = {
+    tool: SHOPIFY_AGENT_TOOL.callOperation,
+    ok: false,
+    message: "products failed",
+    facts: { operation: "products", status: "DENIED", variables: { first: 5 } },
+    error: { code: "DENIED", message: "denied" },
+  };
+  const existing = findExistingRead(
+    [failed],
+    { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation: "products", variables: { first: 5 } } },
+  );
+  assert.equal(existing, null);
+});
+
+test("Test D: validateInvestigation requires a real successful read, not ALREADY_AVAILABLE", () => {
+  assert.equal(validateInvestigation([makeRetrieveResult(), makeAlreadyAvailableResult("products")]).ok, false);
+  assert.equal(validateInvestigation([makeRetrieveResult(), makeReadResult("products")]).ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// Loop-level Tests A, D, F, G, H
+// ---------------------------------------------------------------------------
+
+const LOOP_SNAPSHOT = {
+  beliefs: [VALID_BELIEF, VALID_BELIEF_2],
+  goals: [{ id: "goal-1", title: "Grow revenue", generatedBy: "jefe_llm", authority: "jefe_interpretation" }],
+  insights: [VALID_INSIGHT],
+  goalCoaching: [],
+  merchantContext: [],
+  previousRecommendations: [],
+  privacy: {},
+  beliefCount: 2,
+};
+
+function scriptedProvider(script) {
+  const calls = [];
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted-luna",
+    calls,
+    async generateStructuredJson({ prompt }) {
+      const payload = JSON.parse(prompt);
+      calls.push(payload);
+      return { json: script(payload), usage: { inputTokens: 1, outputTokens: 1 }, durationMs: 1 };
+    },
+  };
+}
+
+function fakeShopifyClient() {
+  return {
+    async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return { currentAppInstallation: { accessScopes: [{ handle: "read_products" }, { handle: "write_products" }] } };
+      }
+      if (document.includes("products(")) {
+        return { products: { edges: [{ node: { id: "gid://shopify/Product/1", title: "Test Wine" } }], pageInfo: { hasNextPage: false } } };
+      }
+      if (document.includes("collections(")) {
+        return { collections: { edges: [], pageInfo: { hasNextPage: false } } };
+      }
+      return {};
+    },
+  };
+}
+
+function retrieveCall(query = "products collections") {
+  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
+}
+
+function readCall(operation = "products", variables = { first: 5 }) {
+  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables, purpose: "Investigate current Shopify state." } };
+}
+
+function validLoopRec(overrides = {}) {
+  return {
+    title: "Create a type collection",
+    summary: "Group products that currently have no collection.",
+    outcome: "Shoppers can browse by type.",
+    scope: "Active catalogue products.",
+    constraints: [],
+    materialExpectedEffects: ["Create a collection"],
+    diagnosedProblem: "Shopify has zero collections for a 22-product catalogue.",
+    mechanism: "Creating type collections adds browse paths that do not exist.",
+    whyThisAction: "The collections read confirmed the gap.",
+    whyNow: "The gap is current.",
+    supportingBeliefIds: ["b-valid-1"],
+    supportingInsightIds: [],
+    feasibleWriteOperations: ["collectionCreate"],
+    verificationPlan: "Read the collection back.",
+    confidence: "reasonable",
+    ...overrides,
+  };
+}
+
+async function runLoop(script, overrides = {}) {
+  const provider = scriptedProvider(script);
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: {
+      shopifyOperationCall: { create: async () => ({}) },
+      session: { findFirst: async () => ({ scope: "read_products,write_products" }) },
+    },
+    client: fakeShopifyClient(),
+    merchantId: "00000000-0000-0000-0000-000000000021",
+    shopId: "00000000-0000-0000-0000-000000000022",
+    shopDomain: "jefe-local-store.myshopify.com",
+    snapshot: LOOP_SNAPSHOT,
+    grantedScopes: ["read_products", "write_products"],
+    logger: { info() {}, warn() {}, error() {} },
+    ...overrides,
+  });
+  return { provider, result };
+}
+
+test("Test A: repair after invalid candidate does not require another products read", async () => {
+  const { provider, result } = await runLoop((payload) => {
+    if (payload.iteration === 0) {
+      return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    }
+    if (payload.iteration === 1) {
+      assert.equal(payload.investigationState.investigationComplete, true);
+      return { status: "RECOMMEND_ACTION", recommendation: validLoopRec({ supportingBeliefIds: ["invented-belief"] }) };
+    }
+    assert.equal(payload.investigationState.investigationComplete, true);
+    assert.equal(payload.investigationState.lastValidationError.errorCode, "UNSUPPORTED_BELIEF_ID");
+    assert.equal(payload.investigationState.lastCandidate.diagnosedProblem, "Shopify has zero collections for a 22-product catalogue.");
+    assert.ok(!payload.investigationState.lastValidationError.repairInstruction.toLowerCase().includes("retrieve"));
+    return { status: "RECOMMEND_ACTION", recommendation: validLoopRec() };
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.equal(provider.calls.length, 3);
+  const realProductReads = result.diagnostics.shopifyReads.filter((row) => row.operation === "products" && row.status !== "ALREADY_AVAILABLE" && row.ok);
+  assert.equal(realProductReads.length, 1);
+});
+
+test("Test D: identical Shopify read is returned as ALREADY_AVAILABLE and not re-executed", async () => {
+  let productReads = 0;
+  const client = {
+    async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return { currentAppInstallation: { accessScopes: [{ handle: "read_products" }] } };
+      }
+      if (document.includes("products(")) {
+        productReads += 1;
+        return { products: { edges: [], pageInfo: { hasNextPage: false } } };
+      }
+      return {};
+    },
+  };
+  const { result } = await runLoop(
+    (payload) => {
+      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+      if (payload.iteration === 1) return { status: "CONTINUE", toolCalls: [readCall("products")] };
+      return { status: "RECOMMEND_ACTION", recommendation: validLoopRec() };
+    },
+    { client },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(productReads, 1);
+  assert.ok(result.diagnostics.shopifyReads.some((row) => row.status === "ALREADY_AVAILABLE"));
+});
+
+test("Test E: a different operation is executed as a genuine new read", async () => {
+  const operations = [];
+  const client = {
+    async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return { currentAppInstallation: { accessScopes: [{ handle: "read_products" }] } };
+      }
+      if (document.includes("products(")) {
+        operations.push("products");
+        return { products: { edges: [], pageInfo: { hasNextPage: false } } };
+      }
+      if (document.includes("collections(")) {
+        operations.push("collections");
+        return { collections: { edges: [], pageInfo: { hasNextPage: false } } };
+      }
+      return {};
+    },
+  };
+  const { result } = await runLoop(
+    (payload) => {
+      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+      if (payload.iteration === 1) return { status: "CONTINUE", toolCalls: [readCall("collections")] };
+      return { status: "RECOMMEND_ACTION", recommendation: validLoopRec() };
+    },
+    { client },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(operations, ["products", "collections"]);
+  assert.equal(result.diagnostics.shopifyReads.filter((row) => row.status === "ALREADY_AVAILABLE").length, 0);
+});
+
+test("Test F: later semantic validation failure does not reset investigationComplete", async () => {
+  const { provider, result } = await runLoop((payload) => {
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    if (payload.iteration === 1) {
+      assert.equal(payload.investigationState.investigationComplete, true);
+      return { status: "RECOMMEND_ACTION", recommendation: validLoopRec({ supportingBeliefIds: ["nope"] }) };
+    }
+    assert.equal(payload.investigationState.investigationComplete, true);
+    assert.equal(payload.investigationState.lastValidationError.errorCode, "UNSUPPORTED_BELIEF_ID");
+    return { status: "RECOMMEND_ACTION", recommendation: validLoopRec({ supportingInsightIds: ["nope-insight"] }) };
+  }, { maxIterations: 3 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.equal(provider.calls.at(-1).investigationState.investigationComplete, true);
+});
+
+test("Test G: lastCandidate keeps diagnosedProblem and mechanism during an evidence-id repair", async () => {
+  const { provider } = await runLoop((payload) => {
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    if (payload.iteration === 1) {
+      return {
+        status: "RECOMMEND_ACTION",
+        recommendation: validLoopRec({
+          diagnosedProblem: "Zero collections exist for 22 products",
+          mechanism: "A collection creates the missing browse path",
+          supportingBeliefIds: ["invented"],
+        }),
+      };
+    }
+    assert.equal(payload.investigationState.lastCandidate.diagnosedProblem, "Zero collections exist for 22 products");
+    assert.equal(payload.investigationState.lastCandidate.mechanism, "A collection creates the missing browse path");
+    assert.equal(payload.investigationState.lastValidationError.field, "supportingBeliefIds");
+    return {
+      status: "RECOMMEND_ACTION",
+      recommendation: validLoopRec({
+        diagnosedProblem: "Zero collections exist for 22 products",
+        mechanism: "A collection creates the missing browse path",
+      }),
+    };
+  });
+  assert.equal(provider.calls.length, 3);
+});
+
+test("Test H: explicit BLOCKED terminates after investigation instead of hitting the iteration limit", async () => {
+  const { result } = await runLoop((payload) => {
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    return {
+      status: "BLOCKED",
+      blocker: "Investigated inventory and collections. No safe reversible Shopify Action is justified until warehouse counts are confirmed.",
+    };
+  }, { maxIterations: 6 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "BLOCKED");
+  assert.match(result.blocker, /warehouse counts/);
+  assert.ok(result.diagnostics.shopifyReads.some((row) => row.operation === "products" && row.ok));
 });

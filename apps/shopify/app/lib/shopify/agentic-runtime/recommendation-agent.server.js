@@ -120,7 +120,8 @@ export async function generateAgenticShopifyRecommendation(input) {
   const maxIterations = input.maxIterations ?? MAX_RECOMMENDATION_ITERATIONS;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-    const investigationState = buildInvestigationState(toolResults);
+    const lastCandidate = turns.map((turn) => turn.recommendation).filter(Boolean).at(-1) ?? null;
+    const investigationState = buildInvestigationState(toolResults, { lastCandidate });
     const llmResult = await provider.generateStructuredJson({
       systemPrompt: buildRecommendationSystemPrompt(),
       prompt: JSON.stringify({
@@ -148,8 +149,12 @@ export async function generateAgenticShopifyRecommendation(input) {
         toolResults.push({
           tool: SHOPIFY_AGENT_TOOL.callOperation,
           ok: true,
-          message: `ALREADY_AVAILABLE: ${toolCall.arguments?.operation ?? "This operation"} was already read successfully in this run. Results are in your prior tool results — do not call again.`,
-          facts: { operation: toolCall.arguments?.operation ?? null, status: "ALREADY_AVAILABLE" },
+          message: `ALREADY_AVAILABLE: ${toolCall.arguments?.operation ?? "This operation"} was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.`,
+          facts: {
+            operation: toolCall.arguments?.operation ?? null,
+            variables: toolCall.arguments?.variables ?? existing.facts?.variables ?? {},
+            status: "ALREADY_AVAILABLE",
+          },
           error: null,
         });
       } else {
@@ -335,10 +340,12 @@ Each iteration includes an \`investigationState\` object showing exactly what ha
 - \`investigationComplete\`: true when minimum requirements are met
 - \`doNotRepeat\`: instruction not to re-run completed work
 - \`successfulReads\`: which Shopify operations have already been read
+- \`lastCandidate\`: the most recent recommendation payload, if any
+- \`lastValidationError\`: the exact field to repair, if the last recommendation failed validation
 
-**When \`investigationComplete\` is true**: do not call retrieve_shopify_operations or call_shopify_operation again unless you need a genuinely different resource. The investigation is done.
+**When \`investigationComplete\` is true**: do not call retrieve_shopify_operations or call_shopify_operation again unless you need a genuinely different resource or different arguments (new page, new query, or a different operation). The investigation is done.
 
-**When you receive a validation error after \`investigationComplete\` is true**: read the \`repairInstruction\` in the error. Fix only the identified field. The recommendation is otherwise valid — do not restart investigation and do not regenerate fields that are not mentioned in \`repairInstruction\`.
+**When you receive a validation error after \`investigationComplete\` is true**: read \`lastValidationError\`. Resubmit \`lastCandidate\` with only the identified field repaired. Do not restart investigation and do not regenerate fields that are not mentioned in \`repairInstruction\`.
 
 ## Validation repair
 
@@ -377,9 +384,17 @@ function terminalFailureStatus(toolResults) {
   const validationErrors = toolResults.filter(
     (row) => row?.tool === "recommendation_validation" && row?.ok === false,
   );
-  if (validationErrors.some((row) => row?.error?.code === "INVALID_RECOMMENDATION")) {
-    return "VALIDATION_FAILED";
-  }
+  const payloadFailed = validationErrors.some((row) => {
+    const code = String(row?.error?.code ?? row?.facts?.errorCode ?? "");
+    return (
+      code === "INVALID_RECOMMENDATION" ||
+      code === "UNSUPPORTED_BELIEF_ID" ||
+      code === "UNSUPPORTED_INSIGHT_ID" ||
+      code === "MISSING_FIELD" ||
+      code === "MISSING_RECOMMENDATION"
+    );
+  });
+  if (payloadFailed) return "VALIDATION_FAILED";
   if (validationErrors.some((row) => row?.error?.code === "INSUFFICIENT_INVESTIGATION")) {
     return "INVESTIGATION_FAILED";
   }
@@ -549,7 +564,7 @@ export function validateSemanticRecommendation(recommendation, context) {
       field: "supportingBeliefIds",
       invalidValues: [badBelief],
       allowedValues: allowedBeliefIds.slice(0, 25),
-      error: `supportingBeliefIds contains an unknown id "${badBelief}". Valid belief ids are in allowedValues. Remove or replace only this id — all other recommendation fields are valid and investigation does not need repeating.`,
+      error: `Recommendation cited an unsupported belief id "${badBelief}". Valid belief ids are in allowedValues. Remove or replace only this id — all other recommendation fields are valid and investigation does not need repeating.`,
       repairInstruction: `Replace "${badBelief}" with a valid id from allowedValues, or use an empty array and add a caveat. Do not repeat Shopify investigation.`,
     };
   }
@@ -563,7 +578,7 @@ export function validateSemanticRecommendation(recommendation, context) {
       field: "supportingInsightIds",
       invalidValues: [badInsight],
       allowedValues: allowedInsightIds,
-      error: `supportingInsightIds contains an unknown id "${badInsight}". Valid insight ids are in allowedValues. Remove or replace only this id — all other recommendation fields are valid and investigation does not need repeating.`,
+      error: `Recommendation cited an unsupported insight id "${badInsight}". Valid insight ids are in allowedValues. Remove or replace only this id — all other recommendation fields are valid and investigation does not need repeating.`,
       repairInstruction: `Replace "${badInsight}" with a valid id from allowedValues, or use an empty array. Do not repeat Shopify investigation.`,
     };
   }
@@ -571,7 +586,7 @@ export function validateSemanticRecommendation(recommendation, context) {
 }
 
 /** @param {any[]} toolResults */
-function validateInvestigation(toolResults) {
+export function validateInvestigation(toolResults) {
   const retrieved = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok);
   const read = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok && row.facts?.status !== "ALREADY_AVAILABLE");
   if (!retrieved || !read) {
@@ -588,8 +603,9 @@ function validateInvestigation(toolResults) {
  * Builds a concise server-owned investigation ledger for injection into the prompt.
  * This is authoritative — Luna should not infer completed work from the tool history.
  * @param {any[]} toolResults
+ * @param {{ lastCandidate?: any }} [extras]
  */
-export function buildInvestigationState(toolResults) {
+export function buildInvestigationState(toolResults, extras = {}) {
   const retrievedOps = toolResults.filter((/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && r.ok);
   const successfulReads = toolResults.filter(
     (/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.callOperation && r.ok && r.facts?.status !== "ALREADY_AVAILABLE",
@@ -600,6 +616,9 @@ export function buildInvestigationState(toolResults) {
   const failedReads = toolResults.filter(
     (/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.callOperation && !r.ok,
   );
+  const lastValidation = [...toolResults]
+    .reverse()
+    .find((/** @type {any} */ r) => r?.tool === "recommendation_validation" && r.ok === false);
 
   /** @type {string[]} */
   const satisfied = [];
@@ -616,35 +635,70 @@ export function buildInvestigationState(toolResults) {
   const investigationComplete = retrievedOps.length > 0 && successfulReads.length > 0;
   return {
     retrievedOperations: [...new Set(retrievedOps.flatMap((/** @type {any} */ r) => (r.facts?.results ?? []).map((/** @type {any} */ x) => x.operation)))],
-    successfulReads: successfulReads.map((/** @type {any} */ r) => ({ operation: r.facts?.operation ?? null })),
+    successfulReads: successfulReads.map((/** @type {any} */ r) => ({
+      operation: r.facts?.operation ?? null,
+      variables: r.facts?.variables ?? {},
+    })),
     failedReads: failedReads.map((/** @type {any} */ r) => ({ operation: r.facts?.operation ?? null })),
     satisfiedRequirements: satisfied,
     investigationComplete,
+    lastCandidate: extras.lastCandidate ?? null,
+    lastValidationError: lastValidation
+      ? {
+          errorCode: lastValidation.facts?.errorCode ?? lastValidation.error?.code ?? null,
+          field: lastValidation.facts?.field ?? null,
+          invalidValues: lastValidation.facts?.invalidValues ?? null,
+          allowedValues: lastValidation.facts?.allowedValues ?? null,
+          repairInstruction: lastValidation.facts?.repairInstruction ?? lastValidation.message ?? null,
+        }
+      : null,
     doNotRepeat: investigationComplete
-      ? "Investigation requirements are satisfied. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource or page."
+      ? "Investigation requirements are satisfied. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource, query, or page."
       : null,
   };
 }
 
 /**
- * Returns an existing successful read for the same operation, or null if none.
+ * Returns an existing successful read for the same operation and arguments, or null.
  * Used to suppress duplicate identical reads within the same immutable run.
+ * Different variables (query, page, id) are treated as a new read.
  * @param {any[]} toolResults
  * @param {{ tool: string; arguments?: Record<string, any> }} toolCall
  */
-function findExistingRead(toolResults, toolCall) {
+export function findExistingRead(toolResults, toolCall) {
   if (toolCall.tool !== SHOPIFY_AGENT_TOOL.callOperation) return null;
   const operation = toolCall.arguments?.operation;
   if (!operation) return null;
+  const requestedKey = readFingerprint(operation, toolCall.arguments?.variables);
   return (
-    toolResults.find(
-      (/** @type {any} */ r) =>
-        r?.tool === SHOPIFY_AGENT_TOOL.callOperation &&
-        r.ok &&
-        r.facts?.status !== "ALREADY_AVAILABLE" &&
-        r.facts?.operation === operation,
-    ) ?? null
+    toolResults.find((/** @type {any} */ row) => {
+      if (row?.tool !== SHOPIFY_AGENT_TOOL.callOperation) return false;
+      if (!row.ok || row.facts?.status === "ALREADY_AVAILABLE") return false;
+      if (row.facts?.operation !== operation) return false;
+      return readFingerprint(row.facts.operation, row.facts.variables) === requestedKey;
+    }) ?? null
   );
+}
+
+/** @param {string} operation @param {unknown} variables */
+function readFingerprint(operation, variables) {
+  return JSON.stringify({
+    operation: String(operation ?? ""),
+    variables: stableJsonValue(variables && typeof variables === "object" && !Array.isArray(variables) ? variables : {}),
+  });
+}
+
+/** @param {unknown} value */
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map((item) => stableJsonValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stableJsonValue(/** @type {Record<string, unknown>} */ (value)[key])]),
+    );
+  }
+  return value ?? null;
 }
 
 /** @param {any[]} turns @param {any[]} toolResults */
