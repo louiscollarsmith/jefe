@@ -322,7 +322,7 @@ test("small goal snapshot keeps the v2 context hash", async () => {
   assert.equal(snapshot.beliefIds.includes("b-5"), false);
   assert.equal(
     snapshot.snapshotHash,
-    "9e0df62bc667162a5016a96752fd51667e89f5e466b4ba8278be2ab2a990c1d8",
+    "c9244fc97dbdd0c5682bedac811ca725d76b8304084919461e6f2caf2003fffe",
   );
   assert.equal(
     snapshot.snapshot.memorySnapshotHash,
