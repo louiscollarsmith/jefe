@@ -130,7 +130,10 @@ typed adapters write to Shopify or another external system.
 - **Shopify API operation stub** — One generated operation entry in the stub catalogue, such as `products`, `collectionCreate` or `metafieldsSet`.
 - **Shopify tool retrieval** — The runtime helper that returns a small relevant subset of Shopify API operation stubs for the current recommendation, chat or execution task.
 - **Agentic Shopify recommendation loop** — Luna's recommendation run for the universal Shopify runtime: it receives Merchant Memory, bounded store evidence, compact Shopify API stubs and read tools, investigates hypotheses with generated Shopify reads, and returns a semantic recommendation only after feasibility is grounded.
-- **Semantic Action materialisation** — The conversion of a recommendation into a Merchant Action defined by outcome, scope, constraints, material expected effects and verification plan, without pre-authoring a Shopify API sequence or binding a legacy action type executor.
+- **Semantic Action** — A merchant-facing Action defined by outcome, scope, eligibility criteria, write protections, constraints, expected material effects and verification plan, without pre-authoring a Shopify API sequence.
+- **Eligibility criteria** — Structured predicates on the semantic Action that decide which Shopify resources qualify. They are distinct from write protections. Merchant-facing wording explains this contract; it is not a separate source of rules. A change to eligibility creates a new Action revision.
+- **Focused semantic repair** — A single post-investigation repair of a recommendation whose wording and eligibilityCriteria disagree. It does not repeat Shopify reads. If the repair is still invalid, the run terminates as a validation failure.
+- **Write protection** — A structured rule forbidding a class of Shopify mutation, such as inventory or pricing changes. It does not prevent that field from being used as eligibility evidence.
 - **External purchase order** — A merchant-owned workflow step for raising a purchase order outside Jefe when the merchant wants purchase orders but no typed purchase-order adapter exists yet.
 - **Instruct path** — When Jefe cannot safely execute something, it explains how the merchant can do it themselves.
 
@@ -164,6 +167,7 @@ typed adapters write to Shopify or another external system.
 - **Bootstrap** — The fast first-run Merchant Memory job that reads a bounded recent window for immediate value.
 - **Backfill** — The deeper background import that learns from the store's full available history.
 - **Context question** — The first-run question whose answer becomes merchant-supplied memory and can reorder supported opportunities.
+- **Onboarding learning progress** — The idempotent first-value pipeline that, after the context answer, advances the next missing durable stage: store understanding, insights, goals, then the agentic recommendation. The browser may say work is in progress only when a relevant job or run is actually queued or running.
 - **APP handoff** — The one-time transition from onboarding into the normal app home, carrying only real accepted, deferred or tracked work.
 
 ## Operations

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import {
+  AGENTIC_ACTION_CHAT_PROMPT_VERSION,
   agenticActionChatToolCatalogue,
   runAgenticActionChat,
 } from "../app/lib/shopify/agentic-runtime/action-chat.server.js";
@@ -19,6 +20,8 @@ const shopDomain = "jefe-local-store.myshopify.com";
 test("agentic pre-acceptance chat has no legacy focused-action tools", () => {
   const names = agenticActionChatToolCatalogue().map((tool) => tool.name);
 
+  assert.ok(names.includes("update_action_eligibility"));
+  assert.ok(names.includes("restore_action_revision"));
   assert.ok(names.includes("retrieve_shopify_operations"));
   assert.ok(names.includes("call_shopify_operation"));
   assert.equal(names.includes("simulate_plan"), false);
@@ -271,7 +274,7 @@ test("agentic chat acceptance creates accepted revision and starts post-acceptan
     recommendation: semanticCollectionRecommendation(),
   });
   const provider = scriptedProvider((payload) => {
-    if (payload.promptVersion === "agentic-action-chat-v1") {
+    if (payload.promptVersion === AGENTIC_ACTION_CHAT_PROMPT_VERSION) {
       return {
         status: "ANSWER",
         finalReply: "Accepted. I started the Shopify work.",

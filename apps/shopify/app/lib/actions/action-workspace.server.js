@@ -43,6 +43,7 @@ const RESTOCK_EVIDENCE_REFS = new Set(["assist:inventory_review"]);
  * @typedef {{
  *   id?: string | null;
  *   stepId?: string | null;
+ *   semanticKey?: string | null;
  *   title?: string | null;
  *   kind?: string | null;
  *   state?: string | null;
@@ -824,6 +825,8 @@ function buildAgenticShopifyWorkspace(action, projection, existing) {
     },
     candidateScope: semanticScopeSnapshot(semanticAction),
     constraints: semanticConstraints(semanticAction),
+    eligibilityCriteria: semanticEligibility(semanticAction),
+    writeProtections: semanticWriteProtections(semanticAction),
     materialExpectedEffects: materialEffectRows(semanticAction),
     items: mergeWorkspaceItems(items, existing?.items ?? []),
     artifacts: existing?.artifacts ?? [],
@@ -844,11 +847,13 @@ function agenticWorkspaceItems(action, semanticAction, source) {
   const effects = materialEffectRows(semanticAction);
   const scope = semanticScopeSnapshot(semanticAction);
   const constraints = semanticConstraints(semanticAction);
+  const eligibility = semanticEligibility(semanticAction);
   const evidenceCount =
     countArray(semanticAction?.supportingBeliefIds) +
     countArray(semanticAction?.supportingInsightIds) +
     countArray(source?.supportingBeliefIds) +
     countArray(source?.supportingInsightIds);
+  /** @type {WorkspaceItem[]} */
   const items = [
     {
       id: "understand_recommendation",
@@ -882,7 +887,22 @@ function agenticWorkspaceItems(action, semanticAction, source) {
       orderIndex: 1,
       artifact: scope,
     },
-    {
+  ];
+  if (eligibility.length) {
+    items.push({
+      id: "who_qualifies",
+      semanticKey: "who_qualifies",
+      title: "Who qualifies",
+      description: eligibility.map((row) => row.label).join("; ").slice(0, 260),
+      kind: WORKSPACE_ITEM_KIND.decision,
+      state: "planned",
+      statusLabel: "Eligibility",
+      showInPlan: true,
+      orderIndex: 1.5,
+      artifact: { eligibilityCriteria: eligibility },
+    });
+  }
+  items.push({
       id: "agree_constraints",
       semanticKey: "agree_constraints",
       title: "Agree constraints",
@@ -915,8 +935,7 @@ function agenticWorkspaceItems(action, semanticAction, source) {
         materialExpectedEffects: effects,
         verificationPlan: semanticAction?.verificationPlan ?? null,
       },
-    },
-  ];
+    });
   return items;
 }
 
@@ -1001,6 +1020,16 @@ function semanticActionForAction(action) {
       arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).constraints) ||
       arrayValue(signal.constraints) ||
       [],
+    eligibilityCriteria:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).eligibilityCriteria) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).eligibilityCriteria) ||
+      arrayValue(signal.eligibilityCriteria) ||
+      [],
+    writeProtections:
+      arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).writeProtections) ||
+      arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).writeProtections) ||
+      arrayValue(signal.writeProtections) ||
+      [],
     materialExpectedEffects:
       arrayValue(jsonObject(jsonObject(progress.agentic).semanticAction).materialExpectedEffects) ||
       arrayValue(jsonObject(jsonObject(plan.agentic).semanticAction).materialExpectedEffects) ||
@@ -1063,6 +1092,31 @@ function semanticConstraints(semanticAction) {
       kind: safeText(row?.kind ?? row?.type, 80) || "semantic",
       label: safeText(row?.label ?? row?.description ?? row?.summary ?? row, 220),
       params: jsonObject(row?.params),
+    }))
+    .filter((row) => row.label);
+}
+
+/** @param {any} semanticAction */
+function semanticEligibility(semanticAction) {
+  return (arrayValue(semanticAction?.eligibilityCriteria) || [])
+    .map((row) => ({
+      id: safeText(row?.id, 80) || null,
+      resourceType: safeText(row?.resourceType, 80) || "Product",
+      field: safeText(row?.field, 80),
+      operator: safeText(row?.operator, 20),
+      value: row?.value ?? null,
+      label: safeText(row?.label, 220),
+      source: safeText(row?.source, 40) || "recommendation",
+    }))
+    .filter((row) => row.label || row.field);
+}
+
+/** @param {any} semanticAction */
+function semanticWriteProtections(semanticAction) {
+  return (arrayValue(semanticAction?.writeProtections) || [])
+    .map((row) => ({
+      target: safeText(row?.target, 40) || "custom",
+      label: safeText(row?.label, 220),
     }))
     .filter((row) => row.label);
 }

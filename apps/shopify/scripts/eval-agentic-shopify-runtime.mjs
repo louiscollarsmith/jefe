@@ -12,7 +12,9 @@ import { ShopifyAdminGraphqlClient, normalizeShopDomain } from "../app/lib/shopi
 import { executeShopifyOperation, getActionRevisionState } from "../app/lib/shopify/api/gateway.server.js";
 import {
   AGENTIC_RECOMMENDATION_PROMPT_VERSION,
+  AGENTIC_SEMANTIC_REPAIR_PROMPT_VERSION,
   buildRecommendationSystemPrompt,
+  buildSemanticRepairSystemPrompt,
   generateAgenticShopifyRecommendation,
 } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import { runAgenticRecommendationInvestigation } from "../app/lib/shopify/agentic-runtime/recommendation-service.server.js";
@@ -28,6 +30,7 @@ import {
 import {
   materializeAgenticShopifyAction,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
+import { validatePromiseConsistency } from "../app/lib/shopify/agentic-runtime/eligibility.server.js";
 import { loadLocalEnv } from "./load-env.mjs";
 
 loadLocalEnv(process.cwd());
@@ -47,13 +50,15 @@ const cleanupCollectionIds = new Set();
 
 runCommandStage("deterministic_agentic_runtime", [
   process.execPath,
-  ["scripts/run-tests.mjs", "agentic-shopify-runtime.test.mjs", "shopify-api-gateway.test.mjs"],
+  ["scripts/run-tests.mjs", "agentic-shopify-runtime.test.mjs", "agentic-eligibility.test.mjs", "shopify-api-gateway.test.mjs"],
 ]);
 
 if (args.has("--live-luna")) {
   await runLiveLunaFixtureStage();
+  await runLiveLunaInStockReliabilityStage();
 } else {
   stages.push(skipped("live_luna_unseen_action", "Pass --live-luna to use the configured real LLM provider."));
+  stages.push(skipped("live_luna_instock_snapshot_reliability", "Pass --live-luna to rerun the frozen in-stock snapshot."));
 }
 
 if (args.has("--real-shopify")) {
@@ -66,6 +71,8 @@ if (args.has("--real-shopify")) {
       name: "real_dev_shopify_unhandled_error",
       status: "FAIL",
       error: error instanceof Error ? error.message : String(error),
+      statusCode: typeof error === "object" && error && "status" in error ? error.status : null,
+      requestId: typeof error === "object" && error && "requestId" in error ? error.requestId : null,
     });
   } finally {
     await cleanupRealDevShopifyEntities();
@@ -103,6 +110,11 @@ async function runLiveLunaFixtureStage() {
   });
   const sawRetrievedOperations = (result.diagnostics?.retrievedOperations ?? []).length > 0;
   const sawShopifyRead = (result.diagnostics?.shopifyReads ?? []).some((row) => row.ok);
+  const eligibilityCriteria = result.recommendation?.eligibilityCriteria;
+  const hasStructuredEligibility = Array.isArray(eligibilityCriteria);
+  const consistency = result.recommendation
+    ? validatePromiseConsistency(result.recommendation, eligibilityCriteria)
+    : { ok: false, error: "No recommendation." };
   if (result.ok && result.status === "RECOMMEND_ACTION") {
     liveLunaRecommendation = result.recommendation;
     liveLunaDiagnostics = result.diagnostics ?? null;
@@ -110,13 +122,89 @@ async function runLiveLunaFixtureStage() {
   stages.push({
     name: "live_luna_unseen_action",
     status:
-      result.ok && result.status === "RECOMMEND_ACTION" && sawRetrievedOperations && sawShopifyRead
+      result.ok &&
+      result.status === "RECOMMEND_ACTION" &&
+      sawRetrievedOperations &&
+      sawShopifyRead &&
+      hasStructuredEligibility &&
+      consistency.ok
         ? "PASS"
         : "FAIL",
     durationMs: Date.now() - started,
     recommendation: result.recommendation ?? null,
+    eligibilityCriteria: eligibilityCriteria ?? null,
+    promiseConsistency: consistency,
     diagnostics: result.diagnostics ?? null,
     trace: result.trace ?? null,
+  });
+}
+
+async function runLiveLunaInStockReliabilityStage() {
+  if (!process.env.OPENAI_API_KEY && !process.env.GEMINI_API_KEY) {
+    stages.push(blocked("live_luna_instock_snapshot_reliability", "OPENAI_API_KEY or GEMINI_API_KEY is required."));
+    return;
+  }
+  const snapshot = frozenInStockSnapshot();
+  const repeats = 3;
+  const runs = [];
+  const started = Date.now();
+  for (let index = 0; index < repeats; index += 1) {
+    const provider = capturePrompts(
+      createLlmProvider({ logger: quietLogger() }),
+      `live_luna_instock_snapshot_reliability:${index}:recommendation_investigation`,
+    );
+    const result = await generateAgenticShopifyRecommendation({
+      provider,
+      client: frozenInStockShopifyClient(),
+      merchantId: "fixture-merchant",
+      shopId: "fixture-shop",
+      shopDomain: "jefe-local-store.myshopify.com",
+      snapshot,
+      grantedScopes: ["read_products", "write_products"],
+      logger: quietLogger(),
+    });
+    const recommendation = result.recommendation ?? null;
+    const consistency = recommendation
+      ? validatePromiseConsistency(recommendation, recommendation.eligibilityCriteria)
+      : { ok: false, error: "No recommendation." };
+    const hasAvailability = Boolean(recommendation?.eligibilityCriteria?.some((row) => row.field === "available"));
+    const promisesAvailability = /\b(in[-\s]?stock|currently sellable|available inventory|available units)\b/i.test(
+      [recommendation?.title, recommendation?.summary, recommendation?.outcome, recommendation?.scope].filter(Boolean).join("\n"),
+    );
+    const validA = Boolean(result.ok && promisesAvailability && hasAvailability && consistency.ok);
+    const validB = Boolean(result.ok && !promisesAvailability && !hasAvailability && consistency.ok);
+    runs.push({
+      index,
+      status: result.status,
+      ok: result.ok === true,
+      repairAttempted: result.diagnostics?.semanticRepair?.attempted === true,
+      repairOk: result.diagnostics?.semanticRepair?.ok === true,
+      validWithoutRepair: Boolean(validA || validB) && result.diagnostics?.semanticRepair?.attempted !== true,
+      validAfterRepair: Boolean(validA || validB) && result.diagnostics?.semanticRepair?.attempted === true,
+      validationFailed: result.status === "VALIDATION_FAILED",
+      validA,
+      validB,
+      title: recommendation?.title ?? null,
+      eligibilityCriteria: recommendation?.eligibilityCriteria ?? null,
+      blocker: result.blocker ?? null,
+    });
+  }
+  const validWithoutRepair = runs.filter((row) => row.validWithoutRepair).length;
+  const validAfterRepair = runs.filter((row) => row.validAfterRepair).length;
+  const validationFailed = runs.filter((row) => row.validationFailed).length;
+  const valid = runs.filter((row) => row.validA || row.validB).length;
+  stages.push({
+    name: "live_luna_instock_snapshot_reliability",
+    status: valid === repeats && validationFailed === 0 ? "PASS" : "FAIL",
+    durationMs: Date.now() - started,
+    summary: {
+      repeats,
+      validWithoutRepair,
+      validAfterRepair,
+      validationFailed,
+      valid,
+    },
+    runs,
   });
 }
 
@@ -424,16 +512,134 @@ function fixtureSnapshot() {
   };
 }
 
+function frozenInStockSnapshot() {
+  return {
+    privacy: { excludesCredentialsAndTokens: true },
+    goals: [{ id: "goal-revenue", title: "Grow revenue from products customers can actually buy" }],
+    insights: [],
+    beliefs: [
+      {
+        id: "belief-active-catalogue",
+        key: "catalogue.active_products",
+        label: "Active catalogue size",
+        val: 22,
+        status: "active",
+        authority: "deterministic",
+      },
+      {
+        id: "belief-positive-inventory",
+        key: "inventory.positive_available_count",
+        label: "Products with positive available inventory",
+        val: 17,
+        status: "active",
+        authority: "deterministic",
+      },
+    ],
+    merchantContext: [],
+    previousRecommendations: [],
+  };
+}
+
+function frozenInStockShopifyClient() {
+  const inStock = Array.from({ length: 17 }, (_, index) => ({
+    node: {
+      id: `gid://shopify/Product/${index + 1}`,
+      title: `Sellable Wine ${index + 1}`,
+      status: "ACTIVE",
+      productType: index % 2 === 0 ? "Red Wine" : "White Wine",
+      totalInventory: index + 2,
+    },
+  }));
+  const outOfStock = Array.from({ length: 5 }, (_, index) => ({
+    node: {
+      id: `gid://shopify/Product/${index + 18}`,
+      title: `Unavailable Wine ${index + 1}`,
+      status: "ACTIVE",
+      productType: "Red Wine",
+      totalInventory: index === 0 ? -1 : 0,
+    },
+  }));
+  return {
+    async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return {
+          currentAppInstallation: {
+            accessScopes: [
+              { handle: "read_products" },
+              { handle: "write_products" },
+            ],
+          },
+        };
+      }
+      if (document.includes("products(")) {
+        return {
+          products: {
+            edges: [...inStock, ...outOfStock],
+            pageInfo: { hasNextPage: false },
+          },
+        };
+      }
+      if (document.includes("collections(")) {
+        return {
+          collections: {
+            edges: Array.from({ length: 11 }, (_, index) => ({
+              node: { id: `gid://shopify/Collection/${index + 1}`, title: `Existing Collection ${index + 1}` },
+            })),
+            pageInfo: { hasNextPage: false },
+          },
+        };
+      }
+      return {};
+    },
+  };
+}
+
 function fixtureShopifyClient() {
   return {
     async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return {
+          currentAppInstallation: {
+            accessScopes: [
+              { handle: "read_products" },
+              { handle: "write_products" },
+            ],
+          },
+        };
+      }
       if (document.includes("products(")) {
         return {
           products: {
             edges: [
-              { node: { id: "gid://shopify/Product/1", title: "London Jacket" } },
-              { node: { id: "gid://shopify/Product/2", title: "London Tote" } },
+              {
+                node: {
+                  id: "gid://shopify/Product/1",
+                  title: "London Jacket",
+                  status: "ACTIVE",
+                  tags: ["london-delivery"],
+                  productType: "Outerwear",
+                  totalInventory: 8,
+                },
+              },
+              {
+                node: {
+                  id: "gid://shopify/Product/2",
+                  title: "London Tote",
+                  status: "ACTIVE",
+                  tags: ["london-delivery"],
+                  productType: "Accessories",
+                  totalInventory: 14,
+                },
+              },
             ],
+            pageInfo: { hasNextPage: false },
+          },
+        };
+      }
+      if (document.includes("collections(")) {
+        return {
+          collections: {
+            edges: [],
             pageInfo: { hasNextPage: false },
           },
         };
@@ -724,6 +930,10 @@ function writePromptReport() {
             when: "Live Luna forms an unseen semantic Shopify recommendation from Merchant Memory, bounded store evidence, searchable generated API knowledge, retrieved stubs and Shopify reads.",
           },
           {
+            scenario: "live_luna_instock_snapshot_reliability:recommendation_investigation",
+            when: "Live Luna reruns the frozen in-stock collection evidence snapshot several times so structured criteria either accompany in-stock wording or that wording is removed.",
+          },
+          {
             scenario: "real_dev_shopify_agentic_execution:post_acceptance_execution",
             when: "After acceptedActionRevision exists, Luna executes the accepted semantic Action through generated Shopify read/write operations and verifies by reading Shopify state back.",
           },
@@ -750,13 +960,34 @@ function promptTemplateCatalog() {
       systemPrompt: buildRecommendationSystemPrompt(),
       promptBodyShape: [
         "promptVersion",
+        "mode",
+        "eligibilityConsistencyVersion",
         "iteration",
         "merchantMemory",
         "boundedStoreEvidence",
         "searchableShopifyApiKnowledge",
         "initiallyRetrievedShopifyTools",
         "previousAttemptDiagnostics",
+        "investigationState",
+        "eligibilityEncoding",
         "toolResults",
+      ],
+    },
+    {
+      promptVersion: AGENTIC_SEMANTIC_REPAIR_PROMPT_VERSION,
+      scenario: "recommendation_semantic_repair",
+      when: "After Shopify investigation, a consistency mismatch gets one focused structured repair without further reads.",
+      systemPrompt: buildSemanticRepairSystemPrompt(),
+      promptBodyShape: [
+        "promptVersion",
+        "mode",
+        "eligibilityConsistencyVersion",
+        "candidateRecommendation",
+        "currentEligibilityCriteria",
+        "rawEligibilityCriteria",
+        "validationError",
+        "shopifyEvidence",
+        "allowedEligibilityEncoding",
       ],
     },
     {

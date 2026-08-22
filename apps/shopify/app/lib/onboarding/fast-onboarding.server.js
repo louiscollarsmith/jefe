@@ -23,6 +23,9 @@ import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/re
 import { AGENTIC_RECOMMENDATION_SOURCE_MODE } from "../shopify/agentic-runtime/constants.server.js";
 import { semanticActionRevision } from "../shopify/agentic-runtime/semantic-action.server.js";
 import { PLAN_RUN_STATUS } from "../merchant-plan/constants.server.js";
+import {
+  ensureOnboardingLearningProgress,
+} from "./learning-progress.server.js";
 
 export const ONBOARDING_CONTEXT_OPTIONS = Object.freeze([
   { value: "revenue", label: "Grow revenue", echo: "revenue comes first" },
@@ -38,11 +41,18 @@ const MILESTONES = new Set([
 ]);
 
 export async function getFastOnboardingExperience(prisma, input) {
-  const [shop, bootstrapStatus, bootstrapJob, priority, recommendations, latestPlanRun, fullStatuses, fullJobs] = await Promise.all([
-    prisma.shop.findUniqueOrThrow({
-      where: { id: input.shopId },
-      select: { onboardingCompletedAt: true, onboardingMetadata: true, backfillCompletedAt: true },
-    }),
+  const shop = await prisma.shop.findUniqueOrThrow({
+    where: { id: input.shopId },
+    select: { onboardingCompletedAt: true, onboardingMetadata: true, backfillCompletedAt: true },
+  });
+  const canAdvanceLearning =
+    !shop.onboardingCompletedAt &&
+    typeof prisma.storeUnderstandingRun?.findFirst === "function";
+  const learningProgress = canAdvanceLearning
+    ? await ensureOnboardingLearningProgress(prisma, input)
+    : null;
+
+  const [bootstrapStatus, bootstrapJob, priority, recommendations, latestPlanRun, fullStatuses, fullJobs] = await Promise.all([
     prisma.shopBackfillStatus.findUnique({
       where: { shopId_domain: { shopId: input.shopId, domain: BOOTSTRAP_BACKFILL_DOMAIN } },
     }),
@@ -132,6 +142,17 @@ export async function getFastOnboardingExperience(prisma, input) {
   const bootstrapPhase = stringValue(jsonObject(bootstrapStatus?.metadata).phase) ??
     (bootstrapJob?.status === "queued" ? "queued" : bootstrapJob?.status === "running" ? "starting" : "not_started");
   const fullLearning = shapeFullLearning(fullStatuses, fullJobs);
+  const recommendationInvestigationPending =
+    !selected &&
+    Boolean(context) &&
+    [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running].includes(latestPlanRun?.status);
+  const learningPipelinePending =
+    Boolean(context) &&
+    !selected &&
+    (
+      learningProgress?.learningPipelinePending === true ||
+      recommendationInvestigationPending
+    );
   const failure = classifyFailure(bootstrapStatus, bootstrapJob, {
     bootstrapPhase,
     contextAnswered: Boolean(context),
@@ -139,6 +160,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     inAppHandoff: Boolean(handoff),
     fullLearningState: fullLearning.state,
     latestPlanRun,
+    learningPipelinePending,
   });
   let stage = "connect";
   if (handoff) stage = "app";
@@ -178,10 +200,6 @@ export async function getFastOnboardingExperience(prisma, input) {
   const presentation = selected
     ? shapeRecommendationPresentation(selected, { insight, evidence })
     : null;
-  const recommendationInvestigationPending =
-    !selected &&
-    Boolean(context) &&
-    [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running].includes(latestPlanRun?.status);
   const queueItems = recommendations
     .filter(
       (row) =>
@@ -206,6 +224,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     queueItems,
     failure,
     recommendationInvestigationPending,
+    learningPipelinePending,
     fullLearning,
     handoff: handoff ? { id: handoff.id, token: input.handoffToken } : null,
     devToolsEnabled: process.env.ENABLE_DEV_TOOLS === "true",
@@ -232,9 +251,10 @@ export async function answerOnboardingContext(prisma, input) {
     where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
   });
   const onboardingEpoch = bootstrapEpoch(null, bootstrap);
-  await ensureAgenticRecommendationQueued(prisma, {
+  await ensureOnboardingLearningProgress(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
+    shopDomain: input.shopDomain,
   });
   void trackOnce(prisma, {
     type: "context_answered",
@@ -495,11 +515,21 @@ export async function retryFastOnboarding(prisma, input) {
     return { ok: true, retried: retried.retried };
   }
   if (input.target === "merchant_plan") {
-        await ensureAgenticRecommendationQueued(prisma, {
-          merchantId: input.merchantId,
-          shopId: input.shopId,
-          resetAttempts: true,
-        });
+    const progress = await ensureOnboardingLearningProgress(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      shopDomain: input.shopDomain,
+    });
+    if (
+      progress.goals?.state === "ready" &&
+      ["failed", "missing", "blocked"].includes(progress.recommendation?.state)
+    ) {
+      await ensureAgenticRecommendationQueued(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        resetAttempts: true,
+      });
+    }
     await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
     return { ok: true };
   }
@@ -887,9 +917,7 @@ export function classifyFailure(status, job, experience = {}) {
       experience.inAppHandoff !== true &&
       (
         activePlanGeneration ||
-        !["complete", "failed", "access_failure"].includes(
-          stringValue(experience.fullLearningState),
-        )
+        experience.learningPipelinePending === true
       );
     if (
       experience.contextAnswered === true &&
@@ -972,6 +1000,33 @@ export function classifyFailure(status, job, experience = {}) {
         type: "insufficient",
         message:
           "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
+      };
+    }
+    if (
+      ["awaiting_context", "ready_for_agentic_recommendation"].includes(phase ?? "") &&
+      experience.contextAnswered === true &&
+      experience.hasSurfaceableRecommendation === false &&
+      experience.inAppHandoff !== true
+    ) {
+      if (shouldKeepWaitingForRecommendation) return null;
+      return {
+        type: "retryable",
+        retryTarget: "merchant_plan",
+        message:
+          "I saved your priority, but the next learning step has not started. I can continue from the same store evidence.",
+      };
+    }
+    if (
+      experience.contextAnswered === true &&
+      experience.hasSurfaceableRecommendation !== true &&
+      experience.inAppHandoff !== true
+    ) {
+      if (shouldKeepWaitingForRecommendation) return null;
+      return {
+        type: "retryable",
+        retryTarget: "merchant_plan",
+        message:
+          "I saved your priority, but the next learning step has not started. I can continue from the same store evidence.",
       };
     }
     return null;

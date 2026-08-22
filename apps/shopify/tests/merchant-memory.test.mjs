@@ -1763,7 +1763,7 @@ test("A deterministic metric that drops below its data threshold is retired on r
       },
     });
     assert.ok(active, "positive_available_units should be active after first rebuild");
-    assert.equal(active.precedence, BELIEF_PRECEDENCE.systemInference);
+    assert.equal(active.precedence, BELIEF_PRECEDENCE.directObservation);
 
     // Remove the source so the derivation now returns INSUFFICIENT_DATA.
     await prisma.inventoryLevel.deleteMany({ where: { merchantId: merchant.id } });

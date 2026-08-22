@@ -409,7 +409,7 @@ test("the UI keeps the exact beats, one dominant result and honest chrome", () =
   assert.match(componentSource, /type: "entered_app"[\s\S]*current\.searchParams\.delete\("handoff"\)[\s\S]*navigate\(appUrl, \{ replace: true \}\)/);
   assert.match(componentSource, /presentation\.evidence\.slice\(0, 3\)/);
   assert.match(componentSource, /recommendationInvestigationPending/);
-  assert.match(componentSource, /Boolean\(experience\.context\)[\s\S]*!experience\.failure/);
+  assert.match(componentSource, /Boolean\(experience\.context\)[\s\S]*!experience\.failure[\s\S]*learningPipelinePending/);
   assert.match(componentSource, /I won’t suggest something I can’t back up with your store data/);
   assert.match(serviceSource, /Work on this/);
   assert.match(componentSource, /Opening Action Chat/);
@@ -548,7 +548,7 @@ test("bootstrap failure does not downgrade completed full learning", () => {
   assert.equal(shapeFullLearning(statuses, [{ jobType: "backfill_finalize", status: "succeeded" }]).state, "complete");
 });
 
-test("bootstrap-insufficient onboarding waits while full learning is still active", async () => {
+test("bootstrap-insufficient onboarding does not wait on full learning alone", async () => {
   const prisma = {
     shop: {
       findUniqueOrThrow: async () => ({
@@ -609,7 +609,9 @@ test("bootstrap-insufficient onboarding waits while full learning is still activ
 
   assert.equal(experience.stage, "context");
   assert.equal(experience.recommendation, null);
-  assert.equal(experience.failure, null);
+  assert.equal(experience.learningPipelinePending, false);
+  assert.equal(experience.failure.type, "insufficient");
+  assert.match(experience.failure.message, /grounded Shopify action/);
 });
 
 test("ready bootstrap with only a superseded recommendation stops polling after full learning", async () => {
@@ -1366,6 +1368,8 @@ test("retrying a failed agentic recommendation creates a fresh run and requeues 
     merchantGoalRun: {
       findFirst: async () => ({
         id: "goal-run-1",
+        status: "completed",
+        _count: { horizons: 3 },
         horizons: [
           { id: "goal-1", horizon: "threeMonths", title: "Grow revenue", description: "Revenue", supportingBeliefIds: ["belief-1"] },
           { id: "goal-2", horizon: "sixMonths", title: "Improve repeat purchase", description: "Repeat", supportingBeliefIds: ["belief-1"] },
@@ -1376,10 +1380,22 @@ test("retrying a failed agentic recommendation creates a fresh run and requeues 
     merchantInsightRun: {
       findFirst: async () => ({
         id: "insight-run-1",
+        status: "completed",
         findings: [],
       }),
     },
+    storeUnderstandingRun: {
+      findFirst: async () => ({
+        id: "understanding-1",
+        status: "completed",
+      }),
+    },
     merchantMemoryBelief: {
+      findFirst: async () => ({
+        id: "priority-1",
+        key: "preferences.optimisation_priority",
+        value: { option: "revenue", label: "Grow revenue", echo: "revenue comes first" },
+      }),
       findMany: async () => [
         {
           id: "belief-1",
@@ -1395,7 +1411,10 @@ test("retrying a failed agentic recommendation creates a fresh run and requeues 
         },
       ],
     },
-    merchantPlanRecommendation: { findMany: async () => [] },
+    merchantPlanRecommendation: {
+      findFirst: async () => null,
+      findMany: async () => [],
+    },
     merchantPlanRun: {
       count: async () => runs.length,
       findFirst: async ({ where }) => {
@@ -1429,7 +1448,10 @@ test("retrying a failed agentic recommendation creates a fresh run and requeues 
     backfillJob: {
       findUnique: async () => ({
         payloadJson: { onboardingEpoch: "epoch-1" },
+        status: "succeeded",
+        jobType: "merchant_memory_bootstrap",
       }),
+      findMany: async () => [],
       upsert: async (args) => {
         calls.push(["backfillJob.upsert", args]);
         return { id: "job-1", ...args.create, ...args.update };
@@ -1477,6 +1499,19 @@ test("thin first-read evidence waits only while recommendation work is active", 
         contextAnswered: true,
         hasSurfaceableRecommendation: false,
         fullLearningState: "learning",
+      },
+    )?.type,
+    "insufficient",
+  );
+  assert.equal(
+    classifyFailure(
+      { status: "complete", metadata: { phase: "insufficient_evidence" } },
+      { status: "succeeded" },
+      {
+        contextAnswered: true,
+        hasSurfaceableRecommendation: false,
+        fullLearningState: "learning",
+        learningPipelinePending: true,
       },
     ),
     null,
