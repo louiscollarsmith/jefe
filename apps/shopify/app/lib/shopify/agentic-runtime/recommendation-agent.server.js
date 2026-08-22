@@ -52,6 +52,8 @@ export const AGENTIC_RECOMMENDATION_SCHEMA = {
         "scope",
         "constraints",
         "materialExpectedEffects",
+        "diagnosedProblem",
+        "mechanism",
         "whyThisAction",
         "whyNow",
         "supportingBeliefIds",
@@ -67,6 +69,8 @@ export const AGENTIC_RECOMMENDATION_SCHEMA = {
         scope: { type: Type.STRING },
         constraints: { type: Type.ARRAY, items: { type: Type.STRING } },
         materialExpectedEffects: { type: Type.ARRAY, items: { type: Type.STRING } },
+        diagnosedProblem: { type: Type.STRING },
+        mechanism: { type: Type.STRING },
         whyThisAction: { type: Type.STRING },
         whyNow: { type: Type.STRING },
         supportingBeliefIds: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -272,6 +276,32 @@ Merchant Memory is divided into three provenance layers. Use them to reason corr
 
 A Jefe hypothesis that has been explicitly confirmed by the merchant (belief status merchant_confirmed or merchant_corrected) may be treated as merchant intent. Do not infer confirmation from silence or absence of objection.
 
+## Mechanism requirement
+
+Every recommendation must explicitly identify:
+
+**diagnosedProblem** — The specific constraint or gap in the current Shopify state that the Action addresses. This must be distinct from commercial importance. Do not simply restate that something is popular or generates revenue — identify what is wrong or missing in the store.
+
+**mechanism** — Why the proposed Shopify change directly addresses that specific problem. Explain the causal connection, not merely the intended effect.
+
+Evidence that something is commercially important does not automatically establish that it should be changed. For example:
+- "White Wine = 34.78% of revenue" establishes commercial importance.
+- It does not establish that White Wine has a discoverability gap, a navigation problem, or a missing grouping.
+
+To justify a merchandising action, you must read current Shopify collections/navigation state and establish that the problem exists. To justify an inventory action, you must establish that Shopify availability misrepresents real stock. To justify a copy/catalogue change, you must establish that current content is inaccurate or incomplete.
+
+Tool availability is a feasibility condition, not a justification. A Shopify mutation being executable is not a reason to select it.
+
+## Reasoning sequence
+
+Reason in this order:
+1. What specific gap or constraint does the store evidence establish?
+2. What Shopify state investigation would confirm or deny that gap?
+3. What change would directly address that confirmed gap?
+4. Which Shopify capability implements that change?
+
+Do not search for write operations before identifying the diagnosed problem. Capability discovery should bind a confirmed diagnosis to an executable form — not manufacture one.
+
 ## Investigation rules
 
 Use tools when needed:
@@ -409,6 +439,8 @@ export function normalizeSemanticRecommendation(value) {
     scope: clean(value.scope, 360),
     constraints: uniqueStrings(value.constraints).slice(0, 10),
     materialExpectedEffects: uniqueStrings(value.materialExpectedEffects).slice(0, 10),
+    diagnosedProblem: clean(value.diagnosedProblem, 520),
+    mechanism: clean(value.mechanism, 520),
     whyThisAction: clean(value.whyThisAction, 520),
     whyNow: clean(value.whyNow, 420),
     supportingBeliefIds: uniqueStrings(value.supportingBeliefIds),
@@ -422,9 +454,9 @@ export function normalizeSemanticRecommendation(value) {
 }
 
 /** @param {any} recommendation @param {any} context */
-function validateSemanticRecommendation(recommendation, context) {
+export function validateSemanticRecommendation(recommendation, context) {
   if (!recommendation) return { ok: false, error: "Recommendation is required." };
-  for (const field of ["title", "summary", "outcome", "scope", "whyThisAction", "whyNow", "verificationPlan"]) {
+  for (const field of ["title", "summary", "outcome", "scope", "diagnosedProblem", "mechanism", "whyThisAction", "whyNow", "verificationPlan"]) {
     if (!recommendation[field]) return { ok: false, error: `Recommendation needs ${field}.` };
   }
   if (!recommendation.materialExpectedEffects.length) {
