@@ -85,7 +85,7 @@ import {
   resolveStepTargetOrClarify,
 } from "./action-workflow-navigation.server.js";
 import {
-  acceptAndExecuteAgenticShopifyAction,
+  acceptAndEnqueueAgenticShopifyAction,
   isAgenticShopifyAction,
 } from "../shopify/agentic-runtime/execution-service.server.js";
 import { semanticActionRevision } from "../shopify/agentic-runtime/semantic-action.server.js";
@@ -443,16 +443,13 @@ async function runAcceptPlan(prisma, input) {
     },
   });
   if (rawAction && isAgenticShopifyAction(rawAction)) {
-    const result = await acceptAndExecuteAgenticShopifyAction(prisma, {
+    const result = await acceptAndEnqueueAgenticShopifyAction(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       shopDomain: input.session?.shop,
       actionId: input.action.id,
       actor: input.actor ?? input.merchantId,
       scopes: input.session?.scope ? String(input.session.scope).split(/[,\s]+/).filter(Boolean) : undefined,
-      client: input.executeDeps?.client ?? null,
-      loadOfflineToken: input.executeDeps?.loadOfflineToken,
-      provider: input.provider ?? null,
       logger: input.logger,
     });
     const fresh = await refreshAction(prisma, input);
@@ -462,8 +459,8 @@ async function runAcceptPlan(prisma, input) {
       reason: result.ok ? null : result.reason,
       result,
       reply: result.ok
-        ? "Accepted. I made the Shopify change and verified the outcome."
-        : "I accepted the Action, but could not complete the Shopify work yet.",
+        ? "I've got it — I'm working on this now. I'll update you when it's done."
+        : "I accepted the Action, but could not start the Shopify work yet.",
       action: fresh ?? input.action,
     };
   }

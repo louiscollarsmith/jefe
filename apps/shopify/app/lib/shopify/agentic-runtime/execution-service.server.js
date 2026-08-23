@@ -4,6 +4,7 @@ import { createLlmProvider } from "../../llm/provider.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { acceptAgenticShopifyAction } from "./semantic-action.server.js";
 import { runAgenticShopifyExecution } from "./execution-agent.server.js";
+import { enqueueAgenticExecutionJob } from "./execution-job.server.js";
 
 /**
  * Accept a semantic Shopify Action and immediately run the canonical agentic
@@ -83,6 +84,52 @@ export async function acceptAndExecuteAgenticShopifyAction(prisma, input) {
     execution,
     reason: execution.ok ? null : execution.blocker ?? execution.status,
   };
+}
+
+/**
+ * Accept a semantic Shopify Action and enqueue it for durable background
+ * execution. The execution runs in the backfill worker, not in the merchant's
+ * HTTP request, so there is no Cloudflare 524 timeout risk.
+ *
+ * Returns immediately after acceptance + enqueue — no `execution` field.
+ *
+ * @param {any} prisma
+ * @param {{
+ *   merchantId: string;
+ *   shopId: string;
+ *   shopDomain: string;
+ *   actionId: string;
+ *   actor?: string | null;
+ *   scopes?: string[];
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ * }} input
+ */
+export async function acceptAndEnqueueAgenticShopifyAction(prisma, input) {
+  const action = await prisma.merchantAction.findFirst({
+    where: {
+      id: input.actionId,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    },
+  });
+  if (!action) return { ok: false, reason: "not_found" };
+  if (!isAgenticShopifyAction(action)) return { ok: false, reason: "not_agentic" };
+  const accepted = await acceptAgenticShopifyAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    actor: input.actor ?? input.merchantId,
+  });
+  if (!accepted.ok) return { ok: false, reason: accepted.reason, accepted };
+  const enqueue = await enqueueAgenticExecutionJob(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: action.id,
+    acceptedRevision: accepted.acceptedActionRevision,
+    shopDomain: input.shopDomain,
+    scopes: input.scopes ?? [],
+  });
+  return { ok: true, accepted, enqueue };
 }
 
 /** @param {any} action */

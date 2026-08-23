@@ -3,10 +3,9 @@
 import { Type } from "@google/genai";
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { resolveActionState } from "../../actions/action-state.server.js";
-import {
-  ACTION_COMMAND,
-  executeActionCommand,
-} from "../../actions/action-command.server.js";
+// ACTION_COMMAND and executeActionCommand removed — accept_action now calls
+// acceptAndEnqueueAgenticShopifyAction directly rather than routing through
+// executeActionCommand to avoid the sync Shopify execution path.
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { semanticActionRevision, appendRevisionHistory, findRevisionSnapshot, revisionSnapshot } from "./semantic-action.server.js";
 import {
@@ -23,6 +22,13 @@ import {
   normalizeWriteProtections,
   collectResourceFacts,
 } from "./eligibility.server.js";
+import {
+  acceptAndEnqueueAgenticShopifyAction,
+} from "./execution-service.server.js";
+import {
+  getAgenticExecutionJobState,
+  cancelAgenticExecutionJobForStaleRevision,
+} from "./execution-job.server.js";
 
 const log = baseLogger.child({ component: "agentic-action-chat" });
 
@@ -404,7 +410,11 @@ CURRENT ELIGIBILITY CRITERIA and WRITE PROTECTIONS are provided separately in th
 
 When the merchant adds a selection rule such as a minimum available quantity, persist it with update_action_eligibility. When working out candidate products, apply the current eligibility criteria to Shopify reads and record which criteria each product passed or failed.
 
-You must not perform Shopify writes before the Action is accepted. If the merchant says "go ahead" or otherwise clearly accepts the current Action, call accept_action; the application will create acceptedActionRevision and hand off to the post-acceptance execution loop.
+You must not perform Shopify writes before the Action is accepted. If the merchant says "go ahead" or otherwise clearly accepts the current Action, call accept_action; the application will create acceptedActionRevision and enqueue background execution.
+
+When action.executionJob.status is "queued" or "running", Jefe is already working on this Action in the background. Do NOT call accept_action again — instead tell the merchant that Jefe is working on it and they will be updated when it is done.
+
+When action.executionJob.status is "succeeded", tell the merchant the Action has been completed. When it is "failed", explain that the execution encountered a problem and offer to help investigate or retry.
 
 The merchant is not navigating a rigid workflow. Displayed milestones are explanatory and do not block discussion. Do not use historical workflow or step semantics.
 
@@ -531,32 +541,45 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
     return shopifyToolResult(annotateShopifyReadWithEligibility(result, state));
   }
   if (tool === "accept_action") {
-    const result = await executeActionCommand(prisma, {
-      command: ACTION_COMMAND.ACCEPT_PLAN,
-      params: {},
+    // Check whether execution is already running for the current revision
+    const existingJobState = await getAgenticExecutionJobState(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: input.actionId,
+    });
+    if (
+      existingJobState.status === "queued" ||
+      existingJobState.status === "running"
+    ) {
+      return toolOk(tool, {
+        effect: TOOL_EFFECT.externalWrite,
+        message: "Jefe is already working on this — I'll update you when it's done.",
+        facts: { accepted: true, alreadyRunning: true, jobStatus: existingJobState.status },
+      });
+    }
+    if (existingJobState.status === "succeeded") {
+      return toolOk(tool, {
+        effect: TOOL_EFFECT.externalWrite,
+        message: "This Action has already been completed.",
+        facts: { accepted: true, alreadyCompleted: true, jobStatus: "succeeded" },
+      });
+    }
+    const result = await acceptAndEnqueueAgenticShopifyAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      shopDomain: input.shopDomain ?? input.session?.shop ?? "",
+      actionId: input.actionId,
       actor: input.actor ?? input.merchantId,
-      conversationId: input.conversationId ?? null,
-      session: {
-        shop: input.shopDomain ?? input.session?.shop ?? "",
-        scope: scopeString(input),
-      },
-      executeDeps: {
-        loadOfflineToken: input.loadOfflineToken,
-        client: input.client ?? null,
-      },
-      provider: input.provider,
+      scopes: input.scopes ?? (scopeString(input) ? scopeString(input).split(",").filter(Boolean) : []),
       logger,
     });
     return result.ok
       ? toolOk(tool, {
           effect: TOOL_EFFECT.externalWrite,
-          message: result.reply ?? "Accepted the Action and started execution.",
-          facts: { accepted: true, result: result.result ?? null },
+          message: "I've accepted this Action and Jefe is working on it now. I'll update you when it's done.",
+          facts: { accepted: true, enqueue: result.enqueue ?? null },
         })
-      : toolFail(tool, String(result.reason ?? "ACCEPTANCE_FAILED"), result.reply ?? "I couldn't accept that Action.");
+      : toolFail(tool, String(result.reason ?? "ACCEPTANCE_FAILED"), "I couldn't accept that Action.");
   }
 
   const patch = patchFromTool(tool, args);
@@ -797,6 +820,16 @@ async function updateSemanticActionDraft(prisma, input, patch) {
         : {}),
     },
   };
+  // Cancel any queued execution job for the old accepted revision when the draft
+  // moves to a new revision — the queued job would execute a stale acceptance.
+  if (progressAgentic.acceptedActionRevision && progressAgentic.acceptedActionRevision !== revision) {
+    cancelAgenticExecutionJobForStaleRevision(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: row.id,
+      currentRevision: revision,
+    }).catch(() => {}); // best-effort — draft update must not fail if this throws
+  }
   const nextPlan = {
     ...plan,
     agentic: {
@@ -909,6 +942,10 @@ function publicActionState(state) {
     semanticAction.acceptedActionRevision ??
     state?.action?.semanticAction?.acceptedActionRevision ??
     null;
+  const currentRevision = semanticAction.revision ?? null;
+  const currentRevisionAccepted = Boolean(acceptedActionRevision) && acceptedActionRevision === currentRevision;
+  const previousRevisionWasAccepted = Boolean(acceptedActionRevision) && acceptedActionRevision !== currentRevision;
+  const executionJobProgress = state?.action?.progress?.agentic?.executionJob;
   const outcome = publicOutcome(state?.outcome ?? state?.action?.outcome);
   return {
     id: state?.action?.id ?? null,
@@ -917,9 +954,17 @@ function publicActionState(state) {
     kind: state?.action?.kind ?? null,
     lifecycle: {
       status: state?.lifecycle ?? null,
-      accepted: Boolean(acceptedActionRevision),
-      currentActionRevision: semanticAction.revision ?? null,
+      // accepted is true only when the CURRENT revision has been accepted
+      accepted: currentRevisionAccepted,
+      currentRevisionAccepted,
+      previousRevisionWasAccepted,
+      currentActionRevision: currentRevision,
       acceptedActionRevision,
+    },
+    executionJob: {
+      status: executionJobProgress?.jobStatus ?? null,
+      acceptedRevision: executionJobProgress?.acceptedRevision ?? null,
+      completedAt: executionJobProgress?.completedAt ?? null,
     },
     outcome,
     semanticAction: {

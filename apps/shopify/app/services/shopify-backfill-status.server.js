@@ -9,7 +9,10 @@ import {
 import { MERCHANT_INSIGHTS_JOB_TYPE } from "../lib/merchant-insights/constants.server.js";
 import { MERCHANT_GOALS_JOB_TYPE } from "../lib/merchant-goals/constants.server.js";
 import { MERCHANT_PLAN_JOB_TYPE } from "../lib/merchant-plan/constants.server.js";
-import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
+import {
+  AGENTIC_RECOMMENDATION_JOB_TYPE,
+  AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
+} from "../lib/shopify/agentic-runtime/constants.server.js";
 import { DEFAULT_BACKFILL_DAYS } from "../lib/shopify/backfill-window.server.js";
 import { normalizeShopDomain } from "../lib/shopify/admin-graphql.server.js";
 import { trackOnce } from "./analytics/event-log.server.js";
@@ -568,9 +571,15 @@ function shouldResetBackfillDomain(shop, domain, isReinstall) {
 
 /** @param {string} jobType */
 function jobPriority(jobType) {
-  return Object.prototype.hasOwnProperty.call(JOB_PRIORITIES, jobType)
-    ? JOB_PRIORITIES[/** @type {keyof typeof JOB_PRIORITIES} */ (jobType)]
-    : 100;
+  if (Object.prototype.hasOwnProperty.call(JOB_PRIORITIES, jobType)) {
+    return JOB_PRIORITIES[/** @type {keyof typeof JOB_PRIORITIES} */ (jobType)];
+  }
+  // Agentic execution jobs include the actionId in the jobType (prefix:actionId),
+  // so they cannot be an exact key in JOB_PRIORITIES. Handle by prefix match.
+  if (jobType.startsWith(AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX + ":")) {
+    return 15;
+  }
+  return 100;
 }
 
 /** @param {string | null | undefined} status */
