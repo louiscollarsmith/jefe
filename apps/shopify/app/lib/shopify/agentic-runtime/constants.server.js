@@ -2,8 +2,13 @@
 
 export const AGENTIC_RECOMMENDATION_JOB_TYPE = "agentic_recommendation_generate";
 export const AGENTIC_RECOMMENDATION_SOURCE_MODE = "agentic";
+// Bump this version whenever the snapshot schema changes (new fields, removed fields,
+// or changed semantics). It is included in the snapshot object before hashing, so any
+// version change produces new hashes for all future runs — making schema changes
+// explicit and debuggable. Existing queued runs are refreshed in-place by the worker.
+// v2: added shopifyMirrorWatermark field (Shopify state invalidation via backfill watermark)
 export const AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION =
-  "agentic-recommendation-snapshot-v1";
+  "agentic-recommendation-snapshot-v2";
 export const AGENTIC_RECOMMENDATION_SCHEMA_VERSION =
   "agentic-recommendation-schema-v4";
 

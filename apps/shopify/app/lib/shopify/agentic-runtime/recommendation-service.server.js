@@ -273,11 +273,16 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
         trace: result.trace ?? null,
       };
     }
-    const terminalStatus = result.status === "NO_ACTIONABLE_OPPORTUNITY"
-      ? "no_actionable_opportunity"
-      : result.status === "INSUFFICIENT_EVIDENCE"
-        ? PLAN_RUN_STATUS.insufficientData
-        : PLAN_RUN_STATUS.failed;
+    // BLOCKED means "investigation complete but no safe Shopify action is possible right
+    // now." This is a legitimate no-opportunity result, not a system failure. Map it to
+    // no_actionable_opportunity alongside NO_ACTIONABLE_OPPORTUNITY.
+    // VALIDATION_FAILED and INVESTIGATION_FAILED remain PLAN_RUN_STATUS.failed (genuine errors).
+    const terminalStatus =
+      result.status === "NO_ACTIONABLE_OPPORTUNITY" || result.status === "BLOCKED"
+        ? "no_actionable_opportunity"
+        : result.status === "INSUFFICIENT_EVIDENCE"
+          ? PLAN_RUN_STATUS.insufficientData
+          : PLAN_RUN_STATUS.failed;
     const safeErrorCode = agenticRecommendationSafeErrorCode(result.status);
     const runMetadata = agenticRunMetadata(run);
     await prisma.merchantPlanRun.update({
@@ -430,8 +435,37 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
     },
   });
   if (!run) return prepareAgenticRecommendationRun(prisma, input);
+
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
   const result = jsonObject(run.result);
+
+  // Ownership invariant: a worker job created for run X must execute run X, never
+  // silently switch to run Y. The previous code fell through to prepareAgenticRecommendationRun
+  // when the snapshot hash changed between enqueue and worker pickup, which created a new run Y
+  // with sourceMode="agentic" and left X queued forever.
+  //
+  // Queued runs: the snapshot may legitimately change before pickup (Shopify webhooks,
+  // Memory refresh, Action state changes, snapshot schema version bumps). Use the current
+  // snapshot for the investigation — it is always fresher — and preserve all run identity:
+  // id, sourceMode, retry metadata, creation origin. Do NOT create a new run.
+  //
+  // Running runs: snapshot is immutable for the attempt in progress.
+  //
+  // Terminal runs: snapshot changed after completion is the legitimate "something changed,
+  // re-investigate" case — prepareAgenticRecommendationRun correctly creates a new run here.
+  if (run.status === PLAN_RUN_STATUS.queued || run.status === PLAN_RUN_STATUS.running) {
+    return {
+      status: "ready",
+      run,
+      snapshot,
+      previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        runId: typeof result.retryOfRunId === "string" ? result.retryOfRunId : null,
+      }),
+    };
+  }
+
   if (run.snapshotHash !== snapshot.snapshotHash && result.baseSnapshotHash !== snapshot.snapshotHash) {
     return prepareAgenticRecommendationRun(prisma, input);
   }
@@ -921,6 +955,7 @@ function retrySnapshotHash(baseSnapshotHash) {
 /** @param {unknown} status */
 function agenticRecommendationSafeErrorCode(status) {
   if (status === "NO_ACTIONABLE_OPPORTUNITY") return null;
+  if (status === "BLOCKED") return null; // legitimate no-opportunity; not a system error
   if (status === "VALIDATION_FAILED") return "agentic_recommendation_validation_failed";
   if (status === "INVESTIGATION_FAILED") return "agentic_recommendation_investigation_failed";
   if (status === "INSUFFICIENT_EVIDENCE") return "agentic_recommendation_insufficient_evidence";
