@@ -52,7 +52,31 @@ export async function enqueueAgenticExecutionJob(prisma, input) {
         return { status: "already_failed", job: existing };
       }
     }
-    // Different revision or unknown status — fall through to upsert
+
+    // Never reset a RUNNING job. Store the new revision as pending so the
+    // running worker re-queues for it on completion. This prevents two workers
+    // from simultaneously owning the same logical job row in multi-process
+    // deployments. The running job's Shopify writes are already blocked by the
+    // gateway revision guard, so Shopify safety holds regardless.
+    if (existing.status === "running") {
+      const updated = await prisma.backfillJob.update({
+        where: { id: existing.id },
+        data: {
+          payloadJson: {
+            ...existingPayload,
+            pendingAcceptedRevision: input.acceptedRevision,
+          },
+        },
+      });
+      await updateActionExecutionJobProgress(prisma, input, {
+        acceptedRevision: input.acceptedRevision,
+        jobStatus: "queued",
+        enqueuedAt: new Date().toISOString(),
+        note: "pending_when_running_completes",
+      });
+      return { status: "pending_when_running_completes", job: updated };
+    }
+    // Different revision, not running — fall through to upsert
   }
 
   const enqueuedAt = new Date().toISOString();

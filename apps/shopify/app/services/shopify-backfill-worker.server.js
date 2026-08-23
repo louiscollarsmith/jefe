@@ -851,9 +851,26 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     return { status: "cancelled_action_not_found" };
   }
 
-  // Guard: if the action's accepted revision no longer matches, skip execution
+  // Guard: if the action's accepted revision no longer matches, skip execution.
+  // Re-read the live job payload so we don't miss a pendingAcceptedRevision
+  // written while we were waiting to be scheduled.
   const revisionState = getActionRevisionState(action);
   if (revisionState.acceptedActionRevision !== acceptedRevision) {
+    const liveJob = await prisma.backfillJob.findUnique({ where: { id: job.id } });
+    const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
+    const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
+    if (pendingRevision && pendingRevision === revisionState.acceptedActionRevision) {
+      logger.info("agentic execution job: stale at entry, re-queuing for pending revision", {
+        merchantId, shopId, actionId,
+        staleRevision: acceptedRevision,
+        pendingRevision,
+      });
+      await prisma.backfillJob.update({
+        where: { id: job.id },
+        data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
+      });
+      return { requeue: true, status: "requeued_for_pending_revision" };
+    }
     logger.info("agentic execution job skipped — stale revision", {
       merchantId,
       shopId,
@@ -937,6 +954,35 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
       merchantId,
       shopId,
       actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+
+  // If a new revision was accepted while we were running, re-queue for it rather
+  // than terminating. The generic CAS will set status="queued" (requeue:true) and
+  // leave payloadJson as we've updated it, so the next poll runs rev_B directly.
+  // This prevents the race where an in-flight rev_A worker resets a multi-process
+  // rev_B job's status via the shared CAS.
+  try {
+    const jobType = `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`;
+    const liveJob = await prisma.backfillJob.findUnique({
+      where: { shopId_jobType: { shopId, jobType } },
+    });
+    const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
+    const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
+    if (pendingRevision) {
+      logger.info("agentic execution job: re-queuing for pending revision after completion", {
+        merchantId, shopId, actionId, completedRevision: acceptedRevision, pendingRevision,
+      });
+      await prisma.backfillJob.update({
+        where: { id: job.id },
+        data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
+      });
+      return { requeue: true, status: "requeued_for_pending_revision", completedResult: result };
+    }
+  } catch (error) {
+    logger.warn("agentic execution job: could not check for pending revision", {
+      merchantId, shopId, actionId,
       error: error instanceof Error ? error.message : "UnknownError",
     });
   }

@@ -91,7 +91,7 @@ test("enqueueAgenticExecutionJob — same revision, failed → already_failed", 
   assert.equal(result.status, "already_failed");
 });
 
-test("enqueueAgenticExecutionJob — different revision → re-enqueues (resets to queued)", async () => {
+test("enqueueAgenticExecutionJob — different revision, non-running → re-enqueues (resets to queued)", async () => {
   const prisma = fakePrisma();
   // Enqueue first revision
   await enqueueAgenticExecutionJob(prisma, { merchantId, shopId, actionId, acceptedRevision: "rev-001" });
@@ -109,6 +109,31 @@ test("enqueueAgenticExecutionJob — different revision → re-enqueues (resets 
   assert.equal(result.job.status, "queued");
   assert.equal(result.job.payloadJson.acceptedRevision, "rev-002");
   // Still only one job row (upsert)
+  assert.equal(prisma.jobs.filter((j) => j.jobType === agenticExecutionJobType(actionId)).length, 1);
+});
+
+test("enqueueAgenticExecutionJob — different revision, RUNNING job → pending (no reset, no dual ownership)", async () => {
+  const prisma = fakePrisma();
+  // Enqueue rev-001 and simulate it being claimed (running)
+  await enqueueAgenticExecutionJob(prisma, { merchantId, shopId, actionId, acceptedRevision: "rev-001" });
+  const job = prisma.jobs.find((j) => j.jobType === agenticExecutionJobType(actionId));
+  job.status = "running";
+
+  // Accept rev-002 while rev-001 is running
+  const result = await enqueueAgenticExecutionJob(prisma, {
+    merchantId,
+    shopId,
+    actionId,
+    acceptedRevision: "rev-002",
+  });
+
+  // Must NOT reset to queued — that would allow a second worker to claim it
+  assert.equal(result.status, "pending_when_running_completes");
+  assert.equal(job.status, "running", "running job must not be reset to queued");
+  // Pending revision recorded in payload for the running worker to detect on completion
+  assert.equal(job.payloadJson.pendingAcceptedRevision, "rev-002");
+  assert.equal(job.payloadJson.acceptedRevision, "rev-001", "acceptedRevision unchanged while running");
+  // Still only one job row
   assert.equal(prisma.jobs.filter((j) => j.jobType === agenticExecutionJobType(actionId)).length, 1);
 });
 
