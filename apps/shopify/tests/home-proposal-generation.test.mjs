@@ -11,6 +11,7 @@ import {
   requestHomeProposalGeneration,
   HOME_PROPOSAL_SOURCE_MODE,
   DEFAULT_HOME_PROPOSAL_DAILY_CAP,
+  HOME_STUCK_RUN_THRESHOLD_MS,
 } from "../app/lib/merchant-plan/home-proposal-generation.server.js";
 
 test("proposalGenerationBudget: under the cap → allowed with remaining", () => {
@@ -95,8 +96,12 @@ test("getHomeProposalGenerationState: blocked at daily cap even without a propos
 });
 
 test("getHomeProposalGenerationState: generating blocks another request", async () => {
+  const recentUpdatedAt = new Date("2026-08-12T08:55:00Z"); // 5 min ago, within threshold
   const prisma = {
-    merchantPlanRun: { count: async () => 1 },
+    merchantPlanRun: {
+      count: async () => 1,
+      findFirst: async () => ({ updatedAt: recentUpdatedAt, createdAt: recentUpdatedAt }),
+    },
   };
   const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
     merchantId: "m1",
@@ -295,4 +300,186 @@ test("isHomeProposalGenerationInFlight detects queued home runs", async () => {
     await isHomeProposalGenerationInFlight(/** @type {any} */ (prisma), { merchantId: "m1", shopId: "s1" }),
     true,
   );
+});
+
+test("getHomeProposalGenerationState: surfaces no_actionable_opportunity terminal state", async () => {
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ status: "no_actionable_opportunity" }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, true);
+  assert.equal(state?.isGenerating, false);
+  assert.equal(state?.terminalStatus, "no_actionable_opportunity");
+});
+
+test("getHomeProposalGenerationState: surfaces failed terminal state", async () => {
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ status: "failed" }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, true);
+  assert.equal(state?.terminalStatus, "failed");
+});
+
+test("getHomeProposalGenerationState: no terminal status when proposed action exists", async () => {
+  const prisma = {
+    merchantPlanRun: { count: async () => 0 },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => true,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, false);
+  assert.equal(state?.reason, "proposed_exists");
+  assert.equal(state?.terminalStatus, null);
+});
+
+test("getHomeProposalGenerationState: no terminal status when generating (run is recent)", async () => {
+  const recentUpdatedAt = new Date("2026-08-23T08:59:00Z"); // 1 min ago, well within threshold
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ updatedAt: recentUpdatedAt, createdAt: recentUpdatedAt }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => true,
+    },
+  });
+  assert.equal(state?.isGenerating, true);
+  assert.equal(state?.terminalStatus, null);
+});
+
+test("HOME_STUCK_RUN_THRESHOLD_MS is exported and a positive finite number", () => {
+  assert.equal(typeof HOME_STUCK_RUN_THRESHOLD_MS, "number");
+  assert.ok(Number.isFinite(HOME_STUCK_RUN_THRESHOLD_MS));
+  assert.ok(HOME_STUCK_RUN_THRESHOLD_MS > 0);
+});
+
+test("getHomeProposalGenerationState: stuck run treated as failed and allows retry", async () => {
+  // Run was last updated 20 minutes ago — past any reasonable threshold.
+  const stuckAt = new Date("2026-08-23T08:40:00Z");
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ updatedAt: stuckAt, createdAt: stuckAt }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    stuckRunThresholdMs: 10 * 60 * 1000, // 10 min threshold for test
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => true,
+    },
+  });
+  assert.equal(state?.isGenerating, false, "stuck run must not block the generating state");
+  assert.equal(state?.canGenerate, true, "stuck run must allow retry");
+  assert.equal(state?.terminalStatus, "failed", "stuck run surfaces as failed terminal");
+});
+
+test("getHomeProposalGenerationState: run within threshold is not considered stuck", async () => {
+  const recentAt = new Date("2026-08-23T08:52:00Z"); // 8 min ago
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ updatedAt: recentAt, createdAt: recentAt }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    stuckRunThresholdMs: 10 * 60 * 1000, // 10 min threshold for test
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => true,
+    },
+  });
+  assert.equal(state?.isGenerating, true, "recent run must remain generating");
+  assert.equal(state?.terminalStatus, null);
+});
+
+test("worker run update does not overwrite sourceMode on the merchantPlanRun", () => {
+  const source = readFileSync(
+    new URL("../app/lib/shopify/agentic-runtime/recommendation-service.server.js", import.meta.url),
+    "utf8",
+  );
+  // The status:running update and the status:completed update in persistAgenticRecommendation
+  // must NOT include sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE, otherwise home-triggered
+  // runs would lose their sourceMode and polling would stop prematurely.
+  const runningUpdateBlock = source.match(/status: PLAN_RUN_STATUS\.running[\s\S]*?}\s*,\s*\}/)?.[0] ?? "";
+  assert.doesNotMatch(
+    runningUpdateBlock,
+    /sourceMode:\s*AGENTIC_RECOMMENDATION_SOURCE_MODE/,
+    "status:running update must not overwrite sourceMode",
+  );
+  // The completed update is inside persistAgenticRecommendation.
+  const completedUpdateBlock = source.match(/status: PLAN_RUN_STATUS\.completed[\s\S]*?}\s*,\s*\}/)?.[0] ?? "";
+  assert.doesNotMatch(
+    completedUpdateBlock,
+    /sourceMode:\s*AGENTIC_RECOMMENDATION_SOURCE_MODE/,
+    "status:completed update in persistAgenticRecommendation must not overwrite sourceMode",
+  );
+});
+
+test("requestHomeProposalGeneration: passes sourceMode: home to ensureQueued", async () => {
+  const calls = [];
+  const result = await requestHomeProposalGeneration(/** @type {any} */ ({ $transaction: (fn) => fn({}) }), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+    ensureQueued: async (_p, input) => {
+      calls.push(input);
+      return { status: "queued" };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].sourceMode, HOME_PROPOSAL_SOURCE_MODE);
+  assert.equal(calls[0].resetAttempts, true);
 });

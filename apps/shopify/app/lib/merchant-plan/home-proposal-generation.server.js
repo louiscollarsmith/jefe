@@ -13,6 +13,10 @@ export { merchantHasProposedAction };
 export const HOME_PROPOSAL_SOURCE_MODE = "home";
 export const DEFAULT_HOME_PROPOSAL_DAILY_CAP = 5;
 
+/** A run that has not made progress for this long is considered stuck. Based on the worker's
+ *  own job timeout (5 minutes) plus a generous LLM-latency headroom. */
+export const HOME_STUCK_RUN_THRESHOLD_MS = 15 * 60 * 1000;
+
 const ACTIVE_HOME_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
 
 /**
@@ -103,15 +107,31 @@ export async function isHomeProposalGenerationInFlight(prisma, { merchantId, sho
   return count > 0;
 }
 
+/** Terminal run statuses that end generation without a proposed action. */
+const TERMINAL_NON_PROPOSAL_STATUSES = [
+  "no_actionable_opportunity",
+  PLAN_RUN_STATUS.failed,
+  PLAN_RUN_STATUS.insufficientData,
+  PLAN_RUN_STATUS.modelDisabled,
+];
+
 /**
  * Loader-facing state for the Reading your store card.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
- * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean } | null>}
+ * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; stuckRunThresholdMs?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
+ * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean; terminalStatus: string | null } | null>}
  */
 export async function getHomeProposalGenerationState(
   prisma,
-  { merchantId, shopId, now, timeZone, cap = DEFAULT_HOME_PROPOSAL_DAILY_CAP, deps = {} },
+  {
+    merchantId,
+    shopId,
+    now,
+    timeZone,
+    cap = DEFAULT_HOME_PROPOSAL_DAILY_CAP,
+    stuckRunThresholdMs = HOME_STUCK_RUN_THRESHOLD_MS,
+    deps = {},
+  },
 ) {
   const count = deps.count ?? countHomeProposalGenerationsSince;
   const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
@@ -151,6 +171,56 @@ export async function getHomeProposalGenerationState(
     reason = "generating";
   }
 
+  // Stuck-run detection: a run that has been queued or running beyond the threshold
+  // without completing is assumed dead (worker crash, deploy, etc.). Treat it as failed
+  // so the merchant can retry rather than waiting indefinitely. The actual DB cleanup is
+  // handled by recoverStaleRunningBackfillJobs in the worker on the next tick.
+  let terminalStatus = null;
+  if (generating) {
+    try {
+      const activeRun = await prisma.merchantPlanRun.findFirst({
+        where: {
+          merchantId,
+          shopId,
+          sourceMode: HOME_PROPOSAL_SOURCE_MODE,
+          status: { in: ACTIVE_HOME_RUN_STATUSES },
+        },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true, createdAt: true },
+      });
+      if (activeRun) {
+        const lastActivity = activeRun.updatedAt ?? activeRun.createdAt;
+        const elapsedMs = now.getTime() - new Date(lastActivity).getTime();
+        if (elapsedMs > stuckRunThresholdMs) {
+          generating = false;
+          terminalStatus = PLAN_RUN_STATUS.failed;
+          canGenerate = true;
+          reason = null;
+        }
+      }
+    } catch {
+      // Stuck detection is best-effort; do not block eligibility on a read error.
+    }
+  }
+
+  // When idle (no proposed action, not generating, under the cap), surface the
+  // most recent run's terminal status so the UI can explain why the last attempt
+  // produced no proposal instead of silently resetting to the default copy.
+  if (canGenerate && !generating && !proposedExists && !terminalStatus) {
+    try {
+      const lastRun = await prisma.merchantPlanRun.findFirst({
+        where: { merchantId, shopId, sourceMode: HOME_PROPOSAL_SOURCE_MODE },
+        orderBy: { updatedAt: "desc" },
+        select: { status: true },
+      });
+      if (lastRun && TERMINAL_NON_PROPOSAL_STATUSES.includes(lastRun.status)) {
+        terminalStatus = lastRun.status;
+      }
+    } catch {
+      // Terminal status is best-effort; do not block generation eligibility on a read error.
+    }
+  }
+
   return {
     canGenerate,
     reason,
@@ -159,6 +229,7 @@ export async function getHomeProposalGenerationState(
     cap: budget.cap,
     isGenerating: generating,
     hasPriorProposal: priorCount > 0 || budget.used > 0,
+    terminalStatus,
   };
 }
 

@@ -36,9 +36,10 @@ const MAX_AGENTIC_BELIEFS = 40;
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; runAfter?: Date; resetAttempts?: boolean }} input
+ * @param {{ merchantId: string; shopId: string; sourceMode?: string; runAfter?: Date; resetAttempts?: boolean }} input
  */
 export async function ensureAgenticRecommendationQueued(prisma, input) {
+  const sourceMode = input.sourceMode ?? AGENTIC_RECOMMENDATION_SOURCE_MODE;
   const previousRun = input.resetAttempts
     ? await findLatestAgenticRecommendationRun(prisma, {
         merchantId: input.merchantId,
@@ -58,6 +59,7 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
   ]);
   const prepared = await prepareAgenticRecommendationRun(prisma, {
     ...input,
+    sourceMode,
     forceFreshRun: input.resetAttempts === true && Boolean(previousRun),
     retryOfRunId: previousRun?.id ?? null,
     onboardingEpoch,
@@ -93,7 +95,7 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
       safeErrorCode: null,
       lastError: null,
       failedAt: null,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      sourceMode,
     },
   });
   await enqueueBackfillJob(prisma, {
@@ -160,7 +162,9 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       lastError: null,
       provider: provider.provider,
       modelIdentifier: provider.model,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      // sourceMode is set by the caller (e.g., "home" or "agentic") and must not be overwritten
+      // here — overwriting it would break isHomeProposalGenerationInFlight's sourceMode filter,
+      // causing the home-triggered polling to lose track of the run while it is still running.
     },
   });
   if (!provider.enabled || !provider.generateStructuredJson) {
@@ -286,8 +290,9 @@ export async function markAgenticRecommendationJobFailed(prisma, input) {
   });
 }
 
-/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; forceFreshRun?: boolean; retryOfRunId?: string | null; onboardingEpoch?: string | null; attemptNumber?: number | null }} input */
+/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; sourceMode?: string; forceFreshRun?: boolean; retryOfRunId?: string | null; onboardingEpoch?: string | null; attemptNumber?: number | null }} input */
 async function prepareAgenticRecommendationRun(prisma, input) {
+  const sourceMode = input.sourceMode ?? AGENTIC_RECOMMENDATION_SOURCE_MODE;
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
   if (!snapshot.hasGoals) return { status: "missing_completed_goals", snapshot };
   if (input.forceFreshRun) {
@@ -296,7 +301,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
         merchantId: input.merchantId,
         shopId: input.shopId,
         status: PLAN_RUN_STATUS.queued,
-        sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+        sourceMode,
         snapshotVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
         snapshotHash: retrySnapshotHash(snapshot.snapshotHash),
         relevantBeliefIds: snapshot.beliefIds,
@@ -340,7 +345,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
       merchantId: input.merchantId,
       shopId: input.shopId,
       status: PLAN_RUN_STATUS.queued,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      sourceMode,
       snapshotVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
       snapshotHash: snapshot.snapshotHash,
       relevantBeliefIds: snapshot.beliefIds,
@@ -360,7 +365,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
       relevantBeliefIds: snapshot.beliefIds,
       insightRunId: snapshot.insightRunId,
       goalRunId: snapshot.goalRunId,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      sourceMode,
     },
   });
   return { status: "ready", run, snapshot };
@@ -689,7 +694,8 @@ async function persistAgenticRecommendation(prisma, input) {
         completedAt: new Date(),
         safeErrorCode: null,
         lastError: null,
-        sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+        // sourceMode is intentionally omitted — preserve the value set by the caller so
+        // "home"-triggered runs stay filterable by isHomeProposalGenerationInFlight.
         result: {
           runtime: "agentic_shopify",
           ...runMetadata,
@@ -715,7 +721,9 @@ async function findLatestAgenticRecommendationRun(prisma, input) {
     where: {
       merchantId: input.merchantId,
       shopId: input.shopId,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      // Include home-triggered runs alongside agentic so retry diagnostics are
+      // available regardless of which sourceMode triggered the previous attempt.
+      sourceMode: { in: [AGENTIC_RECOMMENDATION_SOURCE_MODE, "home"] },
       ...(Array.isArray(input.statuses) && input.statuses.length
         ? { status: { in: input.statuses } }
         : {}),

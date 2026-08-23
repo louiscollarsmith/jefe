@@ -127,6 +127,7 @@ type HomeProposalGenerationState = {
   cap: number;
   isGenerating: boolean;
   hasPriorProposal: boolean;
+  terminalStatus?: string | null;
 };
 
 type PrimaryMove = {
@@ -935,7 +936,16 @@ function ReadingYourStoreCard({
 
   let bodyCopy =
     "Jefe reads your store continuously. When you're ready, ask for the next move worth ten minutes.";
-  if (generation?.reason === "nothing_new") {
+  if (generation?.terminalStatus === "no_actionable_opportunity") {
+    bodyCopy =
+      "Jefe couldn't find another action it can safely execute from the store's current state. Store state will change — try again later.";
+  } else if (
+    generation?.terminalStatus === "failed" ||
+    generation?.terminalStatus === "insufficient_data" ||
+    generation?.terminalStatus === "model_disabled"
+  ) {
+    bodyCopy = "Jefe couldn't generate a proposal. Try again.";
+  } else if (generation?.reason === "nothing_new") {
     bodyCopy =
       "Nothing worth your time right now. Jefe will only suggest moves that are genuinely worth ten minutes.";
   } else if (atDailyCap) {
