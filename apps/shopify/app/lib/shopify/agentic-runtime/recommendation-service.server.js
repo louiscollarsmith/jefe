@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createLlmProvider } from "../../llm/provider.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
+  MEMORY_BACKFILL_DOMAIN,
 } from "../../merchant-memory/constants.server.js";
 import { authorityLevel } from "../../merchant-insights/candidates.server.js";
 import { retrieveMerchantContext } from "../../merchant-memory/merchant-context.server.js";
@@ -448,7 +449,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
 async function buildAgenticRecommendationSnapshot(prisma, input) {
-  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence, activeActions] = await Promise.all([
+  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence, activeActions, shopifyMirrorStatus] = await Promise.all([
     prisma.merchantGoalRun.findFirst({
       where: {
         merchantId: input.merchantId,
@@ -526,6 +527,17 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       orderBy: { updatedAt: "desc" },
       take: 10,
     }) ?? Promise.resolve([])).catch(() => []),
+    // Shopify mirror watermark: updatedAt of the merchant_memory backfill status record.
+    // This timestamp is written whenever a Shopify webhook triggers a memory refresh
+    // (enqueueMerchantMemoryRefresh → upsertBackfillStatus). Including it in the
+    // snapshot hash makes the reuse key sensitive to Shopify mutations — when
+    // product status, inventory, or other mutable Shopify state changes, the webhook
+    // fires, the watermark advances, and the hash changes, forcing a fresh investigation
+    // rather than blindly reusing a stale no_actionable_opportunity result.
+    (prisma.shopBackfillStatus?.findUnique?.({
+      where: { shopId_domain: { shopId: input.shopId, domain: MEMORY_BACKFILL_DOMAIN } },
+      select: { updatedAt: true },
+    }) ?? Promise.resolve(null)).catch(() => null),
   ]);
   const goals = (goalRun?.horizons ?? []).map((/** @type {any} */ goal) => ({
     id: goal.id,
@@ -593,6 +605,10 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       reviewStatus: item.reviewStatus,
     })),
     activeWork,
+    // Shopify mirror watermark: included in the hash so that any Shopify mutation
+    // that fires a webhook → enqueueMerchantMemoryRefresh → upsertBackfillStatus
+    // advances this timestamp and invalidates any cached snapshot result.
+    shopifyMirrorWatermark: shopifyMirrorStatus?.updatedAt?.toISOString?.() ?? null,
   };
   return {
     snapshot,
