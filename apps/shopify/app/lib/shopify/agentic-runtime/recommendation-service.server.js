@@ -162,7 +162,9 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       lastError: null,
       provider: provider.provider,
       modelIdentifier: provider.model,
-      sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+      // sourceMode is set by the caller (e.g., "home" or "agentic") and must not be overwritten
+      // here — overwriting it would break isHomeProposalGenerationInFlight's sourceMode filter,
+      // causing the home-triggered polling to lose track of the run while it is still running.
     },
   });
   if (!provider.enabled || !provider.generateStructuredJson) {
@@ -692,7 +694,8 @@ async function persistAgenticRecommendation(prisma, input) {
         completedAt: new Date(),
         safeErrorCode: null,
         lastError: null,
-        sourceMode: AGENTIC_RECOMMENDATION_SOURCE_MODE,
+        // sourceMode is intentionally omitted — preserve the value set by the caller so
+        // "home"-triggered runs stay filterable by isHomeProposalGenerationInFlight.
         result: {
           runtime: "agentic_shopify",
           ...runMetadata,
