@@ -195,6 +195,26 @@ export async function cancelAgenticExecutionJobForStaleRevision(prisma, input) {
 }
 
 // ---------------------------------------------------------------------------
+// Execution phase helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks the agentic execution job as actively executing.
+ * Called by the worker before handing off to runAgenticShopifyExecution so the
+ * workspace shows "Jefe working" during the LLM loop.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string }} input
+ */
+export async function markAgenticExecutionStarted(prisma, input) {
+  await updateActionExecutionJobProgress(prisma, input, {
+    phase: "executing",
+    jobStatus: "running",
+    startedAt: new Date().toISOString(),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 

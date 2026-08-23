@@ -49,7 +49,10 @@ import {
   runAgenticRecommendationInvestigation,
 } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
-import { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX } from "../lib/shopify/agentic-runtime/execution-job.server.js";
+import {
+  AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
+  markAgenticExecutionStarted,
+} from "../lib/shopify/agentic-runtime/execution-job.server.js";
 import { runAgenticShopifyExecution } from "../lib/shopify/agentic-runtime/execution-agent.server.js";
 import { getActionRevisionState } from "../lib/shopify/api/gateway.server.js";
 import { createLlmProvider } from "../lib/llm/provider.server.js";
@@ -905,6 +908,17 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     logger,
   });
 
+  // Mark as executing before handing off to the LLM loop so the workspace
+  // reflects "Jefe working" while the job runs.
+  try {
+    await markAgenticExecutionStarted(prisma, { merchantId, shopId, actionId });
+  } catch (error) {
+    logger.warn("agentic execution job: could not mark execution started", {
+      merchantId, shopId, actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+
   const result = await runAgenticShopifyExecution({
     provider,
     prisma,
@@ -927,6 +941,13 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
       const progress = freshAction.progress && typeof freshAction.progress === "object" ? freshAction.progress : {};
       const agentic = progress.agentic && typeof progress.agentic === "object" ? progress.agentic : {};
       const prevExecutionJob = agentic.executionJob && typeof agentic.executionJob === "object" ? agentic.executionJob : {};
+      const finalPhase = result.ok
+        ? "completed"
+        : result.blocker === "ITERATION_LIMIT_AFTER_WRITES"
+          ? "verification_incomplete"
+          : result.status === "NEEDS_ACTION_REPLAN"
+            ? "needs_attention"
+            : "failed";
       await prisma.merchantAction.update({
         where: { id: actionId },
         data: {
@@ -937,6 +958,7 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
               executionJob: {
                 ...prevExecutionJob,
                 acceptedRevision,
+                phase: prevExecutionJob.phase === "completed" ? "completed" : finalPhase,
                 jobStatus: result.ok ? "succeeded" : "failed",
                 ok: result.ok,
                 status: result.status,

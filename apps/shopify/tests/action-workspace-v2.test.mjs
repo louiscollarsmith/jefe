@@ -306,9 +306,11 @@ test("agentic Shopify Actions project semantic context as ready to discuss", () 
   assert.deepEqual(
     rows.map((row) => [row.title, row.statusLabel, row.workspaceState]),
     [
-      ["Review what Jefe found", "Ready to discuss", "planned"],
-      ["Confirm the candidate scope", "Known candidate scope", "planned"],
-      ["Agree constraints", "Editable", "planned"],
+      // Before acceptance: pre-execution items carry no static descriptive label;
+      // only the execute row carries "After acceptance" to signal the gate.
+      ["Review what Jefe found", "Planned", "planned"],
+      ["Confirm the candidate scope", "Planned", "planned"],
+      ["Agree constraints", "Planned", "planned"],
       ["Execute and verify the outcome", "After acceptance", "planned"],
     ],
   );

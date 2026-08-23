@@ -93,6 +93,7 @@ export async function runAgenticShopifyExecution(input) {
   const toolResults = [];
   /** @type {any[]} */
   const turns = [];
+  let wroteToShopify = false;
   const initialTools = retrieveShopifyApiOperations(
     `${semanticAction.outcome} ${semanticAction.scope} ${semanticAction.materialExpectedEffects?.join(" ")}`,
     { catalog: input.catalog, limit: 10 },
@@ -144,23 +145,31 @@ export async function runAgenticShopifyExecution(input) {
           continue;
         }
       }
-      toolResults.push(
-        await runShopifyAgentTool(
-          {
-            prisma: input.prisma,
-            client: input.client,
-            merchantId: input.merchantId,
-            shopId: input.shopId,
-            shopDomain: input.shopDomain,
-            actionId: input.actionId,
-            acceptedActionRevision: revision.acceptedActionRevision,
-            grantedScopes: input.grantedScopes,
-            catalog: input.catalog,
-            logger,
-          },
-          toolCall,
-        ),
+      const toolResult = await runShopifyAgentTool(
+        {
+          prisma: input.prisma,
+          client: input.client,
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          shopDomain: input.shopDomain,
+          actionId: input.actionId,
+          acceptedActionRevision: revision.acceptedActionRevision,
+          grantedScopes: input.grantedScopes,
+          catalog: input.catalog,
+          logger,
+        },
+        toolCall,
       );
+      if (
+        !wroteToShopify &&
+        toolResult.ok &&
+        toolResult.tool === SHOPIFY_AGENT_TOOL.callOperation &&
+        operationLooksWrite(String(toolResult.facts?.operation ?? ""))
+      ) {
+        wroteToShopify = true;
+        await markExecutionPhase(input.prisma, input, "verifying");
+      }
+      toolResults.push(toolResult);
     }
 
     if (turn.status === "CONTINUE" && turn.toolCalls.length === 0) {
@@ -226,6 +235,7 @@ export async function runAgenticShopifyExecution(input) {
       }
       await markActionExecutionOutcome(input.prisma, input, {
         status: "completed",
+        executionPhase: "completed",
         outcome: { verification: turn.verification, progressSummary: turn.progressSummary ?? null },
       });
       logger.info("agentic Shopify execution achieved outcome", {
@@ -244,6 +254,7 @@ export async function runAgenticShopifyExecution(input) {
     if (turn.status !== "CONTINUE") {
       await markActionExecutionOutcome(input.prisma, input, {
         status: turn.status === "NEEDS_ACTION_REPLAN" ? "needs_attention" : "in_progress",
+        executionPhase: "needs_attention",
         outcome: { blocker: turn.blocker, status: turn.status },
       });
       return {
@@ -256,10 +267,24 @@ export async function runAgenticShopifyExecution(input) {
     }
   }
 
+  if (wroteToShopify) {
+    await markActionExecutionOutcome(input.prisma, input, {
+      status: "needs_attention",
+      executionPhase: "verification_incomplete",
+      outcome: {
+        writesOccurred: true,
+        verificationIncomplete: true,
+        blocker: "ITERATION_LIMIT_AFTER_WRITES",
+        progressSummary:
+          "Shopify changes were applied. Verification did not complete within the execution budget.",
+      },
+    });
+  }
+
   return {
     ok: false,
     status: "BLOCKED",
-    blocker: "ITERATION_LIMIT",
+    blocker: wroteToShopify ? "ITERATION_LIMIT_AFTER_WRITES" : "ITERATION_LIMIT",
     trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
   };
 }
@@ -434,7 +459,7 @@ async function loadAction(prisma, input) {
   });
 }
 
-/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {{ status: string; outcome: any }} data */
+/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {{ status: string; executionPhase?: string; outcome: any }} data */
 async function markActionExecutionOutcome(prisma, input, data) {
   if (!prisma?.merchantAction?.updateMany) return;
   await prisma.merchantAction.updateMany({
@@ -444,9 +469,47 @@ async function markActionExecutionOutcome(prisma, input, data) {
       outcome: data.outcome,
     },
   });
+  if (data.executionPhase) {
+    await markExecutionPhase(prisma, input, data.executionPhase);
+  }
+}
+
+/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {string} phase */
+async function markExecutionPhase(prisma, input, phase) {
+  if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.update) return;
+  try {
+    const action = await prisma.merchantAction.findFirst({
+      where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+    });
+    if (!action) return;
+    const progress = jsonObject(action.progress) ?? {};
+    const agentic = jsonObject(progress.agentic) ?? {};
+    const executionJob = jsonObject(agentic.executionJob) ?? {};
+    await prisma.merchantAction.update({
+      where: { id: action.id },
+      data: {
+        progress: {
+          ...progress,
+          agentic: {
+            ...agentic,
+            executionJob: { ...executionJob, phase, updatedAt: new Date().toISOString() },
+          },
+        },
+      },
+    });
+  } catch {
+    // best-effort — phase update failure must not fail the execution
+  }
 }
 
 /** @param {Record<string, any>} value */
 function stripNulls(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
+}
+
+/** @param {unknown} value @returns {Record<string, any>} */
+function jsonObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, any>} */ (value)
+    : {};
 }

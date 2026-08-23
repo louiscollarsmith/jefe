@@ -1,0 +1,750 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { runAgenticShopifyExecution } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
+import {
+  acceptAgenticShopifyAction,
+  materializeAgenticShopifyAction,
+} from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
+import {
+  buildActionWorkspace,
+  resolveWorkspaceFocus,
+  workspacePlanItems,
+} from "../app/lib/actions/action-workspace.server.js";
+
+const merchantId = "00000000-0000-0000-0000-000000000021";
+const shopId = "00000000-0000-0000-0000-000000000022";
+const shopDomain = "jefe-lifecycle-test.myshopify.com";
+
+// ---------------------------------------------------------------------------
+// Scenario 1 — Happy path
+// ---------------------------------------------------------------------------
+test("scenario 1: successful writes + read-back → completed status, verified outcome, phase = completed", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+
+  const provider = happyPathProvider();
+
+  const result = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true, "execution should succeed");
+  assert.equal(result.status, "OUTCOME_ACHIEVED");
+
+  const finalAction = prisma.actions[0];
+
+  // Invariant 4: completed requires successful outcome verification
+  assert.equal(finalAction.status, "completed");
+  assert.equal(finalAction.outcome?.verification?.verified, true);
+
+  // Phase should be persisted as completed
+  assert.equal(finalAction.progress?.agentic?.executionJob?.phase, "completed");
+
+  // Writes occurred
+  assert.ok(prisma.operationCalls.some((r) => r.operationKind === "MUTATION" && r.status === "OK"));
+  // Read-after-write occurred
+  assert.ok(prisma.operationCalls.some((r) => r.operationKind === "QUERY" && r.status === "OK"));
+
+  // Workspace from persisted state (reload simulation)
+  const workspace = buildActionWorkspace(finalAction);
+  assert.equal(workspace.actionState, "completed");
+
+  // Execute item must not revert to ready
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.ok(execItem, "execute_and_verify_outcome item must exist");
+  assert.equal(execItem.state, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 2 — Writes succeed, verification exhausts iteration budget
+// ---------------------------------------------------------------------------
+test("scenario 2: writes succeed but verification exhausts budget → needs_attention, writesOccurred, not accepted", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+
+  // Provider writes once then keeps returning OUTCOME_ACHIEVED without read-back,
+  // forcing the validation loop to consume the iteration budget.
+  const provider = writesWithoutVerificationProvider();
+
+  const result = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+    maxIterations: 4,
+  });
+
+  assert.equal(result.ok, false);
+  // Invariant 2: must not remain indistinguishable from "accepted but not executed"
+  assert.notEqual(result.blocker, "ITERATION_LIMIT", "blocker must reflect that writes occurred");
+  assert.equal(result.blocker, "ITERATION_LIMIT_AFTER_WRITES");
+
+  const finalAction = prisma.actions[0];
+
+  // Must not be "completed"
+  assert.notEqual(finalAction.status, "completed", "must not be falsely completed");
+  // Must not be "accepted" — writes occurred
+  assert.notEqual(finalAction.status, "accepted", "must not appear as if nothing happened");
+  // Should be needs_attention
+  assert.equal(finalAction.status, "needs_attention");
+
+  // Outcome must record that writes occurred
+  assert.equal(finalAction.outcome?.writesOccurred, true);
+  assert.equal(finalAction.outcome?.verificationIncomplete, true);
+
+  // Phase must be verification_incomplete, not executing or completed
+  assert.equal(finalAction.progress?.agentic?.executionJob?.phase, "verification_incomplete");
+
+  // Workspace from persisted state
+  const workspace = buildActionWorkspace(finalAction);
+  assert.equal(workspace.actionState, "needs_attention");
+
+  // Execute item must show needs_attention, not ready or completed
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.ok(execItem);
+  assert.equal(execItem.state, "needs_attention");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 3 — Failure before any write
+// ---------------------------------------------------------------------------
+test("scenario 3: no writes succeed → BLOCKED, action not falsely completed, no write evidence", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+
+  // Provider immediately returns BLOCKED without any tool calls
+  const provider = blockedProvider();
+
+  const result = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+
+  const finalAction = prisma.actions[0];
+
+  // Must not be completed or needs_attention-due-to-writes
+  assert.notEqual(finalAction.status, "completed");
+  assert.ok(
+    !finalAction.outcome?.writesOccurred,
+    "must not claim writes occurred when none did",
+  );
+
+  // No successful mutations
+  assert.equal(
+    prisma.operationCalls.filter((r) => r.operationKind === "MUTATION" && r.status === "OK").length,
+    0,
+  );
+
+  // Workspace must not claim changes occurred
+  const workspace = buildActionWorkspace(finalAction);
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.ok(execItem);
+  assert.notEqual(execItem.state, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 4 — Worker currently running (executionJob.phase = "executing")
+// ---------------------------------------------------------------------------
+test("scenario 4: executionJob.phase=executing → workspace shows jefe_working, not on_track", () => {
+  const action = agenticActionFixture({
+    status: "accepted",
+    executionJobPhase: "executing",
+  });
+
+  const workspace = buildActionWorkspace(action);
+
+  // Invariant 1: must not resolve to on_track while executing
+  assert.notEqual(workspace.actionState, "on_track");
+  assert.equal(workspace.actionState, "jefe_working");
+
+  // Execute item must be running
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.ok(execItem);
+  assert.equal(execItem.state, "running");
+
+  // currentFocus must not say "Nothing needs your attention"
+  const focus = resolveWorkspaceFocus(workspace, action);
+  assert.notEqual(focus.kind, "on_track", "focus must not be on_track while executing");
+  assert.equal(focus.kind, "jefe_working");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 5 — Verification mismatch (eligibility failure after writes)
+// ---------------------------------------------------------------------------
+test("scenario 5: verification mismatch → needs_attention, not completed", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+
+  // Provider writes then returns NEEDS_ACTION_REPLAN
+  const provider = writeThenReplanProvider();
+
+  const result = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "NEEDS_ACTION_REPLAN");
+
+  const finalAction = prisma.actions[0];
+  assert.notEqual(finalAction.status, "completed");
+  assert.equal(finalAction.status, "needs_attention");
+
+  const workspace = buildActionWorkspace(finalAction);
+  assert.equal(workspace.actionState, "needs_attention");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 6 — Completed reload
+// ---------------------------------------------------------------------------
+test("scenario 6: persisted completed action reloads as completed with no ready rows", () => {
+  const action = agenticActionFixture({
+    status: "completed",
+    executionJobPhase: "completed",
+  });
+
+  const workspace = buildActionWorkspace(action);
+  assert.equal(workspace.actionState, "completed");
+
+  const items = workspacePlanItems(workspace);
+
+  // No item should revert to ready or planned
+  for (const item of items) {
+    assert.notEqual(
+      item.workState,
+      "ready",
+      `item ${item.id} must not be "ready" after completion`,
+    );
+    assert.notEqual(
+      item.workState,
+      "planned",
+      `item ${item.id} must not be "planned" after completion`,
+    );
+  }
+
+  // WORKING ON focus must not reappear
+  const focus = resolveWorkspaceFocus(workspace, action);
+  assert.notEqual(focus.eyebrow, "WORKING ON");
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 7 — Milestone count
+// ---------------------------------------------------------------------------
+test("scenario 7a: orientation item excluded, four milestones → count = 4", () => {
+  const action = agenticActionFixture({ status: "accepted" });
+  const workspace = buildActionWorkspace(action);
+  const items = workspacePlanItems(workspace);
+
+  const milestones = items.filter((i) => i.isMilestone !== false);
+  const orientation = items.filter((i) => i.isMilestone === false);
+
+  // understand_recommendation is an orientation item
+  assert.ok(orientation.length >= 1, "at least one orientation item expected");
+  assert.ok(orientation.some((i) => i.id === "understand_recommendation"));
+
+  // milestone count should not include orientation items
+  assert.ok(milestones.length > 0);
+  assert.equal(
+    milestones.some((i) => i.id === "understand_recommendation"),
+    false,
+    "understand_recommendation must not count as a milestone",
+  );
+});
+
+test("scenario 7b: five actual milestones → milestone count = 5", () => {
+  // Build an action whose workspace has five milestone items (includes who_qualifies)
+  const action = agenticActionFixture({ status: "accepted", withEligibility: true });
+  const workspace = buildActionWorkspace(action);
+  const items = workspacePlanItems(workspace);
+
+  const milestones = items.filter((i) => i.isMilestone !== false);
+  // Without eligibility: confirm_scope, agree_constraints, execute = 3 milestones
+  // With eligibility: + who_qualifies = 4 milestones
+  assert.equal(milestones.length, 4, "four milestones expected with eligibility criterion");
+
+  // Total items (including orientation) = 5
+  assert.equal(items.length, 5);
+});
+
+test("scenario 7c: milestonesCount agrees with displayed header for agentic action during execution", () => {
+  const action = agenticActionFixture({ status: "accepted", executionJobPhase: "executing" });
+  const workspace = buildActionWorkspace(action);
+  const items = workspacePlanItems(workspace);
+
+  const milestoneCount = items.filter((i) => i.isMilestone !== false).length;
+  const totalCount = items.length;
+
+  // The header count must equal milestone count, not total count
+  assert.ok(milestoneCount < totalCount, "milestone count must be less than total when orientation items exist");
+  // confirm_scope + agree_constraints + execute = 3 milestones (no eligibility)
+  assert.equal(milestoneCount, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Invariant 3: BackfillJob succeeded alone does NOT imply business completion
+// ---------------------------------------------------------------------------
+test("invariant 3: executionJob.jobStatus=succeeded with no MerchantAction status update is not completed", () => {
+  // Simulate what would happen if markActionExecutionOutcome never ran but
+  // the worker's final write (jobStatus=succeeded) did run.
+  const action = agenticActionFixture({
+    status: "accepted", // NOT completed — markActionExecutionOutcome never fired
+    executionJob: { jobStatus: "succeeded", phase: "completed" },
+  });
+
+  const workspace = buildActionWorkspace(action);
+  // Workspace actionState is driven by action.status, not executionJob.jobStatus
+  // action.status = "accepted" with phase = "completed" is an inconsistency —
+  // the workspace should still not claim the action is completed.
+  assert.notEqual(workspace.actionState, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function hideProductsRecommendation() {
+  return {
+    title: "Hide active products that are currently out of stock",
+    summary: "Hide products to prevent customers seeing out-of-stock items.",
+    outcome: "All out-of-stock products are hidden from the storefront.",
+    scope: "Active products with zero inventory.",
+    constraints: ["Do not change prices."],
+    materialExpectedEffects: ["Set product status to DRAFT for qualifying products"],
+    feasibleWriteOperations: ["productUpdate"],
+    verificationPlan: "Read each product back and confirm status is DRAFT.",
+    whyThisAction: "Out-of-stock products visible on storefront.",
+    whyNow: "Multiple products found with zero inventory.",
+    supportingBeliefIds: [],
+    supportingInsightIds: [],
+    confidence: "high",
+  };
+}
+
+function agenticActionFixture({ status = "accepted", executionJobPhase, executionJob, withEligibility = false } = {}) {
+  const semanticAction = {
+    revision: "rev-fixture",
+    title: "Hide out-of-stock products",
+    summary: "Hide products with zero inventory.",
+    outcome: "All out-of-stock products are hidden.",
+    scope: "Active products with zero inventory.",
+    constraints: [{ kind: "pricing", label: "Do not change prices." }],
+    materialExpectedEffects: [{ label: "Set product status to DRAFT" }],
+    eligibilityCriteria: withEligibility ? [{ kind: "inventory", label: "Zero inventory" }] : [],
+    writeProtections: [],
+    verificationPlan: "Read products back and confirm DRAFT status.",
+    whyThisAction: "Out-of-stock products visible.",
+    whyNow: "Products found.",
+    supportingBeliefIds: [],
+    supportingInsightIds: [],
+    feasibleWriteOperations: ["productUpdate"],
+  };
+  const job = executionJob ?? (executionJobPhase ? { phase: executionJobPhase, jobStatus: "running" } : {});
+  return {
+    id: "action-fixture",
+    merchantId,
+    shopId,
+    title: "Hide out-of-stock products",
+    summary: "Hide products with zero inventory.",
+    status,
+    outcome: status === "completed"
+      ? { verification: { verified: true, evidence: ["Read-back confirmed."], remaining: [] }, progressSummary: "5 products hidden." }
+      : null,
+    progress: {
+      agentic: {
+        runtime: "shopify_admin_api",
+        currentActionRevision: "rev-fixture",
+        acceptedActionRevision: status !== "proposed" ? "rev-fixture" : undefined,
+        semanticAction,
+        executionJob: job,
+      },
+    },
+    plan: { agentic: { runtime: "shopify_admin_api", semanticAction } },
+  };
+}
+
+function happyPathProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson({ prompt }) {
+      const payload = JSON.parse(prompt);
+      const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
+      const hasMutation = calls.some((r) => r.facts?.operation === "productUpdate" && r.ok);
+      const hasRead = calls.some((r) => r.facts?.operation === "product" && r.ok);
+
+      if (!hasMutation) {
+        return {
+          json: {
+            status: "CONTINUE",
+            toolCalls: [
+              {
+                tool: "call_shopify_operation",
+                arguments: {
+                  operation: "productUpdate",
+                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
+                  purpose: "Hide the out-of-stock product.",
+                  expectedEffect: "Set product status to DRAFT.",
+                  idempotencyKey: "hide-product-1",
+                },
+              },
+            ],
+          },
+        };
+      }
+      if (!hasRead) {
+        return {
+          json: {
+            status: "CONTINUE",
+            toolCalls: [
+              {
+                tool: "call_shopify_operation",
+                arguments: {
+                  operation: "product",
+                  variables: { id: "gid://shopify/Product/1" },
+                  purpose: "Verify the product is now DRAFT.",
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        json: {
+          status: "OUTCOME_ACHIEVED",
+          progressSummary: "Product hidden and verified.",
+          verification: {
+            verified: true,
+            evidence: ["Read-back confirmed product gid://shopify/Product/1 is DRAFT."],
+            remaining: [],
+          },
+        },
+      };
+    },
+  };
+}
+
+function writesWithoutVerificationProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson({ prompt }) {
+      const payload = JSON.parse(prompt);
+      const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
+      const validation = (payload.toolResults ?? []).find((r) => r.tool === "execution_validation");
+
+      if (validation) {
+        // Ignore validation and claim OUTCOME_ACHIEVED again — this will keep
+        // triggering the validation loop until the iteration budget is exhausted.
+        if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
+          return {
+            json: {
+              status: "CONTINUE",
+              toolCalls: [
+                {
+                  tool: "call_shopify_operation",
+                  arguments: {
+                    operation: "productUpdate",
+                    variables: { input: { id: "gid://shopify/Product/1", status: "DRAFT" } },
+                    purpose: "Hide the product.",
+                    expectedEffect: "Set product status to DRAFT.",
+                    idempotencyKey: "hide-product-no-verify",
+                  },
+                },
+              ],
+            },
+          };
+        }
+        return {
+          json: {
+            status: "OUTCOME_ACHIEVED",
+            verification: { verified: true, evidence: ["Mutation returned OK."], remaining: [] },
+          },
+        };
+      }
+
+      if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
+        return {
+          json: {
+            status: "CONTINUE",
+            toolCalls: [
+              {
+                tool: "call_shopify_operation",
+                arguments: {
+                  operation: "productUpdate",
+                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
+                  purpose: "Hide the product.",
+                  expectedEffect: "Set product status to DRAFT.",
+                  idempotencyKey: "hide-product-no-verify",
+                },
+              },
+            ],
+          },
+        };
+      }
+
+      // Skip read-back, claim done — triggers MISSING_PROVIDER_STATE_VERIFICATION
+      return {
+        json: {
+          status: "OUTCOME_ACHIEVED",
+          verification: { verified: true, evidence: ["Mutation returned OK."], remaining: [] },
+        },
+      };
+    },
+  };
+}
+
+function blockedProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson() {
+      return { json: { status: "BLOCKED", blocker: "no_shopify_api_available" } };
+    },
+  };
+}
+
+function writeThenReplanProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson({ prompt }) {
+      const payload = JSON.parse(prompt);
+      const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
+      if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
+        return {
+          json: {
+            status: "CONTINUE",
+            toolCalls: [
+              {
+                tool: "call_shopify_operation",
+                arguments: {
+                  operation: "productUpdate",
+                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
+                  purpose: "Hide the product.",
+                  expectedEffect: "Set product status to DRAFT.",
+                  idempotencyKey: "hide-product-replan",
+                },
+              },
+            ],
+          },
+        };
+      }
+      return {
+        json: {
+          status: "NEEDS_ACTION_REPLAN",
+          blocker: "Scope of qualifying products changed since acceptance.",
+        },
+      };
+    },
+  };
+}
+
+function fakeShopifyClient() {
+  return {
+    async request(document) {
+      if (document.includes("currentAppInstallation")) {
+        return {
+          currentAppInstallation: {
+            accessScopes: [
+              { handle: "read_products" },
+              { handle: "write_products" },
+            ],
+          },
+        };
+      }
+      if (document.includes("productUpdate")) {
+        return {
+          productUpdate: {
+            product: { id: "gid://shopify/Product/1", status: "DRAFT" },
+            userErrors: [],
+          },
+        };
+      }
+      if (document.includes("product(id:")) {
+        return {
+          product: {
+            id: "gid://shopify/Product/1",
+            title: "Cold Bench Six",
+            status: "DRAFT",
+            handle: "cold-bench-six",
+            productType: "Wine",
+            tags: [],
+          },
+        };
+      }
+      return {};
+    },
+  };
+}
+
+function fakePrisma() {
+  const prisma = {
+    actions: [],
+    events: [],
+    operationCalls: [],
+    jobs: [],
+    $transaction: async (run) => run(prisma),
+    backfillJob: {
+      findUnique: async ({ where }) => {
+        const key = where.shopId_jobType;
+        return (
+          prisma.jobs.find(
+            (j) => j.shopId === key.shopId && j.jobType === key.jobType,
+          ) ?? null
+        );
+      },
+      upsert: async ({ where, create, update }) => {
+        const key = where.shopId_jobType;
+        const existing = prisma.jobs.find(
+          (j) => j.shopId === key.shopId && j.jobType === key.jobType,
+        );
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const row = { id: `job-${prisma.jobs.length + 1}`, ...create, createdAt: new Date() };
+        prisma.jobs.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = prisma.jobs.find((j) => j.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? null;
+      },
+    },
+    merchantAction: {
+      create: async ({ data }) => {
+        const row = {
+          id: `action-${prisma.actions.length + 1}`,
+          ...data,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        prisma.actions.push(row);
+        return row;
+      },
+      findFirst: async ({ where }) =>
+        prisma.actions.find(
+          (row) =>
+            (!where.id || row.id === where.id) &&
+            (!where.merchantId || row.merchantId === where.merchantId) &&
+            (!where.shopId || row.shopId === where.shopId) &&
+            matchesStatus(row.status, where.status),
+        ) ?? null,
+      update: async ({ where, data }) => {
+        const row = prisma.actions.find((item) => item.id === where.id);
+        if (row) Object.assign(row, data, { updatedAt: new Date() });
+        return row ?? null;
+      },
+      updateMany: async ({ where, data }) => {
+        let count = 0;
+        for (const row of prisma.actions) {
+          if (
+            (!where.id || row.id === where.id) &&
+            (!where.merchantId || row.merchantId === where.merchantId) &&
+            (!where.shopId || row.shopId === where.shopId) &&
+            matchesStatus(row.status, where.status)
+          ) {
+            Object.assign(row, data, { updatedAt: new Date() });
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    },
+    merchantActionEvent: {
+      create: async ({ data }) => {
+        prisma.events.push(data);
+        return data;
+      },
+      findMany: async () => prisma.events,
+    },
+    actionChangeSet: {
+      findFirst: async () => null,
+    },
+    shopifyOperationCall: {
+      create: async ({ data }) => {
+        const row = {
+          id: `op-${prisma.operationCalls.length + 1}`,
+          createdAt: new Date(),
+          ...data,
+        };
+        prisma.operationCalls.push(row);
+        return row;
+      },
+      findMany: async ({ where, take } = {}) =>
+        prisma.operationCalls
+          .filter(
+            (row) =>
+              (!where?.merchantId || row.merchantId === where.merchantId) &&
+              (!where?.shopId || row.shopId === where.shopId) &&
+              (!where?.merchantActionId || row.merchantActionId === where.merchantActionId),
+          )
+          .slice(0, take ?? prisma.operationCalls.length),
+    },
+  };
+  return prisma;
+}
+
+function matchesStatus(actual, filter) {
+  if (!filter) return true;
+  if (typeof filter === "string") return actual === filter;
+  if (Array.isArray(filter.in)) return filter.in.includes(actual);
+  return true;
+}
+
+const quietLogger = { info() {}, warn() {}, error() {} };

@@ -189,6 +189,7 @@ type WorkflowStepDisplay =
       itemKind?: string | null;
       workspaceState?: string | null;
       suppressStatus?: boolean | null;
+      isMilestone?: boolean | null;
     };
 
 type StepTreatment = "completed" | "current" | "future";
@@ -991,8 +992,8 @@ function NextMoveSpotlight({
   action: MerchantActionView;
   onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
 }) {
-  const steps = action.displaySteps?.slice(0, 4) ?? [];
-  const stepCountLabel = actionPlanItemCountLabel(action, steps.length);
+  const steps = action.displaySteps ?? [];
+  const stepCountLabel = actionPlanItemCountLabel(action, milestonesCount(steps));
   return (
     <section style={nextMoveCardStyle} aria-label="Your next move">
       <div style={nextMoveTopStyle}>
@@ -1080,8 +1081,8 @@ function AttentionSpotlight({
     );
   }
 
-  const steps = action.displaySteps?.slice(0, 4) ?? [];
-  const stepCountLabel = actionPlanItemCountLabel(action, steps.length);
+  const steps = action.displaySteps ?? [];
+  const stepCountLabel = actionPlanItemCountLabel(action, milestonesCount(steps));
 
   return (
     <section style={nextMoveCardStyle}>
@@ -1206,7 +1207,7 @@ function ActionProgressRow({
   onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
 }) {
   const progressState = actionProgressState(action);
-  const displaySteps = action.displaySteps?.slice(0, 4) ?? [];
+  const displaySteps = action.displaySteps ?? [];
   const progressBadge = progressBadgeLabel(action, displaySteps);
   const footerText = progressFooterText(action, progressState.currentStepIndex);
   return (
@@ -2075,7 +2076,7 @@ function FocusedActionStrip({
   focusExpanded: boolean;
   onToggle: () => void;
 }) {
-  const visibleSteps = focusedAction.displaySteps?.slice(0, 4) ?? [];
+  const allSteps = focusedAction.displaySteps ?? [];
   return (
     <section style={focusStripWrapStyle} aria-label="Working on">
       <div style={focusPanelStyle}>
@@ -2095,7 +2096,7 @@ function FocusedActionStrip({
           <span style={focusStripRightStyle}>
             <WorkflowStatusSummary
               action={focusedAction}
-              stepCount={visibleSteps.length}
+              stepCount={milestonesCount(allSteps)}
             />
             <span style={focusStripChevronStyle}>
               {focusExpanded ? "▲" : "▼"}
@@ -2422,6 +2423,12 @@ function isAgenticActionView(action: MerchantActionView) {
     action.workspace?.kind === "agentic_shopify" ||
     progress?.agentic?.runtime === "shopify_admin_api"
   );
+}
+
+function milestonesCount(steps: WorkflowStepDisplay[]): number {
+  return steps.filter(
+    (s) => typeof s !== "string" && s.isMilestone !== false,
+  ).length;
 }
 
 function actionPlanItemCountLabel(
