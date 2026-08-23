@@ -522,6 +522,16 @@ function semanticActionForAction(action) {
       arrayValue(planSemantic.constraints) ??
       arrayValue(signal.constraints) ??
       [],
+    eligibilityCriteria:
+      arrayValue(progressSemantic.eligibilityCriteria) ??
+      arrayValue(planSemantic.eligibilityCriteria) ??
+      arrayValue(signal.eligibilityCriteria) ??
+      [],
+    writeProtections:
+      arrayValue(progressSemantic.writeProtections) ??
+      arrayValue(planSemantic.writeProtections) ??
+      arrayValue(signal.writeProtections) ??
+      [],
     materialExpectedEffects:
       arrayValue(progressSemantic.materialExpectedEffects) ??
       arrayValue(planSemantic.materialExpectedEffects) ??

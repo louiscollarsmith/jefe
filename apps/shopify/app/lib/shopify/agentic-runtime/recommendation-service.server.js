@@ -27,6 +27,7 @@ import {
   AGENTIC_RECOMMENDATION_SOURCE_MODE,
 } from "./constants.server.js";
 import {
+  revisionSnapshot,
   semanticActionFromRecommendation,
 } from "./semantic-action.server.js";
 
@@ -562,6 +563,8 @@ async function persistAgenticRecommendation(prisma, input) {
           semanticOutcome: recommendation.outcome,
           scope: recommendation.scope,
           constraints: recommendation.constraints ?? [],
+          eligibilityCriteria: recommendation.eligibilityCriteria ?? [],
+          writeProtections: recommendation.writeProtections ?? [],
           materialExpectedEffects: recommendation.materialExpectedEffects ?? [],
           feasibleWriteOperations: recommendation.feasibleWriteOperations ?? [],
           diagnosedProblem: recommendation.diagnosedProblem ?? null,
@@ -589,6 +592,8 @@ async function persistAgenticRecommendation(prisma, input) {
           semanticOutcome: recommendation.outcome,
           scope: recommendation.scope,
           constraints: recommendation.constraints ?? [],
+          eligibilityCriteria: recommendation.eligibilityCriteria ?? [],
+          writeProtections: recommendation.writeProtections ?? [],
           materialExpectedEffects: recommendation.materialExpectedEffects ?? [],
           feasibleWriteOperations: recommendation.feasibleWriteOperations ?? [],
           diagnosedProblem: recommendation.diagnosedProblem ?? null,
@@ -604,6 +609,7 @@ async function persistAgenticRecommendation(prisma, input) {
         reviewStatus: PLAN_REVIEW_STATUS.proposed,
       },
     });
+    const revisionHistory = [revisionSnapshot(semanticAction, "recommendation")];
     const actionData = {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -615,14 +621,18 @@ async function persistAgenticRecommendation(prisma, input) {
         agentic: {
           runtime: "shopify_admin_api",
           currentActionRevision: semanticAction.revision,
+          originalActionRevision: semanticAction.revision,
           semanticAction,
+          revisionHistory,
         },
       },
       progress: {
         agentic: {
           runtime: "shopify_admin_api",
           currentActionRevision: semanticAction.revision,
+          originalActionRevision: semanticAction.revision,
           semanticAction,
+          revisionHistory,
           diagnostics: input.diagnostics ?? {},
         },
       },
@@ -641,14 +651,18 @@ async function persistAgenticRecommendation(prisma, input) {
           agentic: {
             runtime: "shopify_admin_api",
             currentActionRevision: semanticAction.revision,
+            originalActionRevision: semanticAction.revision,
             semanticAction,
+            revisionHistory,
           },
         },
         progress: {
           agentic: {
             runtime: "shopify_admin_api",
             currentActionRevision: semanticAction.revision,
+            originalActionRevision: semanticAction.revision,
             semanticAction,
+            revisionHistory,
             diagnostics: input.diagnostics ?? {},
           },
         },

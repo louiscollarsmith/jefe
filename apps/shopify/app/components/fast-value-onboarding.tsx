@@ -65,6 +65,7 @@ type FastExperience = {
   queueItems: Array<{ id: string; title: string; status: string }>;
   failure: { type: string; message: string; retryTarget?: string | null } | null;
   recommendationInvestigationPending: boolean;
+  learningPipelinePending?: boolean;
   fullLearning: { state: string; label: string; detail: string };
   handoff: { id: string; token: string } | null;
   devToolsEnabled: boolean;
@@ -91,11 +92,15 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
   const [alternativeMessage, setAlternativeMessage] = useState<string | null>(null);
   const recordedMilestones = useRef(new Set<string>());
 
+  const waitingForLearningWork =
+    experience.stage === "context" &&
+    Boolean(experience.context) &&
+    !experience.failure &&
+    (experience.learningPipelinePending ||
+      experience.recommendationInvestigationPending);
   const awaitingResult =
     experience.stage === "connect" ||
-    (experience.stage === "context" &&
-      Boolean(experience.context) &&
-      !experience.failure) ||
+    waitingForLearningWork ||
     alternativeFetcher.state !== "idle";
   useEffect(() => {
     if (!awaitingResult) return;
@@ -256,6 +261,10 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               retrying={answerFetcher.state !== "idle"}
               bootstrapPhase={experience.bootstrapPhase}
               fullLearning={experience.fullLearning}
+              learningPipelinePending={
+                experience.learningPipelinePending ||
+                experience.recommendationInvestigationPending
+              }
             />
           ) : stage === "insight" ? (
             <RecommendationScene
@@ -360,6 +369,7 @@ function ContextScene({
   retrying,
   bootstrapPhase,
   fullLearning,
+  learningPipelinePending,
 }: {
   context: { value: string; label: string; echo: string } | null;
   answer: (option: ContextOption) => void;
@@ -367,18 +377,22 @@ function ContextScene({
   retrying: boolean;
   bootstrapPhase: string;
   fullLearning: FastExperience["fullLearning"];
+  learningPipelinePending: boolean;
 }) {
   const waiting = onboardingWaitingCopy(bootstrapPhase, fullLearning);
+  const showWaitingCopy = Boolean(context) && !failure && learningPipelinePending;
   const readState = failure
     ? failure.type === "insufficient"
       ? "Recent read complete"
       : "Read paused"
-    : context
+    : showWaitingCopy
       ? waiting.kicker
-      : "Still looking";
+      : context
+        ? "Priority saved"
+        : "Still looking";
   return (
     <div className="jf-scene jf-context-scene">
-      <Kicker pulse={!failure}>{readState}</Kicker>
+      <Kicker pulse={showWaitingCopy}>{readState}</Kicker>
       {!context ? (
         <>
           <div className="jf-display jf-context-title">While I finish looking — what matters most to you <em>right now</em>?</div>
@@ -396,7 +410,7 @@ function ContextScene({
           <span aria-hidden="true">✓</span>
           <span>Your priority is saved. I won’t suggest something I can’t back up with your store data.</span>
         </div>
-      ) : (
+      ) : showWaitingCopy ? (
         <>
           <div className="jf-ack"><span className="jf-pulse-dot" aria-hidden="true" /><span>Got it — {context.echo}. {waiting.title}</span></div>
           <div className="jf-honest-state">
@@ -406,6 +420,11 @@ function ContextScene({
             </BlockStack>
           </div>
         </>
+      ) : (
+        <div className="jf-ack">
+          <span aria-hidden="true">✓</span>
+          <span>Got it — {context.echo}. Your priority is saved.</span>
+        </div>
       )}
       {failure ? (
         <div className="jf-honest-state">

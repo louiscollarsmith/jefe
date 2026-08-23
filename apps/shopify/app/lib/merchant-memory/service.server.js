@@ -1040,12 +1040,12 @@ export async function refreshBeliefs(prisma, input) {
       if (result.skipped) skipped += 1;
       else createdOrUpdated += 1;
     }
-    // Retire deterministic system inferences whose definition was attempted this
+    // Retire deterministic derived beliefs whose definition was attempted this
     // run but no longer publishes (e.g. it dropped below its minimum-data
     // threshold and now returns INSUFFICIENT_DATA / NOT_APPLICABLE). Bounded to
-    // the keys the run actually attempted (skippedOutcomes) and to active
-    // systemInference beliefs, so merchant-authoritative beliefs are never
-    // obsoleted. Mirrors obsoleteUnsupportedStoreUnderstandingBeliefs.
+    // the keys the run actually attempted (skippedOutcomes) and to inferred
+    // systemInference / directObservation beliefs, so merchant-authoritative
+    // beliefs are never obsoleted. Mirrors obsoleteUnsupportedStoreUnderstandingBeliefs.
     const obsoletedDeterministic =
       (input.refreshType ?? "selective_refresh") === "full_rebuild"
         ? await obsoleteUnsupportedDeterministicBeliefs(prisma, {
@@ -1118,11 +1118,12 @@ export async function refreshBeliefs(prisma, input) {
 }
 
 /**
- * Retire active deterministic system inferences whose definition was attempted
+ * Retire active deterministic derived beliefs whose definition was attempted
  * in the current rebuild but is no longer supported by the data. Bounded to the
  * attempted-but-not-published keys (skippedOutcomes) and, critically, to
- * `status: inferred` + `precedence: systemInference` so merchant-confirmed and
- * merchant-corrected (authoritative) beliefs are never obsoleted.
+ * `status: inferred` plus systemInference or directObservation precedence so
+ * merchant-confirmed and merchant-corrected (authoritative) beliefs are never
+ * obsoleted.
  *
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId?: string | null; skippedKeys: Set<string>; runId: string }} input
@@ -1135,7 +1136,9 @@ async function obsoleteUnsupportedDeterministicBeliefs(prisma, input) {
       shopId: input.shopId ?? undefined,
       key: { in: [...input.skippedKeys] },
       status: BELIEF_STATUS.inferred,
-      precedence: BELIEF_PRECEDENCE.systemInference,
+      precedence: {
+        in: [BELIEF_PRECEDENCE.systemInference, BELIEF_PRECEDENCE.directObservation],
+      },
     },
   });
   const now = new Date();

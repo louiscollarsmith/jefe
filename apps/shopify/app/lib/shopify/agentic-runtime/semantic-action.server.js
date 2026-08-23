@@ -1,17 +1,32 @@
 // @ts-check
 
 import { createHash } from "node:crypto";
+import {
+  normalizeEligibilityCriteria,
+  normalizeWriteProtections,
+} from "./eligibility.server.js";
 
 /**
  * @param {any} recommendation
  */
 export function semanticActionFromRecommendation(recommendation) {
+  const eligibilityCriteria = normalizeEligibilityCriteria(
+    recommendation.eligibilityCriteria,
+    { source: "recommendation", derivedFrom: "recommendation" },
+  );
+  const writeProtections = normalizeWriteProtections(
+    recommendation.writeProtections,
+    recommendation.constraints,
+  );
   const semanticAction = {
     title: recommendation.title,
     summary: recommendation.summary,
     outcome: recommendation.outcome,
     scope: recommendation.scope,
     constraints: recommendation.constraints ?? [],
+    eligibilityCriteria,
+    writeProtections,
+    eligibilityStatus: eligibilityCriteria.length ? "structured" : "unstructured",
     materialExpectedEffects: recommendation.materialExpectedEffects ?? [],
     feasibleWriteOperations: recommendation.feasibleWriteOperations ?? [],
     verificationPlan: recommendation.verificationPlan,
@@ -40,6 +55,7 @@ export function semanticActionFromRecommendation(recommendation) {
  */
 export async function materializeAgenticShopifyAction(prisma, input) {
   const semanticAction = semanticActionFromRecommendation(input.recommendation);
+  const revisionHistory = [revisionSnapshot(semanticAction, "recommendation")];
   const action = await prisma.merchantAction.create({
     data: {
       merchantId: input.merchantId,
@@ -51,14 +67,18 @@ export async function materializeAgenticShopifyAction(prisma, input) {
         agentic: {
           runtime: "shopify_admin_api",
           currentActionRevision: semanticAction.revision,
+          originalActionRevision: semanticAction.revision,
           semanticAction,
+          revisionHistory,
         },
       },
       progress: {
         agentic: {
           runtime: "shopify_admin_api",
           currentActionRevision: semanticAction.revision,
+          originalActionRevision: semanticAction.revision,
           semanticAction,
+          revisionHistory,
           diagnostics: input.diagnostics ?? {},
         },
       },
@@ -148,11 +168,57 @@ export function semanticActionRevision(semanticAction) {
     outcome: semanticAction.outcome,
     scope: semanticAction.scope,
     constraints: semanticAction.constraints ?? [],
+    eligibilityCriteria: semanticAction.eligibilityCriteria ?? [],
+    writeProtections: semanticAction.writeProtections ?? [],
     materialExpectedEffects: semanticAction.materialExpectedEffects ?? [],
     feasibleWriteOperations: semanticAction.feasibleWriteOperations ?? [],
     verificationPlan: semanticAction.verificationPlan,
   });
   return `sar_${createHash("sha256").update(stable).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * @param {any} semanticAction
+ * @param {string | null} reason
+ */
+export function revisionSnapshot(semanticAction, reason = null) {
+  return {
+    revision: semanticAction?.revision ?? null,
+    at: new Date().toISOString(),
+    reason,
+    title: semanticAction?.title ?? null,
+    outcome: semanticAction?.outcome ?? null,
+    scope: semanticAction?.scope ?? null,
+    constraints: semanticAction?.constraints ?? [],
+    eligibilityCriteria: semanticAction?.eligibilityCriteria ?? [],
+    writeProtections: semanticAction?.writeProtections ?? [],
+    materialExpectedEffects: semanticAction?.materialExpectedEffects ?? [],
+    verificationPlan: semanticAction?.verificationPlan ?? null,
+  };
+}
+
+/**
+ * @param {any[]} history
+ * @param {any} semanticAction
+ * @param {string | null} reason
+ */
+export function appendRevisionHistory(history, semanticAction, reason = null) {
+  const rows = Array.isArray(history) ? history.slice(-24) : [];
+  const snapshot = revisionSnapshot(semanticAction, reason);
+  if (rows.some((row) => row?.revision === snapshot.revision)) return rows;
+  return [...rows, snapshot];
+}
+
+/**
+ * @param {any[]} history
+ * @param {{ which?: string; revision?: string | null }} query
+ */
+export function findRevisionSnapshot(history, query = {}) {
+  const rows = Array.isArray(history) ? history : [];
+  if (!rows.length) return null;
+  if (query.revision) return rows.find((row) => row?.revision === query.revision) ?? null;
+  if (query.which === "original" || !query.which) return rows[0] ?? null;
+  return rows[rows.length - 1] ?? null;
 }
 
 /** @param {unknown} value */
