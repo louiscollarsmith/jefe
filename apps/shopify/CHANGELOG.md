@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-23
+
+### Fixed
+
+- **"Generate a proposal" now reliably shows the generating state and surfaces a result.** A sourceMode mismatch (`"home"` vs `"agentic"`) meant the in-flight and daily-cap checks always returned zero — so after clicking the button, the loader immediately reported `isGenerating: false` and the button reappeared as if nothing happened. Home-triggered runs are now stored with `sourceMode: "home"`, the loader correctly detects in-flight jobs and polls until they complete, and the card shows an explicit message when the last run found no executable opportunity (`app/lib/shopify/agentic-runtime/recommendation-service.server.js`, `app/lib/merchant-plan/home-proposal-generation.server.js`, `app/components/daily-home.tsx`, `app/routes/app._index.tsx`, `tests/home-proposal-generation.test.mjs`).
+
 ## 2026-08-22
 
 ### Fixed
