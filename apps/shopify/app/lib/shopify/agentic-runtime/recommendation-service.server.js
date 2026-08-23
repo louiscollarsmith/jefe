@@ -30,6 +30,7 @@ import {
   revisionSnapshot,
   semanticActionFromRecommendation,
 } from "./semantic-action.server.js";
+import { buildActiveWorkItem, checkCandidateNovelty } from "./action-fingerprint.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
 const MAX_AGENTIC_BELIEFS = 40;
@@ -199,6 +200,53 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       logger,
     });
     if (result.ok && result.status === "RECOMMEND_ACTION") {
+      // Server-side novelty check: verify the candidate doesn't structurally
+      // duplicate an existing proposed or accepted (in-progress) Action.
+      // Luna does not reliably detect structural overlap via prose alone.
+      const currentActiveActions = await (prisma.merchantAction?.findMany?.({
+        where: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          status: { in: ["proposed", "accepted"] },
+        },
+        select: { id: true, status: true, plan: true, outcome: true },
+      }) ?? Promise.resolve([])).catch(() => []);
+      const novelty = checkCandidateNovelty(result.recommendation, currentActiveActions);
+      if (!novelty.novel) {
+        const terminalStatus = "no_actionable_opportunity";
+        const runMetadata = agenticRunMetadata(run);
+        await prisma.merchantPlanRun.update({
+          where: { id: run.id },
+          data: {
+            status: terminalStatus,
+            completedAt: new Date(),
+            safeErrorCode: null,
+            lastError: null,
+            result: {
+              runtime: "agentic_shopify",
+              ...runMetadata,
+              status: "NO_ACTIONABLE_OPPORTUNITY",
+              blocker: novelty.reason ?? "duplicate_action",
+              noveltyCheck: novelty,
+              diagnostics: result.diagnostics ?? {},
+            },
+          },
+        });
+        logger.info("Agentic recommendation rejected: structural overlap with existing action", {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          runId: run.id,
+          reason: novelty.reason,
+          overlappingActionId: novelty.overlappingActionId,
+        });
+        return {
+          status: terminalStatus,
+          runId: run.id,
+          blocker: novelty.reason ?? "duplicate_action",
+          diagnostics: result.diagnostics ?? {},
+          trace: result.trace ?? null,
+        };
+      }
       const persisted = await persistAgenticRecommendation(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -400,7 +448,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
 async function buildAgenticRecommendationSnapshot(prisma, input) {
-  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence] = await Promise.all([
+  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence, activeActions] = await Promise.all([
     prisma.merchantGoalRun.findFirst({
       where: {
         merchantId: input.merchantId,
@@ -439,6 +487,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         shopId: input.shopId,
         reviewStatus: {
           in: [
+            PLAN_REVIEW_STATUS.proposed,
             PLAN_REVIEW_STATUS.accepted,
             PLAN_REVIEW_STATUS.rejected,
             PLAN_REVIEW_STATUS.refinementRequested,
@@ -447,7 +496,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         },
       },
       orderBy: { createdAt: "desc" },
-      take: 8,
+      take: 10,
     }),
     retrieveMerchantContext(prisma, {
       merchantId: input.merchantId,
@@ -465,6 +514,17 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       },
       orderBy: { createdAt: "desc" },
       take: 8,
+    }) ?? Promise.resolve([])).catch(() => []),
+    // Active actions (proposed + accepted/in-progress, not superseded) for deduplication
+    (prisma.merchantAction?.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: { in: ["proposed", "accepted"] },
+      },
+      select: { id: true, status: true, title: true, plan: true, outcome: true, updatedAt: true },
+      orderBy: { updatedAt: "desc" },
+      take: 10,
     }) ?? Promise.resolve([])).catch(() => []),
   ]);
   const goals = (goalRun?.horizons ?? []).map((/** @type {any} */ goal) => ({
@@ -488,6 +548,9 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     authority: "jefe_interpretation",
   }));
   const normalizedBeliefs = beliefs.map(normalizeBelief).filter(Boolean);
+  const activeWork = (activeActions ?? [])
+    .map(buildActiveWorkItem)
+    .filter(Boolean);
   const snapshot = {
     snapshotVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
     merchantId: input.merchantId,
@@ -529,6 +592,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       summary: safeText(item.summary, 280),
       reviewStatus: item.reviewStatus,
     })),
+    activeWork,
   };
   return {
     snapshot,

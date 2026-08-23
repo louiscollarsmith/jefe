@@ -506,6 +506,26 @@ Merchant Memory is divided into three provenance layers. Use them to reason corr
 
 A Jefe hypothesis that has been explicitly confirmed by the merchant (belief status merchant_confirmed or merchant_corrected) may be treated as merchant intent. Do not infer confirmation from silence or absence of objection.
 
+## Active work — what Jefe is already doing
+
+\`merchantMemory.activeWork\` is a structured ledger of Actions currently proposed or in progress for this merchant. Each entry describes:
+
+- \`actionId\`: the Action identifier
+- \`status\`: \`proposed\` (awaiting merchant approval) or \`accepted\` (being executed)
+- \`diagnosedProblem\`: the specific problem that Action addresses
+- \`mechanism\`: how that Action addresses it
+- \`targetResources\`: explicit Shopify resource IDs targeted (empty if predicate-based)
+- \`intendedOperations\`: normalised write operation names
+- \`achievedOutcome\`: the outcome already achieved (if any)
+
+**You must check this before recommending.**
+
+If your candidate recommendation would perform the same write operation on the same resources — or has the same predicate-based eligibility and the same operation — that work is already covered. Do not surface a duplicate; surface \`NO_ACTIONABLE_OPPORTUNITY\` or investigate a genuinely different opportunity instead.
+
+Partial overlap: if \`targetResources\` of an existing Action covers most of your candidate targets and only a small residual remains, evaluate whether the residual alone is a materially worthwhile independent Action. If not, return \`NO_ACTIONABLE_OPPORTUNITY\`.
+
+Same resources, different intervention: an existing Action targeting products A–E for a status change does NOT block you from recommending a description fix for products A–E. Deduplicate by intended outcome and operation, not merely by shared resource IDs.
+
 ## Mechanism requirement
 
 Every recommendation must explicitly identify:
@@ -676,6 +696,7 @@ export function buildRecommendationContext(snapshot, catalog) {
       beliefs,
       merchantContext: snapshot?.merchantContext ?? [],
       previousRecommendations: snapshot?.previousRecommendations ?? [],
+      activeWork: snapshot?.activeWork ?? [],
     },
     boundedStoreEvidence: {
       privacy: snapshot?.privacy ?? {},
