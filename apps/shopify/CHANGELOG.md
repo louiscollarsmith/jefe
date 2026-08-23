@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-23
+
+### Fixed
+
+- **Accepted Agentic Actions no longer cause HTTP 524 timeouts.** The full post-acceptance execution loop (Luna planning, Shopify reads/writes, verification) previously ran synchronously inside the merchant's request, routinely exceeding Cloudflare's ~100 s origin-response limit. Repeated 524s then created concurrent server-side loops that could diverge on the accepted-revision guard and block collection writes. Acceptance now returns immediately after persisting `acceptedActionRevision` and enqueueing a `agentic_shopify_execute:<actionId>` job in the existing BackfillJob worker; execution runs in the background with the same Luna + Shopify gateway path. One job per (Action, accepted revision): repeated "go ahead" messages for the same revision are idempotent — the existing queued/running job is returned. A material replan while a queued job exists cancels the stale job before the revision advances. `accepted` in the Action lifecycle now correctly means `acceptedActionRevision === currentActionRevision`, not merely that any prior acceptance exists. `app/lib/shopify/agentic-runtime/{execution-job,execution-service,action-chat,constants}.server.js`, `app/lib/actions/action-command.server.js`, `app/services/{shopify-backfill-worker,shopify-backfill-status}.server.js`, `tests/agentic-execution-job.test.mjs`.
+
 ## 2026-08-22
 
 ### Fixed
