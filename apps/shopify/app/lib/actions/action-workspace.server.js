@@ -587,7 +587,7 @@ function refreshWorkspaceItem(item, input) {
     state,
     workState: workState ?? item.workState ?? null,
     statusLabel:
-      state === "planned" && item.statusLabel
+      item.statusLabel != null && state === item.state
         ? item.statusLabel
         : stateLabel({ ...item, state }),
     artifact,
@@ -874,7 +874,12 @@ function agenticWorkspaceItems(action, semanticAction, source) {
   } else if (executionPhase === "executing") {
     executeState = "running";
     executeLabel = "Jefe working";
-  } else if (executionPhase === "verification_incomplete" || actionNeedsAttention) {
+  } else if (executionPhase === "verification_incomplete") {
+    // Auto-recovery is scheduled unless verificationExhausted is set (after max retries).
+    const exhausted = executionJob.verificationExhausted === true;
+    executeState = exhausted ? "needs_attention" : "running";
+    executeLabel = exhausted ? "Needs attention" : "Verifying";
+  } else if (actionNeedsAttention) {
     executeState = "needs_attention";
     executeLabel = "Needs attention";
   } else if (accepted) {

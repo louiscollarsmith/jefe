@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runAgenticShopifyExecution } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
+import { runAgenticShopifyVerification } from "../app/lib/shopify/agentic-runtime/verification-agent.server.js";
 import {
   acceptAgenticShopifyAction,
   materializeAgenticShopifyAction,
@@ -17,9 +18,9 @@ const shopId = "00000000-0000-0000-0000-000000000022";
 const shopDomain = "jefe-lifecycle-test.myshopify.com";
 
 // ---------------------------------------------------------------------------
-// Scenario 1 — Happy path
+// Scenario 1 — Happy path: mutation phase → verification phase → completed
 // ---------------------------------------------------------------------------
-test("scenario 1: successful writes + read-back → completed status, verified outcome, phase = completed", async () => {
+test("scenario 1: mutation WRITES_COMPLETE then verification OUTCOME_ACHIEVED → completed, phase = completed", async () => {
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -28,10 +29,9 @@ test("scenario 1: successful writes + read-back → completed status, verified o
   });
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
-  const provider = happyPathProvider();
-
-  const result = await runAgenticShopifyExecution({
-    provider,
+  // Mutation phase: issues write then signals WRITES_COMPLETE
+  const mutationResult = await runAgenticShopifyExecution({
+    provider: mutationPhaseProvider(),
     prisma,
     client: fakeShopifyClient(),
     merchantId,
@@ -42,37 +42,50 @@ test("scenario 1: successful writes + read-back → completed status, verified o
     logger: quietLogger,
   });
 
-  assert.equal(result.ok, true, "execution should succeed");
-  assert.equal(result.status, "OUTCOME_ACHIEVED");
+  assert.equal(mutationResult.ok, true, "mutation phase should succeed");
+  assert.equal(mutationResult.status, "WRITES_COMPLETE");
+
+  // Phase must be "verifying" after mutation, not "completed"
+  const afterMutation = prisma.actions[0];
+  assert.equal(afterMutation.progress?.agentic?.executionJob?.phase, "verifying");
+  // Write receipt must exist
+  assert.ok(prisma.operationCalls.some((r) => r.operationKind === "MUTATION" && r.status === "OK"));
+
+  // Verification phase: read-only — confirms outcome
+  const verResult = await runAgenticShopifyVerification({
+    provider: verificationPhaseProvider(),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(verResult.ok, true, "verification should succeed");
+  assert.equal(verResult.status, "OUTCOME_ACHIEVED");
 
   const finalAction = prisma.actions[0];
 
-  // Invariant 4: completed requires successful outcome verification
+  // Invariant: completed requires successful outcome verification
   assert.equal(finalAction.status, "completed");
   assert.equal(finalAction.outcome?.verification?.verified, true);
-
-  // Phase should be persisted as completed
   assert.equal(finalAction.progress?.agentic?.executionJob?.phase, "completed");
-
-  // Writes occurred
-  assert.ok(prisma.operationCalls.some((r) => r.operationKind === "MUTATION" && r.status === "OK"));
-  // Read-after-write occurred
-  assert.ok(prisma.operationCalls.some((r) => r.operationKind === "QUERY" && r.status === "OK"));
 
   // Workspace from persisted state (reload simulation)
   const workspace = buildActionWorkspace(finalAction);
   assert.equal(workspace.actionState, "completed");
-
-  // Execute item must not revert to ready
   const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
   assert.ok(execItem, "execute_and_verify_outcome item must exist");
   assert.equal(execItem.state, "completed");
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 2 — Writes succeed, verification exhausts iteration budget
+// Scenario 2 — Mutation succeeds, verification hits iteration budget → verification_incomplete
 // ---------------------------------------------------------------------------
-test("scenario 2: writes succeed but verification exhausts budget → needs_attention, writesOccurred, not accepted", async () => {
+test("scenario 2: mutation WRITES_COMPLETE then verification budget exhausted → verification_incomplete, jefe working in workspace", async () => {
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -81,12 +94,9 @@ test("scenario 2: writes succeed but verification exhausts budget → needs_atte
   });
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
-  // Provider writes once then keeps returning OUTCOME_ACHIEVED without read-back,
-  // forcing the validation loop to consume the iteration budget.
-  const provider = writesWithoutVerificationProvider();
-
-  const result = await runAgenticShopifyExecution({
-    provider,
+  // Mutation phase succeeds
+  const mutationResult = await runAgenticShopifyExecution({
+    provider: mutationPhaseProvider(),
     prisma,
     client: fakeShopifyClient(),
     merchantId,
@@ -95,38 +105,45 @@ test("scenario 2: writes succeed but verification exhausts budget → needs_atte
     actionId: action.id,
     grantedScopes: ["read_products", "write_products"],
     logger: quietLogger,
-    maxIterations: 4,
   });
 
-  assert.equal(result.ok, false);
-  // Invariant 2: must not remain indistinguishable from "accepted but not executed"
-  assert.notEqual(result.blocker, "ITERATION_LIMIT", "blocker must reflect that writes occurred");
-  assert.equal(result.blocker, "ITERATION_LIMIT_AFTER_WRITES");
+  assert.equal(mutationResult.ok, true);
+  assert.equal(mutationResult.status, "WRITES_COMPLETE");
+
+  // Verification phase hits iteration limit (never achieves OUTCOME_ACHIEVED)
+  const verResult = await runAgenticShopifyVerification({
+    provider: blockedVerificationProvider(),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products"],
+    logger: quietLogger,
+    maxIterations: 2,
+  });
+
+  assert.equal(verResult.ok, false);
+  assert.equal(verResult.blocker, "VERIFICATION_ITERATION_LIMIT");
 
   const finalAction = prisma.actions[0];
 
-  // Must not be "completed"
-  assert.notEqual(finalAction.status, "completed", "must not be falsely completed");
-  // Must not be "accepted" — writes occurred
-  assert.notEqual(finalAction.status, "accepted", "must not appear as if nothing happened");
-  // Should be needs_attention
-  assert.equal(finalAction.status, "needs_attention");
+  // Status stays "accepted" while verification is incomplete and retries are pending
+  // (only executionJob.phase changes; action.status is not set until verification resolves)
+  assert.notEqual(finalAction.status, "completed");
+  assert.equal(finalAction.status, "accepted");
 
-  // Outcome must record that writes occurred
-  assert.equal(finalAction.outcome?.writesOccurred, true);
-  assert.equal(finalAction.outcome?.verificationIncomplete, true);
-
-  // Phase must be verification_incomplete, not executing or completed
+  // Phase must be verification_incomplete
   assert.equal(finalAction.progress?.agentic?.executionJob?.phase, "verification_incomplete");
 
-  // Workspace from persisted state
+  // Workspace: verification_incomplete without exhaustion = Jefe still owns it (running, not needs_attention)
   const workspace = buildActionWorkspace(finalAction);
-  assert.equal(workspace.actionState, "needs_attention");
-
-  // Execute item must show needs_attention, not ready or completed
   const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
   assert.ok(execItem);
-  assert.equal(execItem.state, "needs_attention");
+  assert.equal(execItem.state, "running", "must show running (jefe working), not needs_attention, while retries are pending");
+  assert.equal(execItem.statusLabel, "Verifying");
+  assert.equal(workspace.actionState, "jefe_working");
 });
 
 // ---------------------------------------------------------------------------
@@ -141,11 +158,8 @@ test("scenario 3: no writes succeed → BLOCKED, action not falsely completed, n
   });
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
-  // Provider immediately returns BLOCKED without any tool calls
-  const provider = blockedProvider();
-
   const result = await runAgenticShopifyExecution({
-    provider,
+    provider: blockedProvider(),
     prisma,
     client: fakeShopifyClient(),
     merchantId,
@@ -159,13 +173,8 @@ test("scenario 3: no writes succeed → BLOCKED, action not falsely completed, n
   assert.equal(result.ok, false);
 
   const finalAction = prisma.actions[0];
-
-  // Must not be completed or needs_attention-due-to-writes
   assert.notEqual(finalAction.status, "completed");
-  assert.ok(
-    !finalAction.outcome?.writesOccurred,
-    "must not claim writes occurred when none did",
-  );
+  assert.ok(!finalAction.outcome?.writesOccurred, "must not claim writes occurred when none did");
 
   // No successful mutations
   assert.equal(
@@ -173,7 +182,6 @@ test("scenario 3: no writes succeed → BLOCKED, action not falsely completed, n
     0,
   );
 
-  // Workspace must not claim changes occurred
   const workspace = buildActionWorkspace(finalAction);
   const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
   assert.ok(execItem);
@@ -191,25 +199,22 @@ test("scenario 4: executionJob.phase=executing → workspace shows jefe_working,
 
   const workspace = buildActionWorkspace(action);
 
-  // Invariant 1: must not resolve to on_track while executing
   assert.notEqual(workspace.actionState, "on_track");
   assert.equal(workspace.actionState, "jefe_working");
 
-  // Execute item must be running
   const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
   assert.ok(execItem);
   assert.equal(execItem.state, "running");
 
-  // currentFocus must not say "Nothing needs your attention"
   const focus = resolveWorkspaceFocus(workspace, action);
-  assert.notEqual(focus.kind, "on_track", "focus must not be on_track while executing");
+  assert.notEqual(focus.kind, "on_track");
   assert.equal(focus.kind, "jefe_working");
 });
 
 // ---------------------------------------------------------------------------
-// Scenario 5 — Verification mismatch (eligibility failure after writes)
+// Scenario 5 — Verification mismatch: writes happened, Shopify state wrong
 // ---------------------------------------------------------------------------
-test("scenario 5: verification mismatch → needs_attention, not completed", async () => {
+test("scenario 5: mutation succeeds then verification mismatch → needs_attention, not completed", async () => {
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -218,11 +223,9 @@ test("scenario 5: verification mismatch → needs_attention, not completed", asy
   });
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
-  // Provider writes then returns NEEDS_ACTION_REPLAN
-  const provider = writeThenReplanProvider();
-
-  const result = await runAgenticShopifyExecution({
-    provider,
+  // Mutation phase succeeds
+  await runAgenticShopifyExecution({
+    provider: mutationPhaseProvider(),
     prisma,
     client: fakeShopifyClient(),
     merchantId,
@@ -233,12 +236,26 @@ test("scenario 5: verification mismatch → needs_attention, not completed", asy
     logger: quietLogger,
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, "NEEDS_ACTION_REPLAN");
+  // Verification finds state doesn't match
+  const verResult = await runAgenticShopifyVerification({
+    provider: mismatchVerificationProvider(),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(verResult.ok, false);
+  assert.equal(verResult.status, "VERIFICATION_MISMATCH");
 
   const finalAction = prisma.actions[0];
   assert.notEqual(finalAction.status, "completed");
   assert.equal(finalAction.status, "needs_attention");
+  assert.equal(finalAction.progress?.agentic?.executionJob?.phase, "needs_attention");
 
   const workspace = buildActionWorkspace(finalAction);
   assert.equal(workspace.actionState, "needs_attention");
@@ -258,21 +275,11 @@ test("scenario 6: persisted completed action reloads as completed with no ready 
 
   const items = workspacePlanItems(workspace);
 
-  // No item should revert to ready or planned
   for (const item of items) {
-    assert.notEqual(
-      item.workState,
-      "ready",
-      `item ${item.id} must not be "ready" after completion`,
-    );
-    assert.notEqual(
-      item.workState,
-      "planned",
-      `item ${item.id} must not be "planned" after completion`,
-    );
+    assert.notEqual(item.workState, "ready", `item ${item.id} must not be "ready" after completion`);
+    assert.notEqual(item.workState, "planned", `item ${item.id} must not be "planned" after completion`);
   }
 
-  // WORKING ON focus must not reappear
   const focus = resolveWorkspaceFocus(workspace, action);
   assert.notEqual(focus.eyebrow, "WORKING ON");
 });
@@ -288,11 +295,8 @@ test("scenario 7a: orientation item excluded, four milestones → count = 4", ()
   const milestones = items.filter((i) => i.isMilestone !== false);
   const orientation = items.filter((i) => i.isMilestone === false);
 
-  // understand_recommendation is an orientation item
   assert.ok(orientation.length >= 1, "at least one orientation item expected");
   assert.ok(orientation.some((i) => i.id === "understand_recommendation"));
-
-  // milestone count should not include orientation items
   assert.ok(milestones.length > 0);
   assert.equal(
     milestones.some((i) => i.id === "understand_recommendation"),
@@ -302,17 +306,12 @@ test("scenario 7a: orientation item excluded, four milestones → count = 4", ()
 });
 
 test("scenario 7b: five actual milestones → milestone count = 5", () => {
-  // Build an action whose workspace has five milestone items (includes who_qualifies)
   const action = agenticActionFixture({ status: "accepted", withEligibility: true });
   const workspace = buildActionWorkspace(action);
   const items = workspacePlanItems(workspace);
 
   const milestones = items.filter((i) => i.isMilestone !== false);
-  // Without eligibility: confirm_scope, agree_constraints, execute = 3 milestones
-  // With eligibility: + who_qualifies = 4 milestones
   assert.equal(milestones.length, 4, "four milestones expected with eligibility criterion");
-
-  // Total items (including orientation) = 5
   assert.equal(items.length, 5);
 });
 
@@ -324,28 +323,56 @@ test("scenario 7c: milestonesCount agrees with displayed header for agentic acti
   const milestoneCount = items.filter((i) => i.isMilestone !== false).length;
   const totalCount = items.length;
 
-  // The header count must equal milestone count, not total count
   assert.ok(milestoneCount < totalCount, "milestone count must be less than total when orientation items exist");
-  // confirm_scope + agree_constraints + execute = 3 milestones (no eligibility)
   assert.equal(milestoneCount, 3);
 });
 
 // ---------------------------------------------------------------------------
-// Invariant 3: BackfillJob succeeded alone does NOT imply business completion
+// Invariant: BackfillJob succeeded alone does NOT imply business completion
 // ---------------------------------------------------------------------------
 test("invariant 3: executionJob.jobStatus=succeeded with no MerchantAction status update is not completed", () => {
-  // Simulate what would happen if markActionExecutionOutcome never ran but
-  // the worker's final write (jobStatus=succeeded) did run.
   const action = agenticActionFixture({
-    status: "accepted", // NOT completed — markActionExecutionOutcome never fired
+    status: "accepted",
     executionJob: { jobStatus: "succeeded", phase: "completed" },
   });
 
   const workspace = buildActionWorkspace(action);
   // Workspace actionState is driven by action.status, not executionJob.jobStatus
-  // action.status = "accepted" with phase = "completed" is an inconsistency —
-  // the workspace should still not claim the action is completed.
   assert.notEqual(workspace.actionState, "completed");
+});
+
+// ---------------------------------------------------------------------------
+// Workspace reload at every lifecycle phase
+// ---------------------------------------------------------------------------
+test("workspace reload: verifying phase shows running / jefe_working focus", () => {
+  const action = agenticActionFixture({ status: "accepted", executionJobPhase: "verifying" });
+  const workspace = buildActionWorkspace(action);
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.equal(execItem?.state, "running");
+  assert.equal(execItem?.statusLabel, "Verifying");
+  assert.equal(workspace.actionState, "jefe_working");
+});
+
+test("workspace reload: verification_incomplete (not exhausted) shows running / jefe_working", () => {
+  const action = agenticActionFixture({ status: "accepted", executionJobPhase: "verification_incomplete" });
+  const workspace = buildActionWorkspace(action);
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  // verificationExhausted not set → still jefe_working
+  assert.equal(execItem?.state, "running");
+  assert.equal(execItem?.statusLabel, "Verifying");
+  assert.equal(workspace.actionState, "jefe_working");
+});
+
+test("workspace reload: verification_incomplete with exhaustion shows needs_attention", () => {
+  const action = agenticActionFixture({
+    status: "accepted",
+    executionJob: { phase: "verification_incomplete", verificationExhausted: true },
+  });
+  const workspace = buildActionWorkspace(action);
+  const execItem = workspace.items.find((i) => i.semanticKey === "execute_and_verify_outcome");
+  assert.equal(execItem?.state, "needs_attention");
+  assert.equal(execItem?.statusLabel, "Needs attention");
+  assert.equal(workspace.actionState, "needs_attention");
 });
 
 // ---------------------------------------------------------------------------
@@ -412,7 +439,8 @@ function agenticActionFixture({ status = "accepted", executionJobPhase, executio
   };
 }
 
-function happyPathProvider() {
+/** Provider that issues a write then signals WRITES_COMPLETE. */
+function mutationPhaseProvider() {
   return {
     enabled: true,
     provider: "test",
@@ -421,8 +449,6 @@ function happyPathProvider() {
       const payload = JSON.parse(prompt);
       const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
       const hasMutation = calls.some((r) => r.facts?.operation === "productUpdate" && r.ok);
-      const hasRead = calls.some((r) => r.facts?.operation === "product" && r.ok);
-
       if (!hasMutation) {
         return {
           json: {
@@ -442,6 +468,21 @@ function happyPathProvider() {
           },
         };
       }
+      return { json: { status: "WRITES_COMPLETE", progressSummary: "Product mutation issued." } };
+    },
+  };
+}
+
+/** Provider for the verification phase that reads back and confirms. */
+function verificationPhaseProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson({ prompt }) {
+      const payload = JSON.parse(prompt);
+      const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
+      const hasRead = calls.some((r) => r.facts?.operation === "product" && r.ok);
       if (!hasRead) {
         return {
           json: {
@@ -462,7 +503,7 @@ function happyPathProvider() {
       return {
         json: {
           status: "OUTCOME_ACHIEVED",
-          progressSummary: "Product hidden and verified.",
+          progressSummary: "Product verified as DRAFT.",
           verification: {
             verified: true,
             evidence: ["Read-back confirmed product gid://shopify/Product/1 is DRAFT."],
@@ -474,7 +515,20 @@ function happyPathProvider() {
   };
 }
 
-function writesWithoutVerificationProvider() {
+/** Verification provider that always returns CONTINUE without achieving outcome. */
+function blockedVerificationProvider() {
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson() {
+      return { json: { status: "CONTINUE", toolCalls: [] } };
+    },
+  };
+}
+
+/** Verification provider that finds a state mismatch. */
+function mismatchVerificationProvider() {
   return {
     enabled: true,
     provider: "test",
@@ -482,39 +536,8 @@ function writesWithoutVerificationProvider() {
     async generateStructuredJson({ prompt }) {
       const payload = JSON.parse(prompt);
       const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
-      const validation = (payload.toolResults ?? []).find((r) => r.tool === "execution_validation");
-
-      if (validation) {
-        // Ignore validation and claim OUTCOME_ACHIEVED again — this will keep
-        // triggering the validation loop until the iteration budget is exhausted.
-        if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
-          return {
-            json: {
-              status: "CONTINUE",
-              toolCalls: [
-                {
-                  tool: "call_shopify_operation",
-                  arguments: {
-                    operation: "productUpdate",
-                    variables: { input: { id: "gid://shopify/Product/1", status: "DRAFT" } },
-                    purpose: "Hide the product.",
-                    expectedEffect: "Set product status to DRAFT.",
-                    idempotencyKey: "hide-product-no-verify",
-                  },
-                },
-              ],
-            },
-          };
-        }
-        return {
-          json: {
-            status: "OUTCOME_ACHIEVED",
-            verification: { verified: true, evidence: ["Mutation returned OK."], remaining: [] },
-          },
-        };
-      }
-
-      if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
+      const hasRead = calls.some((r) => r.facts?.operation === "product" && r.ok);
+      if (!hasRead) {
         return {
           json: {
             status: "CONTINUE",
@@ -522,23 +545,25 @@ function writesWithoutVerificationProvider() {
               {
                 tool: "call_shopify_operation",
                 arguments: {
-                  operation: "productUpdate",
-                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
-                  purpose: "Hide the product.",
-                  expectedEffect: "Set product status to DRAFT.",
-                  idempotencyKey: "hide-product-no-verify",
+                  operation: "product",
+                  variables: { id: "gid://shopify/Product/1" },
+                  purpose: "Verify product status.",
                 },
               },
             ],
           },
         };
       }
-
-      // Skip read-back, claim done — triggers MISSING_PROVIDER_STATE_VERIFICATION
       return {
         json: {
-          status: "OUTCOME_ACHIEVED",
-          verification: { verified: true, evidence: ["Mutation returned OK."], remaining: [] },
+          status: "VERIFICATION_MISMATCH",
+          blocker: "Product is still ACTIVE, not DRAFT.",
+          verification: {
+            verified: false,
+            mismatch: "Product is still ACTIVE, not DRAFT.",
+            evidence: [],
+            remaining: ["Confirm product status"],
+          },
         },
       };
     },
@@ -552,43 +577,6 @@ function blockedProvider() {
     model: "scripted",
     async generateStructuredJson() {
       return { json: { status: "BLOCKED", blocker: "no_shopify_api_available" } };
-    },
-  };
-}
-
-function writeThenReplanProvider() {
-  return {
-    enabled: true,
-    provider: "test",
-    model: "scripted",
-    async generateStructuredJson({ prompt }) {
-      const payload = JSON.parse(prompt);
-      const calls = (payload.toolResults ?? []).filter((r) => r.tool === "call_shopify_operation");
-      if (!calls.some((r) => r.facts?.operation === "productUpdate")) {
-        return {
-          json: {
-            status: "CONTINUE",
-            toolCalls: [
-              {
-                tool: "call_shopify_operation",
-                arguments: {
-                  operation: "productUpdate",
-                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
-                  purpose: "Hide the product.",
-                  expectedEffect: "Set product status to DRAFT.",
-                  idempotencyKey: "hide-product-replan",
-                },
-              },
-            ],
-          },
-        };
-      }
-      return {
-        json: {
-          status: "NEEDS_ACTION_REPLAN",
-          blocker: "Scope of qualifying products changed since acceptance.",
-        },
-      };
     },
   };
 }
@@ -640,7 +628,8 @@ function fakePrisma() {
     $transaction: async (run) => run(prisma),
     backfillJob: {
       findUnique: async ({ where }) => {
-        const key = where.shopId_jobType;
+        const key = where.shopId_jobType ?? where.id;
+        if (where.id) return prisma.jobs.find((j) => j.id === where.id) ?? null;
         return (
           prisma.jobs.find(
             (j) => j.shopId === key.shopId && j.jobType === key.jobType,
@@ -732,7 +721,10 @@ function fakePrisma() {
             (row) =>
               (!where?.merchantId || row.merchantId === where.merchantId) &&
               (!where?.shopId || row.shopId === where.shopId) &&
-              (!where?.merchantActionId || row.merchantActionId === where.merchantActionId),
+              (!where?.merchantActionId || row.merchantActionId === where.merchantActionId) &&
+              (!where?.acceptedActionRevision || row.acceptedActionRevision === where.acceptedActionRevision) &&
+              (!where?.operationKind || row.operationKind === where.operationKind) &&
+              (!where?.status?.in || where.status.in.includes(row.status)),
           )
           .slice(0, take ?? prisma.operationCalls.length),
     },

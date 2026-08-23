@@ -3,9 +3,17 @@
 // rows for the Shop In-Stock action from this file. The real-store validation
 // (spec §29) requires a manual DB check before executing against the live store.
 
-import { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX } from "./constants.server.js";
+import {
+  AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
+  AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX,
+} from "./constants.server.js";
 
-export { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX };
+export {
+  AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
+  AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX,
+};
+
+export const MAX_VERIFICATION_RETRIES = 3;
 
 /**
  * Returns the BackfillJob jobType for a given actionId.
@@ -14,6 +22,16 @@ export { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX };
  */
 export function agenticExecutionJobType(actionId) {
   return `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`;
+}
+
+/**
+ * Returns the verification-retry BackfillJob jobType for a given actionId.
+ * Separate from the execution job so the execution job can complete while
+ * verification retries are pending. Satisfies @@unique([shopId, jobType]).
+ * @param {string} actionId
+ */
+export function agenticVerificationJobType(actionId) {
+  return `${AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX}:${actionId}`;
 }
 
 /**
@@ -192,6 +210,71 @@ export async function cancelAgenticExecutionJobForStaleRevision(prisma, input) {
   });
 
   return { cancelled: true };
+}
+
+// ---------------------------------------------------------------------------
+// Verification retry job
+// ---------------------------------------------------------------------------
+
+/**
+ * Enqueue a standalone verification-only retry job for an action whose mutation
+ * phase is complete but whose verification hit the iteration budget.
+ *
+ * - Uses a separate job type so the execution job row can be marked succeeded.
+ * - `verificationRetryCount` in the payload tracks retry number (1-based).
+ * - `runAfter` implements backoff: 60 s × 2^(retryCount-1), capped at 600 s.
+ * - Idempotent: if a queued job already exists for the same action, updates payload
+ *   and runAfter rather than creating a duplicate.
+ *
+ * @param {any} prisma
+ * @param {{
+ *   merchantId: string;
+ *   shopId: string;
+ *   actionId: string;
+ *   acceptedRevision: string;
+ *   shopDomain?: string | null;
+ *   scopes?: string[];
+ *   verificationRetryCount?: number;
+ * }} input
+ */
+export async function enqueueAgenticVerificationRetryJob(prisma, input) {
+  const jobType = agenticVerificationJobType(input.actionId);
+  const retryCount = input.verificationRetryCount ?? 1;
+  const backoffMs = Math.min(60_000 * Math.pow(2, retryCount - 1), 600_000);
+  const runAfter = new Date(Date.now() + backoffMs);
+  const payload = {
+    actionId: input.actionId,
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    acceptedRevision: input.acceptedRevision,
+    shopDomain: input.shopDomain ?? null,
+    scopes: input.scopes ?? [],
+    verificationRetryCount: retryCount,
+    enqueuedAt: new Date().toISOString(),
+  };
+  await prisma.backfillJob.upsert({
+    where: { shopId_jobType: { shopId: input.shopId, jobType } },
+    create: {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      jobType,
+      status: "queued",
+      priority: 14,
+      runAfter,
+      payloadJson: payload,
+      attemptCount: 0,
+    },
+    update: {
+      status: "queued",
+      runAfter,
+      startedAt: null,
+      completedAt: null,
+      failedAt: null,
+      lastError: null,
+      attemptCount: 0,
+      payloadJson: payload,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
