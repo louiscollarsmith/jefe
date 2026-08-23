@@ -266,7 +266,10 @@ test("agentic pre-acceptance Shopify mutation attempts are denied by the univers
   assert.equal(prisma.operationCalls.some((row) => row.status === "DENIED_ACTION_NOT_ACCEPTED"), true);
 });
 
-test("agentic chat acceptance creates accepted revision and starts post-acceptance execution", async () => {
+test("agentic chat acceptance creates accepted revision and enqueues background execution", async () => {
+  // Execution is now async — the accept_action tool calls acceptAndEnqueueAgenticShopifyAction,
+  // which sets acceptedActionRevision and creates a BackfillJob for the background worker.
+  // No Shopify API calls happen synchronously in the merchant's HTTP request.
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -277,63 +280,12 @@ test("agentic chat acceptance creates accepted revision and starts post-acceptan
     if (payload.promptVersion === AGENTIC_ACTION_CHAT_PROMPT_VERSION) {
       return {
         status: "ANSWER",
-        finalReply: "Accepted. I started the Shopify work.",
+        finalReply: "I've accepted this — Jefe is working on it now.",
         toolCalls: [{ tool: "accept_action", arguments: {} }],
       };
     }
-    const calls = payload.toolResults?.filter((row) => row.tool === "call_shopify_operation") ?? [];
-    if (!calls.some((row) => row.facts?.operation === "products")) {
-      return {
-        status: "CONTINUE",
-        toolCalls: [
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "products",
-              variables: { first: 5, query: "tag:london-delivery" },
-              purpose: "Read qualifying products before creating the accepted collection.",
-            },
-          },
-        ],
-      };
-    }
-    if (!calls.some((row) => row.facts?.operation === "collectionCreate")) {
-      return {
-        status: "CONTINUE",
-        toolCalls: [
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "collectionCreate",
-              variables: { input: { title: "London fast delivery" } },
-              purpose: "Create the accepted collection.",
-              expectedEffect: "Create a Shopify collection for the accepted Action.",
-              idempotencyKey: "chat-accept-collection-create",
-            },
-          },
-        ],
-      };
-    }
-    if (!calls.some((row) => row.facts?.operation === "collection")) {
-      return {
-        status: "CONTINUE",
-        toolCalls: [
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "collection",
-              variables: { id: "gid://shopify/Collection/99" },
-              purpose: "Verify the accepted collection exists.",
-            },
-          },
-        ],
-      };
-    }
-    return {
-      status: "OUTCOME_ACHIEVED",
-      progressSummary: "Created and verified the accepted collection.",
-      verification: { verified: true, evidence: ["Read-back confirmed the collection."], remaining: [] },
-    };
+    // Execution provider should not be called synchronously
+    return { status: "OUTCOME_ACHIEVED", progressSummary: "Done." };
   });
 
   const result = await runAgenticActionChat(prisma, {
@@ -351,8 +303,14 @@ test("agentic chat acceptance creates accepted revision and starts post-acceptan
   });
 
   assert.equal(result.ok, true);
+  // Acceptance should have set the accepted revision
   assert.equal(Boolean(prisma.actions[0].progress.agentic.acceptedActionRevision), true);
-  assert.equal(prisma.operationCalls.some((row) => row.operationName === "collectionCreate"), true);
+  // Execution is async — no Shopify API calls made in the merchant's HTTP request
+  assert.equal(prisma.operationCalls.some((row) => row.operationName === "collectionCreate"), false);
+  // A BackfillJob should have been enqueued for the background worker
+  assert.equal(prisma.jobs.length, 1);
+  assert.equal(prisma.jobs[0].status, "queued");
+  assert.ok(prisma.jobs[0].jobType.startsWith("agentic_shopify_execute:"));
 });
 
 test("completed agentic Action projects accepted verified outcome and Shopify history to Luna", async () => {
@@ -1207,7 +1165,36 @@ function fakePrisma() {
     actions: [],
     events: [],
     operationCalls: [],
+    jobs: [],
     $transaction: async (run) => run(prisma),
+    backfillJob: {
+      findUnique: async ({ where }) => {
+        const key = where.shopId_jobType;
+        return (
+          prisma.jobs.find(
+            (j) => j.shopId === key.shopId && j.jobType === key.jobType,
+          ) ?? null
+        );
+      },
+      upsert: async ({ where, create, update }) => {
+        const key = where.shopId_jobType;
+        const existing = prisma.jobs.find(
+          (j) => j.shopId === key.shopId && j.jobType === key.jobType,
+        );
+        if (existing) {
+          Object.assign(existing, update);
+          return existing;
+        }
+        const row = { id: `job-${prisma.jobs.length + 1}`, ...create, createdAt: new Date() };
+        prisma.jobs.push(row);
+        return row;
+      },
+      update: async ({ where, data }) => {
+        const row = prisma.jobs.find((j) => j.id === where.id);
+        if (row) Object.assign(row, data);
+        return row ?? null;
+      },
+    },
     merchantAction: {
       create: async ({ data }) => {
         const row = {

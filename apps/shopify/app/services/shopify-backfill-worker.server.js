@@ -49,6 +49,10 @@ import {
   runAgenticRecommendationInvestigation,
 } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
+import { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX } from "../lib/shopify/agentic-runtime/execution-job.server.js";
+import { runAgenticShopifyExecution } from "../lib/shopify/agentic-runtime/execution-agent.server.js";
+import { getActionRevisionState } from "../lib/shopify/api/gateway.server.js";
+import { createLlmProvider } from "../lib/llm/provider.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
 import {
   newCorrelationId,
@@ -691,6 +695,12 @@ async function runBackfillJob(prisma, job, options) {
     fullBackfillEpoch: stringValue(payload.fullBackfillEpoch),
   };
 
+  // Handle agentic execution jobs before the switch — jobType includes actionId so
+  // it cannot be an exact case label.
+  if (job.jobType.startsWith(AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX + ":")) {
+    return runAgenticExecutionBackfillJob(prisma, job, options);
+  }
+
   switch (job.jobType) {
     case MERCHANT_BOOTSTRAP_JOB_TYPE:
       return runMerchantMemoryBootstrap(prisma, {
@@ -803,6 +813,181 @@ async function runBackfillJob(prisma, job, options) {
     default:
       return {};
   }
+}
+
+/**
+ * Execute one agentic Shopify execution job from the backfill queue.
+ * Loads the action, validates the revision is still current, loads a fresh
+ * offline token, creates the LLM provider and Shopify client, then delegates
+ * to `runAgenticShopifyExecution`. Persists the result into
+ * `MerchantAction.progress.agentic.executionJob`.
+ *
+ * maxAttempts is effectively 2 (one crash recovery) — agentic execution
+ * completes in 1-5 minutes in practice, and the 15-minute stale-job timeout
+ * in recoverStaleRunningBackfillJobs is acceptable.
+ *
+ * @param {any} prisma
+ * @param {any} job
+ * @param {any} options
+ */
+async function runAgenticExecutionBackfillJob(prisma, job, options) {
+  const logger = options.logger ?? console;
+  const payload = job.payloadJson && typeof job.payloadJson === "object" ? job.payloadJson : {};
+  const actionId = String(payload.actionId ?? "");
+  const acceptedRevision = String(payload.acceptedRevision ?? "");
+  const shopDomain = job.shop.shopDomain;
+  const merchantId = job.merchantId;
+  const shopId = job.shopId;
+  const scopes = Array.isArray(payload.scopes) ? payload.scopes : [];
+
+  if (!actionId) {
+    return { status: "cancelled_missing_action_id" };
+  }
+
+  const action = await prisma.merchantAction.findFirst({
+    where: { id: actionId, merchantId, shopId },
+  });
+  if (!action) {
+    return { status: "cancelled_action_not_found" };
+  }
+
+  // Guard: if the action's accepted revision no longer matches, skip execution.
+  // Re-read the live job payload so we don't miss a pendingAcceptedRevision
+  // written while we were waiting to be scheduled.
+  const revisionState = getActionRevisionState(action);
+  if (revisionState.acceptedActionRevision !== acceptedRevision) {
+    const liveJob = await prisma.backfillJob.findUnique({ where: { id: job.id } });
+    const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
+    const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
+    if (pendingRevision && pendingRevision === revisionState.acceptedActionRevision) {
+      logger.info("agentic execution job: stale at entry, re-queuing for pending revision", {
+        merchantId, shopId, actionId,
+        staleRevision: acceptedRevision,
+        pendingRevision,
+      });
+      await prisma.backfillJob.update({
+        where: { id: job.id },
+        data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
+      });
+      return { requeue: true, status: "requeued_for_pending_revision" };
+    }
+    logger.info("agentic execution job skipped — stale revision", {
+      merchantId,
+      shopId,
+      actionId,
+      jobAcceptedRevision: acceptedRevision,
+      currentAcceptedRevision: revisionState.acceptedActionRevision,
+    });
+    return { status: "cancelled_stale_revision" };
+  }
+
+  const accessToken = await (options.loadOfflineToken ?? loadFreshOfflineToken)(shopDomain);
+  if (!accessToken) {
+    return { status: "failed_missing_access_token" };
+  }
+
+  const provider = createLlmProvider({
+    logger,
+    usage: {
+      prisma,
+      merchantId,
+      shopId,
+      feature: "agentic_shopify_execution",
+      runType: "MerchantAction",
+      runId: actionId,
+    },
+  });
+
+  const client = new ShopifyAdminGraphqlClient({
+    shopDomain,
+    accessToken,
+    fetchImpl: options.fetchImpl,
+    logger,
+  });
+
+  const result = await runAgenticShopifyExecution({
+    provider,
+    prisma,
+    client,
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId,
+    action,
+    grantedScopes: scopes.length ? scopes : undefined,
+    logger,
+  });
+
+  // Persist execution result into MerchantAction.progress.agentic.executionJob
+  try {
+    const freshAction = await prisma.merchantAction.findFirst({
+      where: { id: actionId, merchantId, shopId },
+    });
+    if (freshAction) {
+      const progress = freshAction.progress && typeof freshAction.progress === "object" ? freshAction.progress : {};
+      const agentic = progress.agentic && typeof progress.agentic === "object" ? progress.agentic : {};
+      const prevExecutionJob = agentic.executionJob && typeof agentic.executionJob === "object" ? agentic.executionJob : {};
+      await prisma.merchantAction.update({
+        where: { id: actionId },
+        data: {
+          progress: {
+            ...progress,
+            agentic: {
+              ...agentic,
+              executionJob: {
+                ...prevExecutionJob,
+                acceptedRevision,
+                jobStatus: result.ok ? "succeeded" : "failed",
+                ok: result.ok,
+                status: result.status,
+                blocker: result.blocker ?? null,
+                completedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+            },
+          },
+        },
+      });
+    }
+  } catch (error) {
+    logger.warn("agentic execution job: could not persist result to MerchantAction", {
+      merchantId,
+      shopId,
+      actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+
+  // If a new revision was accepted while we were running, re-queue for it rather
+  // than terminating. The generic CAS will set status="queued" (requeue:true) and
+  // leave payloadJson as we've updated it, so the next poll runs rev_B directly.
+  // This prevents the race where an in-flight rev_A worker resets a multi-process
+  // rev_B job's status via the shared CAS.
+  try {
+    const jobType = `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`;
+    const liveJob = await prisma.backfillJob.findUnique({
+      where: { shopId_jobType: { shopId, jobType } },
+    });
+    const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
+    const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
+    if (pendingRevision) {
+      logger.info("agentic execution job: re-queuing for pending revision after completion", {
+        merchantId, shopId, actionId, completedRevision: acceptedRevision, pendingRevision,
+      });
+      await prisma.backfillJob.update({
+        where: { id: job.id },
+        data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
+      });
+      return { requeue: true, status: "requeued_for_pending_revision", completedResult: result };
+    }
+  } catch (error) {
+    logger.warn("agentic execution job: could not check for pending revision", {
+      merchantId, shopId, actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+
+  return result;
 }
 
 /**
