@@ -2216,11 +2216,17 @@ export default function AppIndex() {
     data.appMode === "onboarding" &&
     data.activeStep === "plan" &&
     shouldPollMerchantPlan(data.plan);
+  // Poll while a home-triggered proposal generation job is running so the
+  // merchant sees the result (or a clear terminal message) without a manual refresh.
+  const shouldPollHomeProposal =
+    data.appMode === "daily" &&
+    data.homeProposalGeneration?.isGenerating === true;
 
   useConnectStatusPolling(shouldPollConnect);
   useConnectStatusPolling(shouldPollInsights);
   useConnectStatusPolling(shouldPollGoals);
   useConnectStatusPolling(shouldPollPlan);
+  useConnectStatusPolling(shouldPollHomeProposal);
 
   // Overlay params (move zoom / action chooser) drop on a fresh document load because
   // App Bridge restores the last URL. Conversation is a destination, not an overlay:

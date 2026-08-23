@@ -103,11 +103,19 @@ export async function isHomeProposalGenerationInFlight(prisma, { merchantId, sho
   return count > 0;
 }
 
+/** Terminal run statuses that end generation without a proposed action. */
+const TERMINAL_NON_PROPOSAL_STATUSES = [
+  "no_actionable_opportunity",
+  PLAN_RUN_STATUS.failed,
+  PLAN_RUN_STATUS.insufficientData,
+  PLAN_RUN_STATUS.modelDisabled,
+];
+
 /**
  * Loader-facing state for the Reading your store card.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
- * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean } | null>}
+ * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean; terminalStatus: string | null } | null>}
  */
 export async function getHomeProposalGenerationState(
   prisma,
@@ -151,6 +159,25 @@ export async function getHomeProposalGenerationState(
     reason = "generating";
   }
 
+  // When idle (no proposed action, not generating, under the cap), surface the
+  // most recent run's terminal status so the UI can explain why the last attempt
+  // produced no proposal instead of silently resetting to the default copy.
+  let terminalStatus = null;
+  if (canGenerate && !generating && !proposedExists) {
+    try {
+      const lastRun = await prisma.merchantPlanRun.findFirst({
+        where: { merchantId, shopId, sourceMode: HOME_PROPOSAL_SOURCE_MODE },
+        orderBy: { updatedAt: "desc" },
+        select: { status: true },
+      });
+      if (lastRun && TERMINAL_NON_PROPOSAL_STATUSES.includes(lastRun.status)) {
+        terminalStatus = lastRun.status;
+      }
+    } catch {
+      // Terminal status is best-effort; do not block generation eligibility on a read error.
+    }
+  }
+
   return {
     canGenerate,
     reason,
@@ -159,6 +186,7 @@ export async function getHomeProposalGenerationState(
     cap: budget.cap,
     isGenerating: generating,
     hasPriorProposal: priorCount > 0 || budget.used > 0,
+    terminalStatus,
   };
 }
 

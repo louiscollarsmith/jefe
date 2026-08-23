@@ -296,3 +296,104 @@ test("isHomeProposalGenerationInFlight detects queued home runs", async () => {
     true,
   );
 });
+
+test("getHomeProposalGenerationState: surfaces no_actionable_opportunity terminal state", async () => {
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ status: "no_actionable_opportunity" }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, true);
+  assert.equal(state?.isGenerating, false);
+  assert.equal(state?.terminalStatus, "no_actionable_opportunity");
+});
+
+test("getHomeProposalGenerationState: surfaces failed terminal state", async () => {
+  const prisma = {
+    merchantPlanRun: {
+      count: async () => 0,
+      findFirst: async () => ({ status: "failed" }),
+    },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, true);
+  assert.equal(state?.terminalStatus, "failed");
+});
+
+test("getHomeProposalGenerationState: no terminal status when proposed action exists", async () => {
+  const prisma = {
+    merchantPlanRun: { count: async () => 0 },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => true,
+      inFlight: async () => false,
+    },
+  });
+  assert.equal(state?.canGenerate, false);
+  assert.equal(state?.reason, "proposed_exists");
+  assert.equal(state?.terminalStatus, null);
+});
+
+test("getHomeProposalGenerationState: no terminal status when generating", async () => {
+  const prisma = {
+    merchantPlanRun: { count: async () => 0 },
+  };
+  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => true,
+    },
+  });
+  assert.equal(state?.isGenerating, true);
+  assert.equal(state?.terminalStatus, null);
+});
+
+test("requestHomeProposalGeneration: passes sourceMode: home to ensureQueued", async () => {
+  const calls = [];
+  const result = await requestHomeProposalGeneration(/** @type {any} */ ({ $transaction: (fn) => fn({}) }), {
+    merchantId: "m1",
+    shopId: "s1",
+    now: new Date("2026-08-23T09:00:00Z"),
+    deps: {
+      count: async () => 0,
+      hasProposed: async () => false,
+      inFlight: async () => false,
+    },
+    ensureQueued: async (_p, input) => {
+      calls.push(input);
+      return { status: "queued" };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].sourceMode, HOME_PROPOSAL_SOURCE_MODE);
+  assert.equal(calls[0].resetAttempts, true);
+});
