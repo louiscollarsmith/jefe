@@ -49,8 +49,20 @@ import {
   runAgenticRecommendationInvestigation,
 } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
-import { AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX } from "../lib/shopify/agentic-runtime/execution-job.server.js";
+import {
+  AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
+  AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX,
+  MAX_VERIFICATION_RETRIES,
+  markAgenticExecutionStarted,
+  agenticVerificationJobType,
+  enqueueAgenticVerificationRetryJob,
+} from "../lib/shopify/agentic-runtime/execution-job.server.js";
 import { runAgenticShopifyExecution } from "../lib/shopify/agentic-runtime/execution-agent.server.js";
+import { runAgenticShopifyVerification } from "../lib/shopify/agentic-runtime/verification-agent.server.js";
+import {
+  markActionExecutionOutcome,
+  markExecutionPhase,
+} from "../lib/shopify/agentic-runtime/execution-agent.server.js";
 import { getActionRevisionState } from "../lib/shopify/api/gateway.server.js";
 import { createLlmProvider } from "../lib/llm/provider.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
@@ -695,10 +707,12 @@ async function runBackfillJob(prisma, job, options) {
     fullBackfillEpoch: stringValue(payload.fullBackfillEpoch),
   };
 
-  // Handle agentic execution jobs before the switch — jobType includes actionId so
-  // it cannot be an exact case label.
+  // Handle agentic jobs before the switch — jobType includes actionId.
   if (job.jobType.startsWith(AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX + ":")) {
     return runAgenticExecutionBackfillJob(prisma, job, options);
+  }
+  if (job.jobType.startsWith(AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX + ":")) {
+    return runAgenticVerificationBackfillJob(prisma, job, options);
   }
 
   switch (job.jobType) {
@@ -905,7 +919,38 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     logger,
   });
 
-  const result = await runAgenticShopifyExecution({
+  // Crash-safety: if the action is already in "verifying" or "verification_incomplete"
+  // phase (written by a previous worker that crashed after mutations), skip the mutation
+  // phase entirely and jump directly to inline verification. This guarantees mutations
+  // are never replayed from persisted evidence alone.
+  const currentProgress = action.progress && typeof action.progress === "object" ? action.progress : {};
+  const currentAgentic = currentProgress.agentic && typeof currentProgress.agentic === "object" ? currentProgress.agentic : {};
+  const currentExecutionJob = currentAgentic.executionJob && typeof currentAgentic.executionJob === "object" ? currentAgentic.executionJob : {};
+  const currentPhase = String(currentExecutionJob.phase ?? "");
+  if (currentPhase === "verifying" || currentPhase === "verification_incomplete") {
+    logger.info("agentic execution job: mutation phase already complete, resuming verification", {
+      merchantId, shopId, actionId, currentPhase,
+    });
+    return runInlineVerification(prisma, job, {
+      provider, client, logger, merchantId, shopId, shopDomain, actionId, acceptedRevision, scopes,
+      verificationRetryCount: 0,
+    });
+  }
+
+  // Mark as executing before handing off to the LLM loop so the workspace
+  // reflects "Jefe working" while the job runs.
+  try {
+    await markAgenticExecutionStarted(prisma, { merchantId, shopId, actionId });
+  } catch (error) {
+    logger.warn("agentic execution job: could not mark execution started", {
+      merchantId, shopId, actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+
+  // Run the mutation-only phase. Returns WRITES_COMPLETE when done (phase already
+  // written to "verifying" by the agent), or BLOCKED/NEEDS_ACTION_REPLAN/etc. on failure.
+  const mutationResult = await runAgenticShopifyExecution({
     provider,
     prisma,
     client,
@@ -918,15 +963,49 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     logger,
   });
 
-  // Persist execution result into MerchantAction.progress.agentic.executionJob
-  try {
-    const freshAction = await prisma.merchantAction.findFirst({
-      where: { id: actionId, merchantId, shopId },
+  // If writes occurred (WRITES_COMPLETE or ITERATION_LIMIT_AFTER_WRITES), run
+  // verification inline. Phase is already "verifying" or "verification_incomplete"
+  // from the mutation agent, so a crash here is safe to recover via phase check above.
+  if (mutationResult.ok || mutationResult.blocker === "ITERATION_LIMIT_AFTER_WRITES") {
+    const verResult = await runInlineVerification(prisma, job, {
+      provider, client, logger, merchantId, shopId, shopDomain, actionId, acceptedRevision, scopes,
+      verificationRetryCount: 0,
     });
+
+    // After verification, check for pending revision re-queue (same as before).
+    try {
+      const jobType = `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`;
+      const liveJob = await prisma.backfillJob.findUnique({
+        where: { shopId_jobType: { shopId, jobType } },
+      });
+      const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
+      const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
+      if (pendingRevision) {
+        logger.info("agentic execution job: re-queuing for pending revision after verification", {
+          merchantId, shopId, actionId, completedRevision: acceptedRevision, pendingRevision,
+        });
+        await prisma.backfillJob.update({
+          where: { id: job.id },
+          data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
+        });
+        return { requeue: true, status: "requeued_for_pending_revision", completedResult: verResult };
+      }
+    } catch (error) {
+      logger.warn("agentic execution job: could not check for pending revision", {
+        merchantId, shopId, actionId,
+        error: error instanceof Error ? error.message : "UnknownError",
+      });
+    }
+    return verResult;
+  }
+
+  // Mutation phase failed without writing to Shopify. Persist final job state.
+  try {
+    const freshAction = await prisma.merchantAction.findFirst({ where: { id: actionId, merchantId, shopId } });
     if (freshAction) {
       const progress = freshAction.progress && typeof freshAction.progress === "object" ? freshAction.progress : {};
       const agentic = progress.agentic && typeof progress.agentic === "object" ? progress.agentic : {};
-      const prevExecutionJob = agentic.executionJob && typeof agentic.executionJob === "object" ? agentic.executionJob : {};
+      const prevJob = agentic.executionJob && typeof agentic.executionJob === "object" ? agentic.executionJob : {};
       await prisma.merchantAction.update({
         where: { id: actionId },
         data: {
@@ -935,12 +1014,13 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
             agentic: {
               ...agentic,
               executionJob: {
-                ...prevExecutionJob,
+                ...prevJob,
                 acceptedRevision,
-                jobStatus: result.ok ? "succeeded" : "failed",
-                ok: result.ok,
-                status: result.status,
-                blocker: result.blocker ?? null,
+                phase: "failed",
+                jobStatus: "failed",
+                ok: false,
+                status: mutationResult.status,
+                blocker: mutationResult.blocker ?? null,
                 completedAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               },
@@ -950,19 +1030,13 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
       });
     }
   } catch (error) {
-    logger.warn("agentic execution job: could not persist result to MerchantAction", {
-      merchantId,
-      shopId,
-      actionId,
+    logger.warn("agentic execution job: could not persist failure to MerchantAction", {
+      merchantId, shopId, actionId,
       error: error instanceof Error ? error.message : "UnknownError",
     });
   }
 
-  // If a new revision was accepted while we were running, re-queue for it rather
-  // than terminating. The generic CAS will set status="queued" (requeue:true) and
-  // leave payloadJson as we've updated it, so the next poll runs rev_B directly.
-  // This prevents the race where an in-flight rev_A worker resets a multi-process
-  // rev_B job's status via the shared CAS.
+  // Check pending revision re-queue even on mutation failure.
   try {
     const jobType = `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`;
     const liveJob = await prisma.backfillJob.findUnique({
@@ -971,14 +1045,14 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     const livePayload = liveJob?.payloadJson && typeof liveJob.payloadJson === "object" ? liveJob.payloadJson : {};
     const pendingRevision = livePayload.pendingAcceptedRevision ?? null;
     if (pendingRevision) {
-      logger.info("agentic execution job: re-queuing for pending revision after completion", {
+      logger.info("agentic execution job: re-queuing for pending revision after mutation failure", {
         merchantId, shopId, actionId, completedRevision: acceptedRevision, pendingRevision,
       });
       await prisma.backfillJob.update({
         where: { id: job.id },
         data: { payloadJson: { ...livePayload, acceptedRevision: pendingRevision, pendingAcceptedRevision: null } },
       });
-      return { requeue: true, status: "requeued_for_pending_revision", completedResult: result };
+      return { requeue: true, status: "requeued_for_pending_revision", completedResult: mutationResult };
     }
   } catch (error) {
     logger.warn("agentic execution job: could not check for pending revision", {
@@ -987,7 +1061,194 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     });
   }
 
-  return result;
+  return mutationResult;
+}
+
+/**
+ * Run the read-only verification phase inline. Called both from the execution job
+ * (after WRITES_COMPLETE) and from the standalone verification retry job.
+ *
+ * If verification hits its iteration budget, enqueues a verification retry job
+ * (separate job type, bounded to MAX_VERIFICATION_RETRIES) and returns. If max
+ * retries are exhausted, marks the action as needs_attention.
+ *
+ * Write safety: `runAgenticShopifyVerification` uses `verificationMode: true`
+ * throughout, so the Shopify gateway rejects mutations at the tool layer.
+ *
+ * @param {any} prisma
+ * @param {any} job
+ * @param {{
+ *   provider: any;
+ *   client: any;
+ *   logger: any;
+ *   merchantId: string;
+ *   shopId: string;
+ *   shopDomain: string;
+ *   actionId: string;
+ *   acceptedRevision: string;
+ *   scopes: string[];
+ *   verificationRetryCount: number;
+ * }} ctx
+ */
+async function runInlineVerification(prisma, job, ctx) {
+  const { provider, client, logger, merchantId, shopId, shopDomain, actionId, acceptedRevision, scopes } = ctx;
+
+  // Ensure phase is "verifying" before running verification (idempotent if already set).
+  try {
+    await markExecutionPhase(prisma, { actionId, merchantId, shopId }, "verifying");
+  } catch {
+    // best-effort
+  }
+
+  const verResult = await runAgenticShopifyVerification({
+    provider,
+    prisma,
+    client,
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId,
+    acceptedRevision,
+    grantedScopes: scopes.length ? scopes : undefined,
+    logger,
+  });
+
+  if (verResult.ok) {
+    // action.status = "completed" already written by the verification agent.
+    return { ok: true, status: "OUTCOME_ACHIEVED", ...verResult };
+  }
+
+  if (verResult.status === "VERIFICATION_MISMATCH") {
+    // action.status = "needs_attention" already written by the verification agent.
+    return verResult;
+  }
+
+  // Verification budget exhausted (VERIFICATION_ITERATION_LIMIT) or blocked.
+  // verificationExhausted is used by the workspace to decide label.
+  const retryCount = ctx.verificationRetryCount + 1;
+  if (retryCount <= MAX_VERIFICATION_RETRIES) {
+    logger.info("agentic verification: budget exhausted, scheduling retry", {
+      merchantId, shopId, actionId, retryCount, maxRetries: MAX_VERIFICATION_RETRIES,
+    });
+    try {
+      await enqueueAgenticVerificationRetryJob(prisma, {
+        merchantId,
+        shopId,
+        actionId,
+        acceptedRevision,
+        shopDomain,
+        scopes,
+        verificationRetryCount: retryCount,
+      });
+    } catch (error) {
+      logger.warn("agentic verification: could not enqueue retry job", {
+        merchantId, shopId, actionId,
+        error: error instanceof Error ? error.message : "UnknownError",
+      });
+    }
+    return { ok: false, status: "BLOCKED", blocker: "VERIFICATION_ITERATION_LIMIT", verificationRetryCount: retryCount };
+  }
+
+  // Retries exhausted — action genuinely needs attention.
+  logger.info("agentic verification: max retries exhausted", {
+    merchantId, shopId, actionId, retryCount: ctx.verificationRetryCount,
+  });
+  try {
+    await markActionExecutionOutcome(prisma, { actionId, merchantId, shopId }, {
+      status: "needs_attention",
+      executionPhase: "needs_attention",
+      outcome: {
+        writesOccurred: true,
+        verificationIncomplete: true,
+        verificationExhausted: true,
+        blocker: "VERIFICATION_RETRIES_EXHAUSTED",
+        progressSummary: "Shopify changes were applied. Verification could not complete within the retry budget.",
+      },
+    });
+  } catch (error) {
+    logger.warn("agentic verification: could not mark exhaustion outcome", {
+      merchantId, shopId, actionId,
+      error: error instanceof Error ? error.message : "UnknownError",
+    });
+  }
+  // Also set verificationExhausted in executionJob progress so the workspace can
+  // distinguish "still retrying" from "merchant action required".
+  try {
+    const freshAction = await prisma.merchantAction.findFirst({ where: { id: actionId, merchantId, shopId } });
+    if (freshAction) {
+      const progress = freshAction.progress && typeof freshAction.progress === "object" ? freshAction.progress : {};
+      const agentic = progress.agentic && typeof progress.agentic === "object" ? progress.agentic : {};
+      const prevJob = agentic.executionJob && typeof agentic.executionJob === "object" ? agentic.executionJob : {};
+      await prisma.merchantAction.update({
+        where: { id: actionId },
+        data: {
+          progress: {
+            ...progress,
+            agentic: {
+              ...agentic,
+              executionJob: {
+                ...prevJob,
+                verificationExhausted: true,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+          },
+        },
+      });
+    }
+  } catch {
+    // best-effort
+  }
+
+  return { ok: false, status: "BLOCKED", blocker: "VERIFICATION_RETRIES_EXHAUSTED" };
+}
+
+/**
+ * Handle a standalone verification-retry job (job type: agentic_shopify_verify:{actionId}).
+ * Runs the verification-only path with write capability blocked at the tool layer.
+ *
+ * @param {any} prisma
+ * @param {any} job
+ * @param {any} options
+ */
+async function runAgenticVerificationBackfillJob(prisma, job, options) {
+  const logger = options.logger ?? console;
+  const payload = job.payloadJson && typeof job.payloadJson === "object" ? job.payloadJson : {};
+  const actionId = String(payload.actionId ?? "");
+  const acceptedRevision = String(payload.acceptedRevision ?? "");
+  const shopDomain = job.shop.shopDomain;
+  const merchantId = job.merchantId;
+  const shopId = job.shopId;
+  const scopes = Array.isArray(payload.scopes) ? payload.scopes : [];
+  const verificationRetryCount = Number(payload.verificationRetryCount ?? 1);
+
+  if (!actionId) return { status: "cancelled_missing_action_id" };
+
+  const action = await prisma.merchantAction.findFirst({
+    where: { id: actionId, merchantId, shopId },
+  });
+  if (!action) return { status: "cancelled_action_not_found" };
+
+  if (String(action.status) === "completed") {
+    logger.info("agentic verification job: action already completed, skipping", { merchantId, shopId, actionId });
+    return { status: "already_completed" };
+  }
+
+  const accessToken = await (options.loadOfflineToken ?? loadFreshOfflineToken)(shopDomain);
+  if (!accessToken) return { status: "failed_missing_access_token" };
+
+  const provider = createLlmProvider({
+    logger,
+    usage: { prisma, merchantId, shopId, feature: "agentic_shopify_verification", runType: "MerchantAction", runId: actionId },
+  });
+  const client = new ShopifyAdminGraphqlClient({
+    shopDomain, accessToken, fetchImpl: options.fetchImpl, logger,
+  });
+
+  return runInlineVerification(prisma, job, {
+    provider, client, logger, merchantId, shopId, shopDomain, actionId, acceptedRevision, scopes,
+    verificationRetryCount,
+  });
 }
 
 /**

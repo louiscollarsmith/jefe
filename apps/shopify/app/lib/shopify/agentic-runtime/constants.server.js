@@ -13,6 +13,9 @@ export const AGENTIC_RECOMMENDATION_SCHEMA_VERSION =
   "agentic-recommendation-schema-v4";
 
 // Prefix for per-action durable execution jobs stored in the BackfillJob table.
-// The full jobType is `${AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX}:${actionId}`,
-// which satisfies the @@unique([shopId, jobType]) constraint giving one-job-per-action.
+// The full jobType is `${PREFIX}:${actionId}`, satisfying @@unique([shopId, jobType]).
 export const AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX = "agentic_shopify_execute";
+
+// Prefix for verification-only retry jobs. These are separate job entries so the
+// execution job can be marked succeeded while verification retries are still pending.
+export const AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX = "agentic_shopify_verify";

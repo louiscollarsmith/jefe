@@ -797,12 +797,15 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
   });
 
   assert.equal(execution.ok, true);
-  assert.equal(execution.status, "OUTCOME_ACHIEVED");
+  // Mutation phase returns WRITES_COMPLETE (OUTCOME_ACHIEVED is treated as backward-compat alias)
+  assert.equal(execution.status, "WRITES_COMPLETE");
   const operationNames = prisma.operationCalls.map((row) => row.operationName);
   assert.ok(operationNames.includes("collectionCreate"));
   assert.ok(operationNames.includes("collectionAddProducts"));
   assert.ok(operationNames.includes("collection"));
-  assert.equal(prisma.actions[0].status, "completed");
+  // Action stays "accepted" after mutation phase; "completed" requires successful verification phase
+  assert.equal(prisma.actions[0].status, "accepted");
+  assert.equal(prisma.actions[0].progress.agentic.executionJob.phase, "verifying");
   assert.equal(provider.calls[0].acceptedAction.outcome, "Make London fast-delivery products easier to discover.");
   assert.equal(provider.calls[0].acceptedAction.scope, "Products tagged london-delivery.");
 });
@@ -929,7 +932,8 @@ test("a second unrelated semantic Action can execute product metafield writes an
   });
 
   assert.equal(execution.ok, true);
-  assert.equal(execution.status, "OUTCOME_ACHIEVED");
+  // Mutation phase returns WRITES_COMPLETE (OUTCOME_ACHIEVED is treated as backward-compat alias)
+  assert.equal(execution.status, "WRITES_COMPLETE");
   const operationNames = prisma.operationCalls.map((row) => row.operationName);
   assert.ok(operationNames.includes("metafieldsSet"));
   assert.ok(operationNames.includes("product"));
@@ -938,9 +942,16 @@ test("a second unrelated semantic Action can execute product metafield writes an
     finalProductRead.facts.data.product.metafields.edges[0].node.value,
     "Spot clean only",
   );
+  // Action stays "accepted" after mutation; "completed" requires separate verification phase
+  assert.equal(prisma.actions[0].status, "accepted");
+  assert.equal(prisma.actions[0].progress.agentic.executionJob.phase, "verifying");
 });
 
-test("execution loop refuses completion when Luna skips provider-state verification", async () => {
+test("mutation phase accepts OUTCOME_ACHIEVED without a read-back; completion requires separate verification phase", async () => {
+  // This replaces the old "execution loop refuses completion when Luna skips provider-state verification" test.
+  // Under the new two-phase contract, the mutation loop no longer enforces read-after-write.
+  // OUTCOME_ACHIEVED in the mutation loop is treated as WRITES_COMPLETE (backward compat).
+  // The verification phase is where Shopify state is confirmed — a separate read-only runtime.
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -964,8 +975,6 @@ test("execution loop refuses completion when Luna skips provider-state verificat
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
   const provider = scriptedProvider((payload) => {
-    const validation = payload.toolResults?.find((row) => row.tool === "execution_validation");
-    if (validation) return { status: "BLOCKED", blocker: validation.error.message };
     if (payload.iteration === 0) {
       return {
         status: "CONTINUE",
@@ -983,6 +992,7 @@ test("execution loop refuses completion when Luna skips provider-state verificat
         ],
       };
     }
+    // Signal OUTCOME_ACHIEVED without a read — accepted by mutation phase as WRITES_COMPLETE
     return {
       status: "OUTCOME_ACHIEVED",
       verification: { verified: true, evidence: ["Mutation returned a collection."], remaining: [] },
@@ -1002,9 +1012,14 @@ test("execution loop refuses completion when Luna skips provider-state verificat
     maxIterations: 4,
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.status, "BLOCKED");
-  assert.match(result.blocker, /Read Shopify state/);
+  // Mutation loop accepts OUTCOME_ACHIEVED (treated as WRITES_COMPLETE); read-back is verification's job
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "WRITES_COMPLETE");
+  assert.equal(result.wroteToShopify, true);
+
+  // Action stays "accepted" — completion only happens after successful verification
+  assert.equal(prisma.actions[0].status, "accepted");
+  assert.equal(prisma.actions[0].progress.agentic.executionJob.phase, "verifying");
 });
 
 function recommendationSnapshot() {

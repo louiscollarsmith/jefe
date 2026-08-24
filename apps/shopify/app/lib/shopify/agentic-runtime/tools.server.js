@@ -64,6 +64,7 @@ export const SHOPIFY_AGENT_TOOL_CALL_SCHEMA = {
  *   catalog?: import("../api/catalog.server.js").ShopifyApiCatalog;
  *   recommendationMode?: boolean;
  *   preAcceptanceMode?: boolean;
+ *   verificationMode?: boolean;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  * }} ctx
  * @param {{ tool: string; arguments?: Record<string, any> | null }} call
@@ -77,12 +78,16 @@ export async function runShopifyAgentTool(ctx, call) {
   if (call.tool === SHOPIFY_AGENT_TOOL.retrieveOperations) {
     const query = String(args.query ?? "").trim();
     if (!query) return toolFail(call.tool, "MISSING_QUERY", "query is required.");
+    // In verification mode, restrict retrieval to read operations only so the LLM
+    // never receives mutation stubs it could attempt to invoke.
+    const operationKind = ctx.verificationMode
+      ? "QUERY"
+      : args.operationKind === "QUERY" || args.operationKind === "MUTATION"
+        ? args.operationKind
+        : undefined;
     const results = retrieveShopifyApiOperations(query, {
       catalog: ctx.catalog,
-      operationKind:
-        args.operationKind === "QUERY" || args.operationKind === "MUTATION"
-          ? args.operationKind
-          : undefined,
+      operationKind,
       limit: boundedLimit(args.limit),
     });
     return {
@@ -96,6 +101,13 @@ export async function runShopifyAgentTool(ctx, call) {
   if (call.tool === SHOPIFY_AGENT_TOOL.callOperation) {
     const operation = String(args.operation ?? "").trim();
     if (!operation) return toolFail(call.tool, "MISSING_OPERATION", "operation is required.");
+    if (ctx.verificationMode && !operationLooksRead(operation)) {
+      return toolFail(
+        call.tool,
+        "VERIFICATION_WRITE_DENIED",
+        "Verification may not issue Shopify mutations. The mutation phase is closed; use reads to confirm state.",
+      );
+    }
     if (ctx.recommendationMode && !operationLooksRead(operation)) {
       return toolFail(
         call.tool,

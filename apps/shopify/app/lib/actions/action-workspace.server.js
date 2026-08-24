@@ -60,6 +60,7 @@ const RESTOCK_EVIDENCE_REFS = new Set(["assist:inventory_review"]);
  *   workState?: string | null;
  *   artifact?: any;
  *   orderIndex?: number | null;
+ *   isMilestone?: boolean;
  * }} WorkspaceItem
  */
 
@@ -355,6 +356,7 @@ export function workspacePlanItems(workspace) {
       progress: item.artifact ?? {},
       attention: {},
       orderIndex: item.orderIndex ?? index,
+      isMilestone: item.isMilestone ?? true,
     }));
 }
 
@@ -585,7 +587,7 @@ function refreshWorkspaceItem(item, input) {
     state,
     workState: workState ?? item.workState ?? null,
     statusLabel:
-      state === "planned" && item.statusLabel
+      item.statusLabel != null && state === item.state
         ? item.statusLabel
         : stateLabel({ ...item, state }),
     artifact,
@@ -853,6 +855,44 @@ function agenticWorkspaceItems(action, semanticAction, source) {
     countArray(semanticAction?.supportingInsightIds) +
     countArray(source?.supportingBeliefIds) +
     countArray(source?.supportingInsightIds);
+
+  const accepted = Boolean(acceptedAgenticRevision(action));
+  const actionCompleted = String(action?.status ?? "") === "completed";
+  const actionNeedsAttention = String(action?.status ?? "") === "needs_attention";
+  const executionJob = jsonObject(jsonObject(action?.progress)?.agentic)?.executionJob ?? {};
+  const executionPhase = String(executionJob.phase ?? "");
+
+  // Derive the state and label for the execution step from canonical phase
+  let executeState;
+  let executeLabel;
+  if (actionCompleted) {
+    executeState = "completed";
+    executeLabel = null;
+  } else if (executionPhase === "verifying") {
+    executeState = "running";
+    executeLabel = "Verifying";
+  } else if (executionPhase === "executing") {
+    executeState = "running";
+    executeLabel = "Jefe working";
+  } else if (executionPhase === "verification_incomplete") {
+    // Auto-recovery is scheduled unless verificationExhausted is set (after max retries).
+    const exhausted = executionJob.verificationExhausted === true;
+    executeState = exhausted ? "needs_attention" : "running";
+    executeLabel = exhausted ? "Needs attention" : "Verifying";
+  } else if (actionNeedsAttention) {
+    executeState = "needs_attention";
+    executeLabel = "Needs attention";
+  } else if (accepted) {
+    executeState = "ready";
+    executeLabel = "Ready";
+  } else {
+    executeState = "planned";
+    executeLabel = "After acceptance";
+  }
+
+  // Pre-execution items are "done" once accepted (scope, criteria, constraints all agreed)
+  const preItemState = actionCompleted ? "completed" : accepted ? "completed" : "planned";
+
   /** @type {WorkspaceItem[]} */
   const items = [
     {
@@ -864,10 +904,11 @@ function agenticWorkspaceItems(action, semanticAction, source) {
         safeText(action?.summary ?? source?.summary, 260) ||
         "Review the evidence behind this recommendation.",
       kind: WORKSPACE_ITEM_KIND.evidence,
-      state: "planned",
-      statusLabel: "Ready to discuss",
+      state: preItemState,
+      statusLabel: null,
       showInPlan: true,
       orderIndex: 0,
+      isMilestone: false,
       artifact: {
         recommendationId: action?.sourceRecommendationId ?? source?.id ?? null,
         evidenceCount,
@@ -881,10 +922,11 @@ function agenticWorkspaceItems(action, semanticAction, source) {
         scope.summary ||
         "Confirm the products, collections or store resources this Action may affect.",
       kind: WORKSPACE_ITEM_KIND.decision,
-      state: "planned",
-      statusLabel: "Known candidate scope",
+      state: preItemState,
+      statusLabel: null,
       showInPlan: true,
       orderIndex: 1,
+      isMilestone: true,
       artifact: scope,
     },
   ];
@@ -895,14 +937,16 @@ function agenticWorkspaceItems(action, semanticAction, source) {
       title: "Who qualifies",
       description: eligibility.map((row) => row.label).join("; ").slice(0, 260),
       kind: WORKSPACE_ITEM_KIND.decision,
-      state: "planned",
-      statusLabel: "Eligibility",
+      state: preItemState,
+      statusLabel: null,
       showInPlan: true,
       orderIndex: 1.5,
+      isMilestone: true,
       artifact: { eligibilityCriteria: eligibility },
     });
   }
-  items.push({
+  items.push(
+    {
       id: "agree_constraints",
       semanticKey: "agree_constraints",
       title: "Agree constraints",
@@ -911,10 +955,11 @@ function agenticWorkspaceItems(action, semanticAction, source) {
           ? constraints.map((row) => row.label).join("; ").slice(0, 260)
           : "Add or change any limits before Jefe executes.",
       kind: WORKSPACE_ITEM_KIND.decision,
-      state: "planned",
-      statusLabel: "Editable",
+      state: preItemState,
+      statusLabel: null,
       showInPlan: true,
       orderIndex: 2,
+      isMilestone: true,
       artifact: { constraints },
     },
     {
@@ -927,15 +972,17 @@ function agenticWorkspaceItems(action, semanticAction, source) {
           : safeText(semanticAction?.verificationPlan, 260) ||
             "After acceptance, Luna will choose Shopify reads and writes, then read Shopify back to verify the outcome.",
       kind: WORKSPACE_ITEM_KIND.execution,
-      state: acceptedAgenticRevision(action) ? "ready" : "planned",
-      statusLabel: acceptedAgenticRevision(action) ? "Ready" : "After acceptance",
+      state: executeState,
+      statusLabel: executeLabel,
       showInPlan: true,
       orderIndex: 3,
+      isMilestone: true,
       artifact: {
         materialExpectedEffects: effects,
         verificationPlan: semanticAction?.verificationPlan ?? null,
       },
-    });
+    },
+  );
   return items;
 }
 
