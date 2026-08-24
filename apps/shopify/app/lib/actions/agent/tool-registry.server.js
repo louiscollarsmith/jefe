@@ -602,6 +602,36 @@ const TOOLS = {
     },
   },
 
+  reject_action: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: "*",
+    description:
+      "Permanently reject this action and its underlying recommendation. Use when the merchant clearly does not want this done at all — 'don't do this', 'cancel this', 'I never want to do this', 'bin this idea', 'forget this recommendation'. Never writes to Shopify. Distinct from defer_action, which holds the action for later instead of rejecting it.",
+    args: {},
+    async run(/** @type {any} */ ctx) {
+      return ctx.runCommandWithDiff(
+        "reject_action",
+        ACTION_COMMAND.REJECT_ACTION,
+        {},
+      );
+    },
+  },
+
+  defer_action: {
+    effect: TOOL_EFFECT.stateChange,
+    kinds: "*",
+    description:
+      "Hold this action for later without rejecting it. Use for 'not now', 'maybe later', 'leave this for another time' — the merchant may still want this done eventually. Never writes to Shopify. Distinct from reject_action, which permanently declines the recommendation.",
+    args: {},
+    async run(/** @type {any} */ ctx) {
+      return ctx.runCommandWithDiff(
+        "defer_action",
+        ACTION_COMMAND.DEFER_ACTION,
+        {},
+      );
+    },
+  },
+
   skip_work: {
     effect: TOOL_EFFECT.stateChange,
     kinds: "*",

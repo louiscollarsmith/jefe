@@ -34,15 +34,18 @@ const EFFECTFUL = new Set([
  * @type {RegExp}
  */
 const BARE_SUCCESS =
-  /^(?:ok(?:ay)?|done|all done|updated|applied|built|changed|completed|complete|sorted|all set|got it|no problem)[.!\s—-]*$/i;
+  /^(?:ok(?:ay)?|done|all done|updated|applied|built|changed|completed|complete|sorted|all set|got it|no problem|cancelled|canceled|rejected|declined|deferred)[.!\s—-]*$/i;
 
 /**
  * Language that asserts work was performed. If the ledger does not support it,
- * the sentence does not ship.
+ * the sentence does not ship. This also covers lifecycle-ending claims —
+ * "cancelled", "rejected", "declined", "deferred" — so a model cannot narrate
+ * ending or holding an action unless a matching tool actually ran (see
+ * reject_action/defer_action in tool-registry.server.js).
  * @type {RegExp}
  */
 const SUCCESS_ASSERTION =
-  /\b(?:i(?:'ve| have)\s+(?:updated|changed|excluded|included|removed|added|applied|built|drafted|created|set|recalculated|rebuilt|done)|(?:^|\s)(?:done|updated|applied|built|changed|completed)\b|is now (?:excluded|included|set)|has been (?:updated|applied|changed|excluded|built))/i;
+  /\b(?:i(?:'ve| have)\s+(?:updated|changed|excluded|included|removed|added|applied|built|drafted|created|set|recalculated|rebuilt|done|cancelled|canceled|rejected|declined|deferred)|(?:^|\s)(?:done|updated|applied|built|changed|completed|cancelled|canceled|rejected|declined|deferred)\b|is now (?:excluded|included|set)|has been (?:updated|applied|changed|excluded|built|cancelled|canceled|rejected|declined|deferred))/i;
 
 /**
  * Split the ledger into the categories the contract cares about.

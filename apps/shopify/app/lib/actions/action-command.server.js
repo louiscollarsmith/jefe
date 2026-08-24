@@ -9,6 +9,7 @@
  */
 
 import { logger as baseLogger } from "../observability/logger.server.js";
+import { PLAN_REVIEW_STATUS } from "../merchant-plan/constants.js";
 import {
   acceptMerchantActionPlan,
   completeCurrentActionStep,
@@ -1977,13 +1978,23 @@ export async function deferMerchantAction(prisma, input) {
     action.sourceRecommendationId &&
     prisma.merchantPlanRecommendation?.updateMany
   ) {
+    // MerchantAction.status uses "declined"; the recommendation-level concept
+    // is the canonical PLAN_REVIEW_STATUS.rejected, which is what future plan
+    // generation's duplicate/history checks read (see candidates.server.js and
+    // schema.server.js#duplicatesPriorRecommendation). The two models are not
+    // required to share vocabulary — only "declined" writing "rejected" is.
+    const reviewStatus =
+      status === "declined" ? PLAN_REVIEW_STATUS.rejected : "deferred";
     await prisma.merchantPlanRecommendation.updateMany({
       where: {
         id: action.sourceRecommendationId,
         merchantId: input.merchantId,
         shopId: input.shopId,
       },
-      data: { reviewStatus: status },
+      data: {
+        reviewStatus,
+        ...(status === "declined" ? { rejectedAt: new Date() } : {}),
+      },
     });
   }
   if (prisma.merchantActionEvent?.create) {

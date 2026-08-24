@@ -25,6 +25,7 @@ import {
 import {
   acceptAndEnqueueAgenticShopifyAction,
 } from "./execution-service.server.js";
+import { deferMerchantAction } from "../../actions/action-command.server.js";
 import {
   getAgenticExecutionJobState,
   cancelAgenticExecutionJobForStaleRevision,
@@ -50,6 +51,15 @@ export const AGENTIC_ACTION_CHAT_TOOLS = Object.freeze([
   SHOPIFY_AGENT_TOOL.retrieveOperations,
   SHOPIFY_AGENT_TOOL.callOperation,
   "accept_action",
+  "reject_action",
+  "defer_action",
+]);
+
+/** Tools whose ok result licenses a lifecycle-ending claim in finalReply. */
+const LIFECYCLE_TOOLS = Object.freeze([
+  "accept_action",
+  "reject_action",
+  "defer_action",
 ]);
 
 const TOOL_EFFECT = Object.freeze({
@@ -298,9 +308,18 @@ export async function runAgenticActionChat(prisma, input) {
         ? "FAILED"
         : "NO_ACTION";
   const latestState = await resolveActionState(prisma, input);
+  // A model reply is never trusted to narrate a lifecycle change on its own —
+  // "cancelled", "rejected", "deferred", "accepted", "executed", "completed"
+  // may only reach the merchant if the matching tool actually succeeded this
+  // turn. Otherwise the prose is discarded in favour of the ledger-grounded
+  // fallback, so the model can never talk its way past a tool it didn't call.
+  const groundedFinalReply =
+    finalReply && assertsLifecycleClaim(finalReply) && !lifecycleToolSucceeded(ledger)
+      ? null
+      : finalReply;
   const reply =
     clarificationQuestion ||
-    finalReply ||
+    groundedFinalReply ||
     fallbackReply({ outcome, ledger, state: latestState ?? state });
 
   logger.info("agentic action chat completed", {
@@ -398,6 +417,18 @@ export function agenticActionChatToolCatalogue() {
       description: "Accept the current semantic Action revision and hand off to the post-acceptance agentic Shopify execution loop. Only when the merchant clearly says to go ahead.",
       arguments: [],
     },
+    {
+      name: "reject_action",
+      effect: TOOL_EFFECT.stateChange,
+      description: "Permanently reject this proposed Action and its underlying recommendation. Use for a clear, standalone 'don't do this', 'cancel this', 'I never want to do this', 'forget this recommendation'. Never writes to Shopify; the recommendation will not be regenerated later. Distinct from defer_action, which holds it instead of rejecting it.",
+      arguments: [],
+    },
+    {
+      name: "defer_action",
+      effect: TOOL_EFFECT.stateChange,
+      description: "Hold this proposed Action for later without rejecting it. Use for 'not now', 'maybe later', 'leave this for another time'. Never writes to Shopify; the recommendation may resurface later.",
+      arguments: [],
+    },
   ];
 }
 
@@ -415,6 +446,8 @@ You must not perform Shopify writes before the Action is accepted. If the mercha
 When action.executionJob.status is "queued" or "running", Jefe is already working on this Action in the background. Do NOT call accept_action again — instead tell the merchant that Jefe is working on it and they will be updated when it is done.
 
 When action.executionJob.status is "succeeded", tell the merchant the Action has been completed. When it is "failed", explain that the execution encountered a problem and offer to help investigate or retry.
+
+If the merchant clearly, standalone rejects the whole Action — "don't do this", "cancel this", "I never want to do this", "forget this recommendation", "bin this idea" — call reject_action. This is permanent and writes nothing to Shopify; do not just say "cancelled" in prose. If instead they want to hold it without ruling it out — "not now", "maybe later", "leave this for another time" — call defer_action instead. Ordinary negation of the current request ("don't change that", "don't touch Shopify yet") is neither; call no lifecycle tool for that. Only state that the Action was rejected, deferred, accepted, executed or completed once the corresponding tool call has actually succeeded — never assert a lifecycle change that the tool results do not support.
 
 The merchant is not navigating a rigid workflow. Displayed milestones are explanatory and do not block discussion. Do not use historical workflow or step semantics.
 
@@ -580,6 +613,53 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
           facts: { accepted: true, enqueue: result.enqueue ?? null },
         })
       : toolFail(tool, String(result.reason ?? "ACCEPTANCE_FAILED"), "I couldn't accept that Action.");
+  }
+  if (tool === "reject_action" || tool === "defer_action") {
+    const declining = tool === "reject_action";
+    const existingJobState = await getAgenticExecutionJobState(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+    });
+    if (existingJobState.status === "queued" || existingJobState.status === "running") {
+      return toolFail(
+        tool,
+        "EXECUTION_IN_PROGRESS",
+        "Jefe is already carrying this Action out, so it can't be cancelled from here.",
+      );
+    }
+    if (existingJobState.status === "succeeded") {
+      return toolFail(
+        tool,
+        "ALREADY_COMPLETED",
+        "This Action has already been completed, so there's nothing left to reject.",
+      );
+    }
+    const result = await deferMerchantAction(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: input.actionId,
+      actor: input.actor ?? input.merchantId,
+      status: declining ? "declined" : "deferred",
+      logger,
+    });
+    if (!result.ok) {
+      return toolFail(
+        tool,
+        String(result.reason ?? "COMMAND_FAILED").toUpperCase(),
+        declining
+          ? "I couldn't reject that Action just now."
+          : "I couldn't defer that Action just now.",
+      );
+    }
+    return toolOk(tool, {
+      effect: TOOL_EFFECT.stateChange,
+      message: declining
+        ? "I've rejected this Action. Nothing was written to Shopify."
+        : "I'll leave this Action for later. Nothing was written to Shopify.",
+      facts: { status: result.status },
+      changes: [{ field: "status", to: result.status }],
+    });
   }
 
   const patch = patchFromTool(tool, args);
@@ -1280,6 +1360,25 @@ function semanticDraftSummary(semanticAction) {
   }
   parts.push("Nothing has been changed in Shopify.");
   return parts.join(" ");
+}
+
+/**
+ * Wording that asserts a lifecycle transition happened. This gates what the
+ * model's own prose may claim about — not merchant intent, which is always
+ * expressed through typed tool calls, never regex.
+ * @type {RegExp}
+ */
+const LIFECYCLE_CLAIM_PATTERN =
+  /\b(?:cancel(?:led|ed)?|reject(?:ed|ing)?|declin(?:ed|e|ing)|defer(?:red|ring)?|accept(?:ed|ing)?|execut(?:ed|ing)|complet(?:ed|e|ing))\b/i;
+
+/** @param {string | null | undefined} text */
+function assertsLifecycleClaim(text) {
+  return LIFECYCLE_CLAIM_PATTERN.test(String(text ?? ""));
+}
+
+/** @param {any[]} ledger */
+function lifecycleToolSucceeded(ledger) {
+  return ledger.some((row) => row.ok && LIFECYCLE_TOOLS.includes(row.tool));
 }
 
 /** @param {{ outcome: string; ledger: any[]; state: any }} input */
