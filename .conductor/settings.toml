@@ -3,15 +3,34 @@
 [scripts]
 run_mode = "concurrent"
 
+[scripts.setup]
+command = """
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm use
+cd apps/shopify && npm install
+cd ../ops && npm install
+"""
+
 [scripts.run.dev]
 available_in = [ "local" ]
-command = "cd apps/shopify && npm run dev"
+command = """
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm use
+cd apps/shopify && npm run dev
+"""
 default = true
 icon = "play"
 
 [scripts.run.dev_web]
 available_in = [ "local" ]
-command = "cd apps/shopify && npm run dev:web"
+command = """
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm use
+cd apps/shopify && npm run dev:web
+"""
 icon = "monitor"
 
 [scripts.run.preflight]
