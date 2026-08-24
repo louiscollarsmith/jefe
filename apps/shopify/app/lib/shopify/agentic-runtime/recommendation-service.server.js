@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createLlmProvider } from "../../llm/provider.server.js";
 import {
   ACTIVE_BELIEF_STATUSES,
+  MEMORY_BACKFILL_DOMAIN,
 } from "../../merchant-memory/constants.server.js";
 import { authorityLevel } from "../../merchant-insights/candidates.server.js";
 import { retrieveMerchantContext } from "../../merchant-memory/merchant-context.server.js";
@@ -30,6 +31,7 @@ import {
   revisionSnapshot,
   semanticActionFromRecommendation,
 } from "./semantic-action.server.js";
+import { buildActiveWorkItem, checkCandidateNovelty } from "./action-fingerprint.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
 const MAX_AGENTIC_BELIEFS = 40;
@@ -199,6 +201,53 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       logger,
     });
     if (result.ok && result.status === "RECOMMEND_ACTION") {
+      // Server-side novelty check: verify the candidate doesn't structurally
+      // duplicate an existing proposed or accepted (in-progress) Action.
+      // Luna does not reliably detect structural overlap via prose alone.
+      const currentActiveActions = await (prisma.merchantAction?.findMany?.({
+        where: {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          status: { in: ["proposed", "accepted"] },
+        },
+        select: { id: true, status: true, plan: true, outcome: true },
+      }) ?? Promise.resolve([])).catch(() => []);
+      const novelty = checkCandidateNovelty(result.recommendation, currentActiveActions);
+      if (!novelty.novel) {
+        const terminalStatus = "no_actionable_opportunity";
+        const runMetadata = agenticRunMetadata(run);
+        await prisma.merchantPlanRun.update({
+          where: { id: run.id },
+          data: {
+            status: terminalStatus,
+            completedAt: new Date(),
+            safeErrorCode: null,
+            lastError: null,
+            result: {
+              runtime: "agentic_shopify",
+              ...runMetadata,
+              status: "NO_ACTIONABLE_OPPORTUNITY",
+              blocker: novelty.reason ?? "duplicate_action",
+              noveltyCheck: novelty,
+              diagnostics: result.diagnostics ?? {},
+            },
+          },
+        });
+        logger.info("Agentic recommendation rejected: structural overlap with existing action", {
+          merchantId: input.merchantId,
+          shopId: input.shopId,
+          runId: run.id,
+          reason: novelty.reason,
+          overlappingActionId: novelty.overlappingActionId,
+        });
+        return {
+          status: terminalStatus,
+          runId: run.id,
+          blocker: novelty.reason ?? "duplicate_action",
+          diagnostics: result.diagnostics ?? {},
+          trace: result.trace ?? null,
+        };
+      }
       const persisted = await persistAgenticRecommendation(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -224,11 +273,16 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
         trace: result.trace ?? null,
       };
     }
-    const terminalStatus = result.status === "NO_ACTIONABLE_OPPORTUNITY"
-      ? "no_actionable_opportunity"
-      : result.status === "INSUFFICIENT_EVIDENCE"
-        ? PLAN_RUN_STATUS.insufficientData
-        : PLAN_RUN_STATUS.failed;
+    // BLOCKED means "investigation complete but no safe Shopify action is possible right
+    // now." This is a legitimate no-opportunity result, not a system failure. Map it to
+    // no_actionable_opportunity alongside NO_ACTIONABLE_OPPORTUNITY.
+    // VALIDATION_FAILED and INVESTIGATION_FAILED remain PLAN_RUN_STATUS.failed (genuine errors).
+    const terminalStatus =
+      result.status === "NO_ACTIONABLE_OPPORTUNITY" || result.status === "BLOCKED"
+        ? "no_actionable_opportunity"
+        : result.status === "INSUFFICIENT_EVIDENCE"
+          ? PLAN_RUN_STATUS.insufficientData
+          : PLAN_RUN_STATUS.failed;
     const safeErrorCode = agenticRecommendationSafeErrorCode(result.status);
     const runMetadata = agenticRunMetadata(run);
     await prisma.merchantPlanRun.update({
@@ -381,8 +435,37 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
     },
   });
   if (!run) return prepareAgenticRecommendationRun(prisma, input);
+
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
   const result = jsonObject(run.result);
+
+  // Ownership invariant: a worker job created for run X must execute run X, never
+  // silently switch to run Y. The previous code fell through to prepareAgenticRecommendationRun
+  // when the snapshot hash changed between enqueue and worker pickup, which created a new run Y
+  // with sourceMode="agentic" and left X queued forever.
+  //
+  // Queued runs: the snapshot may legitimately change before pickup (Shopify webhooks,
+  // Memory refresh, Action state changes, snapshot schema version bumps). Use the current
+  // snapshot for the investigation — it is always fresher — and preserve all run identity:
+  // id, sourceMode, retry metadata, creation origin. Do NOT create a new run.
+  //
+  // Running runs: snapshot is immutable for the attempt in progress.
+  //
+  // Terminal runs: snapshot changed after completion is the legitimate "something changed,
+  // re-investigate" case — prepareAgenticRecommendationRun correctly creates a new run here.
+  if (run.status === PLAN_RUN_STATUS.queued || run.status === PLAN_RUN_STATUS.running) {
+    return {
+      status: "ready",
+      run,
+      snapshot,
+      previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        runId: typeof result.retryOfRunId === "string" ? result.retryOfRunId : null,
+      }),
+    };
+  }
+
   if (run.snapshotHash !== snapshot.snapshotHash && result.baseSnapshotHash !== snapshot.snapshotHash) {
     return prepareAgenticRecommendationRun(prisma, input);
   }
@@ -400,7 +483,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
 async function buildAgenticRecommendationSnapshot(prisma, input) {
-  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence] = await Promise.all([
+  const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence, activeActions, shopifyMirrorStatus] = await Promise.all([
     prisma.merchantGoalRun.findFirst({
       where: {
         merchantId: input.merchantId,
@@ -439,6 +522,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         shopId: input.shopId,
         reviewStatus: {
           in: [
+            PLAN_REVIEW_STATUS.proposed,
             PLAN_REVIEW_STATUS.accepted,
             PLAN_REVIEW_STATUS.rejected,
             PLAN_REVIEW_STATUS.refinementRequested,
@@ -447,7 +531,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         },
       },
       orderBy: { createdAt: "desc" },
-      take: 8,
+      take: 10,
     }),
     retrieveMerchantContext(prisma, {
       merchantId: input.merchantId,
@@ -466,6 +550,28 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       orderBy: { createdAt: "desc" },
       take: 8,
     }) ?? Promise.resolve([])).catch(() => []),
+    // Active actions (proposed + accepted/in-progress, not superseded) for deduplication
+    (prisma.merchantAction?.findMany({
+      where: {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        status: { in: ["proposed", "accepted"] },
+      },
+      select: { id: true, status: true, title: true, plan: true, outcome: true, updatedAt: true },
+      orderBy: { updatedAt: "desc" },
+      take: 10,
+    }) ?? Promise.resolve([])).catch(() => []),
+    // Shopify mirror watermark: updatedAt of the merchant_memory backfill status record.
+    // This timestamp is written whenever a Shopify webhook triggers a memory refresh
+    // (enqueueMerchantMemoryRefresh → upsertBackfillStatus). Including it in the
+    // snapshot hash makes the reuse key sensitive to Shopify mutations — when
+    // product status, inventory, or other mutable Shopify state changes, the webhook
+    // fires, the watermark advances, and the hash changes, forcing a fresh investigation
+    // rather than blindly reusing a stale no_actionable_opportunity result.
+    (prisma.shopBackfillStatus?.findUnique?.({
+      where: { shopId_domain: { shopId: input.shopId, domain: MEMORY_BACKFILL_DOMAIN } },
+      select: { updatedAt: true },
+    }) ?? Promise.resolve(null)).catch(() => null),
   ]);
   const goals = (goalRun?.horizons ?? []).map((/** @type {any} */ goal) => ({
     id: goal.id,
@@ -488,6 +594,9 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     authority: "jefe_interpretation",
   }));
   const normalizedBeliefs = beliefs.map(normalizeBelief).filter(Boolean);
+  const activeWork = (activeActions ?? [])
+    .map(buildActiveWorkItem)
+    .filter(Boolean);
   const snapshot = {
     snapshotVersion: AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
     merchantId: input.merchantId,
@@ -529,6 +638,11 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
       summary: safeText(item.summary, 280),
       reviewStatus: item.reviewStatus,
     })),
+    activeWork,
+    // Shopify mirror watermark: included in the hash so that any Shopify mutation
+    // that fires a webhook → enqueueMerchantMemoryRefresh → upsertBackfillStatus
+    // advances this timestamp and invalidates any cached snapshot result.
+    shopifyMirrorWatermark: shopifyMirrorStatus?.updatedAt?.toISOString?.() ?? null,
   };
   return {
     snapshot,
@@ -841,6 +955,7 @@ function retrySnapshotHash(baseSnapshotHash) {
 /** @param {unknown} status */
 function agenticRecommendationSafeErrorCode(status) {
   if (status === "NO_ACTIONABLE_OPPORTUNITY") return null;
+  if (status === "BLOCKED") return null; // legitimate no-opportunity; not a system error
   if (status === "VALIDATION_FAILED") return "agentic_recommendation_validation_failed";
   if (status === "INVESTIGATION_FAILED") return "agentic_recommendation_investigation_failed";
   if (status === "INSUFFICIENT_EVIDENCE") return "agentic_recommendation_insufficient_evidence";
