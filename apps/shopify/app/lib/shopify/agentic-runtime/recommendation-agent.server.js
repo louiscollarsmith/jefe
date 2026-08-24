@@ -300,7 +300,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         toolResults: publicShopifyToolResults(toolResults),
       }),
       schema: AGENTIC_RECOMMENDATION_SCHEMA,
-      maxInputTokens: 40000,
+      maxInputTokens: 80000,
       maxOutputTokens: 2800,
       timeoutMs: 90_000,
     });
