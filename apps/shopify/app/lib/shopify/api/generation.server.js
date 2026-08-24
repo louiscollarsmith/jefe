@@ -2,6 +2,8 @@
 
 import { createHash } from "node:crypto";
 import { diffShopifyApiCatalogs, validateShopifyApiCatalog } from "./catalog.server.js";
+import { classifyShopifyOperationDomain, inferShopifyOperationScopes } from "./domain-taxonomy.server.js";
+import { classifyShopifyOperationSafety } from "./mutation-safety.server.js";
 
 /**
  * @param {any} introspection
@@ -94,13 +96,24 @@ function buildOperationStub(field, operationKind, byName, apiVersion) {
   for (const arg of args) {
     collectTypeMetadata(arg.type, byName, inputObjects, enumTypes, new Set());
   }
+  const domain = classifyShopifyOperationDomain(field.name);
+  const { requiredScopes, scopeConfidence } = inferShopifyOperationScopes(field.name, domain, operationKind);
+  const { safety, execution } = classifyShopifyOperationSafety({
+    operation: field.name,
+    operationKind,
+    domain,
+    scopeConfidence,
+  });
   return {
     id: `shopify.admin_graphql.${apiVersion}.${operationKind.toLowerCase()}.${field.name}`,
     operation: field.name,
     operationKind,
-    domain: inferDomain(field.name),
-    description: field.description || `${operationKind === "QUERY" ? "Reads" : "Mutates"} Shopify ${field.name}.`,
-    requiredScopes: [],
+    domain,
+    description: cleanShopifyDescription(field.description) || `${operationKind === "QUERY" ? "Reads" : "Mutates"} Shopify ${field.name}.`,
+    requiredScopes,
+    scopeConfidence,
+    safety,
+    execution,
     arguments: args,
     inputObjects,
     enumTypes,
@@ -170,17 +183,21 @@ function buildMinimalDocument(operation, operationKind, args) {
   return `${header} { ${operation}${callArgs ? `(${callArgs})` : ""} { __typename } }`;
 }
 
-/** @param {string} operation */
-function inferDomain(operation) {
-  const value = operation.toLowerCase();
-  if (value.includes("collection")) return "collections";
-  if (value.includes("inventory") || value.includes("location")) return "inventory";
-  if (value.includes("discount")) return "discounts";
-  if (value.includes("order") || value.includes("refund")) return "orders";
-  if (value.includes("customer")) return "customers";
-  if (value.includes("metafield")) return "metafields";
-  if (value.includes("product") || value.includes("variant")) return "products";
-  return "general";
+// Shopify's schema descriptions are full markdown docs with embedded shopify.dev links —
+// [`Product`](https://shopify.dev/...) repeated throughout. Left raw, those links flood both
+// the retrieval scorer's token haystack (every description shares the same "docs", "api",
+// "admin", "graphql", "objects" boilerplate, drowning out real signal) and every LLM prompt
+// that includes a retrieved stub. Strip link syntax and truncate to the first real paragraph.
+/** @param {string | null | undefined} raw */
+function cleanShopifyDescription(raw) {
+  const text = String(raw ?? "")
+    .replace(/\[`?([^\]]+?)`?\]\([^)]*\)/g, "$1") // [`Product`](url) -> Product
+    .replace(/https?:\/\/\S+/g, "") // any remaining bare URL
+    .replace(/[`*>]/g, "") // markdown emphasis/quote noise
+    .replace(/\s+/g, " ")
+    .trim();
+  const firstParagraph = text.split(/(?<=[.!?])\s(?=[A-Z])/)[0] ?? text;
+  return (firstParagraph.length > 20 ? firstParagraph : text).slice(0, 320).trim();
 }
 
 /** @param {string} operation */

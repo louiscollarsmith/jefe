@@ -1,0 +1,260 @@
+{
+  "merchantId": "1c435ded-0fa5-4216-959f-93488575bab7",
+  "shopId": "c02236e8-1f98-4203-90d4-d17ac876d52d",
+  "at": "2026-08-24T19:36:11.767Z",
+  "mode": "assumeAllScopesGranted=true (controlled evaluation — not a real merchant grant)",
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "Investigated 6 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+  "recommendation": null,
+  "candidateQueue": [
+    {
+      "candidateId": "capture-product-costs",
+      "diagnosedProblem": "All 25 active variants have current prices but none has a recorded cost per item, so product-level gross profit cannot be calculated from the catalogue.",
+      "priority": 1,
+      "status": "NON_EXECUTABLE",
+      "reason": "The diagnosis is supported by Merchant Memory evidence (products.cost_coverage: 0 of 25 variants), but the bound Shopify operation catalogue contains no safe mutation for setting a variant's cost per item. The available product and productVariants reads also returned only the fixture product and did not provide variant-level cost inputs. Because Shopify has no executable write path for this intervention, populating cost-per-item cannot be implemented safely in an Action."
+    },
+    {
+      "candidateId": "refresh-inventory-data",
+      "diagnosedProblem": "All 51 recorded inventory levels are older than the 72-hour freshness threshold, even though inventory coverage exists for all 25 tracked variants; current availability may therefore be unreliable.",
+      "priority": 2,
+      "status": "BLOCKED_BY_EVIDENCE",
+      "reason": "The deterministic evidence supports stale inventory metadata (inventory.stale_inventory_level_share: 51/51 older than 72 hours; data.inventory_freshness_hours_p90: 438.47; data.inventory_variant_coverage: 25/25), but the available Shopify reads only returned a fixture product and did not return inventory-level timestamps, per-variant available quantities, inventory item IDs, or locations. The bound mutations can set or adjust quantities, not refresh timestamps without known authoritative values. The intervention therefore cannot be executed safely from current Shopify state."
+    },
+    {
+      "candidateId": "recover-single-item-baskets",
+      "diagnosedProblem": "Most recent orders are single-item purchases: 27 of 50 orders (54%) in the trailing 90 days, with a median basket size of one item and only 6% of orders containing four or more items.",
+      "priority": 3,
+      "status": "NON_EXECUTABLE",
+      "reason": "The Shopify state reads confirm an active product exists, but the available operation family does not provide a safe storefront write for implementing product-page recommendations or cross-sell placements. The available mutations are limited to deleting products, attaching variant media, editing existing orders, changing quantity pricing, and inventory operations; none implements the proposed intervention. Existing evidence supports the basket-size premise: 27 of 50 trailing-90-day orders were single-item (54%), median items per order was 1, and only 3 of 50 orders contained at least four items. No Shopify mutation was performed."
+    },
+    {
+      "candidateId": "improve-customer-identity-capture",
+      "diagnosedProblem": "None of the 50 stored orders is linked to a known customer identity, so repeat purchasing and customer-level retention cannot currently be measured or acted on.",
+      "priority": 4,
+      "status": "NON_EXECUTABLE",
+      "reason": "The factual premise is supported by Shopify-derived evidence: 0 known customer identities and 0% identity linkage across 50 stored orders. However, the bound Shopify operation catalogue has no safe write operation to configure checkout identity capture, customer-account creation, or marketing-consent collection, nor to associate future orders with customer profiles. The available customer operation is customerSegmentMembersQueryCreate, which creates a segment-members query and does not implement this intervention. No mutation was performed."
+    },
+    {
+      "candidateId": "reactivate-declining-demand",
+      "diagnosedProblem": "Product momentum is broadly negative: 13 products declined between the prior and current 30-day periods, while only one rose; Rain Map Tannat fell from £24 to £0 in the current period, and the store has had no order in the latest seven days.",
+      "priority": 5,
+      "status": "NON_EXECUTABLE",
+      "reason": "The candidate cannot be implemented safely from the currently bound Shopify operations. The available promotion mutation is only discountAutomaticFreeShippingCreate and does not support a product-specific discount in its bound arguments; the other discount operations are delete/update/remove operations for existing discounts. In addition, the completed product reads returned only gid://shopify/Product/1 (“Eval Fixture Product”), not Rain Map Tannat (product ID 998c562d-8477-4937-bd8a-546a73a1e310), so its current Shopify status and availability were not confirmed."
+    },
+    {
+      "candidateId": "address-intermittent-selling-cadence",
+      "diagnosedProblem": "Orders are highly intermittent: only 6 of the last 30 days had sales, 62 of 90 days were zero-sales days, and 18 days have elapsed since the latest stored order.",
+      "priority": 6,
+      "status": "NON_EXECUTABLE",
+      "reason": "Shopify state supports the diagnosis: the products read returned an ACTIVE product (gid://shopify/Product/1), while Merchant Memory shows only 6 selling days in the trailing 30 days, 62 zero-sales days in the trailing 90 days, and 18 days since the latest stored order. However, no safe Shopify write operation implements the proposed recurring campaign or announcement cadence, scheduling, or campaign-level order tracking. The available writes are unrelated operations such as creating orders or draft orders, modifying discounts, and creating product feedback. No mutation was performed."
+    }
+  ],
+  "discoveryLog": [
+    {
+      "rescue": false,
+      "candidateCount": 6,
+      "usage": {
+        "inputTokens": 57768,
+        "cachedInputTokens": 57765,
+        "outputTokens": 1442,
+        "totalTokens": 59210,
+        "estimatedInputTokens": 50072
+      }
+    },
+    {
+      "rescue": true,
+      "candidateCount": 0,
+      "usage": {
+        "inputTokens": 58867,
+        "cachedInputTokens": 0,
+        "outputTokens": 251,
+        "totalTokens": 59118,
+        "estimatedInputTokens": 51489
+      }
+    }
+  ],
+  "progressLog": [
+    {
+      "state": "DISCOVERING_CANDIDATES",
+      "at": "2026-08-24T19:33:24.692Z",
+      "rescue": false
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:33:39.031Z",
+      "candidateId": "capture-product-costs",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:34:17.390Z",
+      "candidateId": "capture-product-costs",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "The diagnosis is supported by Merchant Memory evidence (products.cost_coverage: 0 of 25 variants), but the bound Shopify operation catalogue contains no safe mutation for setting a variant's cost per item. The available product and productVariants reads also returned only the fixture product and did not provide variant-level cost inputs. Because Shopify has no executable write path for this intervention, populating cost-per-item cannot be implemented safely in an Action."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:34:17.390Z",
+      "candidateId": "refresh-inventory-data",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:34:37.951Z",
+      "candidateId": "refresh-inventory-data",
+      "disposition": "BLOCKED_BY_EVIDENCE",
+      "reason": "The deterministic evidence supports stale inventory metadata (inventory.stale_inventory_level_share: 51/51 older than 72 hours; data.inventory_freshness_hours_p90: 438.47; data.inventory_variant_coverage: 25/25), but the available Shopify reads only returned a fixture product and did not return inventory-level timestamps, per-variant available quantities, inventory item IDs, or locations. The bound mutations can set or adjust quantities, not refresh timestamps without known authoritative values. The intervention therefore cannot be executed safely from current Shopify state."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:34:37.951Z",
+      "candidateId": "recover-single-item-baskets",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:34:55.543Z",
+      "candidateId": "recover-single-item-baskets",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "The Shopify state reads confirm an active product exists, but the available operation family does not provide a safe storefront write for implementing product-page recommendations or cross-sell placements. The available mutations are limited to deleting products, attaching variant media, editing existing orders, changing quantity pricing, and inventory operations; none implements the proposed intervention. Existing evidence supports the basket-size premise: 27 of 50 trailing-90-day orders were single-item (54%), median items per order was 1, and only 3 of 50 orders contained at least four items. No Shopify mutation was performed."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:34:55.543Z",
+      "candidateId": "improve-customer-identity-capture",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:35:14.193Z",
+      "candidateId": "improve-customer-identity-capture",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "The factual premise is supported by Shopify-derived evidence: 0 known customer identities and 0% identity linkage across 50 stored orders. However, the bound Shopify operation catalogue has no safe write operation to configure checkout identity capture, customer-account creation, or marketing-consent collection, nor to associate future orders with customer profiles. The available customer operation is customerSegmentMembersQueryCreate, which creates a segment-members query and does not implement this intervention. No mutation was performed."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:35:14.193Z",
+      "candidateId": "reactivate-declining-demand",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:35:33.334Z",
+      "candidateId": "reactivate-declining-demand",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "The candidate cannot be implemented safely from the currently bound Shopify operations. The available promotion mutation is only discountAutomaticFreeShippingCreate and does not support a product-specific discount in its bound arguments; the other discount operations are delete/update/remove operations for existing discounts. In addition, the completed product reads returned only gid://shopify/Product/1 (“Eval Fixture Product”), not Rain Map Tannat (product ID 998c562d-8477-4937-bd8a-546a73a1e310), so its current Shopify status and availability were not confirmed."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:35:33.334Z",
+      "candidateId": "address-intermittent-selling-cadence",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:35:57.575Z",
+      "candidateId": "address-intermittent-selling-cadence",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Shopify state supports the diagnosis: the products read returned an ACTIVE product (gid://shopify/Product/1), while Merchant Memory shows only 6 selling days in the trailing 30 days, 62 zero-sales days in the trailing 90 days, and 18 days since the latest stored order. However, no safe Shopify write operation implements the proposed recurring campaign or announcement cadence, scheduling, or campaign-level order tracking. The available writes are unrelated operations such as creating orders or draft orders, modifying discounts, and creating product feedback. No mutation was performed."
+    },
+    {
+      "state": "RESCUE_DISCOVERY",
+      "at": "2026-08-24T19:35:57.575Z"
+    },
+    {
+      "state": "NO_ACTIONABLE_OPPORTUNITY",
+      "at": "2026-08-24T19:36:11.767Z"
+    }
+  ],
+  "toolResults": [
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "products completed through the Shopify gateway.",
+      "operation": "products",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "product completed through the Shopify gateway.",
+      "operation": "product",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "productVariants completed through the Shopify gateway.",
+      "operation": "productVariants",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "ALREADY_AVAILABLE: products was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+      "operation": "products",
+      "status": "ALREADY_AVAILABLE",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "ALREADY_AVAILABLE: product was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+      "operation": "product",
+      "status": "ALREADY_AVAILABLE",
+      "error": null
+    }
+  ]
+}

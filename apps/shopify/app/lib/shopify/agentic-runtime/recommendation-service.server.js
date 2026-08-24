@@ -536,7 +536,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
 }
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string }} input */
-async function buildAgenticRecommendationSnapshot(prisma, input) {
+export async function buildAgenticRecommendationSnapshot(prisma, input) {
   const [goalRun, insightRun, beliefs, priorRecommendations, context, coachingEvidence, activeActions, shopifyMirrorStatus] = await Promise.all([
     prisma.merchantGoalRun.findFirst({
       where: {

@@ -1,0 +1,385 @@
+{
+  "merchantId": "1c435ded-0fa5-4216-959f-93488575bab7",
+  "shopId": "c02236e8-1f98-4203-90d4-d17ac876d52d",
+  "at": "2026-08-24T19:32:46.293Z",
+  "mode": "assumeAllScopesGranted=true (controlled evaluation — not a real merchant grant)",
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "Investigated 8 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+  "recommendation": null,
+  "candidateQueue": [
+    {
+      "candidateId": "restore-product-profitability-visibility",
+      "diagnosedProblem": "All 25 active variants have prices but none has a recorded cost per item, so product-level gross profit cannot currently be assessed.",
+      "priority": 1,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "increase-attachment-to-single-item-orders",
+      "diagnosedProblem": "Most recent orders are single-item baskets: 27 of 50 orders (54%) contained exactly one item, while only 3 orders (6%) contained four or more items.",
+      "priority": 2,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "capture-customer-identity-for-repeat-growth",
+      "diagnosedProblem": "None of the 50 stored orders is linked to a known customer identity, leaving repeat purchasing unmeasurable and preventing reliable customer-level follow-up.",
+      "priority": 3,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "correct-stale-inventory-signals",
+      "diagnosedProblem": "All 51 recorded inventory levels are older than the 72-hour freshness threshold, so the apparent availability of the 25 tracked variants cannot be treated as current; two variants are currently recorded at zero or below.",
+      "priority": 4,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "reengage-after-sales-inactivity",
+      "diagnosedProblem": "Recent demand is intermittent: only 6 of the last 30 days were active selling days, there were 18 days since the latest stored order, and 68.89% of the trailing 90 days had no recorded order.",
+      "priority": 5,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "activate-online-sales-channel",
+      "diagnosedProblem": "The store recorded £2,629.30 of known revenue in the trailing 90 days, but 0% was attributed to online sales; all revenue is classified as coming from “other” channels, indicating the online storefront is not currently contributing measurable revenue.",
+      "priority": 1,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "promote-rising-product-without-new-collection",
+      "diagnosedProblem": "Product momentum is highly uneven: 13 products declined in the current 30-day period versus the prior 30 days, while only one product rose; Cloud Needle Tsolikouri increased from £92 to £115, leaving a demonstrated positive-momentum product without a distinct merchandising response in the current evidence.",
+      "priority": 2,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "recover-recently-lapsed-product",
+      "diagnosedProblem": "Rain Map Tannat generated £24 in the prior 30-day period but £0 in the current 30-day period, showing a complete recent sales drop for a previously selling product rather than merely a catalogue item with no historical demand.",
+      "priority": 3,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    }
+  ],
+  "discoveryLog": [
+    {
+      "rescue": false,
+      "candidateCount": 5,
+      "usage": {
+        "inputTokens": 57768,
+        "cachedInputTokens": 57765,
+        "outputTokens": 1484,
+        "totalTokens": 59252,
+        "estimatedInputTokens": 50072
+      }
+    },
+    {
+      "rescue": true,
+      "candidateCount": 3,
+      "usage": {
+        "inputTokens": 58241,
+        "cachedInputTokens": 0,
+        "outputTokens": 949,
+        "totalTokens": 59190,
+        "estimatedInputTokens": 50694
+      }
+    }
+  ],
+  "progressLog": [
+    {
+      "state": "DISCOVERING_CANDIDATES",
+      "at": "2026-08-24T19:22:59.371Z",
+      "rescue": false
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:23:16.541Z",
+      "candidateId": "restore-product-profitability-visibility",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:23:39.761Z",
+      "candidateId": "restore-product-profitability-visibility",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:23:39.761Z",
+      "candidateId": "increase-attachment-to-single-item-orders",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:24:55.262Z",
+      "candidateId": "increase-attachment-to-single-item-orders",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:24:55.262Z",
+      "candidateId": "capture-customer-identity-for-repeat-growth",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:26:11.434Z",
+      "candidateId": "capture-customer-identity-for-repeat-growth",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:26:11.434Z",
+      "candidateId": "correct-stale-inventory-signals",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:27:26.567Z",
+      "candidateId": "correct-stale-inventory-signals",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:27:26.567Z",
+      "candidateId": "reengage-after-sales-inactivity",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:28:43.088Z",
+      "candidateId": "reengage-after-sales-inactivity",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "RESCUE_DISCOVERY",
+      "at": "2026-08-24T19:28:43.088Z"
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:29:06.220Z",
+      "candidateId": "activate-online-sales-channel",
+      "rescue": true
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:30:15.616Z",
+      "candidateId": "activate-online-sales-channel",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:30:15.616Z",
+      "candidateId": "promote-rising-product-without-new-collection",
+      "rescue": true
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:31:31.728Z",
+      "candidateId": "promote-rising-product-without-new-collection",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:31:31.728Z",
+      "candidateId": "recover-recently-lapsed-product",
+      "rescue": true
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:32:46.293Z",
+      "candidateId": "recover-recently-lapsed-product",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "state": "NO_ACTIONABLE_OPPORTUNITY",
+      "at": "2026-08-24T19:32:46.293Z"
+    }
+  ],
+  "toolResults": [
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "publications did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "publications",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_publications"
+      }
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": false,
+      "message": "RETRIEVAL_ALREADY_SUFFICIENT: You already have sufficient capability information for this candidate. Verify it against current Shopify state with call_shopify_operation before retrieving more operations.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "RETRIEVAL_ALREADY_SUFFICIENT",
+        "message": "Call call_shopify_operation to read current Shopify state before requesting more operation stubs."
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "product did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "product",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_products"
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "publications did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "publications",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_publications"
+      }
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "product did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "product",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_products"
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "publications did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "publications",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_publications"
+      }
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "product did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "product",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_products"
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "publications did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "publications",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_publications"
+      }
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "product did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "product",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_products"
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": false,
+      "message": "publications did not complete: NEEDS_SHOPIFY_AUTHORIZATION.",
+      "operation": "publications",
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "error": {
+        "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+        "message": "Missing Shopify scopes: read_publications"
+      }
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    }
+  ]
+}

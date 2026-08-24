@@ -20,6 +20,9 @@ export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
   deniedAcceptedRevisionStale: "DENIED_ACCEPTED_REVISION_STALE",
   deniedIntent: "DENIED_OUTSIDE_ACCEPTED_INTENT",
   deniedBlastRadius: "DENIED_BLAST_RADIUS",
+  deniedProhibitedOperation: "DENIED_PROHIBITED_OPERATION",
+  deniedUnsafeSemantics: "DENIED_UNSAFE_SEMANTICS",
+  needsExplicitConfirmation: "NEEDS_EXPLICIT_CONFIRMATION",
   idempotentReplay: "IDEMPOTENT_REPLAY",
   needsReconciliation: "NEEDS_RECONCILIATION",
   providerError: "PROVIDER_ERROR",
@@ -111,6 +114,14 @@ export async function executeShopifyOperation(input) {
   }
   let action = null;
   if (stub.operationKind === "MUTATION") {
+    // Discovery/execution separation (see mutation-safety.server.js): a mutation may be fully
+    // visible to Luna's reasoning and still be structurally denied here, independent of scope
+    // or merchant approval. "Never let unknown mean safe" — an operation with no confidently
+    // known scope is treated as not-satisfied even though requiredScopes may be [].
+    const safetyDenial = evaluateOperationSafety(stub);
+    if (safetyDenial) {
+      return deny(input, { ...baseLedger, ...safetyDenial });
+    }
     const authorization = await verifyActionAuthorization(input);
     if (!authorization.ok) {
       return deny(input, {
@@ -412,6 +423,61 @@ export function getActionRevisionState(action) {
       ...agentic,
     },
   };
+}
+
+/**
+ * The gateway's own enforcement of mutation-safety.server.js's execution.status — discovery
+ * (Luna retrieving/reasoning about a stub) is unconditional; this is the one place execution
+ * authority is actually decided. Returns a deny()-shaped partial, or null to proceed.
+ * @param {import("./catalog.server.js").ShopifyApiOperationStub} stub
+ */
+function evaluateOperationSafety(stub) {
+  const status = stub.execution?.status;
+  if (status === "PROHIBITED") {
+    return {
+      status: SHOPIFY_GATEWAY_STATUS.deniedProhibitedOperation,
+      gatewayDecision: "operation_permanently_prohibited",
+      error: `${stub.operation} is permanently prohibited: ${stub.execution?.reason ?? "no reason recorded"}`,
+    };
+  }
+  // A mutation whose scope requirement isn't confidently known must never pass because
+  // requiredScopes happens to be empty — "unknown" is a real state, never silently "satisfied."
+  if (stub.scopeConfidence === "unknown") {
+    return {
+      status: SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics,
+      gatewayDecision: "scope_requirement_unknown",
+      error: `${stub.operation}'s required Shopify scope is not confidently known; never let unknown mean safe.`,
+    };
+  }
+  if (status === "UNSUPPORTED_SEMANTICS") {
+    return {
+      status: SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics,
+      gatewayDecision: "unsupported_execution_semantics",
+      error: `${stub.operation} has no reviewed, structurally safe execution path yet: ${stub.execution?.reason ?? ""}`,
+    };
+  }
+  // EXECUTABLE_WITH_CONFIRMATION on its own means "attemptable under the standard accepted-
+  // Action approval this gateway already enforces below" — not an extra gate. The extra gate
+  // is the *interaction* tier: EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED operations need more
+  // than ordinary Action approval, regardless of execution.status.
+  if (stub.safety?.interaction === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" && !hasExplicitHighRiskConfirmation()) {
+    return {
+      status: SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation,
+      gatewayDecision: "explicit_high_risk_confirmation_missing",
+      error: `${stub.operation} requires an explicit high-risk confirmation beyond standard Action approval: ${stub.execution?.reason ?? ""}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Whether the accepted Action carries an explicit high-risk confirmation, distinct from
+ * ordinary Action approval. No merchant-facing confirmation UI exists yet for this tier —
+ * this fails closed (never confirmed) until that surface is built, which is the correct
+ * default per "never let unknown mean safe."
+ */
+function hasExplicitHighRiskConfirmation() {
+  return false;
 }
 
 /**

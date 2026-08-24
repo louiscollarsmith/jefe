@@ -1,0 +1,267 @@
+{
+  "merchantId": "1c435ded-0fa5-4216-959f-93488575bab7",
+  "shopId": "c02236e8-1f98-4203-90d4-d17ac876d52d",
+  "at": "2026-08-24T19:40:03.190Z",
+  "mode": "assumeAllScopesGranted=true (controlled evaluation — not a real merchant grant)",
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "Investigated 5 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+  "recommendation": null,
+  "candidateQueue": [
+    {
+      "candidateId": "restore-consistent-selling-cadence",
+      "diagnosedProblem": "Recent demand is intermittent: 14 orders occurred on only 6 of the last 30 days, there have been 18 days since the latest stored order, and 68.89% of the last 90 days had no stored order.",
+      "priority": 1,
+      "status": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms a compact active catalogue and proven products, but the available operation family has no safe Shopify mutation that directly edits the homepage or featured merchandising area. The only bound write is collectionAddProducts, which requires an existing collection and does not implement the proposed no-new-collection intervention. No mutation was performed."
+    },
+    {
+      "candidateId": "capture-product-costs",
+      "diagnosedProblem": "Product-level profitability is unobservable because none of the 25 active variants has a recorded cost per item, despite all 25 having current prices.",
+      "priority": 2,
+      "status": "BLOCKED_BY_EVIDENCE",
+      "reason": "The cost-coverage premise is supported by Merchant Memory (products.cost_coverage: 0 of 25 active variants with cost) and the successful inventoryItems read returned unitCost: null for the available inventory item. However, the required mutation inputs—the merchant's actual cost per item for each variant—cannot be read from Shopify. Although inventoryItemUpdate exists, populating costs without merchant-provided values would be unsafe and non-reversible in substance. Checked Shopify operations: products, inventoryItems, and inventoryItemUpdate."
+    },
+    {
+      "candidateId": "increase-basket-breadth",
+      "diagnosedProblem": "Orders are usually narrow: the trailing-90-day median order contains 1 item, 54% of orders contain exactly one item, and only 6% contain four or more items.",
+      "priority": 3,
+      "status": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms the underlying basket-breadth problem: orders.median_items_per_order.trailing_90d is 1, orders.single_item_order_share.trailing_90d is 54% (27/50), and orders.large_basket_order_share.trailing_90d is 6% (3/50). Current catalogue and inventory reads also show active products and available stock. However, no safe Shopify write operation in the bound operation family implements complementary-product recommendations or cart add-ons. collectionAddProducts only modifies an existing collection and does not create storefront recommendation placement; order-edit operations modify historical orders and are not an appropriate implementation. Therefore the diagnosis remains plausible, but this intervention is non-executable through the available Shopify write path."
+    },
+    {
+      "candidateId": "improve-repeat-customer-measurement",
+      "diagnosedProblem": "Repeat purchasing cannot currently be measured because zero of the 50 stored orders are linked to a known customer identity.",
+      "priority": 4,
+      "status": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms the measurement gap: customers returned one customer record, customerAccountPages returned no usable account-page configuration, and the authoritative customer-identity coverage is 0 of 50 orders. However, the available Shopify write path is only customerSendAccountInviteEmail for a specific customer ID; it cannot enable or improve store-wide checkout/email identity capture. Sending an invite to the single customer would not implement the diagnosed intervention or reliably link future orders, so no safe executable Shopify action is available."
+    },
+    {
+      "candidateId": "protect-demand-on-stockout-variants",
+      "diagnosedProblem": "Two of the 25 tracked active variants are currently out of stock, while the store’s strongest product contributes 22.96% of product revenue and 59.54% of available-stock retail value is concentrated in the top five variants.",
+      "priority": 5,
+      "status": "BLOCKED_BY_EVIDENCE",
+      "reason": "Blocked by insufficient actionable Shopify state. I checked the successful products read (only gid://shopify/Product/1, “Eval Fixture Product,” status ACTIVE), the successful inventoryItems read (only gid://shopify/InventoryItem/1 with SKU EVAL-1 and unitCost null), and the successful customerAccountPages read (no usable configuration data). These results do not verify the identities or parent products of the two out-of-stock variants, nor provide a safe Shopify write operation for adding back-in-stock capture or substitute-product pathways. Candidate disposition: BLOCKED_BY_EVIDENCE."
+    }
+  ],
+  "discoveryLog": [
+    {
+      "rescue": false,
+      "candidateCount": 5,
+      "usage": {
+        "inputTokens": 57768,
+        "cachedInputTokens": 57765,
+        "outputTokens": 1270,
+        "totalTokens": 59038,
+        "estimatedInputTokens": 50072
+      }
+    },
+    {
+      "rescue": true,
+      "candidateCount": 0,
+      "usage": {
+        "inputTokens": 58705,
+        "cachedInputTokens": 0,
+        "outputTokens": 144,
+        "totalTokens": 58849,
+        "estimatedInputTokens": 51281
+      }
+    }
+  ],
+  "progressLog": [
+    {
+      "state": "DISCOVERING_CANDIDATES",
+      "at": "2026-08-24T19:37:36.093Z",
+      "rescue": false
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:37:48.516Z",
+      "candidateId": "restore-consistent-selling-cadence",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:38:03.974Z",
+      "candidateId": "restore-consistent-selling-cadence",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms a compact active catalogue and proven products, but the available operation family has no safe Shopify mutation that directly edits the homepage or featured merchandising area. The only bound write is collectionAddProducts, which requires an existing collection and does not implement the proposed no-new-collection intervention. No mutation was performed."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:38:03.974Z",
+      "candidateId": "capture-product-costs",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:38:31.955Z",
+      "candidateId": "capture-product-costs",
+      "disposition": "BLOCKED_BY_EVIDENCE",
+      "reason": "The cost-coverage premise is supported by Merchant Memory (products.cost_coverage: 0 of 25 active variants with cost) and the successful inventoryItems read returned unitCost: null for the available inventory item. However, the required mutation inputs—the merchant's actual cost per item for each variant—cannot be read from Shopify. Although inventoryItemUpdate exists, populating costs without merchant-provided values would be unsafe and non-reversible in substance. Checked Shopify operations: products, inventoryItems, and inventoryItemUpdate."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:38:31.955Z",
+      "candidateId": "increase-basket-breadth",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:38:48.517Z",
+      "candidateId": "increase-basket-breadth",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms the underlying basket-breadth problem: orders.median_items_per_order.trailing_90d is 1, orders.single_item_order_share.trailing_90d is 54% (27/50), and orders.large_basket_order_share.trailing_90d is 6% (3/50). Current catalogue and inventory reads also show active products and available stock. However, no safe Shopify write operation in the bound operation family implements complementary-product recommendations or cart add-ons. collectionAddProducts only modifies an existing collection and does not create storefront recommendation placement; order-edit operations modify historical orders and are not an appropriate implementation. Therefore the diagnosis remains plausible, but this intervention is non-executable through the available Shopify write path."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:38:48.517Z",
+      "candidateId": "improve-repeat-customer-measurement",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:39:27.308Z",
+      "candidateId": "improve-repeat-customer-measurement",
+      "disposition": "NON_EXECUTABLE",
+      "reason": "Shopify state confirms the measurement gap: customers returned one customer record, customerAccountPages returned no usable account-page configuration, and the authoritative customer-identity coverage is 0 of 50 orders. However, the available Shopify write path is only customerSendAccountInviteEmail for a specific customer ID; it cannot enable or improve store-wide checkout/email identity capture. Sending an invite to the single customer would not implement the diagnosed intervention or reliably link future orders, so no safe executable Shopify action is available."
+    },
+    {
+      "state": "INVESTIGATING_CANDIDATE",
+      "at": "2026-08-24T19:39:27.308Z",
+      "candidateId": "protect-demand-on-stockout-variants",
+      "rescue": false
+    },
+    {
+      "state": "TRYING_NEXT_CANDIDATE",
+      "at": "2026-08-24T19:39:49.409Z",
+      "candidateId": "protect-demand-on-stockout-variants",
+      "disposition": "BLOCKED_BY_EVIDENCE",
+      "reason": "Blocked by insufficient actionable Shopify state. I checked the successful products read (only gid://shopify/Product/1, “Eval Fixture Product,” status ACTIVE), the successful inventoryItems read (only gid://shopify/InventoryItem/1 with SKU EVAL-1 and unitCost null), and the successful customerAccountPages read (no usable configuration data). These results do not verify the identities or parent products of the two out-of-stock variants, nor provide a safe Shopify write operation for adding back-in-stock capture or substitute-product pathways. Candidate disposition: BLOCKED_BY_EVIDENCE."
+    },
+    {
+      "state": "RESCUE_DISCOVERY",
+      "at": "2026-08-24T19:39:49.409Z"
+    },
+    {
+      "state": "NO_ACTIONABLE_OPPORTUNITY",
+      "at": "2026-08-24T19:40:03.190Z"
+    }
+  ],
+  "toolResults": [
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "recommendation_validation",
+      "ok": false,
+      "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      "operation": null,
+      "status": null,
+      "error": {
+        "code": "INSUFFICIENT_INVESTIGATION",
+        "message": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+      }
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "products completed through the Shopify gateway.",
+      "operation": "products",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "inventoryItems completed through the Shopify gateway.",
+      "operation": "inventoryItems",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "ALREADY_AVAILABLE: products was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+      "operation": "products",
+      "status": "ALREADY_AVAILABLE",
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "customers completed through the Shopify gateway.",
+      "operation": "customers",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "customerAccountPages completed through the Shopify gateway.",
+      "operation": "customerAccountPages",
+      "status": "OK",
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "retrieve_shopify_operations",
+      "ok": true,
+      "message": "Retrieved 8 Shopify operation stubs.",
+      "operation": null,
+      "status": null,
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "ALREADY_AVAILABLE: products was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+      "operation": "products",
+      "status": "ALREADY_AVAILABLE",
+      "error": null
+    },
+    {
+      "tool": "call_shopify_operation",
+      "ok": true,
+      "message": "ALREADY_AVAILABLE: inventoryItems was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+      "operation": "inventoryItems",
+      "status": "ALREADY_AVAILABLE",
+      "error": null
+    }
+  ]
+}

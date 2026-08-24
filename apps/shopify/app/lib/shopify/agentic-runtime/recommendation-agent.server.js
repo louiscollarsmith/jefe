@@ -296,6 +296,7 @@ export const AGENTIC_SEMANTIC_REPAIR_SCHEMA = {
  *   initialToolResults?: any[];
  *   runId?: string | null;
  *   llmRetryWaitImpl?: (ms: number) => Promise<void>;
+ *   assumeAllScopesGranted?: boolean;
  * }} input
  */
 export async function generateAgenticShopifyRecommendation(input) {
@@ -309,7 +310,9 @@ export async function generateAgenticShopifyRecommendation(input) {
   // back to possibly-undefined (it can't prove the object's property wasn't reassigned).
   const generateStructuredJson = provider.generateStructuredJson;
 
-  const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes);
+  const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes, {
+    assumeAllScopesGranted: input.assumeAllScopesGranted === true,
+  });
   const opportunitySurface = context.opportunitySurface;
   const focusCandidate = input.focusCandidate ?? null;
   /** @type {any[]} */
@@ -901,8 +904,10 @@ function terminalFailureBlocker(toolResults) {
  * @param {any} snapshot
  * @param {import("../api/catalog.server.js").ShopifyApiCatalog} [catalog]
  * @param {string[]} [grantedScopes]
+ * @param {{ assumeAllScopesGranted?: boolean }} [opportunityOptions] controlled-evaluation only
+ *   — see buildOpportunitySurface. Never set from production request handling.
  */
-export function buildRecommendationContext(snapshot, catalog, grantedScopes = []) {
+export function buildRecommendationContext(snapshot, catalog, grantedScopes = [], opportunityOptions = {}) {
   const beliefs = Array.isArray(snapshot?.beliefs) ? snapshot.beliefs : [];
   const goals = Array.isArray(snapshot?.goals) ? snapshot.goals : [];
   const insights = Array.isArray(snapshot?.insights) ? snapshot.insights : [];
@@ -951,22 +956,36 @@ export function buildRecommendationContext(snapshot, catalog, grantedScopes = []
       instruction:
         "Use retrieve_shopify_operations to search the generated Shopify Admin API operation catalogue for detailed stubs within any opportunity family you choose to investigate.",
     },
-    opportunitySurface: buildOpportunitySurface(catalog, grantedScopes),
+    opportunitySurface: buildOpportunitySurface(catalog, grantedScopes, opportunityOptions),
   };
 }
 
 // ---- Opportunity surface derivation ----------------------------------------
 
+// Statuses (from mutation-safety.server.js's execution.status) that mean "the gateway will
+// actually attempt this write" for a merchant who holds the scope — everything else (
+// UNSUPPORTED_SEMANTICS, PROHIBITED) is discoverable but never counted toward a family being
+// "available," regardless of scope or the eval-mode assumption below.
+const GATEWAY_ATTEMPTABLE_EXECUTION_STATUSES = new Set(["EXECUTABLE", "EXECUTABLE_WITH_CONFIRMATION"]);
+
 /**
- * Derives executable opportunity families from catalog domains.
- * Groups mutations by domain; marks families unavailable when required scopes are not granted.
- * No hardcoded recommendation categories — families come from API structure.
+ * Derives opportunity families from catalog domains. Every domain with at least one mutation
+ * is always represented — discovery is unconditional; only the per-operation execution-status
+ * rollup varies. No hardcoded recommendation categories — families come from API structure.
  *
  * @param {import("../api/catalog.server.js").ShopifyApiCatalog | undefined} catalog
  * @param {string[]} [grantedScopes]
+ * @param {{ assumeAllScopesGranted?: boolean }} [options] `assumeAllScopesGranted` is for
+ *   controlled capability evaluation only (never production — see recommendation-service.server.js
+ *   / candidate-pipeline.server.js callers). It bypasses the *scope* check only; it can never
+ *   make a PROHIBITED or UNSUPPORTED_SEMANTICS operation look available — safety classification
+ *   and OAuth grants are separate concerns (see docs/shopify-full-capability-surface.md).
  */
-export function buildOpportunitySurface(catalog, grantedScopes = []) {
+export function buildOpportunitySurface(catalog, grantedScopes = [], options = {}) {
   const scopeSet = normalizeScopeSet(grantedScopes);
+  const assumeAllScopesGranted = options.assumeAllScopesGranted === true;
+  const scopeSatisfied = (/** @type {string[]} */ requiredScopes) =>
+    assumeAllScopesGranted || requiredScopes.length === 0 || requiredScopes.every((s) => scopeSet.has(s));
   /** @type {Map<string, import("../api/catalog.server.js").ShopifyApiOperationStub[]>} */
   const byDomain = new Map();
   for (const op of catalog?.operations ?? []) {
@@ -978,14 +997,32 @@ export function buildOpportunitySurface(catalog, grantedScopes = []) {
     const mutations = ops.filter((op) => op.operationKind === "MUTATION");
     if (!mutations.length) continue;
     const queries = ops.filter((op) => op.operationKind === "QUERY");
-    const anyMutationAvailable = mutations.some(
-      (op) => (op.requiredScopes ?? []).length === 0 || (op.requiredScopes ?? []).every((s) => scopeSet.has(s)),
-    );
+    const writeOperations = mutations.map((op) => ({
+      operation: op.operation,
+      description: op.description,
+      executionStatus: op.execution?.status ?? "UNSUPPORTED_SEMANTICS",
+      scopeSatisfied: scopeSatisfied(op.requiredScopes ?? []),
+    }));
+    const executionSummary = {
+      executable: 0,
+      executableWithConfirmation: 0,
+      unsupportedSemantics: 0,
+      prohibited: 0,
+    };
+    let anyAttemptable = false;
+    for (const op of writeOperations) {
+      if (op.executionStatus === "PROHIBITED") executionSummary.prohibited += 1;
+      else if (op.executionStatus === "UNSUPPORTED_SEMANTICS") executionSummary.unsupportedSemantics += 1;
+      else if (op.executionStatus === "EXECUTABLE_WITH_CONFIRMATION") executionSummary.executableWithConfirmation += 1;
+      else if (op.executionStatus === "EXECUTABLE") executionSummary.executable += 1;
+      if (GATEWAY_ATTEMPTABLE_EXECUTION_STATUSES.has(op.executionStatus) && op.scopeSatisfied) anyAttemptable = true;
+    }
     families.push({
       id: domain,
       label: formatDomainLabel(domain),
-      capabilityState: anyMutationAvailable ? "available" : "scope_missing",
-      writeOperations: mutations.map((op) => ({ operation: op.operation, description: op.description })),
+      capabilityState: anyAttemptable ? "available" : "scope_missing",
+      executionSummary,
+      writeOperations,
       readOperations: queries.map((op) => ({ operation: op.operation, description: op.description })),
     });
   }
@@ -999,6 +1036,22 @@ function normalizeScopeSet(grantedScopes) {
       .flatMap((s) => String(s).split(",").map((x) => x.trim()))
       .filter(Boolean),
   );
+}
+
+/**
+ * Distinguishes *why* a family isn't attemptable — a scope gap is a merchant-permission
+ * question; UNSUPPORTED_SEMANTICS/PROHIBITED are safety-classification questions no scope
+ * grant would change. Luna and the merchant-facing "grant this scope" path need to tell
+ * these apart (task: "adding a scope cannot solve a missing capability implementation").
+ * @param {{ executable: number; executableWithConfirmation: number; unsupportedSemantics: number; prohibited: number }} [summary]
+ */
+function nonExecutableReason(summary) {
+  if (!summary) return "Required write scopes not granted.";
+  if (summary.executable + summary.executableWithConfirmation > 0) return "Required write scopes not granted.";
+  if (summary.prohibited > 0 && summary.unsupportedSemantics === 0) {
+    return "Every write in this family is permanently prohibited, independent of scope.";
+  }
+  return "No write in this family has a reviewed, structurally safe execution path yet — independent of scope.";
 }
 
 /** @param {string} domain */
@@ -1022,7 +1075,7 @@ export function initCoverageLedger(opportunitySurface) {
     status: family.capabilityState === "available"
       ? OPPORTUNITY_COVERAGE_STATUS.unassessed
       : OPPORTUNITY_COVERAGE_STATUS.nonExecutable,
-    reason: family.capabilityState !== "available" ? "Required write scopes not granted." : null,
+    reason: family.capabilityState !== "available" ? nonExecutableReason(family.executionSummary) : null,
     evidenceRefs: [],
   }));
 }

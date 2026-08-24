@@ -342,6 +342,7 @@ function summarizeCandidateForDiagnostics(candidate) {
  *   maxTotalLlmCalls?: number;
  *   runId?: string | null;
  *   llmRetryWaitImpl?: (ms: number) => Promise<void>;
+ *   assumeAllScopesGranted?: boolean;
  * }} input
  */
 export async function runCandidateDrivenRecommendation(input) {
@@ -350,8 +351,11 @@ export async function runCandidateDrivenRecommendation(input) {
   if (!provider?.enabled || typeof provider.generateStructuredJson !== "function") {
     return { ok: false, status: "BLOCKED", blocker: "llm_provider_unavailable", trace: null };
   }
+  const assumeAllScopesGranted = input.assumeAllScopesGranted === true;
 
-  const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes);
+  const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes, {
+    assumeAllScopesGranted,
+  });
   /** @type {any[]} */
   const progressLog = [];
   const pushProgress = (state, detail = {}) => {
@@ -397,6 +401,7 @@ export async function runCandidateDrivenRecommendation(input) {
         logger,
         runId: input.runId ?? null,
         llmRetryWaitImpl: input.llmRetryWaitImpl,
+        assumeAllScopesGranted,
         maxIterations: perCandidateIterations,
         focusCandidate: {
           candidateId: candidate.candidateId,

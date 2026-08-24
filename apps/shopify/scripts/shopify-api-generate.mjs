@@ -7,6 +7,64 @@ import {
 } from "../app/lib/shopify/api/generation.server.js";
 import { ShopifyAdminGraphqlClient } from "../app/lib/shopify/admin-graphql.server.js";
 
+const TYPE_REF = `
+fragment TypeRef on __Type {
+  kind
+  name
+  ofType {
+    kind
+    name
+    ofType {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType { kind name }
+      }
+    }
+  }
+}`;
+
+const INTROSPECTION_QUERY = `
+${TYPE_REF}
+query JefeAdminApiIntrospection {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      kind
+      name
+      description
+      enumValues(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+      }
+      inputFields {
+        name
+        description
+        type { ...TypeRef }
+        defaultValue
+      }
+      fields(includeDeprecated: true) {
+        name
+        description
+        isDeprecated
+        deprecationReason
+        args {
+          name
+          description
+          type { ...TypeRef }
+          defaultValue
+        }
+        type { ...TypeRef }
+      }
+    }
+  }
+}`;
+
 const args = parseArgs(process.argv.slice(2));
 const apiVersion = args.apiVersion || process.env.SHOPIFY_API_VERSION || "2026-07";
 const outputPath = resolve(
@@ -70,61 +128,3 @@ function parseArgs(values) {
 function toCamel(value) {
   return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 }
-
-const TYPE_REF = `
-fragment TypeRef on __Type {
-  kind
-  name
-  ofType {
-    kind
-    name
-    ofType {
-      kind
-      name
-      ofType {
-        kind
-        name
-        ofType { kind name }
-      }
-    }
-  }
-}`;
-
-const INTROSPECTION_QUERY = `
-${TYPE_REF}
-query JefeAdminApiIntrospection {
-  __schema {
-    queryType { name }
-    mutationType { name }
-    types {
-      kind
-      name
-      description
-      enumValues(includeDeprecated: true) {
-        name
-        description
-        isDeprecated
-        deprecationReason
-      }
-      inputFields {
-        name
-        description
-        type { ...TypeRef }
-        defaultValue
-      }
-      fields(includeDeprecated: true) {
-        name
-        description
-        isDeprecated
-        deprecationReason
-        args {
-          name
-          description
-          type { ...TypeRef }
-          defaultValue
-        }
-        type { ...TypeRef }
-      }
-    }
-  }
-}`;

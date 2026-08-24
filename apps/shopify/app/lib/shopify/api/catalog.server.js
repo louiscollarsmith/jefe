@@ -33,6 +33,9 @@ export const SHOPIFY_OPERATION_KIND = Object.freeze({
  *   domain: string;
  *   description: string;
  *   requiredScopes: string[];
+ *   scopeConfidence: "high" | "inferred" | "unknown";
+ *   safety: { riskTier: string; reversibility: string; interaction: string };
+ *   execution: { status: string; classificationSource?: string; reason: string };
  *   arguments: Array<{ name: string; type: string; required: boolean }>;
  *   inputObjects: Record<string, { fields: Array<{ name: string; type: string; required: boolean }> }>;
  *   enumTypes: Record<string, string[]>;
@@ -42,6 +45,21 @@ export const SHOPIFY_OPERATION_KIND = Object.freeze({
  *   tags: string[];
  * }} ShopifyApiOperationStub
  */
+
+const KNOWN_SCOPE_CONFIDENCE = new Set(["high", "inferred", "unknown"]);
+const KNOWN_EXECUTION_STATUS = new Set([
+  "EXECUTABLE",
+  "EXECUTABLE_WITH_CONFIRMATION",
+  "UNSUPPORTED_SEMANTICS",
+  "PROHIBITED",
+]);
+const EXECUTABLE_STATUSES = new Set(["EXECUTABLE", "EXECUTABLE_WITH_CONFIRMATION"]);
+const KNOWN_CLASSIFICATION_SOURCES = new Set([
+  "EXPLICIT_KNOWN_GOOD",
+  "EXPLICIT_OPERATION_OVERRIDE",
+  "REVIEWED_OPERATION_FAMILY_POLICY",
+  "STRUCTURAL_NAME_INFERENCE",
+]);
 
 /**
  * @param {{ catalogPath?: string | URL }} [input]
@@ -96,6 +114,35 @@ export function validateShopifyApiCatalog(value) {
     const deprecation = asRecord(op.deprecation);
     if (!deprecation || typeof deprecation.deprecated !== "boolean") {
       errors.push(`${op.id} deprecation is required`);
+    }
+    if (!KNOWN_SCOPE_CONFIDENCE.has(op.scopeConfidence)) {
+      errors.push(`${op.id} scopeConfidence must be one of ${[...KNOWN_SCOPE_CONFIDENCE].join(", ")}`);
+    }
+    const safety = asRecord(op.safety);
+    if (!safety || typeof safety.riskTier !== "string" || typeof safety.reversibility !== "string" || typeof safety.interaction !== "string") {
+      errors.push(`${op.id} safety (riskTier, reversibility, interaction) is required`);
+    }
+    const execution = asRecord(op.execution);
+    if (!execution || !KNOWN_EXECUTION_STATUS.has(execution.status)) {
+      errors.push(`${op.id} execution.status must be one of ${[...KNOWN_EXECUTION_STATUS].join(", ")}`);
+    }
+    // "Never let unknown mean safe" applies to writes: a mutation must have scopeConfidence
+    // "high" — not merely "inferred", and never "unknown" — to be EXECUTABLE or
+    // EXECUTABLE_WITH_CONFIRMATION (task Part 2.3: "inferred" powers discovery/reasoning/
+    // evaluation, never production write authority on its own). Reads are exempt — a query
+    // cannot mutate merchant state, and the gateway separately re-verifies real granted scopes
+    // live for every operation, read or write, before admitting it.
+    if (execution && op.operationKind === "MUTATION" && op.scopeConfidence !== "high" && EXECUTABLE_STATUSES.has(execution.status)) {
+      errors.push(`${op.id} is a mutation with scopeConfidence "${op.scopeConfidence}" (not "high") but execution.status is ${execution.status}`);
+    }
+    // Task Part 1.3: operation-name similarity alone must never grant production write
+    // authority. STRUCTURAL_NAME_INFERENCE may only ever appear on non-executable results.
+    if (execution && EXECUTABLE_STATUSES.has(execution.status)) {
+      if (!KNOWN_CLASSIFICATION_SOURCES.has(execution.classificationSource)) {
+        errors.push(`${op.id} is ${execution.status} but has no valid execution.classificationSource`);
+      } else if (execution.classificationSource === "STRUCTURAL_NAME_INFERENCE") {
+        errors.push(`${op.id} is ${execution.status} sourced from STRUCTURAL_NAME_INFERENCE — name pattern alone must never grant execution authority`);
+      }
     }
     for (const argument of Array.isArray(op.arguments) ? op.arguments : []) {
       if (!argument?.name || !argument?.type || typeof argument.required !== "boolean") {

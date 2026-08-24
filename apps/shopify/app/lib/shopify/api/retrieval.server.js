@@ -1,6 +1,15 @@
 // @ts-check
 
 import { listShopifyApiOperationStubs, loadShopifyApiCatalog } from "./catalog.server.js";
+import { expandShopifyQueryTerms } from "./query-expansions.server.js";
+
+// High-frequency English function words that appear in nearly every operation description
+// (itself derived from Shopify's own docs prose) and would otherwise inflate the score of
+// operations that share no real signal with the query.
+const STOPWORDS = new Set([
+  "and", "the", "for", "with", "from", "that", "this", "into", "your", "you",
+  "are", "was", "were", "will", "can", "use", "used", "using", "not", "any",
+]);
 
 /**
  * @param {string} query
@@ -13,7 +22,8 @@ import { listShopifyApiOperationStubs, loadShopifyApiCatalog } from "./catalog.s
  */
 export function retrieveShopifyApiOperations(query, options = {}) {
   const catalog = options.catalog ?? loadShopifyApiCatalog();
-  const tokens = tokenize(query);
+  const expansions = [...expandShopifyQueryTerms(query)].join(" ");
+  const tokens = new Set([...tokenize(query), ...tokenize(expansions)]);
   const domains = new Set(options.domains ?? []);
   return listShopifyApiOperationStubs({ catalog, operationKind: options.operationKind })
     .filter((operation) => !domains.size || domains.has(operation.domain))
@@ -64,8 +74,20 @@ function tokenize(value) {
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .map((token) => token.trim())
-      .filter((token) => token.length >= 3),
+      .filter((token) => token.length >= 3 && !STOPWORDS.has(token))
+      .map(singularize),
   );
+}
+
+// Light, internal-matching-only singularization (not linguistically complete) so "collection"
+// (query/operation-name form) and "collections" (a plural domain id) score as the same term.
+// Applied uniformly to both the query and every haystack field, so it only ever helps recall.
+/** @param {string} token */
+function singularize(token) {
+  if (token.length > 4 && token.endsWith("ies")) return `${token.slice(0, -3)}y`;
+  if (token.length > 4 && token.endsWith("es") && !token.endsWith("ses")) return token.slice(0, -2);
+  if (token.length > 4 && token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
+  return token;
 }
 
 /**

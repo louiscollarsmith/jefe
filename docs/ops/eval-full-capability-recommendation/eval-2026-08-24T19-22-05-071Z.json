@@ -1,0 +1,70 @@
+{
+  "merchantId": "1c435ded-0fa5-4216-959f-93488575bab7",
+  "shopId": "c02236e8-1f98-4203-90d4-d17ac876d52d",
+  "at": "2026-08-24T19:22:05.067Z",
+  "mode": "assumeAllScopesGranted=true (controlled evaluation — not a real merchant grant)",
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "Investigated 5 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+  "recommendation": null,
+  "candidateQueue": [
+    {
+      "candidateId": "capture-product-costs",
+      "diagnosedProblem": "All 25 active variants have current prices but none has a recorded cost per item, so product-level gross profit is not observable for merchandising or growth decisions.",
+      "priority": 1,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "recover-out-of-stock-variants",
+      "diagnosedProblem": "Two of the 25 tracked active variants have zero or negative available inventory, creating availability gaps within an otherwise in-stock range.",
+      "priority": 2,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "increase-basket-completion",
+      "diagnosedProblem": "Most recent orders are single-item baskets: 27 of 50 orders (54%) had exactly one item, while the median order contained one item and only 6% contained four or more items.",
+      "priority": 3,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "reengage-after-sales-gaps",
+      "diagnosedProblem": "Recent demand is intermittent rather than continuous: 14 orders occurred on only 6 of the last 30 days, there have been 18 days since the latest stored order, and 68.89% of the last 90 calendar days had no order.",
+      "priority": 4,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    },
+    {
+      "candidateId": "establish-customer-identity-capture",
+      "diagnosedProblem": "None of the 50 stored orders is linked to a known customer identity, so repeat purchasing cannot currently be measured or targeted from Shopify customer records.",
+      "priority": 5,
+      "status": "NON_EXECUTABLE",
+      "reason": "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+    }
+  ],
+  "discoveryLog": [
+    {
+      "rescue": false,
+      "candidateCount": 5,
+      "usage": {
+        "inputTokens": 57768,
+        "cachedInputTokens": 0,
+        "outputTokens": 1231,
+        "totalTokens": 58999,
+        "estimatedInputTokens": 50072
+      }
+    },
+    {
+      "rescue": true,
+      "candidateCount": 0,
+      "usage": {
+        "inputTokens": 58237,
+        "cachedInputTokens": 0,
+        "outputTokens": 84,
+        "totalTokens": 58321,
+        "estimatedInputTokens": 50695
+      }
+    }
+  ]
+}

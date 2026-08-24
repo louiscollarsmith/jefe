@@ -27,8 +27,9 @@ test("generated Shopify API catalog validates and separates reads from writes", 
 });
 
 test("retrieval returns a small relevant Shopify API subset", () => {
-  const results = retrieveShopifyApiOperations("create a merchandising collection and populate it with products", {
+  const results = retrieveShopifyApiOperations("create a merchandising collection and add products to it", {
     operationKind: "MUTATION",
+    domains: ["collections"],
     limit: 4,
   });
   assert.ok(results.length <= 4);
@@ -39,17 +40,17 @@ test("retrieval returns a small relevant Shopify API subset", () => {
 
 test("operation variable validation rejects missing nested required fields", () => {
   const create = getShopifyApiOperationStub("collectionCreate");
-  assert.equal(validateShopifyOperationVariables(create, { input: { title: "London delivery" } }).ok, true);
-  const invalid = validateShopifyOperationVariables(create, { input: { handle: "london-delivery" } });
+  assert.equal(validateShopifyOperationVariables(create, { collection: { title: "London delivery" } }).ok, true);
+  const invalid = validateShopifyOperationVariables(create, { collection: { handle: "london-delivery" } });
   assert.equal(invalid.ok, false);
-  assert.ok(invalid.errors.includes("input.title is required"));
+  assert.ok(invalid.errors.includes("collection.title is required"));
 
   const update = getShopifyApiOperationStub("productUpdate");
   const enumError = validateShopifyOperationVariables(update, {
     product: { id: "gid://shopify/Product/1", status: "REMOVED" },
   });
   assert.equal(enumError.ok, false);
-  assert.ok(enumError.errors.some((error) => error.includes("ACTIVE, ARCHIVED, DRAFT")));
+  assert.ok(enumError.errors.some((error) => error.includes("ACTIVE, ARCHIVED, DRAFT, UNLISTED")));
 });
 
 test("gateway permits reads without accepted Action authorization and ledgers the provider result", async () => {
@@ -187,6 +188,47 @@ test("accepted-intent guard blocks pricing drift during collection execution", a
   assert.equal(result.ok, false);
   assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedIntent);
   assert.equal(result.gatewayDecision, "pricing_effect_outside_accepted_intent");
+});
+
+test("gateway permanently denies an explicitly prohibited operation regardless of scope or Action state", async () => {
+  const prisma = fakePrisma();
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, fakeClient({})),
+    operation: "appUninstall",
+    variables: {},
+    grantedScopes: [],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedProhibitedOperation);
+  assert.equal(result.gatewayDecision, "operation_permanently_prohibited");
+});
+
+test("gateway denies a mutation with no reviewed safety classification, even with the right scope", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction() });
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, fakeClient({}, { grantedScopes: ["write_customers"] })),
+    actionId,
+    acceptedActionRevision: "rev-1",
+    operation: "customerDelete",
+    variables: { input: { id: "gid://shopify/Customer/1" } },
+    grantedScopes: ["write_customers"],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics);
+  assert.equal(result.gatewayDecision, "unsupported_execution_semantics");
+});
+
+test("gateway denies a mutation whose required scope is not confidently known — unknown never means safe", async () => {
+  const prisma = fakePrisma();
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, fakeClient({})),
+    operation: "tagsAdd",
+    variables: { id: "gid://shopify/Product/1", tags: ["evergreen"] },
+    grantedScopes: ["write_products"],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics);
+  assert.equal(result.gatewayDecision, "scope_requirement_unknown");
 });
 
 test("gateway returns Shopify userErrors as structured tool results", async () => {
