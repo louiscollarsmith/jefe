@@ -16,6 +16,7 @@ import {
   LlmOutputValidationError,
   LlmProviderHttpError,
   estimateTokens,
+  isRetryableLlmInfrastructureError,
 } from "../errors.server.js";
 import { assertExternalLlmCallAllowed } from "../external-call-guard.server.js";
 import { parseAndValidateStructuredOperation } from "../structured-operation-schema.server.js";
@@ -243,7 +244,7 @@ async function generateStructuredJson(input) {
       };
     } catch (error) {
       lastError = error;
-      if (attempt >= maxAttempts || !isRetryableError(error)) {
+      if (attempt >= maxAttempts || !isRetryableLlmInfrastructureError(error)) {
         const durationMs = Date.now() - startedAt;
         logUsage(input.logger, {
           status: "failed",
@@ -451,21 +452,6 @@ function parseJson(value) {
   } catch {
     return null;
   }
-}
-
-/** @param {unknown} error */
-function isRetryableError(error) {
-  if (error instanceof LlmOutputValidationError) return false;
-  if (error instanceof LlmInputLimitError) return false;
-  if (error instanceof DOMException && error.name === "AbortError") return true;
-  const status = Number(
-    /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).status ??
-      /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).code,
-  );
-  if (status === 429 || status === 498) return true;
-  if (status >= 500 && status <= 599) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /timeout|timed out|network|fetch failed|ECONNRESET/i.test(message);
 }
 
 /** @param {unknown} error @param {number} attempt */

@@ -20,7 +20,7 @@ import {
   MERCHANT_BOOTSTRAP_JOB_TYPE,
 } from "../../../services/shopify-backfill-status.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
-import { generateAgenticShopifyRecommendation } from "./recommendation-agent.server.js";
+import { runCandidateDrivenRecommendation } from "./candidate-pipeline.server.js";
 import {
   AGENTIC_RECOMMENDATION_JOB_TYPE,
   AGENTIC_RECOMMENDATION_SCHEMA_VERSION,
@@ -32,9 +32,54 @@ import {
   semanticActionFromRecommendation,
 } from "./semantic-action.server.js";
 import { buildActiveWorkItem, checkCandidateNovelty } from "./action-fingerprint.server.js";
+import { DETERMINISTIC_BELIEF_REGISTRY } from "../../merchant-memory/deterministic-belief-registry.server.js";
 
 const ACTIVE_RUN_STATUSES = [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running];
-const MAX_AGENTIC_BELIEFS = 40;
+
+// llmExposure lookup: maps belief key → normalized exposure class.
+// Beliefs not in the registry (merchant-confirmed, non-deterministic) default to "core".
+const REGISTRY_EXPOSURE_MAP = new Map(
+  DETERMINISTIC_BELIEF_REGISTRY.map((entry) => [entry.key, entry.llmExposure]),
+);
+
+/** @param {string} key */
+export function resolveExposure(key) {
+  const raw = REGISTRY_EXPOSURE_MAP.get(key);
+  if (raw === "Internal guardrail; use to set confidence") return "guardrail";
+  if (raw === "On-demand; promote only when decision-relevant") return "on_demand";
+  return "core"; // "Core or category retrieval" and all non-registry keys
+}
+
+const AUTHORITY_RANK = {
+  merchant_corrected: 0,
+  merchant_confirmed: 1,
+  deterministic: 2,
+  system_inference: 3,
+  lower_authority_inference: 4,
+};
+
+/** @param {any} a @param {any} b */
+export function compareBeliefStable(a, b) {
+  const ra = AUTHORITY_RANK[a.authority] ?? 5;
+  const rb = AUTHORITY_RANK[b.authority] ?? 5;
+  if (ra !== rb) return ra - rb;
+  return (a.key ?? "").localeCompare(b.key ?? "");
+}
+
+/**
+ * Partitions normalized beliefs into model-visible and guardrail sets,
+ * each sorted deterministically by authority then key.
+ * @param {any[]} normalizedBeliefs
+ */
+export function partitionBeliefsByExposure(normalizedBeliefs) {
+  const visible = normalizedBeliefs
+    .filter((b) => resolveExposure(b.key) !== "guardrail")
+    .sort(compareBeliefStable);
+  const guardrails = normalizedBeliefs
+    .filter((b) => resolveExposure(b.key) === "guardrail")
+    .sort(compareBeliefStable);
+  return { visible, guardrails };
+}
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -131,6 +176,10 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
  *   fetchImpl?: typeof fetch;
  *   llmProvider?: import("../../llm/provider.server.js").LlmProvider;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   maxCandidatesFirstPass?: number;
+ *   maxCandidatesRescue?: number;
+ *   perCandidateIterations?: number;
+ *   maxTotalLlmCalls?: number;
  * }} input
  */
 export async function runAgenticRecommendationInvestigation(prisma, input) {
@@ -188,7 +237,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
     logger,
   });
   try {
-    const result = await generateAgenticShopifyRecommendation({
+    const result = await runCandidateDrivenRecommendation({
       provider,
       prisma,
       client,
@@ -199,6 +248,11 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       snapshot: prepared.snapshot.snapshot,
       previousAttempt: prepared.previousAttempt ?? null,
       logger,
+      runId: run.id,
+      maxCandidatesFirstPass: input.maxCandidatesFirstPass,
+      maxCandidatesRescue: input.maxCandidatesRescue,
+      perCandidateIterations: input.perCandidateIterations,
+      maxTotalLlmCalls: input.maxTotalLlmCalls,
     });
     if (result.ok && result.status === "RECOMMEND_ACTION") {
       // Server-side novelty check: verify the candidate doesn't structurally
@@ -513,8 +567,6 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
         supersededAt: null,
       },
       include: { evidence: { orderBy: { createdAt: "desc" }, take: 2 } },
-      orderBy: [{ precedence: "desc" }, { updatedAt: "desc" }],
-      take: MAX_AGENTIC_BELIEFS,
     }),
     prisma.merchantPlanRecommendation.findMany({
       where: {
@@ -593,7 +645,17 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     generatedBy: "jefe_llm",
     authority: "jefe_interpretation",
   }));
-  const normalizedBeliefs = beliefs.map(normalizeBelief).filter(Boolean);
+  const allNormalizedBeliefs = beliefs.map(normalizeBelief).filter(Boolean);
+
+  // Partition by llmExposure: guardrails go to a separate confidence section,
+  // all other beliefs (core, on_demand, non-registry) are model-visible evidence.
+  const visibleBeliefs = allNormalizedBeliefs
+    .filter((b) => resolveExposure(b.key) !== "guardrail")
+    .sort(compareBeliefStable);
+  const guardrailBeliefs = allNormalizedBeliefs
+    .filter((b) => resolveExposure(b.key) === "guardrail")
+    .sort(compareBeliefStable);
+
   const activeWork = (activeActions ?? [])
     .map(buildActiveWorkItem)
     .filter(Boolean);
@@ -616,8 +678,12 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     })).reverse(),
     goals,
     insights,
-    beliefCount: normalizedBeliefs.length,
-    beliefs: normalizedBeliefs,
+    beliefCount: visibleBeliefs.length,
+    beliefs: visibleBeliefs,
+    // Internal guardrails (data quality / coverage) — kept available server-side for
+    // confidence context but not surfaced as recommendation evidence. Excluded from
+    // the snapshot hash so guardrail-only changes do not invalidate recommendation reuse.
+    dataQualityContext: guardrailBeliefs,
     merchantContext: [
       ...(context.episodicMemory ?? []).slice(0, 12).map((/** @type {any} */ item) => ({
         id: item.id,
@@ -644,10 +710,15 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
     // advances this timestamp and invalidates any cached snapshot result.
     shopifyMirrorWatermark: shopifyMirrorStatus?.updatedAt?.toISOString?.() ?? null,
   };
+  // Hash over only the model-visible portion of the snapshot. dataQualityContext
+  // (internal guardrails) is intentionally excluded: guardrail-only changes do not
+  // invalidate recommendation reuse, since they don't affect what Luna sees.
+  // eslint-disable-next-line no-unused-vars -- destructured only to exclude it from hashableSnapshot
+  const { dataQualityContext: _excludedFromHash, ...hashableSnapshot } = snapshot;
   return {
     snapshot,
-    snapshotHash: hashJson(snapshot),
-    beliefIds: normalizedBeliefs.map((/** @type {any} */ belief) => belief.id),
+    snapshotHash: hashJson(hashableSnapshot),
+    beliefIds: allNormalizedBeliefs.map((/** @type {any} */ belief) => belief.id),
     insightRunId: insightRun?.id ?? null,
     goalRunId: goalRun?.id ?? null,
     hasGoals: goals.length === 3,
@@ -975,6 +1046,7 @@ function normalizeBelief(row) {
     type: row.valueType,
     status: row.status,
     authority: authorityLevel(row.precedence, row.status, row.evidence ?? []),
+    llmExposure: resolveExposure(row.key),
     confidence: Number(row.confidence ?? 0),
     evidence: (row.evidence ?? []).map((/** @type {any} */ item) => ({
       id: item.id,
@@ -1013,6 +1085,7 @@ function safeTrace(value) {
           error: row.error ?? null,
         }))
       : [],
+    progressLog: Array.isArray(trace.progressLog) ? trace.progressLog : [],
   };
 }
 
@@ -1034,7 +1107,7 @@ function uniqueStrings(value) {
 }
 
 /** @param {unknown} value */
-function hashJson(value) {
+export function hashJson(value) {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 

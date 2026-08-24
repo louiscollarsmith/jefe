@@ -69,3 +69,34 @@ export class LlmProviderHttpError extends Error {
 export function estimateTokens(text) {
   return Math.ceil(text.length / 4);
 }
+
+/**
+ * Classifies an error from an LLM call as a transient infrastructure failure
+ * worth retrying (429 rate limit, 5xx, request timeout/abort, network reset)
+ * versus a deterministic failure that will not be fixed by waiting and
+ * retrying the identical request (invalid schema/output, input too large,
+ * auth failure, unsupported model, malformed request). Shared by the
+ * provider's own short internal retry loop and by any longer-lived retry
+ * wrapper built on top of it — callers should not duplicate this list.
+ *
+ * Deliberately narrower than `isLlmFallbackError` in provider.server.js:
+ * that function also answers "is it worth trying a *different* provider"
+ * (true for 401/403/404 there — the model or credentials may work
+ * elsewhere), which is a different question from "is retrying the *same*
+ * call worth it" (false for 401/403/404 here — nothing changes by waiting).
+ *
+ * @param {unknown} error
+ */
+export function isRetryableLlmInfrastructureError(error) {
+  if (error instanceof LlmOutputValidationError) return false;
+  if (error instanceof LlmInputLimitError) return false;
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  const status = Number(
+    /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).status ??
+      /** @type {{ status?: unknown; code?: unknown }} */ (error ?? {}).code,
+  );
+  if (status === 429 || status === 498) return true;
+  if (status >= 500 && status <= 599) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|timed out|network|fetch failed|ECONNRESET/i.test(message);
+}
