@@ -543,6 +543,68 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/default-reports/customers-reports"
   },
   {
+    "key": "customers.rfm_segment_mix.all_time",
+    "category": "customers",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "all_stored_history",
+    "calculation": "repeat customers (orderCount >= 2) crossed on top-quartile lifetime spend vs the rest, and overdue vs current against the store's own median repeat gap (shared with customers.cohort_mix), into champions / at_risk / loyal / fading; one-time buyers reported as a count only",
+    "minimumData": "At least 10 known customers, with at least 5 repeat customers establishing a purchase rhythm",
+    "confidenceRule": "0.8; rises with repeat-customer sample size",
+    "legacyConfidenceRule": "0.8; rises with repeat-customer sample size",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.8; rises with repeat-customer sample size"
+    },
+    "confidenceComponents": [
+      { "template": "ratio_sample_coverage_v1", "params": { "suppress_below_denominator": 10 } },
+      { "template": "coverage_based_v1", "params": {} }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage", "low_sample", "partial_history"],
+    "refreshCadence": "Backfill + relevant webhooks",
+    "dependencies": ["orders", "customer_identities"],
+    "tranche": "Customer memory v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "RFM-style, store-relative segmentation — not an independently-scored recency/frequency/monetary system (e.g. no separate 1-5 R/F/M scores combined into a cube). Frequency is a single repeat/non-repeat filter (orderCount >= 2); monetary is a binary top-quartile-vs-rest split; recency is binary overdue/current against the store's own rhythm. cohort_mix answers how many customers come back; this answers which of the repeat customers are worth protecting. champions and at_risk both spend at the top quartile — the difference is only whether they are still current against the store's own rhythm, never a fixed day count. Do not include PII in the belief; counts, shares and aggregate money only.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/default-reports/customers-reports"
+  },
+  {
+    "key": "customers.new_customer_early_repeat_rate.trailing_180d",
+    "category": "customers",
+    "valueType": "percentage",
+    "derivationVersion": "v1",
+    "window": "trailing_180d",
+    "calculation": "customers whose first stored order falls between 90 and 180 days ago — old enough that the full 90-day follow window has already elapsed, avoiding right-censoring bias from customers who haven't had time to repeat yet — and the share of those whose second stored order followed within 90 days of the first",
+    "minimumData": "At least 10 customers with a first stored order between 90 and 180 days ago",
+    "confidenceRule": "0.8; rises with sample size",
+    "legacyConfidenceRule": "0.8; rises with sample size",
+    "confidenceTemplate": "composite_min_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "combiner": "minimum",
+      "legacy_rule": "0.8; rises with sample size"
+    },
+    "confidenceComponents": [
+      { "template": "ratio_sample_coverage_v1", "params": { "suppress_below_denominator": 10 } },
+      { "template": "coverage_based_v1", "params": {} }
+    ],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage", "low_sample"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders"],
+    "tranche": "Customer memory v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "A leading indicator, not a lifetime one: cohort_mix describes the whole customer base as it stands today; this tracks only the freshest FULLY-OBSERVED acquisition cohort, so it moves before the all-time numbers do. Deliberately excludes customers acquired in the most recent 90 days — they have not yet had the full follow window to repeat, and counting them as non-repeaters would bias the rate down purely from recency (right-censoring). Built from stored order dates directly, not from the CustomerIdentity first/last aggregate, because the aggregate cannot say when a customer's second order landed.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/default-reports/customers-reports"
+  },
+  {
     "key": "inventory.out_of_stock_variant_count",
     "category": "inventory",
     "valueType": "number",
@@ -5008,6 +5070,90 @@ export const DETERMINISTIC_BELIEF_REGISTRY = [
     "sourceUrl": "https://shopify.dev/docs/api/admin-graphql/2026-07/objects/DiscountCodeApplication"
   },
   {
+    "key": "business.discount_order_value_effect.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "average order value and average items per order for discounted vs undiscounted priced orders within window, plus the percentage lift of discounted over undiscounted",
+    "minimumData": "At least 5 discounted and 5 undiscounted priced orders in the window",
+    "confidenceRule": "0.85 direct observation",
+    "legacyConfidenceRule": "0.85 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "discount_depth states how much is given away; this states whether the discounted orders look any different — the 'is this discount actually working' signal a discount-code decision needs. Correlational, not causal: a bigger discounted basket may reflect the discount changing behaviour, or simply that bigger spenders are the ones who apply a code. Never present the lift as a proven causal effect.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.discount_concentration.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "line-item discount amount summed per product within window, ranked, with the top 5 products' share of total window discount spend",
+    "minimumData": "At least 5 discounted line items linked to a stored product in the window",
+    "confidenceRule": "0.85 direct observation",
+    "legacyConfidenceRule": "0.85 direct observation",
+    "confidenceTemplate": "direct_observation_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 direct observation"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "publish_when_minimum_data_met",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "line_items", "products"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "discount_depth gives one store-wide percentage; a modest average can hide a handful of SKUs carrying almost all of it. High concentration on products already known to be dead stock points at price_markdown clearance (already executable); concentration on live sellers points at a targeted code instead of a storewide one. Reads OrderLineItem.discount, already ingested with every line item.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/analytics-fields"
+  },
+  {
+    "key": "business.discount_customer_mix.trailing_90d",
+    "category": "business",
+    "valueType": "structured",
+    "derivationVersion": "v1",
+    "window": "trailing_90d",
+    "calculation": "repeat customers' (orderCount >= 2) share of discounted priced orders vs their share of all priced orders in window, both restricted to orders with a linked customer identity; ratio of the two is the over-index signal",
+    "minimumData": "At least 10 priced orders and 10 discounted orders in the window with a linked customer identity",
+    "confidenceRule": "0.85 scaled by customer-link coverage",
+    "legacyConfidenceRule": "0.85 scaled by customer-link coverage",
+    "confidenceTemplate": "coverage_based_v1",
+    "confidenceTemplateVersion": "v1",
+    "confidenceParameters": {
+      "requires_completed_relevant_backfill": true,
+      "legacy_rule": "0.85 scaled by coverage"
+    },
+    "confidenceComponents": [],
+    "confidencePublishPolicy": "suppress_if_denominator_or_coverage_is_insufficient",
+    "dataQualityFlags": ["incomplete_source_coverage"],
+    "refreshCadence": "On order change; debounce",
+    "dependencies": ["orders", "customer_identities"],
+    "tranche": "Product performance v1",
+    "registryStatus": "New candidate",
+    "llmExposure": "Core or category retrieval",
+    "materializationRule": "Persist only when minimum data is met; otherwise record skipped/insufficient in refresh diagnostics.",
+    "caveat": "An over-index ratio above 1 means repeat customers are over-represented among discounted orders relative to their share of all orders; below 1 means discounted orders skew toward newer/one-time customers. This is an observed distribution, not a counterfactual — the belief does not know what a repeat customer would have bought or paid without the discount, only who the discount actually reached. Do not include PII; the join uses the same customerExternalId linkage data.customer_identity_order_coverage already measures, and its coverage gates this belief the same way.",
+    "sourceUrl": "https://help.shopify.com/en/manual/reports-and-analytics/shopify-reports/report-types/default-reports/customers-reports"
+  },
+  {
     "key": "products.top_returned_products.trailing_180d",
     "category": "products",
     "valueType": "structured",
@@ -5779,6 +5925,93 @@ const BELIEF_RETRIEVAL_TERMS = {
     "markdown",
     "welcome10",
     "free shipping",
+  ],
+  // Nobody says "discount depth". They ask if they're giving too much away.
+  "business.discount_depth.trailing_90d": [
+    "giving away",
+    "give away",
+    "margin",
+    "too much off",
+    "promo",
+    "voucher",
+    "coupon",
+    "sale",
+  ],
+  // "Concentration" and "which products" are our words for "who's actually getting
+  // discounted" — merchants name the products or ask what's on sale.
+  "business.discount_concentration.trailing_90d": [
+    "which products",
+    "what's on sale",
+    "whats on sale",
+    "always discounted",
+    "only sells on sale",
+  ],
+  // "Is the discount working" is the merchant's phrasing for what this belief answers.
+  "business.discount_order_value_effect.trailing_90d": [
+    "is it working",
+    "worth it",
+    "bigger basket",
+    "spend more",
+    "actually working",
+  ],
+  // Merchants ask this as "am I just discounting my regulars" — never "customer mix".
+  "business.discount_customer_mix.trailing_90d": [
+    "my regulars",
+    "loyal customers",
+    "already buy",
+    "would have bought anyway",
+    "discounting regulars",
+  ],
+  // Nobody says "repeat customer rate" or "revenue share" — they ask if people come back,
+  // or what they're worth.
+  "customers.repeat_customer_rate.all_time": [
+    "come back",
+    "coming back",
+    "came back",
+    "buy again",
+    "return customers",
+    "repeat business",
+  ],
+  "customers.repeat_revenue_share.all_time": [
+    "come back",
+    "returning customers",
+    "worth more",
+    "revenue from",
+  ],
+  "customers.average_lifetime_spend.all_time": [
+    "lifetime value",
+    "ltv",
+    "worth",
+    "how much do customers spend",
+    "average spend",
+  ],
+  "customers.top_customer_revenue_share.all_time": [
+    "best customers",
+    "biggest customers",
+    "depend on",
+    "concentration",
+    "vip",
+  ],
+  // "Champion" and "at risk" are the words this belief exists to make usable — but a
+  // merchant asks for who to target, not for the segment name.
+  "customers.rfm_segment_mix.all_time": [
+    "champion",
+    "champions",
+    "at risk",
+    "vip",
+    "best customers",
+    "who should i",
+    "target",
+    "winback",
+    "win back",
+    "segment",
+  ],
+  "customers.new_customer_early_repeat_rate.trailing_180d": [
+    "new customers",
+    "first time",
+    "come back again",
+    "second order",
+    "second purchase",
   ],
 };
 

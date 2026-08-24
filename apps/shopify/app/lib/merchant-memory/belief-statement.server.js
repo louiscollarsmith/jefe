@@ -441,6 +441,145 @@ function formatChannelQuality(value) {
   return `Customers who first found you through ${label(best)} come back more often than the ones from ${label(worst)} — worth knowing before you decide where the next spend goes. It's early, so compare the two rather than reading either as your repeat rate.`;
 }
 
+/**
+ * customers.known_customer_count → the size of the customer base I can see.
+ * Value (countOutcome): { count }.
+ * @param {any} value
+ */
+function formatKnownCustomerCount(value) {
+  const count = Number(value?.count);
+  if (!Number.isFinite(count) || count < 1) return null;
+  return `I can see ${plural(count, "customer")} who've bought from you.`;
+}
+
+/**
+ * customers.repeat_revenue_share.all_time → how much of the money comes from people who
+ * already know you. Value (shareOutcome): { percentage, repeatCustomerCount, ... }.
+ * @param {any} value
+ */
+function formatRepeatRevenueShare(value) {
+  const p = pct(value?.percentage);
+  if (!p || !(Number(value?.percentage) > 0)) return null;
+  return `${p}% of everything you've made has come from customers who've bought more than once.`;
+}
+
+/**
+ * customers.average_lifetime_spend.all_time → what a customer is worth, split by whether
+ * they came back. Value: { averageLifetimeSpend, repeatCustomerAverageSpend,
+ * oneTimeCustomerAverageSpend, currency }.
+ * @param {any} value
+ */
+function formatAverageLifetimeSpend(value) {
+  const overall = money(value?.currency, value?.averageLifetimeSpend);
+  if (!overall || !(Number(value?.averageLifetimeSpend) > 0)) return null;
+  let s = `The average customer has spent ${overall} with you`;
+  const repeat = money(value?.currency, value?.repeatCustomerAverageSpend);
+  const oneTime = money(value?.currency, value?.oneTimeCustomerAverageSpend);
+  if (repeat && oneTime && Number(value?.repeatCustomerAverageSpend) > Number(value?.oneTimeCustomerAverageSpend)) {
+    s += ` — ${repeat} for someone who's come back, against ${oneTime} for a one-time buyer`;
+  }
+  return `${s}.`;
+}
+
+/**
+ * customers.rfm_segment_mix.all_time → who's worth protecting vs who's slipping away.
+ * Value: { championsCustomers, championsSharePercent, atRiskCustomers, atRiskSharePercent,
+ * atRiskRevenueAtStake, currency }.
+ *
+ * Leads with at_risk over champions on purpose: a merchant can act on "these high-value
+ * customers have gone quiet" today, whereas "these customers are fine" needs nothing from
+ * them. Only speaks when there's an at-risk customer to name.
+ * @param {any} value
+ */
+function formatRfmSegmentMix(value) {
+  const atRisk = Number(value?.atRiskCustomers);
+  if (!Number.isFinite(atRisk) || atRisk < 1) return null;
+  const atStake = money(value?.currency, value?.atRiskRevenueAtStake);
+  let s = `${plural(atRisk, "customer")} used to be among your best and have gone quiet longer than they usually would`;
+  if (atStake && Number(value?.atRiskRevenueAtStake) > 0) s += ` — ${atStake} of past spend between them`;
+  s += ".";
+  const champions = Number(value?.championsCustomers);
+  if (Number.isFinite(champions) && champions > 0) {
+    s += ` ${plural(champions, "customer")} match that same high value and are still buying regularly.`;
+  }
+  return s;
+}
+
+/**
+ * customers.new_customer_early_repeat_rate.trailing_180d → whether new customers are
+ * coming back quickly. Value: { newCustomers, repeatedWithin90dCount,
+ * repeatedWithin90dSharePercent }.
+ *
+ * "3 to 6 months ago", not "recently" — the belief deliberately excludes anyone acquired
+ * in the last 90 days (they haven't had the full follow window yet), so the sentence
+ * has to say which customers it's actually talking about.
+ * @param {any} value
+ */
+function formatNewCustomerEarlyRepeatRate(value) {
+  const p = pct(value?.repeatedWithin90dSharePercent);
+  if (!p) return null;
+  const newCustomers = Number(value?.newCustomers);
+  let s = `Of the ${Number.isFinite(newCustomers) ? plural(newCustomers, "customer") : "customers"} you won 3 to 6 months ago, ${p}% had already ordered again within 90 days of their first order`;
+  return `${s}.`;
+}
+
+/**
+ * business.discount_order_value_effect.trailing_90d → whether a discount changes the sale,
+ * not just the price. Value: { discountedAverageOrderValue, undiscountedAverageOrderValue,
+ * averageOrderValueLiftPercent, currency }.
+ *
+ * Stated as a comparison, never a claim that the discount CAUSED the difference — the
+ * belief itself is explicitly correlational.
+ * @param {any} value
+ */
+function formatDiscountOrderValueEffect(value) {
+  const lift = Number(value?.averageOrderValueLiftPercent);
+  const discountedAov = money(value?.currency, value?.discountedAverageOrderValue);
+  const undiscountedAov = money(value?.currency, value?.undiscountedAverageOrderValue);
+  if (!Number.isFinite(lift) || !discountedAov || !undiscountedAov) return null;
+  if (Math.abs(lift) < 5) {
+    return `Discounted orders average about the same as undiscounted ones (${discountedAov} vs ${undiscountedAov}) — the discount doesn't look like it's changing what people buy.`;
+  }
+  const direction = lift > 0 ? "bigger" : "smaller";
+  return `Discounted orders average ${discountedAov}, ${pct(Math.abs(lift))}% ${direction} than the ${undiscountedAov} average on undiscounted orders. Worth knowing before reading too much into it either way — bigger discounted baskets could mean the discount is working, or just that bigger spenders are the ones who use it.`;
+}
+
+/**
+ * business.discount_concentration.trailing_90d → which products are absorbing the discount
+ * spend. Value: { topDiscountedProduct: {title, discountSharePercent}, items,
+ * top5ConcentrationSharePercent, currency }.
+ * @param {any} value
+ */
+function formatDiscountConcentration(value) {
+  const top = value?.topDiscountedProduct;
+  const title = top?.title;
+  if (typeof title !== "string" || !title) return null;
+  const top5 = pct(value?.top5ConcentrationSharePercent);
+  let s = `${title} absorbs more of your discount spend than any other product`;
+  if (top5 && Number(value?.top5ConcentrationSharePercent) >= 50) {
+    s += ` — your top 5 discounted products account for ${top5}% of everything given away`;
+  }
+  return `${s}.`;
+}
+
+/**
+ * business.discount_customer_mix.trailing_90d → whether repeat customers are over- or
+ * under-represented among discounted orders. Value: { repeatCustomerShareOfDiscountedOrdersPercent,
+ * repeatCustomerShareOfAllOrdersPercent, overIndexRatio }.
+ *
+ * States the observed distribution only — never what a repeat customer would have done
+ * without the discount, which this belief has no way to know.
+ * @param {any} value
+ */
+function formatDiscountCustomerMix(value) {
+  const ratio = Number(value?.overIndexRatio);
+  const discountedShare = pct(value?.repeatCustomerShareOfDiscountedOrdersPercent);
+  const allShare = pct(value?.repeatCustomerShareOfAllOrdersPercent);
+  if (!Number.isFinite(ratio) || !discountedShare || !allShare) return null;
+  if (ratio < 1.2) return null; // Not meaningfully over-indexed — nothing worth flagging.
+  return `${discountedShare}% of your discounted orders come from customers who already buy repeatedly, versus ${allShare}% of your orders overall — your discounts are reaching repeat customers more than your order mix would predict.`;
+}
+
 /** @type {Record<string, (value: any) => string | null>} */
 const FORMATTERS = {
   "business.discount_code_mix.trailing_90d": formatDiscountCodeMix,
@@ -469,6 +608,16 @@ const FORMATTERS = {
   "catalog.out_of_stock_product_count": formatOutOfStockProducts,
   "business.days_since_last_order": formatDaysSinceLastOrder,
   "products.no_sale_active_product_count.trailing_90d": formatNoSaleProducts,
+  // Third tranche — customer and discount intelligence broad enough to target a
+  // recommendation (who to win back, which product/offer is actually working).
+  "customers.known_customer_count": formatKnownCustomerCount,
+  "customers.repeat_revenue_share.all_time": formatRepeatRevenueShare,
+  "customers.average_lifetime_spend.all_time": formatAverageLifetimeSpend,
+  "customers.rfm_segment_mix.all_time": formatRfmSegmentMix,
+  "customers.new_customer_early_repeat_rate.trailing_180d": formatNewCustomerEarlyRepeatRate,
+  "business.discount_order_value_effect.trailing_90d": formatDiscountOrderValueEffect,
+  "business.discount_concentration.trailing_90d": formatDiscountConcentration,
+  "business.discount_customer_mix.trailing_90d": formatDiscountCustomerMix,
 };
 
 /** Belief keys that have a statement formatter (for coverage checks / roadmap). */
