@@ -310,3 +310,106 @@ test("activeWork content changes produce different fingerprints", () => {
   assert.equal(itemA?.targetResources?.[0], "gid://P/1");
   assert.equal(itemB?.targetResources?.[0], "gid://P/2");
 });
+
+// ---------------------------------------------------------------------------
+// Cross-domain novelty (Task 3 §7 follow-on): different feasibleWriteOperations structurally
+// cannot overlap, regardless of what the target-ID strings happen to look like. detectOverlap's
+// very first gate is `candidate.operations.some(op => existing.operations.includes(op))` — if
+// the operation sets share nothing, everything downstream (explicit IDs, predicates) is never
+// even inspected. These tests exercise that gate directly across genuinely different domains.
+// ---------------------------------------------------------------------------
+
+test("cross-domain: a customer-segment action and a product-status action never collide, even with an accidental ID-string overlap", () => {
+  // Deliberately reuse the exact same literal string as both a "customer id" and a "product id"
+  // to prove the non-collision comes from the operation-name gate, not from the IDs happening to
+  // differ.
+  const sharedLookingId = "gid://shopify/Resource/1";
+  const customerSegmentAction = {
+    feasibleWriteOperations: ["customerUpdate"],
+    eligibilityCriteria: [{ resourceType: "Customer", field: "id", operator: "in", value: [sharedLookingId] }],
+  };
+  const productStatusAction = {
+    feasibleWriteOperations: ["productUpdate"],
+    eligibilityCriteria: [{ resourceType: "Product", field: "id", operator: "in", value: [sharedLookingId] }],
+  };
+
+  const candidateFp = computeActionFingerprint(customerSegmentAction);
+  const existingFp = computeActionFingerprint(productStatusAction);
+
+  // Structural proof: operations don't intersect, so detectOverlap's gate trips before target
+  // IDs are ever compared.
+  assert.deepEqual(candidateFp.operations, ["customerupdate"]);
+  assert.deepEqual(existingFp.operations, ["productupdate"]);
+  assert.equal(
+    candidateFp.operations.some((op) => existingFp.operations.includes(op)),
+    false,
+  );
+
+  const result = detectOverlap(candidateFp, existingFp);
+  assert.equal(result.overlap, "none");
+
+  const noveltyResult = checkCandidateNovelty(customerSegmentAction, [
+    makeAction("existing-product-action", "proposed", productStatusAction),
+  ]);
+  assert.equal(noveltyResult.novel, true);
+});
+
+test("cross-domain: a discount action on a customer cohort and a price change on one SKU remain distinct despite both being 'pricing-adjacent'", () => {
+  const discountForVipCohort = {
+    feasibleWriteOperations: ["discountCodeBasicCreate"],
+    eligibilityCriteria: [{ resourceType: "Customer", field: "tags", operator: "eq", value: "vip" }],
+  };
+  const priceChangeForOneSku = {
+    feasibleWriteOperations: ["productVariantsBulkUpdate"],
+    eligibilityCriteria: [{ resourceType: "Variant", field: "id", operator: "eq", value: "gid://shopify/ProductVariant/900" }],
+  };
+
+  const discountFp = computeActionFingerprint(discountForVipCohort);
+  const priceFp = computeActionFingerprint(priceChangeForOneSku);
+  const result = detectOverlap(discountFp, priceFp);
+  assert.equal(result.overlap, "none");
+
+  const noveltyResult = checkCandidateNovelty(discountForVipCohort, [
+    makeAction("existing-price-action", "accepted", priceChangeForOneSku),
+  ]);
+  assert.equal(noveltyResult.novel, true);
+});
+
+test("documented edge case (intentional, not a bug): two same-operation, same-target-ID actions collide even when business intent differs", () => {
+  // Two unrelated customerUpdate calls that both happen to target the exact same customer ID
+  // (one tagging them "vip", the other tagging them "newsletter-opt-out") are indistinguishable
+  // to computeActionFingerprint, because eligibilityCriteria's non-id predicates are folded into
+  // predicateSig only when there are NO explicit target IDs (see detectOverlap: "Both sides have
+  // explicit IDs -> compare by ID set", which short-circuits before predicateSig is consulted at
+  // all). This is the existing code's own documented stance (see action-fingerprint.server.js's
+  // module comment and the "caller must decide" note already in this file, Test 4/Note above) —
+  // not something this task loosens. Silently allowing two same-operation, same-target writes
+  // through as "novel" risks a duplicate/conflicting execution against the exact same resource,
+  // which is a worse failure mode than the rare false positive of blocking a legitimately
+  // different reason to update the same customer. The caller (recommendation-service) is
+  // expected to inspect the collision, not this structural layer.
+  const sameCustomerId = "gid://shopify/Customer/42";
+  const tagVip = {
+    feasibleWriteOperations: ["customerUpdate"],
+    eligibilityCriteria: [
+      { resourceType: "Customer", field: "id", operator: "eq", value: sameCustomerId },
+      { resourceType: "Customer", field: "tags", operator: "eq", value: "vip" },
+    ],
+  };
+  const tagNewsletterOptOut = {
+    feasibleWriteOperations: ["customerUpdate"],
+    eligibilityCriteria: [
+      { resourceType: "Customer", field: "id", operator: "eq", value: sameCustomerId },
+      { resourceType: "Customer", field: "tags", operator: "eq", value: "newsletter-opt-out" },
+    ],
+  };
+
+  const fpA = computeActionFingerprint(tagVip);
+  const fpB = computeActionFingerprint(tagNewsletterOptOut);
+  const result = detectOverlap(fpA, fpB);
+  assert.equal(result.overlap, "exact");
+
+  const noveltyResult = checkCandidateNovelty(tagNewsletterOptOut, [makeAction("existing-vip-tag", "proposed", tagVip)]);
+  assert.equal(noveltyResult.novel, false);
+  assert.equal(noveltyResult.reason, "exact_duplicate");
+});

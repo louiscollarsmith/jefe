@@ -27,6 +27,10 @@ import {
   CANDIDATE_DISPOSITION,
 } from "./recommendation-agent.server.js";
 import { withRecommendationLlmRetry } from "./recommendation-llm-retry.server.js";
+import {
+  resolveCandidateFamily,
+  classifyDispositionDetail,
+} from "./candidate-disposition-taxonomy.server.js";
 
 const log = baseLogger.child({ component: "agentic-shopify-candidate-pipeline" });
 
@@ -301,15 +305,74 @@ export function classifyCandidateOutcome(result) {
   return CANDIDATE_STATUS.nonExecutable;
 }
 
-/** @param {any} candidate */
-function summarizeCandidateForDiagnostics(candidate) {
+/**
+ * Structured, permanent per-candidate diagnostics (task: "Instrument permanent candidate
+ * diagnostics"). `domain` and `dispositionDetail` are derived deterministically server-side
+ * (see candidate-disposition-taxonomy.server.js) from signals already computed during
+ * investigation — no LLM call, no schema change, safe to compute on every run including past
+ * ones replayed from persisted candidateQueue rows.
+ * @param {any} candidate
+ * @param {{ families: any[] } | null} [opportunitySurface]
+ */
+function summarizeCandidateForDiagnostics(candidate, opportunitySurface = null) {
+  const family = resolveCandidateFamily(candidate, opportunitySurface);
+  const investigationDiagnostics = candidate.investigation?.diagnostics ?? null;
+  const isTerminalFailure = candidate.status !== CANDIDATE_STATUS.recommended && candidate.status !== CANDIDATE_STATUS.queued && candidate.status !== CANDIDATE_STATUS.investigating;
+  const dispositionDetail = isTerminalFailure
+    ? classifyDispositionDetail({
+        candidateStatus: candidate.status,
+        resultStatus: candidate.resultStatus ?? null,
+        reason: candidate.reason,
+        family,
+      })
+    : null;
   return {
     candidateId: candidate.candidateId,
+    domain: family?.id ?? null,
     diagnosedProblem: candidate.diagnosedProblem,
     priority: candidate.priority,
+    beliefIds: candidate.businessEvidenceRefs ?? [],
+    operationQuery: [candidate.possibleIntervention, candidate.diagnosedProblem].filter(Boolean).join(" ").trim() || null,
+    retrievedOperations: investigationDiagnostics?.retrievedOperations ?? [],
+    scopeRequired: family ? family.writeOperations.some((/** @type {any} */ op) => !op.scopeSatisfied) : null,
+    scopeGranted: family ? family.writeOperations.every((/** @type {any} */ op) => op.scopeSatisfied) : null,
+    executionStatus: family?.capabilityState ?? null,
     status: candidate.status,
     reason: candidate.reason,
+    resultStatus: candidate.resultStatus ?? null,
+    finalDisposition: candidate.status === CANDIDATE_STATUS.recommended ? "RECOMMENDED" : dispositionDetail,
   };
+}
+
+/**
+ * Reconciliation summary (task: "rejection funnel" / "Only accept NO_ACTIONABLE_OPPORTUNITY if
+ * this reconciliation balances") — counts every non-recommended terminal candidate by its
+ * deterministic disposition-detail category, so exhaustion can be audited by category totals
+ * rather than re-reading free-text reasons.
+ * @param {any[]} candidateQueue
+ * @param {{ families: any[] } | null} opportunitySurface
+ */
+function summarizeRejectionFunnel(candidateQueue, opportunitySurface) {
+  /** @type {Record<string, number>} */
+  const counts = {};
+  let recommended = 0;
+  for (const candidate of candidateQueue) {
+    if (candidate.status === CANDIDATE_STATUS.recommended) {
+      recommended += 1;
+      continue;
+    }
+    if (candidate.status === CANDIDATE_STATUS.queued || candidate.status === CANDIDATE_STATUS.investigating) continue;
+    const family = resolveCandidateFamily(candidate, opportunitySurface);
+    const detail = classifyDispositionDetail({
+      candidateStatus: candidate.status,
+      resultStatus: candidate.resultStatus ?? null,
+      reason: candidate.reason,
+      family,
+    });
+    counts[detail] = (counts[detail] ?? 0) + 1;
+  }
+  const rejected = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  return { recommended, rejected, total: candidateQueue.length, byDisposition: counts };
 }
 
 /**
@@ -416,6 +479,7 @@ export async function runCandidateDrivenRecommendation(input) {
       llmCallCount += Array.isArray(result.trace?.turns) ? Math.max(1, result.trace.turns.length) : 1;
       if (Array.isArray(result.trace?.toolResults)) sharedToolResults = result.trace.toolResults;
       candidate.investigation = { status: result.status, diagnostics: result.diagnostics ?? null };
+      candidate.resultStatus = result.status ?? null;
 
       if (result.status === "RECOMMEND_ACTION") {
         pushProgress(PROGRESS_STATE.validatingRecommendation, { candidateId: candidate.candidateId });
@@ -452,7 +516,12 @@ export async function runCandidateDrivenRecommendation(input) {
   });
   if (firstPassOutcome.done) {
     pushProgress(PROGRESS_STATE.completed);
-    return finalizeRecommendation(firstPassOutcome.result, { candidateQueue, discoveryLog, progressLog });
+    return finalizeRecommendation(firstPassOutcome.result, {
+      candidateQueue,
+      discoveryLog,
+      progressLog,
+      opportunitySurface: context.opportunitySurface,
+    });
   }
 
   // Part 13/14: first pass exhausted without a recommendation. Run rescue discovery before
@@ -479,7 +548,12 @@ export async function runCandidateDrivenRecommendation(input) {
       const rescueOutcome = await investigateCandidates(novelRescueCandidates, { rescue: true });
       if (rescueOutcome.done) {
         pushProgress(PROGRESS_STATE.completed);
-        return finalizeRecommendation(rescueOutcome.result, { candidateQueue, discoveryLog, progressLog });
+        return finalizeRecommendation(rescueOutcome.result, {
+          candidateQueue,
+          discoveryLog,
+          progressLog,
+          opportunitySurface: context.opportunitySurface,
+        });
       }
     }
   }
@@ -500,7 +574,8 @@ export async function runCandidateDrivenRecommendation(input) {
       ? `Investigated ${candidateQueue.length} candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.`
       : "Candidate discovery produced no evidence-grounded business opportunities to investigate.",
     diagnostics: {
-      candidateQueue: candidateQueue.map(summarizeCandidateForDiagnostics),
+      candidateQueue: candidateQueue.map((candidate) => summarizeCandidateForDiagnostics(candidate, context.opportunitySurface)),
+      rejectionFunnel: summarizeRejectionFunnel(candidateQueue, context.opportunitySurface),
       discoveryLog,
       llmCallCount,
     },
@@ -508,15 +583,19 @@ export async function runCandidateDrivenRecommendation(input) {
   };
 }
 
-/** @param {any} result @param {{ candidateQueue: any[]; discoveryLog: any[]; progressLog: any[] }} extras */
-function finalizeRecommendation(result, { candidateQueue, discoveryLog, progressLog }) {
+/**
+ * @param {any} result
+ * @param {{ candidateQueue: any[]; discoveryLog: any[]; progressLog: any[]; opportunitySurface: any }} extras
+ */
+function finalizeRecommendation(result, { candidateQueue, discoveryLog, progressLog, opportunitySurface }) {
   return {
     ok: true,
     status: "RECOMMEND_ACTION",
     recommendation: result.recommendation,
     diagnostics: {
       ...(result.diagnostics ?? {}),
-      candidateQueue: candidateQueue.map(summarizeCandidateForDiagnostics),
+      candidateQueue: candidateQueue.map((candidate) => summarizeCandidateForDiagnostics(candidate, opportunitySurface)),
+      rejectionFunnel: summarizeRejectionFunnel(candidateQueue, opportunitySurface),
       discoveryLog,
     },
     trace: {
