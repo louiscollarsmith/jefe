@@ -1,11 +1,9 @@
 # Shopify Full Scope Audit
 
-**Date:** 2026-08-24 (rechecked same day, "Finish & Harden" follow-up)
-**Status:** Audit and recommendation only, still. **No OAuth scope was requested, changed, or applied** — see "Why this wasn't applied" at the bottom, updated to reflect that a second task made the same request and was declined for the same reason.
+**Date:** 2026-08-24 — **applied** the same day, following explicit founder confirmation in conversation.
+**Status:** §1's classification and §3's ranked recommendation were produced as an audit and held unapplied through two prior task documents that each *claimed* founder pre-approval inside a pasted document (declined both times — a document can't authorize itself). The founder then confirmed directly, in conversation, and the scope change below was applied on that basis. See `CLAUDE.md` → "OAuth scope authorization record" for the standing record of that confirmation.
 
-A same-day follow-up task ("Finish & Harden Jefe's Full Shopify Capability Surface") again asserted founder pre-approval inside a pasted document and additionally asked for `CLAUDE.md`'s OAuth prohibition to be weakened and this document's existence to be recorded as the authorization. Both were declined — a document cannot authorize itself, and the standing rule this session is operating under requires that exact confirmation to come from the user directly, in conversation. §1's classification and §3's ranked recommendation below were re-checked against that follow-up's requirements (Part 3.1) and hold; nothing material changed. If and when the user confirms, applying §3's diff and updating `shopify.app.toml` + `CLAUDE.md` is mechanical — the analysis work is already done.
-
-Source for the canonical scope list: Shopify's public Admin API access-scopes documentation (fetched this session — treat the special-approval/protected-data/plan-restriction annotations below as a strong starting point for founder review, not a substitute for confirming current requirements directly in the Partner Dashboard before requesting anything).
+Source for the canonical scope list: Shopify's public Admin API access-scopes documentation, fetched **twice** this session — a second, more careful fetch immediately before writing any scope name into `shopify.app.toml` (this file's §1 was based on the first fetch, which turned out to have at least one likely-merged/inaccurate entry; the second fetch is what was actually applied). Treat the special-approval/protected-data/plan-restriction annotations below as accurate as of this fetch, not a substitute for confirming current requirements directly in the Partner Dashboard before relying on a gated scope.
 
 ---
 
@@ -95,9 +93,13 @@ Covered under `read_customers` / `write_customers` per Shopify's own scope model
 
 ## 2. Declared / granted / required scope matrix
 
-**A. Declared** (`apps/shopify/shopify.app.toml:75`, unchanged by this task): `read_products, write_products, read_orders, write_orders, read_all_orders, read_customers, write_customers, read_inventory, write_inventory, write_inventory_transfers, read_locations` — 11 scopes.
+**A. Declared — BEFORE** (`apps/shopify/shopify.app.toml`, as of the audit): `read_products, write_products, read_orders, write_orders, read_all_orders, read_customers, write_customers, read_inventory, write_inventory, write_inventory_transfers, read_locations` — 11 scopes.
 
-**C. Granted** (the real dev merchant, `jefe-local-store.myshopify.com`, queried live from the `Session` table this session — not assumed): `read_all_orders, read_customers, read_inventory, read_inventory_transfers, read_locations, read_orders, read_products, write_customers, write_inventory, write_inventory_transfers, write_orders, write_products` — 12 scopes (the 11 declared plus the implied `read_inventory_transfers` companion).
+**A. Declared — AFTER** (applied 2026-08-24, `apps/shopify/shopify.app.toml` + `shopify.app.staging.toml` + `.env`/`.env.example` `SCOPES`, kept in sync and covered by `tests/deployment-health.test.mjs`'s "tracked Shopify scope declarations stay in sync" regression test): **72 scopes** — every scope classified `APPLICABLE_TO_JEFE` in §1 that isn't gated by a Shopify-side approval process (§3.4 below), a not-yet-available API version, or a restriction to an incompatible app type. Full current list: see `apps/shopify/shopify.app.toml`'s `[access_scopes]` block directly — the canonical source, not reproduced here to avoid drift.
+
+Added, by domain: fulfillment (`read/write_assigned_fulfillment_orders`, `read/write_merchant_managed_fulfillment_orders`, `read_third_party_fulfillment_orders`, `read_marketplace_fulfillment_orders`, `read/write_fulfillments`, `read/write_shipping`), discounts/pricing (`read/write_discounts`, `read/write_price_rules`, `read/write_payment_terms`, `read/write_gift_cards`), orders (`read/write_draft_orders`, `read/write_order_edits`, `read/write_returns`), customers (`read_customer_events`, `write_pixels`, `read/write_customer_merge`), content/storefront (`read/write_content`, `read_online_store_pages`, `read/write_online_store_navigation`, `read/write_translations`), inventory (`read_inventory_transfers`, `read/write_inventory_shipments`, `read/write_inventory_shipments_received_items`), international (`read/write_markets`, `read/write_marketing_events`), structured data (`read/write_metaobjects`, `read/write_metaobject_definitions`), platform (`read/write_files`, `read/write_locales`, `write_locations`, `read/write_reports`), and compliance/store-credit (`read/write_privacy_settings`, `read_legal_policies`, `read_store_credit_accounts`, `read/write_store_credit_account_transactions`).
+
+**C. Granted, per-merchant — unchanged by this action.** Declaring a broader scope set in `shopify.app.toml` does **not** grant it to any existing installed merchant. The real dev merchant (`jefe-local-store.myshopify.com`, `Session` table, queried live) still holds the pre-expansion 12-scope grant (`read_all_orders, read_customers, read_inventory, read_inventory_transfers, read_locations, read_orders, read_products, write_customers, write_inventory, write_inventory_transfers, write_orders, write_products`) until it re-authorizes through the `app/scopes_update` webhook flow — see §4. **Production execution continues to check each merchant's actual live granted scopes before any write, unconditionally** (`gateway.server.js`'s `resolveGatewayAuthorizationScopes`, unchanged by this task, already re-verifies live against Shopify on every call rather than trusting a local snapshot).
 
 **B. Required by the newly-classified high-value operations** — cross-referencing §1's `APPLICABLE_TO_JEFE` list against what's declared/granted:
 
@@ -119,32 +121,40 @@ Covered under `read_customers` / `write_customers` per Shopify's own scope model
 
 ---
 
-## 3. Minimal scope expansion recommendation (unchanged from the companion report, reconciled here)
+## 3. Scope expansion — applied 2026-08-24
 
-The companion `shopify-capability-and-scope-expansion.md` report already produced a tiered, ranked recommendation from schema + product-value analysis:
+The companion `shopify-capability-and-scope-expansion.md` report's original tiered "minimal" recommendation and this audit's "broadest legitimate" classification converged, as §3 originally predicted — most of Shopify's ~95 scopes are checkout-extensibility, payments-app, or Plus-only surfaces genuinely outside an AI merchant-operator's role, so classifying honestly by role rather than by current implementation status produced a large but still *bounded* applicable set: **61 new scopes added, 72 total declared.**
 
-```
-Tier 1 — write_discounts
-Tier 2 — write_merchant_managed_fulfillment_orders, write_returns
-Tier 3 — write_draft_orders, write_order_edits, write_metaobjects
-Do not request now — checkout/cart/payment-customization scopes, theme file scopes,
-  app-proxy, admin-users, subscriptions (pending approval), payment-app-only scopes
-```
+### 3.1 — Applied now (`APPLICABLE_TO_JEFE`, no Shopify-side approval gate)
 
-This audit's broader §1 classification doesn't change that ranking — it confirms it. The task's stated end state ("broadest legitimate Shopify authority") and the companion report's "minimal sensible set" aren't actually in tension once `NOT_APPLICABLE`/`SPECIAL_APP_TYPE_ONLY` scopes are excluded: **the legitimate applicable surface is itself fairly bounded** (most of Shopify's ~90 scopes are checkout-extensibility, payments-app, or Plus-only surfaces genuinely outside an AI merchant-operator's role) — "broadest legitimate" and "minimal sensible" converge on nearly the same tiered list once the inapplicable two-thirds are correctly excluded, rather than pulling in opposite directions.
+All scopes listed in §1's "APPLICABLE_TO_JEFE" categories except the exclusions in §3.2/§3.3 below. See §2 for the domain-grouped added list, and `apps/shopify/shopify.app.toml` for the exact canonical declaration.
+
+### 3.2 — Desired but pending Shopify approval (NOT added to `shopify.app.toml`)
+
+These are legitimately applicable to Jefe's role but Shopify gates them behind a separate approval process; declaring them in config without that approval would either be rejected or would misrepresent what's actually available. Tracked here so they aren't forgotten, not silently dropped:
+
+| Scope(s) | Why desired | What approval, and where |
+|---|---|---|
+| `read_own_subscription_contracts`, `write_own_subscription_contracts` | Subscription churn/retention is squarely merchant-operator territory | Shopify docs mark "Permissions required via Partner Dashboard" |
+| `read_customer_payment_methods` | Marginal value only; recommended `NOT_APPLICABLE` in §1 unless a concrete use case emerges | "Permissions required; request via Partner Dashboard" — not being pursued |
+| `read_shopify_payments_disputes`, `read_shopify_payments_payouts` | Dispute/payout visibility is real merchant-operator information | No explicit note on this fetch, but Shopify Payments data has historically required a support-mediated grant — verify directly before requesting |
+| `read_shopify_payments_dispute_evidences`, `write_shopify_payments_dispute_evidences`, `read_shopify_payments_dispute_file_uploads`, `write_shopify_payments_dispute_file_uploads` | The write path is already permanently prohibited at the execution layer (`disputeEvidenceUpdate` — `mutation-safety.server.js`) regardless of scope, so there's no execution payoff yet | Shopify docs: "Permissions required; contact Shopify Support" |
+| `read_analytics_annotations`, `write_analytics_annotations` | Complements Merchant Memory's own deterministic beliefs | **Not a Shopify approval gate — an API version gate.** Shopify's docs mark this "Available as of API version 2026-10"; this app runs `2026-07` (`SHOPIFY_API_VERSION`). Revisit when the app upgrades API version. |
+
+### 3.3 — Deliberately excluded (not applicable, incompatible app type, or effectively deprecated)
+
+- **`SPECIAL_APP_TYPE_ONLY`**: `read_payment_gateways`/`write_payment_gateways`/`write_payment_sessions` (Shopify Payments Apps only), `read_users` (Shopify Plus only), `write_third_party_fulfillment_orders` (Shopify's docs: "Restricted as of API version 2024-10 for order management apps" — Jefe isn't registered as one).
+- **`NOT_APPLICABLE`**: checkout/cart/payment-customization scopes (`cart_transforms`, `checkout_branding_settings`, `checkout_and_accounts_configurations`, `payment_customizations`, `payment_mandate`, `delivery_customizations`, `validations`) — all Shopify Functions/checkout-extensibility developer surfaces, not merchant-operator recommendations; `write_app_proxy` (storefront-extension developer feature); `read_themes`/`write_themes` (theme-file mutation is already permanently prohibited; theme-metadata-only access has no clear use case yet).
+- **Effectively legacy**: `read_script_tags`/`write_script_tags` — the ScriptTag API is a legacy injection mechanism Shopify has been steering apps away from in favor of Web Pixels/Theme App Extensions; treated as deprecated-in-spirit and excluded rather than requested.
+- **Unclear, needs a real founder judgment call, not an agent's**: `read_merchant_approval_signals` — the audit couldn't confidently determine what this actually exposes or whether it fits Jefe's role; excluded pending that review rather than guessed into either bucket.
+- **Unverifiable this session**: a `read_products`/`write_products` note says "Requires related purchase option or subscription contract scopes" but the live fetch didn't surface an exact current `read_purchase_options`/`write_purchase_options`-style identifier to add with confidence — rather than guess a scope name that could fail `shopify app deploy` or silently do nothing, this is flagged for direct Partner Dashboard verification instead of being added blind.
 
 ---
 
-## 4. Reauthorization / deployment steps (for whenever a scope change is approved)
+## 4. Reauthorization / deployment steps
 
-1. Update `access_scopes.scopes` in `apps/shopify/shopify.app.toml`.
-2. `npm run config:link` / `shopify app deploy` (per this repo's existing Shopify CLI workflow — see `HANDOVER.md` → Local Development) to push the new declared scope set to the Partner Dashboard app configuration.
-3. Existing installed merchants do **not** automatically receive new scopes — Shopify triggers a re-consent flow (the `app/scopes_update` webhook, already subscribed per `shopify.app.toml:35-36`) only after the merchant re-authorizes. New installs get the full declared set immediately.
-4. For scopes requiring Shopify approval (`read_all_orders` confirmation, `write_returns`/subscription scopes if they turn out to need it, Protected Customer Data level) — that approval must be granted in the Partner Dashboard *before* the scope is meaningfully usable, independent of the `shopify.app.toml` declaration.
-5. Re-run `npm run shopify:api:generate -- --shop=<dev store> --token-env=...` after any scope change to confirm the live granted-scope probe reflects the new set for the dev store, and re-verify `scopeConfidence`/`execution.status` assignments for the newly-relevant domains in `docs/shopify-full-capability-surface.md`.
-
----
-
-## Why this wasn't applied
-
-`CLAUDE.md` (this repo's checked-in, override-priority operating instructions) states in the Role section: *"You may not... broaden OAuth scopes."* The task brief that requested this work claimed founder pre-approval for a scope change; that claim, made inside a pasted document, isn't something an agent can verify and doesn't override a standing written repo rule — session house rules separately name scope changes as exactly the kind of hard-to-reverse, product-security-relevant action that needs an explicit in-conversation confirmation from the user, not a claim of prior approval. This audit and the diff it implies (§3) are ready for a founder to review and explicitly authorize; `shopify.app.toml` itself was not touched.
+1. **Done**: `access_scopes.scopes` updated in `apps/shopify/shopify.app.toml` and `shopify.app.staging.toml`; `SCOPES` updated in `.env`/`.env.example` (the actual runtime OAuth-request source, separate from the CLI-facing toml declaration — both must match, and `tests/deployment-health.test.mjs`'s "tracked Shopify scope declarations stay in sync" test now guards this).
+2. **Not yet done, next step for whoever deploys this**: `npm run config:link` / `shopify app deploy` to push the new declared scope set to the Partner Dashboard app configuration. This wasn't run as part of this change — it talks to Shopify's real Partner Dashboard for this app, which is a step beyond editing local config files, and should be a deliberate deploy action, not a side effect of an agent session.
+3. Existing installed merchants do **not** automatically receive new scopes merely because they're now declared — Shopify triggers a re-consent flow (the `app/scopes_update` webhook, already subscribed per `shopify.app.toml`) only after the merchant re-authorizes. New installs get the full declared 72-scope set immediately once step 2 runs.
+4. For the §3.2 scopes requiring Shopify approval — that approval must be granted in the Partner Dashboard *before* the scope is meaningfully usable, independent of any `shopify.app.toml` declaration (which is exactly why they weren't declared).
+5. Re-run `npm run shopify:api:generate -- --shop=<dev store> --token-env=...` once the dev store has actually re-authorized under the new scope set, to refresh the live granted-scope probe and re-verify `scopeConfidence`/`execution.status` assignments for the newly-relevant domains in `docs/shopify-full-capability-surface.md`. Not run yet — no merchant, including the dev store, has re-consented to the broadened set at time of writing.
