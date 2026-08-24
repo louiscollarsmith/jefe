@@ -13,6 +13,7 @@ automatically_update_urls_on_dev = true
 api_version = "2026-07"
 
   [[events.subscription]]
+  handle = "app-uninstalled"
   topic = "app/uninstalled"
   uri = "/webhooks/app/uninstalled"
   actions = ["delete"]
