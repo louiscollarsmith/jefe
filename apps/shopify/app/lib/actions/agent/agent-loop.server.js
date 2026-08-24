@@ -275,6 +275,26 @@ export function buildActionAgentSystemPrompt(input) {
     );
   }
 
+  if (tools.has("reject_action") || tools.has("defer_action")) {
+    lines.push(
+      "",
+      "Ending or holding this action: this is different from negation within the current request.",
+    );
+    if (tools.has("reject_action")) {
+      lines.push(
+        "- A clear, standalone rejection of the whole action — 'don't do this', 'cancel this', 'I never want to do this', 'forget this recommendation', 'bin this idea', 'I don't want this one' — calls reject_action. This is permanent: nothing is written to Shopify, and the underlying recommendation will not be repeated later. Only call it once the merchant has confirmed they mean the whole action, not just the current proposed values.",
+      );
+    }
+    if (tools.has("defer_action")) {
+      lines.push(
+        "- A request to hold this for later without ruling it out — 'not now', 'maybe later', 'leave this for another time', 'ask me again another time' — calls defer_action instead. The recommendation may resurface later; it is not being rejected.",
+      );
+    }
+    lines.push(
+      "- 'don't change it', 'don't touch Shopify yet', or declining to apply a specific change this turn is ordinary negation of the current request — call neither tool for that; see 'Negation is a first-class instruction' below.",
+    );
+  }
+
   lines.push(
     "",
     "Ambiguity: if a reference genuinely could mean two things, set requiresClarification with one narrow question and call no mutating tools.",

@@ -313,6 +313,110 @@ test("agentic chat acceptance creates accepted revision and enqueues background 
   assert.ok(prisma.jobs[0].jobType.startsWith("agentic_shopify_execute:"));
 });
 
+test("agentic chat reject_action durably declines the Action and writes no Shopify mutation", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const provider = scriptedProvider(() => ({
+    status: "ANSWER",
+    finalReply: "I've rejected this Action. Nothing was written to Shopify.",
+    toolCalls: [{ tool: "reject_action", arguments: {} }],
+  }));
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Don't do this. I never want to do it.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /rejected/i);
+  assert.equal(prisma.actions[0].status, "declined");
+  assert.equal(prisma.operationCalls.length, 0);
+  assert.equal(
+    prisma.events.some((event) => event.eventType === "action_rejected"),
+    true,
+  );
+});
+
+test("agentic chat defer_action holds the Action without rejecting it", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const provider = scriptedProvider(() => ({
+    status: "ANSWER",
+    finalReply: "I'll leave this for later. Nothing was written to Shopify.",
+    toolCalls: [{ tool: "defer_action", arguments: {} }],
+  }));
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Not now, maybe later.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(prisma.actions[0].status, "deferred");
+  assert.notEqual(prisma.actions[0].status, "declined");
+  assert.equal(prisma.operationCalls.length, 0);
+  assert.equal(
+    prisma.events.some((event) => event.eventType === "action_deferred"),
+    true,
+  );
+});
+
+test("agentic chat cannot claim a cancellation the model narrated but never invoked", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const provider = scriptedProvider(() => ({
+    status: "ANSWER",
+    finalReply: "Cancelled.",
+    toolCalls: [],
+  }));
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Can we cancel this, I never want to do it?",
+    logger: quietLogger,
+  });
+
+  // The durable ledger stays untouched — no reject_action ran — so the reply
+  // must not repeat the model's ungrounded "Cancelled." claim.
+  assert.notEqual(result.reply.trim(), "Cancelled.");
+  assert.equal(prisma.actions[0].status, "proposed");
+});
+
 test("completed agentic Action projects accepted verified outcome and Shopify history to Luna", async () => {
   const prisma = fakePrisma();
   const { action, semanticAction } = await materializeAgenticShopifyAction(prisma, {
