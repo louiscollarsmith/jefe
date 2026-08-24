@@ -304,6 +304,7 @@ async function loadDerivationContext(prisma, input) {
           quantity: true,
           unitPrice: true,
           totalPrice: true,
+          discount: true,
         },
       }),
       input.evidenceScope ? Promise.resolve([]) : prisma.refund.findMany({
@@ -551,6 +552,12 @@ function deriveDefinition(context, definition) {
         return discountDepth(context, definition, 90);
       case "business.discount_code_mix.trailing_90d":
         return discountCodeMix(context, definition, 90);
+      case "business.discount_order_value_effect.trailing_90d":
+        return discountOrderValueEffect(context, definition, 90);
+      case "business.discount_concentration.trailing_90d":
+        return discountConcentration(context, definition, 90);
+      case "business.discount_customer_mix.trailing_90d":
+        return discountCustomerMix(context, definition, 90);
       case "business.acquisition_mix.trailing_90d":
         return acquisitionMix(context, definition, 90);
       case "business.channel_quality.all_stored_history":
@@ -637,6 +644,10 @@ function deriveDefinition(context, definition) {
         return averageLifetimeSpend(context, definition);
       case "customers.top_customer_revenue_share.all_time":
         return topCustomerRevenueShare(context, definition);
+      case "customers.rfm_segment_mix.all_time":
+        return customerRfmSegmentMix(context, definition);
+      case "customers.new_customer_early_repeat_rate.trailing_180d":
+        return newCustomerEarlyRepeatRate(context, definition);
 
       case "refunds.refunded_order_rate.all_time":
         return refundedOrderRate(context, definition);
@@ -1594,8 +1605,6 @@ function customerCohortMix(context, definition) {
 
   const cohorts = { one_time: { customers: 0, spend: 0 }, returning: { customers: 0, spend: 0 }, loyal: { customers: 0, spend: 0 } };
   let totalSpend = 0;
-  /** @type {number[]} */
-  const gapsDays = [];
   for (const identity of identities) {
     const orderCount = Number(identity.orderCount ?? 0);
     const spend = Number(identity.totalSpend ?? 0);
@@ -1603,14 +1612,6 @@ function customerCohortMix(context, definition) {
     const bucket = orderCount >= 4 ? "loyal" : orderCount >= 2 ? "returning" : "one_time";
     cohorts[bucket].customers += 1;
     cohorts[bucket].spend += spend;
-
-    // Average gap between this customer's own orders. Only repeat buyers have one, and it
-    // is what the store's rhythm is built from.
-    const first = identity.firstSeenOrderAt ? new Date(identity.firstSeenOrderAt).getTime() : null;
-    const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
-    if (orderCount >= 2 && first != null && last != null && last > first) {
-      gapsDays.push((last - first) / 86400000 / (orderCount - 1));
-    }
   }
 
   const customerCount = identities.length;
@@ -1630,25 +1631,19 @@ function customerCohortMix(context, definition) {
     thresholdVersion: "customer-cohort-v1",
   };
 
-  // MIN_REPEATERS_FOR_RHYTHM: below this the median gap is one or two people's habits, not
-  // the store's, and a lapsed count built on it would be noise with a number attached.
-  const MIN_REPEATERS_FOR_RHYTHM = 5;
-  if (gapsDays.length >= MIN_REPEATERS_FOR_RHYTHM) {
-    const typicalGapDays = percentile([...gapsDays].sort((a, b) => a - b), 0.5);
-    // Twice the typical gap: one missed cycle is ordinary life, two is a pattern breaking.
-    const lapsedAfterDays = typicalGapDays * 2;
-    const cutoff = context.now.getTime() - lapsedAfterDays * 86400000;
+  const rhythm = repeatGapRhythm(identities, context.now);
+  if (rhythm.established) {
     let lapsed = 0;
     let lapsedSpend = 0;
     for (const identity of identities) {
       const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
-      if (last != null && last < cutoff) {
+      if (last != null && last < rhythm.cutoffTime) {
         lapsed += 1;
         lapsedSpend += Number(identity.totalSpend ?? 0);
       }
     }
-    value.typicalRepeatGapDays = roundNumber(typicalGapDays, 1);
-    value.lapsedAfterDays = roundNumber(lapsedAfterDays, 1);
+    value.typicalRepeatGapDays = roundNumber(rhythm.typicalGapDays, 1);
+    value.lapsedAfterDays = roundNumber(rhythm.lapsedAfterDays, 1);
     value.lapsedCustomers = lapsed;
     value.lapsedSharePercent = roundNumber((lapsed / customerCount) * 100, 2);
     value.lapsedRevenueAtStake = roundMoney(lapsedSpend);
@@ -1657,7 +1652,7 @@ function customerCohortMix(context, definition) {
     // Named explicitly so a reader can tell "this store has no lapsed customers" apart from
     // "we could not work out what lapsed means here".
     value.recencyBasis = "unavailable_too_few_repeat_customers";
-    value.repeatCustomersWithRhythm = gapsDays.length;
+    value.repeatCustomersWithRhythm = rhythm.repeatersWithRhythm;
   }
 
   return derived(context, definition, {
@@ -1667,6 +1662,40 @@ function customerCohortMix(context, definition) {
     summary: "How the customer base splits between one-time, returning and loyal buyers.",
     sampleSize: customerCount,
   });
+}
+
+// MIN_REPEATERS_FOR_RHYTHM: below this the median gap is one or two people's habits, not
+// the store's, and a lapsed count built on it would be noise with a number attached.
+const MIN_REPEATERS_FOR_RHYTHM = 5;
+
+/**
+ * The store's own repeat-purchase rhythm, derived from customers who have actually
+ * repeated — shared by customers.cohort_mix and customers.rfm_segment_mix so the two
+ * beliefs never disagree about who counts as overdue. `established: false` means there
+ * are too few repeaters to trust a median; callers must treat that as "recency cannot be
+ * established" and withhold the recency-dependent half of their output, never as "nobody
+ * is lapsed".
+ * @param {any[]} identities @param {Date} now
+ */
+function repeatGapRhythm(identities, now) {
+  /** @type {number[]} */
+  const gapsDays = [];
+  for (const identity of identities) {
+    const orderCount = Number(identity.orderCount ?? 0);
+    const first = identity.firstSeenOrderAt ? new Date(identity.firstSeenOrderAt).getTime() : null;
+    const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
+    if (orderCount >= 2 && first != null && last != null && last > first) {
+      gapsDays.push((last - first) / 86400000 / (orderCount - 1));
+    }
+  }
+  if (gapsDays.length < MIN_REPEATERS_FOR_RHYTHM) {
+    return { established: false, repeatersWithRhythm: gapsDays.length };
+  }
+  const typicalGapDays = percentile([...gapsDays].sort((a, b) => a - b), 0.5);
+  // Twice the typical gap: one missed cycle is ordinary life, two is a pattern breaking.
+  const lapsedAfterDays = typicalGapDays * 2;
+  const cutoffTime = now.getTime() - lapsedAfterDays * 86400000;
+  return { established: true, typicalGapDays, lapsedAfterDays, cutoffTime, repeatersWithRhythm: gapsDays.length };
 }
 
 const MIN_CUSTOMERS_FOR_SPEND_BELIEFS = 10;
@@ -1747,6 +1776,158 @@ function topCustomerRevenueShare(context, definition) {
   const topCustomerCount = Math.min(TOP_CUSTOMER_SAMPLE, stats.customerCount);
   const topSpend = sum(stats.spendsDesc.slice(0, topCustomerCount));
   return shareOutcome(context, definition, roundMoney(topSpend), roundMoney(stats.totalSpend), `Lifetime spend from the top ${topCustomerCount} customers divided by total known customer spend (shop base currency).`, { confidence: sampleConfidence(0.85, stats.customerCount, 10, 100), supportingValues: { topCustomerCount, currency: shopBaseCurrency(context).currency, window: "all_stored_history" } });
+}
+
+/**
+ * RFM-style segments a merchant can target, not just a description of the customer base.
+ * cohort_mix already answers "how many customers come back"; this crosses the same
+ * store-relative repeat rhythm with lifetime spend so Jefe can tell champions (high
+ * value, still current) from at-risk customers (high value, gone quiet against the
+ * store's own rhythm) — the pair a targeted winback or a native Shopify customer
+ * segment needs, rather than one lapsed number that mixes a big spender with someone
+ * who bought a £5 sample twice.
+ *
+ * Repeat customers only (orderCount >= 2): the top spend quartile among repeaters is
+ * "high value"; crossed with overdue/not-overdue from the shared repeat-gap rhythm.
+ * One-time buyers are reported as a count only — a single order has no spend
+ * distribution to rank against. PII-safe: counts, shares and aggregate money only.
+ */
+function customerRfmSegmentMix(context, definition) {
+  const identities = context.customerIdentities;
+  if (identities.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 known customers are required to segment the customer base.", { customerIdentities: identities.length });
+  }
+  const rhythm = repeatGapRhythm(identities, context.now);
+  if (!rhythm.established) {
+    return skipped(definition, "insufficient_data", "At least 5 repeat customers with an established purchase rhythm are required to tell champions from at-risk customers.", { repeatersWithRhythm: rhythm.repeatersWithRhythm });
+  }
+
+  const repeaters = identities.filter((identity) => Number(identity.orderCount ?? 0) >= 2);
+  const oneTimers = identities.filter((identity) => Number(identity.orderCount ?? 0) < 2);
+  const repeaterSpends = repeaters.map((identity) => Number(identity.totalSpend ?? 0)).sort((a, b) => a - b);
+  const highValueThreshold = repeaterSpends.length > 0 ? percentile(repeaterSpends, 0.75) : 0;
+
+  const segments = {
+    champions: { customers: 0, spend: 0 },
+    at_risk: { customers: 0, spend: 0 },
+    loyal: { customers: 0, spend: 0 },
+    fading: { customers: 0, spend: 0 },
+  };
+  for (const identity of repeaters) {
+    const spend = Number(identity.totalSpend ?? 0);
+    const last = identity.lastOrderAt ? new Date(identity.lastOrderAt).getTime() : null;
+    const overdue = last != null && last < rhythm.cutoffTime;
+    const highValue = highValueThreshold > 0 && spend >= highValueThreshold;
+    const bucket = highValue ? (overdue ? "at_risk" : "champions") : overdue ? "fading" : "loyal";
+    segments[bucket].customers += 1;
+    segments[bucket].spend += spend;
+  }
+
+  const totalSpend = identities.reduce((total, identity) => total + Number(identity.totalSpend ?? 0), 0);
+  const customerCount = identities.length;
+  const segmentFields = Object.fromEntries(
+    Object.entries(segments).flatMap(([name, stats]) => [
+      [`${camelSegment(name)}Customers`, stats.customers],
+      [`${camelSegment(name)}SharePercent`, roundNumber((stats.customers / customerCount) * 100, 2)],
+      [`${camelSegment(name)}RevenueSharePercent`, totalSpend > 0 ? roundNumber((stats.spend / totalSpend) * 100, 2) : null],
+    ]),
+  );
+
+  return derived(context, definition, {
+    value: {
+      customers: customerCount,
+      oneTimeCustomers: oneTimers.length,
+      oneTimeSharePercent: roundNumber((oneTimers.length / customerCount) * 100, 2),
+      ...segmentFields,
+      atRiskRevenueAtStake: roundMoney(segments.at_risk.spend),
+      highValueSpendThreshold: roundMoney(highValueThreshold),
+      typicalRepeatGapDays: roundNumber(rhythm.typicalGapDays, 1),
+      lapsedAfterDays: roundNumber(rhythm.lapsedAfterDays, 1),
+      currency: shopBaseCurrency(context).currency,
+      window: "all_stored_history",
+    },
+    confidence: sampleConfidence(0.8, repeaters.length, 5, 100),
+    confidenceReason: "Repeat customers split by lifetime spend quartile and by recency against the store's own median repeat gap.",
+    summary: "Which repeat customers are high-value and current versus high-value and overdue.",
+    sampleSize: customerCount,
+  });
+}
+
+function camelSegment(name) {
+  return name.replace(/_([a-z])/g, (_match, letter) => letter.toUpperCase());
+}
+
+/**
+ * A leading indicator cohort_mix cannot give: whether customers acquired RECENTLY are
+ * coming back quickly, not just whether the customer base as a whole has repeaters.
+ * cohort_mix is a lifetime snapshot; this tracks the freshest FULLY-OBSERVED cohort so a
+ * merchant (or Jefe) can tell "early retention is improving" from "it's slipping" refresh
+ * over refresh, well before it moves the all-time number.
+ *
+ * ⚠️ Right-censoring: a customer acquired 10 days ago has not had the 90-day follow
+ * window elapse yet, so "hasn't repeated" is not yet knowable for them — counting them
+ * as a non-repeater would bias the rate down for no reason but recency. Only customers
+ * whose first order is old enough that the full 90-day follow window has already
+ * elapsed are counted at all (acquired between 180 and 90 days ago); anyone acquired in
+ * the most recent 90 days is excluded from BOTH the numerator and denominator, not
+ * counted as a non-repeat. This is the standard fix for right-censoring in a cohort
+ * table: restrict to the fully-observed cohort rather than guess at the still-open one.
+ *
+ * Built directly from stored orders rather than the CustomerIdentity aggregate: the
+ * aggregate keeps only a customer's first and last order date, which cannot say whether
+ * their SECOND order landed inside the 90-day follow window that matters here. No new
+ * Shopify data — orders are already loaded for every other belief in this file.
+ */
+function newCustomerEarlyRepeatRate(context, definition) {
+  const days = 180;
+  const followWindowDays = 90;
+  const acquisitionStart = new Date(context.now.getTime() - days * 86400000);
+  // A customer's first order must be on or before this instant for their 90-day follow
+  // window to have fully elapsed by "now" — the right-censoring cutoff.
+  const acquisitionEnd = new Date(context.now.getTime() - followWindowDays * 86400000);
+  /** @type {Map<string, Date[]>} */
+  const datesByCustomer = new Map();
+  for (const order of context.datedOrders) {
+    const customerId = order.customerExternalId;
+    if (!customerId) continue;
+    const list = datesByCustomer.get(customerId);
+    if (list) list.push(order.orderTime);
+    else datesByCustomer.set(customerId, [order.orderTime]);
+  }
+
+  let newCustomers = 0;
+  let repeatedWithinWindow = 0;
+  for (const dates of datesByCustomer.values()) {
+    dates.sort((a, b) => a.getTime() - b.getTime());
+    const first = dates[0];
+    if (first < acquisitionStart || first > acquisitionEnd) continue;
+    newCustomers += 1;
+    const second = dates[1];
+    if (second && second.getTime() - first.getTime() <= followWindowDays * 86400000) {
+      repeatedWithinWindow += 1;
+    }
+  }
+
+  if (newCustomers < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 customers with a first stored order between 90 and 180 days ago (old enough for the full 90-day follow window to have elapsed) are required.", { newCustomers });
+  }
+
+  return derived(context, definition, {
+    value: {
+      newCustomers,
+      repeatedWithin90dCount: repeatedWithinWindow,
+      repeatedWithin90dSharePercent: roundNumber((repeatedWithinWindow / newCustomers) * 100, 2),
+      window: `trailing_${days}d`,
+      followWindowDays,
+      // Customers acquired more recently than this are excluded (right-censored, not
+      // yet knowable) — never counted as a non-repeat.
+      acquisitionWindowDaysAgo: { start: days, end: followWindowDays },
+    },
+    confidence: sampleConfidence(0.8, newCustomers, 10, 100),
+    confidenceReason: "Customers whose first stored order falls 90 to 180 days ago — old enough that their 90-day follow window has fully elapsed — and the share whose second order followed within 90 days of their first.",
+    summary: "Whether customers acquired a few months ago came back quickly.",
+    sampleSize: newCustomers,
+  });
 }
 
 function refundedOrderRate(context, definition) {
@@ -3242,6 +3423,144 @@ function discountCodeMix(context, definition, days) {
     summary: `Which offers are discounting orders in the trailing ${days} days, and whether customers typed them.`,
     sampleSize: discountedOrders.length,
     coverageMetrics: { discountIdentityCoverage: roundNumber(coverage, 4) },
+  });
+}
+
+/**
+ * Whether discounts are actually changing buying behaviour, or just handing back margin
+ * on orders that would have happened anyway. discount_depth says how much is given
+ * away; this says whether the discounted orders look any different from the ones that
+ * weren't — the "active but ineffective" question a discount-code action needs answered
+ * before Jefe proposes running (or keeps running) one. Correlational, not causal: a
+ * bigger discounted basket could be the discount working, or simply that big spenders
+ * are the ones who bother to apply a code. Stated as a comparison, not a claim of cause.
+ */
+function discountOrderValueEffect(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  const discounted = orders.filter((order) => decimalNumber(order.totalDiscount) > 0);
+  const undiscounted = orders.filter((order) => decimalNumber(order.totalDiscount) <= 0);
+  if (discounted.length < 5 || undiscounted.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 discounted and 5 undiscounted priced orders in the window are required to compare them.", { discountedOrders: discounted.length, undiscountedOrders: undiscounted.length });
+  }
+  const discountedAov = average(discounted.map((order) => decimalNumber(order.totalPrice)));
+  const undiscountedAov = average(undiscounted.map((order) => decimalNumber(order.totalPrice)));
+  const discountedItems = average(discounted.map((order) => context.quantitiesByOrder.get(order.id) ?? 0));
+  const undiscountedItems = average(undiscounted.map((order) => context.quantitiesByOrder.get(order.id) ?? 0));
+
+  return derived(context, definition, {
+    value: {
+      discountedOrderCount: discounted.length,
+      undiscountedOrderCount: undiscounted.length,
+      discountedAverageOrderValue: roundMoney(discountedAov),
+      undiscountedAverageOrderValue: roundMoney(undiscountedAov),
+      averageOrderValueLiftPercent: undiscountedAov > 0 ? roundNumber(((discountedAov - undiscountedAov) / undiscountedAov) * 100, 2) : null,
+      discountedAverageItemsPerOrder: roundNumber(discountedItems, 2),
+      undiscountedAverageItemsPerOrder: roundNumber(undiscountedItems, 2),
+      itemsPerOrderLiftPercent: undiscountedItems > 0 ? roundNumber(((discountedItems - undiscountedItems) / undiscountedItems) * 100, 2) : null,
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Discounted and undiscounted priced orders in the window compared directly on order value and basket size.",
+    summary: `Whether discounted orders in the trailing ${days} days look bigger than the ones that weren't.`,
+    sampleSize: discounted.length + undiscounted.length,
+  });
+}
+
+/**
+ * WHICH products are absorbing the discount spend, not just how much overall.
+ * discount_depth gives one store-wide percentage; a business can sit at a modest
+ * average while a handful of SKUs carry almost all of it — those are candidates for a
+ * price_markdown clearance (already executable) rather than an ongoing storewide code,
+ * or for pulling out of a promotion entirely. Reads `OrderLineItem.discount`, a column
+ * already ingested with every line item; no new Shopify read.
+ */
+function discountConcentration(context, definition, days) {
+  const orders = pricedOrdersInWindow(context, days);
+  const orderIds = new Set(orders.map((order) => order.id));
+  const items = context.lineItems.filter(
+    (item) => item.productId && orderIds.has(item.orderId) && decimalNumber(item.discount) > 0,
+  );
+  if (items.length < 5) {
+    return skipped(definition, "insufficient_data", "At least 5 discounted line items linked to products in the window are required.", { discountedLineItems: items.length });
+  }
+  const discountByProduct = sumBy(items, (item) => item.productId, (item) => decimalNumber(item.discount));
+  const totalDiscount = sum(Array.from(discountByProduct.values()));
+  if (totalDiscount <= 0) {
+    return skipped(definition, "insufficient_data", "No positive line-item discount amounts in the window.", { discountedLineItems: items.length });
+  }
+  const items5 = Array.from(discountByProduct.entries())
+    .map(([productId, amount]) => ({
+      productId,
+      title: productTitle(context, productId),
+      discountAmount: roundMoney(amount),
+      discountSharePercent: roundNumber((amount / totalDiscount) * 100, 2),
+    }))
+    .sort((a, b) => b.discountAmount - a.discountAmount)
+    .slice(0, 5);
+  const top5Share = roundNumber((items5.reduce((total, entry) => total + entry.discountAmount, 0) / totalDiscount) * 100, 2);
+
+  return derived(context, definition, {
+    value: {
+      items: items5,
+      // Headline product surfaced at the top level so it survives the generator's
+      // compactValue serialization (which drops objects nested in an array).
+      topDiscountedProduct: items5[0] ?? null,
+      top5ConcentrationSharePercent: top5Share,
+      discountedProductCount: discountByProduct.size,
+      totalDiscountAmount: roundMoney(totalDiscount),
+      currency: shopBaseCurrency(context).currency,
+      window: `trailing_${days}d`,
+    },
+    confidence: 0.85,
+    confidenceReason: "Products ranked by line-item discount amount from stored order line items over the window.",
+    summary: `Which products are absorbing the most discount spend in the trailing ${days} days.`,
+    sampleSize: items.length,
+  });
+}
+
+/**
+ * Whether repeat customers are over- or under-represented among discounted orders,
+ * relative to their share of all orders in the same window. This is an observed
+ * distribution, not a counterfactual: the belief does not know what a repeat customer
+ * would have paid or purchased without the discount, only who the discount actually
+ * reached. Order-to-customer linkage reuses the same `customerExternalId` join
+ * `data.customer_identity_order_coverage` already measures, so coverage is gated the
+ * same way.
+ */
+function discountCustomerMix(context, definition, days) {
+  const allPriced = pricedOrdersInWindow(context, days);
+  const linked = allPriced.filter((order) => order.customerExternalId);
+  if (linked.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 priced orders with a linked customer in the window are required.", { linkedOrders: linked.length });
+  }
+  const discounted = linked.filter((order) => decimalNumber(order.totalDiscount) > 0);
+  if (discounted.length < 10) {
+    return skipped(definition, "insufficient_data", "At least 10 discounted orders with a linked customer in the window are required.", { discountedOrders: discounted.length });
+  }
+  const repeatCustomerIds = new Set(
+    context.customerIdentities
+      .filter((identity) => Number(identity.orderCount ?? 0) >= 2 && identity.shopifyCustomerId)
+      .map((identity) => identity.shopifyCustomerId),
+  );
+  const repeatShareOfAll = linked.filter((order) => repeatCustomerIds.has(order.customerExternalId)).length / linked.length;
+  const repeatShareOfDiscounted = discounted.filter((order) => repeatCustomerIds.has(order.customerExternalId)).length / discounted.length;
+  const coverage = allPriced.length > 0 ? linked.length / allPriced.length : 0;
+
+  return derived(context, definition, {
+    value: {
+      repeatCustomerShareOfAllOrdersPercent: roundNumber(repeatShareOfAll * 100, 2),
+      repeatCustomerShareOfDiscountedOrdersPercent: roundNumber(repeatShareOfDiscounted * 100, 2),
+      overIndexRatio: repeatShareOfAll > 0 ? roundNumber(repeatShareOfDiscounted / repeatShareOfAll, 2) : null,
+      linkedOrders: linked.length,
+      discountedOrders: discounted.length,
+      window: `trailing_${days}d`,
+    },
+    confidence: coverageConfidence(0.85, coverage),
+    confidenceReason: "Discounted and all priced orders with a linked customer, compared by whether the customer already had a repeat purchase history.",
+    summary: `Whether discounts in the trailing ${days} days are landing on customers who already buy repeatedly.`,
+    sampleSize: discounted.length,
+    coverageMetrics: { customerLinkCoverage: roundNumber(coverage, 4) },
   });
 }
 
