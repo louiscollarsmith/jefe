@@ -797,6 +797,10 @@ export function buildRecommendationContext(snapshot, catalog, grantedScopes = []
       merchantContext: snapshot?.merchantContext ?? [],
       previousRecommendations: snapshot?.previousRecommendations ?? [],
       activeWork: snapshot?.activeWork ?? [],
+      dataQualityContext: Array.isArray(snapshot?.dataQualityContext) ? {
+        note: "Internal data-quality and coverage signals. Use to calibrate confidence in the storeEvidence above — do not treat as merchant-facing business facts.",
+        guardrails: snapshot.dataQualityContext,
+      } : undefined,
     },
     boundedStoreEvidence: {
       privacy: snapshot?.privacy ?? {},
