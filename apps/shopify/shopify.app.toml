@@ -8,6 +8,17 @@ embedded = true
 [build]
 automatically_update_urls_on_dev = true
 
+
+[events]
+api_version = "2026-07"
+
+  [[events.subscription]]
+  handle = "order-events"
+  topic = "Order"
+  uri = "/webhooks/orders/create"
+  actions = ["create"]
+
+
 [webhooks]
 api_version = "2026-07"
 
