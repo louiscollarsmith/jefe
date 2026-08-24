@@ -20,7 +20,7 @@ import {
 
 const log = baseLogger.child({ component: "agentic-shopify-recommendation" });
 
-export const AGENTIC_RECOMMENDATION_PROMPT_VERSION = "agentic-shopify-recommendation-v5";
+export const AGENTIC_RECOMMENDATION_PROMPT_VERSION = "agentic-shopify-recommendation-v6";
 export const AGENTIC_SEMANTIC_REPAIR_PROMPT_VERSION = "agentic-semantic-repair-v1";
 export const MAX_RECOMMENDATION_ITERATIONS = 6;
 export const FOCUSED_SEMANTIC_REPAIR_CODES = Object.freeze([
@@ -28,6 +28,61 @@ export const FOCUSED_SEMANTIC_REPAIR_CODES = Object.freeze([
   "INVALID_ELIGIBILITY_CRITERIA",
   "DUPLICATE_ELIGIBILITY_ID",
 ]);
+
+// ---- Opportunity coverage lifecycle ----------------------------------------
+
+export const OPPORTUNITY_COVERAGE_STATUS = Object.freeze({
+  unassessed: "UNASSESSED",
+  plausible: "PLAUSIBLE",
+  investigating: "INVESTIGATING",
+  candidate: "CANDIDATE",
+  rejected: "REJECTED",
+  blocked: "BLOCKED",
+  notApplicable: "NOT_APPLICABLE",
+  alreadySatisfied: "ALREADY_SATISFIED",
+  alreadyCovered: "ALREADY_COVERED",
+  nonExecutable: "NON_EXECUTABLE",
+});
+
+const UNRESOLVED_COVERAGE_STATUSES = new Set([
+  OPPORTUNITY_COVERAGE_STATUS.unassessed,
+  OPPORTUNITY_COVERAGE_STATUS.plausible,
+  OPPORTUNITY_COVERAGE_STATUS.investigating,
+]);
+
+const TERMINAL_COVERAGE_STATUSES = new Set([
+  OPPORTUNITY_COVERAGE_STATUS.candidate,
+  OPPORTUNITY_COVERAGE_STATUS.rejected,
+  OPPORTUNITY_COVERAGE_STATUS.blocked,
+  OPPORTUNITY_COVERAGE_STATUS.notApplicable,
+  OPPORTUNITY_COVERAGE_STATUS.alreadySatisfied,
+  OPPORTUNITY_COVERAGE_STATUS.alreadyCovered,
+  OPPORTUNITY_COVERAGE_STATUS.nonExecutable,
+]);
+
+const OPPORTUNITY_COVERAGE_ITEM_SCHEMA = {
+  type: Type.OBJECT,
+  required: ["familyId", "status"],
+  properties: {
+    familyId: { type: Type.STRING, description: "Opportunity family id from opportunitySurface." },
+    status: {
+      type: Type.STRING,
+      enum: Object.values(OPPORTUNITY_COVERAGE_STATUS),
+      description: "Lifecycle disposition for this family.",
+    },
+    reason: {
+      type: Type.STRING,
+      nullable: true,
+      description: "Evidence-grounded reason. Required when setting a terminal status.",
+    },
+    evidenceRefs: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      nullable: true,
+      description: "Belief keys, operation names, or read results that justify this disposition.",
+    },
+  },
+};
 
 const ELIGIBILITY_CRITERION_SCHEMA = {
   type: Type.OBJECT,
@@ -134,6 +189,12 @@ export const AGENTIC_RECOMMENDATION_SCHEMA = {
       type: Type.STRING,
       enum: ["CONTINUE", "RECOMMEND_ACTION", "NO_ACTIONABLE_OPPORTUNITY", "BLOCKED"],
     },
+    opportunityCoverage: {
+      type: Type.ARRAY,
+      nullable: true,
+      description: "Coverage dispositions for opportunity families assessed this turn. Emit dispositions for every family you have now resolved.",
+      items: OPPORTUNITY_COVERAGE_ITEM_SCHEMA,
+    },
     hypothesesConsidered: {
       type: Type.ARRAY,
       nullable: true,
@@ -209,7 +270,10 @@ export async function generateAgenticShopifyRecommendation(input) {
     return { ok: false, status: "BLOCKED", blocker: "llm_provider_unavailable", trace: null };
   }
 
-  const context = buildRecommendationContext(input.snapshot, input.catalog);
+  const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes);
+  const opportunitySurface = context.opportunitySurface;
+  /** @type {any[]} */
+  const coverageLedger = initCoverageLedger(opportunitySurface);
   /** @type {any[]} */
   const toolResults = [];
   /** @type {any[]} */
@@ -218,7 +282,7 @@ export async function generateAgenticShopifyRecommendation(input) {
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const lastCandidate = turns.map((turn) => turn.recommendation).filter(Boolean).at(-1) ?? null;
-    const investigationState = buildInvestigationState(toolResults, { lastCandidate });
+    const investigationState = buildInvestigationState(toolResults, { lastCandidate, coverageLedger });
     const llmResult = await provider.generateStructuredJson({
       systemPrompt: buildRecommendationSystemPrompt(),
       prompt: JSON.stringify({
@@ -229,7 +293,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         merchantMemory: context.merchantMemory,
         boundedStoreEvidence: context.boundedStoreEvidence,
         searchableShopifyApiKnowledge: context.searchableShopifyApiKnowledge,
-        initiallyRetrievedShopifyTools: context.initialTools,
+        opportunitySurface,
         previousAttemptDiagnostics: input.previousAttempt ?? null,
         investigationState,
         eligibilityEncoding: eligibilityEncodingForPrompt(),
@@ -241,6 +305,7 @@ export async function generateAgenticShopifyRecommendation(input) {
       timeoutMs: 90_000,
     });
     const turn = normalizeRecommendationTurn(llmResult.json);
+    mergeCoverageUpdates(coverageLedger, turn.opportunityCoverage);
     turns.push({ ...turn, usage: llmResult.usage ?? null, durationMs: llmResult.durationMs ?? null });
 
     for (const toolCall of turn.toolCalls) {
@@ -320,6 +385,7 @@ export async function generateAgenticShopifyRecommendation(input) {
             status: "VALIDATION_FAILED",
             blocker: validation.error,
             diagnostics: buildRecommendationDiagnostics(turns, toolResults, {
+              coverageLedger,
               semanticRepair: {
                 attempted: true,
                 choice: null,
@@ -343,6 +409,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         });
         if (repair.validation.ok) {
           const diagnostics = buildRecommendationDiagnostics(turns, toolResults, {
+            coverageLedger,
             semanticRepair: {
               attempted: true,
               choice: repair.repairChoice,
@@ -386,6 +453,7 @@ export async function generateAgenticShopifyRecommendation(input) {
           status: "VALIDATION_FAILED",
           blocker: repair.validation.error ?? validation.error,
           diagnostics: buildRecommendationDiagnostics(turns, toolResults, {
+            coverageLedger,
             semanticRepair: {
               attempted: true,
               choice: repair.repairChoice,
@@ -412,7 +480,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         });
         continue;
       }
-      const diagnostics = buildRecommendationDiagnostics(turns, toolResults);
+      const diagnostics = buildRecommendationDiagnostics(turns, toolResults, { coverageLedger });
       logger.info("agentic Shopify recommendation selected", {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -429,18 +497,19 @@ export async function generateAgenticShopifyRecommendation(input) {
       };
     }
     if (turn.status === "NO_ACTIONABLE_OPPORTUNITY") {
-      const investigation = validateInvestigation(toolResults);
+      const investigation = validateInvestigation(toolResults, opportunitySurface, coverageLedger);
       if (!investigation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
           ok: false,
           message: investigation.error,
           facts: {
-            errorCode: "INSUFFICIENT_INVESTIGATION",
-            requiredNextTools: [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
-            repairInstruction: "Call retrieve_shopify_operations then call_shopify_operation to read relevant Shopify state before concluding.",
+            errorCode: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION",
+            unresolvedFamilies: investigation.unresolved ?? null,
+            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
+            repairInstruction: investigation.repairInstruction ?? "Call retrieve_shopify_operations then call_shopify_operation to read relevant Shopify state before concluding.",
           },
-          error: { code: "INSUFFICIENT_INVESTIGATION", message: investigation.error },
+          error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         });
         continue;
       }
@@ -448,23 +517,24 @@ export async function generateAgenticShopifyRecommendation(input) {
         ok: true,
         status: turn.status,
         blocker: turn.blocker ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
     if (turn.status === "BLOCKED") {
-      const investigation = validateInvestigation(toolResults);
+      const investigation = validateInvestigation(toolResults, opportunitySurface, coverageLedger);
       if (!investigation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
           ok: false,
           message: investigation.error,
           facts: {
-            errorCode: "INSUFFICIENT_INVESTIGATION",
-            requiredNextTools: [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
-            repairInstruction: "Call retrieve_shopify_operations then call_shopify_operation before returning BLOCKED.",
+            errorCode: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION",
+            unresolvedFamilies: investigation.unresolved ?? null,
+            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
+            repairInstruction: investigation.repairInstruction ?? "Call retrieve_shopify_operations then call_shopify_operation before returning BLOCKED.",
           },
-          error: { code: "INSUFFICIENT_INVESTIGATION", message: investigation.error },
+          error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         });
         continue;
       }
@@ -472,17 +542,20 @@ export async function generateAgenticShopifyRecommendation(input) {
         ok: false,
         status: turn.status,
         blocker: turn.blocker ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
   }
 
+  const unresolvedAtEnd = coverageLedger.filter((e) => UNRESOLVED_COVERAGE_STATUSES.has(e.status));
   return {
     ok: false,
-    status: terminalFailureStatus(toolResults),
-    blocker: terminalFailureBlocker(toolResults) ?? "ITERATION_LIMIT",
-    diagnostics: buildRecommendationDiagnostics(turns, toolResults),
+    status: unresolvedAtEnd.length > 0 ? "INVESTIGATION_INCOMPLETE" : terminalFailureStatus(toolResults),
+    blocker: unresolvedAtEnd.length > 0
+      ? `Investigation budget exhausted with ${unresolvedAtEnd.length} unresolved ${unresolvedAtEnd.length === 1 ? "family" : "families"}: ${unresolvedAtEnd.map((e) => e.label).join(", ")}`
+      : terminalFailureBlocker(toolResults) ?? "ITERATION_LIMIT",
+    diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
     trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
   };
 }
@@ -552,6 +625,38 @@ Reason in this order:
 
 Do not search for write operations before identifying the diagnosed problem. Capability discovery should bind a confirmed diagnosis to an executable form — not manufacture one.
 
+## Opportunity surface and coverage
+
+You receive an \`opportunitySurface\` listing distinct executable capability families derived from the merchant's Shopify API access. Each family has:
+- \`id\`: family identifier
+- \`label\`: human-readable name
+- \`capabilityState\`: \`available\` or \`scope_missing\`
+- \`writeOperations\`: list of write capabilities in this family
+- \`readOperations\`: list of supporting reads
+
+The current coverage state is in \`investigationState.opportunityCoverage\`.
+
+Each turn, emit \`opportunityCoverage\` with your updated disposition for every family you have assessed. Available statuses:
+- \`UNASSESSED\`: not yet evaluated
+- \`PLAUSIBLE\`: evidence suggests something may be worth investigating
+- \`INVESTIGATING\`: actively reading Shopify state
+- \`REJECTED\`: Shopify reads found no material problem
+- \`BLOCKED\`: opportunity exists but candidate-specific required evidence is unavailable
+- \`NOT_APPLICABLE\`: existing store evidence already establishes no intervention is needed — no Shopify read required
+- \`ALREADY_SATISFIED\`: current Shopify state already achieves the desired outcome
+- \`ALREADY_COVERED\`: an existing Action already addresses this family
+- \`NON_EXECUTABLE\`: write scopes not granted
+
+**You cannot return BLOCKED or NO_ACTIONABLE_OPPORTUNITY while any family has status UNASSESSED, PLAUSIBLE, or INVESTIGATING.** The server validates coverage and will return INSUFFICIENT_COVERAGE if unresolved families remain. Disposition through all relevant families is required.
+
+**A blocked candidate does not terminate the search.** When one family is BLOCKED, record it in \`opportunityCoverage\` and continue with the next unresolved family.
+
+**Evidence-grounded NOT_APPLICABLE.** You may mark a family NOT_APPLICABLE using store evidence already in Merchant Memory — no Shopify read required. For example: 0 out-of-stock products + 0 at-risk stockouts = inventory family NOT_APPLICABLE. Each disposition must include a \`reason\` and relevant \`evidenceRefs\`.
+
+**Merchant preference ranks families — it does not remove them.** Revenue-first means investigate revenue-relevant families earlier. It does not mean other executable families (catalogue quality, publication state) are removed from coverage.
+
+Use \`retrieve_shopify_operations\` to get detailed API stubs for any family you decide to investigate. The opportunitySurface gives you orientation; retrieve gives you executable detail.
+
 ## Investigation state
 
 Each iteration includes an \`investigationState\` object showing exactly what has already been completed:
@@ -613,9 +718,9 @@ Eligibility encoding:
 
 If availability does not determine membership, do not promise in-stock or currently available wording.
 
-Return NO_ACTIONABLE_OPPORTUNITY only after meaningfully investigating relevant store evidence and the broader Shopify action surface.
+Return NO_ACTIONABLE_OPPORTUNITY only after all materially plausible opportunity families have been assessed and every family has a defensible evidence-grounded disposition in \`opportunityCoverage\`. A family may be marked NOT_APPLICABLE, REJECTED, BLOCKED, ALREADY_SATISFIED, or ALREADY_COVERED — but not left UNASSESSED.
 
-Return BLOCKED when investigation is complete but the evidence genuinely cannot support a safe, reversible Shopify Action. Include in \`blocker\`: what was investigated, what evidence is missing, and what information would unblock it. A legitimate blocker is preferable to repeated failed attempts.`;
+Return BLOCKED when all plausible families have been investigated and none yielded a safe, reversible, executable candidate. Include in \`blocker\`: which families were assessed, what was found, and what evidence would change the result. A legitimate evidence-grounded BLOCKED is preferable to repeated failed attempts.`;
 }
 
 /** @param {any[]} toolResults */
@@ -655,8 +760,9 @@ function terminalFailureBlocker(toolResults) {
 /**
  * @param {any} snapshot
  * @param {import("../api/catalog.server.js").ShopifyApiCatalog} [catalog]
+ * @param {string[]} [grantedScopes]
  */
-export function buildRecommendationContext(snapshot, catalog) {
+export function buildRecommendationContext(snapshot, catalog, grantedScopes = []) {
   const beliefs = Array.isArray(snapshot?.beliefs) ? snapshot.beliefs : [];
   const goals = Array.isArray(snapshot?.goals) ? snapshot.goals : [];
   const insights = Array.isArray(snapshot?.insights) ? snapshot.insights : [];
@@ -669,12 +775,6 @@ export function buildRecommendationContext(snapshot, catalog) {
   const inferredBeliefs = beliefs.filter(
     (/** @type {any} */ b) => b.authority === "lower_authority_inference" || b.authority === "system_inference",
   );
-
-  const initialQuery = [
-    ...goalCoaching.map((/** @type {any} */ item) => item.summary),
-    ...goals.map((/** @type {any} */ goal) => goal.title),
-    ...deterministicBeliefs.slice(0, 8).map((/** @type {any} */ belief) => `${belief.label ?? belief.key} ${JSON.stringify(belief.val ?? belief.value ?? "")}`),
-  ].join(" ");
 
   return {
     merchantMemory: {
@@ -705,13 +805,102 @@ export function buildRecommendationContext(snapshot, catalog) {
     },
     searchableShopifyApiKnowledge: {
       instruction:
-        "Use retrieve_shopify_operations to search the generated Shopify Admin API operation catalogue by objective, resource or needed effect.",
+        "Use retrieve_shopify_operations to search the generated Shopify Admin API operation catalogue for detailed stubs within any opportunity family you choose to investigate.",
     },
-    initialTools: retrieveShopifyApiOperations(initialQuery || "products collections inventory merchandising discounts metafields", {
-      catalog,
-      limit: 10,
-    }),
+    opportunitySurface: buildOpportunitySurface(catalog, grantedScopes),
   };
+}
+
+// ---- Opportunity surface derivation ----------------------------------------
+
+/**
+ * Derives executable opportunity families from catalog domains.
+ * Groups mutations by domain; marks families unavailable when required scopes are not granted.
+ * No hardcoded recommendation categories — families come from API structure.
+ *
+ * @param {import("../api/catalog.server.js").ShopifyApiCatalog | undefined} catalog
+ * @param {string[]} [grantedScopes]
+ */
+export function buildOpportunitySurface(catalog, grantedScopes = []) {
+  const scopeSet = normalizeScopeSet(grantedScopes);
+  /** @type {Map<string, import("../api/catalog.server.js").ShopifyApiOperationStub[]>} */
+  const byDomain = new Map();
+  for (const op of catalog?.operations ?? []) {
+    if (!byDomain.has(op.domain)) byDomain.set(op.domain, []);
+    byDomain.get(op.domain)?.push(op);
+  }
+  const families = [];
+  for (const [domain, ops] of byDomain) {
+    const mutations = ops.filter((op) => op.operationKind === "MUTATION");
+    if (!mutations.length) continue;
+    const queries = ops.filter((op) => op.operationKind === "QUERY");
+    const anyMutationAvailable = mutations.some(
+      (op) => (op.requiredScopes ?? []).length === 0 || (op.requiredScopes ?? []).every((s) => scopeSet.has(s)),
+    );
+    families.push({
+      id: domain,
+      label: formatDomainLabel(domain),
+      capabilityState: anyMutationAvailable ? "available" : "scope_missing",
+      writeOperations: mutations.map((op) => ({ operation: op.operation, description: op.description })),
+      readOperations: queries.map((op) => ({ operation: op.operation, description: op.description })),
+    });
+  }
+  return { families };
+}
+
+/** @param {string[]} grantedScopes */
+function normalizeScopeSet(grantedScopes) {
+  return new Set(
+    (Array.isArray(grantedScopes) ? grantedScopes : [String(grantedScopes ?? "")])
+      .flatMap((s) => String(s).split(",").map((x) => x.trim()))
+      .filter(Boolean),
+  );
+}
+
+/** @param {string} domain */
+function formatDomainLabel(domain) {
+  return (
+    domain
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ") + " capability"
+  );
+}
+
+/**
+ * Initialises a per-family coverage ledger from the opportunity surface.
+ * @param {{ families: any[] }} opportunitySurface
+ */
+export function initCoverageLedger(opportunitySurface) {
+  return (opportunitySurface?.families ?? []).map((family) => ({
+    familyId: family.id,
+    label: family.label,
+    status: family.capabilityState === "available"
+      ? OPPORTUNITY_COVERAGE_STATUS.unassessed
+      : OPPORTUNITY_COVERAGE_STATUS.nonExecutable,
+    reason: family.capabilityState !== "available" ? "Required write scopes not granted." : null,
+    evidenceRefs: [],
+  }));
+}
+
+/**
+ * Merges turn-level coverage updates into the running ledger.
+ * Never regresses a family from a terminal status.
+ * @param {any[]} ledger
+ * @param {any[] | null | undefined} updates
+ */
+export function mergeCoverageUpdates(ledger, updates) {
+  for (const update of updates ?? []) {
+    if (!update || typeof update.familyId !== "string") continue;
+    const entry = ledger.find((e) => e.familyId === update.familyId);
+    if (!entry) continue;
+    if (TERMINAL_COVERAGE_STATUSES.has(entry.status) && !TERMINAL_COVERAGE_STATUSES.has(update.status)) continue;
+    if (update.status && Object.values(OPPORTUNITY_COVERAGE_STATUS).includes(update.status)) {
+      entry.status = update.status;
+    }
+    if (typeof update.reason === "string" && update.reason) entry.reason = update.reason;
+    if (Array.isArray(update.evidenceRefs) && update.evidenceRefs.length) entry.evidenceRefs = update.evidenceRefs;
+  }
 }
 
 /** @param {unknown} raw */
@@ -728,10 +917,17 @@ function normalizeRecommendationTurn(raw) {
           : {},
     }))
     .filter((row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations || row.tool === SHOPIFY_AGENT_TOOL.callOperation);
+  const opportunityCoverage = (Array.isArray(object.opportunityCoverage) ? object.opportunityCoverage : [])
+    .filter((/** @type {any} */ item) =>
+      item && typeof item === "object" &&
+      typeof item.familyId === "string" &&
+      Object.values(OPPORTUNITY_COVERAGE_STATUS).includes(item.status),
+    );
   return {
     status: ["CONTINUE", "RECOMMEND_ACTION", "NO_ACTIONABLE_OPPORTUNITY", "BLOCKED"].includes(String(object.status))
       ? String(object.status)
       : "CONTINUE",
+    opportunityCoverage,
     hypothesesConsidered: Array.isArray(object.hypothesesConsidered) ? object.hypothesesConsidered : [],
     toolCalls,
     recommendation:
@@ -946,8 +1142,12 @@ export async function runFocusedSemanticRepair(input) {
   };
 }
 
-/** @param {any[]} toolResults */
-export function validateInvestigation(toolResults) {
+/**
+ * @param {any[]} toolResults
+ * @param {{ families: any[] } | null} [opportunitySurface]
+ * @param {any[] | null} [coverageLedger]
+ */
+export function validateInvestigation(toolResults, opportunitySurface = null, coverageLedger = null) {
   const retrieved = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok);
   const read = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok && row.facts?.status !== "ALREADY_AVAILABLE");
   if (!retrieved || !read) {
@@ -957,6 +1157,18 @@ export function validateInvestigation(toolResults) {
         "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
     };
   }
+  if (opportunitySurface && coverageLedger) {
+    const unresolved = coverageLedger.filter((e) => UNRESOLVED_COVERAGE_STATUSES.has(e.status));
+    if (unresolved.length > 0) {
+      const familyList = unresolved.map((e) => `- ${e.label} (${e.familyId})`).join("\n");
+      return {
+        ok: false,
+        unresolved,
+        error: `You cannot conclude yet.\n\nUnresolved opportunity families:\n${familyList}\n\nFor each: investigate, or provide an evidence-grounded disposition (REJECTED, NOT_APPLICABLE, BLOCKED, ALREADY_SATISFIED, or ALREADY_COVERED). You may mark a family NOT_APPLICABLE from existing store evidence without additional reads.`,
+        repairInstruction: "Set opportunityCoverage with a terminal status and evidence-grounded reason for each unresolved family.",
+      };
+    }
+  }
   return { ok: true };
 }
 
@@ -964,7 +1176,7 @@ export function validateInvestigation(toolResults) {
  * Builds a concise server-owned investigation ledger for injection into the prompt.
  * This is authoritative — Luna should not infer completed work from the tool history.
  * @param {any[]} toolResults
- * @param {{ lastCandidate?: any }} [extras]
+ * @param {{ lastCandidate?: any; coverageLedger?: any[] | null }} [extras]
  */
 export function buildInvestigationState(toolResults, extras = {}) {
   const retrievedOps = toolResults.filter((/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && r.ok);
@@ -993,7 +1205,11 @@ export function buildInvestigationState(toolResults, extras = {}) {
     satisfied.push(`${op} already available from prior call — result in tool history`);
   }
 
-  const investigationComplete = retrievedOps.length > 0 && successfulReads.length > 0;
+  const coverageLedger = extras.coverageLedger ?? null;
+  const allFamiliesResolved = !coverageLedger ||
+    coverageLedger.every((e) => !UNRESOLVED_COVERAGE_STATUSES.has(e.status));
+  const investigationComplete = retrievedOps.length > 0 && successfulReads.length > 0 && allFamiliesResolved;
+
   return {
     retrievedOperations: [...new Set(retrievedOps.flatMap((/** @type {any} */ r) => (r.facts?.results ?? []).map((/** @type {any} */ x) => x.operation)))],
     successfulReads: successfulReads.map((/** @type {any} */ r) => ({
@@ -1002,6 +1218,7 @@ export function buildInvestigationState(toolResults, extras = {}) {
     })),
     failedReads: failedReads.map((/** @type {any} */ r) => ({ operation: r.facts?.operation ?? null })),
     satisfiedRequirements: satisfied,
+    opportunityCoverage: coverageLedger,
     investigationComplete,
     lastCandidate: extras.lastCandidate ?? null,
     lastValidationError: lastValidation
@@ -1011,10 +1228,11 @@ export function buildInvestigationState(toolResults, extras = {}) {
           invalidValues: lastValidation.facts?.invalidValues ?? null,
           allowedValues: lastValidation.facts?.allowedValues ?? null,
           repairInstruction: lastValidation.facts?.repairInstruction ?? lastValidation.message ?? null,
+          unresolvedFamilies: lastValidation.facts?.unresolvedFamilies ?? null,
         }
       : null,
     doNotRepeat: investigationComplete
-      ? "Investigation requirements are satisfied. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource, query, or page."
+      ? "All opportunity families assessed and minimum Shopify investigation complete. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource, query, or page."
       : null,
   };
 }
@@ -1062,7 +1280,7 @@ function stableJsonValue(value) {
   return value ?? null;
 }
 
-/** @param {any[]} turns @param {any[]} toolResults @param {{ semanticRepair?: any }} [extras] */
+/** @param {any[]} turns @param {any[]} toolResults @param {{ semanticRepair?: any; coverageLedger?: any[] | null }} [extras] */
 function buildRecommendationDiagnostics(turns, toolResults, extras = {}) {
   const retrievedOperations = toolResults
     .filter((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok)
@@ -1086,6 +1304,7 @@ function buildRecommendationDiagnostics(turns, toolResults, extras = {}) {
     rejectedInterventions: turns
       .flatMap((/** @type {any} */ turn) => turn.hypothesesConsidered ?? [])
       .filter((/** @type {any} */ row) => /reject|not|blocked|insufficient/i.test(String(row.status ?? ""))),
+    opportunityCoverage: extras.coverageLedger ?? null,
     semanticRepair: extras.semanticRepair ?? null,
     investigationTurns: turns.filter((/** @type {any} */ turn) => turn.status !== "SEMANTIC_REPAIR").length,
   };
