@@ -20,7 +20,7 @@ import {
   MERCHANT_BOOTSTRAP_JOB_TYPE,
 } from "../../../services/shopify-backfill-status.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
-import { generateAgenticShopifyRecommendation } from "./recommendation-agent.server.js";
+import { runCandidateDrivenRecommendation } from "./candidate-pipeline.server.js";
 import {
   AGENTIC_RECOMMENDATION_JOB_TYPE,
   AGENTIC_RECOMMENDATION_SCHEMA_VERSION,
@@ -176,6 +176,10 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
  *   fetchImpl?: typeof fetch;
  *   llmProvider?: import("../../llm/provider.server.js").LlmProvider;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   maxCandidatesFirstPass?: number;
+ *   maxCandidatesRescue?: number;
+ *   perCandidateIterations?: number;
+ *   maxTotalLlmCalls?: number;
  * }} input
  */
 export async function runAgenticRecommendationInvestigation(prisma, input) {
@@ -233,7 +237,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
     logger,
   });
   try {
-    const result = await generateAgenticShopifyRecommendation({
+    const result = await runCandidateDrivenRecommendation({
       provider,
       prisma,
       client,
@@ -244,6 +248,10 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       snapshot: prepared.snapshot.snapshot,
       previousAttempt: prepared.previousAttempt ?? null,
       logger,
+      maxCandidatesFirstPass: input.maxCandidatesFirstPass,
+      maxCandidatesRescue: input.maxCandidatesRescue,
+      perCandidateIterations: input.perCandidateIterations,
+      maxTotalLlmCalls: input.maxTotalLlmCalls,
     });
     if (result.ok && result.status === "RECOMMEND_ACTION") {
       // Server-side novelty check: verify the candidate doesn't structurally
@@ -704,6 +712,7 @@ async function buildAgenticRecommendationSnapshot(prisma, input) {
   // Hash over only the model-visible portion of the snapshot. dataQualityContext
   // (internal guardrails) is intentionally excluded: guardrail-only changes do not
   // invalidate recommendation reuse, since they don't affect what Luna sees.
+  // eslint-disable-next-line no-unused-vars -- destructured only to exclude it from hashableSnapshot
   const { dataQualityContext: _excludedFromHash, ...hashableSnapshot } = snapshot;
   return {
     snapshot,
@@ -1075,6 +1084,7 @@ function safeTrace(value) {
           error: row.error ?? null,
         }))
       : [],
+    progressLog: Array.isArray(trace.progressLog) ? trace.progressLog : [],
   };
 }
 
