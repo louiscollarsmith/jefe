@@ -3,6 +3,7 @@
 import { Type } from "@google/genai";
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { retrieveShopifyApiOperations } from "../api/retrieval.server.js";
+import { withRecommendationLlmRetry } from "./recommendation-llm-retry.server.js";
 import {
   SHOPIFY_AGENT_TOOL,
   SHOPIFY_AGENT_TOOL_CALL_SCHEMA,
@@ -293,6 +294,8 @@ export const AGENTIC_SEMANTIC_REPAIR_SCHEMA = {
  *     relevantFamilyId?: string | null;
  *   } | null;
  *   initialToolResults?: any[];
+ *   runId?: string | null;
+ *   llmRetryWaitImpl?: (ms: number) => Promise<void>;
  * }} input
  */
 export async function generateAgenticShopifyRecommendation(input) {
@@ -301,6 +304,10 @@ export async function generateAgenticShopifyRecommendation(input) {
   if (!provider?.enabled || typeof provider.generateStructuredJson !== "function") {
     return { ok: false, status: "BLOCKED", blocker: "llm_provider_unavailable", trace: null };
   }
+  // Captured once, right after the guard above confirms it's a function: keeps that narrowing
+  // available inside the retry closure below, where TS otherwise re-widens provider.generateStructuredJson
+  // back to possibly-undefined (it can't prove the object's property wasn't reassigned).
+  const generateStructuredJson = provider.generateStructuredJson;
 
   const context = buildRecommendationContext(input.snapshot, input.catalog, input.grantedScopes);
   const opportunitySurface = context.opportunitySurface;
@@ -341,28 +348,40 @@ export async function generateAgenticShopifyRecommendation(input) {
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const lastCandidate = turns.map((turn) => turn.recommendation).filter(Boolean).at(-1) ?? null;
     const investigationState = buildInvestigationState(toolResults, { lastCandidate, coverageLedger: coverageGateLedger });
-    const llmResult = await provider.generateStructuredJson({
-      systemPrompt: focusCandidate ? buildCandidateInvestigationSystemPrompt() : buildRecommendationSystemPrompt(),
-      prompt: JSON.stringify({
-        promptVersion: AGENTIC_RECOMMENDATION_PROMPT_VERSION,
-        mode: focusCandidate ? "candidate_investigation" : "investigation",
-        eligibilityConsistencyVersion: AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
-        iteration,
-        focusCandidate,
-        merchantMemory: context.merchantMemory,
-        boundedStoreEvidence: context.boundedStoreEvidence,
-        searchableShopifyApiKnowledge: context.searchableShopifyApiKnowledge,
-        opportunitySurface,
-        previousAttemptDiagnostics: input.previousAttempt ?? null,
-        investigationState,
-        eligibilityEncoding: eligibilityEncodingForPrompt(),
-        toolResults: publicShopifyToolResults(toolResults),
-      }),
-      schema: AGENTIC_RECOMMENDATION_SCHEMA,
-      maxInputTokens: 80000,
-      maxOutputTokens: 2800,
-      timeoutMs: 90_000,
-    });
+    const llmResult = await withRecommendationLlmRetry(
+      () =>
+        generateStructuredJson({
+          systemPrompt: focusCandidate ? buildCandidateInvestigationSystemPrompt() : buildRecommendationSystemPrompt(),
+          prompt: JSON.stringify({
+            promptVersion: AGENTIC_RECOMMENDATION_PROMPT_VERSION,
+            mode: focusCandidate ? "candidate_investigation" : "investigation",
+            eligibilityConsistencyVersion: AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
+            iteration,
+            focusCandidate,
+            merchantMemory: context.merchantMemory,
+            boundedStoreEvidence: context.boundedStoreEvidence,
+            searchableShopifyApiKnowledge: context.searchableShopifyApiKnowledge,
+            opportunitySurface,
+            previousAttemptDiagnostics: input.previousAttempt ?? null,
+            investigationState,
+            eligibilityEncoding: eligibilityEncodingForPrompt(),
+            toolResults: publicShopifyToolResults(toolResults),
+          }),
+          schema: AGENTIC_RECOMMENDATION_SCHEMA,
+          maxInputTokens: 80000,
+          maxOutputTokens: 2800,
+          timeoutMs: 90_000,
+        }),
+      {
+        runId: input.runId ?? null,
+        phase: focusCandidate ? "INVESTIGATING_CANDIDATE" : "investigation",
+        candidateId: focusCandidate?.candidateId ?? null,
+        provider: provider.provider ?? null,
+        model: provider.model ?? null,
+        logger,
+        waitImpl: input.llmRetryWaitImpl,
+      },
+    );
     const turn = normalizeRecommendationTurn(llmResult.json);
     mergeCoverageUpdates(coverageLedger, turn.opportunityCoverage);
     turns.push({ ...turn, usage: llmResult.usage ?? null, durationMs: llmResult.durationMs ?? null });
@@ -465,6 +484,10 @@ export async function generateAgenticShopifyRecommendation(input) {
             investigationState: postToolInvestigationState,
             toolResults,
             context,
+            runId: input.runId ?? null,
+            candidateId: focusCandidate?.candidateId ?? null,
+            logger,
+            waitImpl: input.llmRetryWaitImpl,
           });
         } catch (error) {
           const providerError = error instanceof Error ? error.message : String(error);
@@ -1204,46 +1227,62 @@ Return the full repaired recommendation. Keep every field that is not required f
  * and must not perform Shopify reads.
  *
  * @param {{
- *   provider: { generateStructuredJson: Function };
+ *   provider: { generateStructuredJson: Function; provider?: string; model?: string };
  *   candidate: any;
  *   rawCandidate?: any;
  *   validation: any;
  *   investigationState: any;
  *   toolResults: any[];
  *   context: any;
+ *   runId?: string | null;
+ *   candidateId?: string | null;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   waitImpl?: (ms: number) => Promise<void>;
  * }} input
  */
 export async function runFocusedSemanticRepair(input) {
-  const llmResult = await input.provider.generateStructuredJson({
-    systemPrompt: buildSemanticRepairSystemPrompt(),
-    prompt: JSON.stringify({
-      promptVersion: AGENTIC_SEMANTIC_REPAIR_PROMPT_VERSION,
-      mode: "semantic_repair",
-      eligibilityConsistencyVersion: AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
-      candidateRecommendation: input.candidate,
-      currentEligibilityCriteria: input.candidate?.eligibilityCriteria ?? [],
-      rawEligibilityCriteria: input.rawCandidate?.eligibilityCriteria ?? null,
-      validationError: {
-        errorCode: input.validation.errorCode ?? null,
-        field: input.validation.field ?? null,
-        error: input.validation.error ?? null,
-        repairInstruction: input.validation.repairInstruction ?? null,
-        missing: input.validation.missing ?? null,
-      },
-      shopifyEvidence: {
-        successfulReads: input.investigationState?.successfulReads ?? [],
-        retrievedOperations: input.investigationState?.retrievedOperations ?? [],
-        toolResults: publicShopifyToolResults(input.toolResults ?? []),
-      },
-      allowedEligibilityEncoding: eligibilityEncodingForPrompt(),
-      instruction:
-        "Return one repaired recommendation. Do not request Shopify reads. Do not invent extra business rules.",
-    }),
-    schema: AGENTIC_SEMANTIC_REPAIR_SCHEMA,
-    maxInputTokens: 24000,
-    maxOutputTokens: 2800,
-    timeoutMs: 90_000,
-  });
+  const llmResult = await withRecommendationLlmRetry(
+    () =>
+      input.provider.generateStructuredJson({
+        systemPrompt: buildSemanticRepairSystemPrompt(),
+        prompt: JSON.stringify({
+          promptVersion: AGENTIC_SEMANTIC_REPAIR_PROMPT_VERSION,
+          mode: "semantic_repair",
+          eligibilityConsistencyVersion: AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
+          candidateRecommendation: input.candidate,
+          currentEligibilityCriteria: input.candidate?.eligibilityCriteria ?? [],
+          rawEligibilityCriteria: input.rawCandidate?.eligibilityCriteria ?? null,
+          validationError: {
+            errorCode: input.validation.errorCode ?? null,
+            field: input.validation.field ?? null,
+            error: input.validation.error ?? null,
+            repairInstruction: input.validation.repairInstruction ?? null,
+            missing: input.validation.missing ?? null,
+          },
+          shopifyEvidence: {
+            successfulReads: input.investigationState?.successfulReads ?? [],
+            retrievedOperations: input.investigationState?.retrievedOperations ?? [],
+            toolResults: publicShopifyToolResults(input.toolResults ?? []),
+          },
+          allowedEligibilityEncoding: eligibilityEncodingForPrompt(),
+          instruction:
+            "Return one repaired recommendation. Do not request Shopify reads. Do not invent extra business rules.",
+        }),
+        schema: AGENTIC_SEMANTIC_REPAIR_SCHEMA,
+        maxInputTokens: 24000,
+        maxOutputTokens: 2800,
+        timeoutMs: 90_000,
+      }),
+    {
+      runId: input.runId ?? null,
+      phase: "SEMANTIC_REPAIR",
+      candidateId: input.candidateId ?? null,
+      provider: input.provider.provider ?? null,
+      model: input.provider.model ?? null,
+      logger: input.logger,
+      waitImpl: input.waitImpl,
+    },
+  );
   const rawRecommendation =
     llmResult.json?.recommendation && typeof llmResult.json.recommendation === "object"
       ? llmResult.json.recommendation

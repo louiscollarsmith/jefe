@@ -26,6 +26,7 @@ import {
   generateAgenticShopifyRecommendation,
   CANDIDATE_DISPOSITION,
 } from "./recommendation-agent.server.js";
+import { withRecommendationLlmRetry } from "./recommendation-llm-retry.server.js";
 
 const log = baseLogger.child({ component: "agentic-shopify-candidate-pipeline" });
 
@@ -233,34 +234,48 @@ export function normalizeCandidates(raw, existingQueue = []) {
 /**
  * Phase 1 / rescue discovery: one non-tool LLM call producing a ranked candidate queue.
  * @param {{
- *   provider: { generateStructuredJson: Function };
+ *   provider: { generateStructuredJson: Function; provider?: string; model?: string };
  *   context: any;
  *   rescue?: boolean;
  *   rejectedCandidates?: any[];
+ *   runId?: string | null;
+ *   logger?: Pick<Console, "info" | "warn" | "error">;
+ *   waitImpl?: (ms: number) => Promise<void>;
  * }} input
  */
 export async function discoverCandidates(input) {
   const rescue = Boolean(input.rescue);
-  const llmResult = await input.provider.generateStructuredJson({
-    systemPrompt: buildCandidateDiscoverySystemPrompt({ rescue }),
-    prompt: JSON.stringify({
-      promptVersion: AGENTIC_CANDIDATE_DISCOVERY_PROMPT_VERSION,
-      mode: rescue ? "rescue_discovery" : "candidate_discovery",
-      merchantMemory: input.context.merchantMemory,
-      opportunitySurface: input.context.opportunitySurface,
-      alreadyAttemptedCandidates: rescue
-        ? (input.rejectedCandidates ?? []).map((c) => ({
-            diagnosedProblem: c.diagnosedProblem,
-            status: c.status,
-            reason: c.reason,
-          }))
-        : [],
-    }),
-    schema: AGENTIC_CANDIDATE_DISCOVERY_SCHEMA,
-    maxInputTokens: 80000,
-    maxOutputTokens: 3200,
-    timeoutMs: 90_000,
-  });
+  const llmResult = await withRecommendationLlmRetry(
+    () =>
+      input.provider.generateStructuredJson({
+        systemPrompt: buildCandidateDiscoverySystemPrompt({ rescue }),
+        prompt: JSON.stringify({
+          promptVersion: AGENTIC_CANDIDATE_DISCOVERY_PROMPT_VERSION,
+          mode: rescue ? "rescue_discovery" : "candidate_discovery",
+          merchantMemory: input.context.merchantMemory,
+          opportunitySurface: input.context.opportunitySurface,
+          alreadyAttemptedCandidates: rescue
+            ? (input.rejectedCandidates ?? []).map((c) => ({
+                diagnosedProblem: c.diagnosedProblem,
+                status: c.status,
+                reason: c.reason,
+              }))
+            : [],
+        }),
+        schema: AGENTIC_CANDIDATE_DISCOVERY_SCHEMA,
+        maxInputTokens: 80000,
+        maxOutputTokens: 3200,
+        timeoutMs: 90_000,
+      }),
+    {
+      runId: input.runId ?? null,
+      phase: rescue ? "RESCUE_DISCOVERY" : "DISCOVERING_CANDIDATES",
+      provider: input.provider.provider ?? null,
+      model: input.provider.model ?? null,
+      logger: input.logger,
+      waitImpl: input.waitImpl,
+    },
+  );
   return {
     candidates: normalizeCandidates(llmResult.json?.candidates, []),
     usage: llmResult.usage ?? null,
@@ -325,6 +340,8 @@ function summarizeCandidateForDiagnostics(candidate) {
  *   maxCandidatesRescue?: number;
  *   perCandidateIterations?: number;
  *   maxTotalLlmCalls?: number;
+ *   runId?: string | null;
+ *   llmRetryWaitImpl?: (ms: number) => Promise<void>;
  * }} input
  */
 export async function runCandidateDrivenRecommendation(input) {
@@ -378,6 +395,8 @@ export async function runCandidateDrivenRecommendation(input) {
         snapshot: input.snapshot,
         previousAttempt: input.previousAttempt ?? null,
         logger,
+        runId: input.runId ?? null,
+        llmRetryWaitImpl: input.llmRetryWaitImpl,
         maxIterations: perCandidateIterations,
         focusCandidate: {
           candidateId: candidate.candidateId,
@@ -411,7 +430,14 @@ export async function runCandidateDrivenRecommendation(input) {
   };
 
   pushProgress(PROGRESS_STATE.discoveringCandidates, { rescue: false });
-  const firstDiscovery = await discoverCandidates({ provider, context, rescue: false });
+  const firstDiscovery = await discoverCandidates({
+    provider,
+    context,
+    rescue: false,
+    runId: input.runId,
+    logger,
+    waitImpl: input.llmRetryWaitImpl,
+  });
   llmCallCount += 1;
   discoveryLog.push({ rescue: false, candidateCount: firstDiscovery.candidates.length, usage: firstDiscovery.usage });
   candidateQueue.push(...firstDiscovery.candidates);
@@ -433,6 +459,9 @@ export async function runCandidateDrivenRecommendation(input) {
       context,
       rescue: true,
       rejectedCandidates: candidateQueue,
+      runId: input.runId,
+      logger,
+      waitImpl: input.llmRetryWaitImpl,
     });
     llmCallCount += 1;
     const novelRescueCandidates = rescueDiscovery.candidates

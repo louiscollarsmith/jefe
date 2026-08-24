@@ -248,6 +248,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       snapshot: prepared.snapshot.snapshot,
       previousAttempt: prepared.previousAttempt ?? null,
       logger,
+      runId: run.id,
       maxCandidatesFirstPass: input.maxCandidatesFirstPass,
       maxCandidatesRescue: input.maxCandidatesRescue,
       perCandidateIterations: input.perCandidateIterations,
