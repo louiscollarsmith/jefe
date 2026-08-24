@@ -66,6 +66,7 @@
     "vite-tsconfig-paths": "^6.0.4"
   },
   "devDependencies": {
+    "@shopify/cli": "3.93.1",
     "@shopify/api-codegen-preset": "^2.0.0",
     "@types/eslint": "^9.6.1",
     "@types/node": "^25.5.2",
