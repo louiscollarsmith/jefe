@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-24
+
+### Fixed
+
+- **Recommendation generation no longer concludes "nothing to do" after exploring only 1–2 opportunity families.** The investigation protocol now derives an opportunity surface from the Shopify API catalog's domain structure — six capability families (products, collections, inventory, metafields, discounts, orders) — and requires a disposition for every plausible family before BLOCKED or NO_ACTIONABLE_OPPORTUNITY can be returned. A per-family coverage ledger tracks status across turns; if the model tries to conclude while any family is UNASSESSED, PLAUSIBLE, or INVESTIGATING, the server injects an INSUFFICIENT_COVERAGE error and the loop continues. Blockers are candidate-specific: missing cost data marks the products/economics family BLOCKED but leaves collections, metafields, and others available for investigation. Families obviously irrelevant from existing store evidence (e.g. inventory when OOS = 0 and at-risk = 0) may be marked NOT_APPLICABLE without an additional Shopify read. Turn-budget exhaustion with unresolved families returns INVESTIGATION_INCOMPLETE rather than masquerading as no_actionable_opportunity. `app/lib/shopify/agentic-runtime/recommendation-agent.server.js`, `tests/recommendation-breadth.test.mjs`.
+
 ## 2026-08-23
 
 ### Fixed
