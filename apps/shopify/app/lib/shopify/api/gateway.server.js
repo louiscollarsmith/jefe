@@ -1,11 +1,7 @@
 // @ts-check
 
 import { createHash } from "node:crypto";
-import {
-  getConfiguredShopifyApiVersion,
-  getShopifyApiOperationStub,
-  validateShopifyOperationVariables,
-} from "./catalog.server.js";
+import { getConfiguredShopifyApiVersion } from "../api-version.server.js";
 import { fetchGrantedShopifyScopes } from "../installed-scopes.server.js";
 import { hasExplicitHighRiskConfirmation } from "./explicit-confirmation.server.js";
 import { computeShopifyBlastRadius, evaluateBlastRadiusCap } from "./blast-radius.server.js";
@@ -54,22 +50,28 @@ const liveScopeCache = new WeakMap();
  *   idempotencyKey?: string | null;
  *   grantedScopes?: string[];
  *   apiVersion?: string;
- *   catalog?: import("./catalog.server.js").ShopifyApiCatalog;
+ *   catalog?: any;
  *   maxAffectedResources?: number;
  *   logger?: Pick<import("../../observability/logger.server.js").Logger, "info" | "warn" | "error">;
+ *   stubOverride?: any;
  * }} input
  */
 export async function executeShopifyOperation(input) {
   const log = input.logger ?? defaultLogger;
   const variables = input.variables ?? {};
   const apiVersion = input.apiVersion ?? getConfiguredShopifyApiVersion();
-  const stub = getShopifyApiOperationStub(input.operation, { catalog: input.catalog });
+  // stubOverride is the Agentic Shopify Gateway's (../gateway/) validated, agent-composed
+  // GraphQL document, fed through this same safety/idempotency/ledger pipeline unchanged — see
+  // ../gateway/synthetic-stub.server.js for how it's built and validated first. There is no other
+  // way to reach this pipeline: docs/ops/agentic-shopify-gateway-full/ removed the generated
+  // operation catalogue this function used to fall back to looking an operation up in.
+  const stub = input.stubOverride;
   if (!stub) {
     return deny(input, {
       apiVersion,
       status: SHOPIFY_GATEWAY_STATUS.deniedOperationUnknown,
-      gatewayDecision: "operation_not_in_generated_catalog",
-      error: `Unknown Shopify operation: ${input.operation}`,
+      gatewayDecision: "missing_stub_override",
+      error: `${input.operation} must be validated through the Agentic Shopify Gateway (analyzeGatewayDocument) before execution — no stubOverride was provided.`,
     });
   }
   const baseLedger = {
@@ -87,20 +89,10 @@ export async function executeShopifyOperation(input) {
       error: `Operation ${stub.operation} belongs to ${stub.apiVersion}, not ${apiVersion}`,
     });
   }
-  const variableValidation = validateShopifyOperationVariables(stub, variables);
-  if (!variableValidation.ok) {
-    // A required business value that's simply absent is a different, more actionable failure
-    // than a malformed/mistyped one — Luna (or whatever built the call) needs a required cost,
-    // date, or ID it doesn't have, not a broken execution path. Every error string from
-    // validateShopifyOperationVariables ends in "is required" exactly when it's this case.
-    const allMissing = variableValidation.errors.every((error) => /\bis required$/.test(error));
-    return deny(input, {
-      ...baseLedger,
-      status: allMissing ? SHOPIFY_GATEWAY_STATUS.deniedInputMissing : SHOPIFY_GATEWAY_STATUS.deniedInvalidVariables,
-      gatewayDecision: allMissing ? "input_missing" : "invalid_variables",
-      error: variableValidation.errors.join("; "),
-    });
-  }
+  // Gateway-built stubs carry no `arguments` metadata to re-validate here (synthetic-stub.server.js
+  // leaves it empty on purpose) — real argument-shape validation already happened deterministically
+  // against the pinned schema cache in document.server.js's analyzeGatewayDocument, before this
+  // function was ever called.
   const grantedScopes = await resolveGatewayAuthorizationScopes(input, log);
   if (!grantedScopes) {
     return deny(input, {
@@ -251,11 +243,18 @@ export async function executeShopifyOperation(input) {
     // provider error.
     const isScopeDenied = isAccessDeniedError(error);
     const status = isScopeDenied ? SHOPIFY_GATEWAY_STATUS.deniedScopeNotGranted : SHOPIFY_GATEWAY_STATUS.providerError;
+    // Found via a real golden-path mutation failure (docs/ops/agentic-shopify-gateway-full/):
+    // ShopifyAdminGraphqlError's own .message is a generic "Shopify GraphQL response errors" —
+    // the actual repairable detail (e.g. "Field 'code' doesn't exist on type 'UserError'") lives
+    // in .errors and was being silently dropped here, so a genuinely repairable mistake in an
+    // agent-composed mutation (or any operation) surfaced as an opaque failure with no way for
+    // the caller to self-correct. formatShopifyGatewayError surfaces the real detail instead.
+    const detailedMessage = formatShopifyGatewayError(error);
     await recordShopifyOperationCall(input, {
       ...baseLedger,
       status,
       gatewayDecision: isScopeDenied ? "scope_not_granted" : "provider_error",
-      error: error instanceof Error ? error.message : String(error),
+      error: detailedMessage,
     });
     log.warn("Shopify operation provider error", {
       shopDomain: input.shopDomain,
@@ -269,9 +268,27 @@ export async function executeShopifyOperation(input) {
       status,
       operation: stub.operation,
       operationKind: stub.operationKind,
-      error: error instanceof Error ? error.message : String(error),
+      error: detailedMessage,
     };
   }
+}
+
+/**
+ * @param {unknown} error
+ */
+function formatShopifyGatewayError(error) {
+  const raw = /** @type {any} */ (error);
+  const graphqlErrors = Array.isArray(raw?.errors) ? raw.errors : null;
+  const baseMessage = error instanceof Error ? error.message : String(error ?? "Unknown provider error");
+  if (!graphqlErrors?.length) return baseMessage;
+  const detail = graphqlErrors
+    .map((entry) => {
+      const path = Array.isArray(entry?.path) ? ` (at ${entry.path.join(".")})` : "";
+      return `${entry?.message ?? "Unknown GraphQL error"}${path}`;
+    })
+    .slice(0, 5)
+    .join("; ");
+  return `${baseMessage}: ${detail}`;
 }
 
 /**
@@ -504,7 +521,7 @@ export function getActionRevisionState(action) {
 /**
  * @param {{
  *   action: any;
- *   stub: import("./catalog.server.js").ShopifyApiOperationStub;
+ *   stub: any;
  *   variables: Record<string, unknown>;
  *   purpose: string;
  *   expectedEffect: string;

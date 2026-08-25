@@ -1,0 +1,437 @@
+{
+  "candidateKey": "unavailable-variants",
+  "attempt": 1,
+  "durationMs": 70148,
+  "status": "INVESTIGATION_FAILED",
+  "blocker": "Recommendation decisions require at least one successful Shopify read (shopify_query).",
+  "rawQueryCalls": [
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CurrentUnavailableVariants { products(first: 100, query: \"status:active\") { nodes { id title status variants(first: 100) { nodes { id title inventoryQuantity inventoryItem { tracked inventoryLevels(first: 100) { nodes { available location { id name } } } } } } } } }",
+        "variables": {},
+        "purpose": "Verify the candidate's factual predicates against current Shopify state: active products, inventory tracking, and zero available units at variant level.",
+        "expectedEffect": "Read-only; no Shopify state changes."
+      }
+    },
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CurrentUnavailableVariants {\n  products(first: 100, query: \"status:active\") {\n    nodes {\n      id\n      title\n      status\n      variants(first: 100) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            tracked\n            inventoryLevels(first: 100) {\n              nodes {\n                quantities(names: [\"available\"]) {\n                  name\n                  quantity\n                }\n                location {\n                  id\n                  name\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+        "variables": {},
+        "purpose": "Verify the current active variants with tracked inventory and their available quantities before recommending replenishment or storefront substitution.",
+        "expectedEffect": "Read-only verification of the two reported unavailable variants."
+      }
+    }
+  ],
+  "trace": {
+    "turns": [
+      {
+        "status": "CONTINUE",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+            "status": "INVESTIGATING",
+            "reason": "Merchant Memory reports two out-of-stock variants, but current Shopify resource-level state has not yet been read.",
+            "relevantOperations": [
+              "products",
+              "Product.variants",
+              "ProductVariant.inventoryQuantity"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CurrentUnavailableVariants { products(first: 100, query: \"status:active\") { nodes { id title status variants(first: 100) { nodes { id title inventoryQuantity inventoryItem { tracked inventoryLevels(first: 100) { nodes { available location { id name } } } } } } } } }",
+              "variables": {},
+              "purpose": "Verify the candidate's factual predicates against current Shopify state: active products, inventory tracking, and zero available units at variant level.",
+              "expectedEffect": "Read-only; no Shopify state changes."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": null,
+        "candidateDisposition": null,
+        "usage": {
+          "inputTokens": 59001,
+          "cachedInputTokens": 1798,
+          "outputTokens": 354,
+          "totalTokens": 59355,
+          "estimatedInputTokens": 50374
+        },
+        "durationMs": 5140
+      },
+      {
+        "status": "CONTINUE",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+            "status": "INVESTIGATING",
+            "reason": "Merchant Memory reports two out-of-stock variants, but the live Shopify read failed because InventoryLevel.available is not a valid field; the query must be repaired before confirming current state.",
+            "relevantOperations": [
+              "products"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_schema",
+            "arguments": {
+              "action": "list_fields",
+              "typeName": "InventoryLevel",
+              "kind": "QUERY",
+              "purpose": "Identify the live Shopify Admin GraphQL field for inventory quantity on an inventory level."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": null,
+        "candidateDisposition": null,
+        "usage": {
+          "inputTokens": 59276,
+          "cachedInputTokens": 1798,
+          "outputTokens": 186,
+          "totalTokens": 59462,
+          "estimatedInputTokens": 50693
+        },
+        "durationMs": 15641
+      },
+      {
+        "status": "NO_ACTIONABLE_OPPORTUNITY",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+            "status": "UNVERIFIED",
+            "reason": "The supplied read failed because `available` is not a field on Shopify's `InventoryLevel`; the corrected `quantities(names: [\"available\"])` read was not completed this turn.",
+            "relevantOperations": [
+              "products"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CurrentUnavailableVariants {\n  products(first: 100, query: \"status:active\") {\n    nodes {\n      id\n      title\n      status\n      variants(first: 100) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            tracked\n            inventoryLevels(first: 100) {\n              nodes {\n                quantities(names: [\"available\"]) {\n                  name\n                  quantity\n                }\n                location {\n                  id\n                  name\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+              "variables": {},
+              "purpose": "Verify the current active variants with tracked inventory and their available quantities before recommending replenishment or storefront substitution.",
+              "expectedEffect": "Read-only verification of the two reported unavailable variants."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": "The candidate is supported by Merchant Memory evidence (`c6a6f444-8790-48f7-8133-ece8d17a03a5`, `13059c2c-302b-4fdd-b151-688fcc9fd299`), but the live Shopify verification read failed on the invalid `InventoryLevel.available` field. A corrected read using `InventoryLevel.quantities(names: [\"available\"])` is required before determining whether the premise holds and whether a safe intervention can be recommended.",
+        "candidateDisposition": "BLOCKED_BY_EVIDENCE",
+        "usage": {
+          "inputTokens": 59693,
+          "cachedInputTokens": 1798,
+          "outputTokens": 547,
+          "totalTokens": 60240,
+          "estimatedInputTokens": 51240
+        },
+        "durationMs": 5806
+      },
+      {
+        "status": "NO_ACTIONABLE_OPPORTUNITY",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Two active, inventory-tracked variants currently have zero available units.",
+            "status": "confirmed_by_current_memory_but_live_read_required",
+            "reason": "Merchant Memory records 2 out-of-stock variants out of 25, but the prior live Shopify reads failed and no successful current-state read is available in this turn.",
+            "relevantOperations": [
+              "products"
+            ]
+          }
+        ],
+        "toolCalls": [],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": "Cannot complete the required live Shopify verification: the available reads either queried the invalid InventoryLevel.available field or exceeded the query cost limit. A successful lower-cost shopify_query read is required before recommending replenishment or storefront placement changes.",
+        "candidateDisposition": "BLOCKED_BY_EVIDENCE",
+        "usage": {
+          "inputTokens": 60421,
+          "cachedInputTokens": 1798,
+          "outputTokens": 283,
+          "totalTokens": 60704,
+          "estimatedInputTokens": 52044
+        },
+        "durationMs": 16613
+      }
+    ],
+    "toolResults": [
+      {
+        "tool": "shopify_query",
+        "ok": false,
+        "message": "products query failed: Field 'available' doesn't exist on type 'InventoryLevel'",
+        "facts": {
+          "operation": "products",
+          "document": "query CurrentUnavailableVariants {\n  products(first: 100, query: \"status:active\") {\n    nodes {\n      id\n      title\n      status\n      variants(first: 100) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            tracked\n            inventoryLevels(first: 100) {\n              nodes {\n                available\n                location {\n                  id\n                  name\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+          "variables": {},
+          "classification": "GRAPHQL_FAILURE",
+          "providerError": {
+            "code": "SHOPIFY_GRAPHQL_ERROR",
+            "message": "Field 'available' doesn't exist on type 'InventoryLevel'",
+            "details": [
+              {
+                "message": "Field 'available' doesn't exist on type 'InventoryLevel'",
+                "path": [
+                  "query CurrentUnavailableVariants",
+                  "products",
+                  "nodes",
+                  "variants",
+                  "nodes",
+                  "inventoryItem",
+                  "inventoryLevels",
+                  "nodes",
+                  "available"
+                ],
+                "code": "undefinedField"
+              }
+            ]
+          }
+        },
+        "error": {
+          "code": "SHOPIFY_GRAPHQL_ERROR",
+          "message": "Field 'available' doesn't exist on type 'InventoryLevel'"
+        }
+      },
+      {
+        "tool": "shopify_schema",
+        "ok": true,
+        "message": "Listed 100 query field names.",
+        "facts": {
+          "action": "list_fields",
+          "kind": "QUERY",
+          "fields": [
+            "abandonedCheckouts",
+            "abandonedCheckoutsCount",
+            "abandonment",
+            "abandonmentByAbandonedCheckoutId",
+            "app",
+            "appByHandle",
+            "appByKey",
+            "appDiscountType",
+            "appDiscountTypes",
+            "appDiscountTypesNodes",
+            "appInstallation",
+            "appInstallations",
+            "article",
+            "articleAuthors",
+            "articleTags",
+            "articles",
+            "assignedFulfillmentOrders",
+            "automaticDiscount",
+            "automaticDiscountNode",
+            "automaticDiscountNodes",
+            "automaticDiscountSavedSearches",
+            "automaticDiscounts",
+            "availableBackupRegions",
+            "availableCarrierServices",
+            "availableLocales",
+            "backupRegion",
+            "blog",
+            "blogs",
+            "blogsCount",
+            "bulkOperation",
+            "bulkOperations",
+            "businessEntities",
+            "businessEntity",
+            "carrierService",
+            "carrierServices",
+            "cartTransforms",
+            "cashDrawer",
+            "cashDrawers",
+            "cashManagementLocationSummary",
+            "cashManagementReasonCodes",
+            "cashManagementShopSummary",
+            "cashTrackingSession",
+            "cashTrackingSessions",
+            "catalog",
+            "catalogOperations",
+            "catalogs",
+            "catalogsCount",
+            "channel",
+            "channelByHandle",
+            "channels",
+            "checkoutAndAccountsConfiguration",
+            "checkoutAndAccountsConfigurations",
+            "checkoutBranding",
+            "checkoutProfile",
+            "checkoutProfiles",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "collection",
+            "collectionByHandle",
+            "collectionByIdentifier",
+            "collectionConditionMetafieldDefinitions",
+            "collectionConditionsSources",
+            "collectionConditionsSourcesByApp",
+            "collectionRulesConditions",
+            "collectionSavedSearches",
+            "collections",
+            "collectionsCount",
+            "comment",
+            "comments",
+            "companies",
+            "companiesCount",
+            "company",
+            "companyContact",
+            "companyContactRole",
+            "companyLocation",
+            "companyLocations",
+            "consentPolicy",
+            "consentPolicyRegions",
+            "currentAppInstallation",
+            "currentBulkOperation",
+            "currentStaffMember",
+            "customer",
+            "customerAccountPage",
+            "customerAccountPages",
+            "customerByIdentifier",
+            "customerMergeJobStatus",
+            "customerMergePreview",
+            "customerPaymentMethod",
+            "customerSavedSearches",
+            "customerSegmentMembers",
+            "customerSegmentMembersQuery",
+            "customerSegmentMembership",
+            "customers",
+            "customersCount",
+            "deletionEvents",
+            "deliveryCustomization",
+            "deliveryCustomizations",
+            "deliveryProfile"
+          ]
+        },
+        "error": null
+      },
+      {
+        "tool": "shopify_query",
+        "ok": false,
+        "message": "products query failed: Query cost is 2540, which exceeds the single query max cost limit (1000).\n\nSee https://shopify.dev/docs/api/usage/rate-limits for more information on how the\ncost of a query is calculated.\n\nTo query larger amounts of data with fewer limits, bulk operations should be used instead.\nSee https://shopify.dev/docs/api/usage/bulk-operations/queries for usage details.\n",
+        "facts": {
+          "operation": "products",
+          "document": "query CurrentUnavailableVariants {\n  products(first: 100, query: \"status:active\") {\n    nodes {\n      id\n      title\n      status\n      variants(first: 100) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            tracked\n            inventoryLevels(first: 100) {\n              nodes {\n                quantities(names: [\"available\"]) {\n                  name\n                  quantity\n                }\n                location {\n                  id\n                  name\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+          "variables": {},
+          "classification": "GRAPHQL_FAILURE",
+          "providerError": {
+            "code": "SHOPIFY_GRAPHQL_ERROR",
+            "message": "Query cost is 2540, which exceeds the single query max cost limit (1000).\n\nSee https://shopify.dev/docs/api/usage/rate-limits for more information on how the\ncost of a query is calculated.\n\nTo query larger amounts of data with fewer limits, bulk operations should be used instead.\nSee https://shopify.dev/docs/api/usage/bulk-operations/queries for usage details.\n",
+            "details": [
+              {
+                "message": "Query cost is 2540, which exceeds the single query max cost limit (1000).\n\nSee https://shopify.dev/docs/api/usage/rate-limits for more information on how the\ncost of a query is calculated.\n\nTo query larger amounts of data with fewer limits, bulk operations should be used instead.\nSee https://shopify.dev/docs/api/usage/bulk-operations/queries for usage details.\n",
+                "path": null,
+                "code": "MAX_COST_EXCEEDED"
+              }
+            ]
+          }
+        },
+        "error": {
+          "code": "SHOPIFY_GRAPHQL_ERROR",
+          "message": "Query cost is 2540, which exceeds the single query max cost limit (1000).\n\nSee https://shopify.dev/docs/api/usage/rate-limits for more information on how the\ncost of a query is calculated.\n\nTo query larger amounts of data with fewer limits, bulk operations should be used instead.\nSee https://shopify.dev/docs/api/usage/bulk-operations/queries for usage details.\n"
+        }
+      },
+      {
+        "tool": "recommendation_validation",
+        "ok": false,
+        "message": "Recommendation decisions require at least one successful Shopify read (shopify_query).",
+        "facts": {
+          "errorCode": "INSUFFICIENT_INVESTIGATION",
+          "unresolvedFamilies": null,
+          "requiredNextTools": [
+            "shopify_query"
+          ],
+          "repairInstruction": "Call shopify_query to read relevant Shopify state before concluding."
+        },
+        "error": {
+          "code": "INSUFFICIENT_INVESTIGATION",
+          "message": "Recommendation decisions require at least one successful Shopify read (shopify_query)."
+        }
+      },
+      {
+        "tool": "recommendation_validation",
+        "ok": false,
+        "message": "Recommendation decisions require at least one successful Shopify read (shopify_query).",
+        "facts": {
+          "errorCode": "INSUFFICIENT_INVESTIGATION",
+          "unresolvedFamilies": null,
+          "requiredNextTools": [
+            "shopify_query"
+          ],
+          "repairInstruction": "Call shopify_query to read relevant Shopify state before concluding."
+        },
+        "error": {
+          "code": "INSUFFICIENT_INVESTIGATION",
+          "message": "Recommendation decisions require at least one successful Shopify read (shopify_query)."
+        }
+      }
+    ]
+  },
+  "diagnostics": {
+    "hypothesesConsidered": [
+      {
+        "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+        "status": "INVESTIGATING",
+        "reason": "Merchant Memory reports two out-of-stock variants, but current Shopify resource-level state has not yet been read.",
+        "relevantOperations": [
+          "products",
+          "Product.variants",
+          "ProductVariant.inventoryQuantity"
+        ]
+      },
+      {
+        "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+        "status": "INVESTIGATING",
+        "reason": "Merchant Memory reports two out-of-stock variants, but the live Shopify read failed because InventoryLevel.available is not a valid field; the query must be repaired before confirming current state.",
+        "relevantOperations": [
+          "products"
+        ]
+      },
+      {
+        "hypothesis": "Two active, inventory-tracked variants currently have zero available inventory.",
+        "status": "UNVERIFIED",
+        "reason": "The supplied read failed because `available` is not a field on Shopify's `InventoryLevel`; the corrected `quantities(names: [\"available\"])` read was not completed this turn.",
+        "relevantOperations": [
+          "products"
+        ]
+      },
+      {
+        "hypothesis": "Two active, inventory-tracked variants currently have zero available units.",
+        "status": "confirmed_by_current_memory_but_live_read_required",
+        "reason": "Merchant Memory records 2 out-of-stock variants out of 25, but the prior live Shopify reads failed and no successful current-state read is available in this turn.",
+        "relevantOperations": [
+          "products"
+        ]
+      }
+    ],
+    "retrievedOperations": [],
+    "shopifyReads": [
+      {
+        "operation": "products",
+        "ok": false
+      },
+      {
+        "operation": "products",
+        "ok": false
+      }
+    ],
+    "feasibleInterventions": [],
+    "rejectedInterventions": [],
+    "opportunityCoverage": [],
+    "semanticRepair": null,
+    "investigationTurns": 4
+  }
+}

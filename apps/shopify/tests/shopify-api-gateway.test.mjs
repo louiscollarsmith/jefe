@@ -2,65 +2,56 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
-  getShopifyApiOperationStub,
-  loadShopifyApiCatalog,
-  validateShopifyApiCatalog,
-  validateShopifyOperationVariables,
-} from "../app/lib/shopify/api/catalog.server.js";
-import { retrieveShopifyApiOperations } from "../app/lib/shopify/api/retrieval.server.js";
-import {
   executeShopifyOperation,
   SHOPIFY_GATEWAY_STATUS,
 } from "../app/lib/shopify/api/gateway.server.js";
 import { recordExplicitHighRiskConfirmation } from "../app/lib/shopify/api/explicit-confirmation.server.js";
+import { getConfiguredShopifyApiVersion } from "../app/lib/shopify/api-version.server.js";
+import { loadGatewaySchemaIndex } from "../app/lib/shopify/gateway/schema-index.server.js";
+import { analyzeGatewayDocument, GATEWAY_MODE } from "../app/lib/shopify/gateway/document.server.js";
+import { buildSyntheticGatewayStub } from "../app/lib/shopify/gateway/synthetic-stub.server.js";
+
+// docs/ops/agentic-shopify-gateway-full/: executeShopifyOperation (this file's real subject) no
+// longer resolves a stub from a catalog operation name — stubOverride, built from a real, agent-
+// composed GraphQL document via the same seam gateway/tools.server.js uses in production, is now
+// the only way to reach it. These tests exercise the shared safety/idempotency/ledger pipeline
+// itself (accepted-Action-revision authorization, live-scope checks, blast-radius/pricing-intent
+// guard, explicit high-risk confirmation, idempotent replay) through that entry point, using real
+// documents against the real Shopify Admin schema index rather than fixture catalog stubs.
 
 const merchantId = "00000000-0000-0000-0000-000000000001";
 const shopId = "00000000-0000-0000-0000-000000000002";
 const actionId = "00000000-0000-0000-0000-000000000003";
+const apiVersion = getConfiguredShopifyApiVersion();
+const schemaIndex = loadGatewaySchemaIndex();
 
-test("generated Shopify API catalog validates and separates reads from writes", () => {
-  const catalog = loadShopifyApiCatalog();
-  assert.equal(catalog.catalogId, "shopify-admin-api:2026-07");
-  assert.equal(validateShopifyApiCatalog(catalog).ok, true);
-  assert.ok(catalog.operations.some((operation) => operation.operation === "products" && operation.operationKind === "QUERY"));
-  assert.ok(catalog.operations.some((operation) => operation.operation === "collectionCreate" && operation.operationKind === "MUTATION"));
-  assert.ok(catalog.operations.every((operation) => !Object.hasOwn(operation, "executorRef")));
-});
+/** @param {string} document @param {Record<string, any>} [variables] @param {"QUERY_ONLY"|"MUTATION_ONLY"} [mode] */
+function stubFor(document, variables = {}, mode = GATEWAY_MODE.mutationOnly) {
+  const analysis = analyzeGatewayDocument({ documentText: document, mode, variables, schemaIndex });
+  assert.equal(analysis.ok, true, `test fixture document failed to analyze: ${JSON.stringify(analysis)}`);
+  return buildSyntheticGatewayStub({ analysis, apiVersion });
+}
 
-test("retrieval returns a small relevant Shopify API subset", () => {
-  const results = retrieveShopifyApiOperations("create a merchandising collection and add products to it", {
-    operationKind: "MUTATION",
-    domains: ["collections"],
-    limit: 4,
-  });
-  assert.ok(results.length <= 4);
-  assert.ok(results.some((row) => row.operation === "collectionCreate"));
-  assert.ok(results.some((row) => row.operation === "collectionAddProducts"));
-  assert.equal(results.some((row) => row.operation === "refundCreate"), false);
-});
-
-test("operation variable validation rejects missing nested required fields", () => {
-  const create = getShopifyApiOperationStub("collectionCreate");
-  assert.equal(validateShopifyOperationVariables(create, { collection: { title: "London delivery" } }).ok, true);
-  const invalid = validateShopifyOperationVariables(create, { collection: { handle: "london-delivery" } });
-  assert.equal(invalid.ok, false);
-  assert.ok(invalid.errors.includes("collection.title is required"));
-
-  const update = getShopifyApiOperationStub("productUpdate");
-  const enumError = validateShopifyOperationVariables(update, {
-    product: { id: "gid://shopify/Product/1", status: "REMOVED" },
-  });
-  assert.equal(enumError.ok, false);
-  assert.ok(enumError.errors.some((error) => error.includes("ACTIVE, ARCHIVED, DRAFT, UNLISTED")));
-});
+const PRODUCTS_QUERY = "query($first: Int!) { products(first: $first) { edges { node { id } } pageInfo { hasNextPage } } }";
+const COLLECTION_CREATE_MUTATION =
+  "mutation($collection: CollectionCreateInput!) { collectionCreate(collection: $collection) { collection { id title } userErrors { field message } } }";
+const PRODUCT_VARIANTS_BULK_UPDATE_MUTATION =
+  "mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId: $productId, variants: $variants) { productVariants { id price } userErrors { field message } } }";
+const APP_REVOKE_ACCESS_SCOPES_MUTATION =
+  "mutation($scopes: [String!]!) { appRevokeAccessScopes(scopes: $scopes) { revoked { handle } userErrors { field message } } }";
+const CUSTOMER_DELETE_MUTATION =
+  "mutation($input: CustomerDeleteInput!) { customerDelete(input: $input) { deletedCustomerId userErrors { field message } } }";
+const TAGS_ADD_MUTATION = "mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { node { id } userErrors { field message } } }";
 
 test("gateway permits reads without accepted Action authorization and ledgers the provider result", async () => {
   const prisma = fakePrisma();
   const client = fakeClient({ products: { edges: [], pageInfo: { hasNextPage: false } } });
+  const variables = { first: 10 };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, client),
     operation: "products",
-    variables: { first: 10 },
+    variables,
+    stubOverride: stubFor(PRODUCTS_QUERY, variables, GATEWAY_MODE.queryOnly),
     grantedScopes: ["read_products"],
     purpose: "Investigate catalogue structure before recommending an Action",
   });
@@ -76,10 +67,12 @@ test("gateway authorizes products read from live Shopify scopes when local scope
     { products: { edges: [], pageInfo: { hasNextPage: false } } },
     { grantedScopes: ["read_products", "write_products"] },
   );
+  const variables = { first: 10 };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, client),
     operation: "products",
-    variables: { first: 10 },
+    variables,
+    stubOverride: stubFor(PRODUCTS_QUERY, variables, GATEWAY_MODE.queryOnly),
     grantedScopes: ["write_products"],
     purpose: "Investigate current products from Shopify despite stale local scope metadata.",
   });
@@ -99,10 +92,12 @@ test("gateway denies required scope when live Shopify installation does not gran
     { products: { edges: [], pageInfo: { hasNextPage: false } } },
     { grantedScopes: ["write_products"] },
   );
+  const variables = { first: 10 };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, client),
     operation: "products",
-    variables: { first: 10 },
+    variables,
+    stubOverride: stubFor(PRODUCTS_QUERY, variables, GATEWAY_MODE.queryOnly),
     grantedScopes: ["read_products", "write_products"],
     purpose: "This must use Shopify's actual installed authorization, not local metadata.",
   });
@@ -118,10 +113,12 @@ test("gateway denies required scope when live Shopify installation does not gran
 
 test("gateway denies mutations before Action revision acceptance", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction() });
+  const variables = { collection: { title: "London delivery" } };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
     operation: "collectionCreate",
-    variables: { input: { title: "London delivery" } },
+    variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["write_products"],
     purpose: "Create the accepted merchandising collection",
     expectedEffect: "Create a Shopify collection",
@@ -143,12 +140,14 @@ test("gateway denies stale accepted Action revisions", async () => {
       },
     }),
   });
+  const variables = { collection: { title: "London delivery" } };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
-    variables: { input: { title: "London delivery" } },
+    variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["write_products"],
   });
   assert.equal(result.ok, false);
@@ -158,12 +157,14 @@ test("gateway denies stale accepted Action revisions", async () => {
 
 test("gateway checks actual granted Shopify scopes", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction() });
+  const variables = { collection: { title: "London delivery" } };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({}, { grantedScopes: ["read_products"] })),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
-    variables: { input: { title: "London delivery" } },
+    variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["read_products"],
   });
   assert.equal(result.ok, false);
@@ -173,15 +174,17 @@ test("gateway checks actual granted Shopify scopes", async () => {
 
 test("accepted-intent guard blocks pricing drift during collection execution", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction() });
+  const variables = {
+    productId: "gid://shopify/Product/1",
+    variants: [{ id: "gid://shopify/ProductVariant/1", price: "12.00" }],
+  };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "productVariantsBulkUpdate",
-    variables: {
-      productId: "gid://shopify/Product/1",
-      variants: [{ id: "gid://shopify/ProductVariant/1", price: "12.00" }],
-    },
+    variables,
+    stubOverride: stubFor(PRODUCT_VARIANTS_BULK_UPDATE_MUTATION, variables),
     grantedScopes: ["write_products"],
     purpose: "Lower the price while creating the collection",
     expectedEffect: "Change product pricing",
@@ -192,13 +195,27 @@ test("accepted-intent guard blocks pricing drift during collection execution", a
 });
 
 test("a formerly-prohibited operation is executable but needs a durable explicit confirmation, even with an accepted Action", async () => {
-  const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Uninstall Jefe.", materialExpectedEffects: ["Uninstall the app"], constraints: [] } } }) });
+  const prisma = fakePrisma({
+    action: acceptedCollectionAction({
+      progress: {
+        agentic: {
+          currentActionRevision: "rev-1",
+          acceptedActionRevision: "rev-1",
+          outcome: "Reduce Jefe's own granted Shopify scopes.",
+          materialExpectedEffects: ["Revoke previously granted access scopes"],
+          constraints: [],
+        },
+      },
+    }),
+  });
+  const variables = { scopes: ["write_products"] };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
     actionId,
     acceptedActionRevision: "rev-1",
-    operation: "appUninstall",
-    variables: {},
+    operation: "appRevokeAccessScopes",
+    variables,
+    stubOverride: stubFor(APP_REVOKE_ACCESS_SCOPES_MUTATION, variables),
     grantedScopes: [],
   });
   assert.equal(result.ok, false);
@@ -208,12 +225,14 @@ test("a formerly-prohibited operation is executable but needs a durable explicit
 
 test("gateway requires explicit destructive confirmation for an unreviewed delete-shaped mutation, even with the right scope and an accepted Action", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Delete a customer record.", materialExpectedEffects: ["Delete a customer"], constraints: [] } } }) });
+  const variables = { input: { id: "gid://shopify/Customer/1" } };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({}, { grantedScopes: ["write_customers"] })),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "customerDelete",
-    variables: { input: { id: "gid://shopify/Customer/1" } },
+    variables,
+    stubOverride: stubFor(CUSTOMER_DELETE_MUTATION, variables),
     grantedScopes: ["write_customers"],
   });
   assert.equal(result.ok, false);
@@ -223,12 +242,14 @@ test("gateway requires explicit destructive confirmation for an unreviewed delet
 
 test("a mutation whose required scope is not confidently known is still executable, but only at the explicit confirmation tier — unknown never means frictionless", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Tag a product.", materialExpectedEffects: ["Add tags to a product"], constraints: [] } } }) });
+  const variables = { id: "gid://shopify/Product/1", tags: ["evergreen"] };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "tagsAdd",
-    variables: { id: "gid://shopify/Product/1", tags: ["evergreen"] },
+    variables,
+    stubOverride: stubFor(TAGS_ADD_MUTATION, variables),
     grantedScopes: ["write_products"],
   });
   assert.equal(result.ok, false);
@@ -263,6 +284,7 @@ test("recording an explicit high-risk confirmation lets a destructive mutation p
     acceptedActionRevision: "rev-1",
     operation: "customerDelete",
     variables,
+    stubOverride: stubFor(CUSTOMER_DELETE_MUTATION, variables),
     grantedScopes: ["write_customers"],
   });
   assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.ok);
@@ -274,15 +296,17 @@ test("gateway returns Shopify userErrors as structured tool results", async () =
   const client = fakeClient({
     collectionCreate: {
       collection: null,
-      userErrors: [{ field: ["input", "title"], message: "Title has already been taken" }],
+      userErrors: [{ field: ["collection", "title"], message: "Title has already been taken" }],
     },
   });
+  const variables = { collection: { title: "London delivery" } };
   const result = await executeShopifyOperation({
     ...baseInput(prisma, client),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
-    variables: { input: { title: "London delivery" } },
+    variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["write_products"],
     purpose: "Create the accepted merchandising collection",
     expectedEffect: "Create a Shopify collection",
@@ -290,7 +314,7 @@ test("gateway returns Shopify userErrors as structured tool results", async () =
   assert.equal(result.ok, false);
   assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.userErrors);
   assert.deepEqual(result.userErrors, [
-    { field: "input.title", message: "Title has already been taken", code: null },
+    { field: "collection.title", message: "Title has already been taken", code: null },
   ]);
   assert.equal(prisma.calls.at(-1).data.status, SHOPIFY_GATEWAY_STATUS.userErrors);
 });
@@ -303,12 +327,14 @@ test("gateway replays duplicate idempotent writes without a second provider call
       userErrors: [],
     },
   });
+  const variables = { collection: { title: "London delivery" } };
   const input = {
     ...baseInput(prisma, client),
     actionId,
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
-    variables: { input: { title: "London delivery" } },
+    variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["write_products"],
     purpose: "Create the accepted merchandising collection",
     expectedEffect: "Create a Shopify collection",
@@ -326,7 +352,7 @@ test("gateway replays duplicate idempotent writes without a second provider call
 });
 
 test("gateway blocks idempotent retries when the previous write result is unknown", async () => {
-  const variables = { input: { title: "London delivery" } };
+  const variables = { collection: { title: "London delivery" } };
   const prisma = fakePrisma({
     action: acceptedCollectionAction(),
     calls: [
@@ -354,6 +380,7 @@ test("gateway blocks idempotent retries when the previous write result is unknow
     acceptedActionRevision: "rev-1",
     operation: "collectionCreate",
     variables,
+    stubOverride: stubFor(COLLECTION_CREATE_MUTATION, variables),
     grantedScopes: ["write_products"],
     purpose: "Create the accepted merchandising collection",
     expectedEffect: "Create a Shopify collection",

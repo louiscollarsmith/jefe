@@ -267,7 +267,7 @@ export async function discoverCandidates(input) {
             : [],
         }),
         schema: AGENTIC_CANDIDATE_DISCOVERY_SCHEMA,
-        maxInputTokens: 80000,
+        maxInputTokens: 120000,
         maxOutputTokens: 3200,
         timeoutMs: 90_000,
       }),

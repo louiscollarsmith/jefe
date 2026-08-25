@@ -10,7 +10,18 @@ import {
   validateInvestigation,
   validateSemanticRecommendation,
 } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
-import { SHOPIFY_AGENT_TOOL } from "../app/lib/shopify/agentic-runtime/tools.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
+
+// findExistingRead/validateInvestigation/buildInvestigationState are generic bookkeeping
+// functions over an opaque `toolResults` array — they accept discoveryToolName/readToolName as
+// options and default to these literal catalog-era tool-name strings for backward compatibility.
+// Using them here is not a dependency on the (removed) catalog dispatcher: nothing below routes a
+// tool call through it — see gatewayQueryCall/readCall further down for the tests that exercise
+// real dispatch, which are gateway-shaped.
+const SHOPIFY_AGENT_TOOL = Object.freeze({
+  retrieveOperations: "retrieve_shopify_operations",
+  callOperation: "call_shopify_operation",
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -452,12 +463,15 @@ function fakeShopifyClient() {
   };
 }
 
-function retrieveCall(query = "products collections") {
-  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
-}
-
-function readCall(operation = "products", variables = { first: 5 }) {
-  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables, purpose: "Investigate current Shopify state." } };
+// Loop tests below exercise real dispatch through generateAgenticShopifyRecommendation (gateway
+// surface, always on) — these build real GraphQL documents, matched by fakeShopifyClient's
+// document.includes(...) checks above.
+function readCall(operation = "products") {
+  const document =
+    operation === "collections"
+      ? "query { collections(first: 5) { edges { node { id title } } } }"
+      : "query { products(first: 5) { edges { node { id title } } } }";
+  return { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document } };
 }
 
 function validLoopRec(overrides = {}) {
@@ -504,7 +518,7 @@ async function runLoop(script, overrides = {}) {
 test("Test A: repair after invalid candidate does not require another products read", async () => {
   const { provider, result } = await runLoop((payload) => {
     if (payload.iteration === 0) {
-      return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+      return { status: "CONTINUE", toolCalls: [readCall("products")] };
     }
     if (payload.iteration === 1) {
       assert.equal(payload.investigationState.investigationComplete, true);
@@ -540,7 +554,7 @@ test("Test D: identical Shopify read is returned as ALREADY_AVAILABLE and not re
   };
   const { result } = await runLoop(
     (payload) => {
-      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("products")] };
       if (payload.iteration === 1) return { status: "CONTINUE", toolCalls: [readCall("products")] };
       return { status: "RECOMMEND_ACTION", recommendation: validLoopRec() };
     },
@@ -572,7 +586,7 @@ test("Test E: a different operation is executed as a genuine new read", async ()
   };
   const { result } = await runLoop(
     (payload) => {
-      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+      if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("products")] };
       if (payload.iteration === 1) return { status: "CONTINUE", toolCalls: [readCall("collections")] };
       return { status: "RECOMMEND_ACTION", recommendation: validLoopRec() };
     },
@@ -586,7 +600,7 @@ test("Test E: a different operation is executed as a genuine new read", async ()
 
 test("Test F: later semantic validation failure does not reset investigationComplete", async () => {
   const { provider, result } = await runLoop((payload) => {
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("products")] };
     if (payload.iteration === 1) {
       assert.equal(payload.investigationState.investigationComplete, true);
       return { status: "RECOMMEND_ACTION", recommendation: validLoopRec({ supportingBeliefIds: ["nope"] }) };
@@ -603,7 +617,7 @@ test("Test F: later semantic validation failure does not reset investigationComp
 
 test("Test G: lastCandidate keeps diagnosedProblem and mechanism during an evidence-id repair", async () => {
   const { provider } = await runLoop((payload) => {
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("products")] };
     if (payload.iteration === 1) {
       return {
         status: "RECOMMEND_ACTION",
@@ -630,7 +644,7 @@ test("Test G: lastCandidate keeps diagnosedProblem and mechanism during an evide
 
 test("Test H: explicit BLOCKED terminates after investigation instead of hitting the iteration limit", async () => {
   const { result } = await runLoop((payload) => {
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall("products")] };
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("products")] };
     return {
       status: "BLOCKED",
       blocker: "Investigated inventory and collections. No safe reversible Shopify Action is justified until warehouse counts are confirmed.",

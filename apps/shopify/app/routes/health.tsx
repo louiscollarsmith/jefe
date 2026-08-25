@@ -28,7 +28,7 @@ import {
   getEpisodeIndexHealth,
 } from "../lib/observability/embedding-health.server.js";
 import { getShopifyIntelligenceCoverageHealth } from "../lib/shopify/intelligence-coverage.server.js";
-import { getShopifyApiCatalogHealth } from "../lib/shopify/api/retrieval.server.js";
+import { getGatewaySchemaHealth } from "../lib/shopify/gateway/schema-index.server.js";
 
 export const loader = async () => {
   const [database, bootstrapJobs, actionStepRuns] = await Promise.all([
@@ -67,7 +67,7 @@ export const loader = async () => {
         index: episodeIndex,
       },
       shopifyIntelligence: getShopifyIntelligenceCoverageHealth(),
-      shopifyApiCatalog: getShopifyApiCatalogHealth(),
+      shopifyGatewaySchema: getGatewaySchemaHealth(),
       ...buildDependencyHealth(process.env),
       // Which actions can actually WRITE to a store on this instance. Every go-live so far
       // has been a variable flip with no way to confirm it landed: the running process reads

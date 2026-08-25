@@ -1,0 +1,354 @@
+{
+    "trace": {
+        "turns": [],
+        "progressLog": [
+            {
+                "at": "2026-08-25T18:04:45.603Z",
+                "state": "DISCOVERING_CANDIDATES",
+                "rescue": false
+            },
+            {
+                "at": "2026-08-25T18:04:59.245Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "reactivate-sales-after-gap"
+            },
+            {
+                "at": "2026-08-25T18:05:10.461Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The candidate's underlying revenue-gap evidence is present in Merchant Memory, but the required live Shopify predicates for the proposed intervention were not confirmed: the products query returned zero nodes for both named products. No safe, reversible Shopify merchandising write can be recommended without identifying the actual Shopify product records and confirming their current status, availability, and existing placement state.",
+                "candidateId": "reactivate-sales-after-gap",
+                "disposition": "REJECTED"
+            },
+            {
+                "at": "2026-08-25T18:05:10.461Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "improve-customer-retention-measurement"
+            },
+            {
+                "at": "2026-08-25T18:05:15.610Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The candidate's factual premise was not confirmed against current Shopify orders/customers in this turn. The only successful live read was a products query, which returned zero matching products and does not establish order-to-customer linkage. Additionally, no safe reversible Shopify Admin write operation was established for enabling customer identity capture and retroactively associating future orders.",
+                "candidateId": "improve-customer-retention-measurement",
+                "disposition": "NON_EXECUTABLE"
+            },
+            {
+                "at": "2026-08-25T18:05:15.610Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "raise-items-per-order"
+            },
+            {
+                "at": "2026-08-25T18:05:19.955Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The Shopify products query for the proposed anchor products \u201cBorderlands Discovery Four\u201d and \u201cCloud Needle Tsolikouri\u201d executed successfully but returned zero product nodes. Current Shopify state therefore does not confirm the products needed to scope complementary recommendations or a bundle. Historical evidence shows median items per order of 1, 54% single-item orders, and 6% orders with four or more items, but those predicates alone do not identify currently valid Shopify resources for a safe reversible intervention.",
+                "candidateId": "raise-items-per-order",
+                "disposition": "BLOCKED_BY_EVIDENCE"
+            },
+            {
+                "at": "2026-08-25T18:05:19.955Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "recover-declining-product-demand"
+            },
+            {
+                "at": "2026-08-25T18:05:34.616Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The supporting evidence confirms historical momentum, but the required live Shopify predicates for a safe merchandising change were not established: the prior products query returned an empty node set for Borderlands Discovery Four and Cloud Needle Tsolikouri, and no collection/storefront ordering state was read. Therefore the intervention cannot be safely scoped or confirmed in this turn.",
+                "candidateId": "recover-declining-product-demand",
+                "disposition": "BLOCKED_BY_EVIDENCE"
+            },
+            {
+                "at": "2026-08-25T18:05:34.616Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "restore-unavailable-variants"
+            },
+            {
+                "at": "2026-08-25T18:05:57.510Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The successful Shopify products query returned zero matching nodes, so the two affected variants cannot be identified or verified from current Shopify state. In addition, replenishment quantities and approved in-stock alternatives are not available in Shopify. Checked operation: products, with product status, total inventory, variant inventory quantity, available-for-sale status, and price requested. Candidate disposition: BLOCKED_BY_EVIDENCE.",
+                "candidateId": "restore-unavailable-variants",
+                "disposition": "BLOCKED_BY_EVIDENCE"
+            },
+            {
+                "at": "2026-08-25T18:05:57.510Z",
+                "state": "INVESTIGATING_CANDIDATE",
+                "rescue": false,
+                "candidateId": "capture-product-margin-data"
+            },
+            {
+                "at": "2026-08-25T18:06:51.479Z",
+                "state": "TRYING_NEXT_CANDIDATE",
+                "reason": "The Shopify state confirms the premise: 25 variants across 17 ACTIVE products were read successfully, and all 25 inventoryItem.unitCost values are null. However, Shopify cannot provide authoritative supplier purchase costs. A complete merchant-confirmed cost mapping for all 25 eligible variant IDs is required before any safe productVariantUpdate can be executed.",
+                "candidateId": "capture-product-margin-data",
+                "disposition": "BLOCKED_BY_EVIDENCE"
+            },
+            {
+                "at": "2026-08-25T18:06:51.479Z",
+                "state": "RESCUE_DISCOVERY"
+            },
+            {
+                "at": "2026-08-25T18:07:11.193Z",
+                "state": "NO_ACTIONABLE_OPPORTUNITY"
+            }
+        ],
+        "toolResults": [
+            {
+                "ok": true,
+                "tool": "shopify_query",
+                "error": null,
+                "facts": {
+                    "query": null,
+                    "status": null,
+                    "operation": "products",
+                    "gatewayDecision": null
+                },
+                "message": "products query executed."
+            },
+            {
+                "ok": true,
+                "tool": "shopify_query",
+                "error": null,
+                "facts": {
+                    "query": null,
+                    "status": "ALREADY_AVAILABLE",
+                    "operation": "products",
+                    "gatewayDecision": null
+                },
+                "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results \u2014 do not call again."
+            },
+            {
+                "ok": true,
+                "tool": "shopify_query",
+                "error": null,
+                "facts": {
+                    "query": null,
+                    "status": null,
+                    "operation": "products",
+                    "gatewayDecision": null
+                },
+                "message": "products query executed."
+            },
+            {
+                "ok": false,
+                "tool": "recommendation_validation",
+                "error": {
+                    "code": "UNSUPPORTED_BELIEF_ID",
+                    "message": "Recommendation cited an unsupported belief id \"cf4be3ff-87ff-4aaa-9a1b-966c677b8851\". Valid belief ids are in allowedValues. Remove or replace only this id \u2014 all other recommendation fields are valid and investigation does not need repeating."
+                },
+                "facts": {
+                    "query": null,
+                    "status": null,
+                    "operation": null,
+                    "gatewayDecision": null
+                },
+                "message": "Recommendation cited an unsupported belief id \"cf4be3ff-87ff-4aaa-9a1b-966c677b8851\". Valid belief ids are in allowedValues. Remove or replace only this id \u2014 all other recommendation fields are valid and investigation does not need repeating."
+            },
+            {
+                "ok": true,
+                "tool": "shopify_query",
+                "error": null,
+                "facts": {
+                    "query": null,
+                    "status": "ALREADY_AVAILABLE",
+                    "operation": "products",
+                    "gatewayDecision": null
+                },
+                "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results \u2014 do not call again."
+            },
+            {
+                "ok": false,
+                "tool": "recommendation_validation",
+                "error": {
+                    "code": "UNSUPPORTED_BELIEF_ID",
+                    "message": "Recommendation cited an unsupported belief id \"11da0f30-2434-4b37-b094-7784a26db067\". Valid belief ids are in allowedValues. Remove or replace only this id \u2014 all other recommendation fields are valid and investigation does not need repeating."
+                },
+                "facts": {
+                    "query": null,
+                    "status": null,
+                    "operation": null,
+                    "gatewayDecision": null
+                },
+                "message": "Recommendation cited an unsupported belief id \"11da0f30-2434-4b37-b094-7784a26db067\". Valid belief ids are in allowedValues. Remove or replace only this id \u2014 all other recommendation fields are valid and investigation does not need repeating."
+            },
+            {
+                "ok": true,
+                "tool": "shopify_query",
+                "error": null,
+                "facts": {
+                    "query": null,
+                    "status": "ALREADY_AVAILABLE",
+                    "operation": "products",
+                    "gatewayDecision": null
+                },
+                "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results \u2014 do not call again."
+            }
+        ]
+    },
+    "status": "NO_ACTIONABLE_OPPORTUNITY",
+    "blocker": "Investigated 6 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+    "runtime": "agentic_shopify",
+    "diagnostics": {
+        "discoveryLog": [
+            {
+                "usage": {
+                    "inputTokens": 57372,
+                    "totalTokens": 58659,
+                    "outputTokens": 1287,
+                    "cachedInputTokens": 0,
+                    "estimatedInputTokens": 49589
+                },
+                "rescue": false,
+                "candidateCount": 6
+            },
+            {
+                "usage": {
+                    "inputTokens": 58249,
+                    "totalTokens": 58669,
+                    "outputTokens": 420,
+                    "cachedInputTokens": 0,
+                    "estimatedInputTokens": 50768
+                },
+                "rescue": true,
+                "candidateCount": 0
+            }
+        ],
+        "llmCallCount": 11,
+        "candidateQueue": [
+            {
+                "domain": null,
+                "reason": "The candidate's underlying revenue-gap evidence is present in Merchant Memory, but the required live Shopify predicates for the proposed intervention were not confirmed: the products query returned zero nodes for both named products. No safe, reversible Shopify merchandising write can be recommended without identifying the actual Shopify product records and confirming their current status, availability, and existing placement state.",
+                "status": "REJECTED",
+                "priority": 1,
+                "beliefIds": [
+                    "8923c17a-13d0-4f02-89d3-3216350eee87",
+                    "0a8b0fb3-c8e7-4de6-9df0-03d122b1834d",
+                    "e1dbd5c0-37b6-4790-ad6c-972bdcd93c15",
+                    "906b9275-1bdd-4715-a04f-c79f9ecae6d6"
+                ],
+                "candidateId": "reactivate-sales-after-gap",
+                "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Create or update a promotional merchandising placement featuring the strongest recent products, particularly Borderlands Discovery Four and Cloud Needle Tsolikouri. Revenue is intermittent: only 6 of the last 30 days had orders, and no order has been recorded for 19 days despite 13 orders in the preceding 30-day window.",
+                "executionStatus": null,
+                "diagnosedProblem": "Revenue is intermittent: only 6 of the last 30 days had orders, and no order has been recorded for 19 days despite 13 orders in the preceding 30-day window.",
+                "finalDisposition": "WEAK_DIAGNOSIS",
+                "retrievedOperations": []
+            },
+            {
+                "domain": null,
+                "reason": "The candidate's factual premise was not confirmed against current Shopify orders/customers in this turn. The only successful live read was a products query, which returned zero matching products and does not establish order-to-customer linkage. Additionally, no safe reversible Shopify Admin write operation was established for enabling customer identity capture and retroactively associating future orders.",
+                "status": "NON_EXECUTABLE",
+                "priority": 2,
+                "beliefIds": [
+                    "7a84d388-e38c-4350-b557-29e6ab1e7e9e",
+                    "de330fac-e3ac-401b-9d87-8fa376994cf4",
+                    "ffdd23d8-2a45-4571-9c7a-1cd6137bc184"
+                ],
+                "candidateId": "improve-customer-retention-measurement",
+                "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Enable customer identity capture and connect future orders to customer profiles for retention and re-engagement use. None of the 50 stored orders is linked to a stored customer identity, so the merchant cannot distinguish repeat purchasing from new-customer sales or target prior buyers reliably.",
+                "executionStatus": null,
+                "diagnosedProblem": "None of the 50 stored orders is linked to a stored customer identity, so the merchant cannot distinguish repeat purchasing from new-customer sales or target prior buyers reliably.",
+                "finalDisposition": "CAPABILITY_RETRIEVAL_FAILURE",
+                "retrievedOperations": []
+            },
+            {
+                "domain": null,
+                "reason": "The Shopify products query for the proposed anchor products \u201cBorderlands Discovery Four\u201d and \u201cCloud Needle Tsolikouri\u201d executed successfully but returned zero product nodes. Current Shopify state therefore does not confirm the products needed to scope complementary recommendations or a bundle. Historical evidence shows median items per order of 1, 54% single-item orders, and 6% orders with four or more items, but those predicates alone do not identify currently valid Shopify resources for a safe reversible intervention.",
+                "status": "BLOCKED_BY_EVIDENCE",
+                "priority": 3,
+                "beliefIds": [
+                    "540be5ee-eeaf-440c-83f5-4fbfcb20e9b5",
+                    "a9d6579f-bac4-4630-ba5a-b1dfb8d4055b",
+                    "3dda72f4-3ee2-4c22-b80f-9d2753d15edf"
+                ],
+                "candidateId": "raise-items-per-order",
+                "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Add complementary-product recommendations or a curated bundle using products already purchased together or aligned to the leading wine range. The typical basket contains only one item: median items per order is 1, 54% of orders contain exactly one item, and only 6% contain four or more items.",
+                "executionStatus": null,
+                "diagnosedProblem": "The typical basket contains only one item: median items per order is 1, 54% of orders contain exactly one item, and only 6% contain four or more items.",
+                "finalDisposition": "INSUFFICIENT_EVIDENCE",
+                "retrievedOperations": []
+            },
+            {
+                "domain": null,
+                "reason": "The supporting evidence confirms historical momentum, but the required live Shopify predicates for a safe merchandising change were not established: the prior products query returned an empty node set for Borderlands Discovery Four and Cloud Needle Tsolikouri, and no collection/storefront ordering state was read. Therefore the intervention cannot be safely scoped or confirmed in this turn.",
+                "status": "BLOCKED_BY_EVIDENCE",
+                "priority": 4,
+                "beliefIds": [
+                    "48949d7f-81d5-4f64-83a8-9d7d8b12e8e6"
+                ],
+                "candidateId": "recover-declining-product-demand",
+                "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Reorder collection or storefront merchandising to feature Cloud Needle Tsolikouri, Borderlands Discovery Four, and the strongest recent category products ahead of declining items. Demand has weakened across most of the catalogue: 13 products declined month over month, including Lemon Grove Vidiano falling from \u00a363 to \u00a30, while only one product rose.",
+                "executionStatus": null,
+                "diagnosedProblem": "Demand has weakened across most of the catalogue: 13 products declined month over month, including Lemon Grove Vidiano falling from \u00a363 to \u00a30, while only one product rose.",
+                "finalDisposition": "INSUFFICIENT_EVIDENCE",
+                "retrievedOperations": []
+            },
+            {
+                "domain": null,
+                "reason": "The successful Shopify products query returned zero matching nodes, so the two affected variants cannot be identified or verified from current Shopify state. In addition, replenishment quantities and approved in-stock alternatives are not available in Shopify. Checked operation: products, with product status, total inventory, variant inventory quantity, available-for-sale status, and price requested. Candidate disposition: BLOCKED_BY_EVIDENCE.",
+                "status": "BLOCKED_BY_EVIDENCE",
+                "priority": 5,
+                "beliefIds": [
+                    "c6a6f444-8790-48f7-8133-ece8d17a03a5",
+                    "13059c2c-302b-4fdd-b151-688fcc9fd299"
+                ],
+                "candidateId": "restore-unavailable-variants",
+                "resultStatus": "BLOCKED",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Replenish the unavailable variants or replace their storefront placement with in-stock alternatives until replenishment is complete. Two of the 25 active inventory-tracked variants have zero available units, creating availability gaps within an otherwise active catalogue.",
+                "executionStatus": null,
+                "diagnosedProblem": "Two of the 25 active inventory-tracked variants have zero available units, creating availability gaps within an otherwise active catalogue.",
+                "finalDisposition": "INSUFFICIENT_EVIDENCE",
+                "retrievedOperations": []
+            },
+            {
+                "domain": null,
+                "reason": "The Shopify state confirms the premise: 25 variants across 17 ACTIVE products were read successfully, and all 25 inventoryItem.unitCost values are null. However, Shopify cannot provide authoritative supplier purchase costs. A complete merchant-confirmed cost mapping for all 25 eligible variant IDs is required before any safe productVariantUpdate can be executed.",
+                "status": "BLOCKED_BY_EVIDENCE",
+                "priority": 6,
+                "beliefIds": [
+                    "11da0f30-2434-4b93-8606-bc4f0603a0b2",
+                    "95422054-a55d-42eb-a62d-32d1bcee43e5"
+                ],
+                "candidateId": "capture-product-margin-data",
+                "resultStatus": "BLOCKED",
+                "scopeGranted": null,
+                "scopeRequired": null,
+                "operationQuery": "Populate cost-per-item for all active variants and use the resulting margin view to guide product promotion and offer selection. Cost per item is absent for all 25 active variants, so the merchant cannot identify which products generate profitable revenue or assess the economics of promotions.",
+                "executionStatus": null,
+                "diagnosedProblem": "Cost per item is absent for all 25 active variants, so the merchant cannot identify which products generate profitable revenue or assess the economics of promotions.",
+                "finalDisposition": "INSUFFICIENT_EVIDENCE",
+                "retrievedOperations": []
+            }
+        ],
+        "rejectionFunnel": {
+            "total": 6,
+            "rejected": 6,
+            "recommended": 0,
+            "byDisposition": {
+                "WEAK_DIAGNOSIS": 1,
+                "INSUFFICIENT_EVIDENCE": 4,
+                "CAPABILITY_RETRIEVAL_FAILURE": 1
+            }
+        }
+    },
+    "retryOfRunId": null,
+    "attemptNumber": 1,
+    "attemptReason": null,
+    "onboardingEpoch": "3d4c7aab-4f7f-4c6e-9b80-d2fcc72f9b32",
+    "baseSnapshotHash": null
+}

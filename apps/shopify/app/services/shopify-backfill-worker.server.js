@@ -66,6 +66,7 @@ import {
 } from "../lib/shopify/agentic-runtime/execution-agent.server.js";
 import { getActionRevisionState } from "../lib/shopify/api/gateway.server.js";
 import { createLlmProvider } from "../lib/llm/provider.server.js";
+import { isRetryableLlmInfrastructureError } from "../lib/llm/errors.server.js";
 import { logger as baseLogger } from "../lib/observability/logger.server.js";
 import {
   newCorrelationId,
@@ -540,7 +541,7 @@ async function runClaimedBackfillJob(prisma, job, options) {
   } catch (error) {
     const failure = backfillFailureDetails(error);
     const message = failure.message;
-    const failedPermanently = job.attemptCount + 1 >= job.maxAttempts;
+    const failedPermanently = isBackfillJobFailurePermanent(job, error);
     const updated = await prisma.backfillJob.updateMany({
       where: { id: job.id },
       data: {
@@ -2026,6 +2027,36 @@ function requireAccessToken(context) {
 /** @param {number} attemptCount */
 function retryAfter(attemptCount) {
   return new Date(Date.now() + Math.min(5, attemptCount + 1) * 60_000);
+}
+
+/**
+ * Whether a failed backfill job attempt should stop retrying now, rather than waiting for
+ * `attemptCount` to reach `maxAttempts`.
+ *
+ * The generic path (attemptCount+1 >= maxAttempts) is correct for most job types — a Shopify
+ * 5xx, a network blip — where the identical retry has a real chance of succeeding next time. It
+ * is wrong for a recommendation-generation failure that recommendation-llm-retry.server.js's own
+ * shared classifier (`isRetryableLlmInfrastructureError`) already knows is deterministic (input
+ * too large, invalid schema/output, auth): waiting and replaying the exact same call cannot
+ * change an estimated-token-count that only shrinks if the underlying data does. Before this
+ * function existed, such a failure silently consumed all `maxAttempts` retries (with growing
+ * 60s/120s backoff) — three full LLM investigation attempts, each failing in single-digit
+ * milliseconds before ever reaching the provider — before the merchant's MerchantPlanRun was ever
+ * marked failed. Traced live in docs/ops/onboarding-recommendation-duplicate-retry-2026-08-25/.
+ *
+ * Scoped to AGENTIC_RECOMMENDATION_JOB_TYPE only: `isRetryableLlmInfrastructureError` is written
+ * for LLM-call errors specifically (see its own doc comment) and must not be applied to other job
+ * types' non-LLM failure modes (a Shopify permission error during a backfill sync, for instance,
+ * where the existing generic attempt-budget behavior is unchanged and correct).
+ *
+ * @param {{ jobType: string; attemptCount: number; maxAttempts: number }} job
+ * @param {unknown} error
+ */
+export function isBackfillJobFailurePermanent(job, error) {
+  if (job.jobType === AGENTIC_RECOMMENDATION_JOB_TYPE && !isRetryableLlmInfrastructureError(error)) {
+    return true;
+  }
+  return job.attemptCount + 1 >= job.maxAttempts;
 }
 
 /**

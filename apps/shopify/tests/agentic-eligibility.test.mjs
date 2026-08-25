@@ -33,6 +33,7 @@ import {
   semanticActionRevision,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
 import { buildActionWorkspace, workspacePlanItems } from "../app/lib/actions/action-workspace.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000021";
 const shopId = "00000000-0000-0000-0000-000000000022";
@@ -459,7 +460,33 @@ test("FOCUSED SEMANTIC REPAIR: option A adds available; option B removes In Stoc
   assert.equal(remove.recommendation.eligibilityCriteria.some((row) => row.field === "available"), false);
 });
 
+// investigateThenRecommendInvalidInStock: turn 1 investigates (CONTINUE + a shopify_query call,
+// satisfying the "at least one successful read" investigation-sufficiency gate), turn 2 proposes
+// the (criteria-invalid) recommendation with no further toolCalls. Two turns, not one: since the
+// docs/ops/gateway-bad-graphql-root-cause-2026-08-25 fix, a terminal status may never be paired
+// with a pending toolCall in the same turn (see "a terminal status paired with a pending toolCall
+// is provisional" above) — a real model that wants to both read and decide must do so as two turns.
+function investigateThenRecommendInvalidInStock() {
+  let calls = 0;
+  return () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          {
+            tool: SHOPIFY_GATEWAY_TOOL.query,
+            arguments: { document: "query { products(first: 5) { edges { node { id title status } } } }" },
+          },
+        ],
+      };
+    }
+    return recommendInvalidInStock();
+  };
+}
+
 test("FOCUSED SEMANTIC REPAIR: one repair then persist or VALIDATION_FAILED, no investigation loop", async () => {
+  const investigateThenRecommendSuccess = investigateThenRecommendInvalidInStock();
   const success = await runRecommendationRepairLoop((payload) => {
     if (payload.mode === "semantic_repair") {
       return {
@@ -473,38 +500,81 @@ test("FOCUSED SEMANTIC REPAIR: one repair then persist or VALIDATION_FAILED, no 
         },
       };
     }
-    return recommendInvalidInStock();
+    return investigateThenRecommendSuccess();
   });
   assert.equal(success.result.ok, true);
-  assert.equal(success.provider.calls.filter((row) => row.mode === "investigation").length, 1);
+  assert.equal(success.provider.calls.filter((row) => row.mode === "candidate_investigation").length, 2);
   assert.equal(success.provider.calls.filter((row) => row.mode === "semantic_repair").length, 1);
   assert.equal(success.result.diagnostics.semanticRepair.ok, true);
   assert.equal(success.result.trace.turns.some((turn) => turn.status === "SEMANTIC_REPAIR" && turn.toolCalls.length === 0), true);
 
+  const investigateThenRecommendFailed = investigateThenRecommendInvalidInStock();
   const failed = await runRecommendationRepairLoop((payload) => {
     if (payload.mode === "semantic_repair") {
       return { repairChoice: "add_missing_criteria", recommendation: payload.candidateRecommendation };
     }
-    return recommendInvalidInStock();
+    return investigateThenRecommendFailed();
   });
   assert.equal(failed.result.ok, false);
   assert.equal(failed.result.status, "VALIDATION_FAILED");
   assert.equal(failed.provider.calls.filter((row) => row.mode === "semantic_repair").length, 1);
-  assert.equal(failed.provider.calls.filter((row) => row.mode === "investigation").length, 1);
+  assert.equal(failed.provider.calls.filter((row) => row.mode === "candidate_investigation").length, 2);
   assert.equal(failed.result.diagnostics.semanticRepair.errorCode, "PROMISE_CRITERIA_MISMATCH");
 });
 
+// Regression for docs/ops/gateway-bad-graphql-root-cause-2026-08-25: a terminal status paired with
+// a pending toolCall in the same turn must not be honored immediately. A real run reproduced Luna
+// issuing a fallback shopify_query alongside "BLOCKED" (its first read had returned null), the
+// fallback query succeeded with the real data, and the old loop discarded that result and returned
+// BLOCKED anyway because it only re-consulted the model when status === "CONTINUE". The tool call
+// the model itself requested must always be seen before any terminal status is honored.
+test("a terminal status paired with a pending toolCall is provisional, not final", async () => {
+  let investigationCalls = 0;
+  const { provider, result } = await runRecommendationRepairLoop((payload) => {
+    if (payload.mode === "semantic_repair") {
+      throw new Error("semantic repair should not be reached in this test");
+    }
+    investigationCalls += 1;
+    if (investigationCalls === 1) {
+      // First turn: declares BLOCKED but also fires off a read it hasn't seen the result of yet.
+      return {
+        status: "BLOCKED",
+        blocker: "Product existence not yet confirmed.",
+        toolCalls: [
+          {
+            tool: SHOPIFY_GATEWAY_TOOL.query,
+            arguments: { document: "query { products(first: 5) { edges { node { id title status } } } }" },
+          },
+        ],
+      };
+    }
+    // Second turn: now that the model has seen the (successful) read from turn 1, it recommends —
+    // a criteria-consistent recommendation, so this reaches RECOMMEND_ACTION with no repair needed.
+    return { status: "RECOMMEND_ACTION", recommendation: bundleRecommendation() };
+  });
+  assert.equal(
+    provider.calls.filter((row) => row.mode === "candidate_investigation").length,
+    2,
+    "the model must be re-consulted with the executed tool result before BLOCKED is honored",
+  );
+  // The second call's investigation state must show the first turn's shopify_query as a completed,
+  // successful read — proving the result reached the model rather than being discarded.
+  const secondCallToolResults = provider.calls.filter((row) => row.mode === "candidate_investigation")[1].toolResults;
+  assert.ok(
+    secondCallToolResults.some((row) => row.tool === SHOPIFY_GATEWAY_TOOL.query && row.ok === true),
+    "the fallback read's success must be visible to the model on the next turn",
+  );
+  assert.equal(result.status, "RECOMMEND_ACTION");
+});
+
 function recommendInvalidInStock() {
+  // No toolCalls: this simulates a converged turn (the model is done investigating and is only
+  // proposing a recommendation). A turn that pairs RECOMMEND_ACTION with a pending toolCall is a
+  // different, deliberately-tested case — see "a terminal status paired with a pending toolCall is
+  // provisional" below — and must loop back with the tool result rather than being treated as final.
   return {
     status: "RECOMMEND_ACTION",
     recommendation: inStockCollectionCandidate(),
-    toolCalls: [
-      { tool: "retrieve_shopify_operations", arguments: { query: "products inventory", limit: 5 } },
-      {
-        tool: "call_shopify_operation",
-        arguments: { operation: "products", variables: { first: 5 }, purpose: "Read current catalogue." },
-      },
-    ],
   };
 }
 
@@ -524,6 +594,12 @@ async function runRecommendationRepairLoop(script) {
       goalCoaching: [],
     },
     grantedScopes: ["read_products", "write_products"],
+    focusCandidate: {
+      candidateId: "eligibility-repair-1",
+      diagnosedProblem: "No storefront collection groups the 17 products with positive available inventory.",
+      priority: 1,
+      businessEvidenceRefs: ["b-1"],
+    },
     catalog: tinyCatalog(),
     maxIterations: 3,
     logger: quietLogger,

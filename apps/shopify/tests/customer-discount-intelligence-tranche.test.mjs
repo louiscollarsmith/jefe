@@ -348,9 +348,9 @@ test("discount order-value effect is withheld without both a discounted and undi
 
 function discountConcentrationPrisma() {
   const products = [
-    { id: "product-a", title: "Big Discount Product", status: "ACTIVE" },
-    { id: "product-b", title: "Small Discount Product", status: "ACTIVE" },
-    { id: "product-c", title: "Tiny Discount Product", status: "ACTIVE" },
+    { id: "product-a", externalId: "gid://shopify/Product/5001", title: "Big Discount Product", status: "ACTIVE" },
+    { id: "product-b", externalId: "gid://shopify/Product/5002", title: "Small Discount Product", status: "ACTIVE" },
+    { id: "product-c", externalId: "gid://shopify/Product/5003", title: "Tiny Discount Product", status: "ACTIVE" },
   ];
   const orders = Array.from({ length: 8 }, (_, i) => {
     const id = `order-${i}`;
@@ -393,7 +393,7 @@ test("discount concentration ranks products by line-item discount amount", async
   assert.ok(belief, "belief should be calculated, not skipped");
   // product-a: 4 * 200 = 800; product-b: 2 * 75 = 150; product-c: 2 * 25 = 50. Total = 1000.
   assert.equal(belief.value.totalDiscountAmount, 1000);
-  assert.equal(belief.value.topDiscountedProduct.productId, "product-a");
+  assert.equal(belief.value.topDiscountedProduct.productId, "gid://shopify/Product/5001");
   assert.equal(belief.value.topDiscountedProduct.discountAmount, 800);
   assert.equal(belief.value.top5ConcentrationSharePercent, 100);
   assert.equal(belief.value.discountedProductCount, 3);

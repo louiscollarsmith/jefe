@@ -1,15 +1,16 @@
 // @ts-check
 
 import { Type } from "@google/genai";
+import { parse as parseGraphqlDocument, print as printGraphqlDocument } from "graphql";
 import { logger as baseLogger } from "../../observability/logger.server.js";
-import { retrieveShopifyApiOperations } from "../api/retrieval.server.js";
+import { getConfiguredShopifyApiVersion } from "../api-version.server.js";
 import { withRecommendationLlmRetry } from "./recommendation-llm-retry.server.js";
 import {
-  SHOPIFY_AGENT_TOOL,
-  SHOPIFY_AGENT_TOOL_CALL_SCHEMA,
+  SHOPIFY_GATEWAY_TOOL,
+  SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA,
   publicShopifyToolResults,
-  runShopifyAgentTool,
-} from "./tools.server.js";
+  runShopifyGatewayTool,
+} from "../gateway/tools.server.js";
 import {
   eligibilityEncodingForPrompt,
   normalizeEligibilityCriteria,
@@ -230,7 +231,7 @@ export const AGENTIC_RECOMMENDATION_SCHEMA = {
         },
       },
     },
-    toolCalls: SHOPIFY_AGENT_TOOL_CALL_SCHEMA,
+    toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA,
     recommendation: {
       type: Type.OBJECT,
       nullable: true,
@@ -315,30 +316,30 @@ export async function generateAgenticShopifyRecommendation(input) {
   });
   const opportunitySurface = context.opportunitySurface;
   const focusCandidate = input.focusCandidate ?? null;
+  // docs/ops/agentic-shopify-gateway-full/: the Gateway is the only Shopify investigation
+  // substrate on this branch, for both candidate-scoped and open-ended investigation. The
+  // open-ended branch (focusCandidate absent) has zero production callers (candidate-pipeline.
+  // server.js is the only live caller, and always passes focusCandidate) — see
+  // 03-runtime-migration-matrix.md — but is kept working on Gateway rather than left on a
+  // dispatcher that no longer exists.
+  const discoveryToolName = SHOPIFY_GATEWAY_TOOL.schema;
+  const readToolName = SHOPIFY_GATEWAY_TOOL.query;
+  const dispatchShopifyTool = runShopifyGatewayTool;
+  const apiVersion = input.apiVersion ?? getConfiguredShopifyApiVersion();
+  // buildRecommendationContext's default instruction describes the catalog's
+  // retrieve_shopify_operations tool — replace it so the prompt doesn't point at a tool that
+  // doesn't exist. Local override only; buildRecommendationContext itself (shared with
+  // execution/verification/chat callers) is untouched.
+  context.searchableShopifyApiKnowledge = {
+    instruction:
+      "Use shopify_schema to look up real Shopify Admin GraphQL fields when you're not sure one exists, then write and run your own GraphQL with shopify_query. shopify_schema is optional per turn — if you already know the correct GraphQL, call shopify_query directly.",
+  };
   /** @type {any[]} */
   const coverageLedger = initCoverageLedger(opportunitySurface);
   /** @type {any[]} */
   const toolResults = [...(input.initialToolResults ?? [])];
-  if (focusCandidate) {
-    // Server-side capability binding (Part 4): resolve relevant operation stubs for this
-    // candidate up front instead of letting the model spend turns searching for them. This
-    // is what makes "7-8 retrieve_shopify_operations calls, 0 reads" structurally impossible
-    // for candidate-scoped investigation — the retrieval step is already done.
-    const bindingQuery = [focusCandidate.possibleIntervention, focusCandidate.diagnosedProblem]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-    if (bindingQuery) {
-      const boundResults = retrieveShopifyApiOperations(bindingQuery, { catalog: input.catalog, limit: 8 });
-      toolResults.push({
-        tool: SHOPIFY_AGENT_TOOL.retrieveOperations,
-        ok: true,
-        message: `Server-bound ${boundResults.length} Shopify operation stubs for this candidate.`,
-        facts: { query: bindingQuery, results: boundResults, serverBound: true },
-        error: null,
-      });
-    }
-  }
+  // No server-side stub-binding step (Part 4: schema lookup is the model's own choice, not a
+  // ritual) — the model calls shopify_schema itself only if it needs to.
   /** @type {any[]} */
   const turns = [];
   const maxIterations = input.maxIterations ?? MAX_RECOMMENDATION_ITERATIONS;
@@ -348,16 +349,28 @@ export async function generateAgenticShopifyRecommendation(input) {
   const coverageGateSurface = focusCandidate ? null : opportunitySurface;
   const coverageGateLedger = focusCandidate ? null : coverageLedger;
 
+  const recommendationSchema = {
+    ...AGENTIC_RECOMMENDATION_SCHEMA,
+    properties: { ...AGENTIC_RECOMMENDATION_SCHEMA.properties, toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA },
+  };
+
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const lastCandidate = turns.map((turn) => turn.recommendation).filter(Boolean).at(-1) ?? null;
-    const investigationState = buildInvestigationState(toolResults, { lastCandidate, coverageLedger: coverageGateLedger });
+    const investigationState = buildInvestigationState(toolResults, {
+      lastCandidate,
+      coverageLedger: coverageGateLedger,
+      discoveryToolName,
+      readToolName,
+      requireDiscovery: false,
+    });
     const llmResult = await withRecommendationLlmRetry(
       () =>
         generateStructuredJson({
-          systemPrompt: focusCandidate ? buildCandidateInvestigationSystemPrompt() : buildRecommendationSystemPrompt(),
+          systemPrompt: focusCandidate ? buildGatewayCandidateInvestigationSystemPrompt() : buildRecommendationSystemPrompt(),
           prompt: JSON.stringify({
             promptVersion: AGENTIC_RECOMMENDATION_PROMPT_VERSION,
             mode: focusCandidate ? "candidate_investigation" : "investigation",
+            toolSurface: "gateway",
             eligibilityConsistencyVersion: AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
             iteration,
             focusCandidate,
@@ -370,8 +383,8 @@ export async function generateAgenticShopifyRecommendation(input) {
             eligibilityEncoding: eligibilityEncodingForPrompt(),
             toolResults: publicShopifyToolResults(toolResults),
           }),
-          schema: AGENTIC_RECOMMENDATION_SCHEMA,
-          maxInputTokens: 80000,
+          schema: recommendationSchema,
+          maxInputTokens: 120000,
           maxOutputTokens: 2800,
           timeoutMs: 90_000,
         }),
@@ -385,54 +398,57 @@ export async function generateAgenticShopifyRecommendation(input) {
         waitImpl: input.llmRetryWaitImpl,
       },
     );
-    const turn = normalizeRecommendationTurn(llmResult.json);
+    const turn = normalizeRecommendationTurn(llmResult.json, [
+      SHOPIFY_GATEWAY_TOOL.schema,
+      SHOPIFY_GATEWAY_TOOL.query,
+      SHOPIFY_GATEWAY_TOOL.prepareMutation,
+      SHOPIFY_GATEWAY_TOOL.executeMutation,
+    ]);
     mergeCoverageUpdates(coverageLedger, turn.opportunityCoverage);
     turns.push({ ...turn, usage: llmResult.usage ?? null, durationMs: llmResult.durationMs ?? null });
 
-    // Loop-prevention (Parts 5/6/17): once at least MAX_RETRIEVALS_WITHOUT_READ retrievals
-    // have executed with no successful read yet, further retrieval requests are structurally
-    // rejected instead of executed — this is what makes "7-8 retrievals, 0 reads" impossible.
-    let retrievalCountSoFar = toolResults.filter(
-      (row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok,
-    ).length;
+    // Loop-prevention (Parts 5/6/17; adapted for Gateway mode per docs/ops/
+    // agentic-shopify-gateway-recommendation-ab/): once at least MAX_RETRIEVALS_WITHOUT_READ
+    // discovery calls have executed with no successful read yet, further discovery requests are
+    // structurally rejected instead of executed. Gateway mode's discovery tool is shopify_schema,
+    // its read tool is shopify_query — schema lookup is still optional per turn (Part 4), this
+    // only guards against stalling on discovery calls that never lead to a real read.
+    let retrievalCountSoFar = toolResults.filter((row) => row.tool === discoveryToolName && row.ok).length;
     let hasSuccessfulReadSoFar = toolResults.some(
-      (row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok && row.facts?.status !== "ALREADY_AVAILABLE",
+      (row) => row.tool === readToolName && row.ok && row.facts?.status !== "ALREADY_AVAILABLE",
     );
 
     for (const toolCall of turn.toolCalls) {
       if (
-        toolCall.tool === SHOPIFY_AGENT_TOOL.retrieveOperations &&
+        toolCall.tool === discoveryToolName &&
         retrievalCountSoFar >= MAX_RETRIEVALS_WITHOUT_READ &&
         !hasSuccessfulReadSoFar
       ) {
         toolResults.push({
-          tool: SHOPIFY_AGENT_TOOL.retrieveOperations,
+          tool: discoveryToolName,
           ok: false,
           message:
-            "RETRIEVAL_ALREADY_SUFFICIENT: You already have sufficient capability information for this candidate. Verify it against current Shopify state with call_shopify_operation before retrieving more operations.",
+            "RETRIEVAL_ALREADY_SUFFICIENT: You already have sufficient schema information for this candidate. Write and run a shopify_query document against current Shopify state before requesting more schema lookups.",
           facts: { errorCode: "RETRIEVAL_ALREADY_SUFFICIENT", priorRetrievalCount: retrievalCountSoFar },
           error: {
             code: "RETRIEVAL_ALREADY_SUFFICIENT",
-            message: "Call call_shopify_operation to read current Shopify state before requesting more operation stubs.",
+            message: "Call shopify_query to read current Shopify state before requesting more schema lookups.",
           },
         });
         continue;
       }
-      const existing = findExistingRead(toolResults, toolCall);
+      const existing = findExistingGatewayQuery(toolResults, toolCall);
       if (existing) {
         toolResults.push({
-          tool: SHOPIFY_AGENT_TOOL.callOperation,
+          tool: readToolName,
           ok: true,
-          message: `ALREADY_AVAILABLE: ${toolCall.arguments?.operation ?? "This operation"} was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.`,
-          facts: {
-            operation: toolCall.arguments?.operation ?? null,
-            variables: toolCall.arguments?.variables ?? existing.facts?.variables ?? {},
-            status: "ALREADY_AVAILABLE",
-          },
+          message:
+            "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results — do not call again.",
+          facts: { operation: existing.facts?.operation ?? null, document: toolCall.arguments?.document ?? null, status: "ALREADY_AVAILABLE" },
           error: null,
         });
       } else {
-        const executed = await runShopifyAgentTool(
+        const executed = await dispatchShopifyTool(
           {
             prisma: input.prisma,
             client: input.client,
@@ -440,24 +456,39 @@ export async function generateAgenticShopifyRecommendation(input) {
             shopId: input.shopId,
             shopDomain: input.shopDomain,
             grantedScopes: input.grantedScopes,
-            catalog: input.catalog,
+            apiVersion,
             recommendationMode: true,
             logger,
           },
           toolCall,
         );
         toolResults.push(executed);
-        if (toolCall.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && executed.ok) retrievalCountSoFar += 1;
-        if (toolCall.tool === SHOPIFY_AGENT_TOOL.callOperation && executed.ok) hasSuccessfulReadSoFar = true;
+        if (toolCall.tool === discoveryToolName && executed.ok) retrievalCountSoFar += 1;
+        if (toolCall.tool === readToolName && executed.ok) hasSuccessfulReadSoFar = true;
       }
     }
 
-    if (turn.toolCalls.length > 0 && turn.status === "CONTINUE") continue;
+    // A terminal status (RECOMMEND_ACTION / NO_ACTIONABLE_OPPORTUNITY / BLOCKED) declared in the
+    // same turn as one or more toolCalls is provisional, not final: the executed results above are
+    // real new evidence the model has not seen yet, and it may well have changed its mind (e.g. a
+    // fallback query it fired alongside "BLOCKED" because its first read came back empty/null —
+    // see docs/ops/gateway-bad-graphql-root-cause-2026-08-25/12-root-cause-and-fix.md). Always loop
+    // back with the fresh tool results before honoring any terminal status the model paired with a
+    // pending call; maxIterations still bounds this the same way it bounds ordinary CONTINUE turns.
+    if (turn.toolCalls.length > 0) continue;
     if (turn.status === "RECOMMEND_ACTION") {
       const postToolInvestigationState = buildInvestigationState(toolResults, {
         lastCandidate: turn.recommendation ?? lastCandidate,
+        discoveryToolName,
+        readToolName,
+        requireDiscovery: false,
       });
-      const investigation = validateInvestigation(toolResults, null, null, { acceptAlreadyAvailableRead: Boolean(focusCandidate) });
+      const investigation = validateInvestigation(toolResults, null, null, {
+        acceptAlreadyAvailableRead: Boolean(focusCandidate),
+        discoveryToolName,
+        readToolName,
+        requireDiscovery: false,
+      });
       if (!investigation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
@@ -465,8 +496,8 @@ export async function generateAgenticShopifyRecommendation(input) {
           message: investigation.error,
           facts: {
             errorCode: "INSUFFICIENT_INVESTIGATION",
-            requiredNextTools: [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
-            repairInstruction: "Call retrieve_shopify_operations then call_shopify_operation to read relevant Shopify state before recommending.",
+            requiredNextTools: [SHOPIFY_GATEWAY_TOOL.query],
+            repairInstruction: "Call shopify_query to read relevant Shopify state before recommending. Use shopify_schema first only if you need to discover a field.",
           },
           error: { code: "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         });
@@ -500,6 +531,8 @@ export async function generateAgenticShopifyRecommendation(input) {
             blocker: validation.error,
             diagnostics: buildRecommendationDiagnostics(turns, toolResults, {
               coverageLedger,
+              discoveryToolName,
+              readToolName,
               semanticRepair: {
                 attempted: true,
                 choice: null,
@@ -594,7 +627,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         });
         continue;
       }
-      const diagnostics = buildRecommendationDiagnostics(turns, toolResults, { coverageLedger });
+      const diagnostics = buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName });
       logger.info("agentic Shopify recommendation selected", {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -611,7 +644,12 @@ export async function generateAgenticShopifyRecommendation(input) {
       };
     }
     if (turn.status === "NO_ACTIONABLE_OPPORTUNITY") {
-      const investigation = validateInvestigation(toolResults, coverageGateSurface, coverageGateLedger, { acceptAlreadyAvailableRead: Boolean(focusCandidate) });
+      const investigation = validateInvestigation(toolResults, coverageGateSurface, coverageGateLedger, {
+        acceptAlreadyAvailableRead: Boolean(focusCandidate),
+        discoveryToolName,
+        readToolName,
+        requireDiscovery: false,
+      });
       if (!investigation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
@@ -620,8 +658,8 @@ export async function generateAgenticShopifyRecommendation(input) {
           facts: {
             errorCode: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION",
             unresolvedFamilies: investigation.unresolved ?? null,
-            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
-            repairInstruction: investigation.repairInstruction ?? "Call retrieve_shopify_operations then call_shopify_operation to read relevant Shopify state before concluding.",
+            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_GATEWAY_TOOL.query],
+            repairInstruction: investigation.repairInstruction ?? "Call shopify_query to read relevant Shopify state before concluding.",
           },
           error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         });
@@ -632,12 +670,17 @@ export async function generateAgenticShopifyRecommendation(input) {
         status: turn.status,
         blocker: turn.blocker ?? null,
         candidateDisposition: turn.candidateDisposition ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
     if (turn.status === "BLOCKED") {
-      const investigation = validateInvestigation(toolResults, coverageGateSurface, coverageGateLedger, { acceptAlreadyAvailableRead: Boolean(focusCandidate) });
+      const investigation = validateInvestigation(toolResults, coverageGateSurface, coverageGateLedger, {
+        acceptAlreadyAvailableRead: Boolean(focusCandidate),
+        discoveryToolName,
+        readToolName,
+        requireDiscovery: false,
+      });
       if (!investigation.ok) {
         toolResults.push({
           tool: "recommendation_validation",
@@ -646,8 +689,8 @@ export async function generateAgenticShopifyRecommendation(input) {
           facts: {
             errorCode: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION",
             unresolvedFamilies: investigation.unresolved ?? null,
-            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_AGENT_TOOL.retrieveOperations, SHOPIFY_AGENT_TOOL.callOperation],
-            repairInstruction: investigation.repairInstruction ?? "Call retrieve_shopify_operations then call_shopify_operation before returning BLOCKED.",
+            requiredNextTools: investigation.unresolved ? null : [SHOPIFY_GATEWAY_TOOL.query],
+            repairInstruction: investigation.repairInstruction ?? "Call shopify_query before returning BLOCKED.",
           },
           error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         });
@@ -658,7 +701,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         status: turn.status,
         blocker: turn.blocker ?? null,
         candidateDisposition: turn.candidateDisposition ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
@@ -671,7 +714,7 @@ export async function generateAgenticShopifyRecommendation(input) {
     blocker: unresolvedAtEnd.length > 0
       ? `Investigation budget exhausted with ${unresolvedAtEnd.length} unresolved ${unresolvedAtEnd.length === 1 ? "family" : "families"}: ${unresolvedAtEnd.map((e) => e.label).join(", ")}`
       : terminalFailureBlocker(toolResults) ?? "ITERATION_LIMIT",
-    diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger }),
+    diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
     trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
   };
 }
@@ -844,22 +887,30 @@ Return BLOCKED when all plausible families have been investigated and none yield
  * buildRecommendationSystemPrompt, this does not ask Luna to discover or rank opportunities —
  * a specific business hypothesis (\`focusCandidate\`) was already chosen by a prior discovery
  * pass. This turn's only job is to verify it against live Shopify state and decide.
+ *
+ * No server-side stub binding exists — the model discovers schema and composes its own GraphQL.
+ * Structurally read-only regardless of what this prompt says: shopify_query only ever accepts a
+ * "query" operation (document.server.js's analyzeGatewayDocument, GATEWAY_MODE.queryOnly) and the
+ * mutation tools are not in this mode's tool list at all — see the safety tests in
+ * tests/agentic-shopify-gateway-recommendation-ab-safety.test.mjs.
  */
-export function buildCandidateInvestigationSystemPrompt() {
+export function buildGatewayCandidateInvestigationSystemPrompt() {
   return `You are Jefe, verifying one specific already-diagnosed business opportunity against live Shopify state.
 
 You receive \`focusCandidate\`: a diagnosed problem, its supporting Merchant Memory evidence, a hypothesised mechanism, and a possible intervention. A prior discovery pass already ranked this above other candidates — do not reconsider whether it is the best opportunity, and do not invent a different one.
 
-Relevant Shopify operation stubs for this candidate have already been retrieved server-side and are in \`toolResults\`. You almost never need to call retrieve_shopify_operations yourself — read \`toolResults\` first. Only retrieve again if the candidate genuinely requires a different operation family than what was bound.
+You have two tools:
+- shopify_schema — look up real Shopify Admin GraphQL fields (search by concept, inspect a root field, list fields, inspect an enum/input type). Use it when you are not confident a field or argument exists. You do NOT need to call it before every query — if you already know the correct GraphQL, write it directly.
+- shopify_query — run a read-only GraphQL document you write yourself, with variables. It is validated deterministically before it reaches Shopify: if you got a field or argument wrong, you get back a specific, compact error (not a vague failure) — read it and repair your document in your next tool call. It can never execute a mutation, no matter what the document contains.
 
 Your job this turn:
-1. Read \`focusCandidate.businessEvidenceRefs\` and the bound operation stubs.
-2. Use call_shopify_operation to read current Shopify state and confirm or disprove the candidate's factual predicates (e.g. "product X is DRAFT with available inventory > 0").
+1. Read \`focusCandidate.businessEvidenceRefs\`.
+2. Use shopify_query (optionally preceded by shopify_schema if you need to confirm a field) to read current Shopify state and confirm or disprove the candidate's factual predicates (e.g. "product X is DRAFT with available inventory > 0").
 3. Decide:
    - **RECOMMEND_ACTION** — Shopify state confirms the predicates and a safe, reversible mutation implements the intervention. Return a full semantic recommendation.
    - **NO_ACTIONABLE_OPPORTUNITY** or **BLOCKED** — the candidate does not hold up. Set \`candidateDisposition\` to exactly one of: REJECTED (Shopify state disproves the premise), BLOCKED_BY_EVIDENCE (a specific required input, such as cost data, is missing and cannot be read from Shopify), NON_EXECUTABLE (no safe Shopify write operation implements this intervention even though the diagnosis may be correct), ALREADY_SATISFIED (current Shopify state already achieves the outcome), or ALREADY_COVERED (an existing active Action already addresses this). Explain in \`blocker\` which Shopify state you checked.
 
-Do not spend turns searching for alternative opportunities — that is a different phase owned by the server. Do not return CONTINUE with only retrieve_shopify_operations calls once operation stubs already exist in toolResults; call_shopify_operation is the next required step.
+Do not spend turns searching for alternative opportunities — that is a different phase owned by the server. A recommendation requires at least one successful shopify_query read; it does not require calling shopify_schema.
 
 Mechanism requirement, eligibility encoding, active-work deduplication, evidence-id rules, and validation-repair rules are the same as full investigation — see the field descriptions in the schema and any \`recommendation_validation\` tool results.
 
@@ -1099,10 +1150,16 @@ export function mergeCoverageUpdates(ledger, updates) {
 }
 
 /** @param {unknown} raw */
-function normalizeRecommendationTurn(raw) {
+/**
+ * @param {unknown} raw
+ * @param {string[]} allowedToolNames The gateway tool names for this mode. Any tool name outside
+ *   this list is dropped here, before dispatch, exactly like an unrecognized tool name always was.
+ */
+function normalizeRecommendationTurn(raw, allowedToolNames) {
   const object = raw && typeof raw === "object" && !Array.isArray(raw)
     ? /** @type {Record<string, any>} */ (raw)
     : {};
+  const allowed = new Set(allowedToolNames);
   const toolCalls = (Array.isArray(object.toolCalls) ? object.toolCalls : [])
     .map((/** @type {any} */ row) => ({
       tool: String(row?.tool ?? ""),
@@ -1111,7 +1168,7 @@ function normalizeRecommendationTurn(raw) {
           ? stripNulls(row.arguments)
           : {},
     }))
-    .filter((row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations || row.tool === SHOPIFY_AGENT_TOOL.callOperation);
+    .filter((row) => allowed.has(row.tool));
   const opportunityCoverage = (Array.isArray(object.opportunityCoverage) ? object.opportunityCoverage : [])
     .filter((/** @type {any} */ item) =>
       item && typeof item === "object" &&
@@ -1360,26 +1417,36 @@ export async function runFocusedSemanticRepair(input) {
  * @param {any[]} toolResults
  * @param {{ families: any[] } | null} [opportunitySurface]
  * @param {any[] | null} [coverageLedger]
- * @param {{ acceptAlreadyAvailableRead?: boolean }} [options] Candidate-pipeline investigations
- *   share a toolResults cache across candidates (Part 5's ALREADY_AVAILABLE reuse principle).
- *   A candidate whose only relevant read was already fetched by an earlier candidate in the
- *   same run has still been genuinely verified against live Shopify state — it should not be
- *   forced to read again. The single open-ended discovery loop keeps the stricter default so
- *   the model cannot claim a fresh investigation was complete by pointing at a duplicate.
+ * @param {{ acceptAlreadyAvailableRead?: boolean; discoveryToolName?: string; readToolName?: string; requireDiscovery?: boolean }} [options]
+ *   Candidate-pipeline investigations share a toolResults cache across candidates (Part 5's
+ *   ALREADY_AVAILABLE reuse principle). A candidate whose only relevant read was already fetched
+ *   by an earlier candidate in the same run has still been genuinely verified against live
+ *   Shopify state — it should not be forced to read again. The single open-ended discovery loop
+ *   keeps the stricter default so the model cannot claim a fresh investigation was complete by
+ *   pointing at a duplicate.
+ *   `discoveryToolName`/`readToolName` default to the catalog surface's tool names; the Gateway
+ *   focused-investigation caller (recommendation-agent.server.js) passes the gateway equivalents.
+ *   `requireDiscovery: false` (Gateway only — docs/ops/agentic-shopify-gateway-recommendation-ab/
+ *   Part 4) drops the "must have called shopify_schema at least once" requirement: schema lookup
+ *   is the model's own choice, not a ritual: only a real read is required.
  */
 export function validateInvestigation(toolResults, opportunitySurface = null, coverageLedger = null, options = {}) {
-  const retrieved = toolResults.some((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok);
+  const discoveryToolName = options.discoveryToolName ?? "retrieve_shopify_operations";
+  const readToolName = options.readToolName ?? "call_shopify_operation";
+  const requireDiscovery = options.requireDiscovery ?? true;
+  const retrieved = !requireDiscovery || toolResults.some((/** @type {any} */ row) => row.tool === discoveryToolName && row.ok);
   const read = toolResults.some(
     (/** @type {any} */ row) =>
-      row.tool === SHOPIFY_AGENT_TOOL.callOperation &&
+      row.tool === readToolName &&
       row.ok &&
       (options.acceptAlreadyAvailableRead || row.facts?.status !== "ALREADY_AVAILABLE"),
   );
   if (!retrieved || !read) {
     return {
       ok: false,
-      error:
-        "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read.",
+      error: requireDiscovery
+        ? "Recommendation decisions require at least one Shopify operation retrieval and one successful Shopify read."
+        : "Recommendation decisions require at least one successful Shopify read (shopify_query).",
     };
   }
   if (opportunitySurface && coverageLedger) {
@@ -1401,18 +1468,23 @@ export function validateInvestigation(toolResults, opportunitySurface = null, co
  * Builds a concise server-owned investigation ledger for injection into the prompt.
  * This is authoritative — Luna should not infer completed work from the tool history.
  * @param {any[]} toolResults
- * @param {{ lastCandidate?: any; coverageLedger?: any[] | null }} [extras]
+ * @param {{ lastCandidate?: any; coverageLedger?: any[] | null; discoveryToolName?: string; readToolName?: string; requireDiscovery?: boolean }} [extras]
+ *   `discoveryToolName`/`readToolName`/`requireDiscovery` — see validateInvestigation's doc comment;
+ *   same Gateway-vs-catalog defaulting.
  */
 export function buildInvestigationState(toolResults, extras = {}) {
-  const retrievedOps = toolResults.filter((/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && r.ok);
+  const discoveryToolName = extras.discoveryToolName ?? "retrieve_shopify_operations";
+  const readToolName = extras.readToolName ?? "call_shopify_operation";
+  const requireDiscovery = extras.requireDiscovery ?? true;
+  const retrievedOps = toolResults.filter((/** @type {any} */ r) => r?.tool === discoveryToolName && r.ok);
   const successfulReads = toolResults.filter(
-    (/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.callOperation && r.ok && r.facts?.status !== "ALREADY_AVAILABLE",
+    (/** @type {any} */ r) => r?.tool === readToolName && r.ok && r.facts?.status !== "ALREADY_AVAILABLE",
   );
   const alreadyAvailable = toolResults.filter(
-    (/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.callOperation && r.ok && r.facts?.status === "ALREADY_AVAILABLE",
+    (/** @type {any} */ r) => r?.tool === readToolName && r.ok && r.facts?.status === "ALREADY_AVAILABLE",
   );
   const failedReads = toolResults.filter(
-    (/** @type {any} */ r) => r?.tool === SHOPIFY_AGENT_TOOL.callOperation && !r.ok,
+    (/** @type {any} */ r) => r?.tool === readToolName && !r.ok,
   );
   const lastValidation = [...toolResults]
     .reverse()
@@ -1420,7 +1492,9 @@ export function buildInvestigationState(toolResults, extras = {}) {
 
   /** @type {string[]} */
   const satisfied = [];
-  if (retrievedOps.length > 0) satisfied.push("Shopify operation catalogue retrieved ✓");
+  if (retrievedOps.length > 0) {
+    satisfied.push(requireDiscovery ? "Shopify operation catalogue retrieved ✓" : "Shopify schema discovery used ✓");
+  }
   for (const read of successfulReads) {
     const op = read.facts?.operation ?? "Shopify read";
     satisfied.push(`${op} completed successfully ✓`);
@@ -1433,7 +1507,7 @@ export function buildInvestigationState(toolResults, extras = {}) {
   const coverageLedger = extras.coverageLedger ?? null;
   const allFamiliesResolved = !coverageLedger ||
     coverageLedger.every((e) => !UNRESOLVED_COVERAGE_STATUSES.has(e.status));
-  const investigationComplete = retrievedOps.length > 0 && successfulReads.length > 0 && allFamiliesResolved;
+  const investigationComplete = (!requireDiscovery || retrievedOps.length > 0) && successfulReads.length > 0 && allFamiliesResolved;
 
   return {
     retrievedOperations: [...new Set(retrievedOps.flatMap((/** @type {any} */ r) => (r.facts?.results ?? []).map((/** @type {any} */ x) => x.operation)))],
@@ -1457,7 +1531,9 @@ export function buildInvestigationState(toolResults, extras = {}) {
         }
       : null,
     doNotRepeat: investigationComplete
-      ? "All opportunity families assessed and minimum Shopify investigation complete. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource, query, or page."
+      ? requireDiscovery
+        ? "All opportunity families assessed and minimum Shopify investigation complete. Do not repeat retrieve_shopify_operations or call_shopify_operation for resources already read unless you need a genuinely different resource, query, or page."
+        : "Minimum Shopify investigation complete. Do not repeat shopify_schema or shopify_query calls for resources already covered unless you need a genuinely different resource, query, or page."
       : null,
   };
 }
@@ -1470,13 +1546,13 @@ export function buildInvestigationState(toolResults, extras = {}) {
  * @param {{ tool: string; arguments?: Record<string, any> }} toolCall
  */
 export function findExistingRead(toolResults, toolCall) {
-  if (toolCall.tool !== SHOPIFY_AGENT_TOOL.callOperation) return null;
+  if (toolCall.tool !== "call_shopify_operation") return null;
   const operation = toolCall.arguments?.operation;
   if (!operation) return null;
   const requestedKey = readFingerprint(operation, toolCall.arguments?.variables);
   return (
     toolResults.find((/** @type {any} */ row) => {
-      if (row?.tool !== SHOPIFY_AGENT_TOOL.callOperation) return false;
+      if (row?.tool !== "call_shopify_operation") return false;
       if (!row.ok || row.facts?.status === "ALREADY_AVAILABLE") return false;
       if (row.facts?.operation !== operation) return false;
       return readFingerprint(row.facts.operation, row.facts.variables) === requestedKey;
@@ -1488,6 +1564,51 @@ export function findExistingRead(toolResults, toolCall) {
 function readFingerprint(operation, variables) {
   return JSON.stringify({
     operation: String(operation ?? ""),
+    variables: stableJsonValue(variables && typeof variables === "object" && !Array.isArray(variables) ? variables : {}),
+  });
+}
+
+/**
+ * Gateway equivalent of findExistingRead: there is no "operation name" for an agent-composed
+ * GraphQL document, so identity is the (trimmed document text, variables) pair instead. Purely an
+ * anti-repeat-loop optimization, not a safety property — a byte-different document that queries
+ * the same field still runs and is correctly ledgered by the gateway.
+ * @param {any[]} toolResults
+ * @param {{ tool: string; arguments?: Record<string, any> }} toolCall
+ */
+export function findExistingGatewayQuery(toolResults, toolCall) {
+  if (toolCall.tool !== SHOPIFY_GATEWAY_TOOL.query) return null;
+  const document = typeof toolCall.arguments?.document === "string" ? toolCall.arguments.document.trim() : "";
+  if (!document) return null;
+  const requestedKey = gatewayQueryFingerprint(document, toolCall.arguments?.variables);
+  return (
+    toolResults.find((/** @type {any} */ row) => {
+      if (row?.tool !== SHOPIFY_GATEWAY_TOOL.query) return false;
+      if (!row.ok || row.facts?.status === "ALREADY_AVAILABLE") return false;
+      return gatewayQueryFingerprint(row.facts?.document ?? "", row.facts?.variables) === requestedKey;
+    }) ?? null
+  );
+}
+
+/**
+ * @param {string} document @param {unknown} variables
+ * The stored side of this comparison (row.facts.document) is graphql-js's print(ast) — reformatted
+ * with its own line breaks, indentation, and shorthand (e.g. an anonymous `query { ... }` prints as
+ * bare `{ ... }`) — not the model's original text. Re-running the same parse+print on the current
+ * turn's raw text before comparing means both sides land on the identical canonical form regardless
+ * of which one is pretty-printed. Falls back to whitespace-collapsed raw text if the current text
+ * doesn't parse (e.g. a malformed repeat attempt) — best-effort only, not a safety property.
+ * @returns {string}
+ */
+function gatewayQueryFingerprint(document, variables) {
+  let canonicalDocument;
+  try {
+    canonicalDocument = printGraphqlDocument(parseGraphqlDocument(String(document ?? "")));
+  } catch {
+    canonicalDocument = String(document ?? "").trim().replace(/\s+/g, " ");
+  }
+  return JSON.stringify({
+    document: canonicalDocument,
     variables: stableJsonValue(variables && typeof variables === "object" && !Array.isArray(variables) ? variables : {}),
   });
 }
@@ -1507,12 +1628,14 @@ function stableJsonValue(value) {
 
 /** @param {any[]} turns @param {any[]} toolResults @param {{ semanticRepair?: any; coverageLedger?: any[] | null }} [extras] */
 function buildRecommendationDiagnostics(turns, toolResults, extras = {}) {
+  const discoveryToolName = extras.discoveryToolName ?? "retrieve_shopify_operations";
+  const readToolName = extras.readToolName ?? "call_shopify_operation";
   const retrievedOperations = toolResults
-    .filter((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok)
+    .filter((/** @type {any} */ row) => row.tool === discoveryToolName && row.ok)
     .flatMap((/** @type {any} */ row) => row.facts?.results ?? [])
     .map((/** @type {any} */ row) => row.operation);
   const shopifyReads = toolResults
-    .filter((/** @type {any} */ row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation)
+    .filter((/** @type {any} */ row) => row.tool === readToolName)
     .map((/** @type {any} */ row) => ({
       operation: row.facts?.operation,
       status: row.facts?.status,

@@ -1,0 +1,1069 @@
+{
+  "startedAt": "2026-08-25T14:20:36.653Z",
+  "shopDomain": "jefe-local-store.myshopify.com",
+  "steps": [
+    {
+      "step": "real_read_candidate",
+      "ok": true,
+      "candidate": {
+        "id": "gid://shopify/Product/10375206633768",
+        "title": "Salt Road Feteasca",
+        "tags": [
+          "jefe_synthetic",
+          "Moldova",
+          "profile:local_300",
+          "scenario:healthy_gbp",
+          "seed_run:source",
+          "white"
+        ]
+      }
+    },
+    {
+      "step": "materialize_action",
+      "ok": true,
+      "actionId": "4e7632a5-f356-4b4f-b80f-5410802c469a",
+      "recommendation": {
+        "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+        "summary": "Automated golden-path validation: add a distinctive test tag to one real product. Trivially reversible by removing the tag. Created 2026-08-25T14:20:36.653Z.",
+        "outcome": "Product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\") has the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" added to its existing tags.",
+        "scope": "One existing active product (gid://shopify/Product/10375206633768); no price or inventory data changed.",
+        "constraints": [
+          "Do not change prices.",
+          "Do not change inventory.",
+          "Do not remove any existing tag.",
+          "Only add the one new tag."
+        ],
+        "materialExpectedEffects": [
+          "Add tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768"
+        ],
+        "feasibleWriteOperations": [
+          "productUpdate"
+        ],
+        "verificationPlan": "Read the product back and confirm its tags now include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+        "whyThisAction": "Automated golden-path validation of the Agentic Shopify Gateway execution lifecycle.",
+        "whyNow": "docs/ops/agentic-shopify-gateway-full/ Part 19-20.",
+        "supportingBeliefIds": [],
+        "supportingInsightIds": [],
+        "confidence": "high"
+      }
+    },
+    {
+      "step": "accept_action",
+      "ok": true,
+      "acceptResult": {
+        "ok": true,
+        "action": {
+          "id": "4e7632a5-f356-4b4f-b80f-5410802c469a",
+          "merchantId": "255f0e8a-33de-4e35-8d14-576bf4b06290",
+          "shopId": "f4b3ac1b-687c-4795-bb5e-ab6150973cd7",
+          "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+          "summary": "Automated golden-path validation: add a distinctive test tag to one real product. Trivially reversible by removing the tag. Created 2026-08-25T14:20:36.653Z.",
+          "status": "accepted",
+          "sourceRecommendationId": null,
+          "currentActionRunId": null,
+          "plan": {
+            "agentic": {
+              "runtime": "shopify_admin_api",
+              "semanticAction": {
+                "scope": "One existing active product (gid://shopify/Product/10375206633768); no price or inventory data changed.",
+                "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+                "caveat": null,
+                "whyNow": "docs/ops/agentic-shopify-gateway-full/ Part 19-20.",
+                "outcome": "Product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\") has the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" added to its existing tags.",
+                "summary": "Automated golden-path validation: add a distinctive test tag to one real product. Trivially reversible by removing the tag. Created 2026-08-25T14:20:36.653Z.",
+                "revision": "sar_aad13770ceb815bf",
+                "assumption": null,
+                "confidence": "high",
+                "constraints": [
+                  "Do not change prices.",
+                  "Do not change inventory.",
+                  "Do not remove any existing tag.",
+                  "Only add the one new tag."
+                ],
+                "whyThisAction": "Automated golden-path validation of the Agentic Shopify Gateway execution lifecycle.",
+                "verificationPlan": "Read the product back and confirm its tags now include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+                "writeProtections": [
+                  {
+                    "id": "wp_pricing",
+                    "label": "Do not change prices.",
+                    "source": "recommendation",
+                    "target": "pricing"
+                  },
+                  {
+                    "id": "wp_inventory",
+                    "label": "Do not change inventory.",
+                    "source": "recommendation",
+                    "target": "inventory"
+                  }
+                ],
+                "eligibilityStatus": "unstructured",
+                "eligibilityCriteria": [],
+                "supportingBeliefIds": [],
+                "supportingInsightIds": [],
+                "feasibleWriteOperations": [
+                  "productUpdate"
+                ],
+                "materialExpectedEffects": [
+                  "Add tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768"
+                ]
+              },
+              "revisionHistory": [
+                {
+                  "at": "2026-08-25T14:20:38.050Z",
+                  "scope": "One existing active product (gid://shopify/Product/10375206633768); no price or inventory data changed.",
+                  "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+                  "reason": "recommendation",
+                  "outcome": "Product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\") has the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" added to its existing tags.",
+                  "revision": "sar_aad13770ceb815bf",
+                  "constraints": [
+                    "Do not change prices.",
+                    "Do not change inventory.",
+                    "Do not remove any existing tag.",
+                    "Only add the one new tag."
+                  ],
+                  "verificationPlan": "Read the product back and confirm its tags now include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+                  "writeProtections": [
+                    {
+                      "id": "wp_pricing",
+                      "label": "Do not change prices.",
+                      "source": "recommendation",
+                      "target": "pricing"
+                    },
+                    {
+                      "id": "wp_inventory",
+                      "label": "Do not change inventory.",
+                      "source": "recommendation",
+                      "target": "inventory"
+                    }
+                  ],
+                  "eligibilityCriteria": [],
+                  "materialExpectedEffects": [
+                    "Add tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768"
+                  ]
+                }
+              ],
+              "currentActionRevision": "sar_aad13770ceb815bf",
+              "originalActionRevision": "sar_aad13770ceb815bf"
+            }
+          },
+          "progress": {
+            "agentic": {
+              "runtime": "shopify_admin_api",
+              "acceptedAt": "2026-08-25T14:20:38.132Z",
+              "acceptedBy": "255f0e8a-33de-4e35-8d14-576bf4b06290",
+              "diagnostics": {},
+              "semanticAction": {
+                "scope": "One existing active product (gid://shopify/Product/10375206633768); no price or inventory data changed.",
+                "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+                "caveat": null,
+                "whyNow": "docs/ops/agentic-shopify-gateway-full/ Part 19-20.",
+                "outcome": "Product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\") has the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" added to its existing tags.",
+                "summary": "Automated golden-path validation: add a distinctive test tag to one real product. Trivially reversible by removing the tag. Created 2026-08-25T14:20:36.653Z.",
+                "revision": "sar_aad13770ceb815bf",
+                "assumption": null,
+                "confidence": "high",
+                "constraints": [
+                  "Do not change prices.",
+                  "Do not change inventory.",
+                  "Do not remove any existing tag.",
+                  "Only add the one new tag."
+                ],
+                "whyThisAction": "Automated golden-path validation of the Agentic Shopify Gateway execution lifecycle.",
+                "verificationPlan": "Read the product back and confirm its tags now include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+                "writeProtections": [
+                  {
+                    "id": "wp_pricing",
+                    "label": "Do not change prices.",
+                    "source": "recommendation",
+                    "target": "pricing"
+                  },
+                  {
+                    "id": "wp_inventory",
+                    "label": "Do not change inventory.",
+                    "source": "recommendation",
+                    "target": "inventory"
+                  }
+                ],
+                "eligibilityStatus": "unstructured",
+                "eligibilityCriteria": [],
+                "supportingBeliefIds": [],
+                "supportingInsightIds": [],
+                "feasibleWriteOperations": [
+                  "productUpdate"
+                ],
+                "materialExpectedEffects": [
+                  "Add tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768"
+                ]
+              },
+              "revisionHistory": [
+                {
+                  "at": "2026-08-25T14:20:38.050Z",
+                  "scope": "One existing active product (gid://shopify/Product/10375206633768); no price or inventory data changed.",
+                  "title": "[TEST] Jefe Gateway golden-path product tag (jefe-gateway-golden-path-2026-08-25-14-20-38)",
+                  "reason": "recommendation",
+                  "outcome": "Product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\") has the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" added to its existing tags.",
+                  "revision": "sar_aad13770ceb815bf",
+                  "constraints": [
+                    "Do not change prices.",
+                    "Do not change inventory.",
+                    "Do not remove any existing tag.",
+                    "Only add the one new tag."
+                  ],
+                  "verificationPlan": "Read the product back and confirm its tags now include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+                  "writeProtections": [
+                    {
+                      "id": "wp_pricing",
+                      "label": "Do not change prices.",
+                      "source": "recommendation",
+                      "target": "pricing"
+                    },
+                    {
+                      "id": "wp_inventory",
+                      "label": "Do not change inventory.",
+                      "source": "recommendation",
+                      "target": "inventory"
+                    }
+                  ],
+                  "eligibilityCriteria": [],
+                  "materialExpectedEffects": [
+                    "Add tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768"
+                  ]
+                }
+              ],
+              "currentActionRevision": "sar_aad13770ceb815bf",
+              "acceptedActionRevision": "sar_aad13770ceb815bf",
+              "originalActionRevision": "sar_aad13770ceb815bf"
+            }
+          },
+          "outcome": {},
+          "createdAt": "2026-08-25T14:20:38.051Z",
+          "updatedAt": "2026-08-25T14:20:38.149Z"
+        },
+        "acceptedActionRevision": "sar_aad13770ceb815bf"
+      }
+    },
+    {
+      "step": "execution",
+      "ok": true,
+      "status": "WRITES_COMPLETE",
+      "wroteToShopify": true,
+      "result": {
+        "ok": true,
+        "status": "WRITES_COMPLETE",
+        "wroteToShopify": true,
+        "trace": {
+          "turns": [
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_query",
+                  "arguments": {
+                    "document": "query CheckProduct($id: ID!) { product(id: $id) { id title status tags } }",
+                    "variables": {
+                      "id": "gid://shopify/Product/10375206633768"
+                    }
+                  }
+                }
+              ],
+              "progressSummary": "Checking the current product state and existing tags before making the authorized tag-only mutation.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 1186,
+                "cachedInputTokens": 0,
+                "outputTokens": 133,
+                "totalTokens": 1319,
+                "estimatedInputTokens": 950
+              },
+              "durationMs": 2354
+            },
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_query",
+                  "arguments": {
+                    "document": "query CheckProduct($id: ID!) {\n  product(id: $id) {\n    id\n    title\n    status\n    tags\n  }\n}",
+                    "variables": {
+                      "id": "gid://shopify/Product/10375206633768"
+                    }
+                  }
+                }
+              ],
+              "progressSummary": "Re-reading the target product to confirm current eligibility and preserve all existing tags before adding the authorized tag.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 1359,
+                "cachedInputTokens": 0,
+                "outputTokens": 170,
+                "totalTokens": 1529,
+                "estimatedInputTokens": 1108
+              },
+              "durationMs": 2450
+            },
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_prepare_mutation",
+                  "arguments": {
+                    "kind": "MUTATION",
+                    "document": "mutation AddProductTag($input: ProductInput!) {\n  productUpdate(input: $input) {\n    product {\n      id\n      tags\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}",
+                    "variables": {
+                      "input": {
+                        "id": "gid://shopify/Product/10375206633768",
+                        "tags": [
+                          "jefe_synthetic",
+                          "Moldova",
+                          "profile:local_300",
+                          "scenario:healthy_gbp",
+                          "seed_run:source",
+                          "white",
+                          "jefe-gateway-golden-path-2026-08-25-14-20-38"
+                        ]
+                      }
+                    },
+                    "purpose": "Add the accepted Action's distinctive tag to the one eligible active product while preserving all existing tags and changing no pricing or inventory data.",
+                    "expectedEffect": "Product gid://shopify/Product/10375206633768 will contain the existing six tags plus jefe-gateway-golden-path-2026-08-25-14-20-38.",
+                    "idempotencyKey": "sar_aad13770ceb815bf:product-10375206633768:add-tag-jefe-gateway-golden-path-2026-08-25-14-20-38"
+                  }
+                }
+              ],
+              "progressSummary": "Current state was already checked: the target product is ACTIVE and does not yet have the accepted tag. Preparing the single scoped product tag mutation.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 1531,
+                "cachedInputTokens": 0,
+                "outputTokens": 385,
+                "totalTokens": 1916,
+                "estimatedInputTokens": 1266
+              },
+              "durationMs": 4791
+            },
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_schema",
+                  "arguments": {
+                    "action": "inspect_field",
+                    "kind": "MUTATION",
+                    "fieldName": "productUpdate"
+                  }
+                }
+              ],
+              "progressSummary": "The target product is ACTIVE and does not yet have the required tag. The initial mutation shape was rejected because this gateway's productUpdate does not accept an input argument; inspecting the live mutation schema before retrying.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 1597,
+                "cachedInputTokens": 0,
+                "outputTokens": 161,
+                "totalTokens": 1758,
+                "estimatedInputTokens": 1341
+              },
+              "durationMs": 2179
+            },
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_prepare_mutation",
+                  "arguments": {
+                    "document": "mutation AddProductTag($product: ProductUpdateInput!) {\n  productUpdate(product: $product) {\n    product { id title status tags }\n    userErrors { field message }\n  }\n}",
+                    "variables": {
+                      "product": {
+                        "id": "gid://shopify/Product/10375206633768",
+                        "tags": [
+                          "jefe_synthetic",
+                          "Moldova",
+                          "profile:local_300",
+                          "scenario:healthy_gbp",
+                          "seed_run:source",
+                          "white",
+                          "jefe-gateway-golden-path-2026-08-25-14-20-38"
+                        ]
+                      }
+                    },
+                    "purpose": "Add the one authorized distinctive tag to the specified active product while preserving all existing tags and changing no pricing or inventory data.",
+                    "expectedEffect": "Product gid://shopify/Product/10375206633768 will contain tag jefe-gateway-golden-path-2026-08-25-14-20-38 in addition to its existing tags.",
+                    "idempotencyKey": "sar_aad13770ceb815bf-add-tag-jefe-gateway-golden-path-2026-08-25-14-20-38"
+                  }
+                }
+              ],
+              "progressSummary": "Eligibility was rechecked: the target product exists, is ACTIVE, and does not yet have the authorized tag. The corrected productUpdate argument shape is ready for validation.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 2297,
+                "cachedInputTokens": 0,
+                "outputTokens": 340,
+                "totalTokens": 2637,
+                "estimatedInputTokens": 2069
+              },
+              "durationMs": 3310
+            },
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_execute_mutation",
+                  "arguments": {
+                    "document": "mutation AddProductTag($product: ProductUpdateInput!) {\n  productUpdate(product: $product) {\n    product {\n      id\n      title\n      status\n      tags\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}",
+                    "variables": {
+                      "product": {
+                        "id": "gid://shopify/Product/10375206633768",
+                        "tags": [
+                          "jefe_synthetic",
+                          "Moldova",
+                          "profile:local_300",
+                          "scenario:healthy_gbp",
+                          "seed_run:source",
+                          "white",
+                          "jefe-gateway-golden-path-2026-08-25-14-20-38"
+                        ]
+                      }
+                    },
+                    "purpose": "Add the accepted distinctive test tag to the one eligible active product while preserving all existing tags.",
+                    "expectedEffect": "Add tag jefe-gateway-golden-path-2026-08-25-14-20-38 to product gid://shopify/Product/10375206633768 without changing prices, inventory, or removing existing tags.",
+                    "idempotencyKey": "sar_aad13770ceb815bf_product-10375206633768_add-tag_jefe-gateway-golden-path-2026-08-25-14-20-38"
+                  }
+                }
+              ],
+              "progressSummary": "Current state was checked: the target product is ACTIVE and does not yet have the requested tag. The correctly shaped productUpdate mutation was prepared and is ready to execute.",
+              "verification": {
+                "verified": null,
+                "evidence": [
+                  "Target product is ACTIVE.",
+                  "Existing tags were read and will be preserved.",
+                  "Mutation preparation succeeded with one affected resource and no money or quantity impact."
+                ],
+                "remaining": [
+                  "Execute the prepared productUpdate mutation."
+                ]
+              },
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 2763,
+                "cachedInputTokens": 0,
+                "outputTokens": 405,
+                "totalTokens": 3168,
+                "estimatedInputTokens": 2531
+              },
+              "durationMs": 4279
+            },
+            {
+              "status": "WRITES_COMPLETE",
+              "toolCalls": [],
+              "progressSummary": "Added the tag \"jefe-gateway-golden-path-2026-08-25-14-20-38\" to product gid://shopify/Product/10375206633768 (\"Salt Road Feteasca\"). No price or inventory changes were made.",
+              "verification": null,
+              "blocker": null,
+              "merchantMessage": null,
+              "usage": {
+                "inputTokens": 2919,
+                "cachedInputTokens": 0,
+                "outputTokens": 116,
+                "totalTokens": 3035,
+                "estimatedInputTokens": 2676
+              },
+              "durationMs": 2302
+            }
+          ],
+          "toolResults": [
+            {
+              "tool": "shopify_query",
+              "ok": true,
+              "message": "product query executed.",
+              "facts": {
+                "operation": "product",
+                "domain": "products",
+                "document": "query CheckProduct($id: ID!) {\n  product(id: $id) {\n    id\n    title\n    status\n    tags\n  }\n}",
+                "variables": {
+                  "id": "gid://shopify/Product/10375206633768"
+                },
+                "classification": "FULL_SUCCESS",
+                "partialErrors": [],
+                "resourceIds": [
+                  "gid://shopify/Product/10375206633768"
+                ],
+                "data": {
+                  "product": {
+                    "id": "gid://shopify/Product/10375206633768",
+                    "title": "Salt Road Feteasca",
+                    "status": "ACTIVE",
+                    "tags": [
+                      "jefe_synthetic",
+                      "Moldova",
+                      "profile:local_300",
+                      "scenario:healthy_gbp",
+                      "seed_run:source",
+                      "white"
+                    ]
+                  }
+                }
+              },
+              "error": null
+            },
+            {
+              "tool": "shopify_query",
+              "ok": true,
+              "message": "product query executed.",
+              "facts": {
+                "operation": "product",
+                "domain": "products",
+                "document": "query CheckProduct($id: ID!) {\n  product(id: $id) {\n    id\n    title\n    status\n    tags\n  }\n}",
+                "variables": {
+                  "id": "gid://shopify/Product/10375206633768"
+                },
+                "classification": "FULL_SUCCESS",
+                "partialErrors": [],
+                "resourceIds": [
+                  "gid://shopify/Product/10375206633768"
+                ],
+                "data": {
+                  "product": {
+                    "id": "gid://shopify/Product/10375206633768",
+                    "title": "Salt Road Feteasca",
+                    "status": "ACTIVE",
+                    "tags": [
+                      "jefe_synthetic",
+                      "Moldova",
+                      "profile:local_300",
+                      "scenario:healthy_gbp",
+                      "seed_run:source",
+                      "white"
+                    ]
+                  }
+                }
+              },
+              "error": null
+            },
+            {
+              "tool": "shopify_prepare_mutation",
+              "ok": false,
+              "message": "productUpdate has no known argument \"input\". Known arguments: product, media, identifier.",
+              "facts": {},
+              "error": {
+                "code": "UNKNOWN_ARGUMENT",
+                "message": "productUpdate has no known argument \"input\". Known arguments: product, media, identifier."
+              }
+            },
+            {
+              "tool": "shopify_schema",
+              "ok": true,
+              "message": "Inspected productUpdate.",
+              "facts": {
+                "action": "inspect_field",
+                "field": {
+                  "operation": "productUpdate",
+                  "operationKind": "MUTATION",
+                  "domain": "products",
+                  "description": "Updates a product with attributes such as title, description, vendor, and media.",
+                  "returnType": "ProductUpdatePayload",
+                  "deprecation": {
+                    "deprecated": false,
+                    "reason": null
+                  },
+                  "requiredScopes": [
+                    "write_products"
+                  ],
+                  "scopeConfidence": "high",
+                  "arguments": [
+                    {
+                      "name": "product",
+                      "type": "ProductUpdateInput",
+                      "required": false
+                    },
+                    {
+                      "name": "media",
+                      "type": "[CreateMediaInput!]",
+                      "required": false
+                    },
+                    {
+                      "name": "identifier",
+                      "type": "ProductUpdateIdentifiers",
+                      "required": false
+                    }
+                  ],
+                  "inputObjects": {
+                    "ProductUpdateInput": {
+                      "fields": [
+                        {
+                          "name": "descriptionHtml",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "handle",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "seo",
+                          "type": "SEOInput",
+                          "required": false
+                        },
+                        {
+                          "name": "productType",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "tags",
+                          "type": "[String!]",
+                          "required": false
+                        },
+                        {
+                          "name": "templateSuffix",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "giftCardTemplateSuffix",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "title",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "vendor",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "category",
+                          "type": "ID",
+                          "required": false
+                        },
+                        {
+                          "name": "redirectNewHandle",
+                          "type": "Boolean",
+                          "required": false
+                        },
+                        {
+                          "name": "id",
+                          "type": "ID",
+                          "required": false
+                        },
+                        {
+                          "name": "collectionsToJoin",
+                          "type": "[ID!]",
+                          "required": false
+                        },
+                        {
+                          "name": "collectionsToLeave",
+                          "type": "[ID!]",
+                          "required": false
+                        },
+                        {
+                          "name": "deleteConflictingConstrainedMetafields",
+                          "type": "Boolean",
+                          "required": false
+                        },
+                        {
+                          "name": "metafields",
+                          "type": "[MetafieldInput!]",
+                          "required": false
+                        },
+                        {
+                          "name": "status",
+                          "type": "ProductStatus",
+                          "required": false
+                        },
+                        {
+                          "name": "requiresSellingPlan",
+                          "type": "Boolean",
+                          "required": false
+                        }
+                      ]
+                    },
+                    "SEOInput": {
+                      "fields": [
+                        {
+                          "name": "title",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "description",
+                          "type": "String",
+                          "required": false
+                        }
+                      ]
+                    },
+                    "MetafieldInput": {
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": "ID",
+                          "required": false
+                        },
+                        {
+                          "name": "namespace",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "key",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "value",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "type",
+                          "type": "String",
+                          "required": false
+                        }
+                      ]
+                    },
+                    "CreateMediaInput": {
+                      "fields": [
+                        {
+                          "name": "originalSource",
+                          "type": "String!",
+                          "required": true
+                        },
+                        {
+                          "name": "alt",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "mediaContentType",
+                          "type": "MediaContentType!",
+                          "required": true
+                        }
+                      ]
+                    },
+                    "ProductUpdateIdentifiers": {
+                      "fields": [
+                        {
+                          "name": "id",
+                          "type": "ID",
+                          "required": false
+                        },
+                        {
+                          "name": "handle",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "customId",
+                          "type": "UniqueMetafieldValueInput",
+                          "required": false
+                        }
+                      ]
+                    },
+                    "UniqueMetafieldValueInput": {
+                      "fields": [
+                        {
+                          "name": "namespace",
+                          "type": "String",
+                          "required": false
+                        },
+                        {
+                          "name": "key",
+                          "type": "String!",
+                          "required": true
+                        },
+                        {
+                          "name": "value",
+                          "type": "String!",
+                          "required": true
+                        }
+                      ]
+                    }
+                  },
+                  "enumTypes": {
+                    "ProductStatus": [
+                      "ACTIVE",
+                      "ARCHIVED",
+                      "DRAFT",
+                      "UNLISTED"
+                    ],
+                    "MediaContentType": [
+                      "VIDEO",
+                      "EXTERNAL_VIDEO",
+                      "MODEL_3D",
+                      "IMAGE"
+                    ]
+                  }
+                }
+              },
+              "error": null
+            },
+            {
+              "tool": "shopify_prepare_mutation",
+              "ok": true,
+              "message": "productUpdate mutation validated and classified; not executed.",
+              "facts": {
+                "operation": "productUpdate",
+                "domain": "products",
+                "safety": {
+                  "riskTier": "NORMAL",
+                  "reversibility": "REVERSIBLE",
+                  "interaction": "APPROVAL_REQUIRED"
+                },
+                "execution": {
+                  "status": "EXECUTABLE",
+                  "classificationSource": "EXPLICIT_KNOWN_GOOD",
+                  "reason": "Live typed adapters (tidy_up, listing_copy) — ACTION_REGISTRY."
+                },
+                "knownInSchemaIndex": true,
+                "blastRadius": {
+                  "resourcesAffected": 1,
+                  "moneyAffected": 0,
+                  "quantityDelta": 0,
+                  "percentageChange": 0,
+                  "customerCount": 0,
+                  "orderCount": 0,
+                  "publicSurfaceImpact": true,
+                  "destructiveCount": 0
+                },
+                "blastRadiusWithinCap": true,
+                "preview": {
+                  "kind": "update",
+                  "operation": "productUpdate",
+                  "resource": "gid://shopify/Product/10375206633768",
+                  "fields": [
+                    {
+                      "field": "product.tags[0]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "jefe_synthetic"
+                    },
+                    {
+                      "field": "product.tags[1]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "Moldova"
+                    },
+                    {
+                      "field": "product.tags[2]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "profile:local_300"
+                    },
+                    {
+                      "field": "product.tags[3]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "scenario:healthy_gbp"
+                    },
+                    {
+                      "field": "product.tags[4]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "seed_run:source"
+                    },
+                    {
+                      "field": "product.tags[5]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "white"
+                    },
+                    {
+                      "field": "product.tags[6]",
+                      "currentValue": "unknown — not read",
+                      "newValue": "jefe-gateway-golden-path-2026-08-25-14-20-38"
+                    }
+                  ],
+                  "money": [],
+                  "consequence": null,
+                  "recoverability": "Reversible: this can be changed again or undone directly."
+                },
+                "requiresExplicitConfirmation": false,
+                "normalizedDocument": "mutation AddProductTag($product: ProductUpdateInput!) {\n  productUpdate(product: $product) {\n    product {\n      id\n      title\n      status\n      tags\n    }\n    userErrors {\n      field\n      message\n    }\n  }\n}"
+              },
+              "error": null
+            },
+            {
+              "tool": "shopify_execute_mutation",
+              "ok": true,
+              "message": "productUpdate completed through the Shopify gateway.",
+              "facts": {
+                "operation": "productUpdate",
+                "domain": "products",
+                "status": "OK",
+                "gatewayDecision": null,
+                "userErrors": [],
+                "resourceIds": [
+                  "gid://shopify/Product/10375206633768"
+                ],
+                "responseSummary": {},
+                "data": {
+                  "productUpdate": {
+                    "product": {
+                      "id": "gid://shopify/Product/10375206633768",
+                      "title": "Salt Road Feteasca",
+                      "status": "ACTIVE",
+                      "tags": [
+                        "jefe-gateway-golden-path-2026-08-25-14-20-38",
+                        "jefe_synthetic",
+                        "Moldova",
+                        "profile:local_300",
+                        {
+                          "omittedItems": 3
+                        }
+                      ]
+                    },
+                    "userErrors": []
+                  }
+                }
+              },
+              "error": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "step": "verification",
+      "ok": true,
+      "status": "OUTCOME_ACHIEVED",
+      "result": {
+        "ok": true,
+        "status": "OUTCOME_ACHIEVED",
+        "verification": {
+          "verified": true,
+          "evidence": [
+            "Product gid://shopify/Product/10375206633768 exists with title \"Salt Road Feteasca\" and ACTIVE status.",
+            "Its tags include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+            "The existing tags remain present, including \"jefe_synthetic\", \"Moldova\", \"profile:local_300\", \"scenario:healthy_gbp\", \"seed_run:source\", and \"white\"."
+          ],
+          "remaining": [],
+          "mismatch": null
+        },
+        "trace": {
+          "turns": [
+            {
+              "status": "CONTINUE",
+              "toolCalls": [
+                {
+                  "tool": "shopify_query",
+                  "arguments": {
+                    "document": "query VerifyProductTag($id: ID!) {\n  product(id: $id) {\n    id\n    title\n    status\n    tags\n  }\n}",
+                    "variables": {
+                      "id": "gid://shopify/Product/10375206633768"
+                    },
+                    "purpose": "Verify that the accepted product exists and includes the distinctive test tag after the executed productUpdate.",
+                    "expectedEffect": "Product gid://shopify/Product/10375206633768 is active, titled Salt Road Feteasca, and its tags include jefe-gateway-golden-path-2026-08-25-14-20-38."
+                  }
+                }
+              ],
+              "progressSummary": "Reading the target product to confirm the distinctive tag is present.",
+              "verification": {
+                "verified": false,
+                "evidence": [],
+                "remaining": [
+                  "Shopify read result for the target product and tag list."
+                ],
+                "mismatch": null
+              },
+              "blocker": null,
+              "usage": {
+                "inputTokens": 1024,
+                "cachedInputTokens": 0,
+                "outputTokens": 227,
+                "totalTokens": 1251,
+                "estimatedInputTokens": 746
+              },
+              "durationMs": 2906
+            },
+            {
+              "status": "OUTCOME_ACHIEVED",
+              "toolCalls": [],
+              "progressSummary": "Verification read confirmed the accepted product tag was added successfully.",
+              "verification": {
+                "verified": true,
+                "evidence": [
+                  "Product gid://shopify/Product/10375206633768 exists with title \"Salt Road Feteasca\" and ACTIVE status.",
+                  "Its tags include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+                  "The existing tags remain present, including \"jefe_synthetic\", \"Moldova\", \"profile:local_300\", \"scenario:healthy_gbp\", \"seed_run:source\", and \"white\"."
+                ],
+                "remaining": [],
+                "mismatch": null
+              },
+              "blocker": null,
+              "usage": {
+                "inputTokens": 1219,
+                "cachedInputTokens": 0,
+                "outputTokens": 207,
+                "totalTokens": 1426,
+                "estimatedInputTokens": 917
+              },
+              "durationMs": 9794
+            }
+          ],
+          "toolResults": [
+            {
+              "tool": "shopify_query",
+              "ok": true,
+              "message": "product query executed.",
+              "facts": {
+                "operation": "product",
+                "domain": "products",
+                "document": "query VerifyProductTag($id: ID!) {\n  product(id: $id) {\n    id\n    title\n    status\n    tags\n  }\n}",
+                "variables": {
+                  "id": "gid://shopify/Product/10375206633768"
+                },
+                "classification": "FULL_SUCCESS",
+                "partialErrors": [],
+                "resourceIds": [
+                  "gid://shopify/Product/10375206633768"
+                ],
+                "data": {
+                  "product": {
+                    "id": "gid://shopify/Product/10375206633768",
+                    "title": "Salt Road Feteasca",
+                    "status": "ACTIVE",
+                    "tags": [
+                      "jefe-gateway-golden-path-2026-08-25-14-20-38",
+                      "jefe_synthetic",
+                      "Moldova",
+                      "profile:local_300",
+                      "scenario:healthy_gbp",
+                      "seed_run:source",
+                      "white"
+                    ]
+                  }
+                }
+              },
+              "error": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "step": "final_action_state",
+      "status": "completed",
+      "outcome": {
+        "verification": {
+          "evidence": [
+            "Product gid://shopify/Product/10375206633768 exists with title \"Salt Road Feteasca\" and ACTIVE status.",
+            "Its tags include \"jefe-gateway-golden-path-2026-08-25-14-20-38\".",
+            "The existing tags remain present, including \"jefe_synthetic\", \"Moldova\", \"profile:local_300\", \"scenario:healthy_gbp\", \"seed_run:source\", and \"white\"."
+          ],
+          "mismatch": null,
+          "verified": true,
+          "remaining": []
+        },
+        "progressSummary": "Verification read confirmed the accepted product tag was added successfully."
+      }
+    }
+  ],
+  "completedAt": "2026-08-25T14:21:15.028Z",
+  "finalStatus": "completed",
+  "ok": true
+}

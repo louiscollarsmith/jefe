@@ -12,6 +12,7 @@ import {
   materializeAgenticShopifyAction,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
 import { resolveActionState } from "../app/lib/actions/action-state.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000011";
 const shopId = "00000000-0000-0000-0000-000000000012";
@@ -22,8 +23,8 @@ test("agentic pre-acceptance chat has no legacy focused-action tools", () => {
 
   assert.ok(names.includes("update_action_eligibility"));
   assert.ok(names.includes("restore_action_revision"));
-  assert.ok(names.includes("retrieve_shopify_operations"));
-  assert.ok(names.includes("call_shopify_operation"));
+  assert.ok(names.includes(SHOPIFY_GATEWAY_TOOL.schema));
+  assert.ok(names.includes(SHOPIFY_GATEWAY_TOOL.query));
   assert.equal(names.includes("simulate_plan"), false);
   assert.equal(names.includes("run_work_item"), false);
   assert.equal(names.includes("add_plan_step"), false);
@@ -70,25 +71,15 @@ test("agentic pre-acceptance chat retrieves Shopify reads and persists concrete 
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              query: "read products inventory status product type tags case bundle",
-              operationKind: "QUERY",
-              limit: 5,
-            },
-          },
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "products",
-              variables: { first: 10, query: "case OR bundle" },
-              purpose: "Find active in-stock case and bundle products before refining scope.",
+              document: 'query { products(first: 10, query: "case OR bundle") { edges { node { id title status } } } }',
             },
           },
         ],
       };
     }
-    assert.ok(payload.toolResults.some((row) => row.tool === "call_shopify_operation" && row.ok));
+    assert.ok(payload.toolResults.some((row) => row.tool === SHOPIFY_GATEWAY_TOOL.query && row.ok));
     return {
       status: "ANSWER",
       finalReply:
@@ -229,7 +220,11 @@ test("agentic pre-acceptance chat scope and constraint turns update only the sem
   assert.equal(prisma.operationCalls.some((row) => row.operationKind === "MUTATION"), false);
 });
 
-test("agentic pre-acceptance Shopify mutation attempts are denied by the universal gateway", async () => {
+test("agentic pre-acceptance Shopify mutation attempts are denied before acceptance — chat never even recognizes the mutation tool", async () => {
+  // Chat's Shopify access is structurally read-only (docs/ops/agentic-shopify-gateway-full/ Part
+  // 6): shopify_prepare_mutation/shopify_execute_mutation are not in AGENTIC_ACTION_CHAT_TOOLS at
+  // all, so an attempt never reaches the gateway/ledger the way a recognized-but-denied write
+  // would — it's rejected as UNKNOWN_TOOL before any Shopify or accepted-Action-revision check.
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
     merchantId,
@@ -242,11 +237,10 @@ test("agentic pre-acceptance Shopify mutation attempts are denied by the univers
       status: "ANSWER",
       toolCalls: [
         {
-          tool: "call_shopify_operation",
+          tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
           arguments: {
-            operation: "collectionCreate",
-            variables: { input: { title: "London fast delivery" } },
-            purpose: "This should be denied before acceptance.",
+            document: 'mutation { collectionCreate(input: { title: "London fast delivery" }) { collection { id } userErrors { field message } } }',
+            idempotencyKey: "pre-acceptance-denied",
           },
         },
       ],
@@ -263,7 +257,7 @@ test("agentic pre-acceptance Shopify mutation attempts are denied by the univers
   });
 
   assert.equal(result.ok, false);
-  assert.equal(prisma.operationCalls.some((row) => row.status === "DENIED_ACTION_NOT_ACCEPTED"), true);
+  assert.equal(prisma.operationCalls.length, 0);
 });
 
 test("agentic chat acceptance creates accepted revision and enqueues background execution", async () => {
@@ -552,19 +546,13 @@ test("Luna can recommend an unseen collection Action using generated Shopify API
         ],
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
-            arguments: {
-              query: "read products and create a collection then add products",
-              operationKind: "MUTATION",
-              limit: 5,
-            },
+            tool: SHOPIFY_GATEWAY_TOOL.schema,
+            arguments: { action: "search", query: "create a collection and add products" },
           },
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              operation: "products",
-              variables: { first: 10, query: "tag:london-delivery" },
-              purpose: "Find products that already carry London delivery merchandising evidence.",
+              document: 'query { products(first: 10, query: "tag:london-delivery") { edges { node { id title } } } }',
             },
           },
         ],
@@ -638,19 +626,8 @@ test("recommendation loop requires Shopify retrieval and read evidence before su
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
-            arguments: {
-              query: "create collection add products read products",
-              limit: 5,
-            },
-          },
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "products",
-              variables: { first: 5 },
-              purpose: "Read product evidence before recommending a collection Action.",
-            },
+            tool: SHOPIFY_GATEWAY_TOOL.query,
+            arguments: { document: "query { products(first: 5) { edges { node { id title } } } }" },
           },
         ],
       };
@@ -713,23 +690,8 @@ test("recommendation loop reports validation failure instead of generic blocked 
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
-            arguments: { query: "create collection add products read products", limit: 5 },
-          },
-        ],
-      };
-    }
-    if (payload.iteration === 1) {
-      return {
-        status: "CONTINUE",
-        toolCalls: [
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "products",
-              variables: { first: 5 },
-              purpose: "Read product evidence before recommending a collection Action.",
-            },
+            tool: SHOPIFY_GATEWAY_TOOL.query,
+            arguments: { document: "query { products(first: 5) { edges { node { id title } } } }" },
           },
         ],
       };
@@ -797,24 +759,15 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
   assert.equal(accepted.acceptedActionRevision, semanticAction.revision);
 
   const provider = scriptedProvider((payload) => {
-    const calls = payload.toolResults?.filter((row) => row.tool === "call_shopify_operation") ?? [];
+    const calls = payload.toolResults?.filter((row) => row.tool === SHOPIFY_GATEWAY_TOOL.executeMutation || row.tool === SHOPIFY_GATEWAY_TOOL.query) ?? [];
     if (payload.iteration === 0) {
       return {
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              query: "create collection add products read collection membership",
-              limit: 5,
-            },
-          },
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "products",
-              variables: { first: 10, query: "tag:london-delivery" },
-              purpose: "Identify qualifying products before changing Shopify.",
+              document: 'query { products(first: 10, query: "tag:london-delivery") { edges { node { id title } } } }',
             },
           },
         ],
@@ -825,13 +778,13 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
             arguments: {
-              operation: "collectionCreate",
-              variables: { input: { title: "London fast delivery" } },
+              document:
+                'mutation($collection: CollectionCreateInput!) { collectionCreate(collection: $collection) { collection { id title } userErrors { field message } } }',
+              variables: { collection: { title: "London fast delivery" } },
               purpose: "Create the accepted merchandising collection.",
               expectedEffect: "Create a Shopify collection for the accepted Action.",
-              whyRequiredForAction: "The Action outcome requires a collection destination.",
               idempotencyKey: "collection-create-london-fast-delivery",
             },
           },
@@ -843,16 +796,16 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
             arguments: {
-              operation: "collectionAddProducts",
+              document:
+                'mutation($id: ID!, $productIds: [ID!]!) { collectionAddProducts(id: $id, productIds: $productIds) { collection { id } userErrors { field message } } }',
               variables: {
                 id: "gid://shopify/Collection/99",
                 productIds: ["gid://shopify/Product/1", "gid://shopify/Product/2"],
               },
               purpose: "Populate the accepted merchandising collection.",
               expectedEffect: "Associate qualifying products with the Shopify collection.",
-              whyRequiredForAction: "The collection needs the qualifying products to achieve the accepted outcome.",
               idempotencyKey: "collection-products-london-fast-delivery",
             },
           },
@@ -864,11 +817,10 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              operation: "collection",
+              document: "query($id: ID!) { collection(id: $id) { id title products(first: 10) { edges { node { id title } } } } }",
               variables: { id: "gid://shopify/Collection/99" },
-              purpose: "Verify the accepted collection exists and contains the qualifying products.",
             },
           },
         ],
@@ -903,10 +855,15 @@ test("accepted semantic Action authorizes Luna to execute multiple generated Sho
   assert.equal(execution.ok, true);
   // Mutation phase returns WRITES_COMPLETE (OUTCOME_ACHIEVED is treated as backward-compat alias)
   assert.equal(execution.status, "WRITES_COMPLETE");
+  // The mutation ledger (prisma.operationCalls) only ever records writes — gateway reads
+  // (shopify_query) never go through executeShopifyOperation/the ledger, unlike the old catalog
+  // surface where call_shopify_operation funneled both reads and writes through the same pipeline.
   const operationNames = prisma.operationCalls.map((row) => row.operationName);
   assert.ok(operationNames.includes("collectionCreate"));
   assert.ok(operationNames.includes("collectionAddProducts"));
-  assert.ok(operationNames.includes("collection"));
+  assert.ok(
+    execution.trace.toolResults.some((row) => row.tool === SHOPIFY_GATEWAY_TOOL.query && row.facts?.operation === "collection" && row.ok),
+  );
   // Action stays "accepted" after mutation phase; "completed" requires successful verification phase
   assert.equal(prisma.actions[0].status, "accepted");
   assert.equal(prisma.actions[0].progress.agentic.executionJob.phase, "verifying");
@@ -938,24 +895,15 @@ test("a second unrelated semantic Action can execute product metafield writes an
   await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
 
   const provider = scriptedProvider((payload) => {
-    const calls = payload.toolResults?.filter((row) => row.tool === "call_shopify_operation") ?? [];
+    const calls = payload.toolResults?.filter((row) => row.tool === SHOPIFY_GATEWAY_TOOL.executeMutation || row.tool === SHOPIFY_GATEWAY_TOOL.query) ?? [];
     if (payload.iteration === 0) {
       return {
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              operation: "products",
-              variables: { first: 5, query: "title:'London Jacket'" },
-              purpose: "Find the scoped product before changing metadata.",
-            },
-          },
-          {
-            tool: "retrieve_shopify_operations",
-            arguments: {
-              query: "set product metafield metadata and read product metafields",
-              limit: 6,
+              document: "query { products(first: 5, query: \"title:'London Jacket'\") { edges { node { id title } } } }",
             },
           },
         ],
@@ -966,9 +914,10 @@ test("a second unrelated semantic Action can execute product metafield writes an
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
             arguments: {
-              operation: "metafieldsSet",
+              document:
+                "mutation($metafields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $metafields) { metafields { id namespace key } userErrors { field message } } }",
               variables: {
                 metafields: [
                   {
@@ -982,7 +931,6 @@ test("a second unrelated semantic Action can execute product metafield writes an
               },
               purpose: "Set the accepted Jefe product metadata.",
               expectedEffect: "Set product metadata on the scoped Shopify product.",
-              whyRequiredForAction: "The accepted Action outcome is a product metadata update.",
               idempotencyKey: "set-care-guidance-product-1",
             },
           },
@@ -994,19 +942,11 @@ test("a second unrelated semantic Action can execute product metafield writes an
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "retrieve_shopify_operations",
+            tool: SHOPIFY_GATEWAY_TOOL.query,
             arguments: {
-              query: "read one product metafields verify metadata",
-              operationKind: "QUERY",
-              limit: 4,
-            },
-          },
-          {
-            tool: "call_shopify_operation",
-            arguments: {
-              operation: "product",
+              document:
+                "query($id: ID!) { product(id: $id) { id title metafields(first: 5) { edges { node { id namespace key value } } } } }",
               variables: { id: "gid://shopify/Product/1" },
-              purpose: "Verify the accepted product metadata exists after the write.",
             },
           },
         ],
@@ -1040,8 +980,9 @@ test("a second unrelated semantic Action can execute product metafield writes an
   assert.equal(execution.status, "WRITES_COMPLETE");
   const operationNames = prisma.operationCalls.map((row) => row.operationName);
   assert.ok(operationNames.includes("metafieldsSet"));
-  assert.ok(operationNames.includes("product"));
-  const finalProductRead = execution.trace.toolResults.find((row) => row.facts?.operation === "product");
+  // gateway reads never go through the mutation ledger (prisma.operationCalls) — only writes do.
+  const finalProductRead = execution.trace.toolResults.find((row) => row.tool === SHOPIFY_GATEWAY_TOOL.query && row.facts?.operation === "product");
+  assert.ok(finalProductRead?.ok);
   assert.equal(
     finalProductRead.facts.data.product.metafields.edges[0].node.value,
     "Spot clean only",
@@ -1084,10 +1025,11 @@ test("mutation phase accepts OUTCOME_ACHIEVED without a read-back; completion re
         status: "CONTINUE",
         toolCalls: [
           {
-            tool: "call_shopify_operation",
+            tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
             arguments: {
-              operation: "collectionCreate",
-              variables: { input: { title: "London fast delivery" } },
+              document:
+                'mutation($collection: CollectionCreateInput!) { collectionCreate(collection: $collection) { collection { id title } userErrors { field message } } }',
+              variables: { collection: { title: "London fast delivery" } },
               purpose: "Create the accepted collection.",
               expectedEffect: "Create a Shopify collection.",
               idempotencyKey: "collection-create-without-readback",

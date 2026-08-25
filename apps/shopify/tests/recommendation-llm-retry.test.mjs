@@ -8,7 +8,7 @@ import {
 } from "../app/lib/shopify/agentic-runtime/recommendation-llm-retry.server.js";
 import { runCandidateDrivenRecommendation, CANDIDATE_STATUS } from "../app/lib/shopify/agentic-runtime/candidate-pipeline.server.js";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
-import { SHOPIFY_AGENT_TOOL } from "../app/lib/shopify/agentic-runtime/tools.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
 import { LlmOutputValidationError, LlmProviderHttpError } from "../app/lib/llm/errors.server.js";
 
 // ---------------------------------------------------------------------------
@@ -343,12 +343,14 @@ function candidateFixture(candidateId, diagnosedProblem, priority) {
   return { candidateId, diagnosedProblem, priority, possibleIntervention: "make product purchasable" };
 }
 
-function readCall(operation = "products", variables = { first: 5 }) {
-  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables, purpose: "Verify against Shopify state." } };
-}
-
-function retrieveCall(query = "products collections") {
-  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
+// Real dispatch through generateAgenticShopifyRecommendation (gateway surface, always on) — these
+// build real GraphQL documents, matched by each test's fakeClient document.includes(...) checks.
+function readCall(operation = "products") {
+  const document =
+    operation === "collections"
+      ? "query { collections(first: 5) { edges { node { id title } } } }"
+      : "query { products(first: 5) { edges { node { id title status } } } }";
+  return { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document } };
 }
 
 function validRec(overrides = {}) {
@@ -442,7 +444,7 @@ test("Part 14: 429 during rescue-candidate investigation retries in place — re
     // isolated from cand-a's products read so this test measures the 429-retry's effect, not the
     // separate cross-candidate cache reuse.
     rescueInvestigationCalls += 1;
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("collections", { first: 5 })] };
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall("collections")] };
     if (rescueInvestigationCalls === 2) return http429();
     return { status: "RECOMMEND_ACTION", recommendation: validRec() };
   });
@@ -511,7 +513,7 @@ test("generateAgenticShopifyRecommendation directly: 429 mid-loop retries the sa
     attempts += 1;
     if (payload.iteration === 0) {
       if (attempts === 1) return http429();
-      return { status: "CONTINUE", toolCalls: [retrieveCall(), readCall()] };
+      return { status: "CONTINUE", toolCalls: [readCall()] };
     }
     return { status: "RECOMMEND_ACTION", recommendation: validRec() };
   });

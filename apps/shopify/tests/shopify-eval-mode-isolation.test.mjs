@@ -6,6 +6,22 @@ import test from "node:test";
 import { loadShopifyApiCatalog } from "../app/lib/shopify/api/catalog.server.js";
 import { buildOpportunitySurface } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import { executeShopifyOperation } from "../app/lib/shopify/api/gateway.server.js";
+import { getConfiguredShopifyApiVersion } from "../app/lib/shopify/api-version.server.js";
+import { loadGatewaySchemaIndex } from "../app/lib/shopify/gateway/schema-index.server.js";
+import { analyzeGatewayDocument, GATEWAY_MODE } from "../app/lib/shopify/gateway/document.server.js";
+import { buildSyntheticGatewayStub } from "../app/lib/shopify/gateway/synthetic-stub.server.js";
+
+// docs/ops/agentic-shopify-gateway-full/: executeShopifyOperation no longer resolves a stub from a
+// catalog operation name — stubOverride, built here from a real GraphQL document the same way
+// gateway/tools.server.js does in production, is now the only way to reach it.
+const apiVersion = getConfiguredShopifyApiVersion();
+const schemaIndex = loadGatewaySchemaIndex();
+/** @param {string} document @param {Record<string, any>} [variables] @param {"QUERY_ONLY"|"MUTATION_ONLY"} [mode] */
+function stubFor(document, variables = {}, mode = GATEWAY_MODE.mutationOnly) {
+  const analysis = analyzeGatewayDocument({ documentText: document, mode, variables, schemaIndex });
+  assert.equal(analysis.ok, true, `test fixture document failed to analyze: ${JSON.stringify(analysis)}`);
+  return buildSyntheticGatewayStub({ analysis, apiVersion });
+}
 
 // `assumeAllScopesGranted` exists for controlled capability evaluation only (task: "what could
 // Jefe discover and propose if permissions were not the constraint"). These tests prove the
@@ -54,6 +70,8 @@ test("the gateway has no parameter or branch that honors an eval-mode assumption
   };
   // Pass the flag anyway, as if a caller mistakenly forwarded it — the gateway must ignore it,
   // because it never destructures or reads any such field from its input.
+  const variables = { first: 1 };
+  const document = "query($first: Int!) { products(first: $first) { edges { node { id } } } }";
   const result = await executeShopifyOperation({
     prisma,
     client,
@@ -61,7 +79,8 @@ test("the gateway has no parameter or branch that honors an eval-mode assumption
     shopId: "00000000-0000-0000-0000-000000000002",
     shopDomain: "jefe-local-store.myshopify.com",
     operation: "products",
-    variables: { first: 1 },
+    variables,
+    stubOverride: stubFor(document, variables, GATEWAY_MODE.queryOnly),
     grantedScopes: ["read_products"],
     // @ts-expect-error — deliberately not part of executeShopifyOperation's contract.
     assumeAllScopesGranted: true,
@@ -132,6 +151,7 @@ test("a formerly-prohibited operation still requires a durable explicit confirma
     acceptedActionRevision: "rev-1",
     operation: "appUninstall",
     variables: {},
+    stubOverride: stubFor("mutation { appUninstall { userErrors { field message } } }"),
     grantedScopes: ["read_products", "write_products"],
   });
   assert.equal(result.ok, false);

@@ -1,0 +1,200 @@
+{
+  "candidateKey": "anchor-products",
+  "attempt": 1,
+  "durationMs": 9985,
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "The successful Shopify products read returned no nodes for either “Borderlands Discovery Four” or “Cloud Needle Tsolikouri”. Because the named products cannot be located in current Shopify state, the intervention’s factual predicates and safe eligibility cannot be confirmed.",
+  "rawQueryCalls": [
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+        "variables": {
+          "query": "title:(\"Borderlands Discovery Four\" OR \"Cloud Needle Tsolikouri\")"
+        },
+        "purpose": "Verify that the two proposed promotional products currently exist, are sellable, and have available inventory; inspect their current collection placement and product costs."
+      }
+    },
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+        "variables": {
+          "query": "title:(\"Borderlands Discovery Four\" OR \"Cloud Needle Tsolikouri\")"
+        },
+        "purpose": "Verify that the two products named in the candidate exist and can be checked for current status, inventory, and merchandising placement.",
+        "expectedEffect": "Read-only product verification."
+      }
+    }
+  ],
+  "trace": {
+    "turns": [
+      {
+        "status": "CONTINUE",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Revenue is intermittent and a current promotional merchandising placement featuring the strongest recent products could help reactivate sales.",
+            "status": "INVESTIGATING",
+            "reason": "Merchant Memory indicates a 19-day order gap, 13 orders in the preceding 30 days, Borderlands Discovery Four as the top revenue product, and Cloud Needle Tsolikouri as the leading recent riser. Current Shopify product and merchandising state still needs verification.",
+            "relevantOperations": [
+              "products",
+              "collections",
+              "productVariants",
+              "inventory"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+              "variables": {
+                "query": "title:(\"Borderlands Discovery Four\" OR \"Cloud Needle Tsolikouri\")"
+              },
+              "purpose": "Verify that the two proposed promotional products currently exist, are sellable, and have available inventory; inspect their current collection placement and product costs."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": null,
+        "candidateDisposition": null,
+        "usage": {
+          "inputTokens": 59050,
+          "cachedInputTokens": 59047,
+          "outputTokens": 444,
+          "totalTokens": 59494,
+          "estimatedInputTokens": 50395
+        },
+        "durationMs": 5112
+      },
+      {
+        "status": "NO_ACTIONABLE_OPPORTUNITY",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "A promotional merchandising placement featuring Borderlands Discovery Four and Cloud Needle Tsolikouri can help reactivate sales after the current order gap.",
+            "status": "REJECTED",
+            "reason": "The required Shopify products could not be found by title in the current read: the successful products query returned zero nodes for both named products. Therefore their current Shopify status, inventory, and placement eligibility cannot be confirmed.",
+            "relevantOperations": [
+              "products"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+              "variables": {
+                "query": "title:(\"Borderlands Discovery Four\" OR \"Cloud Needle Tsolikouri\")"
+              },
+              "purpose": "Verify that the two products named in the candidate exist and can be checked for current status, inventory, and merchandising placement.",
+              "expectedEffect": "Read-only product verification."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": "The successful Shopify products read returned no nodes for either “Borderlands Discovery Four” or “Cloud Needle Tsolikouri”. Because the named products cannot be located in current Shopify state, the intervention’s factual predicates and safe eligibility cannot be confirmed.",
+        "candidateDisposition": "REJECTED",
+        "usage": {
+          "inputTokens": 59323,
+          "cachedInputTokens": 1798,
+          "outputTokens": 485,
+          "totalTokens": 59808,
+          "estimatedInputTokens": 50704
+        },
+        "durationMs": 4445
+      }
+    ],
+    "toolResults": [
+      {
+        "tool": "shopify_query",
+        "ok": true,
+        "message": "products query executed.",
+        "facts": {
+          "operation": "products",
+          "domain": "products",
+          "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+          "variables": {
+            "query": "title:(\"Borderlands Discovery Four\" OR \"Cloud Needle Tsolikouri\")"
+          },
+          "classification": "FULL_SUCCESS",
+          "partialErrors": [],
+          "resourceIds": [],
+          "data": {
+            "products": {
+              "nodes": []
+            }
+          }
+        },
+        "error": null
+      },
+      {
+        "tool": "shopify_query",
+        "ok": true,
+        "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results — do not call again.",
+        "facts": {
+          "operation": "products",
+          "document": "query CandidateProducts($query: String!) {\n  products(first: 10, query: $query) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          inventoryQuantity\n          inventoryItem {\n            unitCost {\n              amount\n              currencyCode\n            }\n          }\n        }\n      }\n      collections(first: 20) {\n        nodes {\n          id\n          title\n          handle\n        }\n      }\n    }\n  }\n}",
+          "status": "ALREADY_AVAILABLE"
+        },
+        "error": null
+      }
+    ]
+  },
+  "diagnostics": {
+    "hypothesesConsidered": [
+      {
+        "hypothesis": "Revenue is intermittent and a current promotional merchandising placement featuring the strongest recent products could help reactivate sales.",
+        "status": "INVESTIGATING",
+        "reason": "Merchant Memory indicates a 19-day order gap, 13 orders in the preceding 30 days, Borderlands Discovery Four as the top revenue product, and Cloud Needle Tsolikouri as the leading recent riser. Current Shopify product and merchandising state still needs verification.",
+        "relevantOperations": [
+          "products",
+          "collections",
+          "productVariants",
+          "inventory"
+        ]
+      },
+      {
+        "hypothesis": "A promotional merchandising placement featuring Borderlands Discovery Four and Cloud Needle Tsolikouri can help reactivate sales after the current order gap.",
+        "status": "REJECTED",
+        "reason": "The required Shopify products could not be found by title in the current read: the successful products query returned zero nodes for both named products. Therefore their current Shopify status, inventory, and placement eligibility cannot be confirmed.",
+        "relevantOperations": [
+          "products"
+        ]
+      }
+    ],
+    "retrievedOperations": [],
+    "shopifyReads": [
+      {
+        "operation": "products",
+        "ok": true
+      },
+      {
+        "operation": "products",
+        "status": "ALREADY_AVAILABLE",
+        "ok": true
+      }
+    ],
+    "feasibleInterventions": [],
+    "rejectedInterventions": [
+      {
+        "hypothesis": "A promotional merchandising placement featuring Borderlands Discovery Four and Cloud Needle Tsolikouri can help reactivate sales after the current order gap.",
+        "status": "REJECTED",
+        "reason": "The required Shopify products could not be found by title in the current read: the successful products query returned zero nodes for both named products. Therefore their current Shopify status, inventory, and placement eligibility cannot be confirmed.",
+        "relevantOperations": [
+          "products"
+        ]
+      }
+    ],
+    "opportunityCoverage": [],
+    "semanticRepair": null,
+    "investigationTurns": 2
+  }
+}
