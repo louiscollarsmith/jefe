@@ -1,0 +1,263 @@
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 953,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 1,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_backoff_started {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 1,
+  delayMs: 15495,
+  cumulativeWaitMs: 15495,
+  statusCode: 429
+}
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 880,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 2,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_backoff_started {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 2,
+  delayMs: 24111,
+  cumulativeWaitMs: 39606,
+  statusCode: 429
+}
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 1024,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 3,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_backoff_started {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 3,
+  delayMs: 65108,
+  cumulativeWaitMs: 104714,
+  statusCode: 429
+}
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 927,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 4,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_backoff_started {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 4,
+  delayMs: 49616,
+  cumulativeWaitMs: 154330,
+  statusCode: 429
+}
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 1258,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 5,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_backoff_started {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 5,
+  delayMs: 53994,
+  cumulativeWaitMs: 208324,
+  statusCode: 429
+}
+LLM structured operation request {
+  status: 'failed',
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 2,
+  durationMs: 1141,
+  usage: {
+    estimatedInputTokens: 61600,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  },
+  maxInputTokens: 80000,
+  maxOutputTokens: 3200,
+  error: 'LlmProviderHttpError',
+  statusCode: 429,
+  providerCode: 'rate_limit',
+  providerMessage: null
+}
+recommendation_llm_retryable_error {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempt: 6,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError'
+}
+recommendation_llm_retry_exhausted {
+  runId: null,
+  phase: 'DISCOVERING_CANDIDATES',
+  candidateId: null,
+  provider: 'openai',
+  model: 'gpt-5.6-luna',
+  attempts: 6,
+  cumulativeWaitMs: 208324,
+  statusCode: 429,
+  errorName: 'LlmProviderHttpError',
+  reason: 'max_attempts_exceeded'
+}
+LlmProviderHttpError: openai request failed with HTTP 429.
+    at buildHttpError (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/app/lib/llm/providers/openai-compatible.server.js:394:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async generateStructuredJson (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/app/lib/llm/providers/openai-compatible.server.js:191:15)
+    at async withRecommendationLlmRetry (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/app/lib/shopify/agentic-runtime/recommendation-llm-retry.server.js:131:22)
+    at async discoverCandidates (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/app/lib/shopify/agentic-runtime/candidate-pipeline.server.js:252:21)
+    at async runCandidateDrivenRecommendation (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/app/lib/shopify/agentic-runtime/candidate-pipeline.server.js:502:26)
+    at async main (file:///Users/louis/conductor/workspaces/jefe/charlotte/apps/shopify/scripts/eval-full-capability-recommendation.mjs:125:18) {
+  provider: 'openai',
+  status: 429,
+  code: 'rate_limit',
+  retryAfter: null,
+  rateLimitRemainingTokens: null,
+  rateLimitResetTokens: null,
+  providerMessage: null
+}
