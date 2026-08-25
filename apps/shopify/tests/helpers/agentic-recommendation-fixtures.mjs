@@ -8,7 +8,7 @@
 // so "this domain can win" fixtures are checked against real, audited execution-status
 // classifications — not a hand-authored toy catalog.
 
-import { SHOPIFY_AGENT_TOOL } from "../../app/lib/shopify/agentic-runtime/tools.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../../app/lib/shopify/gateway/tools.server.js";
 import { loadShopifyApiCatalog } from "../../app/lib/shopify/api/catalog.server.js";
 
 export const REAL_CATALOG = loadShopifyApiCatalog();
@@ -97,14 +97,35 @@ export function candidateFixture(id, diagnosedProblem, priority, extra = {}) {
   };
 }
 
-/** @param {string} operation @param {Record<string, any>} [variables] */
+/**
+ * Builds a real GraphQL document for a gateway shopify_query read across an arbitrary domain/
+ * operation, generalizing the paginated-connection default ({first: 5} -> edges { node { id } })
+ * to a singular lookup when variables look like one (no first/last -> bare { id } selection).
+ * fakeShopifyClient's routing is a document.includes(needle) match, so a route keyed on the
+ * operation name (or any substring of the built document) still matches unchanged.
+ * @param {string} operation @param {Record<string, any>} [variables]
+ */
 export function readCall(operation, variables = { first: 5 }) {
-  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables, purpose: "Verify candidate against Shopify state." } };
+  const isConnection = "first" in variables || "last" in variables;
+  const keys = Object.keys(variables);
+  const varDecls = keys.map((key) => `$${key}: ${graphqlTypeForVariable(key, variables[key])}`).join(", ");
+  const argAssigns = keys.map((key) => `${key}: $${key}`).join(", ");
+  const selection = isConnection ? "{ edges { node { id } } }" : "{ id }";
+  const document = `query(${varDecls}) { ${operation}(${argAssigns}) ${selection} }`;
+  return { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document, variables } };
+}
+
+/** @param {string} key @param {unknown} value */
+function graphqlTypeForVariable(key, value) {
+  if (key === "id" || /Id$/.test(key)) return "ID";
+  if (typeof value === "number") return "Int";
+  if (typeof value === "boolean") return "Boolean";
+  return "String";
 }
 
 /** @param {string} [query] */
 export function retrieveCall(query = "operation") {
-  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
+  return { tool: SHOPIFY_GATEWAY_TOOL.schema, arguments: { action: "search", query } };
 }
 
 /**

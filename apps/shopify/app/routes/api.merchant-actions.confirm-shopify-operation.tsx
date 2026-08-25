@@ -9,13 +9,26 @@ import {
   getActionRevisionState,
   hashJson,
 } from "../lib/shopify/api/gateway.server.js";
-import {
-  getShopifyApiOperationStub,
-  validateShopifyOperationVariables,
-} from "../lib/shopify/api/catalog.server.js";
+import { analyzeGatewayDocument, GATEWAY_MODE } from "../lib/shopify/gateway/document.server.js";
+import { buildSyntheticGatewayStub } from "../lib/shopify/gateway/synthetic-stub.server.js";
+import { loadGatewaySchemaIndex } from "../lib/shopify/gateway/schema-index.server.js";
+import { getConfiguredShopifyApiVersion } from "../lib/shopify/api-version.server.js";
 import { computeShopifyBlastRadius } from "../lib/shopify/api/blast-radius.server.js";
 import { buildGenericShopifyOperationPreview } from "../lib/shopify/api/preview.server.js";
 import { recordExplicitHighRiskConfirmation } from "../lib/shopify/api/explicit-confirmation.server.js";
+
+// Builds the same synthetic ShopifyApiOperationStub-shaped object the Gateway's
+// shopify_prepare_mutation/shopify_execute_mutation tools build (gateway/synthetic-stub.server.js)
+// from the exact GraphQL document + variables the merchant is being asked to confirm. Returns
+// `{ ok: false, error }` (never throws) on a document that fails Gateway validation — the caller
+// turns that into a 400, since an invalid document can never legitimately need this route at all.
+function buildStubForConfirmation(document: string, variables: Record<string, unknown>) {
+  const apiVersion = getConfiguredShopifyApiVersion();
+  const schemaIndex = loadGatewaySchemaIndex();
+  const analysis = analyzeGatewayDocument({ documentText: document, mode: GATEWAY_MODE.mutationOnly, variables, schemaIndex });
+  if (!analysis.ok) return { ok: false as const, error: analysis };
+  return { ok: true as const, stub: buildSyntheticGatewayStub({ analysis, apiVersion }) };
+}
 
 // The real, reachable merchant-facing counterpart to gateway.server.js's explicit-confirmation
 // gate (explicit-confirmation.server.js). An EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED operation is
@@ -44,18 +57,19 @@ export async function loader({ request }: ActionFunctionArgs) {
     );
     const url = new URL(request.url);
     const actionId = String(url.searchParams.get("actionId") ?? "").trim();
-    const operation = String(url.searchParams.get("operation") ?? "").trim();
+    const document = String(url.searchParams.get("document") ?? "").trim();
     const variablesRaw = url.searchParams.get("variables");
-    const parsed = parseRequest({ merchantId: merchant.id, shopId: shop.id, actionId, operation, variablesRaw });
+    const parsed = parseRequest({ merchantId: merchant.id, shopId: shop.id, actionId, document, variablesRaw });
     if (!parsed.ok) return json(parsed.body, parsed.status);
 
     const action = await loadOwnedAction(prisma, { merchantId: merchant.id, shopId: shop.id, actionId });
     if (!action) return json({ ok: false, error: "Action not found for this merchant." }, 404);
 
-    const stub = getShopifyApiOperationStub(operation);
-    if (!stub) return json({ ok: false, error: `Unknown Shopify operation: ${operation}` }, 404);
-
-    const variableValidation = validateShopifyOperationVariables(stub, parsed.variables);
+    const built = buildStubForConfirmation(document, parsed.variables);
+    if (!built.ok) {
+      return json({ ok: false, error: `Document failed Gateway validation: ${built.error.message}`, errorCode: built.error.code }, 400);
+    }
+    const stub = built.stub;
     const interactionTier = stub.safety?.interaction;
     const needsExplicitConfirmation = interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED";
 
@@ -66,8 +80,6 @@ export async function loader({ request }: ActionFunctionArgs) {
       interactionTier: interactionTier ?? null,
       needsExplicitConfirmation,
       reason: stub.execution?.reason ?? null,
-      variablesValid: variableValidation.ok,
-      variableErrors: variableValidation.ok ? [] : variableValidation.errors,
       preview: buildGenericShopifyOperationPreview({ stub, variables: parsed.variables }),
       blastRadius: computeShopifyBlastRadius({ stub, variables: parsed.variables }),
       acceptedActionRevision: getActionRevisionState(action).acceptedActionRevision,
@@ -92,10 +104,10 @@ export async function action({ request }: ActionFunctionArgs) {
     );
     const formData = await request.formData();
     const actionId = String(formData.get("actionId") ?? "").trim();
-    const operation = String(formData.get("operation") ?? "").trim();
+    const document = String(formData.get("document") ?? "").trim();
     const variablesRaw = formData.get("variables") ? String(formData.get("variables")) : null;
     const confirmationText = String(formData.get("confirmationText") ?? "").trim();
-    const parsed = parseRequest({ merchantId: merchant.id, shopId: shop.id, actionId, operation, variablesRaw });
+    const parsed = parseRequest({ merchantId: merchant.id, shopId: shop.id, actionId, document, variablesRaw });
     if (!parsed.ok) return json(parsed.body, parsed.status);
     if (!confirmationText || confirmationText.length < 5) {
       return json({ ok: false, error: "confirmationText is required and must describe what the merchant confirmed." }, 400);
@@ -104,8 +116,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const action = await loadOwnedAction(prisma, { merchantId: merchant.id, shopId: shop.id, actionId });
     if (!action) return json({ ok: false, error: "Action not found for this merchant." }, 404);
 
-    const stub = getShopifyApiOperationStub(operation);
-    if (!stub) return json({ ok: false, error: `Unknown Shopify operation: ${operation}` }, 404);
+    const built = buildStubForConfirmation(document, parsed.variables);
+    if (!built.ok) {
+      return json({ ok: false, error: `Document failed Gateway validation: ${built.error.message}`, errorCode: built.error.code }, 400);
+    }
+    const stub = built.stub;
 
     const interactionTier = stub.safety?.interaction;
     if (interactionTier !== "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED") {
@@ -113,10 +128,6 @@ export async function action({ request }: ActionFunctionArgs) {
         { ok: false, error: `${stub.operation} does not require explicit confirmation (interaction=${interactionTier ?? "unknown"}); it needs only ordinary Action approval.` },
         400,
       );
-    }
-    const variableValidation = validateShopifyOperationVariables(stub, parsed.variables);
-    if (!variableValidation.ok) {
-      return json({ ok: false, error: `Variables are not valid for ${stub.operation}: ${variableValidation.errors.join("; ")}` }, 400);
     }
     const acceptedActionRevision = getActionRevisionState(action).acceptedActionRevision;
     if (!acceptedActionRevision) {
@@ -152,20 +163,20 @@ function parseRequest({
   merchantId,
   shopId,
   actionId,
-  operation,
+  document,
   variablesRaw,
 }: {
   merchantId: string;
   shopId: string;
   actionId: string;
-  operation: string;
+  document: string;
   variablesRaw: string | null;
 }) {
   if (!merchantId || !shopId) {
     return { ok: false as const, status: 401, body: { ok: false, error: "No resolved merchant/shop for this session." } };
   }
   if (!actionId) return { ok: false as const, status: 400, body: { ok: false, error: "actionId is required." } };
-  if (!operation) return { ok: false as const, status: 400, body: { ok: false, error: "operation is required." } };
+  if (!document) return { ok: false as const, status: 400, body: { ok: false, error: "document is required." } };
   let variables: Record<string, unknown> = {};
   if (variablesRaw) {
     try {

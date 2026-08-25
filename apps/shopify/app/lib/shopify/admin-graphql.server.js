@@ -125,6 +125,96 @@ export class ShopifyAdminGraphqlClient {
 
     throw new ShopifyAdminGraphqlError("Shopify GraphQL retries exhausted");
   }
+
+  /**
+   * Like `request()`, but never discards `data` a GraphQL response returned alongside `errors` —
+   * per the GraphQL spec, both can be present in the same response (most commonly a field-level
+   * `ACCESS_DENIED` on one nested field while everything else resolves). `request()` keeps its
+   * existing throw-on-any-error contract unchanged (every other caller in the app relies on that);
+   * this is an additive, opt-in method for callers that can meaningfully use partial data — the
+   * Agentic Shopify Gateway's read path (docs/ops/agentic-shopify-gateway-full/) is the first one.
+   *
+   * Still throws for genuine transport failures (HTTP error, exhausted retries) — there is no
+   * `data` to salvage there. Only classifies as PARTIAL_SUCCESS/AUTHORIZATION_PARTIAL when the
+   * response actually has both `data` and `errors`; a response with `errors` and `data: null`
+   * (or no `data` key) is GRAPHQL_FAILURE, matching `request()`'s existing throw behaviour in
+   * effect if you don't handle GRAPHQL_FAILURE specially.
+   *
+   * @template TData
+   * @param {string} query
+   * @param {Record<string, unknown>} [variables]
+   * @returns {Promise<{
+   *   classification: "FULL_SUCCESS" | "PARTIAL_SUCCESS" | "AUTHORIZATION_PARTIAL" | "GRAPHQL_FAILURE";
+   *   data: TData | null;
+   *   errors: Array<{ message: string; path: (string | number)[] | null; code: string | null }>;
+   * }>}
+   */
+  async requestWithClassification(query, variables = {}) {
+    const operationName = getOperationName(query);
+    const body = JSON.stringify({ query, variables });
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const response = await this.fetchImpl(this.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": this.accessToken },
+        body,
+      });
+
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+      const requestId = response.headers.get("x-request-id") || response.headers.get("x-shopify-request-id") || undefined;
+
+      if (response.status === 429 && attempt < this.maxRetries) {
+        this.logger.warn("Shopify GraphQL throttled", { shopDomain: this.shopDomain, operationName, requestId, attempt });
+        await sleep(retryAfterMs ?? backoffMs(attempt));
+        continue;
+      }
+
+      const responseBody = await readJson(response);
+
+      this.logger.info("Shopify GraphQL request completed", {
+        shopDomain: this.shopDomain,
+        apiVersion: this.apiVersion,
+        operationName,
+        status: response.status,
+        requestId,
+      });
+
+      if (!response.ok) {
+        throw new ShopifyAdminGraphqlError("Shopify GraphQL HTTP error", { status: response.status, errors: responseBody, requestId, retryAfterMs });
+      }
+
+      const rawErrors = Array.isArray(responseBody?.errors) ? responseBody.errors : [];
+      if (rawErrors.length) {
+        const isThrottle = hasThrottleError(rawErrors);
+        if (isThrottle && attempt < this.maxRetries) {
+          await sleep(retryAfterMs ?? backoffMs(attempt));
+          continue;
+        }
+      }
+
+      const normalizedErrors = rawErrors.map((entry) => ({
+        message: String(entry?.message ?? "Unknown GraphQL error"),
+        path: Array.isArray(entry?.path) ? entry.path : null,
+        code: entry?.extensions?.code ?? null,
+      }));
+      const hasUsableData = responseBody?.data != null && typeof responseBody.data === "object";
+
+      if (!normalizedErrors.length) {
+        return { classification: "FULL_SUCCESS", data: /** @type {TData} */ (responseBody.data), errors: [] };
+      }
+      if (!hasUsableData) {
+        return { classification: "GRAPHQL_FAILURE", data: null, errors: normalizedErrors };
+      }
+      const isAuthorization = normalizedErrors.every((entry) => entry.code === "ACCESS_DENIED" || entry.code === "FORBIDDEN");
+      return {
+        classification: isAuthorization ? "AUTHORIZATION_PARTIAL" : "PARTIAL_SUCCESS",
+        data: /** @type {TData} */ (responseBody.data),
+        errors: normalizedErrors,
+      };
+    }
+
+    throw new ShopifyAdminGraphqlError("Shopify GraphQL retries exhausted");
+  }
 }
 
 /** @param {string} shopDomain */

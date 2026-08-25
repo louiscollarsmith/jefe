@@ -1,0 +1,1069 @@
+{
+  "surface": "gateway",
+  "startedAt": "2026-08-25T13:31:40.152Z",
+  "completedAt": "2026-08-25T13:33:24.773Z",
+  "wallClockMs": 104621,
+  "provider": "openai",
+  "model": "gpt-5.6-luna",
+  "status": "completed",
+  "result": {
+    "status": "completed",
+    "runId": "5b853cbd-6a20-4092-b48b-ae80b1db74dc",
+    "recommendationId": "e712a34a-441c-4038-a0ca-61501f66a558",
+    "actionId": "835011b6-d7cb-4e02-9acb-c0ec2ecfae9f",
+    "recommendation": {
+      "id": "e712a34a-441c-4038-a0ca-61501f66a558",
+      "runId": "5b853cbd-6a20-4092-b48b-ae80b1db74dc",
+      "merchantId": "42867289-457f-412f-945c-6301a13a4b78",
+      "shopId": "cc76e7ec-786a-4364-8f36-6c299d80dc43",
+      "title": "Create a curated in-stock discovery collection to encourage larger baskets",
+      "summary": "Use existing active, in-stock products to create a clearly merchandised multi-product discovery surface, beginning with the proven bestseller Borderlands Discovery Four and complementary products selected from the currently available range.",
+      "primaryGoalId": null,
+      "supportingGoalIds": [],
+      "whyThisAction": "The supplied evidence shows 27 of 50 trailing-90-day orders contained exactly one item and only 3 contained at least four items. Shopify currently has a focused catalogue with 17 active products and substantial positive inventory, so merchandising existing products is more reversible than introducing new catalogue complexity.",
+      "whyNow": "The current Shopify read confirms the relevant products are active and available now: Borderlands Discovery Four has totalInventory 61, Cloud Needle Tsolikouri 222, Bora Line Rebula 176, Meadow Clock 25, and Cedar Ink 112. There is an existing Bundles collection, but it contains only 2 products, leaving room for a distinct discovery-led merchandising surface.",
+      "startToday": "Give single-item shoppers a lower-friction path to add another product, increasing multi-item orders and average basket depth without adding products or changing prices.",
+      "successSignal": {
+        "scope": "A new manual collection containing a small, merchant-reviewed set of existing active products with positive available inventory. The collection should be linked from relevant product or storefront merchandising surfaces after review.",
+        "mechanism": "A focused, in-stock discovery surface can reduce the effort required for a shopper who has selected one product to consider an additional product, converting some single-item purchases into multi-item baskets.",
+        "constraints": [
+          "Do not create new SKUs, alter product prices, apply discounts, or change inventory.",
+          "Do not include products whose total available inventory is 0 or below.",
+          "The product pairing is a merchandising hypothesis, not a Shopify-confirmed customer-affinity relationship; the merchant should review the final product set before publishing.",
+          "The read found 2 active variants at zero inventory, so eligibility must be evaluated at the selected product/variant level rather than assuming every variant is available.",
+          "The current collections include an existing Bundles collection with 2 products; avoid duplicating those products unless the new collection has a distinct discovery purpose."
+        ],
+        "description": "After acceptance, verify that the new manual collection exists, contains only the approved active products with positive inventory, is distinct from the existing Bundles collection, and is available for the intended storefront merchandising placement. Recheck multi-item order share and median items per order after a meaningful selling period.",
+        "semanticOutcome": "Give single-item shoppers a lower-friction path to add another product, increasing multi-item orders and average basket depth without adding products or changing prices.",
+        "diagnosedProblem": "Most recent orders are shallow: 54% of trailing-90-day orders contained exactly one item, the median order contained one item, and only 6% contained four or more items.",
+        "writeProtections": [
+          {
+            "id": "wp_1",
+            "label": "Must not be changed",
+            "source": "recommendation",
+            "target": "custom"
+          },
+          {
+            "id": "wp_3",
+            "label": "Must not be performed",
+            "source": "recommendation",
+            "target": "custom"
+          },
+          {
+            "id": "wp_4",
+            "label": "Must not be created or applied",
+            "source": "recommendation",
+            "target": "custom"
+          },
+          {
+            "id": "wp_5",
+            "label": "Must not be modified or duplicated without review",
+            "source": "recommendation",
+            "target": "custom"
+          }
+        ],
+        "eligibilityCriteria": [
+          {
+            "id": "ec_1",
+            "field": "status",
+            "label": "Product is active",
+            "value": "ACTIVE",
+            "source": "Shopify products read",
+            "operator": "eq",
+            "derivedFrom": "recommendation",
+            "evidenceRefs": [
+              "products"
+            ],
+            "resourceType": "Product"
+          },
+          {
+            "id": "ec_2",
+            "field": "available",
+            "label": "Product has positive available inventory",
+            "value": 0,
+            "source": "Shopify products read",
+            "operator": "gt",
+            "derivedFrom": "recommendation",
+            "evidenceRefs": [
+              "products"
+            ],
+            "resourceType": "Product"
+          },
+          {
+            "id": "ec_3",
+            "field": "id",
+            "label": "Selected products for the initial discovery collection",
+            "value": [
+              "gid://shopify/Product/10375207780648",
+              "gid://shopify/Product/10375206699304",
+              "gid://shopify/Product/10375206732072",
+              "gid://shopify/Product/10375206863144",
+              "gid://shopify/Product/10375206928680"
+            ],
+            "source": "Merchant-reviewed curation from current Shopify catalogue",
+            "operator": "in",
+            "derivedFrom": "Existing active products, including Borderlands Discovery Four and other currently in-stock products",
+            "evidenceRefs": [
+              "products",
+              "160ab66c-73ff-4748-8186-709ea9e3c450"
+            ],
+            "resourceType": "Product"
+          }
+        ],
+        "feasibleWriteOperations": [
+          "collectionCreate",
+          "collectionAddProducts"
+        ],
+        "materialExpectedEffects": [
+          "Creates one reversible manual collection using existing products.",
+          "Makes a reviewed multi-product discovery offer available for storefront merchandising.",
+          "Does not guarantee conversion or change historical order metrics immediately."
+        ]
+      },
+      "expectedBenefit": "Creates one reversible manual collection using existing products.; Makes a reviewed multi-product discovery offer available for storefront merchandising.; Does not guarantee conversion or change historical order metrics immediately.",
+      "supportingBeliefIds": [
+        "c29d78f3-ea39-4232-b239-1539449ebe6e",
+        "ef5b8ee5-f7ec-4467-84df-71334c102209",
+        "8a08cc8a-2a07-46eb-ac82-95b6178a68bb",
+        "39c293b7-7481-4cfc-8e75-ed46dd10ee86",
+        "602a25db-1284-452e-bc48-105d11288e58",
+        "7e86eb6c-7134-4de3-a03a-e9d3d6c1df49"
+      ],
+      "supportingInsightIds": [
+        "8eb2ebac-8bdd-4d6d-8009-aaba006bcce2",
+        "e840ebf1-b68a-4343-bd21-d7dabd5ae1d7"
+      ],
+      "confidence": "reasonable",
+      "assumption": "The merchant can review and approve complementary pairings among the selected existing products; Shopify order data confirms basket depth but does not independently prove product affinity.",
+      "caveat": "The Shopify read confirms availability and existing collection structure, not customer-level product associations. Treat the first collection as a reversible merchandising test and measure its effect before expanding it.",
+      "sourceMode": "agentic",
+      "reviewAt": "2026-09-08T13:33:24.622Z",
+      "outcomeStatus": "pending",
+      "outcomeMeasuredAt": null,
+      "outcome": null,
+      "reviewStatus": "proposed",
+      "acceptedAt": null,
+      "rejectedAt": null,
+      "completedAt": null,
+      "createdAt": "2026-08-25T13:33:24.623Z",
+      "updatedAt": "2026-08-25T13:33:24.623Z"
+    },
+    "diagnostics": {
+      "hypothesesConsidered": [
+        {
+          "hypothesis": "A curated, in-stock multi-product merchandising surface can encourage customers to add complementary products to shallow baskets.",
+          "status": "SUPPORTED_FOR_ACTION",
+          "reason": "Current Shopify state confirms 17 active products, 16 selling products, positive inventory across 15 products with available stock, and existing basket-depth weakness in the supplied evidence.",
+          "relevantOperations": [
+            "products",
+            "collections"
+          ]
+        }
+      ],
+      "retrievedOperations": [],
+      "shopifyReads": [],
+      "feasibleInterventions": [
+        "Create a curated in-stock discovery collection to encourage larger baskets"
+      ],
+      "rejectedInterventions": [],
+      "opportunityCoverage": [],
+      "semanticRepair": null,
+      "investigationTurns": 1,
+      "candidateQueue": [
+        {
+          "candidateId": "recover-declining-range-sales",
+          "domain": null,
+          "diagnosedProblem": "13 of 17 active products declined in revenue in the current 30-day period versus the prior 30 days, while the store has had no stored order in the last 7 days and its latest stored order was 19 days ago.",
+          "priority": 1,
+          "beliefIds": [
+            "d62acc84-d0e3-4cce-9c8d-aea843f55e67",
+            "5a77dc8c-0df4-4627-8445-f97f6d8b556b",
+            "9a0005c4-0fc6-461e-a043-33a1eccaa030",
+            "43d1e49f-3147-4d80-97d5-95f06b4a0f63"
+          ],
+          "operationQuery": "Create or revise a dedicated collection and storefront merchandising placement for currently declining but in-stock products, subject to product-level verification. 13 of 17 active products declined in revenue in the current 30-day period versus the prior 30 days, while the store has had no stored order in the last 7 days and its latest stored order was 19 days ago.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "BLOCKED_BY_EVIDENCE",
+          "reason": "Shopify confirms the catalogue is active and largely in stock: 17 active products were returned, with positive total inventory for the products read, including Rain Map Tannat at 71 units. The collection read shows existing collections such as All Wine, New Arrivals, and category collections, but no clearly dedicated declining-products collection. However, Shopify state does not provide the product-level current-versus-prior-30-day revenue predicate required to safely select the 13 declining products. The aggregate Merchant Memory evidence (d62acc84-d0e3-4cce-9c8d-aea843f55e67) identifies 13 declining products but does not identify all qualifying product IDs. Creating a collection or placement without that list would risk including non-declining products, so the proposed intervention cannot be safely encoded yet.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "INSUFFICIENT_EVIDENCE"
+        },
+        {
+          "candidateId": "increase-basket-depth",
+          "domain": null,
+          "diagnosedProblem": "Most recent orders are shallow: 54% of trailing-90-day orders contained exactly one item, the median order contained one item, and only 6% contained four or more items.",
+          "priority": 2,
+          "beliefIds": [
+            "ef5b8ee5-f7ec-4467-84df-71334c102209",
+            "8a08cc8a-2a07-46eb-ac82-95b6178a68bb",
+            "39c293b7-7481-4cfc-8e75-ed46dd10ee86",
+            "602a25db-1284-452e-bc48-105d11288e58"
+          ],
+          "operationQuery": "Add complementary-product recommendations or create a curated multi-product offer using existing products. Most recent orders are shallow: 54% of trailing-90-day orders contained exactly one item, the median order contained one item, and only 6% contained four or more items.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "RECOMMENDED",
+          "reason": "Verified against current Shopify state.",
+          "resultStatus": "RECOMMEND_ACTION",
+          "finalDisposition": "RECOMMENDED"
+        },
+        {
+          "candidateId": "capture-customer-repeatability",
+          "domain": null,
+          "diagnosedProblem": "None of the 50 stored orders is linked to a known customer identity, so the merchant cannot identify returning customers or target repeat purchases from the existing order history.",
+          "priority": 3,
+          "beliefIds": [
+            "2e75da6e-c4a1-4227-abbb-7d468bce703b",
+            "538388ca-a64d-47c5-87f0-e6dfd742e999",
+            "17743949-471d-4790-b4e5-9096de415c68"
+          ],
+          "operationQuery": "Configure customer account or checkout settings to capture customer contact identity and establish a repeat-purchase audience. None of the 50 stored orders is linked to a known customer identity, so the merchant cannot identify returning customers or target repeat purchases from the existing order history.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "QUEUED",
+          "reason": null,
+          "resultStatus": null,
+          "finalDisposition": null
+        },
+        {
+          "candidateId": "resolve-stock-availability-gaps",
+          "domain": null,
+          "diagnosedProblem": "Two of 25 active variants have zero available inventory, meaning some sellable catalogue options are currently unavailable even though the store has 17 active products.",
+          "priority": 4,
+          "beliefIds": [
+            "5dc21ead-2395-44ef-9e6d-4e2881f4251d",
+            "c0d88942-7403-4c2d-ae58-a1b83febd933",
+            "91602f84-eee8-4043-a91c-18221a1cf318"
+          ],
+          "operationQuery": "Update inventory availability for the affected variants or adjust their storefront availability and purchasing presentation after identifying the specific variants. Two of 25 active variants have zero available inventory, meaning some sellable catalogue options are currently unavailable even though the store has 17 active products.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "QUEUED",
+          "reason": null,
+          "resultStatus": null,
+          "finalDisposition": null
+        },
+        {
+          "candidateId": "improve-profitability-visibility",
+          "domain": null,
+          "diagnosedProblem": "All 25 active variants have prices but none has a recorded cost per item, preventing product-level gross-margin analysis and making revenue-led assortment decisions financially blind.",
+          "priority": 5,
+          "beliefIds": [
+            "5edc6350-082f-43f0-9b8c-ba62ecdec99a",
+            "3569856b-df22-40f4-89c8-6aeed1abb596",
+            "fca55b9c-afd3-4d10-b4cc-f90eb3ceef53"
+          ],
+          "operationQuery": "Populate cost-per-item for all active variants and use the resulting margin view to guide subsequent pricing or merchandising decisions. All 25 active variants have prices but none has a recorded cost per item, preventing product-level gross-margin analysis and making revenue-led assortment decisions financially blind.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "QUEUED",
+          "reason": null,
+          "resultStatus": null,
+          "finalDisposition": null
+        },
+        {
+          "candidateId": "activate-zero-sales-product",
+          "domain": null,
+          "diagnosedProblem": "One active product has positive stock but no recorded sales in the trailing 90 days, despite 16 of the 17 active products having at least one recorded sale.",
+          "priority": 6,
+          "beliefIds": [
+            "743970c9-28b4-49db-9e9c-9646653c969b",
+            "3a677720-7ada-4614-b98f-64e113683bdd",
+            "719b3e64-25da-4b01-b821-14291c475c51"
+          ],
+          "operationQuery": "Place the identified product in a targeted collection or pair it with a proven seller in a curated offer after verifying its current publication and product details. One active product has positive stock but no recorded sales in the trailing 90 days, despite 16 of the 17 active products having at least one recorded sale.",
+          "retrievedOperations": [],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "QUEUED",
+          "reason": null,
+          "resultStatus": null,
+          "finalDisposition": null
+        }
+      ],
+      "rejectionFunnel": {
+        "recommended": 1,
+        "rejected": 1,
+        "total": 6,
+        "byDisposition": {
+          "INSUFFICIENT_EVIDENCE": 1
+        }
+      },
+      "discoveryLog": [
+        {
+          "rescue": false,
+          "candidateCount": 6,
+          "usage": {
+            "inputTokens": 57162,
+            "cachedInputTokens": 57159,
+            "outputTokens": 1441,
+            "totalTokens": 58603,
+            "estimatedInputTokens": 49523
+          }
+        }
+      ]
+    },
+    "trace": {
+      "progressLog": [
+        {
+          "state": "DISCOVERING_CANDIDATES",
+          "at": "2026-08-25T13:31:40.504Z",
+          "rescue": false
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:32:04.943Z",
+          "candidateId": "recover-declining-range-sales",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:32:52.826Z",
+          "candidateId": "recover-declining-range-sales",
+          "disposition": "BLOCKED_BY_EVIDENCE",
+          "reason": "Shopify confirms the catalogue is active and largely in stock: 17 active products were returned, with positive total inventory for the products read, including Rain Map Tannat at 71 units. The collection read shows existing collections such as All Wine, New Arrivals, and category collections, but no clearly dedicated declining-products collection. However, Shopify state does not provide the product-level current-versus-prior-30-day revenue predicate required to safely select the 13 declining products. The aggregate Merchant Memory evidence (d62acc84-d0e3-4cce-9c8d-aea843f55e67) identifies 13 declining products but does not identify all qualifying product IDs. Creating a collection or placement without that list would risk including non-declining products, so the proposed intervention cannot be safely encoded yet."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:32:52.826Z",
+          "candidateId": "increase-basket-depth",
+          "rescue": false
+        },
+        {
+          "state": "VALIDATING_RECOMMENDATION",
+          "at": "2026-08-25T13:33:24.537Z",
+          "candidateId": "increase-basket-depth"
+        },
+        {
+          "state": "COMPLETED",
+          "at": "2026-08-25T13:33:24.537Z"
+        }
+      ],
+      "turns": [
+        {
+          "status": "RECOMMEND_ACTION",
+          "opportunityCoverage": [],
+          "hypothesesConsidered": [
+            {
+              "hypothesis": "A curated, in-stock multi-product merchandising surface can encourage customers to add complementary products to shallow baskets.",
+              "status": "SUPPORTED_FOR_ACTION",
+              "reason": "Current Shopify state confirms 17 active products, 16 selling products, positive inventory across 15 products with available stock, and existing basket-depth weakness in the supplied evidence.",
+              "relevantOperations": [
+                "products",
+                "collections"
+              ]
+            }
+          ],
+          "toolCalls": [
+            {
+              "tool": "shopify_query",
+              "arguments": {
+                "kind": "QUERY",
+                "document": "query VerifyDecliningRangeMerchandising {\n  products(first: 50, query: \"status:active\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 20) {\n        nodes {\n          id\n          inventoryQuantity\n        }\n      }\n    }\n  }\n  collections(first: 50) {\n    nodes {\n      id\n      title\n      handle\n      productsCount {\n        count\n      }\n    }\n  }\n}",
+                "variables": {},
+                "purpose": "Verify current active product availability and existing collection merchandising before recommending a reversible curated multi-product surface.",
+                "expectedEffect": "Read-only verification only."
+              }
+            }
+          ],
+          "recommendation": {
+            "title": "Create a curated in-stock discovery collection to encourage larger baskets",
+            "summary": "Use existing active, in-stock products to create a clearly merchandised multi-product discovery surface, beginning with the proven bestseller Borderlands Discovery Four and complementary products selected from the currently available range.",
+            "outcome": "Give single-item shoppers a lower-friction path to add another product, increasing multi-item orders and average basket depth without adding products or changing prices.",
+            "scope": "A new manual collection containing a small, merchant-reviewed set of existing active products with positive available inventory. The collection should be linked from relevant product or storefront merchandising surfaces after review.",
+            "constraints": [
+              "Do not create new SKUs, alter product prices, apply discounts, or change inventory.",
+              "Do not include products whose total available inventory is 0 or below.",
+              "The product pairing is a merchandising hypothesis, not a Shopify-confirmed customer-affinity relationship; the merchant should review the final product set before publishing.",
+              "The read found 2 active variants at zero inventory, so eligibility must be evaluated at the selected product/variant level rather than assuming every variant is available.",
+              "The current collections include an existing Bundles collection with 2 products; avoid duplicating those products unless the new collection has a distinct discovery purpose."
+            ],
+            "eligibilityCriteria": [
+              {
+                "id": "ec_1",
+                "resourceType": "Product",
+                "field": "status",
+                "operator": "eq",
+                "value": "ACTIVE",
+                "source": "Shopify products read",
+                "derivedFrom": "recommendation",
+                "evidenceRefs": [
+                  "products"
+                ],
+                "label": "Product is active"
+              },
+              {
+                "id": "ec_2",
+                "resourceType": "Product",
+                "field": "available",
+                "operator": "gt",
+                "value": 0,
+                "source": "Shopify products read",
+                "derivedFrom": "recommendation",
+                "evidenceRefs": [
+                  "products"
+                ],
+                "label": "Product has positive available inventory"
+              },
+              {
+                "id": "ec_3",
+                "resourceType": "Product",
+                "field": "id",
+                "operator": "in",
+                "value": [
+                  "gid://shopify/Product/10375207780648",
+                  "gid://shopify/Product/10375206699304",
+                  "gid://shopify/Product/10375206732072",
+                  "gid://shopify/Product/10375206863144",
+                  "gid://shopify/Product/10375206928680"
+                ],
+                "source": "Merchant-reviewed curation from current Shopify catalogue",
+                "derivedFrom": "Existing active products, including Borderlands Discovery Four and other currently in-stock products",
+                "evidenceRefs": [
+                  "products",
+                  "160ab66c-73ff-4748-8186-709ea9e3c450"
+                ],
+                "label": "Selected products for the initial discovery collection"
+              }
+            ],
+            "writeProtections": [
+              {
+                "id": "wp_1",
+                "target": "custom",
+                "label": "Must not be changed",
+                "source": "recommendation"
+              },
+              {
+                "id": "wp_3",
+                "target": "custom",
+                "label": "Must not be performed",
+                "source": "recommendation"
+              },
+              {
+                "id": "wp_4",
+                "target": "custom",
+                "label": "Must not be created or applied",
+                "source": "recommendation"
+              },
+              {
+                "id": "wp_5",
+                "target": "custom",
+                "label": "Must not be modified or duplicated without review",
+                "source": "recommendation"
+              }
+            ],
+            "materialExpectedEffects": [
+              "Creates one reversible manual collection using existing products.",
+              "Makes a reviewed multi-product discovery offer available for storefront merchandising.",
+              "Does not guarantee conversion or change historical order metrics immediately."
+            ],
+            "diagnosedProblem": "Most recent orders are shallow: 54% of trailing-90-day orders contained exactly one item, the median order contained one item, and only 6% contained four or more items.",
+            "mechanism": "A focused, in-stock discovery surface can reduce the effort required for a shopper who has selected one product to consider an additional product, converting some single-item purchases into multi-item baskets.",
+            "whyThisAction": "The supplied evidence shows 27 of 50 trailing-90-day orders contained exactly one item and only 3 contained at least four items. Shopify currently has a focused catalogue with 17 active products and substantial positive inventory, so merchandising existing products is more reversible than introducing new catalogue complexity.",
+            "whyNow": "The current Shopify read confirms the relevant products are active and available now: Borderlands Discovery Four has totalInventory 61, Cloud Needle Tsolikouri 222, Bora Line Rebula 176, Meadow Clock 25, and Cedar Ink 112. There is an existing Bundles collection, but it contains only 2 products, leaving room for a distinct discovery-led merchandising surface.",
+            "supportingBeliefIds": [
+              "c29d78f3-ea39-4232-b239-1539449ebe6e",
+              "ef5b8ee5-f7ec-4467-84df-71334c102209",
+              "8a08cc8a-2a07-46eb-ac82-95b6178a68bb",
+              "39c293b7-7481-4cfc-8e75-ed46dd10ee86",
+              "602a25db-1284-452e-bc48-105d11288e58",
+              "7e86eb6c-7134-4de3-a03a-e9d3d6c1df49"
+            ],
+            "supportingInsightIds": [
+              "8eb2ebac-8bdd-4d6d-8009-aaba006bcce2",
+              "e840ebf1-b68a-4343-bd21-d7dabd5ae1d7"
+            ],
+            "feasibleWriteOperations": [
+              "collectionCreate",
+              "collectionAddProducts"
+            ],
+            "verificationPlan": "After acceptance, verify that the new manual collection exists, contains only the approved active products with positive inventory, is distinct from the existing Bundles collection, and is available for the intended storefront merchandising placement. Recheck multi-item order share and median items per order after a meaningful selling period.",
+            "confidence": "reasonable",
+            "assumption": "The merchant can review and approve complementary pairings among the selected existing products; Shopify order data confirms basket depth but does not independently prove product affinity.",
+            "caveat": "The Shopify read confirms availability and existing collection structure, not customer-level product associations. Treat the first collection as a reversible merchandising test and measure its effect before expanding it."
+          },
+          "rawRecommendation": {
+            "title": "Create a curated in-stock discovery collection to encourage larger baskets",
+            "summary": "Use existing active, in-stock products to create a clearly merchandised multi-product discovery surface, beginning with the proven bestseller Borderlands Discovery Four and complementary products selected from the currently available range.",
+            "outcome": "Give single-item shoppers a lower-friction path to add another product, increasing multi-item orders and average basket depth without adding products or changing prices.",
+            "scope": "A new manual collection containing a small, merchant-reviewed set of existing active products with positive available inventory. The collection should be linked from relevant product or storefront merchandising surfaces after review.",
+            "constraints": [
+              "Do not create new SKUs, alter product prices, apply discounts, or change inventory.",
+              "Do not include products whose total available inventory is 0 or below.",
+              "The product pairing is a merchandising hypothesis, not a Shopify-confirmed customer-affinity relationship; the merchant should review the final product set before publishing.",
+              "The read found 2 active variants at zero inventory, so eligibility must be evaluated at the selected product/variant level rather than assuming every variant is available.",
+              "The current collections include an existing Bundles collection with 2 products; avoid duplicating those products unless the new collection has a distinct discovery purpose."
+            ],
+            "eligibilityCriteria": [
+              {
+                "resourceType": "Product",
+                "field": "status",
+                "operator": "eq",
+                "value": "ACTIVE",
+                "valueNumber": null,
+                "values": null,
+                "source": "Shopify products read",
+                "derivedFrom": null,
+                "evidenceRefs": [
+                  "products"
+                ],
+                "label": "Product is active"
+              },
+              {
+                "resourceType": "Product",
+                "field": "totalInventory",
+                "operator": "gt",
+                "value": null,
+                "valueNumber": 0,
+                "values": null,
+                "source": "Shopify products read",
+                "derivedFrom": null,
+                "evidenceRefs": [
+                  "products"
+                ],
+                "label": "Product has positive available inventory"
+              },
+              {
+                "resourceType": "Product",
+                "field": "id",
+                "operator": "in",
+                "value": null,
+                "valueNumber": null,
+                "values": [
+                  "gid://shopify/Product/10375207780648",
+                  "gid://shopify/Product/10375206699304",
+                  "gid://shopify/Product/10375206732072",
+                  "gid://shopify/Product/10375206863144",
+                  "gid://shopify/Product/10375206928680"
+                ],
+                "source": "Merchant-reviewed curation from current Shopify catalogue",
+                "derivedFrom": "Existing active products, including Borderlands Discovery Four and other currently in-stock products",
+                "evidenceRefs": [
+                  "products",
+                  "160ab66c-73ff-4748-8186-709ea9e3c450"
+                ],
+                "label": "Selected products for the initial discovery collection"
+              }
+            ],
+            "writeProtections": [
+              {
+                "target": "Product prices",
+                "label": "Must not be changed"
+              },
+              {
+                "target": "Product inventory",
+                "label": "Must not be changed"
+              },
+              {
+                "target": "Product deletion or archival",
+                "label": "Must not be performed"
+              },
+              {
+                "target": "Discounts",
+                "label": "Must not be created or applied"
+              },
+              {
+                "target": "Existing Bundles collection",
+                "label": "Must not be modified or duplicated without review"
+              }
+            ],
+            "materialExpectedEffects": [
+              "Creates one reversible manual collection using existing products.",
+              "Makes a reviewed multi-product discovery offer available for storefront merchandising.",
+              "Does not guarantee conversion or change historical order metrics immediately."
+            ],
+            "diagnosedProblem": "Most recent orders are shallow: 54% of trailing-90-day orders contained exactly one item, the median order contained one item, and only 6% contained four or more items.",
+            "mechanism": "A focused, in-stock discovery surface can reduce the effort required for a shopper who has selected one product to consider an additional product, converting some single-item purchases into multi-item baskets.",
+            "whyThisAction": "The supplied evidence shows 27 of 50 trailing-90-day orders contained exactly one item and only 3 contained at least four items. Shopify currently has a focused catalogue with 17 active products and substantial positive inventory, so merchandising existing products is more reversible than introducing new catalogue complexity.",
+            "whyNow": "The current Shopify read confirms the relevant products are active and available now: Borderlands Discovery Four has totalInventory 61, Cloud Needle Tsolikouri 222, Bora Line Rebula 176, Meadow Clock 25, and Cedar Ink 112. There is an existing Bundles collection, but it contains only 2 products, leaving room for a distinct discovery-led merchandising surface.",
+            "supportingBeliefIds": [
+              "c29d78f3-ea39-4232-b239-1539449ebe6e",
+              "ef5b8ee5-f7ec-4467-84df-71334c102209",
+              "8a08cc8a-2a07-46eb-ac82-95b6178a68bb",
+              "39c293b7-7481-4cfc-8e75-ed46dd10ee86",
+              "602a25db-1284-452e-bc48-105d11288e58",
+              "7e86eb6c-7134-4de3-a03a-e9d3d6c1df49"
+            ],
+            "supportingInsightIds": [
+              "8eb2ebac-8bdd-4d6d-8009-aaba006bcce2",
+              "e840ebf1-b68a-4343-bd21-d7dabd5ae1d7"
+            ],
+            "feasibleWriteOperations": [
+              "collectionCreate",
+              "collectionAddProducts"
+            ],
+            "verificationPlan": "After acceptance, verify that the new manual collection exists, contains only the approved active products with positive inventory, is distinct from the existing Bundles collection, and is available for the intended storefront merchandising placement. Recheck multi-item order share and median items per order after a meaningful selling period.",
+            "confidence": "reasonable",
+            "assumption": "The merchant can review and approve complementary pairings among the selected existing products; Shopify order data confirms basket depth but does not independently prove product affinity.",
+            "caveat": "The Shopify read confirms availability and existing collection structure, not customer-level product associations. Treat the first collection as a reversible merchandising test and measure its effect before expanding it."
+          },
+          "blocker": null,
+          "candidateDisposition": null,
+          "usage": {
+            "inputTokens": 61182,
+            "cachedInputTokens": 1798,
+            "outputTokens": 1988,
+            "totalTokens": 63170,
+            "estimatedInputTokens": 52582
+          },
+          "durationMs": 31565
+        }
+      ],
+      "toolResults": [
+        {
+          "tool": "shopify_query",
+          "ok": false,
+          "message": "products query failed: Field must have selections (field 'productsCount' returns Count but has no selections. Did you mean 'productsCount { ... }'?)",
+          "facts": {
+            "operation": "products",
+            "document": "query VerifyDecliningRangeMerchandising {\n  products(first: 50, query: \"status:active\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 20) {\n        nodes {\n          id\n          inventoryQuantity\n        }\n      }\n    }\n  }\n  collections(first: 50) {\n    nodes {\n      id\n      title\n      handle\n      productsCount\n    }\n  }\n}",
+            "variables": {},
+            "providerError": {
+              "code": "SHOPIFY_GRAPHQL_ERROR",
+              "message": "Field must have selections (field 'productsCount' returns Count but has no selections. Did you mean 'productsCount { ... }'?)",
+              "details": [
+                {
+                  "message": "Field must have selections (field 'productsCount' returns Count but has no selections. Did you mean 'productsCount { ... }'?)",
+                  "path": [
+                    "query VerifyDecliningRangeMerchandising",
+                    "collections",
+                    "nodes",
+                    "productsCount"
+                  ],
+                  "code": "selectionMismatch"
+                }
+              ]
+            }
+          },
+          "error": {
+            "code": "SHOPIFY_GRAPHQL_ERROR",
+            "message": "Field must have selections (field 'productsCount' returns Count but has no selections. Did you mean 'productsCount { ... }'?)"
+          }
+        },
+        {
+          "tool": "shopify_query",
+          "ok": true,
+          "message": "products query executed.",
+          "facts": {
+            "operation": "products",
+            "domain": "products",
+            "document": "query VerifyDecliningRangeMerchandising {\n  products(first: 50, query: \"status:active\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 20) {\n        nodes {\n          id\n          inventoryQuantity\n        }\n      }\n    }\n  }\n  collections(first: 50) {\n    nodes {\n      id\n      title\n      handle\n      productsCount {\n        count\n      }\n    }\n  }\n}",
+            "variables": {},
+            "data": {
+              "products": {
+                "nodes": [
+                  {
+                    "id": "gid://shopify/Product/10375206633768",
+                    "title": "Salt Road Feteasca",
+                    "handle": "salt-road-feteasca",
+                    "status": "ACTIVE",
+                    "totalInventory": 161,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197093867816",
+                          "inventoryQuantity": 62
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096292648",
+                          "inventoryQuantity": 97
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096325416",
+                          "inventoryQuantity": 2
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206699304",
+                    "title": "Cloud Needle Tsolikouri",
+                    "handle": "cloud-needle-tsolikouri",
+                    "status": "ACTIVE",
+                    "totalInventory": 222,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197093933352",
+                          "inventoryQuantity": 150
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096423720",
+                          "inventoryQuantity": 72
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206732072",
+                    "title": "Bora Line Rebula",
+                    "handle": "bora-line-rebula",
+                    "status": "ACTIVE",
+                    "totalInventory": 176,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197093998888",
+                          "inventoryQuantity": 0
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096489256",
+                          "inventoryQuantity": 176
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206797608",
+                    "title": "Lemon Grove Vidiano",
+                    "handle": "lemon-grove-vidiano",
+                    "status": "ACTIVE",
+                    "totalInventory": 22,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094064424",
+                          "inventoryQuantity": 22
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096554792",
+                          "inventoryQuantity": 0
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206863144",
+                    "title": "Basalt Tide Arinto",
+                    "handle": "basalt-tide-arinto",
+                    "status": "ACTIVE",
+                    "totalInventory": 50,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094129960",
+                          "inventoryQuantity": 50
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206928680",
+                    "title": "Meadow Clock",
+                    "handle": "meadow-clock",
+                    "status": "ACTIVE",
+                    "totalInventory": 25,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094195496",
+                          "inventoryQuantity": 25
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375206961448",
+                    "title": "Rain Map Tannat",
+                    "handle": "rain-map-tannat",
+                    "status": "ACTIVE",
+                    "totalInventory": 71,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094228264",
+                          "inventoryQuantity": 71
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207026984",
+                    "title": "Cedar Ink",
+                    "handle": "cedar-ink",
+                    "status": "ACTIVE",
+                    "totalInventory": 112,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094293800",
+                          "inventoryQuantity": 73
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096718632",
+                          "inventoryQuantity": 39
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207125288",
+                    "title": "Black Cherry Kadarka",
+                    "handle": "black-cherry-kadarka",
+                    "status": "ACTIVE",
+                    "totalInventory": 3,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094392104",
+                          "inventoryQuantity": 3
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207190824",
+                    "title": "Harbour Plavac",
+                    "handle": "harbour-plavac",
+                    "status": "ACTIVE",
+                    "totalInventory": 53,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094457640",
+                          "inventoryQuantity": 53
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207223592",
+                    "title": "Ash Path Listan",
+                    "handle": "ash-path-listan",
+                    "status": "ACTIVE",
+                    "totalInventory": 2,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094490408",
+                          "inventoryQuantity": 2
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207289128",
+                    "title": "Apricot Compass",
+                    "handle": "apricot-compass",
+                    "status": "ACTIVE",
+                    "totalInventory": 44,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094555944",
+                          "inventoryQuantity": 20
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197096948008",
+                          "inventoryQuantity": 24
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207354664",
+                    "title": "Amber Market",
+                    "handle": "amber-market",
+                    "status": "ACTIVE",
+                    "totalInventory": 49,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094621480",
+                          "inventoryQuantity": 49
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207452968",
+                    "title": "Reed Bed Orange",
+                    "handle": "reed-bed-orange",
+                    "status": "ACTIVE",
+                    "totalInventory": 3,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094719784",
+                          "inventoryQuantity": 3
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207616808",
+                    "title": "Sea Mist Marselan",
+                    "handle": "sea-mist-marselan",
+                    "status": "ACTIVE",
+                    "totalInventory": 55,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094883624",
+                          "inventoryQuantity": 54
+                        },
+                        {
+                          "id": "gid://shopify/ProductVariant/52197097144616",
+                          "inventoryQuantity": 1
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207715112",
+                    "title": "Red Current Teran",
+                    "handle": "red-current-teran",
+                    "status": "ACTIVE",
+                    "totalInventory": 76,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197094981928",
+                          "inventoryQuantity": 76
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Product/10375207780648",
+                    "title": "Borderlands Discovery Four",
+                    "handle": "borderlands-discovery-four",
+                    "status": "ACTIVE",
+                    "totalInventory": 61,
+                    "variants": {
+                      "nodes": [
+                        {
+                          "id": "gid://shopify/ProductVariant/52197095047464",
+                          "inventoryQuantity": 61
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "collections": {
+                "nodes": [
+                  {
+                    "id": "gid://shopify/Collection/513975943464",
+                    "title": "All Wine",
+                    "handle": "all-wine",
+                    "productsCount": {
+                      "count": 22
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513975976232",
+                    "title": "Red",
+                    "handle": "red",
+                    "productsCount": {
+                      "count": 6
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976009000",
+                    "title": "White",
+                    "handle": "white",
+                    "productsCount": {
+                      "count": 6
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976041768",
+                    "title": "Orange",
+                    "handle": "orange",
+                    "productsCount": {
+                      "count": 5
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976074536",
+                    "title": "Chilled Red",
+                    "handle": "chilled-red",
+                    "productsCount": {
+                      "count": 3
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976107304",
+                    "title": "Bundles",
+                    "handle": "bundles",
+                    "productsCount": {
+                      "count": 2
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976140072",
+                    "title": "Moldova",
+                    "handle": "moldova",
+                    "productsCount": {
+                      "count": 2
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976172840",
+                    "title": "Uruguay",
+                    "handle": "uruguay",
+                    "productsCount": {
+                      "count": 2
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976205608",
+                    "title": "New Arrivals",
+                    "handle": "new-arrivals",
+                    "productsCount": {
+                      "count": 16
+                    }
+                  },
+                  {
+                    "id": "gid://shopify/Collection/513976238376",
+                    "title": "Under GBP 20",
+                    "handle": "under-gbp-20",
+                    "productsCount": {
+                      "count": 3
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "error": null
+        },
+        {
+          "tool": "shopify_query",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "products",
+            "document": "query VerifyDecliningRangeMerchandising {\n  products(first: 50, query: \"status:active\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 20) {\n        nodes {\n          id\n          inventoryQuantity\n        }\n      }\n    }\n  }\n  collections(first: 50) {\n    nodes {\n      id\n      title\n      handle\n      productsCount {\n        count\n      }\n    }\n  }\n}",
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "shopify_query",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: this exact GraphQL document and variables were already run successfully in this run. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "products",
+            "document": "query VerifyDecliningRangeMerchandising {\n  products(first: 50, query: \"status:active\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      variants(first: 20) {\n        nodes {\n          id\n          inventoryQuantity\n        }\n      }\n    }\n  }\n  collections(first: 50) {\n    nodes {\n      id\n      title\n      handle\n      productsCount {\n        count\n      }\n    }\n  }\n}",
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        }
+      ]
+    }
+  }
+}

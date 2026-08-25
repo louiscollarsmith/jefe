@@ -7,7 +7,12 @@ import {
   isNovelCandidate,
 } from "../app/lib/shopify/agentic-runtime/candidate-pipeline.server.js";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
-import { SHOPIFY_AGENT_TOOL } from "../app/lib/shopify/agentic-runtime/tools.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
+// Tests 5/6 below deliberately exercise generateAgenticShopifyRecommendation's open-ended
+// discovery branch (no focusCandidate) — the one Shopify investigation path with no production
+// caller (candidate-pipeline.server.js, the only real caller, always passes focusCandidate). It
+// still dispatches through the same Gateway as every other mode (docs/ops/
+// agentic-shopify-gateway-full/16-known-limitations.md), kept working rather than left dead.
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -93,12 +98,20 @@ function candidateFixture(candidateId, diagnosedProblem, priority, extra = {}) {
   };
 }
 
-function readCall(operation = "products", variables = { first: 5 }) {
-  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables, purpose: "Verify candidate against Shopify state." } };
+function gatewaySchemaCall(query = "product update") {
+  return { tool: SHOPIFY_GATEWAY_TOOL.schema, arguments: { action: "search", query } };
 }
 
-function retrieveCall(query = "product update") {
-  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
+// Gateway-shaped — used by every other test (1-4, 7-10), which go through
+// runCandidateDrivenRecommendation's focusCandidate investigation, migrated to the Gateway.
+function gatewayReadCall(variables = { first: 5 }) {
+  return {
+    tool: SHOPIFY_GATEWAY_TOOL.query,
+    arguments: {
+      document: "query($first: Int!) { products(first: $first) { edges { node { id title status } } } }",
+      variables,
+    },
+  };
 }
 
 function validRec(overrides = {}) {
@@ -126,7 +139,7 @@ function validRec(overrides = {}) {
 /** Candidate script helper: iteration 0 reads, iteration 1 concludes with `conclusion`. */
 function investigate(conclusion) {
   return (payload) => {
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall()] };
+    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [gatewayReadCall()] };
     return conclusion;
   };
 }
@@ -272,14 +285,17 @@ test("Test 4: missing COGS blocks only the COGS-dependent candidate; B remains e
 });
 
 // ---------------------------------------------------------------------------
-// Test 5 — Retrieval-loop prevention (primitive-level: generateAgenticShopifyRecommendation)
+// Test 5 — Retrieval-loop prevention (primitive-level: generateAgenticShopifyRecommendation,
+// open-ended discovery / no focusCandidate). docs/ops/agentic-shopify-gateway-full/ made Gateway
+// universal, so this now-legacy discovery path (no production caller, but kept working rather than
+// left dead) dispatches through shopify_schema/shopify_query like everything else.
 // ---------------------------------------------------------------------------
 
-test("Test 5: repeated retrieve_shopify_operations without a read is structurally rejected and pushed toward a read", async () => {
+test("Test 5: repeated shopify_schema without a read is structurally rejected and pushed toward a read", async () => {
   const provider = scriptedProvider((payload) => {
-    if (payload.iteration < 4) return { status: "CONTINUE", toolCalls: [retrieveCall(`query ${payload.iteration}`)] };
+    if (payload.iteration < 4) return { status: "CONTINUE", toolCalls: [gatewaySchemaCall(`query ${payload.iteration}`)] };
     // By now retrieval has been capped; the model finally reads and recommends.
-    if (payload.iteration === 4) return { status: "CONTINUE", toolCalls: [readCall()] };
+    if (payload.iteration === 4) return { status: "CONTINUE", toolCalls: [gatewayReadCall()] };
     return { status: "RECOMMEND_ACTION", recommendation: validRec() };
   });
 
@@ -291,10 +307,10 @@ test("Test 5: repeated retrieve_shopify_operations without a read is structurall
   assert.equal(result.ok, true);
   assert.equal(result.status, "RECOMMEND_ACTION");
   const executedRetrievals = result.trace.toolResults.filter(
-    (row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok,
+    (row) => row.tool === SHOPIFY_GATEWAY_TOOL.schema && row.ok,
   );
   const rejectedRetrievals = result.trace.toolResults.filter(
-    (row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && !row.ok && row.error?.code === "RETRIEVAL_ALREADY_SUFFICIENT",
+    (row) => row.tool === SHOPIFY_GATEWAY_TOOL.schema && !row.ok && row.error?.code === "RETRIEVAL_ALREADY_SUFFICIENT",
   );
   assert.ok(executedRetrievals.length <= 2, `expected at most 2 executed retrievals, got ${executedRetrievals.length}`);
   assert.ok(rejectedRetrievals.length > 0, "expected at least one retrieval to be structurally rejected");
@@ -307,7 +323,7 @@ test("Test 5: repeated retrieve_shopify_operations without a read is structurall
 test("Test 6: a model that only ever retrieves cannot reach turn-budget exhaustion with zero reads while a candidate exists", async () => {
   const provider = scriptedProvider((payload) => ({
     status: "CONTINUE",
-    toolCalls: [retrieveCall(`query ${payload.iteration}`)],
+    toolCalls: [gatewaySchemaCall(`query ${payload.iteration}`)],
   }));
 
   const result = await generateAgenticShopifyRecommendation({
@@ -317,12 +333,12 @@ test("Test 6: a model that only ever retrieves cannot reach turn-budget exhausti
 
   assert.equal(provider.calls.length, 8);
   const executedRetrievals = result.trace.toolResults.filter(
-    (row) => row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations && row.ok,
+    (row) => row.tool === SHOPIFY_GATEWAY_TOOL.schema && row.ok,
   );
   // The old regression let 7-8 retrievals execute with 0 reads. The cap makes that impossible:
   // only the first 2 ever execute: everything after is rejected and steered toward a read.
   assert.ok(executedRetrievals.length <= 2, `expected at most 2 executed retrievals, got ${executedRetrievals.length}`);
-  const reads = result.trace.toolResults.filter((row) => row.tool === SHOPIFY_AGENT_TOOL.callOperation && row.ok);
+  const reads = result.trace.toolResults.filter((row) => row.tool === SHOPIFY_GATEWAY_TOOL.query && row.ok);
   assert.equal(reads.length, 0);
   // Genuine budget exhaustion with an unread candidate present is reported honestly, not silently.
   assert.equal(result.ok, false);

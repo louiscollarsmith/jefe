@@ -1,0 +1,30 @@
+{
+  "shopDomain": "jefe-local-store.myshopify.com",
+  "generatedAt": "2026-08-25T13:33:24.774Z",
+  "runs": [
+    {
+      "surface": "catalog",
+      "status": "no_actionable_opportunity",
+      "wallClockMs": 272667,
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "schemaLookups": 5,
+      "reads": 11,
+      "successfulReads": 11,
+      "failedReads": 0,
+      "candidatesDiscovered": null
+    },
+    {
+      "surface": "gateway",
+      "status": "completed",
+      "wallClockMs": 104621,
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "schemaLookups": 0,
+      "reads": 4,
+      "successfulReads": 3,
+      "failedReads": 1,
+      "candidatesDiscovered": null
+    }
+  ]
+}

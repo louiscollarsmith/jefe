@@ -21,7 +21,7 @@ import { runAgenticRecommendationInvestigation } from "../app/lib/shopify/agenti
 import { acceptAndExecuteAgenticShopifyAction } from "../app/lib/shopify/agentic-runtime/execution-service.server.js";
 import {
   AGENTIC_EXECUTION_PROMPT_VERSION,
-  buildExecutionSystemPrompt,
+  buildGatewayExecutionSystemPrompt,
 } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
 import {
   AGENTIC_ACTION_CHAT_PROMPT_VERSION,
@@ -1010,7 +1010,7 @@ function promptTemplateCatalog() {
       promptVersion: AGENTIC_EXECUTION_PROMPT_VERSION,
       scenario: "post_acceptance_execution",
       when: "acceptedActionRevision exists and Luna executes the accepted semantic Action through generated Shopify operations, then verifies by reading Shopify state back.",
-      systemPrompt: buildExecutionSystemPrompt(),
+      systemPrompt: buildGatewayExecutionSystemPrompt(),
       promptBodyShape: [
         "promptVersion",
         "iteration",

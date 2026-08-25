@@ -33,6 +33,7 @@ import {
   semanticActionRevision,
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
 import { buildActionWorkspace, workspacePlanItems } from "../app/lib/actions/action-workspace.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000021";
 const shopId = "00000000-0000-0000-0000-000000000022";
@@ -476,7 +477,7 @@ test("FOCUSED SEMANTIC REPAIR: one repair then persist or VALIDATION_FAILED, no 
     return recommendInvalidInStock();
   });
   assert.equal(success.result.ok, true);
-  assert.equal(success.provider.calls.filter((row) => row.mode === "investigation").length, 1);
+  assert.equal(success.provider.calls.filter((row) => row.mode === "candidate_investigation").length, 1);
   assert.equal(success.provider.calls.filter((row) => row.mode === "semantic_repair").length, 1);
   assert.equal(success.result.diagnostics.semanticRepair.ok, true);
   assert.equal(success.result.trace.turns.some((turn) => turn.status === "SEMANTIC_REPAIR" && turn.toolCalls.length === 0), true);
@@ -490,7 +491,7 @@ test("FOCUSED SEMANTIC REPAIR: one repair then persist or VALIDATION_FAILED, no 
   assert.equal(failed.result.ok, false);
   assert.equal(failed.result.status, "VALIDATION_FAILED");
   assert.equal(failed.provider.calls.filter((row) => row.mode === "semantic_repair").length, 1);
-  assert.equal(failed.provider.calls.filter((row) => row.mode === "investigation").length, 1);
+  assert.equal(failed.provider.calls.filter((row) => row.mode === "candidate_investigation").length, 1);
   assert.equal(failed.result.diagnostics.semanticRepair.errorCode, "PROMISE_CRITERIA_MISMATCH");
 });
 
@@ -499,10 +500,9 @@ function recommendInvalidInStock() {
     status: "RECOMMEND_ACTION",
     recommendation: inStockCollectionCandidate(),
     toolCalls: [
-      { tool: "retrieve_shopify_operations", arguments: { query: "products inventory", limit: 5 } },
       {
-        tool: "call_shopify_operation",
-        arguments: { operation: "products", variables: { first: 5 }, purpose: "Read current catalogue." },
+        tool: SHOPIFY_GATEWAY_TOOL.query,
+        arguments: { document: "query { products(first: 5) { edges { node { id title status } } } }" },
       },
     ],
   };
@@ -524,6 +524,12 @@ async function runRecommendationRepairLoop(script) {
       goalCoaching: [],
     },
     grantedScopes: ["read_products", "write_products"],
+    focusCandidate: {
+      candidateId: "eligibility-repair-1",
+      diagnosedProblem: "No storefront collection groups the 17 products with positive available inventory.",
+      priority: 1,
+      businessEvidenceRefs: ["b-1"],
+    },
     catalog: tinyCatalog(),
     maxIterations: 3,
     logger: quietLogger,

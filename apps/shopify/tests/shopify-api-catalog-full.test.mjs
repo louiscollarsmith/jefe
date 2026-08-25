@@ -142,7 +142,10 @@ test("an entirely unseen, synthetic Shopify mutation is discoverable, conservati
   // Steps 4-6: preview-worthy shape, appropriate confirmation, and real execution through the
   // generic gateway — the exact same executeShopifyOperation() every real mutation goes through,
   // fed a fake Shopify client. Confirmation is required and denied first, then granted and the
-  // call actually executes and ledgers.
+  // call actually executes and ledgers. docs/ops/agentic-shopify-gateway-full/: stubOverride is
+  // the only way to reach executeShopifyOperation now (no more catalog-name lookup) — passed here
+  // as the hand-built syntheticStub itself, which is already exactly the shape
+  // buildSyntheticGatewayStub produces from a real agent-composed document.
   const merchantId = "00000000-0000-0000-0000-00000000f001";
   const shopId = "00000000-0000-0000-0000-00000000f002";
   const actionId = "00000000-0000-0000-0000-00000000f003";
@@ -175,6 +178,7 @@ test("an entirely unseen, synthetic Shopify mutation is discoverable, conservati
     acceptedActionRevision: "rev-1",
     operation: "widgetFrobnicate",
     variables: validVariables,
+    stubOverride: syntheticStub,
     grantedScopes: [],
     catalog: augmented,
     logger: { info() {}, warn() {}, error() {} },

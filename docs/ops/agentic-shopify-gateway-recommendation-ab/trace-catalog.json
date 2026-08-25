@@ -1,0 +1,2366 @@
+{
+  "surface": "catalog",
+  "startedAt": "2026-08-25T13:27:07.205Z",
+  "completedAt": "2026-08-25T13:31:39.872Z",
+  "wallClockMs": 272667,
+  "provider": "openai",
+  "model": "gpt-5.6-luna",
+  "status": "no_actionable_opportunity",
+  "result": {
+    "status": "no_actionable_opportunity",
+    "runId": "6463978d-9160-4f4f-9880-4be3c86cc147",
+    "blocker": "Investigated 8 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+    "diagnostics": {
+      "candidateQueue": [
+        {
+          "candidateId": "restart-selling-activity",
+          "domain": null,
+          "diagnosedProblem": "Selling activity is intermittent: only 6 of the last 30 days had orders, there were no orders in the last 7 days, and the latest stored order was 19 days ago.",
+          "priority": 1,
+          "beliefIds": [
+            "43d1e49f-3147-4d80-97d7-95f06b4a0f63",
+            "62610559-aac9-4e41-a35d-085a45161384",
+            "5a77dc8c-0df4-4627-8445-f97f6d8b556b",
+            "9a0005c4-0fc6-461e-a043-33a1eccaa030",
+            "21f902ac-f13b-4e8e-a04b-eea1f89eaa3d"
+          ],
+          "operationQuery": "Create and schedule a targeted promotion or featured-product campaign centred on proven products such as Borderlands Discovery Four and Cloud Needle Tsolikouri. Selling activity is intermittent: only 6 of the last 30 days had orders, there were no orders in the last 7 days, and the latest stored order was 19 days ago.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "BLOCKED_BY_EVIDENCE",
+          "reason": "The current Shopify read confirmed only that an orders query completed; its response contained no order records or summary details. The bound operation set does not include a product or inventory query, so current status and available inventory for Borderlands Discovery Four (product b7c2717a-13ef-49d5-a723-8a4ba4787359) and Cloud Needle Tsolikouri (product 6aef37b6-28c9-4bbe-9751-5be61266188f) cannot yet be verified. No mutation was performed.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "INSUFFICIENT_EVIDENCE"
+        },
+        {
+          "candidateId": "capture-product-costs",
+          "domain": null,
+          "diagnosedProblem": "None of the 25 active variants has a cost-per-item recorded, so the merchant cannot identify product-level gross profit or determine whether revenue growth is economically attractive.",
+          "priority": 2,
+          "beliefIds": [
+            "5edc6350-082f-43f0-9b8c-ba62ecdec99a",
+            "3569856b-df22-40f4-89c8-6aeed1abb596",
+            "fca55b9c-afd3-4d10-b4cc-f90eb3ceef53"
+          ],
+          "operationQuery": "Populate cost-per-item for the active variants, beginning with the highest-revenue and highest-stock-value variants. None of the 25 active variants has a cost-per-item recorded, so the merchant cannot identify product-level gross profit or determine whether revenue growth is economically attractive.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "inventoryItemUpdate",
+            "inventoryItems",
+            "inventoryShipmentAddItems",
+            "inventoryShipmentRemoveItems",
+            "inventoryShipmentUpdateItemQuantities",
+            "productDelete"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "BLOCKED_BY_EVIDENCE",
+          "reason": "The candidate premise is supported by Merchant Memory: products.cost_coverage reports 0 of 25 active variants with cost-per-item recorded, while data.priced_variant_coverage reports all 25 have prices. However, the proposed mutation inventoryItemUpdate requires specific cost values, and no supplier-cost inputs are present in Shopify or Merchant Memory. The available Shopify reads do not provide a safe basis for inferring those values. Cost data must be supplied by the merchant before any inventoryItemUpdate mutation can be recommended.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "INSUFFICIENT_EVIDENCE"
+        },
+        {
+          "candidateId": "increase-multi-product-baskets",
+          "domain": null,
+          "diagnosedProblem": "Most orders are small: the median order contains one item, 54% of orders contain exactly one item, and only 6% contain four or more items.",
+          "priority": 3,
+          "beliefIds": [
+            "8a08cc8a-2a07-46eb-ac82-95b6178a68bb",
+            "ef5b8ee5-f7ec-4467-84df-71334c102209",
+            "39c293b7-7481-4cfc-8e75-ed46dd10ee86"
+          ],
+          "operationQuery": "Create or feature curated multi-product bundles or cross-sell groupings around the existing range. Most orders are small: the median order contains one item, 54% of orders contain exactly one item, and only 6% contain four or more items.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "inventoryItemUpdate",
+            "inventoryItems",
+            "inventoryShipmentAddItems",
+            "inventoryShipmentRemoveItems",
+            "inventoryShipmentUpdateItemQuantities",
+            "productDelete",
+            "order",
+            "orderEditAddCustomItem",
+            "productOptionsCreate",
+            "draftOrderCreate",
+            "orderCreate"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "NON_EXECUTABLE",
+          "reason": "Shopify state checked: orders read completed successfully; active products read completed successfully; automaticDiscounts read completed successfully. The candidate premise remains supported by Merchant Memory evidence, but the available write operations cannot safely implement curated multi-product bundles or cross-sell merchandising. productOptionsCreate only adds options to one product, while draftOrderCreate/orderCreate create orders and orderEditAddCustomItem modifies existing orders. No collection or product-merchandising write operation is available.",
+          "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+          "finalDisposition": "CAPABILITY_RETRIEVAL_FAILURE"
+        },
+        {
+          "candidateId": "recover-unused-range-demand",
+          "domain": null,
+          "diagnosedProblem": "The range has 17 active products, but one active product has stock and no recorded sales in the trailing 90 days; separately, 13 products declined versus the prior 30-day period, including Rain Map Tannat falling from £24 to £0.",
+          "priority": 4,
+          "beliefIds": [
+            "743970c9-28b4-49db-9e9c-9646653c969b",
+            "3a677720-7ada-461e-b98f-64e113683bdd",
+            "d62acc84-d0e3-4cce-9c8d-aea843f55e67"
+          ],
+          "operationQuery": "Feature the identified no-sale and declining products in relevant collections or merchandising placements, with clearer product positioning and complementary recommendations. The range has 17 active products, but one active product has stock and no recorded sales in the trailing 90 days; separately, 13 products declined versus the prior 30-day period, including Rain Map Tannat falling from £24 to £0.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "inventoryItemUpdate",
+            "inventoryItems",
+            "inventoryShipmentAddItems",
+            "inventoryShipmentRemoveItems",
+            "inventoryShipmentUpdateItemQuantities",
+            "productDelete",
+            "order",
+            "orderEditAddCustomItem",
+            "productOptionsCreate",
+            "draftOrderCreate",
+            "orderCreate",
+            "taxonomy",
+            "collectionAddProducts",
+            "collectionAddProductsV2",
+            "collectionRemoveProducts"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "REJECTED",
+          "reason": "Live Shopify state does not confirm the candidate's target product: the product lookup for Rain Map Tannat returned product: null. The active-products and collections reads completed, but their returned data did not expose product or collection records sufficient to identify the separate no-sale product, verify its available inventory, or safely target the proposed collection additions. The diagnosed premise therefore does not hold up against the current Shopify read.",
+          "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+          "finalDisposition": "WEAK_DIAGNOSIS"
+        },
+        {
+          "candidateId": "protect-sales-from-stockouts",
+          "domain": null,
+          "diagnosedProblem": "Two active variants are currently out of stock, meaning 8% of tracked active variants cannot fulfil demand if customers select them.",
+          "priority": 5,
+          "beliefIds": [
+            "5dc21ead-2395-44ef-9e6d-4e2881f4251d",
+            "c0d88942-7403-4c2d-ae58-a1b83febd933",
+            "91602f84-eee8-4043-a91c-18221a1cf318"
+          ],
+          "operationQuery": "Replenish the two out-of-stock variants or adjust their sellable and merchandising state until inventory is available. Two active variants are currently out of stock, meaning 8% of tracked active variants cannot fulfil demand if customers select them.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "inventoryItemUpdate",
+            "inventoryItems",
+            "inventoryShipmentAddItems",
+            "inventoryShipmentRemoveItems",
+            "inventoryShipmentUpdateItemQuantities",
+            "productDelete",
+            "order",
+            "orderEditAddCustomItem",
+            "productOptionsCreate",
+            "draftOrderCreate",
+            "orderCreate",
+            "taxonomy",
+            "collectionAddProducts",
+            "collectionAddProductsV2",
+            "collectionRemoveProducts",
+            "customer",
+            "customers",
+            "fulfillment",
+            "fulfillmentOrderLineItemsPreparedForPickup",
+            "metaobject"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "BLOCKED_BY_EVIDENCE",
+          "reason": "Current Shopify state was checked through products(status:active), product(id:gid://shopify/Product/8e7c7538-223c-4867-837d-470745086119), and related bounded reads. The products result exposed only a connection type with no variant records, while the product lookup returned null. Although Merchant Memory reports 2 out-of-stock variants and 23/25 in-stock, that prior evidence cannot establish the current live predicate or identify safe mutation targets. No mutation was performed.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "INSUFFICIENT_EVIDENCE"
+        },
+        {
+          "candidateId": "establish-customer-retention-visibility",
+          "domain": null,
+          "diagnosedProblem": "None of the 50 stored orders is linked to a customer identity, so the merchant cannot measure repeat purchasing or target prior buyers for follow-up revenue.",
+          "priority": 6,
+          "beliefIds": [
+            "2e75da6e-c4a1-4227-abbb-7d468bce703b",
+            "538388ca-a64d-47c5-87f0-e6dfd742e999",
+            "17743949-471d-4790-b4e5-9096de415c68"
+          ],
+          "operationQuery": "Enable customer account or identity capture at checkout and use the resulting customer records for post-purchase follow-up. None of the 50 stored orders is linked to a customer identity, so the merchant cannot measure repeat purchasing or target prior buyers for follow-up revenue.",
+          "retrievedOperations": [
+            "discountAutomaticFreeShippingCreate",
+            "orders",
+            "discountAutomaticAppCreate",
+            "discountAutomaticBasicCreate",
+            "discountAutomaticBxgyCreate",
+            "discountCodeAppCreate",
+            "discountCodeBasicCreate",
+            "discountCodeBxgyCreate",
+            "codeDiscountNode",
+            "codeDiscountNodeByCode",
+            "codeDiscountNodes",
+            "codeDiscountSavedSearches",
+            "discountRedeemCodeSavedSearches",
+            "automaticDiscounts",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "inventoryItemUpdate",
+            "inventoryItems",
+            "inventoryShipmentAddItems",
+            "inventoryShipmentRemoveItems",
+            "inventoryShipmentUpdateItemQuantities",
+            "productDelete",
+            "order",
+            "orderEditAddCustomItem",
+            "productOptionsCreate",
+            "draftOrderCreate",
+            "orderCreate",
+            "taxonomy",
+            "collectionAddProducts",
+            "collectionAddProductsV2",
+            "collectionRemoveProducts",
+            "customer",
+            "customers",
+            "fulfillment",
+            "fulfillmentOrderLineItemsPreparedForPickup",
+            "metaobject",
+            "metaobjects",
+            "customerAccountPages",
+            "customerGenerateAccountActivationUrl"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "NON_EXECUTABLE",
+          "reason": "Shopify state supports the diagnosis: Merchant Memory reports 0 known customer identities and 0% identity linkage across 50 stored orders; the customers and customerAccountPages reads completed successfully without exposing an existing customer-account capture setting or customer records. However, the available Shopify write operations do not include a safe mutation to enable customer identity capture at checkout or configure retention follow-up. customerGenerateAccountActivationUrl only applies to an existing Customer and cannot create the missing checkout-capture mechanism.",
+          "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+          "finalDisposition": "CAPABILITY_RETRIEVAL_FAILURE"
+        },
+        {
+          "candidateId": "refresh-stale-inventory-records",
+          "domain": null,
+          "diagnosedProblem": "All 51 stored inventory levels are older than the 72-hour freshness threshold, with the inventory freshness p90 at 458.64 hours. Current stock availability therefore cannot be treated as a reliable basis for fulfilment or merchandising decisions.",
+          "priority": 1,
+          "beliefIds": [
+            "739cae45-6562-444f-a472-792e1e62583c",
+            "data.inventory_freshness_hours_p90"
+          ],
+          "operationQuery": "Refresh or reconcile inventory quantities from the merchant’s current stock records before making product availability changes. All 51 stored inventory levels are older than the 72-hour freshness threshold, with the inventory freshness p90 at 458.64 hours. Current stock availability therefore cannot be treated as a reliable basis for fulfilment or merchandising decisions.",
+          "retrievedOperations": [
+            "orders",
+            "order",
+            "orderEditAddCustomItem",
+            "product",
+            "productOptionsCreate",
+            "products",
+            "draftOrderCreate",
+            "orderCreate",
+            "taxonomy",
+            "collection",
+            "collections",
+            "collectionAddProducts",
+            "collectionAddProductsV2",
+            "collectionRemoveProducts",
+            "customer",
+            "customers",
+            "fulfillment",
+            "fulfillmentOrderLineItemsPreparedForPickup",
+            "metaobject",
+            "metaobjects",
+            "customerAccountPages",
+            "customerGenerateAccountActivationUrl",
+            "fulfillmentOrderMerge",
+            "fulfillmentOrderMove",
+            "fulfillmentOrders",
+            "fulfillmentOrderSplit"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "BLOCKED_BY_EVIDENCE",
+          "reason": "The stale-inventory premise is supported by Merchant Memory: 51 of 51 inventory levels exceed the 72-hour threshold and freshness p90 is 458.64 hours (739cae45-6562-444f-a472-792e1e62583c; data.inventory_freshness_hours_p90). However, the successfully read Shopify resources were products, automaticDiscounts, product, collections, customers, and customerAccountPages; the bound inventory investigation returned only taxonomy, collections, fulfillment, and fulfillment-order operations. None provides current merchant stock records or a safe inventory quantity reconciliation write. Shopify therefore cannot supply the required authoritative quantities, so this intervention is blocked.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "INSUFFICIENT_EVIDENCE"
+        },
+        {
+          "candidateId": "repair-unlinked-order-line-items",
+          "domain": null,
+          "diagnosedProblem": "Sixteen percent of stored order line items are not linked to a Shopify product or variant: only 63 of 75 line items have product and variant links. This prevents complete product-level revenue attribution across the 50-order history.",
+          "priority": 2,
+          "beliefIds": [
+            "5e758deb-1e1f-42fd-9549-0fccccea9b5f",
+            "15c10a6f-9af1-491b-90e0-8e634d872c97",
+            "e3ee38c6-c484-48f0-9422-63668501c666"
+          ],
+          "operationQuery": "Map unlinked historical line items to the correct Shopify products or variants using order records and merchant-provided identification. Sixteen percent of stored order line items are not linked to a Shopify product or variant: only 63 of 75 line items have product and variant links. This prevents complete product-level revenue attribution across the 50-order history.",
+          "retrievedOperations": [
+            "taxonomy",
+            "collection",
+            "collections",
+            "product",
+            "products",
+            "collectionAddProducts",
+            "collectionAddProductsV2",
+            "collectionRemoveProducts",
+            "orders",
+            "customer",
+            "customers",
+            "fulfillment",
+            "fulfillmentOrderLineItemsPreparedForPickup",
+            "metaobject",
+            "metaobjects",
+            "order",
+            "customerAccountPages",
+            "customerGenerateAccountActivationUrl",
+            "fulfillmentOrderMerge",
+            "fulfillmentOrderMove",
+            "fulfillmentOrders",
+            "fulfillmentOrderSplit",
+            "orderEditRemoveLineItemDiscount",
+            "orderEditAddCustomItem",
+            "orderEditAddLineItemDiscount",
+            "orderEditAddVariant"
+          ],
+          "scopeRequired": null,
+          "scopeGranted": null,
+          "executionStatus": null,
+          "status": "NON_EXECUTABLE",
+          "reason": "The candidate cannot be actioned from the bound Shopify operations. The available order-edit mutations would add a new variant or custom line item, which would alter historical order contents rather than relink an existing line item. A read of orders is still required to verify the current linkage gap, but even if confirmed, no safe reversible Shopify write operation implements historical relinking. Merchant-provided identification would also be required for any ambiguous mappings.",
+          "resultStatus": "BLOCKED",
+          "finalDisposition": "CAPABILITY_RETRIEVAL_FAILURE"
+        }
+      ],
+      "rejectionFunnel": {
+        "recommended": 0,
+        "rejected": 8,
+        "total": 8,
+        "byDisposition": {
+          "INSUFFICIENT_EVIDENCE": 4,
+          "CAPABILITY_RETRIEVAL_FAILURE": 3,
+          "WEAK_DIAGNOSIS": 1
+        }
+      },
+      "discoveryLog": [
+        {
+          "rescue": false,
+          "candidateCount": 6,
+          "usage": {
+            "inputTokens": 57162,
+            "cachedInputTokens": 57159,
+            "outputTokens": 1340,
+            "totalTokens": 58502,
+            "estimatedInputTokens": 49523
+          }
+        },
+        {
+          "rescue": true,
+          "candidateCount": 2,
+          "usage": {
+            "inputTokens": 58198,
+            "cachedInputTokens": 0,
+            "outputTokens": 682,
+            "totalTokens": 58880,
+            "estimatedInputTokens": 50839
+          }
+        }
+      ],
+      "llmCallCount": 14
+    },
+    "trace": {
+      "progressLog": [
+        {
+          "state": "DISCOVERING_CANDIDATES",
+          "at": "2026-08-25T13:27:07.419Z",
+          "rescue": false
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:27:35.248Z",
+          "candidateId": "restart-selling-activity",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:28:03.099Z",
+          "candidateId": "restart-selling-activity",
+          "disposition": "BLOCKED_BY_EVIDENCE",
+          "reason": "The current Shopify read confirmed only that an orders query completed; its response contained no order records or summary details. The bound operation set does not include a product or inventory query, so current status and available inventory for Borderlands Discovery Four (product b7c2717a-13ef-49d5-a723-8a4ba4787359) and Cloud Needle Tsolikouri (product 6aef37b6-28c9-4bbe-9751-5be61266188f) cannot yet be verified. No mutation was performed."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:28:03.099Z",
+          "candidateId": "capture-product-costs",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:28:21.998Z",
+          "candidateId": "capture-product-costs",
+          "disposition": "BLOCKED_BY_EVIDENCE",
+          "reason": "The candidate premise is supported by Merchant Memory: products.cost_coverage reports 0 of 25 active variants with cost-per-item recorded, while data.priced_variant_coverage reports all 25 have prices. However, the proposed mutation inventoryItemUpdate requires specific cost values, and no supplier-cost inputs are present in Shopify or Merchant Memory. The available Shopify reads do not provide a safe basis for inferring those values. Cost data must be supplied by the merchant before any inventoryItemUpdate mutation can be recommended."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:28:21.998Z",
+          "candidateId": "increase-multi-product-baskets",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:29:01.555Z",
+          "candidateId": "increase-multi-product-baskets",
+          "disposition": "NON_EXECUTABLE",
+          "reason": "Shopify state checked: orders read completed successfully; active products read completed successfully; automaticDiscounts read completed successfully. The candidate premise remains supported by Merchant Memory evidence, but the available write operations cannot safely implement curated multi-product bundles or cross-sell merchandising. productOptionsCreate only adds options to one product, while draftOrderCreate/orderCreate create orders and orderEditAddCustomItem modifies existing orders. No collection or product-merchandising write operation is available."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:29:01.555Z",
+          "candidateId": "recover-unused-range-demand",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:29:41.940Z",
+          "candidateId": "recover-unused-range-demand",
+          "disposition": "REJECTED",
+          "reason": "Live Shopify state does not confirm the candidate's target product: the product lookup for Rain Map Tannat returned product: null. The active-products and collections reads completed, but their returned data did not expose product or collection records sufficient to identify the separate no-sale product, verify its available inventory, or safely target the proposed collection additions. The diagnosed premise therefore does not hold up against the current Shopify read."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:29:41.940Z",
+          "candidateId": "protect-sales-from-stockouts",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:30:02.293Z",
+          "candidateId": "protect-sales-from-stockouts",
+          "disposition": "BLOCKED_BY_EVIDENCE",
+          "reason": "Current Shopify state was checked through products(status:active), product(id:gid://shopify/Product/8e7c7538-223c-4867-837d-470745086119), and related bounded reads. The products result exposed only a connection type with no variant records, while the product lookup returned null. Although Merchant Memory reports 2 out-of-stock variants and 23/25 in-stock, that prior evidence cannot establish the current live predicate or identify safe mutation targets. No mutation was performed."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:30:02.293Z",
+          "candidateId": "establish-customer-retention-visibility",
+          "rescue": false
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:30:42.195Z",
+          "candidateId": "establish-customer-retention-visibility",
+          "disposition": "NON_EXECUTABLE",
+          "reason": "Shopify state supports the diagnosis: Merchant Memory reports 0 known customer identities and 0% identity linkage across 50 stored orders; the customers and customerAccountPages reads completed successfully without exposing an existing customer-account capture setting or customer records. However, the available Shopify write operations do not include a safe mutation to enable customer identity capture at checkout or configure retention follow-up. customerGenerateAccountActivationUrl only applies to an existing Customer and cannot create the missing checkout-capture mechanism."
+        },
+        {
+          "state": "RESCUE_DISCOVERY",
+          "at": "2026-08-25T13:30:42.196Z"
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:31:02.951Z",
+          "candidateId": "refresh-stale-inventory-records",
+          "rescue": true
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:31:18.625Z",
+          "candidateId": "refresh-stale-inventory-records",
+          "disposition": "BLOCKED_BY_EVIDENCE",
+          "reason": "The stale-inventory premise is supported by Merchant Memory: 51 of 51 inventory levels exceed the 72-hour threshold and freshness p90 is 458.64 hours (739cae45-6562-444f-a472-792e1e62583c; data.inventory_freshness_hours_p90). However, the successfully read Shopify resources were products, automaticDiscounts, product, collections, customers, and customerAccountPages; the bound inventory investigation returned only taxonomy, collections, fulfillment, and fulfillment-order operations. None provides current merchant stock records or a safe inventory quantity reconciliation write. Shopify therefore cannot supply the required authoritative quantities, so this intervention is blocked."
+        },
+        {
+          "state": "INVESTIGATING_CANDIDATE",
+          "at": "2026-08-25T13:31:18.625Z",
+          "candidateId": "repair-unlinked-order-line-items",
+          "rescue": true
+        },
+        {
+          "state": "TRYING_NEXT_CANDIDATE",
+          "at": "2026-08-25T13:31:39.790Z",
+          "candidateId": "repair-unlinked-order-line-items",
+          "disposition": "NON_EXECUTABLE",
+          "reason": "The candidate cannot be actioned from the bound Shopify operations. The available order-edit mutations would add a new variant or custom line item, which would alter historical order contents rather than relink an existing line item. A read of orders is still required to verify the current linkage gap, but even if confirmed, no safe reversible Shopify write operation implements historical relinking. Merchant-provided identification would also be required for any ambiguous mappings."
+        },
+        {
+          "state": "NO_ACTIONABLE_OPPORTUNITY",
+          "at": "2026-08-25T13:31:39.790Z"
+        }
+      ],
+      "toolResults": [
+        {
+          "tool": "retrieve_shopify_operations",
+          "ok": true,
+          "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+          "facts": {
+            "query": "Feature the identified no-sale and declining products in relevant collections or merchandising placements, with clearer product positioning and complementary recommendations. The range has 17 active products, but one active product has stock and no recorded sales in the trailing 90 days; separately, 13 products declined versus the prior 30-day period, including Rain Map Tannat falling from £24 to £0.",
+            "results": [
+              {
+                "id": "shopify.admin_graphql.2026-07.query.taxonomy",
+                "operation": "taxonomy",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Access to Shopify's standardized product taxonomy for categorizing products.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [],
+                "tags": [
+                  "taxonomy"
+                ],
+                "matchedTerms": [
+                  "product",
+                  "taxonomy"
+                ],
+                "score": 21
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collection",
+                "operation": "collection",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a collection by its ID.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collections",
+                "operation": "collections",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a list of collections in a store.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "CollectionSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "collections"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.product",
+                "operation": "product",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Retrieves a product by its ID.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "product"
+                ],
+                "matchedTerms": [
+                  "product"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.products",
+                "operation": "products",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Retrieves a list of products in a store.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "ProductSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "products"
+                ],
+                "matchedTerms": [
+                  "product"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.collectionAddProducts",
+                "operation": "collectionAddProducts",
+                "operationKind": "MUTATION",
+                "domain": "collections",
+                "description": "Adds multiple products to an existing collection in a single operation.",
+                "requiredScopes": [
+                  "write_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "productIds",
+                    "type": "[ID!]!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection",
+                  "add",
+                  "products"
+                ],
+                "matchedTerms": [
+                  "collection",
+                  "product"
+                ],
+                "score": 17
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.collectionAddProductsV2",
+                "operation": "collectionAddProductsV2",
+                "operationKind": "MUTATION",
+                "domain": "collections",
+                "description": "Adds products to a Collection asynchronously and returns a Job to track the operation's progress.",
+                "requiredScopes": [
+                  "write_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "productIds",
+                    "type": "[ID!]!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection",
+                  "add",
+                  "products",
+                  "v2"
+                ],
+                "matchedTerms": [
+                  "collection",
+                  "product"
+                ],
+                "score": 17
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.collectionRemoveProducts",
+                "operation": "collectionRemoveProducts",
+                "operationKind": "MUTATION",
+                "domain": "collections",
+                "description": "Removes multiple manually included products from a collection in a single operation.",
+                "requiredScopes": [
+                  "write_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "productIds",
+                    "type": "[ID!]!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection",
+                  "remove",
+                  "products"
+                ],
+                "matchedTerms": [
+                  "collection",
+                  "product"
+                ],
+                "score": 17
+              }
+            ],
+            "serverBound": true
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: products was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "products",
+            "variables": {
+              "first": 50,
+              "query": "status:active"
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "product completed through the Shopify gateway.",
+          "facts": {
+            "operation": "product",
+            "variables": {
+              "id": "gid://shopify/Product/8e7c7538-223c-4867-837d-470745086119"
+            },
+            "status": "OK",
+            "gatewayDecision": null,
+            "userErrors": [],
+            "resourceIds": [],
+            "responseSummary": {},
+            "data": {
+              "product": null
+            }
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "collections completed through the Shopify gateway.",
+          "facts": {
+            "operation": "collections",
+            "variables": {
+              "first": 50
+            },
+            "status": "OK",
+            "gatewayDecision": null,
+            "userErrors": [],
+            "resourceIds": [],
+            "responseSummary": {},
+            "data": {
+              "collections": {
+                "__typename": "CollectionConnection"
+              }
+            }
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: products was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "products",
+            "variables": {
+              "first": 50,
+              "query": "status:active"
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: product was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "product",
+            "variables": {
+              "id": "gid://shopify/Product/8e7c7538-223c-4867-837d-470745086119"
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: collections was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "collections",
+            "variables": {
+              "first": 50
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "retrieve_shopify_operations",
+          "ok": true,
+          "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+          "facts": {
+            "query": "Replenish the two out-of-stock variants or adjust their sellable and merchandising state until inventory is available. Two active variants are currently out of stock, meaning 8% of tracked active variants cannot fulfil demand if customers select them.",
+            "results": [
+              {
+                "id": "shopify.admin_graphql.2026-07.query.orders",
+                "operation": "orders",
+                "operationKind": "QUERY",
+                "domain": "orders",
+                "description": "Returns a list of orders placed in the store, including data such as order status, customer, and line item details.",
+                "requiredScopes": [
+                  "read_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "OrderSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "orders"
+                ],
+                "matchedTerms": [
+                  "customer",
+                  "order"
+                ],
+                "score": 21
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collection",
+                "operation": "collection",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a collection by its ID.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collections",
+                "operation": "collections",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a list of collections in a store.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "CollectionSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "collections"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.customer",
+                "operation": "customer",
+                "operationKind": "QUERY",
+                "domain": "customers",
+                "description": "Returns a Customer resource by ID.",
+                "requiredScopes": [
+                  "read_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "customer"
+                ],
+                "matchedTerms": [
+                  "customer"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.customers",
+                "operation": "customers",
+                "operationKind": "QUERY",
+                "domain": "customers",
+                "description": "Returns a list of customers in your Shopify store, including key information such as name, email, location, and purchase history.",
+                "requiredScopes": [
+                  "read_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "CustomerSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "customers"
+                ],
+                "matchedTerms": [
+                  "customer"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.fulfillment",
+                "operation": "fulfillment",
+                "operationKind": "QUERY",
+                "domain": "fulfillment",
+                "description": "Retrieves a Fulfillment by its ID.",
+                "requiredScopes": [],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "fulfillment"
+                ],
+                "matchedTerms": [
+                  "fulfillment"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.fulfillmentOrderLineItemsPreparedForPickup",
+                "operation": "fulfillmentOrderLineItemsPreparedForPickup",
+                "operationKind": "MUTATION",
+                "domain": "fulfillment",
+                "description": "Marks fulfillment order line items as ready for customer pickup.",
+                "requiredScopes": [
+                  "write_merchant_managed_fulfillment_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "input",
+                    "type": "FulfillmentOrderLineItemsPreparedForPickupInput!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "fulfillment",
+                  "order",
+                  "line",
+                  "items",
+                  "prepared",
+                  "for",
+                  "pickup"
+                ],
+                "matchedTerms": [
+                  "customer",
+                  "fulfillment",
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.metaobject",
+                "operation": "metaobject",
+                "operationKind": "QUERY",
+                "domain": "metaobjects",
+                "description": "Retrieves a single Metaobject by its global ID.",
+                "requiredScopes": [
+                  "read_metaobjects"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "metaobject"
+                ],
+                "matchedTerms": [
+                  "metaobject"
+                ],
+                "score": 19
+              }
+            ],
+            "serverBound": true
+          },
+          "error": null
+        },
+        {
+          "tool": "retrieve_shopify_operations",
+          "ok": true,
+          "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+          "facts": {
+            "query": "Enable customer account or identity capture at checkout and use the resulting customer records for post-purchase follow-up. None of the 50 stored orders is linked to a customer identity, so the merchant cannot measure repeat purchasing or target prior buyers for follow-up revenue.",
+            "results": [
+              {
+                "id": "shopify.admin_graphql.2026-07.query.customers",
+                "operation": "customers",
+                "operationKind": "QUERY",
+                "domain": "customers",
+                "description": "Returns a list of customers in your Shopify store, including key information such as name, email, location, and purchase history.",
+                "requiredScopes": [
+                  "read_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "CustomerSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "customers"
+                ],
+                "matchedTerms": [
+                  "customer",
+                  "purchase"
+                ],
+                "score": 21
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.orders",
+                "operation": "orders",
+                "operationKind": "QUERY",
+                "domain": "orders",
+                "description": "Returns a list of orders placed in the store, including data such as order status, customer, and line item details.",
+                "requiredScopes": [
+                  "read_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "OrderSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "orders"
+                ],
+                "matchedTerms": [
+                  "customer",
+                  "order"
+                ],
+                "score": 21
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.customer",
+                "operation": "customer",
+                "operationKind": "QUERY",
+                "domain": "customers",
+                "description": "Returns a Customer resource by ID.",
+                "requiredScopes": [
+                  "read_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "customer"
+                ],
+                "matchedTerms": [
+                  "customer"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.metaobject",
+                "operation": "metaobject",
+                "operationKind": "QUERY",
+                "domain": "metaobjects",
+                "description": "Retrieves a single Metaobject by its global ID.",
+                "requiredScopes": [
+                  "read_metaobjects"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "metaobject"
+                ],
+                "matchedTerms": [
+                  "metaobject"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.metaobjects",
+                "operation": "metaobjects",
+                "operationKind": "QUERY",
+                "domain": "metaobjects",
+                "description": "Returns a paginated list of Metaobject entries for a specific type.",
+                "requiredScopes": [
+                  "read_metaobjects"
+                ],
+                "arguments": [
+                  {
+                    "name": "type",
+                    "type": "String!",
+                    "required": true
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "metaobjects"
+                ],
+                "matchedTerms": [
+                  "metaobject"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.order",
+                "operation": "order",
+                "operationKind": "QUERY",
+                "domain": "orders",
+                "description": "The order query retrieves an order by its ID.",
+                "requiredScopes": [
+                  "read_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "order"
+                ],
+                "matchedTerms": [
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.customerAccountPages",
+                "operation": "customerAccountPages",
+                "operationKind": "QUERY",
+                "domain": "customers",
+                "description": "List of the shop's customer account pages.",
+                "requiredScopes": [
+                  "read_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "customer",
+                  "account",
+                  "pages"
+                ],
+                "matchedTerms": [
+                  "account",
+                  "customer"
+                ],
+                "score": 17
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.customerGenerateAccountActivationUrl",
+                "operation": "customerGenerateAccountActivationUrl",
+                "operationKind": "MUTATION",
+                "domain": "customers",
+                "description": "Generates a one-time activation URL for a Customer whose legacy customer account isn't yet enabled.",
+                "requiredScopes": [
+                  "write_customers"
+                ],
+                "arguments": [
+                  {
+                    "name": "customerId",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "customer",
+                  "generate",
+                  "account",
+                  "activation",
+                  "url"
+                ],
+                "matchedTerms": [
+                  "account",
+                  "customer"
+                ],
+                "score": 17
+              }
+            ],
+            "serverBound": true
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "customers completed through the Shopify gateway.",
+          "facts": {
+            "operation": "customers",
+            "variables": {
+              "first": 50
+            },
+            "status": "OK",
+            "gatewayDecision": null,
+            "userErrors": [],
+            "resourceIds": [],
+            "responseSummary": {},
+            "data": {
+              "customers": {
+                "__typename": "CustomerConnection"
+              }
+            }
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "customerAccountPages completed through the Shopify gateway.",
+          "facts": {
+            "operation": "customerAccountPages",
+            "variables": {
+              "first": 50
+            },
+            "status": "OK",
+            "gatewayDecision": null,
+            "userErrors": [],
+            "resourceIds": [],
+            "responseSummary": {},
+            "data": {
+              "customerAccountPages": {
+                "__typename": "CustomerAccountPageConnection"
+              }
+            }
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: customers was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "customers",
+            "variables": {
+              "first": 50
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "ALREADY_AVAILABLE: customerAccountPages was already read successfully in this run with the same arguments. Results are in your prior tool results — do not call again.",
+          "facts": {
+            "operation": "customerAccountPages",
+            "variables": {
+              "first": 50
+            },
+            "status": "ALREADY_AVAILABLE"
+          },
+          "error": null
+        },
+        {
+          "tool": "retrieve_shopify_operations",
+          "ok": true,
+          "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+          "facts": {
+            "query": "Refresh or reconcile inventory quantities from the merchant’s current stock records before making product availability changes. All 51 stored inventory levels are older than the 72-hour freshness threshold, with the inventory freshness p90 at 458.64 hours. Current stock availability therefore cannot be treated as a reliable basis for fulfilment or merchandising decisions.",
+            "results": [
+              {
+                "id": "shopify.admin_graphql.2026-07.query.taxonomy",
+                "operation": "taxonomy",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Access to Shopify's standardized product taxonomy for categorizing products.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [],
+                "tags": [
+                  "taxonomy"
+                ],
+                "matchedTerms": [
+                  "product",
+                  "taxonomy"
+                ],
+                "score": 21
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collection",
+                "operation": "collection",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a collection by its ID.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "collection"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.collections",
+                "operation": "collections",
+                "operationKind": "QUERY",
+                "domain": "collections",
+                "description": "Retrieves a list of collections in a store.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "CollectionSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "collections"
+                ],
+                "matchedTerms": [
+                  "collection"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.fulfillment",
+                "operation": "fulfillment",
+                "operationKind": "QUERY",
+                "domain": "fulfillment",
+                "description": "Retrieves a Fulfillment by its ID.",
+                "requiredScopes": [],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "fulfillment"
+                ],
+                "matchedTerms": [
+                  "fulfillment"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.fulfillmentOrderMerge",
+                "operation": "fulfillmentOrderMerge",
+                "operationKind": "MUTATION",
+                "domain": "fulfillment",
+                "description": "Merges a set or multiple sets of fulfillment orders together into one based on line item inputs and quantities.",
+                "requiredScopes": [
+                  "write_merchant_managed_fulfillment_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "fulfillmentOrderMergeInputs",
+                    "type": "[FulfillmentOrderMergeInput!]!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "fulfillment",
+                  "order",
+                  "merge"
+                ],
+                "matchedTerms": [
+                  "fulfillment",
+                  "order",
+                  "quantity"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.fulfillmentOrderMove",
+                "operation": "fulfillmentOrderMove",
+                "operationKind": "MUTATION",
+                "domain": "fulfillment",
+                "description": "Changes the location which is assigned to fulfill a number of unfulfilled fulfillment order line items.",
+                "requiredScopes": [
+                  "write_merchant_managed_fulfillment_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "newLocationId",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "fulfillmentOrderLineItems",
+                    "type": "[FulfillmentOrderLineItemInput!]",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "fulfillment",
+                  "order",
+                  "move"
+                ],
+                "matchedTerms": [
+                  "chang",
+                  "fulfillment",
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.fulfillmentOrders",
+                "operation": "fulfillmentOrders",
+                "operationKind": "QUERY",
+                "domain": "fulfillment",
+                "description": "The paginated list of all fulfillment orders.",
+                "requiredScopes": [
+                  "read_merchant_managed_fulfillment_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "includeClosed",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "FulfillmentOrderSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "fulfillment",
+                  "orders"
+                ],
+                "matchedTerms": [
+                  "all",
+                  "fulfillment",
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.fulfillmentOrderSplit",
+                "operation": "fulfillmentOrderSplit",
+                "operationKind": "MUTATION",
+                "domain": "fulfillment",
+                "description": "Splits FulfillmentOrder objects by moving the specified LineItem objects and quantities into a new fulfillment order.",
+                "requiredScopes": [
+                  "write_merchant_managed_fulfillment_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "fulfillmentOrderSplits",
+                    "type": "[FulfillmentOrderSplitInput!]!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "fulfillment",
+                  "order",
+                  "split"
+                ],
+                "matchedTerms": [
+                  "fulfillment",
+                  "order",
+                  "quantity"
+                ],
+                "score": 19
+              }
+            ],
+            "serverBound": true
+          },
+          "error": null
+        },
+        {
+          "tool": "retrieve_shopify_operations",
+          "ok": true,
+          "message": "Server-bound 8 Shopify operation stubs for this candidate.",
+          "facts": {
+            "query": "Map unlinked historical line items to the correct Shopify products or variants using order records and merchant-provided identification. Sixteen percent of stored order line items are not linked to a Shopify product or variant: only 63 of 75 line items have product and variant links. This prevents complete product-level revenue attribution across the 50-order history.",
+            "results": [
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.orderEditRemoveLineItemDiscount",
+                "operation": "orderEditRemoveLineItemDiscount",
+                "operationKind": "MUTATION",
+                "domain": "order_edits",
+                "description": "Removes a line item discount that was applied as part of an order edit.",
+                "requiredScopes": [
+                  "write_order_edits"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "discountApplicationId",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "order",
+                  "edit",
+                  "remove",
+                  "line",
+                  "item",
+                  "discount"
+                ],
+                "matchedTerms": [
+                  "item",
+                  "line",
+                  "order"
+                ],
+                "score": 23
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.orders",
+                "operation": "orders",
+                "operationKind": "QUERY",
+                "domain": "orders",
+                "description": "Returns a list of orders placed in the store, including data such as order status, customer, and line item details.",
+                "requiredScopes": [
+                  "read_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "OrderSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "orders"
+                ],
+                "matchedTerms": [
+                  "item",
+                  "line",
+                  "order"
+                ],
+                "score": 23
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.order",
+                "operation": "order",
+                "operationKind": "QUERY",
+                "domain": "orders",
+                "description": "The order query retrieves an order by its ID.",
+                "requiredScopes": [
+                  "read_orders"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "order"
+                ],
+                "matchedTerms": [
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.orderEditAddCustomItem",
+                "operation": "orderEditAddCustomItem",
+                "operationKind": "MUTATION",
+                "domain": "order_edits",
+                "description": "Adds a custom line item to an existing Order.",
+                "requiredScopes": [
+                  "write_order_edits"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "title",
+                    "type": "String!",
+                    "required": true
+                  },
+                  {
+                    "name": "locationId",
+                    "type": "ID",
+                    "required": false
+                  },
+                  {
+                    "name": "price",
+                    "type": "MoneyInput!",
+                    "required": true
+                  },
+                  {
+                    "name": "quantity",
+                    "type": "Int!",
+                    "required": true
+                  },
+                  {
+                    "name": "taxable",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "requiresShipping",
+                    "type": "Boolean",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "order",
+                  "edit",
+                  "add",
+                  "custom",
+                  "item"
+                ],
+                "matchedTerms": [
+                  "item",
+                  "line",
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.orderEditAddLineItemDiscount",
+                "operation": "orderEditAddLineItemDiscount",
+                "operationKind": "MUTATION",
+                "domain": "order_edits",
+                "description": "Applies a discount to a LineItem during an order edit session.",
+                "requiredScopes": [
+                  "write_order_edits"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "lineItemId",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "discount",
+                    "type": "OrderEditAppliedDiscountInput!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "order",
+                  "edit",
+                  "add",
+                  "line",
+                  "item",
+                  "discount"
+                ],
+                "matchedTerms": [
+                  "item",
+                  "line",
+                  "order"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.mutation.orderEditAddVariant",
+                "operation": "orderEditAddVariant",
+                "operationKind": "MUTATION",
+                "domain": "order_edits",
+                "description": "Adds a ProductVariant as a line item to an Order that's being edited.",
+                "requiredScopes": [
+                  "write_order_edits"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "variantId",
+                    "type": "ID!",
+                    "required": true
+                  },
+                  {
+                    "name": "locationId",
+                    "type": "ID",
+                    "required": false
+                  },
+                  {
+                    "name": "quantity",
+                    "type": "Int!",
+                    "required": true
+                  },
+                  {
+                    "name": "allowDuplicates",
+                    "type": "Boolean",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "order",
+                  "edit",
+                  "add",
+                  "variant"
+                ],
+                "matchedTerms": [
+                  "item",
+                  "line",
+                  "order",
+                  "variant"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.product",
+                "operation": "product",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Retrieves a product by its ID.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "id",
+                    "type": "ID!",
+                    "required": true
+                  }
+                ],
+                "tags": [
+                  "product"
+                ],
+                "matchedTerms": [
+                  "product"
+                ],
+                "score": 19
+              },
+              {
+                "id": "shopify.admin_graphql.2026-07.query.products",
+                "operation": "products",
+                "operationKind": "QUERY",
+                "domain": "products",
+                "description": "Retrieves a list of products in a store.",
+                "requiredScopes": [
+                  "read_products"
+                ],
+                "arguments": [
+                  {
+                    "name": "first",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "after",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "last",
+                    "type": "Int",
+                    "required": false
+                  },
+                  {
+                    "name": "before",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "reverse",
+                    "type": "Boolean",
+                    "required": false
+                  },
+                  {
+                    "name": "sortKey",
+                    "type": "ProductSortKeys",
+                    "required": false
+                  },
+                  {
+                    "name": "query",
+                    "type": "String",
+                    "required": false
+                  },
+                  {
+                    "name": "savedSearchId",
+                    "type": "ID",
+                    "required": false
+                  }
+                ],
+                "tags": [
+                  "products"
+                ],
+                "matchedTerms": [
+                  "product"
+                ],
+                "score": 19
+              }
+            ],
+            "serverBound": true
+          },
+          "error": null
+        },
+        {
+          "tool": "call_shopify_operation",
+          "ok": true,
+          "message": "orders completed through the Shopify gateway.",
+          "facts": {
+            "operation": "orders",
+            "variables": {
+              "first": 50
+            },
+            "status": "OK",
+            "gatewayDecision": null,
+            "userErrors": [],
+            "resourceIds": [],
+            "responseSummary": {},
+            "data": {
+              "orders": {
+                "__typename": "OrderConnection"
+              }
+            }
+          },
+          "error": null
+        }
+      ]
+    }
+  }
+}

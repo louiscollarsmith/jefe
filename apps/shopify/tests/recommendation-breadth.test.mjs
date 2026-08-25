@@ -10,7 +10,16 @@ import {
   OPPORTUNITY_COVERAGE_STATUS,
   validateInvestigation,
 } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
-import { SHOPIFY_AGENT_TOOL } from "../app/lib/shopify/agentic-runtime/tools.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
+
+// makeRetrieveResult/makeReadResult below build raw toolResults rows for direct
+// validateInvestigation/buildInvestigationState unit tests — generic bookkeeping functions over an
+// opaque toolResults array, not a dependency on the (removed) catalog dispatcher. Kept as literal
+// catalog-era tool-name strings for backward compatibility with those functions' defaults.
+const SHOPIFY_AGENT_TOOL = Object.freeze({
+  retrieveOperations: "retrieve_shopify_operations",
+  callOperation: "call_shopify_operation",
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -201,12 +210,15 @@ function fakeClient() {
   };
 }
 
-function retrieveCall(query = "products") {
-  return { tool: SHOPIFY_AGENT_TOOL.retrieveOperations, arguments: { query, limit: 5 } };
-}
-
+// Loop tests below exercise real dispatch through generateAgenticShopifyRecommendation (gateway
+// surface, always on) — these build real GraphQL documents, matched by fakeClient's
+// document.includes(...) checks above.
 function readCall(operation = "products") {
-  return { tool: SHOPIFY_AGENT_TOOL.callOperation, arguments: { operation, variables: { first: 5 }, purpose: "Read state." } };
+  const document =
+    operation === "collections"
+      ? "query { collections(first: 5) { edges { node { id title } } } }"
+      : "query { products(first: 5) { edges { node { id title } } } }";
+  return { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document } };
 }
 
 function coverageUpdate(familyId, status, reason = "Test reason.", evidenceRefs = []) {
@@ -568,7 +580,7 @@ test("Test 11: budget exhaustion with unresolved families returns INVESTIGATION_
       if (callIndex === 0) {
         return {
           status: "CONTINUE",
-          toolCalls: [retrieveCall(), readCall("products")],
+          toolCalls: [readCall("products")],
           opportunityCoverage: [],
         };
       }
@@ -654,7 +666,7 @@ test("Loop: BLOCKED with unresolved families triggers INSUFFICIENT_COVERAGE erro
       if (callIndex === 0) {
         return {
           status: "CONTINUE",
-          toolCalls: [retrieveCall(), readCall("products")],
+          toolCalls: [readCall("products")],
           opportunityCoverage: [],
         };
       }
@@ -701,7 +713,7 @@ test("Loop: successful recommendation includes opportunityCoverage in diagnostic
       if (callIndex === 0) {
         return {
           status: "CONTINUE",
-          toolCalls: [retrieveCall(), readCall("products")],
+          toolCalls: [readCall("products")],
           opportunityCoverage: [
             coverageUpdate("inventory", OPPORTUNITY_COVERAGE_STATUS.notApplicable, "0 OOS."),
           ],

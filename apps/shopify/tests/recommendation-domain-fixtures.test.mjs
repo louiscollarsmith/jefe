@@ -568,7 +568,7 @@ test("Domain fixture F (returns): pending return backlog investigated for real, 
           materialExpectedEffects: ["The pending return moves out of the review backlog."],
         }),
       },
-      { toolCalls: [retrieveCall("get the return for this order"), readCall("return", { id: "gid://shopify/Return/9001" })] },
+      { toolCalls: [retrieveCall("return status"), readCall("return", { id: "gid://shopify/Return/9001" })] },
     )(payload);
   });
 

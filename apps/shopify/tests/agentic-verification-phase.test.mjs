@@ -25,6 +25,7 @@ import {
 } from "../app/lib/shopify/agentic-runtime/semantic-action.server.js";
 import { buildActionWorkspace } from "../app/lib/actions/action-workspace.server.js";
 import { enqueueAgenticVerificationRetryJob, MAX_VERIFICATION_RETRIES } from "../app/lib/shopify/agentic-runtime/execution-job.server.js";
+import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000031";
 const shopId    = "00000000-0000-0000-0000-000000000032";
@@ -685,7 +686,7 @@ function fiveWriteProvider() {
     async generateStructuredJson({ prompt }) {
       const payload = JSON.parse(prompt);
       const completedWrites = (payload.toolResults ?? []).filter(
-        (r) => r.tool === "call_shopify_operation" && r.ok,
+        (r) => r.tool === SHOPIFY_GATEWAY_TOOL.executeMutation && r.ok,
       ).length;
       if (completedWrites < 5) {
         writeCount += 1;
@@ -693,9 +694,10 @@ function fiveWriteProvider() {
           json: {
             status: "CONTINUE",
             toolCalls: [{
-              tool: "call_shopify_operation",
+              tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
               arguments: {
-                operation: "productUpdate",
+                document:
+                  'mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id status } userErrors { field message } } }',
                 variables: { product: { id: `gid://shopify/Product/${writeCount}`, status: "DRAFT" } },
                 purpose: `Hide product ${writeCount}.`,
                 expectedEffect: "Set status to DRAFT.",
@@ -719,18 +721,17 @@ function verificationProvider() {
     async generateStructuredJson({ prompt }) {
       const payload = JSON.parse(prompt);
       const reads = (payload.toolResults ?? []).filter(
-        (r) => r.tool === "call_shopify_operation" && r.ok,
+        (r) => r.tool === SHOPIFY_GATEWAY_TOOL.query && r.ok,
       );
       if (!reads.length) {
         return {
           json: {
             status: "CONTINUE",
             toolCalls: [{
-              tool: "call_shopify_operation",
+              tool: SHOPIFY_GATEWAY_TOOL.query,
               arguments: {
-                operation: "product",
+                document: "query($id: ID!) { product(id: $id) { id status } }",
                 variables: { id: "gid://shopify/Product/1" },
-                purpose: "Verify product is DRAFT.",
               },
             }],
           },
@@ -769,9 +770,10 @@ function mutationAttemptVerificationProvider() {
           json: {
             status: "CONTINUE",
             toolCalls: [{
-              tool: "call_shopify_operation",
+              tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
               arguments: {
-                operation: "productUpdate",
+                document:
+                  'mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id status } userErrors { field message } } }',
                 variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
                 purpose: "Attempting mutation in verification (must be blocked).",
                 expectedEffect: "Should be rejected.",
@@ -783,17 +785,16 @@ function mutationAttemptVerificationProvider() {
       }
 
       // After blocked mutation, do a read
-      const reads = results.filter((r) => r.tool === "call_shopify_operation" && r.facts?.operation === "product" && r.ok);
+      const reads = results.filter((r) => r.tool === SHOPIFY_GATEWAY_TOOL.query && r.facts?.operation === "product" && r.ok);
       if (!reads.length) {
         return {
           json: {
             status: "CONTINUE",
             toolCalls: [{
-              tool: "call_shopify_operation",
+              tool: SHOPIFY_GATEWAY_TOOL.query,
               arguments: {
-                operation: "product",
+                document: "query($id: ID!) { product(id: $id) { id status } }",
                 variables: { id: "gid://shopify/Product/1" },
-                purpose: "Verify product status.",
               },
             }],
           },
@@ -819,18 +820,17 @@ function mismatchVerificationProvider() {
     async generateStructuredJson({ prompt }) {
       const payload = JSON.parse(prompt);
       const reads = (payload.toolResults ?? []).filter(
-        (r) => r.tool === "call_shopify_operation" && r.ok,
+        (r) => r.tool === SHOPIFY_GATEWAY_TOOL.query && r.ok,
       );
       if (!reads.length) {
         return {
           json: {
             status: "CONTINUE",
             toolCalls: [{
-              tool: "call_shopify_operation",
+              tool: SHOPIFY_GATEWAY_TOOL.query,
               arguments: {
-                operation: "product",
+                document: "query($id: ID!) { product(id: $id) { id status } }",
                 variables: { id: "gid://shopify/Product/1" },
-                purpose: "Verify product status.",
               },
             }],
           },

@@ -3,13 +3,13 @@
 import { Type } from "@google/genai";
 import { logger as baseLogger } from "../../observability/logger.server.js";
 import { getActionRevisionState } from "../api/gateway.server.js";
-import { retrieveShopifyApiOperations } from "../api/retrieval.server.js";
+import { getConfiguredShopifyApiVersion } from "../api-version.server.js";
 import {
-  SHOPIFY_AGENT_TOOL,
-  SHOPIFY_AGENT_TOOL_CALL_SCHEMA,
+  SHOPIFY_GATEWAY_TOOL,
+  SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA,
   publicShopifyToolResults,
-  runShopifyAgentTool,
-} from "./tools.server.js";
+  runShopifyGatewayTool,
+} from "../gateway/tools.server.js";
 import {
   buildExecutionSemanticAction,
   markActionExecutionOutcome,
@@ -32,7 +32,7 @@ export const AGENTIC_VERIFICATION_SCHEMA = {
       type: Type.STRING,
       enum: ["CONTINUE", "OUTCOME_ACHIEVED", "VERIFICATION_MISMATCH", "BLOCKED"],
     },
-    toolCalls: SHOPIFY_AGENT_TOOL_CALL_SCHEMA,
+    toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA,
     progressSummary: { type: Type.STRING, nullable: true },
     verification: {
       type: Type.OBJECT,
@@ -68,7 +68,6 @@ export const AGENTIC_VERIFICATION_SCHEMA = {
  *   acceptedRevision?: string | null;
  *   writeReceipts?: any[];
  *   grantedScopes?: string[];
- *   catalog?: import("../api/catalog.server.js").ShopifyApiCatalog;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  *   maxIterations?: number;
  * }} input
@@ -108,10 +107,17 @@ export async function runAgenticShopifyVerification(input) {
     });
   }
 
-  const initialTools = retrieveShopifyApiOperations(
-    `verify ${semanticAction.outcome} ${semanticAction.verificationPlan ?? ""}`,
-    { catalog: input.catalog, limit: 8, operationKind: "QUERY" },
-  );
+  const readToolName = SHOPIFY_GATEWAY_TOOL.query;
+  const dispatchShopifyTool = runShopifyGatewayTool;
+  const apiVersion = getConfiguredShopifyApiVersion();
+  const initialTools = [];
+  const verificationSchema = {
+    ...AGENTIC_VERIFICATION_SCHEMA,
+    properties: { ...AGENTIC_VERIFICATION_SCHEMA.properties, toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA },
+  };
+  // Verification only ever needs schema + query (never the mutation tools) — mirrors
+  // recommendation-agent's recommendationMode tool list exactly.
+  const allowedVerificationToolNames = [SHOPIFY_GATEWAY_TOOL.schema, SHOPIFY_GATEWAY_TOOL.query];
 
   /** @type {any[]} */
   const toolResults = [];
@@ -120,9 +126,10 @@ export async function runAgenticShopifyVerification(input) {
 
   for (let iteration = 0; iteration < (input.maxIterations ?? MAX_VERIFICATION_ITERATIONS); iteration += 1) {
     const llmResult = await provider.generateStructuredJson({
-      systemPrompt: buildVerificationSystemPrompt(),
+      systemPrompt: buildGatewayVerificationSystemPrompt(),
       prompt: JSON.stringify({
         promptVersion: AGENTIC_VERIFICATION_PROMPT_VERSION,
+        toolSurface: "gateway",
         iteration,
         acceptedActionRevision: acceptedRevision,
         acceptedAction: semanticAction,
@@ -130,17 +137,17 @@ export async function runAgenticShopifyVerification(input) {
         initiallyRetrievedShopifyReadTools: initialTools,
         toolResults: publicShopifyToolResults(toolResults),
       }),
-      schema: AGENTIC_VERIFICATION_SCHEMA,
+      schema: verificationSchema,
       maxInputTokens: 20000,
       maxOutputTokens: 2000,
       timeoutMs: 60_000,
     });
 
-    const turn = normalizeVerificationTurn(llmResult.json);
+    const turn = normalizeVerificationTurn(llmResult.json, allowedVerificationToolNames);
     turns.push({ ...turn, usage: llmResult.usage ?? null, durationMs: llmResult.durationMs ?? null });
 
     for (const toolCall of turn.toolCalls) {
-      const toolResult = await runShopifyAgentTool(
+      const toolResult = await dispatchShopifyTool(
         {
           prisma: input.prisma,
           client: input.client,
@@ -150,7 +157,7 @@ export async function runAgenticShopifyVerification(input) {
           actionId: input.actionId,
           acceptedActionRevision: acceptedRevision,
           grantedScopes: input.grantedScopes,
-          catalog: input.catalog,
+          apiVersion,
           logger,
           verificationMode: true,
         },
@@ -164,7 +171,7 @@ export async function runAgenticShopifyVerification(input) {
         tool: "verification_validation",
         ok: false,
         message: "CONTINUE requires a Shopify read tool call. Mutations are not available.",
-        facts: { requiredNextTools: [SHOPIFY_AGENT_TOOL.callOperation] },
+        facts: { requiredNextTools: [readToolName] },
         error: {
           code: "MISSING_VERIFICATION_TOOL_CALL",
           message: "Use a read operation to inspect Shopify state.",
@@ -244,14 +251,21 @@ export async function runAgenticShopifyVerification(input) {
   };
 }
 
-export function buildVerificationSystemPrompt() {
+/**
+ * Structurally read-only regardless of what this prompt says: only shopify_schema/shopify_query
+ * are ever offered here, and runShopifyGatewayTool additionally hard-denies the mutation tools
+ * under verificationMode even if requested. This is where Gateway is meant to help most: the
+ * verification query never has to have been predefined together with the executed mutation — the
+ * agent can ask what state actually proves the accepted outcome, then query exactly that.
+ */
+export function buildGatewayVerificationSystemPrompt() {
   return `You are Jefe verifying the outcome of a Shopify Action that has already been executed.
 
-The mutation phase is CLOSED. You have read-only tools. Any attempt to call a mutation operation will be rejected by the gateway — do not attempt writes.
+The mutation phase is CLOSED. You have two tools, both read-only:
+- shopify_schema — look up real Shopify Admin GraphQL fields. Optional — use it only if you're not sure a field exists.
+- shopify_query — run a read-only GraphQL document you write yourself, with variables. Any mutation-shaped document is structurally rejected before it reaches Shopify, regardless of what you ask for.
 
-You are given a summary of the mutations that were successfully issued. Your job is to read current Shopify state and determine whether the intended outcome is now in place.
-
-Use retrieve_shopify_operations to find appropriate read operations. Call them with appropriate variables to inspect the affected resources. When you have sufficient evidence that the outcome is achieved, return OUTCOME_ACHIEVED with a verification summary. If current Shopify state does not match the expected outcome, return VERIFICATION_MISMATCH and describe what is wrong. If you are unable to verify after reading, return BLOCKED.
+You are given a summary of the mutations that were successfully issued. Your job is to write and run exactly the query that proves whether the intended outcome is now in place — you decide what state actually proves the accepted outcome, not a predefined read paired with the mutation. When you have sufficient evidence that the outcome is achieved, return OUTCOME_ACHIEVED with a verification summary. If current Shopify state does not match the expected outcome, return VERIFICATION_MISMATCH and describe what is wrong. If you are unable to verify after reading, return BLOCKED.
 
 Do not attempt mutations. Do not claim OUTCOME_ACHIEVED without reading actual Shopify state.`;
 }
@@ -267,12 +281,16 @@ function formatReceiptsForPrompt(receipts) {
   }));
 }
 
-/** @param {unknown} raw */
-function normalizeVerificationTurn(raw) {
+/**
+ * @param {unknown} raw
+ * @param {string[]} allowedToolNames shopify_schema and shopify_query.
+ */
+function normalizeVerificationTurn(raw, allowedToolNames) {
   const object =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? /** @type {Record<string, any>} */ (raw)
       : {};
+  const allowed = new Set(allowedToolNames);
   const toolCalls = (Array.isArray(object.toolCalls) ? object.toolCalls : [])
     .map((/** @type {any} */ row) => ({
       tool: String(row?.tool ?? ""),
@@ -281,11 +299,7 @@ function normalizeVerificationTurn(raw) {
           ? stripNulls(row.arguments)
           : {},
     }))
-    .filter(
-      (row) =>
-        row.tool === SHOPIFY_AGENT_TOOL.retrieveOperations ||
-        row.tool === SHOPIFY_AGENT_TOOL.callOperation,
-    );
+    .filter((row) => allowed.has(row.tool));
   return {
     status: ["CONTINUE", "OUTCOME_ACHIEVED", "VERIFICATION_MISMATCH", "BLOCKED"].includes(
       String(object.status),
