@@ -984,8 +984,13 @@ const GATEWAY_ATTEMPTABLE_EXECUTION_STATUSES = new Set(["EXECUTABLE", "EXECUTABL
 export function buildOpportunitySurface(catalog, grantedScopes = [], options = {}) {
   const scopeSet = normalizeScopeSet(grantedScopes);
   const assumeAllScopesGranted = options.assumeAllScopesGranted === true;
-  const scopeSatisfied = (/** @type {string[]} */ requiredScopes) =>
-    assumeAllScopesGranted || requiredScopes.length === 0 || requiredScopes.every((s) => scopeSet.has(s));
+  // requiredScopes is deliberately [] when scopeConfidence isn't "high" (mutation-safety.server.js
+  // never fabricates a scope guess) — that emptiness must never read as "nothing needed," or a
+  // merchant holding zero scopes would see those domains reported "available." Only a truly
+  // confident empty-requirement (scopeConfidence "high") counts as satisfied on its own.
+  const scopeSatisfied = (/** @type {string[]} */ requiredScopes, /** @type {string} */ scopeConfidence) =>
+    assumeAllScopesGranted ||
+    (requiredScopes.length === 0 ? scopeConfidence === "high" : requiredScopes.every((s) => scopeSet.has(s)));
   /** @type {Map<string, import("../api/catalog.server.js").ShopifyApiOperationStub[]>} */
   const byDomain = new Map();
   for (const op of catalog?.operations ?? []) {
@@ -1001,7 +1006,7 @@ export function buildOpportunitySurface(catalog, grantedScopes = [], options = {
       operation: op.operation,
       description: op.description,
       executionStatus: op.execution?.status ?? "UNSUPPORTED_SEMANTICS",
-      scopeSatisfied: scopeSatisfied(op.requiredScopes ?? []),
+      scopeSatisfied: scopeSatisfied(op.requiredScopes ?? [], op.scopeConfidence),
     }));
     const executionSummary = {
       executable: 0,
@@ -1039,19 +1044,12 @@ function normalizeScopeSet(grantedScopes) {
 }
 
 /**
- * Distinguishes *why* a family isn't attemptable — a scope gap is a merchant-permission
- * question; UNSUPPORTED_SEMANTICS/PROHIBITED are safety-classification questions no scope
- * grant would change. Luna and the merchant-facing "grant this scope" path need to tell
- * these apart (task: "adding a scope cannot solve a missing capability implementation").
- * @param {{ executable: number; executableWithConfirmation: number; unsupportedSemantics: number; prohibited: number }} [summary]
+ * Every mutation in the catalog now has a generic execution path (mutation-safety.server.js,
+ * 2026-08-25) — the only reason left for a family to be non-attemptable is scope: the merchant
+ * hasn't granted (or Jefe hasn't confidently confirmed) the Shopify scope it needs.
  */
-function nonExecutableReason(summary) {
-  if (!summary) return "Required write scopes not granted.";
-  if (summary.executable + summary.executableWithConfirmation > 0) return "Required write scopes not granted.";
-  if (summary.prohibited > 0 && summary.unsupportedSemantics === 0) {
-    return "Every write in this family is permanently prohibited, independent of scope.";
-  }
-  return "No write in this family has a reviewed, structurally safe execution path yet — independent of scope.";
+function nonExecutableReason() {
+  return "Required write scopes not granted, or not confidently known yet — never assumed.";
 }
 
 /** @param {string} domain */
@@ -1075,7 +1073,7 @@ export function initCoverageLedger(opportunitySurface) {
     status: family.capabilityState === "available"
       ? OPPORTUNITY_COVERAGE_STATUS.unassessed
       : OPPORTUNITY_COVERAGE_STATUS.nonExecutable,
-    reason: family.capabilityState !== "available" ? nonExecutableReason(family.executionSummary) : null,
+    reason: family.capabilityState !== "available" ? nonExecutableReason() : null,
     evidenceRefs: [],
   }));
 }

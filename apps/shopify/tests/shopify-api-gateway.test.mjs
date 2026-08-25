@@ -12,6 +12,7 @@ import {
   executeShopifyOperation,
   SHOPIFY_GATEWAY_STATUS,
 } from "../app/lib/shopify/api/gateway.server.js";
+import { recordExplicitHighRiskConfirmation } from "../app/lib/shopify/api/explicit-confirmation.server.js";
 
 const merchantId = "00000000-0000-0000-0000-000000000001";
 const shopId = "00000000-0000-0000-0000-000000000002";
@@ -190,21 +191,23 @@ test("accepted-intent guard blocks pricing drift during collection execution", a
   assert.equal(result.gatewayDecision, "pricing_effect_outside_accepted_intent");
 });
 
-test("gateway permanently denies an explicitly prohibited operation regardless of scope or Action state", async () => {
-  const prisma = fakePrisma();
+test("a formerly-prohibited, system-critical operation is executable but needs a durable explicit confirmation, even with an accepted Action", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Uninstall Jefe.", materialExpectedEffects: ["Uninstall the app"], constraints: [] } } }) });
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
+    actionId,
+    acceptedActionRevision: "rev-1",
     operation: "appUninstall",
     variables: {},
     grantedScopes: [],
   });
   assert.equal(result.ok, false);
-  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedProhibitedOperation);
-  assert.equal(result.gatewayDecision, "operation_permanently_prohibited");
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation);
+  assert.equal(result.gatewayDecision, "explicit_high_risk_confirmation_missing");
 });
 
-test("gateway denies a mutation with no reviewed safety classification, even with the right scope", async () => {
-  const prisma = fakePrisma({ action: acceptedCollectionAction() });
+test("gateway requires explicit destructive confirmation for an unreviewed delete-shaped mutation, even with the right scope and an accepted Action", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Delete a customer record.", materialExpectedEffects: ["Delete a customer"], constraints: [] } } }) });
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({}, { grantedScopes: ["write_customers"] })),
     actionId,
@@ -214,21 +217,56 @@ test("gateway denies a mutation with no reviewed safety classification, even wit
     grantedScopes: ["write_customers"],
   });
   assert.equal(result.ok, false);
-  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics);
-  assert.equal(result.gatewayDecision, "unsupported_execution_semantics");
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation);
+  assert.equal(result.gatewayDecision, "explicit_high_risk_confirmation_missing");
 });
 
-test("gateway denies a mutation whose required scope is not confidently known — unknown never means safe", async () => {
-  const prisma = fakePrisma();
+test("a mutation whose required scope is not confidently known is still executable, but only at the system-critical confirmation tier — unknown never means frictionless", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Tag a product.", materialExpectedEffects: ["Add tags to a product"], constraints: [] } } }) });
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
+    actionId,
+    acceptedActionRevision: "rev-1",
     operation: "tagsAdd",
     variables: { id: "gid://shopify/Product/1", tags: ["evergreen"] },
     grantedScopes: ["write_products"],
   });
   assert.equal(result.ok, false);
-  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics);
-  assert.equal(result.gatewayDecision, "scope_requirement_unknown");
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation);
+  assert.equal(result.gatewayDecision, "explicit_high_risk_confirmation_missing");
+  assert.match(result.error, /system-critical/);
+});
+
+test("recording an explicit high-risk confirmation lets a destructive mutation proceed to the intent/idempotency gates", async () => {
+  const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Delete a customer record.", materialExpectedEffects: ["Delete a customer"], constraints: [] } } }) });
+  const variables = { input: { id: "gid://shopify/Customer/1" } };
+  await recordExplicitHighRiskConfirmation({
+    prisma,
+    merchantId,
+    shopId,
+    actionId,
+    acceptedActionRevision: "rev-1",
+    operation: "customerDelete",
+    variablesHash: hashForTest(variables),
+    interactionTier: "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED",
+    riskTier: "DESTRUCTIVE",
+    confirmedBy: "merchant:test",
+    confirmationText: "Yes, delete this customer.",
+  });
+  const client = fakeClient(
+    { customerDelete: { deletedCustomerId: "gid://shopify/Customer/1", userErrors: [] } },
+    { grantedScopes: ["write_customers"] },
+  );
+  const result = await executeShopifyOperation({
+    ...baseInput(prisma, client),
+    actionId,
+    acceptedActionRevision: "rev-1",
+    operation: "customerDelete",
+    variables,
+    grantedScopes: ["write_customers"],
+  });
+  assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.ok);
+  assert.equal(result.ok, true);
 });
 
 test("gateway returns Shopify userErrors as structured tool results", async () => {
@@ -375,6 +413,26 @@ function fakePrisma({ action = null, calls = [] } = {}) {
         action.shopId === where.shopId
           ? action
           : null,
+    },
+    merchantActionEvent: {
+      events: [],
+      create: async ({ data }) => {
+        const row = { id: `event-${prisma.merchantActionEvent.events.length + 1}`, createdAt: new Date(), ...data };
+        prisma.merchantActionEvent.events.push(row);
+        return row;
+      },
+      findFirst: async ({ where }) => {
+        const matches = prisma.merchantActionEvent.events.filter(
+          (row) =>
+            row.merchantId === where.merchantId &&
+            row.shopId === where.shopId &&
+            row.merchantActionId === where.merchantActionId &&
+            row.eventType === where.eventType &&
+            row.createdAt >= where.createdAt.gte,
+        );
+        matches.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        return matches[0] ?? null;
+      },
     },
     shopifyOperationCall: {
       findFirst: async ({ where }) => {

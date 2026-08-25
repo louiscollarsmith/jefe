@@ -88,10 +88,12 @@ test("gateway.server.js never references assumeAllScopesGranted", () => {
   assert.equal(source.includes("assumeAllScopesGranted"), false, "the gateway must have no concept of this flag");
 });
 
-test("a prohibited operation stays denied even with every real scope granted and an accepted Action", async () => {
+test("a system-critical operation still requires a durable explicit confirmation even with every real scope granted and an accepted Action", async () => {
   // Simulates the maximal real-world case the eval flag is not needed for: a merchant who
-  // genuinely granted every scope, with a fully accepted Action. Prohibition is permanent and
-  // independent of scope or approval — this is not what assumeAllScopesGranted is for, and
+  // genuinely granted every scope, with a fully accepted Action. As of the 2026-08-25
+  // execution-safety architecture change (CLAUDE.md), appUninstall is no longer permanently
+  // denied — but ordinary Action approval is still not enough for it: it needs its own durable,
+  // per-invocation explicit confirmation. This is not what assumeAllScopesGranted is for, and
   // this test intentionally never touches that flag.
   const prisma = {
     merchantAction: {
@@ -133,5 +135,5 @@ test("a prohibited operation stays denied even with every real scope granted and
     grantedScopes: ["read_products", "write_products"],
   });
   assert.equal(result.ok, false);
-  assert.equal(result.status, "DENIED_PROHIBITED_OPERATION");
+  assert.equal(result.status, "NEEDS_EXPLICIT_CONFIRMATION");
 });

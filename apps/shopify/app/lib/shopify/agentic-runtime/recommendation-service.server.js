@@ -153,6 +153,7 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
     resetAttempts: input.resetAttempts,
     payload: {
       runId: run.id,
+      sourceMode,
       snapshotHash: run.snapshotHash,
       baseSnapshotHash: prepared.snapshot.snapshotHash,
       retryOfRunId: previousRun?.id ?? null,
@@ -173,6 +174,10 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
  *   accessToken: string;
  *   scopes?: string[];
  *   runId?: string | null;
+ *   sourceMode?: string;
+ *   retryOfRunId?: string | null;
+ *   onboardingEpoch?: string | null;
+ *   attemptNumber?: number | null;
  *   fetchImpl?: typeof fetch;
  *   llmProvider?: import("../../llm/provider.server.js").LlmProvider;
  *   logger?: Pick<Console, "info" | "warn" | "error">;

@@ -55,11 +55,20 @@ const KNOWN_EXECUTION_STATUS = new Set([
 ]);
 const EXECUTABLE_STATUSES = new Set(["EXECUTABLE", "EXECUTABLE_WITH_CONFIRMATION"]);
 const KNOWN_CLASSIFICATION_SOURCES = new Set([
+  "EXPLICIT_KNOWN_DANGEROUS",
   "EXPLICIT_KNOWN_GOOD",
   "EXPLICIT_OPERATION_OVERRIDE",
   "REVIEWED_OPERATION_FAMILY_POLICY",
   "STRUCTURAL_NAME_INFERENCE",
 ]);
+// Interaction tiers that count as "frictionless" — no explicit, invocation-time merchant
+// confirmation beyond ordinary Action approval. A mutation reaching EXECUTABLE_WITH_CONFIRMATION
+// through unreviewed structural inference, or with anything less than "high" scope confidence,
+// must never land in this set (see the invariant below) — that would recreate the exact
+// "operation-name similarity alone grants production write authority" anti-pattern the 2026-08-24
+// classifier audit found and fixed, just with the deny-list removed instead of the confirmation
+// requirement.
+const FRICTIONLESS_INTERACTIONS = new Set(["AUTONOMOUS_ELIGIBLE", "APPROVAL_REQUIRED"]);
 
 /**
  * @param {{ catalogPath?: string | URL }} [input]
@@ -126,22 +135,38 @@ export function validateShopifyApiCatalog(value) {
     if (!execution || !KNOWN_EXECUTION_STATUS.has(execution.status)) {
       errors.push(`${op.id} execution.status must be one of ${[...KNOWN_EXECUTION_STATUS].join(", ")}`);
     }
-    // "Never let unknown mean safe" applies to writes: a mutation must have scopeConfidence
-    // "high" — not merely "inferred", and never "unknown" — to be EXECUTABLE or
-    // EXECUTABLE_WITH_CONFIRMATION (task Part 2.3: "inferred" powers discovery/reasoning/
-    // evaluation, never production write authority on its own). Reads are exempt — a query
-    // cannot mutate merchant state, and the gateway separately re-verifies real granted scopes
-    // live for every operation, read or write, before admitting it.
-    if (execution && op.operationKind === "MUTATION" && op.scopeConfidence !== "high" && EXECUTABLE_STATUSES.has(execution.status)) {
-      errors.push(`${op.id} is a mutation with scopeConfidence "${op.scopeConfidence}" (not "high") but execution.status is ${execution.status}`);
+    // "Never let unknown mean safe" applies to writes, but as of the 2026-08-25 execution-safety
+    // authorization (CLAUDE.md) it no longer means "block the mutation" — it means "never let
+    // anything less than 'high' scope confidence grant FRICTIONLESS execution." A mutation with
+    // scopeConfidence below "high" may still be EXECUTABLE_WITH_CONFIRMATION, but only at an
+    // explicit/system-critical confirmation tier. Reads are exempt — a query cannot mutate
+    // merchant state, and the gateway separately re-verifies real granted scopes live for every
+    // operation, read or write, before admitting it.
+    if (
+      execution &&
+      op.operationKind === "MUTATION" &&
+      op.scopeConfidence !== "high" &&
+      EXECUTABLE_STATUSES.has(execution.status) &&
+      FRICTIONLESS_INTERACTIONS.has(safety?.interaction)
+    ) {
+      errors.push(
+        `${op.id} is a mutation with scopeConfidence "${op.scopeConfidence}" (not "high") but interaction is ${safety?.interaction} — below-"high" scope confidence must always require explicit or system-critical confirmation`,
+      );
     }
-    // Task Part 1.3: operation-name similarity alone must never grant production write
-    // authority. STRUCTURAL_NAME_INFERENCE may only ever appear on non-executable results.
+    // Operation-name similarity alone must never grant *frictionless* production write
+    // authority. STRUCTURAL_NAME_INFERENCE may be EXECUTABLE_WITH_CONFIRMATION (the 2026-08-25
+    // authorization removed "unreviewed = unsupported forever"), but never at a frictionless
+    // interaction tier — it must always require explicit or system-critical confirmation.
     if (execution && EXECUTABLE_STATUSES.has(execution.status)) {
       if (!KNOWN_CLASSIFICATION_SOURCES.has(execution.classificationSource)) {
         errors.push(`${op.id} is ${execution.status} but has no valid execution.classificationSource`);
-      } else if (execution.classificationSource === "STRUCTURAL_NAME_INFERENCE") {
-        errors.push(`${op.id} is ${execution.status} sourced from STRUCTURAL_NAME_INFERENCE — name pattern alone must never grant execution authority`);
+      } else if (
+        execution.classificationSource === "STRUCTURAL_NAME_INFERENCE" &&
+        FRICTIONLESS_INTERACTIONS.has(safety?.interaction)
+      ) {
+        errors.push(
+          `${op.id} is ${execution.status} sourced from STRUCTURAL_NAME_INFERENCE with interaction ${safety?.interaction} — unreviewed operations must never reach a frictionless interaction tier`,
+        );
       }
     }
     for (const argument of Array.isArray(op.arguments) ? op.arguments : []) {

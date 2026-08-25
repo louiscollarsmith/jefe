@@ -7,6 +7,7 @@ import {
   validateShopifyOperationVariables,
 } from "./catalog.server.js";
 import { fetchGrantedShopifyScopes } from "../installed-scopes.server.js";
+import { hasExplicitHighRiskConfirmation } from "./explicit-confirmation.server.js";
 import { logger as defaultLogger } from "../../observability/logger.server.js";
 
 export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
@@ -14,17 +15,17 @@ export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
   userErrors: "SHOPIFY_USER_ERRORS",
   deniedOperationUnknown: "DENIED_OPERATION_UNKNOWN",
   deniedApiVersion: "DENIED_API_VERSION",
+  deniedInputMissing: "DENIED_INPUT_MISSING",
   deniedInvalidVariables: "DENIED_INVALID_VARIABLES",
   needsAuthorization: "NEEDS_SHOPIFY_AUTHORIZATION",
   deniedActionNotAccepted: "DENIED_ACTION_NOT_ACCEPTED",
   deniedAcceptedRevisionStale: "DENIED_ACCEPTED_REVISION_STALE",
   deniedIntent: "DENIED_OUTSIDE_ACCEPTED_INTENT",
   deniedBlastRadius: "DENIED_BLAST_RADIUS",
-  deniedProhibitedOperation: "DENIED_PROHIBITED_OPERATION",
-  deniedUnsafeSemantics: "DENIED_UNSAFE_SEMANTICS",
   needsExplicitConfirmation: "NEEDS_EXPLICIT_CONFIRMATION",
   idempotentReplay: "IDEMPOTENT_REPLAY",
   needsReconciliation: "NEEDS_RECONCILIATION",
+  deniedScopeNotGranted: "DENIED_SCOPE_NOT_GRANTED",
   providerError: "PROVIDER_ERROR",
 });
 
@@ -86,10 +87,15 @@ export async function executeShopifyOperation(input) {
   }
   const variableValidation = validateShopifyOperationVariables(stub, variables);
   if (!variableValidation.ok) {
+    // A required business value that's simply absent is a different, more actionable failure
+    // than a malformed/mistyped one — Luna (or whatever built the call) needs a required cost,
+    // date, or ID it doesn't have, not a broken execution path. Every error string from
+    // validateShopifyOperationVariables ends in "is required" exactly when it's this case.
+    const allMissing = variableValidation.errors.every((error) => /\bis required$/.test(error));
     return deny(input, {
       ...baseLedger,
-      status: SHOPIFY_GATEWAY_STATUS.deniedInvalidVariables,
-      gatewayDecision: "invalid_variables",
+      status: allMissing ? SHOPIFY_GATEWAY_STATUS.deniedInputMissing : SHOPIFY_GATEWAY_STATUS.deniedInvalidVariables,
+      gatewayDecision: allMissing ? "input_missing" : "invalid_variables",
       error: variableValidation.errors.join("; "),
     });
   }
@@ -114,14 +120,6 @@ export async function executeShopifyOperation(input) {
   }
   let action = null;
   if (stub.operationKind === "MUTATION") {
-    // Discovery/execution separation (see mutation-safety.server.js): a mutation may be fully
-    // visible to Luna's reasoning and still be structurally denied here, independent of scope
-    // or merchant approval. "Never let unknown mean safe" — an operation with no confidently
-    // known scope is treated as not-satisfied even though requiredScopes may be [].
-    const safetyDenial = evaluateOperationSafety(stub);
-    if (safetyDenial) {
-      return deny(input, { ...baseLedger, ...safetyDenial });
-    }
     const authorization = await verifyActionAuthorization(input);
     if (!authorization.ok) {
       return deny(input, {
@@ -132,6 +130,37 @@ export async function executeShopifyOperation(input) {
       });
     }
     action = authorization.action;
+    // Discovery/execution separation (see mutation-safety.server.js): a mutation may be fully
+    // visible to Luna's reasoning yet still require more than ordinary Action approval before
+    // it can run. EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED / SYSTEM_CRITICAL_CONFIRMATION_
+    // REQUIRED operations need a durable, per-invocation confirmation — recorded separately,
+    // immediately before execution — not just "the merchant accepted this Action."
+    const acceptedActionRevision = getActionRevisionState(action).acceptedActionRevision;
+    const interactionTier = stub.safety?.interaction;
+    if (
+      interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" ||
+      interactionTier === "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED"
+    ) {
+      const confirmed = await hasExplicitHighRiskConfirmation({
+        prisma: input.prisma,
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        // verifyActionAuthorization above already guarantees both are present and non-stale.
+        actionId: /** @type {string} */ (input.actionId),
+        acceptedActionRevision: /** @type {string} */ (acceptedActionRevision),
+        operation: stub.operation,
+        variablesHash: hashJson(variables),
+        interactionTier,
+      });
+      if (!confirmed) {
+        return deny(input, {
+          ...baseLedger,
+          status: SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation,
+          gatewayDecision: "explicit_high_risk_confirmation_missing",
+          error: `${stub.operation} requires an explicit ${interactionTier === "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED" ? "system-critical" : "high-risk"} confirmation beyond standard Action approval: ${stub.execution?.reason ?? ""}`,
+        });
+      }
+    }
     const intent = evaluateAcceptedIntent({
       action,
       stub,
@@ -193,26 +222,52 @@ export async function executeShopifyOperation(input) {
       actionRevision: action ? getActionRevisionState(action).acceptedActionRevision : null,
     };
   } catch (error) {
+    // Shopify's own operation-failure semantics are one of the generic mechanisms this gateway
+    // relies on for scope enforcement it can't verify ahead of time (task §17) — most concretely
+    // for operations whose scopeConfidence is "unknown" (requiredScopes is deliberately []
+    // there, never a fabricated guess). A live ACCESS_DENIED-shaped response is the real,
+    // authoritative signal; classify it distinctly rather than folding it into a generic
+    // provider error.
+    const isScopeDenied = isAccessDeniedError(error);
+    const status = isScopeDenied ? SHOPIFY_GATEWAY_STATUS.deniedScopeNotGranted : SHOPIFY_GATEWAY_STATUS.providerError;
     await recordShopifyOperationCall(input, {
       ...baseLedger,
-      status: SHOPIFY_GATEWAY_STATUS.providerError,
-      gatewayDecision: "provider_error",
+      status,
+      gatewayDecision: isScopeDenied ? "scope_not_granted" : "provider_error",
       error: error instanceof Error ? error.message : String(error),
     });
     log.warn("Shopify operation provider error", {
       shopDomain: input.shopDomain,
       operationName: stub.operation,
       operationKind: stub.operationKind,
+      scopeDenied: isScopeDenied,
       err: error,
     });
     return {
       ok: false,
-      status: SHOPIFY_GATEWAY_STATUS.providerError,
+      status,
       operation: stub.operation,
       operationKind: stub.operationKind,
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Best-effort detection of a Shopify GraphQL access-denied response, from either
+ * ShopifyAdminGraphqlError's `.errors` array (extensions.code) or a message that plainly says so.
+ * Never used to grant authorization — only to relabel a real denial from Shopify with a more
+ * actionable status than a generic PROVIDER_ERROR.
+ * @param {unknown} error
+ */
+function isAccessDeniedError(error) {
+  const codes = new Set(["ACCESS_DENIED", "FORBIDDEN"]);
+  const graphqlErrors = /** @type {any} */ (error)?.errors;
+  if (Array.isArray(graphqlErrors) && graphqlErrors.some((entry) => codes.has(entry?.extensions?.code))) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /access denied|not approved to access this|requires? the .* scope|forbidden/i.test(message);
 }
 
 export { fetchGrantedShopifyScopes };
@@ -423,61 +478,6 @@ export function getActionRevisionState(action) {
       ...agentic,
     },
   };
-}
-
-/**
- * The gateway's own enforcement of mutation-safety.server.js's execution.status — discovery
- * (Luna retrieving/reasoning about a stub) is unconditional; this is the one place execution
- * authority is actually decided. Returns a deny()-shaped partial, or null to proceed.
- * @param {import("./catalog.server.js").ShopifyApiOperationStub} stub
- */
-function evaluateOperationSafety(stub) {
-  const status = stub.execution?.status;
-  if (status === "PROHIBITED") {
-    return {
-      status: SHOPIFY_GATEWAY_STATUS.deniedProhibitedOperation,
-      gatewayDecision: "operation_permanently_prohibited",
-      error: `${stub.operation} is permanently prohibited: ${stub.execution?.reason ?? "no reason recorded"}`,
-    };
-  }
-  // A mutation whose scope requirement isn't confidently known must never pass because
-  // requiredScopes happens to be empty — "unknown" is a real state, never silently "satisfied."
-  if (stub.scopeConfidence === "unknown") {
-    return {
-      status: SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics,
-      gatewayDecision: "scope_requirement_unknown",
-      error: `${stub.operation}'s required Shopify scope is not confidently known; never let unknown mean safe.`,
-    };
-  }
-  if (status === "UNSUPPORTED_SEMANTICS") {
-    return {
-      status: SHOPIFY_GATEWAY_STATUS.deniedUnsafeSemantics,
-      gatewayDecision: "unsupported_execution_semantics",
-      error: `${stub.operation} has no reviewed, structurally safe execution path yet: ${stub.execution?.reason ?? ""}`,
-    };
-  }
-  // EXECUTABLE_WITH_CONFIRMATION on its own means "attemptable under the standard accepted-
-  // Action approval this gateway already enforces below" — not an extra gate. The extra gate
-  // is the *interaction* tier: EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED operations need more
-  // than ordinary Action approval, regardless of execution.status.
-  if (stub.safety?.interaction === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" && !hasExplicitHighRiskConfirmation()) {
-    return {
-      status: SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation,
-      gatewayDecision: "explicit_high_risk_confirmation_missing",
-      error: `${stub.operation} requires an explicit high-risk confirmation beyond standard Action approval: ${stub.execution?.reason ?? ""}`,
-    };
-  }
-  return null;
-}
-
-/**
- * Whether the accepted Action carries an explicit high-risk confirmation, distinct from
- * ordinary Action approval. No merchant-facing confirmation UI exists yet for this tier —
- * this fails closed (never confirmed) until that surface is built, which is the correct
- * default per "never let unknown mean safe."
- */
-function hasExplicitHighRiskConfirmation() {
-  return false;
 }
 
 /**
