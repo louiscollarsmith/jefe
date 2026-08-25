@@ -31,6 +31,12 @@ import {
   resolveCandidateFamily,
   classifyDispositionDetail,
 } from "./candidate-disposition-taxonomy.server.js";
+import {
+  CANDIDATE_CONSUMPTION_STATUS,
+  claimNextCandidate,
+  persistFreshOpportunitySet,
+  resolveCandidate as resolveOpportunityCandidate,
+} from "./opportunity-set.server.js";
 
 const log = baseLogger.child({ component: "agentic-shopify-candidate-pipeline" });
 
@@ -62,6 +68,11 @@ export const PROGRESS_STATE = Object.freeze({
   completed: "COMPLETED",
   noActionableOpportunity: "NO_ACTIONABLE_OPPORTUNITY",
   failed: "FAILED",
+  // Reuse-mode only (Part 12): makes it explicit in progressLog/diagnostics that this run did
+  // not run discovery — it resumed an existing 24h opportunity set — rather than looking like a
+  // second discovery silently happened.
+  discoveryReused: "DISCOVERY_REUSED",
+  opportunitySetExhausted: "OPPORTUNITY_SET_EXHAUSTED",
 });
 
 export const AGENTIC_CANDIDATE_DISCOVERY_SCHEMA = {
@@ -317,15 +328,6 @@ export function classifyCandidateOutcome(result) {
 function summarizeCandidateForDiagnostics(candidate, opportunitySurface = null) {
   const family = resolveCandidateFamily(candidate, opportunitySurface);
   const investigationDiagnostics = candidate.investigation?.diagnostics ?? null;
-  const isTerminalFailure = candidate.status !== CANDIDATE_STATUS.recommended && candidate.status !== CANDIDATE_STATUS.queued && candidate.status !== CANDIDATE_STATUS.investigating;
-  const dispositionDetail = isTerminalFailure
-    ? classifyDispositionDetail({
-        candidateStatus: candidate.status,
-        resultStatus: candidate.resultStatus ?? null,
-        reason: candidate.reason,
-        family,
-      })
-    : null;
   return {
     candidateId: candidate.candidateId,
     domain: family?.id ?? null,
@@ -340,8 +342,30 @@ function summarizeCandidateForDiagnostics(candidate, opportunitySurface = null) 
     status: candidate.status,
     reason: candidate.reason,
     resultStatus: candidate.resultStatus ?? null,
-    finalDisposition: candidate.status === CANDIDATE_STATUS.recommended ? "RECOMMENDED" : dispositionDetail,
+    finalDisposition: computeFinalDisposition(candidate, family),
   };
+}
+
+/**
+ * Deterministic final-disposition value for a candidate — "RECOMMENDED" for a winning
+ * candidate, the fine-grained root-cause taxonomy value for any terminal failure, or null while
+ * still queued/investigating. Shared by discover-mode diagnostics (summarizeCandidateForDiagnostics)
+ * and reuse-mode's per-candidate DB resolve (investigateFromOpportunitySet), so both persistence
+ * paths record identical disposition detail for the same candidate outcome.
+ * @param {{ status: string; resultStatus?: string | null; reason?: string | null }} candidate
+ * @param {any} family Already-resolved family (see resolveCandidateFamily), or null.
+ */
+function computeFinalDisposition(candidate, family) {
+  if (candidate.status === CANDIDATE_STATUS.recommended) return "RECOMMENDED";
+  const isTerminalFailure =
+    candidate.status !== CANDIDATE_STATUS.queued && candidate.status !== CANDIDATE_STATUS.investigating;
+  if (!isTerminalFailure) return null;
+  return classifyDispositionDetail({
+    candidateStatus: candidate.status,
+    resultStatus: candidate.resultStatus ?? null,
+    reason: candidate.reason,
+    family,
+  });
 }
 
 /**
@@ -404,8 +428,10 @@ function summarizeRejectionFunnel(candidateQueue, opportunitySurface) {
  *   perCandidateIterations?: number;
  *   maxTotalLlmCalls?: number;
  *   runId?: string | null;
+ *   sourceMode?: string | null;
  *   llmRetryWaitImpl?: (ms: number) => Promise<void>;
  *   assumeAllScopesGranted?: boolean;
+ *   opportunitySet?: { mode: "discover" } | { mode: "reuse"; id: string };
  * }} input
  */
 export async function runCandidateDrivenRecommendation(input) {
@@ -425,6 +451,17 @@ export async function runCandidateDrivenRecommendation(input) {
     progressLog.push({ state, at: new Date().toISOString(), ...detail });
   };
 
+  if (input.opportunitySet?.mode === "reuse") {
+    return investigateReusedOpportunitySet(input, {
+      provider,
+      context,
+      progressLog,
+      pushProgress,
+      assumeAllScopesGranted,
+      logger,
+    });
+  }
+
   const maxCandidatesFirstPass = input.maxCandidatesFirstPass ?? 8;
   const maxCandidatesRescue = input.maxCandidatesRescue ?? 4;
   const perCandidateIterations = input.perCandidateIterations ?? 4;
@@ -437,6 +474,9 @@ export async function runCandidateDrivenRecommendation(input) {
   const candidateQueue = [];
   /** @type {any[]} */
   const discoveryLog = [];
+  // 1-based rank of the last candidate this run actually investigated, for Part 12
+  // observability (endingCandidateRank). -1 means none were investigated yet.
+  let lastInvestigatedIndex = -1;
 
   const investigateCandidates = async (candidates, { rescue }) => {
     for (const candidate of candidates) {
@@ -449,6 +489,7 @@ export async function runCandidateDrivenRecommendation(input) {
         break;
       }
       candidate.status = CANDIDATE_STATUS.investigating;
+      lastInvestigatedIndex = candidateQueue.indexOf(candidate);
       pushProgress(PROGRESS_STATE.investigatingCandidate, { candidateId: candidate.candidateId, rescue });
       const result = await generateAgenticShopifyRecommendation({
         provider,
@@ -517,10 +558,13 @@ export async function runCandidateDrivenRecommendation(input) {
   if (firstPassOutcome.done) {
     pushProgress(PROGRESS_STATE.completed);
     return finalizeRecommendation(firstPassOutcome.result, {
+      input,
       candidateQueue,
       discoveryLog,
+      llmCallCount,
       progressLog,
       opportunitySurface: context.opportunitySurface,
+      lastInvestigatedIndex,
     });
   }
 
@@ -541,6 +585,7 @@ export async function runCandidateDrivenRecommendation(input) {
     const novelRescueCandidates = rescueDiscovery.candidates
       .filter((candidate) => isNovelCandidate(candidate, candidateQueue))
       .slice(0, maxCandidatesRescue);
+    for (const candidate of novelRescueCandidates) candidate.rescue = true;
     discoveryLog.push({ rescue: true, candidateCount: novelRescueCandidates.length, usage: rescueDiscovery.usage });
     candidateQueue.push(...novelRescueCandidates);
 
@@ -549,10 +594,13 @@ export async function runCandidateDrivenRecommendation(input) {
       if (rescueOutcome.done) {
         pushProgress(PROGRESS_STATE.completed);
         return finalizeRecommendation(rescueOutcome.result, {
+          input,
           candidateQueue,
           discoveryLog,
+          llmCallCount,
           progressLog,
           opportunitySurface: context.opportunitySurface,
+          lastInvestigatedIndex,
         });
       }
     }
@@ -567,6 +615,13 @@ export async function runCandidateDrivenRecommendation(input) {
     candidateCount: candidateQueue.length,
     llmCallCount,
   });
+  const opportunitySetId = await maybePersistFreshOpportunitySet(input, {
+    candidateQueue,
+    discoveryLog,
+    llmCallCount,
+    opportunitySurface: context.opportunitySurface,
+    logger,
+  });
   return {
     ok: true,
     status: "NO_ACTIONABLE_OPPORTUNITY",
@@ -580,14 +635,29 @@ export async function runCandidateDrivenRecommendation(input) {
       llmCallCount,
     },
     trace: { progressLog, toolResults: sharedToolResults },
+    opportunitySetId,
+    discoveryReused: false,
+    startingCandidateRank: candidateQueue.length ? 1 : null,
+    endingCandidateRank: lastInvestigatedIndex >= 0 ? lastInvestigatedIndex + 1 : null,
   };
 }
 
 /**
  * @param {any} result
- * @param {{ candidateQueue: any[]; discoveryLog: any[]; progressLog: any[]; opportunitySurface: any }} extras
+ * @param {{ input: any; candidateQueue: any[]; discoveryLog: any[]; llmCallCount: number; progressLog: any[]; opportunitySurface: any; lastInvestigatedIndex: number }} extras
  */
-function finalizeRecommendation(result, { candidateQueue, discoveryLog, progressLog, opportunitySurface }) {
+async function finalizeRecommendation(
+  result,
+  { input, candidateQueue, discoveryLog, llmCallCount, progressLog, opportunitySurface, lastInvestigatedIndex },
+) {
+  const opportunitySetId = await maybePersistFreshOpportunitySet(input, {
+    candidateQueue,
+    discoveryLog,
+    llmCallCount,
+    opportunitySurface,
+    logger: input.logger ?? log,
+  });
+  const recommendedCandidate = candidateQueue.find((candidate) => candidate.status === CANDIDATE_STATUS.recommended);
   return {
     ok: true,
     status: "RECOMMEND_ACTION",
@@ -603,5 +673,213 @@ function finalizeRecommendation(result, { candidateQueue, discoveryLog, progress
       turns: result.trace?.turns ?? [],
       toolResults: result.trace?.toolResults ?? [],
     },
+    opportunitySetId,
+    discoveryReused: false,
+    startingCandidateRank: candidateQueue.length ? 1 : null,
+    endingCandidateRank: lastInvestigatedIndex >= 0 ? lastInvestigatedIndex + 1 : null,
+    recommendedCandidateId: recommendedCandidate?.candidateId ?? null,
+  };
+}
+
+/**
+ * Maps one in-memory pipeline candidate (CANDIDATE_STATUS) onto the coarse durable consumption
+ * shape opportunity-set.server.js persists (Part 4: "keep it simple" — QUEUED/REJECTED/
+ * RECOMMENDED). The fine-grained root-cause taxonomy is preserved in `finalDisposition` so no
+ * diagnostic detail is lost relative to today's in-memory-only candidateQueue.
+ * @param {any} candidate
+ * @param {{ families: any[] } | null} opportunitySurface
+ */
+function mapCandidateForPersistence(candidate, opportunitySurface) {
+  const family = resolveCandidateFamily(candidate, opportunitySurface);
+  const status =
+    candidate.status === CANDIDATE_STATUS.recommended
+      ? CANDIDATE_CONSUMPTION_STATUS.recommended
+      : candidate.status === CANDIDATE_STATUS.queued
+        ? CANDIDATE_CONSUMPTION_STATUS.queued
+        : CANDIDATE_CONSUMPTION_STATUS.rejected;
+  return {
+    candidateId: candidate.candidateId,
+    diagnosedProblem: candidate.diagnosedProblem,
+    businessEvidenceRefs: candidate.businessEvidenceRefs ?? [],
+    mechanismHypothesis: candidate.mechanismHypothesis ?? null,
+    possibleIntervention: candidate.possibleIntervention ?? null,
+    relevantFamilyId: candidate.relevantFamilyId ?? null,
+    confidence: candidate.confidence ?? null,
+    rescue: Boolean(candidate.rescue),
+    status,
+    finalDisposition: computeFinalDisposition(candidate, family),
+    reason: candidate.reason ?? null,
+    investigated: candidate.status !== CANDIDATE_STATUS.queued,
+  };
+}
+
+/**
+ * Persists the fully-materialized candidateQueue as a new 24h MerchantOpportunitySet, once, at
+ * the end of a "discover" mode run (success or NO_ACTIONABLE_OPPORTUNITY) — never mid-run, since
+ * discover mode's in-memory loop is otherwise unchanged from before this feature existed.
+ * Best-effort: a persistence failure must never break recommendation delivery — it only means a
+ * future "Generate another proposal" re-discovers instead of resuming (safe fallback, not a
+ * correctness bug). Silently returns null (no persistence) if `input.prisma` doesn't expose the
+ * opportunity-set models — this keeps every existing discover-mode caller/test working unchanged.
+ * @param {any} input
+ * @param {{ candidateQueue: any[]; discoveryLog: any[]; llmCallCount: number; opportunitySurface: any; logger: Pick<Console, "warn"> }} extras
+ */
+async function maybePersistFreshOpportunitySet(input, { candidateQueue, discoveryLog, llmCallCount, opportunitySurface, logger }) {
+  if (typeof input.prisma?.merchantOpportunitySet?.create !== "function") return null;
+  try {
+    return await persistFreshOpportunitySet(input.prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      sourceRunId: input.runId ?? null,
+      sourceMode: input.sourceMode ?? null,
+      candidates: candidateQueue.map((candidate) => mapCandidateForPersistence(candidate, opportunitySurface)),
+      discoveryLog,
+      llmCallCount,
+    });
+  } catch (error) {
+    logger.warn("failed to persist fresh opportunity set", {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Reuse mode (Part 5-10): resumes an existing, unexpired MerchantOpportunitySet instead of
+ * running discovery. Claims one candidate at a time via opportunity-set.server.js's atomic
+ * claim (which owns concurrency/retry-safety — see claimNextCandidate), investigates it through
+ * the same per-candidate path discover mode uses, and stops at the first recommendation or when
+ * the set is exhausted (Part 10: no rediscovery, ever, while reuse mode is active).
+ * @param {any} input
+ * @param {{ provider: any; context: any; progressLog: any[]; pushProgress: Function; assumeAllScopesGranted: boolean; logger: Pick<Console, "info" | "warn" | "error"> }} deps
+ */
+async function investigateReusedOpportunitySet(input, { provider, context, progressLog, pushProgress, assumeAllScopesGranted, logger }) {
+  const opportunitySetId = input.opportunitySet.id;
+  const maxTotalLlmCalls = input.maxTotalLlmCalls ?? 40;
+  const perCandidateIterations = input.perCandidateIterations ?? 4;
+  let llmCallCount = 0;
+  /** @type {any[]} */
+  let sharedToolResults = [];
+  /** @type {number | null} */
+  let startingCandidateRank = null;
+  /** @type {number | null} */
+  let endingCandidateRank = null;
+
+  pushProgress(PROGRESS_STATE.discoveryReused, { opportunitySetId });
+
+  while (llmCallCount < maxTotalLlmCalls) {
+    const claimed = await claimNextCandidate(input.prisma, { opportunitySetId, runId: input.runId });
+    if (!claimed) {
+      pushProgress(PROGRESS_STATE.opportunitySetExhausted, { opportunitySetId });
+      return {
+        ok: true,
+        status: "OPPORTUNITY_SET_EXHAUSTED",
+        blocker: "Every candidate in this 24h opportunity set has already been investigated.",
+        diagnostics: { discoveryLog: [], llmCallCount },
+        trace: { progressLog, toolResults: sharedToolResults },
+        opportunitySetId,
+        discoveryReused: true,
+        startingCandidateRank,
+        endingCandidateRank,
+      };
+    }
+    if (startingCandidateRank === null) startingCandidateRank = claimed.rank;
+    endingCandidateRank = claimed.rank;
+
+    pushProgress(PROGRESS_STATE.investigatingCandidate, { candidateId: claimed.candidateId, rescue: claimed.rescue });
+    const result = await generateAgenticShopifyRecommendation({
+      provider,
+      prisma: input.prisma,
+      client: input.client,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      shopDomain: input.shopDomain,
+      grantedScopes: input.grantedScopes,
+      catalog: input.catalog,
+      snapshot: input.snapshot,
+      previousAttempt: input.previousAttempt ?? null,
+      logger,
+      runId: input.runId ?? null,
+      llmRetryWaitImpl: input.llmRetryWaitImpl,
+      assumeAllScopesGranted,
+      maxIterations: perCandidateIterations,
+      focusCandidate: {
+        candidateId: claimed.candidateId,
+        diagnosedProblem: claimed.diagnosedProblem,
+        businessEvidenceRefs: claimed.businessEvidenceRefs,
+        mechanismHypothesis: claimed.mechanismHypothesis,
+        possibleIntervention: claimed.possibleIntervention,
+        relevantFamilyId: claimed.relevantFamilyId,
+      },
+      initialToolResults: sharedToolResults,
+    });
+    llmCallCount += Array.isArray(result.trace?.turns) ? Math.max(1, result.trace.turns.length) : 1;
+    if (Array.isArray(result.trace?.toolResults)) sharedToolResults = result.trace.toolResults;
+
+    if (result.status === "RECOMMEND_ACTION") {
+      pushProgress(PROGRESS_STATE.validatingRecommendation, { candidateId: claimed.candidateId });
+      await resolveOpportunityCandidate(input.prisma, {
+        id: claimed.id,
+        status: CANDIDATE_CONSUMPTION_STATUS.recommended,
+        reason: "Verified against current Shopify state.",
+      });
+      pushProgress(PROGRESS_STATE.completed);
+      return {
+        ok: true,
+        status: "RECOMMEND_ACTION",
+        recommendation: result.recommendation,
+        diagnostics: { ...(result.diagnostics ?? {}), discoveryLog: [], llmCallCount },
+        trace: {
+          progressLog,
+          turns: result.trace?.turns ?? [],
+          toolResults: result.trace?.toolResults ?? [],
+        },
+        opportunitySetId,
+        discoveryReused: true,
+        startingCandidateRank,
+        endingCandidateRank,
+        recommendedCandidateId: claimed.candidateId,
+      };
+    }
+
+    const candidateStatus = classifyCandidateOutcome(result);
+    const reason = result.blocker ?? candidateStatus;
+    const family = resolveCandidateFamily(
+      { relevantFamilyId: claimed.relevantFamilyId, investigation: { diagnostics: result.diagnostics ?? null } },
+      context.opportunitySurface,
+    );
+    const finalDisposition = computeFinalDisposition({ status: candidateStatus, resultStatus: result.status, reason }, family);
+    await resolveOpportunityCandidate(input.prisma, {
+      id: claimed.id,
+      status: CANDIDATE_CONSUMPTION_STATUS.rejected,
+      finalDisposition,
+      reason,
+    });
+    pushProgress(PROGRESS_STATE.tryingNextCandidate, {
+      candidateId: claimed.candidateId,
+      disposition: candidateStatus,
+      reason,
+    });
+  }
+
+  logger.warn("reused-opportunity-set investigation hit total LLM call ceiling", {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    opportunitySetId,
+    llmCallCount,
+  });
+  pushProgress(PROGRESS_STATE.noActionableOpportunity);
+  return {
+    ok: true,
+    status: "NO_ACTIONABLE_OPPORTUNITY",
+    blocker: "Reached the per-run investigation budget before exhausting the opportunity set.",
+    diagnostics: { discoveryLog: [], llmCallCount },
+    trace: { progressLog, toolResults: sharedToolResults },
+    opportunitySetId,
+    discoveryReused: true,
+    startingCandidateRank,
+    endingCandidateRank,
   };
 }

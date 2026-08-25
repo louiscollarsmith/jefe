@@ -22,6 +22,12 @@ import {
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { runCandidateDrivenRecommendation } from "./candidate-pipeline.server.js";
 import {
+  loadActiveOpportunitySet,
+  isDefinitelyExhausted,
+  loadOpportunitySetSummary,
+  attachRecommendationToCandidate,
+} from "./opportunity-set.server.js";
+import {
   AGENTIC_RECOMMENDATION_JOB_TYPE,
   AGENTIC_RECOMMENDATION_SCHEMA_VERSION,
   AGENTIC_RECOMMENDATION_SNAPSHOT_VERSION,
@@ -100,6 +106,25 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
         ],
       })
     : null;
+
+  // "Generate (another) proposal" — resetAttempts is the only trigger for this — reuses the
+  // 24h opportunity set instead of rediscovering (docs/ops/recommendation-opportunity-set-24h/).
+  // A resetAttempts:false call (passive onboarding progression) is unaffected: it keeps its
+  // existing snapshotHash-dedup behavior and never touches the opportunity set.
+  /** @type {{ mode: "discover" } | { mode: "reuse"; id: string } | null} */
+  let opportunitySet = null;
+  if (input.resetAttempts) {
+    const activeSet = await loadActiveOpportunitySet(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+    });
+    if (activeSet && isDefinitelyExhausted(activeSet)) {
+      // Part 10: exhaustion never silently triggers rediscovery — not even a wasted run/job.
+      return { status: "opportunity_set_exhausted", opportunitySetId: activeSet.id };
+    }
+    opportunitySet = activeSet ? { mode: "reuse", id: activeSet.id } : { mode: "discover" };
+  }
+
   const [onboardingEpoch, attemptNumber] = await Promise.all([
     loadOnboardingEpoch(prisma, input),
     nextAgenticRecommendationAttemptNumber(prisma, input),
@@ -111,6 +136,7 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
     retryOfRunId: previousRun?.id ?? null,
     onboardingEpoch,
     attemptNumber,
+    opportunitySet,
   });
   if (prepared.status !== "ready") return prepared;
   if (!prepared.run) throw new Error("Agentic recommendation run was not prepared.");
@@ -160,6 +186,8 @@ export async function ensureAgenticRecommendationQueued(prisma, input) {
       onboardingEpoch,
       attemptNumber,
       reason: previousRun ? "merchant_plan_retry" : "merchant_goals_ready",
+      opportunitySetMode: opportunitySet?.mode ?? null,
+      opportunitySetId: opportunitySet?.mode === "reuse" ? opportunitySet.id : null,
     },
   });
   return { status: "queued", run: queuedRun, snapshot: prepared.snapshot };
@@ -254,11 +282,66 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       previousAttempt: prepared.previousAttempt ?? null,
       logger,
       runId: run.id,
+      sourceMode: run.sourceMode,
+      opportunitySet: prepared.opportunitySet ?? { mode: "discover" },
       maxCandidatesFirstPass: input.maxCandidatesFirstPass,
       maxCandidatesRescue: input.maxCandidatesRescue,
       perCandidateIterations: input.perCandidateIterations,
       maxTotalLlmCalls: input.maxTotalLlmCalls,
     });
+    // Part 12 observability: threaded into every persisted result.* below so "why did this
+    // proposal start at candidate #4?" is answerable from result.diagnostics.opportunitySet
+    // without reading code, for every outcome (recommended, no-action, or exhausted).
+    const opportunitySetSummary = result.opportunitySetId
+      ? await loadOpportunitySetSummary(prisma, result.opportunitySetId).catch(() => null)
+      : null;
+    const opportunityMetadata = {
+      opportunitySetId: result.opportunitySetId ?? null,
+      opportunitySetCreatedAt: opportunitySetSummary?.createdAt ?? null,
+      opportunitySetExpiresAt: opportunitySetSummary?.expiresAt ?? null,
+      discoveryReused: result.discoveryReused === true,
+      startingCandidateRank: result.startingCandidateRank ?? null,
+      endingCandidateRank: result.endingCandidateRank ?? null,
+    };
+    const withOpportunityDiagnostics = (diagnostics) => ({
+      ...(diagnostics ?? {}),
+      opportunitySet: opportunitySetSummary,
+    });
+    if (result.status === "OPPORTUNITY_SET_EXHAUSTED") {
+      // Part 10: exhaustion is a distinct terminal outcome, never a silent rediscovery.
+      const terminalStatus = "opportunity_set_exhausted";
+      const runMetadata = agenticRunMetadata(run);
+      await prisma.merchantPlanRun.update({
+        where: { id: run.id },
+        data: {
+          status: terminalStatus,
+          completedAt: new Date(),
+          safeErrorCode: null,
+          lastError: null,
+          result: {
+            runtime: "agentic_shopify",
+            ...runMetadata,
+            ...opportunityMetadata,
+            status: "OPPORTUNITY_SET_EXHAUSTED",
+            blocker: result.blocker ?? null,
+            diagnostics: withOpportunityDiagnostics(result.diagnostics),
+          },
+        },
+      });
+      logger.info("Agentic recommendation: opportunity set exhausted", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        runId: run.id,
+        opportunitySetId: result.opportunitySetId,
+      });
+      return {
+        status: terminalStatus,
+        runId: run.id,
+        opportunitySetId: result.opportunitySetId ?? null,
+        diagnostics: withOpportunityDiagnostics(result.diagnostics),
+        trace: result.trace ?? null,
+      };
+    }
     if (result.ok && result.status === "RECOMMEND_ACTION") {
       // Server-side novelty check: verify the candidate doesn't structurally
       // duplicate an existing proposed or accepted (in-progress) Action.
@@ -285,10 +368,11 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
             result: {
               runtime: "agentic_shopify",
               ...runMetadata,
+              ...opportunityMetadata,
               status: "NO_ACTIONABLE_OPPORTUNITY",
               blocker: novelty.reason ?? "duplicate_action",
               noveltyCheck: novelty,
-              diagnostics: result.diagnostics ?? {},
+              diagnostics: withOpportunityDiagnostics(result.diagnostics),
             },
           },
         });
@@ -303,7 +387,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
           status: terminalStatus,
           runId: run.id,
           blocker: novelty.reason ?? "duplicate_action",
-          diagnostics: result.diagnostics ?? {},
+          diagnostics: withOpportunityDiagnostics(result.diagnostics),
           trace: result.trace ?? null,
         };
       }
@@ -312,8 +396,11 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
         shopId: input.shopId,
         run,
         recommendation: result.recommendation,
-        diagnostics: result.diagnostics,
+        diagnostics: withOpportunityDiagnostics(result.diagnostics),
         trace: result.trace,
+        opportunitySetId: result.opportunitySetId ?? null,
+        recommendedCandidateId: result.recommendedCandidateId ?? null,
+        opportunityMetadata,
       });
       logger.info("Agentic recommendation generated", {
         merchantId: input.merchantId,
@@ -328,7 +415,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
         recommendationId: persisted.recommendation.id,
         actionId: persisted.action.id,
         recommendation: persisted.recommendation,
-        diagnostics: result.diagnostics ?? {},
+        diagnostics: withOpportunityDiagnostics(result.diagnostics),
         trace: result.trace ?? null,
       };
     }
@@ -355,9 +442,10 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
         result: {
           runtime: "agentic_shopify",
           ...runMetadata,
+          ...opportunityMetadata,
           status: result.status,
           blocker: result.blocker ?? null,
-          diagnostics: result.diagnostics ?? {},
+          diagnostics: withOpportunityDiagnostics(result.diagnostics),
           trace: safeTrace(result.trace),
         },
       },
@@ -366,7 +454,7 @@ export async function runAgenticRecommendationInvestigation(prisma, input) {
       status: terminalStatus,
       runId: run.id,
       blocker: result.blocker ?? null,
-      diagnostics: result.diagnostics ?? {},
+      diagnostics: withOpportunityDiagnostics(result.diagnostics),
       trace: result.trace ?? null,
     };
   } catch (error) {
@@ -403,11 +491,32 @@ export async function markAgenticRecommendationJobFailed(prisma, input) {
   });
 }
 
-/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; sourceMode?: string; forceFreshRun?: boolean; retryOfRunId?: string | null; onboardingEpoch?: string | null; attemptNumber?: number | null }} input */
+/**
+ * Reconstructs the `{ mode, id? }` opportunity-set shape stored on a run's `result` JSON at
+ * creation time (see prepareAgenticRecommendationRun) — the single source of truth for whether
+ * an execution of this run should discover or reuse, read back identically at queue time
+ * (ensureAgenticRecommendationQueued's own upsert path) and at worker execution time
+ * (loadPreparedAgenticRecommendationRun).
+ * @param {Record<string, any>} result
+ */
+function deriveOpportunitySetFromResult(result) {
+  const mode = typeof result.opportunitySetMode === "string" ? result.opportunitySetMode : null;
+  if (mode === "reuse" && typeof result.opportunitySetId === "string") {
+    return { mode: "reuse", id: result.opportunitySetId };
+  }
+  if (mode === "discover") return { mode: "discover" };
+  return null;
+}
+
+/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; sourceMode?: string; forceFreshRun?: boolean; retryOfRunId?: string | null; onboardingEpoch?: string | null; attemptNumber?: number | null; opportunitySet?: { mode: "discover" } | { mode: "reuse"; id: string } | null }} input */
 async function prepareAgenticRecommendationRun(prisma, input) {
   const sourceMode = input.sourceMode ?? AGENTIC_RECOMMENDATION_SOURCE_MODE;
   const snapshot = await buildAgenticRecommendationSnapshot(prisma, input);
   if (!snapshot.hasGoals) return { status: "missing_completed_goals", snapshot };
+  const opportunitySetFields = {
+    opportunitySetMode: input.opportunitySet?.mode ?? null,
+    opportunitySetId: input.opportunitySet?.mode === "reuse" ? input.opportunitySet.id : null,
+  };
   if (input.forceFreshRun) {
     const run = await prisma.merchantPlanRun.create({
       data: {
@@ -431,6 +540,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
           onboardingEpoch: input.onboardingEpoch ?? null,
           attemptNumber: input.attemptNumber ?? null,
           attemptReason: "explicit_retry",
+          ...opportunitySetFields,
         },
       },
     });
@@ -438,6 +548,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
       status: "ready",
       run,
       snapshot,
+      opportunitySet: input.opportunitySet ?? null,
       previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -472,6 +583,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
         candidateCount: snapshot.beliefIds.length,
         onboardingEpoch: input.onboardingEpoch ?? null,
         attemptNumber: input.attemptNumber ?? null,
+        ...opportunitySetFields,
       },
     },
     update: {
@@ -481,7 +593,7 @@ async function prepareAgenticRecommendationRun(prisma, input) {
       sourceMode,
     },
   });
-  return { status: "ready", run, snapshot };
+  return { status: "ready", run, snapshot, opportunitySet: deriveOpportunitySetFromResult(jsonObject(run.result)) };
 }
 
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; runId?: string | null }} input */
@@ -517,6 +629,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
       status: "ready",
       run,
       snapshot,
+      opportunitySet: deriveOpportunitySetFromResult(result),
       previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -532,6 +645,7 @@ async function loadPreparedAgenticRecommendationRun(prisma, input) {
     status: "ready",
     run,
     snapshot,
+    opportunitySet: deriveOpportunitySetFromResult(result),
     previousAttempt: await loadPreviousAttemptDiagnostics(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
@@ -730,7 +844,7 @@ export async function buildAgenticRecommendationSnapshot(prisma, input) {
   };
 }
 
-/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; run: any; recommendation: any; diagnostics?: any; trace?: any }} input */
+/** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; run: any; recommendation: any; diagnostics?: any; trace?: any; opportunitySetId?: string | null; recommendedCandidateId?: string | null; opportunityMetadata?: Record<string, any> }} input */
 async function persistAgenticRecommendation(prisma, input) {
   return prisma.$transaction(async (/** @type {any} */ tx) => {
     await supersedeAllProposedRecommendations(tx, {
@@ -877,6 +991,16 @@ async function persistAgenticRecommendation(prisma, input) {
         },
       },
     });
+    if (input.opportunitySetId && input.recommendedCandidateId) {
+      // Part 4: "recommendation ID if it produced one" — links the winning candidate row back
+      // to the recommendation it produced. Best-effort: this is an observability link, not a
+      // correctness dependency, so a failure here must not roll back the recommendation itself.
+      await attachRecommendationToCandidate(tx, {
+        opportunitySetId: input.opportunitySetId,
+        candidateId: input.recommendedCandidateId,
+        recommendationId: persistedRecommendation.id,
+      }).catch(() => null);
+    }
     await tx.merchantPlanRun.update({
       where: { id: input.run.id },
       data: {
@@ -889,6 +1013,7 @@ async function persistAgenticRecommendation(prisma, input) {
         result: {
           runtime: "agentic_shopify",
           ...runMetadata,
+          ...(input.opportunityMetadata ?? {}),
           status: "RECOMMEND_ACTION",
           recommendationId: persistedRecommendation.id,
           actionId: action.id,

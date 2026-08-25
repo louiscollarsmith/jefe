@@ -110,6 +110,7 @@ export async function isHomeProposalGenerationInFlight(prisma, { merchantId, sho
 /** Terminal run statuses that end generation without a proposed action. */
 const TERMINAL_NON_PROPOSAL_STATUSES = [
   "no_actionable_opportunity",
+  "opportunity_set_exhausted",
   PLAN_RUN_STATUS.failed,
   PLAN_RUN_STATUS.insufficientData,
   PLAN_RUN_STATUS.modelDisabled,
