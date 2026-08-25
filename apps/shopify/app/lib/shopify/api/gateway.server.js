@@ -8,6 +8,8 @@ import {
 } from "./catalog.server.js";
 import { fetchGrantedShopifyScopes } from "../installed-scopes.server.js";
 import { hasExplicitHighRiskConfirmation } from "./explicit-confirmation.server.js";
+import { computeShopifyBlastRadius, evaluateBlastRadiusCap } from "./blast-radius.server.js";
+import { buildGenericShopifyOperationPreview } from "./preview.server.js";
 import { logger as defaultLogger } from "../../observability/logger.server.js";
 
 export const SHOPIFY_GATEWAY_STATUS = Object.freeze({
@@ -119,6 +121,8 @@ export async function executeShopifyOperation(input) {
     });
   }
   let action = null;
+  let blastRadius = null;
+  let preview = null;
   if (stub.operationKind === "MUTATION") {
     const authorization = await verifyActionAuthorization(input);
     if (!authorization.ok) {
@@ -178,6 +182,23 @@ export async function executeShopifyOperation(input) {
         responseSummary: intent.summary,
       });
     }
+    // Generic dimensional blast-radius engine (task §11) — a second, richer measurement beyond
+    // evaluateAcceptedIntent's flat resource-count cap: money/quantity/customer/order/public-
+    // surface dimensions, capped per risk tier (tighter for DESTRUCTIVE/PLATFORM_CRITICAL). Both
+    // dimensions and the deterministic preview (task §7) are attached to the ledger regardless
+    // of outcome, so a denial or a success both carry the same auditable "what would this do."
+    blastRadius = computeShopifyBlastRadius({ stub, variables });
+    preview = buildGenericShopifyOperationPreview({ stub, variables });
+    const blastRadiusCap = evaluateBlastRadiusCap(blastRadius, stub.safety?.riskTier);
+    if (!blastRadiusCap.ok) {
+      return deny(input, {
+        ...baseLedger,
+        status: SHOPIFY_GATEWAY_STATUS.deniedBlastRadius,
+        gatewayDecision: "dimensional_blast_radius_exceeded",
+        error: `${stub.operation} exceeds the ${stub.safety?.riskTier} blast-radius cap on: ${blastRadiusCap.exceeded.map((e) => `${e.dimension}=${e.value}>${e.cap}`).join(", ")}`,
+        responseSummary: { blastRadius, exceeded: blastRadiusCap.exceeded },
+      });
+    }
     const idempotency = await resolveIdempotency(input, {
       ...baseLedger,
       action,
@@ -190,6 +211,7 @@ export async function executeShopifyOperation(input) {
     ...baseLedger,
     status: "CALLING_PROVIDER",
     gatewayDecision: "admitted",
+    responseSummary: { blastRadius, preview },
   });
   log.info("Shopify operation admitted by universal gateway", {
     shopDomain: input.shopDomain,
@@ -209,7 +231,7 @@ export async function executeShopifyOperation(input) {
       gatewayDecision: "provider_result",
       userErrors,
       resourceIds,
-      responseSummary: summarizeResponse(response),
+      responseSummary: { ...summarizeResponse(response), blastRadius, preview },
     });
     return {
       ok: !userErrors.length,
@@ -219,6 +241,8 @@ export async function executeShopifyOperation(input) {
       data: response,
       userErrors,
       resourceIds,
+      blastRadius,
+      preview,
       actionRevision: action ? getActionRevisionState(action).acceptedActionRevision : null,
     };
   } catch (error) {
@@ -656,8 +680,14 @@ function normalizeIntentText(value) {
     .replace(/[^a-z0-9]+/g, " ");
 }
 
-/** @param {unknown} value */
-function hashJson(value) {
+/**
+ * Exported so callers that need to record an explicit confirmation for a specific future
+ * invocation (see explicit-confirmation.server.js / the merchant-facing confirmation route) can
+ * compute the exact same variablesHash this gateway will compute at execution time — the two
+ * must match exactly, or a real confirmation would never be recognized as covering the real call.
+ * @param {unknown} value
+ */
+export function hashJson(value) {
   return createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
 

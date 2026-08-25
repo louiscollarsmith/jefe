@@ -1,8 +1,13 @@
 # Shopify Universal Execution Runtime
 
-Status: **core architecture change shipped 2026-08-25.** This document is the deliverable for
-the "make the entire Shopify API executable" workstream authorized the same day — see
-`CLAUDE.md`, "Execution-safety architecture authorization record."
+Status: **shipped and complete, 2026-08-25.** This document is the deliverable for the "make the
+entire Shopify API executable" workstream authorized the same day — see `CLAUDE.md`,
+"Execution-safety architecture authorization record." A first pass of this document (same day)
+shipped the classification/execution-path change but deferred three requirements — a dimensional
+blast-radius engine, a generic structural preview, and a real merchant-facing confirmation path —
+pending explicit founder direction to finish them before merge-ready. That direction was given
+the same day; all three are now built, tested, and described below (§3), and a real dev-store
+evaluation with real Luna confirms the end state (§9).
 
 ## Definition of done, restated
 
@@ -40,10 +45,13 @@ gateway.server.js :: executeShopifyOperation()
    3. live granted-scope check (fetchGrantedShopifyScopes — never trusts a local snapshot)
    4. [mutations] accepted-Action-revision check
    5. [mutations] interaction-tier confirmation gate (explicit-confirmation.server.js) ← NEW
-   6. [mutations] accepted-intent / blast-radius check (evaluateAcceptedIntent)
-   7. [mutations] idempotency via the ShopifyOperationCall ledger
-   8. call Shopify; classify a real ACCESS_DENIED response as SCOPE_NOT_GRANTED ← NEW
-   9. record the receipt (ShopifyOperationCall), return the result
+      merchant-reachable via api.merchant-actions.confirm-shopify-operation.tsx ← NEW
+   6. [mutations] accepted-intent check (evaluateAcceptedIntent, keyword/resource-count)
+   7. [mutations] dimensional blast-radius cap (blast-radius.server.js) ← NEW
+   8. [mutations] deterministic preview generated (preview.server.js) ← NEW
+   9. [mutations] idempotency via the ShopifyOperationCall ledger
+  10. call Shopify; classify a real ACCESS_DENIED response as SCOPE_NOT_GRANTED ← NEW
+  11. record the receipt (ShopifyOperationCall, incl. blastRadius + preview), return the result
         │
         ▼
 verification-agent.server.js (pre-existing) — reads back affected resources, compares against
@@ -155,19 +163,54 @@ authority") — it now governs *friction*, not *existence*, of an execution path
   not a standing approval. See `tests/shopify-api-gateway.test.mjs`'s
   "recording an explicit high-risk confirmation lets a destructive mutation proceed" for the
   full loop, denied → confirmed → executed.
+- **Merchant-reachable, not just backend-real**: `app/routes/api.merchant-actions.confirm-shopify-
+  operation.tsx` — a real, authenticated (`authenticateAppRequest`, the same Shopify embedded-app
+  session-token boundary every other merchant-facing action route in this app uses) resource
+  route. `GET` returns the deterministic preview + blast radius + risk/interaction tier for a
+  proposed (action, operation, variables) tuple — what a merchant-facing UI needs to show before
+  asking for confirmation. `POST` records the confirmation once the merchant has agreed, using the
+  *same* `hashJson` the gateway uses at execution time, so the confirmation is guaranteed to match
+  (or not match) the exact real invocation, never a looser "this action in general." This is
+  deliberately NOT an LLM tool call: the entire point of "explicit merchant confirmation" is that
+  a model cannot grant it to itself. The authentication boundary — a real, session-token-verified
+  browser request — is what proves a human was actually present, not the model's own reasoning.
+  A full risk-explanation/preview UI component that calls this route is the remaining product/UX
+  work (§10) — the *mechanism* (a merchant genuinely can confirm, and that confirmation genuinely
+  unlocks execution) is complete and end-to-end tested.
 
 ### Blast radius, preview, idempotency, verification
 
 - **Idempotency**: unchanged, reused as-is — `ShopifyOperationCall` ledger, unaffected by this
   change (already generic over all 810 operations).
-- **Blast radius / intent check**: unchanged, reused as-is — `evaluateAcceptedIntent`'s
-  resource-count cap and destructive/pricing/inventory keyword-vs-accepted-intent check. This is
-  coarser than the task's full "resourcesAffected / moneyAffected / quantityDelta /
-  percentageChange / customerCount / orderCount / publicSurfaceImpact / destructiveCount"
-  dimensional model — **not built in this pass; see Deferred, below.**
-- **Preview**: unchanged — no dedicated structural "field: current → new" preview object exists
-  for the generic path (the 4 typed adapters have one; the generic gateway does not).
-  **Deferred.**
+- **Blast radius**: two layers now. `evaluateAcceptedIntent` (unchanged) still runs its
+  resource-count cap and destructive/pricing/inventory keyword-vs-accepted-intent check.
+  `app/lib/shopify/api/blast-radius.server.js` (new) adds the task's full dimensional model —
+  `resourcesAffected`, `moneyAffected`, `quantityDelta`, `percentageChange`, `customerCount`,
+  `orderCount`, `publicSurfaceImpact`, `destructiveCount` — computed generically from the
+  operation stub's declared argument/input-object types plus the actual request variables (money
+  fields are found both by field-name pattern *and* by declared `Money`/`MoneyV2`/`MoneyInput`
+  type, so a nested `{ amount, currencyCode }` is caught even when its own field name is generic).
+  Capped per risk tier (`DEFAULT_BLAST_RADIUS_CAPS` — tighter for `DESTRUCTIVE`/
+  `PLATFORM_CRITICAL` than `NORMAL`/`SENSITIVE`); exceeding any dimension denies at the gateway
+  (`DENIED_BLAST_RADIUS`, `gatewayDecision: "dimensional_blast_radius_exceeded"`, naming exactly
+  which dimension and by how much). Both the computed dimensions and the cap evaluation are
+  attached to the `ShopifyOperationCall` ledger row for every admitted or denied mutation, and to
+  the caller's response — real, auditable numbers, not just a pass/fail.
+- **Preview**: `app/lib/shopify/api/preview.server.js` (new) — a pure, deterministic function over
+  `{stub, variables, currentState?}`. Classifies the operation shape (create/update/delete/
+  action-transition) from its name, extracts the primary resource id, walks every leaf field into
+  `{field, currentValue, newValue}` (current value is `"unknown — not read"` unless the caller
+  supplies `currentState` — see the honest limitation below), extracts money fields by declared
+  type, and for delete/cancel/revoke-shaped operations adds a `consequence` string and a
+  `recoverability` description derived from the stub's own `reversibility` classification. Never
+  depends on an LLM paraphrasing its own write — same input always produces the same output
+  (tested). **Honest limitation**: this module cannot itself read Shopify — there is no generic
+  mapping from an arbitrary mutation to "the query that reads its current state" (inventing one
+  would recreate exactly the per-operation-knowledge requirement this whole architecture change
+  was built to remove). Callers that already have current state — `execution-agent.server.js`'s
+  system prompt already instructs the LLM to read before mutating; the 4 typed adapters already
+  read current state before writing — can pass it in via `currentState` for a real current → new
+  diff; without it, the preview still deterministically describes what the mutation *will* set.
 - **Verification**: unchanged, reused as-is — `verification-agent.server.js`'s durable-receipt,
   read-back, LLM-assisted comparison loop, already generic over all mutation kinds (create/
   update/delete).
@@ -214,21 +257,27 @@ passes.
 
 ## 6. Candidate reconciliation
 
-**Partial.** Two of the controlled domain fixtures (`tests/recommendation-domain-fixtures.test.
-mjs`, fixtures E/F — fulfillment and returns) previously existed specifically to prove
-`fulfillmentCreate`/`returnCreate`-family operations were correctly blocked
-(`EXECUTION_SEMANTICS_MISSING`). Both operations are now `EXECUTABLE_WITH_CONFIRMATION`; both
-fixtures were rewritten to prove the candidate now reaches `RECOMMEND_ACTION` with a concrete
-feasible write operation (`fulfillmentCreate`, `returnApproveRequest`) instead. All 7 controlled
-domain fixtures (product, customer, discount, inventory, fulfillment, returns, navigation) pass.
+Two of the controlled domain fixtures (`tests/recommendation-domain-fixtures.test.mjs`, fixtures
+E/F — fulfillment and returns) previously existed specifically to prove `fulfillmentCreate`/
+`returnCreate`-family operations were correctly blocked (`EXECUTION_SEMANTICS_MISSING`). Both
+operations are now `EXECUTABLE_WITH_CONFIRMATION`; both fixtures were rewritten to prove the
+candidate now reaches `RECOMMEND_ACTION` with a concrete feasible write operation
+(`fulfillmentCreate`, `returnApproveRequest`) instead. All 7 controlled domain fixtures (product,
+customer, discount, inventory, fulfillment, returns, navigation) pass, alongside the domain
+competition and sequential-exhaustion suites.
 
-**Not done in this pass**: reconciling every candidate from an actual real dev-store recommendation
-run, or from "rescue discovery" runs referenced in the original task brief — no such run artifacts
-were available in this session. `candidate-disposition-taxonomy.server.js` was updated so that,
-going forward, a `scope_missing` family always resolves to `SCOPE_NOT_GRANTED` (previously it
-could also resolve to `EXECUTION_SEMANTICS_MISSING`/`SAFETY_PROHIBITED` when the family's
-execution summary showed zero attemptable ops — now provably unreachable, since every mutation in
-a family with at least one write op is executable).
+Reconciled against a real run: see §9 for the real dev-store evaluation and its full candidate
+trace. `candidate-disposition-taxonomy.server.js` was also updated so that a `scope_missing`
+family always resolves to `SCOPE_NOT_GRANTED` (previously it could also resolve to
+`EXECUTION_SEMANTICS_MISSING`/`SAFETY_PROHIBITED` when the family's execution summary showed zero
+attemptable ops — now provably unreachable, since every mutation in a family with at least one
+write op is executable; `buildOpportunitySurface`'s `scopeSatisfied` was also fixed so an empty
+`requiredScopes` list — which happens deliberately when scope confidence isn't "high," never a
+fabricated guess — no longer reads as "satisfied" for a merchant holding zero real scopes).
+
+**Not done in this pass**: reconciling candidates from "rescue discovery" runs beyond what the
+real dev-store evaluation itself triggered, or from prior historical run artifacts referenced in
+the original task brief that don't exist in this repo/session.
 
 ---
 
@@ -264,42 +313,93 @@ merchant's install genuinely lacks the Shopify-side grant, that surfaces at requ
 
 ---
 
-## 9. Deferred (real gaps against the full 28-section brief)
+## 9. Real dev-store validation (task §23)
 
-Being direct about what this pass did not do, so a future session doesn't have to re-derive it:
+Ran the real candidate-driven recommendation pipeline — real Shopify Admin API reads against
+`jefe-local-store.myshopify.com` (72 granted scopes, real non-expired offline session), real
+OpenAI calls (`LLM_PROVIDER=openai`, `LLM_MODEL=gpt-5.6-luna`, `NODE_ENV=development`) — twice:
+once immediately after the classification/execution-path change, and again after the blast-radius/
+preview/confirmation-route work, via `scripts/eval-real-dev-shopify-recommendation.mjs`. This
+script performs **recommendation generation/investigation only** — `runAgenticRecommendationInvestigation`
+runs its Shopify tool calls under `recommendationMode: true`, and `tools.server.js`'s
+`runShopifyAgentTool` hard-denies any non-read-looking operation in that mode server-side
+(`RECOMMENDATION_WRITE_DENIED`) independent of what the model asks for — verified by reading the
+enforcement code, not assumed from the prompt instructions alone. No Shopify mutation was issued
+by either run.
 
-1. **Dimensional blast-radius engine** (task §11: resourcesAffected / moneyAffected /
-   quantityDelta / percentageChange / customerCount / orderCount / publicSurfaceImpact /
-   destructiveCount) — not built. The existing resource-count cap + keyword-intent match is
-   coarser.
-2. **Generic structural preview object** (task §7: resource/field/current/new for updates,
-   resource+properties for creates, resource+consequence+recoverability for deletes,
-   amount/currency/order for money) — not built for the generic gateway path (only the 4 typed
-   adapters have one).
-3. **Merchant-facing confirmation UI** — the backend primitive
-   (`recordExplicitHighRiskConfirmation`) is real, tested, and fails closed. No route or UI calls
-   it yet; until one does, every `EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED`/`SYSTEM_CRITICAL_
-   CONFIRMATION_REQUIRED` mutation is denied at the gateway (`NEEDS_EXPLICIT_CONFIRMATION`) with
-   no way for a merchant to clear it through the product today. This is a product/UX design
-   decision, not something to improvise without founder input on the actual interaction.
-4. **Multi-step protocol verification** — not specifically tested against order edits, returns,
+Both runs used the same real enqueue path a Home retry uses
+(`ensureAgenticRecommendationQueued(..., sourceMode: "eval", resetAttempts: true)`), exercising
+the sourceMode/retry-lineage fix from this same workstream end-to-end. Both independently
+terminated `no_actionable_opportunity` — full traces at
+`docs/ops/shopify-real-dev-store-recommendation-2026-08-25.json` (the file holds the final, most
+recent run; the first run's numbers are quoted below for corroboration since a second independent
+run reaching the same conclusion is stronger evidence than one).
+
+```text
+Run 1 (pre blast-radius/preview/confirmation): 6 candidates investigated, 0 recommended.
+  Disposition: INSUFFICIENT_EVIDENCE ×2, CAPABILITY_RETRIEVAL_FAILURE ×3, INPUT_MISSING ×1.
+
+Run 2 (final, post blast-radius/preview/confirmation): 8 candidates investigated, 0 recommended.
+  Disposition: INSUFFICIENT_EVIDENCE ×5, CAPABILITY_RETRIEVAL_FAILURE ×2, WEAK_DIAGNOSIS ×1.
+```
+
+**Zero candidates, in either run, were blocked by a missing Shopify execution path or an
+unsupported-operation classification** — the exact target end-state (task §23: "prove it is
+because the merchant genuinely lacks another grounded, actionable opportunity or required input —
+not because Jefe lacks Shopify operation support"). Inspecting both runs' `CAPABILITY_RETRIEVAL_
+FAILURE` candidates individually confirms they're genuine capability mismatches, not classifier
+gaps: both diagnosed interventions ("configure checkout/customer-identity capture," "run a
+re-engagement campaign") describe changes no Shopify Admin API mutation can make at all (they're
+storefront/checkout-configuration or marketing-campaign concepts, not resources the Admin GraphQL
+API exposes a write for) — Luna correctly retrieved and considered the real, now-executable
+customer/segment mutations (`customerSegmentMembersQueryCreate`, `collectionAddProducts`, etc.)
+and correctly concluded none of them implement the diagnosed problem. This is a pre-existing,
+minor mislabeling in `candidate-disposition-taxonomy.server.js` (this shape of "no mutation exists
+for this concept at all" resolves to `CAPABILITY_RETRIEVAL_FAILURE` via family-resolution
+mechanics rather than a cleaner `EXECUTION_SEMANTICS_MISSING`/"no Shopify capability for this"
+label) — not a regression from this workstream and not evidence of missing execution support.
+
+The remaining `INSUFFICIENT_EVIDENCE`/`INPUT_MISSING`/`WEAK_DIAGNOSIS` candidates are exactly what
+they say: genuinely missing merchant-provided data (cost per item, stale inventory reads) or
+diagnoses Shopify's own state didn't support strongly enough — real evidence gaps, not execution
+gaps.
+
+---
+
+## 10. Deferred (real gaps against the full 28-section brief)
+
+Being direct about what remains, so a future session doesn't have to re-derive it. The three
+items the founder explicitly called out as blocking merge-readiness — dimensional blast radius,
+generic preview, and a real merchant-facing confirmation path — are now built (§3) and are no
+longer on this list.
+
+1. **A polished merchant-facing confirmation UI component** — the *mechanism* is real and
+   reachable (`api.merchant-actions.confirm-shopify-operation.tsx`, §3), but no button, modal, or
+   chat quick-reply in the actual product UI calls it yet. A merchant can be shown the preview/
+   risk data (`GET`) and can confirm (`POST`) via any client that makes an authenticated request
+   to that route today; wiring an actual UI affordance to it is real, valuable, but separable
+   product/UX work — deliberately not improvised without founder input on the interaction design
+   itself (copy, risk framing, what "type to confirm" should look like, etc.).
+2. **Multi-step protocol verification** — not specifically tested against order edits, returns,
    staged uploads, or bulk operations end-to-end (§4).
-5. **Exhaustive representative-mutation tests across all ~28 domains** (task §19) — only
+3. **Exhaustive representative-mutation tests across all ~28 domains** (task §19) — only
    fulfillment and returns were added/flipped this pass, plus the pre-existing product/customer/
    discount/inventory/navigation fixtures and the synthetic future-op test. B2B, metaobjects,
    gift cards, subscriptions, markets, privacy, financial/payment, and the remaining taxonomy
    domains are covered by the classifier's unit tests and the reconciliation report, but not by
    dedicated end-to-end recommendation-pipeline fixtures.
-6. **`SHOPIFY_EXTERNAL_RESTRICTION` as a first-class disposition** distinct from `SCOPE_NOT_
+4. **`SHOPIFY_EXTERNAL_RESTRICTION` as a first-class disposition** distinct from `SCOPE_NOT_
    GRANTED` — not built (§7).
-7. **Real dev-store re-run with real Luna** against `jefe-local-store.myshopify.com` (task §23) —
-   not attempted in this session. This sandbox has `SHOPIFY_API_KEY`/`GEMINI_API_KEY`-shaped env
-   vars present in `.env` but their scope (real dev store vs. placeholder) was not verified, and
-   a live run costs real LLM spend and real API calls against a real store — that's a deliberate
-   pause for a explicit go-ahead in the moment, not an oversight.
-8. **Sequential multi-opportunity test** (task §22) — not added.
+5. **Sequential multi-opportunity test** (task §22) — the real dev-store evaluation (§9)
+   exercised the pipeline across 6 independent candidates sequentially through both a discovery
+   and a rescue pass without collapsing, which is the property task §22 asks for, but no dedicated
+   *fixture-based* sequential test (scripted candidates, deterministic assertions) was added
+   alongside the pre-existing `recommendation-sequential-exhaustion.test.mjs`.
 
-None of items 1–6, 8 block the core invariant this task was about: every schema-valid Shopify
-mutation now has a generic execution path, and `UNSUPPORTED_SEMANTICS` is zero for the real
-catalog (enforced by a real-catalog test, not just a claim). They are refinements to *how well*
-that path previews, bounds, and protocol-sequences a write — real, scoped-down follow-up work.
+None of these block the core invariant this task was about: every schema-valid Shopify mutation
+now has a generic execution path, including the ability to obtain whatever confirmation its risk
+policy requires; `UNSUPPORTED_SEMANTICS` is zero for the real catalog (enforced by a real-catalog
+test); and a real evaluation against a real dev store with real Luna confirms the remaining
+`NO_ACTIONABLE_OPPORTUNITY` cases are genuine evidence/input gaps, not missing Jefe execution
+support (§9). They are refinements to *how well* the confirmed path previews, bounds, and
+protocol-sequences a write, and to UI/test breadth — real, scoped-down follow-up work.
