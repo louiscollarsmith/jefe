@@ -76,8 +76,14 @@ const reportPath = resolve(args.report || `docs/ops/shopify-admin-api-${apiVersi
 const previous = safeLoadCatalog(outputPath);
 let next = previous;
 if (args.reclassify) {
-  if (!previous) throw new Error(`No existing generated catalog found at ${outputPath} to reclassify.`);
-  next = reclassifyShopifyApiCatalog(previous);
+  // Read raw, bypassing validateShopifyApiCatalog: reclassification exists precisely to fix
+  // safety/execution data a classifier change may have made stale (e.g. a removed
+  // classificationSource value), so the pre-reclassification catalog is not required to pass
+  // the current validator — only the reclassified result is (reclassifyShopifyApiCatalog itself
+  // validates before returning).
+  const rawPrevious = safeReadRawCatalog(outputPath);
+  if (!rawPrevious) throw new Error(`No existing generated catalog found at ${outputPath} to reclassify.`);
+  next = reclassifyShopifyApiCatalog(rawPrevious);
 } else if (args.introspection) {
   const introspection = JSON.parse(readFileSync(resolve(args.introspection), "utf8"));
   next = buildShopifyApiCatalogFromIntrospection(introspection, { apiVersion });
@@ -115,6 +121,14 @@ process.stdout.write(
 function safeLoadCatalog(path) {
   try {
     return loadShopifyApiCatalog({ catalogPath: path });
+  } catch {
+    return null;
+  }
+}
+
+function safeReadRawCatalog(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return null;
   }

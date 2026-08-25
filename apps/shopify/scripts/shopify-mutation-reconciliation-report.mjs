@@ -15,7 +15,6 @@ const byDomain = new Map();
 let executableStandard = 0;
 let executableSensitive = 0;
 let executableDestructive = 0;
-let executableSystemCritical = 0;
 let jefeUnsupported = 0;
 
 for (const op of mutations) {
@@ -37,11 +36,8 @@ for (const op of mutations) {
       executableStandard += 1;
       break;
     case "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED":
-      if (op.safety.riskTier === "DESTRUCTIVE") executableDestructive += 1;
+      if (op.safety.riskTier === "DESTRUCTIVE" || op.safety.riskTier === "PLATFORM_CRITICAL") executableDestructive += 1;
       else executableSensitive += 1;
-      break;
-    case "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED":
-      executableSystemCritical += 1;
       break;
     default:
       executableSensitive += 1;
@@ -63,7 +59,6 @@ const lines = [
   `EXECUTABLE_STANDARD: ${executableStandard}`,
   `EXECUTABLE_SENSITIVE_CONFIRMATION: ${executableSensitive}`,
   `EXECUTABLE_DESTRUCTIVE_CONFIRMATION: ${executableDestructive}`,
-  `EXECUTABLE_SYSTEM_CRITICAL_CONFIRMATION: ${executableSystemCritical}`,
   "",
   `NOT EXECUTABLE DUE TO JEFE'S OWN MISSING SUPPORT: ${jefeUnsupported}`,
   "```",

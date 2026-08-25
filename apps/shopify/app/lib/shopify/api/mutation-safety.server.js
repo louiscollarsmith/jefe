@@ -14,62 +14,64 @@
 // touch it. The founder explicitly authorized removing that assumption. Lack of a hand-written
 // policy for an operation is no longer, by itself, a reason execution is impossible.
 //
+// SECOND SUPERSEDED DESIGN NOTE (same day, same authorization thread): the first fix replaced the
+// deny-list with a *named allow/deny-shaped list* mapped to an extra "system-critical" confirmation
+// tier above ordinary explicit confirmation, plus a second, separate confirmation gate/route for
+// it. The founder asked for that removed too: it was still a distinct per-operation classification
+// list (just no longer denying), still a bespoke extra mechanism layered on top of the generic
+// safeguards, and not "keeping the architecture generic." There is now exactly one non-frictionless
+// interaction tier (EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED) and no named operation list at all —
+// every mutation, including the operations formerly on that list (appUninstall,
+// appRevokeAccessScopes, customerCancelDataErasure, etc.), is classified purely by the same
+// domain/name-shape structural rules everything else uses. Their risk is real and is still
+// reflected — structurally, via the destructive-name pattern and the always-sensitive domain set,
+// which is exactly where they land — not via a bespoke list or a bespoke confirmation mechanism.
+//
 // What did NOT change: this module still refuses to let operation-name pattern-matching alone
 // grant *frictionless* execution. The safety invariant is now expressed differently — every
 // mutation this module classifies gets SOME execution path (never a dead end for a schema-valid
-// operation), but an unreviewed one can only ever reach EXECUTABLE_WITH_CONFIRMATION at a
-// conservative interaction tier (never AUTONOMOUS_ELIGIBLE, never plain APPROVAL_REQUIRED for a
-// destructive/unknown shape) — risk changes the conditions under which an operation executes, not
-// whether Jefe has an execution path for it at all. See EXECUTION_STATUS below: UNSUPPORTED_
-// SEMANTICS still exists as a value (kept for schema/type continuity and any genuinely malformed
-// catalog entry) but this classifier no longer produces it for any schema-valid MUTATION.
+// operation), but an unreviewed one can only ever reach EXECUTABLE_WITH_CONFIRMATION at
+// EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED (never AUTONOMOUS_ELIGIBLE, never plain
+// APPROVAL_REQUIRED for a destructive/unknown shape) — risk changes the conditions under which an
+// operation executes, not whether Jefe has an execution path for it at all. See EXECUTION_STATUS
+// below: UNSUPPORTED_SEMANTICS still exists as a value (kept for schema/type continuity and any
+// genuinely malformed catalog entry) but this classifier no longer produces it for any
+// schema-valid MUTATION.
 //
-// Five layers now, checked in priority order, and every result carries a `classificationSource`
+// Four layers now, checked in priority order, and every result carries a `classificationSource`
 // naming which layer produced it — auditable by construction, not by convention:
 //
-//   1. SYSTEM_CRITICAL_OPERATIONS (source: EXPLICIT_KNOWN_DANGEROUS) — a short, human-curated
-//      list of operations that are extremely high-risk BY THEIR NATURE (self-deauthorization,
-//      GDPR erasure primitives, payment voids, arbitrary bulk mutation, theme code writes,
-//      protected financial-dispute data). Formerly a permanent deny-list (PROHIBITED_OPERATIONS);
-//      now these are EXECUTABLE_WITH_CONFIRMATION at the strongest confirmation tier
-//      (SYSTEM_CRITICAL_CONFIRMATION_REQUIRED), never autonomous, and every invocation still goes
-//      through ordinary Action approval, live scope checks, blast-radius, idempotency, and
-//      post-write verification like anything else — see gateway.server.js's explicit
-//      confirmation gate for the runtime enforcement.
-//   2. KNOWN_GOOD_OVERRIDES (source: EXPLICIT_KNOWN_GOOD | EXPLICIT_OPERATION_OVERRIDE) —
+//   1. KNOWN_GOOD_OVERRIDES (source: EXPLICIT_KNOWN_GOOD | EXPLICIT_OPERATION_OVERRIDE) —
 //      individual operations a human has actually reviewed, seeded from the live
 //      ACTION_REGISTRY (EXPLICIT_KNOWN_GOOD — has a real typed adapter, live in production)
 //      and the curated 14-operation capability manifest (EXPLICIT_OPERATION_OVERRIDE —
 //      reviewed and risk-understood, no adapter yet).
-//   3. REVIEWED_FAMILY_POLICIES (source: REVIEWED_OPERATION_FAMILY_POLICY) — a small,
+//   2. REVIEWED_FAMILY_POLICIES (source: REVIEWED_OPERATION_FAMILY_POLICY) — a small,
 //      human-curated table of (domain, name-shape) → policy, each with its own written
 //      justification (why the whole family is trusted, not just why one operation is).
-//   4. Structural defaults (source: STRUCTURAL_NAME_INFERENCE) — the generic path every
-//      unreviewed, schema-valid MUTATION now falls through to. It infers risk tier,
-//      reversibility, and required confirmation from operation-name shape and domain, and always
-//      returns EXECUTABLE_WITH_CONFIRMATION — never UNSUPPORTED_SEMANTICS — but can never assign
-//      AUTONOMOUS_ELIGIBLE or plain APPROVAL_REQUIRED to anything destructive-shaped or of
-//      genuinely unknown shape; the true unknown case (no destructive name, no known-sensitive
-//      domain, no reviewed policy) defaults to the *most* conservative tier
-//      (PLATFORM_CRITICAL / SYSTEM_CRITICAL_CONFIRMATION_REQUIRED), per the "unknown future
-//      Shopify operations default to conservative confirmation, not unsupported" invariant.
+//   3. Structural defaults (source: STRUCTURAL_NAME_INFERENCE) — the generic path every
+//      unreviewed, schema-valid MUTATION now falls through to, including operations that would
+//      once have been on a bespoke high-risk list. It infers risk tier, reversibility, and
+//      required confirmation from operation-name shape and domain, and always returns
+//      EXECUTABLE_WITH_CONFIRMATION — never UNSUPPORTED_SEMANTICS — but can never assign
+//      AUTONOMOUS_ELIGIBLE or plain APPROVAL_REQUIRED to anything destructive-shaped, identity/
+//      financial/platform-domain-shaped, or of genuinely unknown shape.
 //
 // Scope confidence (how sure we are which Shopify scope an operation needs) is a second,
 // independent axis from operation review, and stays that way: it can never promote a mutation to
 // less confirmation than the branch above computed, and less-than-"high" confidence always
-// pushes the interaction tier up (never down) — "inferred" requires at least explicit high-risk
-// confirmation, "unknown" always requires the system-critical tier. It never blocks a mutation
-// outright, because doing so silently re-creates the old "operation review is a precondition for
-// execution" assumption through a side door — live Shopify scope authorization (gateway.server.js)
-// and Shopify's own operation-failure semantics (a real ACCESS_DENIED response, surfaced as
-// SCOPE_NOT_GRANTED, never fabricated) are what actually keeps unauthorized calls from
-// succeeding; this module governs confirmation friction, not authorization itself.
+// requires at least explicit confirmation. It never blocks a mutation outright, because doing so
+// silently re-creates the old "operation review is a precondition for execution" assumption
+// through a side door — live Shopify scope authorization (gateway.server.js) and Shopify's own
+// operation-failure semantics (a real ACCESS_DENIED response, surfaced as SCOPE_NOT_GRANTED,
+// never fabricated) are what actually keeps unauthorized calls from succeeding; this module
+// governs confirmation friction, not authorization itself.
 
 export const RISK_TIER = Object.freeze({
   normal: "NORMAL",
   sensitive: "SENSITIVE",
   destructive: "DESTRUCTIVE",
-  platformCritical: "PLATFORM_CRITICAL", // equivalent to the task's "SYSTEM_CRITICAL"
+  platformCritical: "PLATFORM_CRITICAL",
 });
 
 export const REVERSIBILITY = Object.freeze({
@@ -83,7 +85,6 @@ export const INTERACTION = Object.freeze({
   autonomousEligible: "AUTONOMOUS_ELIGIBLE",
   approvalRequired: "APPROVAL_REQUIRED",
   explicitHighRiskConfirmation: "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED",
-  systemCriticalConfirmation: "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED",
   // Retained for type continuity; this classifier no longer produces it (see module note above).
   prohibited: "PROHIBITED",
 });
@@ -94,8 +95,7 @@ const INTERACTION_STRENGTH = Object.freeze({
   [INTERACTION.autonomousEligible]: 0,
   [INTERACTION.approvalRequired]: 1,
   [INTERACTION.explicitHighRiskConfirmation]: 2,
-  [INTERACTION.systemCriticalConfirmation]: 3,
-  [INTERACTION.prohibited]: 4,
+  [INTERACTION.prohibited]: 3,
 });
 
 function strongerInteraction(a, b) {
@@ -114,35 +114,11 @@ export const EXECUTION_STATUS = Object.freeze({
 // Only meaningful on EXECUTABLE / EXECUTABLE_WITH_CONFIRMATION results — which layer granted
 // execution authority. Auditable by construction, not by convention.
 export const CLASSIFICATION_SOURCE = Object.freeze({
-  explicitKnownDangerous: "EXPLICIT_KNOWN_DANGEROUS",
   explicitKnownGood: "EXPLICIT_KNOWN_GOOD",
   explicitOperationOverride: "EXPLICIT_OPERATION_OVERRIDE",
   reviewedFamilyPolicy: "REVIEWED_OPERATION_FAMILY_POLICY",
   structuralNameInference: "STRUCTURAL_NAME_INFERENCE",
 });
-
-/**
- * Operations that are extremely high-risk by their nature — self-deauthorization, GDPR/erasure
- * primitives, payment reversal, arbitrary bulk mutation, or content/data Shopify itself gates
- * behind special review. Formerly PROHIBITED_OPERATIONS (a permanent deny-list, denied
- * regardless of merchant authorization). As of the 2026-08-25 authorization (see CLAUDE.md),
- * these are executable — at the strongest confirmation tier this module has
- * (SYSTEM_CRITICAL_CONFIRMATION_REQUIRED), never autonomous — because "an engineer has not
- * reviewed and approved this specific operation" is no longer a standing reason execution is
- * impossible. Exact-name match only, deliberately not a regex: extend by adding a name with a
- * written reason, not a rule.
- * @type {Map<string, string>}
- */
-const SYSTEM_CRITICAL_OPERATIONS = new Map([
-  ["appUninstall", "Removes Jefe's own installation."],
-  ["appRevokeAccessScopes", "Alters Jefe's own authorization; may disable Jefe's ability to keep helping this merchant."],
-  ["customerCancelDataErasure", "GDPR/customer-erasure primitive — compliance-sensitive, normally merchant-initiated."],
-  ["customerRequestDataErasure", "GDPR/customer-erasure primitive — compliance-sensitive, normally merchant-initiated."],
-  ["bulkOperationRunMutation", "Runs an arbitrary mutation from a JSONL file — its real risk is whatever mutation it wraps, so it can never be assessed generically; requires the merchant to see exactly what it will run."],
-  ["themeFilesUpsert", "Theme code write; Shopify gates this behind a special app exemption most installs won't have — see SCOPE_NOT_GRANTED at runtime if ungranted."],
-  ["disputeEvidenceUpdate", "One-shot financial/payment-dispute compliance submission; Shopify restricts read access to this data behind special approval most installs won't have."],
-  ["transactionVoid", "Reverses real payment capture — a financial primitive with no generic undo."],
-]);
 
 /**
  * Seeded from the live ACTION_REGISTRY (app/lib/actions/action-intent.server.js) and the
@@ -325,18 +301,6 @@ const COMPENSATABLE_MUTATION_DOMAINS = new Set([
 export function classifyShopifyOperationSafety(input) {
   const { operation, operationKind, domain, scopeConfidence } = input;
 
-  const dangerReason = SYSTEM_CRITICAL_OPERATIONS.get(operation);
-  if (dangerReason) {
-    return result(scopeConfidence, {
-      riskTier: RISK_TIER.platformCritical,
-      reversibility: REVERSIBILITY.irreversible,
-      interaction: INTERACTION.systemCriticalConfirmation,
-      executionStatus: EXECUTION_STATUS.executableWithConfirmation,
-      classificationSource: CLASSIFICATION_SOURCE.explicitKnownDangerous,
-      reason: `System-critical: ${dangerReason} Requires the strongest confirmation tier; never autonomous.`,
-    });
-  }
-
   const override = KNOWN_GOOD_OVERRIDES[operation];
   if (override) return result(scopeConfidence, override);
 
@@ -376,20 +340,24 @@ export function classifyShopifyOperationSafety(input) {
     });
   }
 
-  // MUTATION, not covered by a system-critical/known-good/reviewed-family entry — generic
-  // structural classification from here down. This branch always returns EXECUTABLE_WITH_
+  // MUTATION, not covered by a known-good/reviewed-family entry — generic structural
+  // classification from here down. Every path in this branch returns EXECUTABLE_WITH_
   // CONFIRMATION: an unreviewed mutation still gets an execution path, just never at more than
-  // the interaction tier its shape/domain justifies, and never AUTONOMOUS_ELIGIBLE. Operation-
-  // name similarity alone must not grant *frictionless* production write authority, but it may
-  // no longer be used as a reason execution is impossible at all.
+  // EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED, and never AUTONOMOUS_ELIGIBLE. Operation-name
+  // similarity alone must not grant *frictionless* production write authority, but it may no
+  // longer be used as a reason execution is impossible at all, and there is no named list here
+  // that treats some operations differently by name — everything, including operations that
+  // would once have been individually named as especially dangerous (self-deauthorization, GDPR
+  // erasure, payment reversal, ...), goes through these same structural rules and lands wherever
+  // its real shape and domain put it.
   if (BULK_DESTRUCTIVE_NAME_PATTERN.test(operation)) {
     return result(scopeConfidence, {
       riskTier: RISK_TIER.platformCritical,
       reversibility: REVERSIBILITY.irreversible,
-      interaction: INTERACTION.systemCriticalConfirmation,
+      interaction: INTERACTION.explicitHighRiskConfirmation,
       executionStatus: EXECUTION_STATUS.executableWithConfirmation,
       classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
-      reason: "Bulk-delete-shaped name; unreviewed — system-critical confirmation required, never autonomous.",
+      reason: "Bulk-delete-shaped name; unreviewed — explicit confirmation required, never autonomous.",
     });
   }
   if (DESTRUCTIVE_NAME_PATTERN.test(operation)) {
@@ -399,7 +367,7 @@ export function classifyShopifyOperationSafety(input) {
       interaction: INTERACTION.explicitHighRiskConfirmation,
       executionStatus: EXECUTION_STATUS.executableWithConfirmation,
       classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
-      reason: "Delete/erase/revoke/cancel/close-shaped name; unreviewed — explicit destructive confirmation required.",
+      reason: "Delete/erase/revoke/uninstall/cancel/close-shaped name; unreviewed — explicit confirmation required.",
     });
   }
 
@@ -425,26 +393,26 @@ export function classifyShopifyOperationSafety(input) {
   }
 
   // Genuinely unknown shape: no destructive name, no known-sensitive/compensatable domain, no
-  // reviewed policy. Default to the most conservative tier rather than refusing to understand
-  // the operation — "unknown future operations default to conservative explicit confirmation,
-  // not unsupported."
+  // reviewed policy. Still requires explicit confirmation rather than refusing to understand the
+  // operation — "unknown future operations default to conservative explicit confirmation, not
+  // unsupported."
   return result(scopeConfidence, {
     riskTier: RISK_TIER.platformCritical,
     reversibility: REVERSIBILITY.unknown,
-    interaction: INTERACTION.systemCriticalConfirmation,
+    interaction: INTERACTION.explicitHighRiskConfirmation,
     executionStatus: EXECUTION_STATUS.executableWithConfirmation,
     classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
-    reason: "No reviewed family policy, override, or recognizable risk shape covers this operation; defaulting to the most conservative confirmation tier rather than treating it as unsupported.",
+    reason: "No reviewed family policy, override, or recognizable risk shape covers this operation; defaulting to explicit confirmation rather than treating it as unsupported.",
   });
 }
 
 /**
  * Scope confidence can only ever push the required interaction tier UP, never grant execution
  * status it wouldn't otherwise have and never lower a tier a classification branch already
- * computed. "high" leaves the branch's result untouched; "inferred" requires at least explicit
- * high-risk confirmation; "unknown" always requires the system-critical tier — because Shopify
- * authorization itself (never fabricated) is enforced live by the gateway, not by this module,
- * scope confidence here is about confirmation friction, not a second authorization gate.
+ * computed. "high" leaves the branch's result untouched; anything less than "high" requires at
+ * least explicit confirmation — because Shopify authorization itself (never fabricated) is
+ * enforced live by the gateway, not by this module, scope confidence here is about confirmation
+ * friction, not a second authorization gate.
  * @param {"high" | "inferred" | "unknown"} scopeConfidence
  * @param {{ riskTier: string; reversibility: string; interaction: string; executionStatus: string; classificationSource?: string; reason: string; skipScopeGate?: boolean }} classification
  */
@@ -470,10 +438,8 @@ function result(scopeConfidence, classification) {
 
   let interaction = classification.interaction;
   let reason = classification.reason;
-  if (scopeConfidence === "inferred") {
+  if (scopeConfidence !== "high") {
     interaction = strongerInteraction(interaction, INTERACTION.explicitHighRiskConfirmation);
-  } else if (scopeConfidence === "unknown") {
-    interaction = strongerInteraction(interaction, INTERACTION.systemCriticalConfirmation);
   }
   if (interaction !== classification.interaction) {
     reason = `${reason} Required Shopify scope is not confidently known (scopeConfidence="${scopeConfidence}"), so confirmation is raised to ${interaction} — live scope authorization is still enforced separately at execution time and never fabricated.`;
@@ -493,4 +459,4 @@ function result(scopeConfidence, classification) {
   };
 }
 
-export { SYSTEM_CRITICAL_OPERATIONS, KNOWN_GOOD_OVERRIDES, REVIEWED_FAMILY_POLICIES };
+export { KNOWN_GOOD_OVERRIDES, REVIEWED_FAMILY_POLICIES };

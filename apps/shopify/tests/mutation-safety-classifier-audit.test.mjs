@@ -7,7 +7,6 @@ import {
   EXECUTION_STATUS,
   INTERACTION,
   REVIEWED_FAMILY_POLICIES,
-  SYSTEM_CRITICAL_OPERATIONS,
 } from "../app/lib/shopify/api/mutation-safety.server.js";
 import { loadShopifyApiCatalog, validateShopifyApiCatalog } from "../app/lib/shopify/api/catalog.server.js";
 
@@ -50,7 +49,7 @@ test("a synthetic, previously-unseen mutation cannot become frictionless through
   }
 });
 
-test("STRUCTURAL_NAME_INFERENCE can be executable, but only ever at an explicit or system-critical confirmation tier — never frictionless", () => {
+test("STRUCTURAL_NAME_INFERENCE can be executable, but only ever at the explicit confirmation tier — never frictionless", () => {
   const catalog = loadShopifyApiCatalog();
   let sawStructuralExecutable = false;
   for (const op of catalog.operations) {
@@ -145,7 +144,7 @@ test("scopeConfidence below \"high\" can never grant a frictionless interaction,
     scopeConfidence: "unknown",
   });
   assert.equal(unknown.execution.status, EXECUTION_STATUS.executableWithConfirmation);
-  assert.equal(unknown.safety.interaction, INTERACTION.systemCriticalConfirmation);
+  assert.equal(unknown.safety.interaction, INTERACTION.explicitHighRiskConfirmation);
 });
 
 test("reads are broadly available by a reviewed policy, not name inference, and sensitive reads are carved out", () => {
@@ -167,21 +166,43 @@ test("reads are broadly available by a reviewed policy, not name inference, and 
   assert.equal(sensitiveRead.status, EXECUTION_STATUS.executableWithConfirmation);
 });
 
-test("SYSTEM_CRITICAL_OPERATIONS is a fixed, small, named list — not a pattern — and every entry is executable at the strongest confirmation tier, never autonomous", () => {
-  assert.ok(SYSTEM_CRITICAL_OPERATIONS.size >= 1 && SYSTEM_CRITICAL_OPERATIONS.size < 30, "the system-critical list should stay small and auditable");
-  for (const [name, reason] of SYSTEM_CRITICAL_OPERATIONS) {
-    assert.equal(typeof name, "string");
-    assert.ok(reason.length > 10, `${name} must carry a written reason`);
+// 2026-08-25, second authorization: the founder asked for the named "system-critical operations"
+// list removed entirely — no bespoke allow/deny-shaped list for individually dangerous
+// operations, generic structural rules only. These formerly-named operations (self-
+// deauthorization, GDPR erasure, payment reversal, arbitrary bulk mutation) must still land at
+// explicit confirmation — but via the SAME domain/name-shape structural rules every other
+// operation uses, sourced STRUCTURAL_NAME_INFERENCE like anything else, never a bespoke source.
+test("formerly-named high-risk operations (self-deauth, GDPR erasure, payment reversal) are classified purely structurally now — no bespoke list, still explicit confirmation", () => {
+  const formerlyNamedOperations = [
+    { operation: "appUninstall", domain: "app_platform" },
+    { operation: "appRevokeAccessScopes", domain: "app_platform" },
+    { operation: "customerCancelDataErasure", domain: "privacy_compliance" },
+    { operation: "customerRequestDataErasure", domain: "privacy_compliance" },
+    { operation: "transactionVoid", domain: "financial_payment" },
+    { operation: "disputeEvidenceUpdate", domain: "financial_payment" },
+  ];
+  for (const { operation, domain } of formerlyNamedOperations) {
     const { execution, safety } = classifyShopifyOperationSafety({
-      operation: name,
+      operation,
       operationKind: "MUTATION",
-      domain: "app_platform",
+      domain,
       scopeConfidence: "high",
     });
-    assert.equal(execution.status, EXECUTION_STATUS.executableWithConfirmation, `${name} must be executable`);
-    assert.equal(execution.classificationSource, CLASSIFICATION_SOURCE.explicitKnownDangerous);
-    assert.equal(safety.interaction, INTERACTION.systemCriticalConfirmation, `${name} must require the strongest confirmation tier`);
+    assert.equal(execution.status, EXECUTION_STATUS.executableWithConfirmation, `${operation} must be executable`);
+    assert.equal(
+      execution.classificationSource,
+      CLASSIFICATION_SOURCE.structuralNameInference,
+      `${operation} must be classified structurally, not via a bespoke named list`,
+    );
+    assert.equal(safety.interaction, INTERACTION.explicitHighRiskConfirmation, `${operation} must require explicit confirmation`);
   }
+});
+
+test("there is no bespoke high-risk operation list left in the module's public exports", async () => {
+  const mutationSafetyModule = await import("../app/lib/shopify/api/mutation-safety.server.js");
+  assert.equal(Object.hasOwn(mutationSafetyModule, "SYSTEM_CRITICAL_OPERATIONS"), false);
+  assert.equal(Object.hasOwn(mutationSafetyModule, "PROHIBITED_OPERATIONS"), false);
+  assert.equal(mutationSafetyModule.INTERACTION.systemCriticalConfirmation, undefined);
 });
 
 test("no schema-valid mutation the real catalog carries resolves to UNSUPPORTED_SEMANTICS or PROHIBITED", () => {

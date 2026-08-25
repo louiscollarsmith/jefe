@@ -191,7 +191,7 @@ test("accepted-intent guard blocks pricing drift during collection execution", a
   assert.equal(result.gatewayDecision, "pricing_effect_outside_accepted_intent");
 });
 
-test("a formerly-prohibited, system-critical operation is executable but needs a durable explicit confirmation, even with an accepted Action", async () => {
+test("a formerly-prohibited operation is executable but needs a durable explicit confirmation, even with an accepted Action", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Uninstall Jefe.", materialExpectedEffects: ["Uninstall the app"], constraints: [] } } }) });
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
@@ -221,7 +221,7 @@ test("gateway requires explicit destructive confirmation for an unreviewed delet
   assert.equal(result.gatewayDecision, "explicit_high_risk_confirmation_missing");
 });
 
-test("a mutation whose required scope is not confidently known is still executable, but only at the system-critical confirmation tier — unknown never means frictionless", async () => {
+test("a mutation whose required scope is not confidently known is still executable, but only at the explicit confirmation tier — unknown never means frictionless", async () => {
   const prisma = fakePrisma({ action: acceptedCollectionAction({ progress: { agentic: { currentActionRevision: "rev-1", acceptedActionRevision: "rev-1", outcome: "Tag a product.", materialExpectedEffects: ["Add tags to a product"], constraints: [] } } }) });
   const result = await executeShopifyOperation({
     ...baseInput(prisma, fakeClient({})),
@@ -234,7 +234,7 @@ test("a mutation whose required scope is not confidently known is still executab
   assert.equal(result.ok, false);
   assert.equal(result.status, SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation);
   assert.equal(result.gatewayDecision, "explicit_high_risk_confirmation_missing");
-  assert.match(result.error, /system-critical/);
+  assert.match(result.error, /explicit high-risk confirmation/);
 });
 
 test("recording an explicit high-risk confirmation lets a destructive mutation proceed to the intent/idempotency gates", async () => {

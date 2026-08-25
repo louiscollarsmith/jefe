@@ -136,15 +136,12 @@ export async function executeShopifyOperation(input) {
     action = authorization.action;
     // Discovery/execution separation (see mutation-safety.server.js): a mutation may be fully
     // visible to Luna's reasoning yet still require more than ordinary Action approval before
-    // it can run. EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED / SYSTEM_CRITICAL_CONFIRMATION_
-    // REQUIRED operations need a durable, per-invocation confirmation — recorded separately,
-    // immediately before execution — not just "the merchant accepted this Action."
+    // it can run. EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED operations need a durable,
+    // per-invocation confirmation — recorded separately, immediately before execution — not just
+    // "the merchant accepted this Action."
     const acceptedActionRevision = getActionRevisionState(action).acceptedActionRevision;
     const interactionTier = stub.safety?.interaction;
-    if (
-      interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" ||
-      interactionTier === "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED"
-    ) {
+    if (interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED") {
       const confirmed = await hasExplicitHighRiskConfirmation({
         prisma: input.prisma,
         merchantId: input.merchantId,
@@ -161,7 +158,7 @@ export async function executeShopifyOperation(input) {
           ...baseLedger,
           status: SHOPIFY_GATEWAY_STATUS.needsExplicitConfirmation,
           gatewayDecision: "explicit_high_risk_confirmation_missing",
-          error: `${stub.operation} requires an explicit ${interactionTier === "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED" ? "system-critical" : "high-risk"} confirmation beyond standard Action approval: ${stub.execution?.reason ?? ""}`,
+          error: `${stub.operation} requires an explicit high-risk confirmation beyond standard Action approval: ${stub.execution?.reason ?? ""}`,
         });
       }
     }

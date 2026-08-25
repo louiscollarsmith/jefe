@@ -1,11 +1,14 @@
 // @ts-check
 //
 // Durable, per-invocation explicit confirmation for Shopify mutations classified at the
-// EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED or SYSTEM_CRITICAL_CONFIRMATION_REQUIRED interaction
-// tier (see mutation-safety.server.js). Ordinary Action approval covers "the merchant agreed to
-// this Action" as a whole; this covers "the merchant was shown exactly what THIS mutation call is
-// about to do, immediately before it ran, and said yes" — a stronger, narrower, non-bypassable
-// gate for the operations that need it.
+// EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED interaction tier (see mutation-safety.server.js) — the
+// one non-frictionless tier the classifier can produce. Ordinary Action approval covers "the
+// merchant agreed to this Action" as a whole; this covers "the merchant was shown exactly what
+// THIS mutation call is about to do, immediately before it ran, and said yes" — a stronger,
+// narrower, non-bypassable gate for the operations that need it. (An earlier version of this
+// module also served a second, stricter SYSTEM_CRITICAL_CONFIRMATION_REQUIRED tier with its own
+// shorter freshness window; the founder asked for that tier removed as a distinct concept — see
+// mutation-safety.server.js's module note — so this module now serves exactly one tier.)
 //
 // Deliberately reuses MerchantActionEvent (schema.prisma) rather than a new table: it is already
 // the durable, action-scoped audit history table, and a confirmation is exactly that — an event
@@ -20,11 +23,10 @@
 const EVENT_TYPE = "explicit_high_risk_confirmation";
 
 // How long a recorded confirmation remains valid for the *exact same* (action, revision,
-// operation, variables) invocation before it must be re-confirmed. Deliberately short and
-// deliberately tiered — "immediately before execution", not a standing blanket approval.
+// operation, variables) invocation before it must be re-confirmed. Deliberately short —
+// "immediately before execution", not a standing blanket approval.
 const FRESHNESS_MS = Object.freeze({
   EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED: 60 * 60 * 1000, // 1 hour
-  SYSTEM_CRITICAL_CONFIRMATION_REQUIRED: 10 * 60 * 1000, // 10 minutes
 });
 
 /**

@@ -88,7 +88,7 @@ test("gateway.server.js never references assumeAllScopesGranted", () => {
   assert.equal(source.includes("assumeAllScopesGranted"), false, "the gateway must have no concept of this flag");
 });
 
-test("a system-critical operation still requires a durable explicit confirmation even with every real scope granted and an accepted Action", async () => {
+test("a formerly-prohibited operation still requires a durable explicit confirmation even with every real scope granted and an accepted Action", async () => {
   // Simulates the maximal real-world case the eval flag is not needed for: a merchant who
   // genuinely granted every scope, with a fully accepted Action. As of the 2026-08-25
   // execution-safety architecture change (CLAUDE.md), appUninstall is no longer permanently

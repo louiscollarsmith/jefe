@@ -18,7 +18,7 @@ import { buildGenericShopifyOperationPreview } from "../lib/shopify/api/preview.
 import { recordExplicitHighRiskConfirmation } from "../lib/shopify/api/explicit-confirmation.server.js";
 
 // The real, reachable merchant-facing counterpart to gateway.server.js's explicit-confirmation
-// gate (explicit-confirmation.server.js). A SYSTEM_CRITICAL / EXPLICIT_HIGH_RISK operation is
+// gate (explicit-confirmation.server.js). An EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED operation is
 // denied at the gateway (NEEDS_EXPLICIT_CONFIRMATION) until a row exists here — authenticated by
 // the merchant's real Shopify embedded-app session (authenticateAppRequest), the same boundary
 // every other merchant-facing action route in this app uses. This is what makes "confirmation" a
@@ -57,8 +57,7 @@ export async function loader({ request }: ActionFunctionArgs) {
 
     const variableValidation = validateShopifyOperationVariables(stub, parsed.variables);
     const interactionTier = stub.safety?.interaction;
-    const needsExplicitConfirmation =
-      interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" || interactionTier === "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED";
+    const needsExplicitConfirmation = interactionTier === "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED";
 
     return json({
       ok: true,
@@ -109,7 +108,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (!stub) return json({ ok: false, error: `Unknown Shopify operation: ${operation}` }, 404);
 
     const interactionTier = stub.safety?.interaction;
-    if (interactionTier !== "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED" && interactionTier !== "SYSTEM_CRITICAL_CONFIRMATION_REQUIRED") {
+    if (interactionTier !== "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED") {
       return json(
         { ok: false, error: `${stub.operation} does not require explicit confirmation (interaction=${interactionTier ?? "unknown"}); it needs only ordinary Action approval.` },
         400,

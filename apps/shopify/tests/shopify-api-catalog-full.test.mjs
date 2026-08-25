@@ -97,7 +97,7 @@ test("an entirely unseen, synthetic Shopify mutation is discoverable, conservati
     scopeConfidence: "unknown",
   });
   assert.equal(execution.status, "EXECUTABLE_WITH_CONFIRMATION", "an unseen mutation must never be a dead end");
-  assert.equal(safety.interaction, INTERACTION.systemCriticalConfirmation, "an unknown operation defaults to the strongest confirmation tier");
+  assert.equal(safety.interaction, INTERACTION.explicitHighRiskConfirmation, "an unknown operation defaults to explicit confirmation");
   assert.equal(safety.riskTier, "PLATFORM_CRITICAL");
 
   // Step 1: discoverable — simulates exactly what a real schema regeneration adds: a stub built
@@ -192,7 +192,7 @@ test("an entirely unseen, synthetic Shopify mutation is discoverable, conservati
     acceptedActionRevision: "rev-1",
     operation: "widgetFrobnicate",
     variablesHash: hashForFixture(validVariables),
-    interactionTier: INTERACTION.systemCriticalConfirmation,
+    interactionTier: INTERACTION.explicitHighRiskConfirmation,
     riskTier: safety.riskTier,
     confirmedBy: "merchant:test",
     confirmationText: "Yes, frobnicate this widget.",
