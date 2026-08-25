@@ -1,0 +1,203 @@
+[
+  {
+    "ok": true,
+    "tool": "retrieve_shopify_operations",
+    "error": null,
+    "facts": {
+      "query": "Create a curated product bundle from complementary products, with pricing and component selection confirmed before implementation. Customers are purchasing relatively narrow baskets: the median order contains 1 item, 54% of trailing-90-day orders contain exactly one item, and only 6% contain four or more items.",
+      "status": null,
+      "operation": null,
+      "gatewayDecision": null
+    },
+    "message": "Server-bound 8 Shopify operation stubs for this candidate."
+  },
+  {
+    "ok": true,
+    "tool": "retrieve_shopify_operations",
+    "error": null,
+    "facts": {
+      "query": "Feature Cloud Needle Tsolikouri in a dedicated storefront merchandising placement or campaign, after confirming the desired channel and placement. Demand is concentrated in a small part of the range's current momentum: only 1 product is rising versus the prior 30 days while 13 products are declining, including Lemon Grove Vidiano falling from \u00a363 to \u00a30.",
+      "status": null,
+      "operation": null,
+      "gatewayDecision": null
+    },
+    "message": "Server-bound 8 Shopify operation stubs for this candidate."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "OK",
+      "operation": "product",
+      "gatewayDecision": null
+    },
+    "message": "product completed through the Shopify gateway."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "OK",
+      "operation": "collections",
+      "gatewayDecision": null
+    },
+    "message": "collections completed through the Shopify gateway."
+  },
+  {
+    "ok": false,
+    "tool": "call_shopify_operation",
+    "error": {
+      "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "message": "Missing Shopify scopes: read_publications"
+    },
+    "facts": {
+      "query": null,
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "operation": "channels",
+      "gatewayDecision": "missing_shopify_scopes"
+    },
+    "message": "channels did not complete: NEEDS_SHOPIFY_AUTHORIZATION."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "ALREADY_AVAILABLE",
+      "operation": "product",
+      "gatewayDecision": null
+    },
+    "message": "ALREADY_AVAILABLE: product was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "ALREADY_AVAILABLE",
+      "operation": "collections",
+      "gatewayDecision": null
+    },
+    "message": "ALREADY_AVAILABLE: collections was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+  },
+  {
+    "ok": false,
+    "tool": "call_shopify_operation",
+    "error": {
+      "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "message": "Missing Shopify scopes: read_publications"
+    },
+    "facts": {
+      "query": null,
+      "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+      "operation": "channels",
+      "gatewayDecision": "missing_shopify_scopes"
+    },
+    "message": "channels did not complete: NEEDS_SHOPIFY_AUTHORIZATION."
+  },
+  {
+    "ok": true,
+    "tool": "retrieve_shopify_operations",
+    "error": null,
+    "facts": {
+      "query": "Improve customer-account or consented customer data capture, then create a repeat-purchase customer segment for future outreach. None of the 50 stored orders is linked to a known customer identity, so repeat purchasing and customer retention cannot be measured or acted on from the current data.",
+      "status": null,
+      "operation": null,
+      "gatewayDecision": null
+    },
+    "message": "Server-bound 8 Shopify operation stubs for this candidate."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "OK",
+      "operation": "customers",
+      "gatewayDecision": null
+    },
+    "message": "customers completed through the Shopify gateway."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "OK",
+      "operation": "segments",
+      "gatewayDecision": null
+    },
+    "message": "segments completed through the Shopify gateway."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "ALREADY_AVAILABLE",
+      "operation": "customers",
+      "gatewayDecision": null
+    },
+    "message": "ALREADY_AVAILABLE: customers was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "ALREADY_AVAILABLE",
+      "operation": "segments",
+      "gatewayDecision": null
+    },
+    "message": "ALREADY_AVAILABLE: segments was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+  },
+  {
+    "ok": true,
+    "tool": "retrieve_shopify_operations",
+    "error": null,
+    "facts": {
+      "query": "Refresh or reconcile inventory quantities across active variants before further merchandising or promotional changes. All 51 recorded inventory levels are older than the 72-hour freshness threshold, meaning the apparent availability of 23 in-stock variants and \u00a346,407.68 of retail stock is not supported by current inventory timestamps.",
+      "status": null,
+      "operation": null,
+      "gatewayDecision": null
+    },
+    "message": "Server-bound 8 Shopify operation stubs for this candidate."
+  },
+  {
+    "ok": true,
+    "tool": "call_shopify_operation",
+    "error": null,
+    "facts": {
+      "query": null,
+      "status": "ALREADY_AVAILABLE",
+      "operation": "inventoryItems",
+      "gatewayDecision": null
+    },
+    "message": "ALREADY_AVAILABLE: inventoryItems was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+  },
+  {
+    "ok": false,
+    "tool": "call_shopify_operation",
+    "error": {
+      "code": "RECOMMENDATION_WRITE_DENIED",
+      "message": "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance."
+    },
+    "facts": {
+      "query": null,
+      "status": null,
+      "operation": null,
+      "gatewayDecision": null
+    },
+    "message": "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance."
+  }
+]

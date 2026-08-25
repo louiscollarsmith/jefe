@@ -1063,8 +1063,19 @@ function normalizeBelief(row) {
   };
 }
 
-/** @param {unknown} value */
-function safeTrace(value) {
+/**
+ * Compacts a run's trace for persistence. `query`/`status` originally matched only the catalog
+ * dispatcher's tool-result shape (`call_shopify_operation` set `facts.query`/`facts.status`); the
+ * Agentic Shopify Gateway's tool result shape uses `facts.document`/`facts.classification` for the
+ * same concepts (see gateway/tools.server.js `runValidatedQuery`), so Gateway runs were silently
+ * persisting `query: null` / `status: null` for every real read — the GraphQL text a candidate
+ * investigation actually sent to Shopify was unrecoverable from a completed run. `data`/`variables`/
+ * `resourceIds` stay excluded: those can carry live merchant/customer field values, and keeping them
+ * out of persisted diagnostics is the call-site discipline `apps/shopify/docs/observability.md`
+ * calls for now that generic PII scrubbing has been removed.
+ * @param {unknown} value
+ */
+export function safeTrace(value) {
   const trace = value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, any>} */ (value)
     : {};
@@ -1082,9 +1093,9 @@ function safeTrace(value) {
           ok: row.ok,
           message: row.message,
           facts: {
-            query: row.facts?.query ?? null,
+            query: row.facts?.document ?? row.facts?.query ?? null,
             operation: row.facts?.operation ?? null,
-            status: row.facts?.status ?? null,
+            status: row.facts?.status ?? row.facts?.classification ?? null,
             gatewayDecision: row.facts?.gatewayDecision ?? null,
           },
           error: row.error ?? null,

@@ -384,7 +384,7 @@ export async function generateAgenticShopifyRecommendation(input) {
             toolResults: publicShopifyToolResults(toolResults),
           }),
           schema: recommendationSchema,
-          maxInputTokens: 80000,
+          maxInputTokens: 120000,
           maxOutputTokens: 2800,
           timeoutMs: 90_000,
         }),
@@ -468,7 +468,14 @@ export async function generateAgenticShopifyRecommendation(input) {
       }
     }
 
-    if (turn.toolCalls.length > 0 && turn.status === "CONTINUE") continue;
+    // A terminal status (RECOMMEND_ACTION / NO_ACTIONABLE_OPPORTUNITY / BLOCKED) declared in the
+    // same turn as one or more toolCalls is provisional, not final: the executed results above are
+    // real new evidence the model has not seen yet, and it may well have changed its mind (e.g. a
+    // fallback query it fired alongside "BLOCKED" because its first read came back empty/null —
+    // see docs/ops/gateway-bad-graphql-root-cause-2026-08-25/12-root-cause-and-fix.md). Always loop
+    // back with the fresh tool results before honoring any terminal status the model paired with a
+    // pending call; maxIterations still bounds this the same way it bounds ordinary CONTINUE turns.
+    if (turn.toolCalls.length > 0) continue;
     if (turn.status === "RECOMMEND_ACTION") {
       const postToolInvestigationState = buildInvestigationState(toolResults, {
         lastCandidate: turn.recommendation ?? lastCandidate,

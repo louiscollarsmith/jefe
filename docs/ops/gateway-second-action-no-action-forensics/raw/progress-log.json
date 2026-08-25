@@ -1,0 +1,93 @@
+[
+  {
+    "at": "2026-08-25T17:15:40.516Z",
+    "state": "DISCOVERING_CANDIDATES",
+    "rescue": false
+  },
+  {
+    "at": "2026-08-25T17:15:55.673Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "restore-order-momentum"
+  },
+  {
+    "at": "2026-08-25T17:16:30.928Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "The factual premise is supported: Shopify returned active products, including Salt Road Feteasca and Cloud Needle Tsolikouri, and confirmed no existing code discounts or automatic discounts. However, this is BLOCKED_BY_EVIDENCE because the intervention requires a specific offer (for example, percentage, amount-off, BXGY, or free shipping), validity window, qualifying products, and channel. Shopify cannot infer the merchant's intended commercial terms or marketing channel. Available writes include discountCodeBasicCreate, discountCodeBxgyCreate, discountCodeFreeShippingCreate, and marketingActivityCreate, but they require confirmation and the relevant marketing/discount scopes are not currently satisfied.",
+    "candidateId": "restore-order-momentum",
+    "disposition": "BLOCKED_BY_EVIDENCE"
+  },
+  {
+    "at": "2026-08-25T17:16:30.928Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "capture-product-margin"
+  },
+  {
+    "at": "2026-08-25T17:17:15.118Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "BLOCKED_BY_EVIDENCE: Shopify state confirms the premise\u201425 active variants are present and products.cost_coverage is 0% (0 of 25 variants with cost). The inventoryItems read returned the corresponding inventory items but no usable unit-cost values. Although inventoryItemUpdate can write a cost field, the required accurate cost inputs are not stored in Shopify and cannot be inferred safely from prices, SKUs, inventory, or sales. Merchant-provided cost data is required before any safe mutation.",
+    "candidateId": "capture-product-margin",
+    "disposition": "BLOCKED_BY_EVIDENCE"
+  },
+  {
+    "at": "2026-08-25T17:17:15.118Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "increase-basket-combination"
+  },
+  {
+    "at": "2026-08-25T17:17:38.908Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "Shopify reads checked: active products returned 17 products, including Salt Road Feteasca (\u00a318 single bottle; \u00a397.66 case of six) and Cloud Needle Tsolikouri (\u00a323 single bottle), while product-level evidence reports 23 in-stock variants and 1,185 positive available units. Existing code discounts and automatic discounts are both empty. However, Shopify has no authoritative input for which complementary products the merchant wants bundled or what bundle price/discount to use. Because the proposed intervention requires those choices to be confirmed before implementation, no safe actionable recommendation can be issued.",
+    "candidateId": "increase-basket-combination",
+    "disposition": "BLOCKED_BY_EVIDENCE"
+  },
+  {
+    "at": "2026-08-25T17:17:38.908Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "activate-rising-product"
+  },
+  {
+    "at": "2026-08-25T17:18:28.349Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "Shopify state checked: product confirms Cloud Needle Tsolikouri is ACTIVE; product-momentum evidence confirms \u00a3115 current 30-day revenue versus \u00a392 prior, up 25%; collections shows an existing empty Proven Products collection and no confirmed placement for Cloud Needle Tsolikouri; channels failed with NEEDS_SHOPIFY_AUTHORIZATION due to missing read_publications. Because the desired channel/placement and publishable destination cannot be verified, no safe reversible merchandising mutation can be specified now.",
+    "candidateId": "activate-rising-product",
+    "disposition": "BLOCKED_BY_EVIDENCE"
+  },
+  {
+    "at": "2026-08-25T17:18:28.349Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "improve-repeat-purchase-measurement"
+  },
+  {
+    "at": "2026-08-25T17:19:11.985Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "The candidate does not hold up against current Shopify state: the customers read returned linked customer/order records, including repeat customers, and the segments read found an existing \"Customers who have purchased more than once\" segment using number_of_orders > 1. No mutation is warranted.",
+    "candidateId": "improve-repeat-purchase-measurement",
+    "disposition": "ALREADY_COVERED"
+  },
+  {
+    "at": "2026-08-25T17:19:11.985Z",
+    "state": "INVESTIGATING_CANDIDATE",
+    "rescue": false,
+    "candidateId": "refresh-inventory-confidence"
+  },
+  {
+    "at": "2026-08-25T17:19:37.025Z",
+    "state": "TRYING_NEXT_CANDIDATE",
+    "reason": "The stale-inventory premise holds: inventory.stale_inventory_level_share reports 51/51 levels stale, data.inventory_freshness_hours_p90 is 462.18 hours, and inventory coverage is 25/25 tracked variants. However, the Shopify reads do not provide a trustworthy current quantity source. Available writes such as inventoryAdjustQuantities and inventorySetQuantities require explicit adjustments or absolute quantities; applying values derived from the stale records would not constitute a safe refresh or reconciliation. Obtain a current stock count or authoritative inventory feed first.",
+    "candidateId": "refresh-inventory-confidence",
+    "disposition": "BLOCKED_BY_EVIDENCE"
+  },
+  {
+    "at": "2026-08-25T17:19:37.025Z",
+    "state": "RESCUE_DISCOVERY"
+  },
+  {
+    "at": "2026-08-25T17:19:55.762Z",
+    "state": "NO_ACTIONABLE_OPPORTUNITY"
+  }
+]

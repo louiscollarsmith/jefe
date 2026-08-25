@@ -2611,7 +2611,7 @@ function productMomentum(context, definition) {
     const currentRevenue = current.revenueByProduct.get(productId) ?? 0;
     const change = (currentRevenue - priorRevenue) / priorRevenue;
     const entry = {
-      productId,
+      productId: productShopifyGid(context, productId),
       title: productTitle(context, productId),
       changePercent: roundNumber(change * 100, 2),
       currentRevenue: roundMoney(currentRevenue),
@@ -2744,7 +2744,7 @@ function topReturnedProducts(context, definition, days) {
     .map(([productId, returnedUnits]) => {
       const soldUnits = soldUnitsByProduct.get(productId) ?? 0;
       return {
-        productId,
+        productId: productShopifyGid(context, productId),
         title: productTitle(context, productId),
         returnedUnits,
         refundValue: roundMoney(refundValueByProduct.get(productId) ?? 0),
@@ -3491,7 +3491,7 @@ function discountConcentration(context, definition, days) {
   }
   const items5 = Array.from(discountByProduct.entries())
     .map(([productId, amount]) => ({
-      productId,
+      productId: productShopifyGid(context, productId),
       title: productTitle(context, productId),
       discountAmount: roundMoney(amount),
       discountSharePercent: roundNumber((amount / totalDiscount) * 100, 2),
@@ -3675,6 +3675,21 @@ function productTitle(context, productId) {
   );
 }
 
+/**
+ * Resolves our internal `products.id` (a local Postgres primary key, used throughout this file for
+ * joining orders/line-items/variants) to the real Shopify GID (`products.externalId`, already stored
+ * in `gid://shopify/Product/…` form) for any belief value shown to the model. Beliefs must never
+ * serialize the bare internal id under a `productId` key: the Agentic Shopify Gateway's model-facing
+ * tools (`shopify_query`) accept only Shopify-native GraphQL `ID`s, and an internal database key that
+ * happens to also be a syntactically valid UUID is indistinguishable from a real one to the model —
+ * see docs/ops/gateway-bad-graphql-root-cause-2026-08-25/07-stable-id-analysis.md for the traced
+ * failure this caused (Luna passed a `products.id` value into `nodes(ids:)`, which Shopify correctly
+ * rejected as "Invalid global id").
+ */
+function productShopifyGid(context, productId) {
+  return context.products.find((product) => product.id === productId)?.externalId ?? null;
+}
+
 const INVENTORY_VELOCITY_WINDOW_DAYS = 30;
 const STOCKOUT_RISK_DAYS = 21;
 const MIN_UNITS_FOR_VELOCITY = 3;
@@ -3702,7 +3717,7 @@ function productInventoryCover(context, days) {
     const dailyVelocity = unitsSold / days;
     if (dailyVelocity <= 0) continue;
     rows.push({
-      productId,
+      productId: productShopifyGid(context, productId),
       title: productTitle(context, productId),
       unitsSold,
       available,
@@ -3809,7 +3824,7 @@ function deadStock(context, definition, days) {
     deadStockProductCount += 1;
     if (hasCost) {
       totalTrappedCapital += trapped;
-      items.push({ productId: product.id, title: productTitle(context, product.id), unitsOnHand: units, trappedCapital: roundMoney(trapped) });
+      items.push({ productId: productShopifyGid(context, product.id), title: productTitle(context, product.id), unitsOnHand: units, trappedCapital: roundMoney(trapped) });
     }
   }
   if (deadStockProductCount < 1) {
@@ -3872,7 +3887,7 @@ function bestsellerByRevenue(context, definition, days) {
   const [productId, revenue] = ranked[0];
   return derived(context, definition, {
     value: {
-      productId,
+      productId: productShopifyGid(context, productId),
       title: productTitle(context, productId),
       revenue: roundMoney(revenue),
       revenueSharePercent: roundNumber((revenue / total) * 100, 2),
@@ -3902,7 +3917,7 @@ function bestsellerByUnits(context, definition, days) {
   const [productId, units] = ranked[0];
   return derived(context, definition, {
     value: {
-      productId,
+      productId: productShopifyGid(context, productId),
       title: productTitle(context, productId),
       units,
       unitsSharePercent: roundNumber((units / totalUnits) * 100, 2),

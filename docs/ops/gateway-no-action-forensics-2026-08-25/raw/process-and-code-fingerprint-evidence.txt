@@ -1,0 +1,34 @@
+=== accra (this workspace) ===
+branch: louiscollarsmith/gateway-experiment
+commit:  773a713ddf4ce3c94590d29271d3b8a8596582f7
+git status: clean (only untracked docs/ops/gateway-second-action-no-action-forensics/ from prior investigation)
+gateway/ dir: present (document.server.js, schema-cache/, schema-cache.server.js, schema-index.server.js, synthetic-stub.server.js, tools.server.js)
+.shopify CLI state dir mtime: 2026-08-25 19:02:57 BST
+running shopify app dev process: NONE at investigation time
+
+=== riyadh ===
+branch: louiscollarsmith/gpt-5.6-luna-call-failures
+commit:  a413c9218fd09a9258469253307a838de6a0592c
+gateway/ dir: DOES NOT EXIST
+"shopify_query" string count in app/lib/shopify/agentic-runtime/: 0
+running shopify app dev process: PID 36817, started Tue Aug 25 13:26:26 2026, continuously running
+cloudflared tunnel: PID 37018, --url http://localhost:52109
+
+=== lusaka ===
+branch: louiscollarsmith/wipe-local-db-v12
+commit: 987f0c7b115ec6be90f6af25cbb1799645dba324
+(predates Gateway work entirely; no gateway/ dir)
+
+=== vientiane ===
+branch: louiscollarsmith/vientiane
+commit: c5da77619a7d31062fc6a0adda3dad8904fd1b23
+(predates Gateway work entirely; no gateway/ dir)
+
+=== shared config ===
+Both accra and riyadh shopify.app.toml: client_id = c7d72018569103d47cc8dffb3980e89a (identical)
+Both accra and riyadh .env: DATABASE_URL=postgresql://jefe:jefe@localhost:55432/jefe_dev (identical, shared)
+
+=== target run's persisted tool trace (raw/target-run-result.pretty.json) ===
+"tool": "shopify_query" occurrences: 7 (4 real reads + 3 ALREADY_AVAILABLE cache hits)
+"tool": "retrieve_shopify_operations" occurrences: 0
+"tool": "call_shopify_operation" occurrences: 0

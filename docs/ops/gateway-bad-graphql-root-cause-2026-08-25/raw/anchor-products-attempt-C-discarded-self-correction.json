@@ -1,0 +1,304 @@
+{
+  "candidateKey": "anchor-products",
+  "attempt": 4,
+  "durationMs": 54635,
+  "status": "BLOCKED",
+  "blocker": "The prior nodes read completed technically but returned null for both requested product IDs, leaving the required Shopify predicates unverified. A title-based product search is required before deciding whether a promotional merchandising placement is safe and actionable.",
+  "rawQueryCalls": [
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CandidateProducts($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { id title handle status totalInventory vendor productType onlineStoreUrl variants(first: 10) { nodes { id title availableForSale inventoryQuantity } } } } }",
+        "variables": {
+          "ids": [
+            "gid://shopify/Product/e00fb90c-15a8-44ed-8f26-d702e11c2322",
+            "gid://shopify/Product/15523d15-581c-4e80-80c3-bdb36a524dc8"
+          ]
+        },
+        "purpose": "Verify that the two proposed promotional products still exist, are sellable, and have available inventory in Shopify before recommending a merchandising placement.",
+        "expectedEffect": "Read-only verification only; no Shopify state changes."
+      }
+    },
+    {
+      "raw": {
+        "kind": "QUERY",
+        "document": "query CandidateProductsByTitle {\n  products(first: 10, query: \"title:\\\"Borderlands Discovery Four\\\" OR title:\\\"Cloud Needle Tsolikouri\\\"\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      vendor\n      productType\n      onlineStoreUrl\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          availableForSale\n          inventoryQuantity\n        }\n      }\n    }\n  }\n}",
+        "variables": {},
+        "purpose": "Resolve the product records by title because the prior node lookup returned null IDs; verify current product status, inventory, and online availability before recommending a merchandising placement.",
+        "expectedEffect": "Read-only verification of the two candidate products."
+      }
+    }
+  ],
+  "trace": {
+    "turns": [
+      {
+        "status": "NO_ACTIONABLE_OPPORTUNITY",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri through a Shopify merchandising placement.",
+            "status": "BLOCKED_BY_EVIDENCE",
+            "reason": "The supplied Shopify evidence confirms the sales gap and identifies the products, but does not identify an existing eligible merchandising surface or provide the required destination/placement configuration for a safe reversible Shopify write.",
+            "relevantOperations": [
+              "Product read",
+              "Collection read"
+            ]
+          }
+        ],
+        "toolCalls": [],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": "No live Shopify read was executed because the candidate does not specify a concrete Shopify placement to create or update. A promotional merchandising placement could mean a collection, featured collection, navigation link, theme section, or app-owned resource; the safe write operation and required target are therefore not determinable from the supplied evidence. The evidence also shows the latest stored order is 19 days old, but this is derived from incomplete stored order history (backfillComplete=false), so it cannot by itself establish a complete current-store sales gap.",
+        "candidateDisposition": "BLOCKED_BY_EVIDENCE",
+        "usage": {
+          "inputTokens": 59050,
+          "cachedInputTokens": 59047,
+          "outputTokens": 302,
+          "totalTokens": 59352,
+          "estimatedInputTokens": 50395
+        },
+        "durationMs": 17821
+      },
+      {
+        "status": "CONTINUE",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "Revenue is currently intermittent, and promoting the strongest recent products could help reactivate sales after the 19-day order gap.",
+            "status": "INVESTIGATING",
+            "reason": "Merchant Memory supports the recent order gap and identifies Borderlands Discovery Four and Cloud Needle Tsolikouri as strong recent products; current Shopify product status, availability, and merchandising placement still need verification.",
+            "relevantOperations": [
+              "products",
+              "product",
+              "collections"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CandidateProducts($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { id title handle status totalInventory vendor productType onlineStoreUrl variants(first: 10) { nodes { id title availableForSale inventoryQuantity } } } } }",
+              "variables": {
+                "ids": [
+                  "gid://shopify/Product/e00fb90c-15a8-44ed-8f26-d702e11c2322",
+                  "gid://shopify/Product/15523d15-581c-4e80-80c3-bdb36a524dc8"
+                ]
+              },
+              "purpose": "Verify that the two proposed promotional products still exist, are sellable, and have available inventory in Shopify before recommending a merchandising placement.",
+              "expectedEffect": "Read-only verification only; no Shopify state changes."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": null,
+        "candidateDisposition": null,
+        "usage": {
+          "inputTokens": 59195,
+          "cachedInputTokens": 59192,
+          "outputTokens": 464,
+          "totalTokens": 59659,
+          "estimatedInputTokens": 50572
+        },
+        "durationMs": 5617
+      },
+      {
+        "status": "BLOCKED",
+        "opportunityCoverage": [],
+        "hypothesesConsidered": [
+          {
+            "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri.",
+            "status": "BLOCKED_BY_EVIDENCE",
+            "reason": "The prior Shopify read returned null for both product IDs, so current product status, online availability, inventory, and merchandising state were not verified.",
+            "relevantOperations": [
+              "nodes"
+            ]
+          }
+        ],
+        "toolCalls": [
+          {
+            "tool": "shopify_query",
+            "arguments": {
+              "kind": "QUERY",
+              "document": "query CandidateProductsByTitle {\n  products(first: 10, query: \"title:\\\"Borderlands Discovery Four\\\" OR title:\\\"Cloud Needle Tsolikouri\\\"\") {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      vendor\n      productType\n      onlineStoreUrl\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          availableForSale\n          inventoryQuantity\n        }\n      }\n    }\n  }\n}",
+              "variables": {},
+              "purpose": "Resolve the product records by title because the prior node lookup returned null IDs; verify current product status, inventory, and online availability before recommending a merchandising placement.",
+              "expectedEffect": "Read-only verification of the two candidate products."
+            }
+          }
+        ],
+        "recommendation": null,
+        "rawRecommendation": null,
+        "blocker": "The prior nodes read completed technically but returned null for both requested product IDs, leaving the required Shopify predicates unverified. A title-based product search is required before deciding whether a promotional merchandising placement is safe and actionable.",
+        "candidateDisposition": "BLOCKED_BY_EVIDENCE",
+        "usage": {
+          "inputTokens": 59516,
+          "cachedInputTokens": 1798,
+          "outputTokens": 426,
+          "totalTokens": 59942,
+          "estimatedInputTokens": 50859
+        },
+        "durationMs": 17364
+      }
+    ],
+    "toolResults": [
+      {
+        "tool": "recommendation_validation",
+        "ok": false,
+        "message": "Recommendation decisions require at least one successful Shopify read (shopify_query).",
+        "facts": {
+          "errorCode": "INSUFFICIENT_INVESTIGATION",
+          "unresolvedFamilies": null,
+          "requiredNextTools": [
+            "shopify_query"
+          ],
+          "repairInstruction": "Call shopify_query to read relevant Shopify state before concluding."
+        },
+        "error": {
+          "code": "INSUFFICIENT_INVESTIGATION",
+          "message": "Recommendation decisions require at least one successful Shopify read (shopify_query)."
+        }
+      },
+      {
+        "tool": "shopify_query",
+        "ok": true,
+        "message": "nodes query executed.",
+        "facts": {
+          "operation": "nodes",
+          "domain": "app_platform",
+          "document": "query CandidateProducts($ids: [ID!]!) {\n  nodes(ids: $ids) {\n    ... on Product {\n      id\n      title\n      handle\n      status\n      totalInventory\n      vendor\n      productType\n      onlineStoreUrl\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          availableForSale\n          inventoryQuantity\n        }\n      }\n    }\n  }\n}",
+          "variables": {
+            "ids": [
+              "gid://shopify/Product/e00fb90c-15a8-44ed-8f26-d702e11c2322",
+              "gid://shopify/Product/15523d15-581c-4e80-80c3-bdb36a524dc8"
+            ]
+          },
+          "classification": "FULL_SUCCESS",
+          "partialErrors": [],
+          "resourceIds": [],
+          "data": {
+            "nodes": [
+              null,
+              null
+            ]
+          }
+        },
+        "error": null
+      },
+      {
+        "tool": "shopify_query",
+        "ok": true,
+        "message": "products query executed.",
+        "facts": {
+          "operation": "products",
+          "domain": "products",
+          "document": "query CandidateProductsByTitle {\n  products(\n    first: 10\n    query: \"title:\\\"Borderlands Discovery Four\\\" OR title:\\\"Cloud Needle Tsolikouri\\\"\"\n  ) {\n    nodes {\n      id\n      title\n      handle\n      status\n      totalInventory\n      vendor\n      productType\n      onlineStoreUrl\n      variants(first: 10) {\n        nodes {\n          id\n          title\n          availableForSale\n          inventoryQuantity\n        }\n      }\n    }\n  }\n}",
+          "variables": {},
+          "classification": "FULL_SUCCESS",
+          "partialErrors": [],
+          "resourceIds": [
+            "gid://shopify/Product/10375206699304",
+            "gid://shopify/Product/10375207780648",
+            "gid://shopify/ProductVariant/52197093933352",
+            "gid://shopify/ProductVariant/52197095047464",
+            "gid://shopify/ProductVariant/52197096423720"
+          ],
+          "data": {
+            "products": {
+              "nodes": [
+                {
+                  "id": "gid://shopify/Product/10375206699304",
+                  "title": "Cloud Needle Tsolikouri",
+                  "handle": "cloud-needle-tsolikouri",
+                  "status": "ACTIVE",
+                  "totalInventory": 222,
+                  "vendor": "Didi Mta",
+                  "productType": "White Wine",
+                  "onlineStoreUrl": null
+                },
+                {
+                  "id": "gid://shopify/Product/10375207780648",
+                  "title": "Borderlands Discovery Four",
+                  "handle": "borderlands-discovery-four",
+                  "status": "ACTIVE",
+                  "totalInventory": 61,
+                  "vendor": "Elsewhere Cellar",
+                  "productType": "Wine Bundle",
+                  "onlineStoreUrl": null
+                }
+              ]
+            }
+          }
+        },
+        "error": null
+      }
+    ]
+  },
+  "diagnostics": {
+    "hypothesesConsidered": [
+      {
+        "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri through a Shopify merchandising placement.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "reason": "The supplied Shopify evidence confirms the sales gap and identifies the products, but does not identify an existing eligible merchandising surface or provide the required destination/placement configuration for a safe reversible Shopify write.",
+        "relevantOperations": [
+          "Product read",
+          "Collection read"
+        ]
+      },
+      {
+        "hypothesis": "Revenue is currently intermittent, and promoting the strongest recent products could help reactivate sales after the 19-day order gap.",
+        "status": "INVESTIGATING",
+        "reason": "Merchant Memory supports the recent order gap and identifies Borderlands Discovery Four and Cloud Needle Tsolikouri as strong recent products; current Shopify product status, availability, and merchandising placement still need verification.",
+        "relevantOperations": [
+          "products",
+          "product",
+          "collections"
+        ]
+      },
+      {
+        "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "reason": "The prior Shopify read returned null for both product IDs, so current product status, online availability, inventory, and merchandising state were not verified.",
+        "relevantOperations": [
+          "nodes"
+        ]
+      }
+    ],
+    "retrievedOperations": [],
+    "shopifyReads": [
+      {
+        "operation": "nodes",
+        "ok": true
+      },
+      {
+        "operation": "products",
+        "ok": true
+      }
+    ],
+    "feasibleInterventions": [],
+    "rejectedInterventions": [
+      {
+        "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri through a Shopify merchandising placement.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "reason": "The supplied Shopify evidence confirms the sales gap and identifies the products, but does not identify an existing eligible merchandising surface or provide the required destination/placement configuration for a safe reversible Shopify write.",
+        "relevantOperations": [
+          "Product read",
+          "Collection read"
+        ]
+      },
+      {
+        "hypothesis": "The recent order gap can be addressed by promoting Borderlands Discovery Four and Cloud Needle Tsolikouri.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "reason": "The prior Shopify read returned null for both product IDs, so current product status, online availability, inventory, and merchandising state were not verified.",
+        "relevantOperations": [
+          "nodes"
+        ]
+      }
+    ],
+    "opportunityCoverage": [],
+    "semanticRepair": null,
+    "investigationTurns": 3
+  }
+}

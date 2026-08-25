@@ -176,9 +176,9 @@ test("deterministic Shopify derivations gate unsafe refund amounts and separate 
 
 function createProductPerformancePrisma(orderCount) {
   const products = [
-    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
-    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
-    { id: "prod-charlie", title: "Charlie", status: "ACTIVE" },
+    { id: "prod-alpha", externalId: "gid://shopify/Product/1001", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", externalId: "gid://shopify/Product/1002", title: "Bravo", status: "ACTIVE" },
+    { id: "prod-charlie", externalId: "gid://shopify/Product/1003", title: "Charlie", status: "ACTIVE" },
   ];
   const variants = [
     { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-a" },
@@ -241,13 +241,17 @@ test("product-performance beliefs derive concentration, bestsellers and dead sto
 
   const byRevenue = beliefs.get("products.bestseller_by_revenue.trailing_90d");
   assert.equal(byRevenue.valueType, "structured");
-  assert.equal(byRevenue.value.productId, "prod-alpha");
+  // Regression for docs/ops/gateway-bad-graphql-root-cause-2026-08-25: this must be the real
+  // Shopify GID (products.externalId), never the internal products.id — a bare internal UUID
+  // here is indistinguishable from a real Shopify GID to the model and caused Luna to pass one
+  // into shopify_query's nodes(ids:) argument, which Shopify correctly rejected.
+  assert.equal(byRevenue.value.productId, "gid://shopify/Product/1001");
   assert.equal(byRevenue.value.title, "Alpha");
   assert.equal(byRevenue.value.revenue, 600);
   assert.equal(byRevenue.value.revenueSharePercent, 75);
 
   const byUnits = beliefs.get("products.bestseller_by_units.trailing_90d");
-  assert.equal(byUnits.value.productId, "prod-alpha");
+  assert.equal(byUnits.value.productId, "gid://shopify/Product/1001");
   assert.equal(byUnits.value.units, 6);
 
   for (const key of [
@@ -257,6 +261,41 @@ test("product-performance beliefs derive concentration, bestsellers and dead sto
   ]) {
     assert.ok(bands.includes(beliefs.get(key).confidence), `${key} confidence not in calibrated band`);
   }
+});
+
+// Regression for docs/ops/gateway-bad-graphql-root-cause-2026-08-25: a deterministic belief's
+// value_json must never expose our internal products.id (a local Postgres primary key that is
+// coincidentally UUID-shaped, just like a real identifier) under a `productId`-named key. Luna
+// cannot distinguish "internal database key" from "Shopify GID" by looking at the string alone —
+// it took the value at face value and passed it into shopify_query's nodes(ids:) argument, which
+// Shopify correctly rejected ("Invalid global id"). Every product reference model-visible beliefs
+// emit must be the real Shopify GID (products.externalId, already stored as `gid://shopify/Product/…`).
+test("no product-performance belief ever exposes an internal products.id under a productId key", async () => {
+  const prisma = createProductPerformancePrisma(10);
+  const result = await deriveMerchantMemoryBeliefs(prisma, {
+    merchantId: "merchant-test",
+    shopId: "shop-test",
+    categories: ["products"],
+  });
+  const internalIds = new Set(["prod-alpha", "prod-bravo", "prod-charlie"]);
+  let productIdFieldsChecked = 0;
+  const walk = (value, path) => {
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => walk(item, `${path}[${i}]`));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (/productId$/i.test(key) && typeof child === "string") {
+        productIdFieldsChecked += 1;
+        assert.ok(!internalIds.has(child), `${path}.${key} leaked internal products.id "${child}"`);
+        assert.ok(child.startsWith("gid://shopify/Product/"), `${path}.${key} = "${child}" is not a Shopify GID`);
+      }
+      walk(child, `${path}.${key}`);
+    }
+  };
+  for (const belief of result.derivations) walk(belief.value, belief.key);
+  assert.ok(productIdFieldsChecked >= 2, "expected at least the bestseller-by-revenue and bestseller-by-units productId fields to be checked");
 });
 
 test("structured belief shares/rates ground generated percent claims", () => {
@@ -611,8 +650,8 @@ test("margin-by-region states gross margin per country, doubly coverage-gated", 
 function createDeadStockPrisma() {
   const now = Date.now();
   const products = [
-    { id: "prod-dead", title: "Dead Widget", status: "ACTIVE" },
-    { id: "prod-live", title: "Live Widget", status: "ACTIVE" },
+    { id: "prod-dead", externalId: "gid://shopify/Product/2001", title: "Dead Widget", status: "ACTIVE" },
+    { id: "prod-live", externalId: "gid://shopify/Product/2002", title: "Live Widget", status: "ACTIVE" },
   ];
   const variants = [
     { id: "var-dead", productId: "prod-dead", sku: "D", title: "D", price: "100.00", currency: "GBP", unitCost: "40.00", inventoryItemExternalId: "inv-d" },
@@ -671,7 +710,7 @@ test("dead-stock belief surfaces in-stock, no-sale products with trapped capital
 
   assert.equal(dead.valueType, "structured");
   assert.equal(dead.value.deadStockProductCount, 1); // only the dead product
-  assert.equal(dead.value.topDeadProduct.productId, "prod-dead");
+  assert.equal(dead.value.topDeadProduct.productId, "gid://shopify/Product/2001");
   assert.equal(dead.value.topDeadProduct.trappedCapital, 400); // 10 units × £40 cost
   assert.equal(dead.value.totalTrappedCapital, 400);
   assert.equal(dead.value.currency, "GBP");
@@ -856,8 +895,8 @@ test("online revenue share splits store vs online revenue from sourceName", asyn
 
 function createReturnsPrisma() {
   const products = [
-    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
-    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
+    { id: "prod-alpha", externalId: "gid://shopify/Product/3001", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", externalId: "gid://shopify/Product/3002", title: "Bravo", status: "ACTIVE" },
   ];
   const variants = [
     { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
@@ -913,12 +952,12 @@ test("top-returned-products maps GraphQL and REST webhook refund line items to p
   );
   assert.ok(belief, "top_returned_products should publish");
   // Alpha: 2 returned of 6 sold -> 0.3333; Bravo: 1 of 4 -> 0.25.
-  assert.equal(belief.value.items[0].productId, "prod-alpha");
+  assert.equal(belief.value.items[0].productId, "gid://shopify/Product/3001");
   assert.equal(belief.value.items[0].returnedUnits, 2);
   assert.equal(belief.value.items[0].soldUnits, 6);
   assert.equal(belief.value.items[0].returnRatePercent, 33.33);
   assert.equal(belief.value.items[0].refundValue, 200);
-  assert.equal(belief.value.items[1].productId, "prod-bravo");
+  assert.equal(belief.value.items[1].productId, "gid://shopify/Product/3002");
   assert.equal(belief.value.items[1].returnedUnits, 1);
 });
 
@@ -1232,8 +1271,8 @@ test("action decline signal aggregates reason categories (Observe->Learn)", asyn
 
 function createMomentumPrisma() {
   const products = [
-    { id: "prod-alpha", title: "Alpha", status: "ACTIVE" },
-    { id: "prod-bravo", title: "Bravo", status: "ACTIVE" },
+    { id: "prod-alpha", externalId: "gid://shopify/Product/4001", title: "Alpha", status: "ACTIVE" },
+    { id: "prod-bravo", externalId: "gid://shopify/Product/4002", title: "Bravo", status: "ACTIVE" },
   ];
   const variants = [
     { id: "var-alpha", productId: "prod-alpha", sku: "A", title: "A", price: "100.00", currency: "GBP", inventoryItemExternalId: "inv-a" },
@@ -1289,8 +1328,8 @@ test("product momentum flags risers and fallers, current 30d vs prior 30d", asyn
   // Alpha £500->£100 (declining); Bravo £100->£500 (rising).
   assert.equal(m.value.risingProductCount, 1);
   assert.equal(m.value.decliningProductCount, 1);
-  assert.equal(m.value.topRiser.productId, "prod-bravo");
-  assert.equal(m.value.topFaller.productId, "prod-alpha");
+  assert.equal(m.value.topRiser.productId, "gid://shopify/Product/4002");
+  assert.equal(m.value.topFaller.productId, "gid://shopify/Product/4001");
 });
 
 function createYoyPrisma() {

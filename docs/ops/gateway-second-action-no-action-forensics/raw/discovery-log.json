@@ -1,0 +1,24 @@
+[
+  {
+    "usage": {
+      "inputTokens": 64653,
+      "totalTokens": 66017,
+      "outputTokens": 1364,
+      "cachedInputTokens": 64650,
+      "estimatedInputTokens": 59032
+    },
+    "rescue": false,
+    "candidateCount": 6
+  },
+  {
+    "usage": {
+      "inputTokens": 65734,
+      "totalTokens": 66058,
+      "outputTokens": 324,
+      "cachedInputTokens": 0,
+      "estimatedInputTokens": 60417
+    },
+    "rescue": true,
+    "candidateCount": 0
+  }
+]

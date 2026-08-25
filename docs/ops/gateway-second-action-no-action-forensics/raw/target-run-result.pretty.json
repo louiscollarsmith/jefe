@@ -1,0 +1,633 @@
+{
+  "trace": {
+    "turns": [],
+    "progressLog": [
+      {
+        "at": "2026-08-25T17:15:40.516Z",
+        "state": "DISCOVERING_CANDIDATES",
+        "rescue": false
+      },
+      {
+        "at": "2026-08-25T17:15:55.673Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "restore-order-momentum"
+      },
+      {
+        "at": "2026-08-25T17:16:30.928Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "The factual premise is supported: Shopify returned active products, including Salt Road Feteasca and Cloud Needle Tsolikouri, and confirmed no existing code discounts or automatic discounts. However, this is BLOCKED_BY_EVIDENCE because the intervention requires a specific offer (for example, percentage, amount-off, BXGY, or free shipping), validity window, qualifying products, and channel. Shopify cannot infer the merchant's intended commercial terms or marketing channel. Available writes include discountCodeBasicCreate, discountCodeBxgyCreate, discountCodeFreeShippingCreate, and marketingActivityCreate, but they require confirmation and the relevant marketing/discount scopes are not currently satisfied.",
+        "candidateId": "restore-order-momentum",
+        "disposition": "BLOCKED_BY_EVIDENCE"
+      },
+      {
+        "at": "2026-08-25T17:16:30.928Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "capture-product-margin"
+      },
+      {
+        "at": "2026-08-25T17:17:15.118Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "BLOCKED_BY_EVIDENCE: Shopify state confirms the premise\u201425 active variants are present and products.cost_coverage is 0% (0 of 25 variants with cost). The inventoryItems read returned the corresponding inventory items but no usable unit-cost values. Although inventoryItemUpdate can write a cost field, the required accurate cost inputs are not stored in Shopify and cannot be inferred safely from prices, SKUs, inventory, or sales. Merchant-provided cost data is required before any safe mutation.",
+        "candidateId": "capture-product-margin",
+        "disposition": "BLOCKED_BY_EVIDENCE"
+      },
+      {
+        "at": "2026-08-25T17:17:15.118Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "increase-basket-combination"
+      },
+      {
+        "at": "2026-08-25T17:17:38.908Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "Shopify reads checked: active products returned 17 products, including Salt Road Feteasca (\u00a318 single bottle; \u00a397.66 case of six) and Cloud Needle Tsolikouri (\u00a323 single bottle), while product-level evidence reports 23 in-stock variants and 1,185 positive available units. Existing code discounts and automatic discounts are both empty. However, Shopify has no authoritative input for which complementary products the merchant wants bundled or what bundle price/discount to use. Because the proposed intervention requires those choices to be confirmed before implementation, no safe actionable recommendation can be issued.",
+        "candidateId": "increase-basket-combination",
+        "disposition": "BLOCKED_BY_EVIDENCE"
+      },
+      {
+        "at": "2026-08-25T17:17:38.908Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "activate-rising-product"
+      },
+      {
+        "at": "2026-08-25T17:18:28.349Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "Shopify state checked: product confirms Cloud Needle Tsolikouri is ACTIVE; product-momentum evidence confirms \u00a3115 current 30-day revenue versus \u00a392 prior, up 25%; collections shows an existing empty Proven Products collection and no confirmed placement for Cloud Needle Tsolikouri; channels failed with NEEDS_SHOPIFY_AUTHORIZATION due to missing read_publications. Because the desired channel/placement and publishable destination cannot be verified, no safe reversible merchandising mutation can be specified now.",
+        "candidateId": "activate-rising-product",
+        "disposition": "BLOCKED_BY_EVIDENCE"
+      },
+      {
+        "at": "2026-08-25T17:18:28.349Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "improve-repeat-purchase-measurement"
+      },
+      {
+        "at": "2026-08-25T17:19:11.985Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "The candidate does not hold up against current Shopify state: the customers read returned linked customer/order records, including repeat customers, and the segments read found an existing \"Customers who have purchased more than once\" segment using number_of_orders > 1. No mutation is warranted.",
+        "candidateId": "improve-repeat-purchase-measurement",
+        "disposition": "ALREADY_COVERED"
+      },
+      {
+        "at": "2026-08-25T17:19:11.985Z",
+        "state": "INVESTIGATING_CANDIDATE",
+        "rescue": false,
+        "candidateId": "refresh-inventory-confidence"
+      },
+      {
+        "at": "2026-08-25T17:19:37.025Z",
+        "state": "TRYING_NEXT_CANDIDATE",
+        "reason": "The stale-inventory premise holds: inventory.stale_inventory_level_share reports 51/51 levels stale, data.inventory_freshness_hours_p90 is 462.18 hours, and inventory coverage is 25/25 tracked variants. However, the Shopify reads do not provide a trustworthy current quantity source. Available writes such as inventoryAdjustQuantities and inventorySetQuantities require explicit adjustments or absolute quantities; applying values derived from the stale records would not constitute a safe refresh or reconciliation. Obtain a current stock count or authoritative inventory feed first.",
+        "candidateId": "refresh-inventory-confidence",
+        "disposition": "BLOCKED_BY_EVIDENCE"
+      },
+      {
+        "at": "2026-08-25T17:19:37.025Z",
+        "state": "RESCUE_DISCOVERY"
+      },
+      {
+        "at": "2026-08-25T17:19:55.762Z",
+        "state": "NO_ACTIONABLE_OPPORTUNITY"
+      }
+    ],
+    "toolResults": [
+      {
+        "ok": true,
+        "tool": "retrieve_shopify_operations",
+        "error": null,
+        "facts": {
+          "query": "Create a curated product bundle from complementary products, with pricing and component selection confirmed before implementation. Customers are purchasing relatively narrow baskets: the median order contains 1 item, 54% of trailing-90-day orders contain exactly one item, and only 6% contain four or more items.",
+          "status": null,
+          "operation": null,
+          "gatewayDecision": null
+        },
+        "message": "Server-bound 8 Shopify operation stubs for this candidate."
+      },
+      {
+        "ok": true,
+        "tool": "retrieve_shopify_operations",
+        "error": null,
+        "facts": {
+          "query": "Feature Cloud Needle Tsolikouri in a dedicated storefront merchandising placement or campaign, after confirming the desired channel and placement. Demand is concentrated in a small part of the range's current momentum: only 1 product is rising versus the prior 30 days while 13 products are declining, including Lemon Grove Vidiano falling from \u00a363 to \u00a30.",
+          "status": null,
+          "operation": null,
+          "gatewayDecision": null
+        },
+        "message": "Server-bound 8 Shopify operation stubs for this candidate."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "OK",
+          "operation": "product",
+          "gatewayDecision": null
+        },
+        "message": "product completed through the Shopify gateway."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "OK",
+          "operation": "collections",
+          "gatewayDecision": null
+        },
+        "message": "collections completed through the Shopify gateway."
+      },
+      {
+        "ok": false,
+        "tool": "call_shopify_operation",
+        "error": {
+          "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+          "message": "Missing Shopify scopes: read_publications"
+        },
+        "facts": {
+          "query": null,
+          "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+          "operation": "channels",
+          "gatewayDecision": "missing_shopify_scopes"
+        },
+        "message": "channels did not complete: NEEDS_SHOPIFY_AUTHORIZATION."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "ALREADY_AVAILABLE",
+          "operation": "product",
+          "gatewayDecision": null
+        },
+        "message": "ALREADY_AVAILABLE: product was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "ALREADY_AVAILABLE",
+          "operation": "collections",
+          "gatewayDecision": null
+        },
+        "message": "ALREADY_AVAILABLE: collections was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+      },
+      {
+        "ok": false,
+        "tool": "call_shopify_operation",
+        "error": {
+          "code": "NEEDS_SHOPIFY_AUTHORIZATION",
+          "message": "Missing Shopify scopes: read_publications"
+        },
+        "facts": {
+          "query": null,
+          "status": "NEEDS_SHOPIFY_AUTHORIZATION",
+          "operation": "channels",
+          "gatewayDecision": "missing_shopify_scopes"
+        },
+        "message": "channels did not complete: NEEDS_SHOPIFY_AUTHORIZATION."
+      },
+      {
+        "ok": true,
+        "tool": "retrieve_shopify_operations",
+        "error": null,
+        "facts": {
+          "query": "Improve customer-account or consented customer data capture, then create a repeat-purchase customer segment for future outreach. None of the 50 stored orders is linked to a known customer identity, so repeat purchasing and customer retention cannot be measured or acted on from the current data.",
+          "status": null,
+          "operation": null,
+          "gatewayDecision": null
+        },
+        "message": "Server-bound 8 Shopify operation stubs for this candidate."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "OK",
+          "operation": "customers",
+          "gatewayDecision": null
+        },
+        "message": "customers completed through the Shopify gateway."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "OK",
+          "operation": "segments",
+          "gatewayDecision": null
+        },
+        "message": "segments completed through the Shopify gateway."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "ALREADY_AVAILABLE",
+          "operation": "customers",
+          "gatewayDecision": null
+        },
+        "message": "ALREADY_AVAILABLE: customers was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "ALREADY_AVAILABLE",
+          "operation": "segments",
+          "gatewayDecision": null
+        },
+        "message": "ALREADY_AVAILABLE: segments was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+      },
+      {
+        "ok": true,
+        "tool": "retrieve_shopify_operations",
+        "error": null,
+        "facts": {
+          "query": "Refresh or reconcile inventory quantities across active variants before further merchandising or promotional changes. All 51 recorded inventory levels are older than the 72-hour freshness threshold, meaning the apparent availability of 23 in-stock variants and \u00a346,407.68 of retail stock is not supported by current inventory timestamps.",
+          "status": null,
+          "operation": null,
+          "gatewayDecision": null
+        },
+        "message": "Server-bound 8 Shopify operation stubs for this candidate."
+      },
+      {
+        "ok": true,
+        "tool": "call_shopify_operation",
+        "error": null,
+        "facts": {
+          "query": null,
+          "status": "ALREADY_AVAILABLE",
+          "operation": "inventoryItems",
+          "gatewayDecision": null
+        },
+        "message": "ALREADY_AVAILABLE: inventoryItems was already read successfully in this run with the same arguments. Results are in your prior tool results \u2014 do not call again."
+      },
+      {
+        "ok": false,
+        "tool": "call_shopify_operation",
+        "error": {
+          "code": "RECOMMENDATION_WRITE_DENIED",
+          "message": "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance."
+        },
+        "facts": {
+          "query": null,
+          "status": null,
+          "operation": null,
+          "gatewayDecision": null
+        },
+        "message": "Recommendation investigation may run Shopify reads only. Mutations require Action acceptance."
+      }
+    ]
+  },
+  "status": "NO_ACTIONABLE_OPPORTUNITY",
+  "blocker": "Investigated 6 candidate(s) across discovery and rescue passes; none verified against current Shopify state. See diagnostics.candidateQueue for the reason each failed.",
+  "runtime": "agentic_shopify",
+  "diagnostics": {
+    "discoveryLog": [
+      {
+        "usage": {
+          "inputTokens": 64653,
+          "totalTokens": 66017,
+          "outputTokens": 1364,
+          "cachedInputTokens": 64650,
+          "estimatedInputTokens": 59032
+        },
+        "rescue": false,
+        "candidateCount": 6
+      },
+      {
+        "usage": {
+          "inputTokens": 65734,
+          "totalTokens": 66058,
+          "outputTokens": 324,
+          "cachedInputTokens": 0,
+          "estimatedInputTokens": 60417
+        },
+        "rescue": true,
+        "candidateCount": 0
+      }
+    ],
+    "llmCallCount": 14,
+    "candidateQueue": [
+      {
+        "domain": "marketing",
+        "reason": "The factual premise is supported: Shopify returned active products, including Salt Road Feteasca and Cloud Needle Tsolikouri, and confirmed no existing code discounts or automatic discounts. However, this is BLOCKED_BY_EVIDENCE because the intervention requires a specific offer (for example, percentage, amount-off, BXGY, or free shipping), validity window, qualifying products, and channel. Shopify cannot infer the merchant's intended commercial terms or marketing channel. Available writes include discountCodeBasicCreate, discountCodeBxgyCreate, discountCodeFreeShippingCreate, and marketingActivityCreate, but they require confirmation and the relevant marketing/discount scopes are not currently satisfied.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "priority": 1,
+        "beliefIds": [
+          "a965fcd9-ff64-49c8-bc12-6a94102e7f57",
+          "e2bfbec8-dde5-47eb-9dfc-26f24ec64099",
+          "24ccf870-7fb5-47ca-bd0d-c0f2085f93a2",
+          "ee4b4ec1-acee-4198-ba89-791883bb851e"
+        ],
+        "candidateId": "restore-order-momentum",
+        "resultStatus": "BLOCKED",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Create and activate a targeted promotion or marketing activity for proven products, subject to confirmation of the intended offer and channel. Recent order activity is intermittent: only 6 active selling days and 13 orders were recorded in the trailing 30 days, followed by 19 days since the latest stored order.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "Recent order activity is intermittent: only 6 active selling days and 13 orders were recorded in the trailing 30 days, followed by 19 days since the latest stored order.",
+        "finalDisposition": "INSUFFICIENT_EVIDENCE",
+        "retrievedOperations": [
+          "discountCodeBulkActivate",
+          "discountCodeActivate",
+          "discountCodeAppCreate",
+          "discountCodeBasicCreate",
+          "discountCodeBxgyCreate",
+          "discountCodeFreeShippingCreate",
+          "marketingActivityCreate",
+          "codeDiscountNode",
+          "codeDiscountNodeByCode",
+          "codeDiscountNodes",
+          "codeDiscountSavedSearches",
+          "discountRedeemCodeSavedSearches",
+          "orders",
+          "automaticDiscounts",
+          "order",
+          "product",
+          "products"
+        ]
+      },
+      {
+        "domain": "variants",
+        "reason": "BLOCKED_BY_EVIDENCE: Shopify state confirms the premise\u201425 active variants are present and products.cost_coverage is 0% (0 of 25 variants with cost). The inventoryItems read returned the corresponding inventory items but no usable unit-cost values. Although inventoryItemUpdate can write a cost field, the required accurate cost inputs are not stored in Shopify and cannot be inferred safely from prices, SKUs, inventory, or sales. Merchant-provided cost data is required before any safe mutation.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "priority": 2,
+        "beliefIds": [
+          "37c33c34-a5d1-4b7c-a127-fc3679733ef7",
+          "74aefcb4-4c6b-4a00-b1fb-09b1f9219fee"
+        ],
+        "candidateId": "capture-product-margin",
+        "resultStatus": "BLOCKED",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Populate cost-per-item for active product variants. The catalogue has no recorded cost per item for any of its 25 active variants, so product-level gross margin cannot currently be calculated or used to steer revenue decisions.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "The catalogue has no recorded cost per item for any of its 25 active variants, so product-level gross margin cannot currently be calculated or used to steer revenue decisions.",
+        "finalDisposition": "INSUFFICIENT_EVIDENCE",
+        "retrievedOperations": [
+          "discountCodeBulkActivate",
+          "discountCodeActivate",
+          "discountCodeAppCreate",
+          "discountCodeBasicCreate",
+          "discountCodeBxgyCreate",
+          "discountCodeFreeShippingCreate",
+          "marketingActivityCreate",
+          "codeDiscountNode",
+          "codeDiscountNodeByCode",
+          "codeDiscountNodes",
+          "codeDiscountSavedSearches",
+          "discountRedeemCodeSavedSearches",
+          "orders",
+          "automaticDiscounts",
+          "order",
+          "product",
+          "products",
+          "productDelete",
+          "productVariant",
+          "inventoryItems",
+          "inventoryItemUpdate",
+          "inventoryShipmentAddItems",
+          "inventoryShipmentRemoveItems"
+        ]
+      },
+      {
+        "domain": "products",
+        "reason": "Shopify reads checked: active products returned 17 products, including Salt Road Feteasca (\u00a318 single bottle; \u00a397.66 case of six) and Cloud Needle Tsolikouri (\u00a323 single bottle), while product-level evidence reports 23 in-stock variants and 1,185 positive available units. Existing code discounts and automatic discounts are both empty. However, Shopify has no authoritative input for which complementary products the merchant wants bundled or what bundle price/discount to use. Because the proposed intervention requires those choices to be confirmed before implementation, no safe actionable recommendation can be issued.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "priority": 3,
+        "beliefIds": [
+          "a397fb31-3cc0-4eaa-bdc2-8ce8f99f01ea",
+          "bc4d5efe-98a3-4481-b673-452c51f1650f",
+          "7826f37b-c1c9-4e53-ad99-339bdaf23b9d"
+        ],
+        "candidateId": "increase-basket-combination",
+        "resultStatus": "BLOCKED",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Create a curated product bundle from complementary products, with pricing and component selection confirmed before implementation. Customers are purchasing relatively narrow baskets: the median order contains 1 item, 54% of trailing-90-day orders contain exactly one item, and only 6% contain four or more items.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "Customers are purchasing relatively narrow baskets: the median order contains 1 item, 54% of trailing-90-day orders contain exactly one item, and only 6% contain four or more items.",
+        "finalDisposition": "INSUFFICIENT_EVIDENCE",
+        "retrievedOperations": [
+          "discountCodeBulkActivate",
+          "discountCodeActivate",
+          "discountCodeAppCreate",
+          "discountCodeBasicCreate",
+          "discountCodeBxgyCreate",
+          "discountCodeFreeShippingCreate",
+          "marketingActivityCreate",
+          "codeDiscountNode",
+          "codeDiscountNodeByCode",
+          "codeDiscountNodes",
+          "codeDiscountSavedSearches",
+          "discountRedeemCodeSavedSearches",
+          "orders",
+          "automaticDiscounts",
+          "order",
+          "product",
+          "products",
+          "productDelete",
+          "productVariant",
+          "inventoryItems",
+          "inventoryItemUpdate",
+          "inventoryShipmentAddItems",
+          "inventoryShipmentRemoveItems",
+          "productBundleCreate",
+          "customer",
+          "customers",
+          "draftOrderCreate",
+          "metaobject",
+          "metaobjects"
+        ]
+      },
+      {
+        "domain": "collections",
+        "reason": "Shopify state checked: product confirms Cloud Needle Tsolikouri is ACTIVE; product-momentum evidence confirms \u00a3115 current 30-day revenue versus \u00a392 prior, up 25%; collections shows an existing empty Proven Products collection and no confirmed placement for Cloud Needle Tsolikouri; channels failed with NEEDS_SHOPIFY_AUTHORIZATION due to missing read_publications. Because the desired channel/placement and publishable destination cannot be verified, no safe reversible merchandising mutation can be specified now.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "priority": 4,
+        "beliefIds": [
+          "fcc66d26-f081-45ef-97d1-e970b2b37d23",
+          "24a5dee2-2193-43f3-a526-f918efacc45f"
+        ],
+        "candidateId": "activate-rising-product",
+        "resultStatus": "BLOCKED",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Feature Cloud Needle Tsolikouri in a dedicated storefront merchandising placement or campaign, after confirming the desired channel and placement. Demand is concentrated in a small part of the range's current momentum: only 1 product is rising versus the prior 30 days while 13 products are declining, including Lemon Grove Vidiano falling from \u00a363 to \u00a30.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "Demand is concentrated in a small part of the range's current momentum: only 1 product is rising versus the prior 30 days while 13 products are declining, including Lemon Grove Vidiano falling from \u00a363 to \u00a30.",
+        "finalDisposition": "INSUFFICIENT_EVIDENCE",
+        "retrievedOperations": [
+          "discountCodeBulkActivate",
+          "discountCodeActivate",
+          "discountCodeAppCreate",
+          "discountCodeBasicCreate",
+          "discountCodeBxgyCreate",
+          "discountCodeFreeShippingCreate",
+          "marketingActivityCreate",
+          "codeDiscountNode",
+          "codeDiscountNodeByCode",
+          "codeDiscountNodes",
+          "codeDiscountSavedSearches",
+          "discountRedeemCodeSavedSearches",
+          "orders",
+          "automaticDiscounts",
+          "order",
+          "product",
+          "products",
+          "productDelete",
+          "productVariant",
+          "inventoryItems",
+          "inventoryItemUpdate",
+          "inventoryShipmentAddItems",
+          "inventoryShipmentRemoveItems",
+          "productBundleCreate",
+          "customer",
+          "customers",
+          "draftOrderCreate",
+          "metaobject",
+          "metaobjects",
+          "taxonomy",
+          "channel",
+          "channels",
+          "collection",
+          "collections",
+          "publication"
+        ]
+      },
+      {
+        "domain": "customers",
+        "reason": "The candidate does not hold up against current Shopify state: the customers read returned linked customer/order records, including repeat customers, and the segments read found an existing \"Customers who have purchased more than once\" segment using number_of_orders > 1. No mutation is warranted.",
+        "status": "ALREADY_COVERED",
+        "priority": 5,
+        "beliefIds": [
+          "1bd85337-0d63-42dc-88e1-20311818121a",
+          "d1c16917-dbd1-4c46-bc40-5b56690ca3ba",
+          "efab6065-e7bb-44f8-b5cb-22e218946a57"
+        ],
+        "candidateId": "improve-repeat-purchase-measurement",
+        "resultStatus": "NO_ACTIONABLE_OPPORTUNITY",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Improve customer-account or consented customer data capture, then create a repeat-purchase customer segment for future outreach. None of the 50 stored orders is linked to a known customer identity, so repeat purchasing and customer retention cannot be measured or acted on from the current data.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "None of the 50 stored orders is linked to a known customer identity, so repeat purchasing and customer retention cannot be measured or acted on from the current data.",
+        "finalDisposition": "DUPLICATE_EXISTING_ACTION",
+        "retrievedOperations": [
+          "product",
+          "productDelete",
+          "products",
+          "productVariant",
+          "inventoryItems",
+          "inventoryItemUpdate",
+          "inventoryShipmentAddItems",
+          "inventoryShipmentRemoveItems",
+          "orders",
+          "productBundleCreate",
+          "customer",
+          "customers",
+          "draftOrderCreate",
+          "metaobject",
+          "metaobjects",
+          "order",
+          "taxonomy",
+          "channel",
+          "channels",
+          "collection",
+          "collections",
+          "publication",
+          "customerSegmentMembersQueryCreate",
+          "segment",
+          "segments",
+          "customerSegmentMembers",
+          "customerSegmentMembership",
+          "segmentCreate"
+        ]
+      },
+      {
+        "domain": "inventory",
+        "reason": "The stale-inventory premise holds: inventory.stale_inventory_level_share reports 51/51 levels stale, data.inventory_freshness_hours_p90 is 462.18 hours, and inventory coverage is 25/25 tracked variants. However, the Shopify reads do not provide a trustworthy current quantity source. Available writes such as inventoryAdjustQuantities and inventorySetQuantities require explicit adjustments or absolute quantities; applying values derived from the stale records would not constitute a safe refresh or reconciliation. Obtain a current stock count or authoritative inventory feed first.",
+        "status": "BLOCKED_BY_EVIDENCE",
+        "priority": 6,
+        "beliefIds": [
+          "e544372d-a9ce-4699-8875-04661c605e14",
+          "46897d8b-ba0a-4a4f-856f-cdc8e13c70f9",
+          "5092d4e9-6884-4101-bb0f-d6c0ce9e8f?",
+          "5092d4e9-6884-410e-ba1d-2256a52e1b90"
+        ],
+        "candidateId": "refresh-inventory-confidence",
+        "resultStatus": "BLOCKED",
+        "scopeGranted": false,
+        "scopeRequired": true,
+        "operationQuery": "Refresh or reconcile inventory quantities across active variants before further merchandising or promotional changes. All 51 recorded inventory levels are older than the 72-hour freshness threshold, meaning the apparent availability of 23 in-stock variants and \u00a346,407.68 of retail stock is not supported by current inventory timestamps.",
+        "executionStatus": "scope_missing",
+        "diagnosedProblem": "All 51 recorded inventory levels are older than the 72-hour freshness threshold, meaning the apparent availability of 23 in-stock variants and \u00a346,407.68 of retail stock is not supported by current inventory timestamps.",
+        "finalDisposition": "INSUFFICIENT_EVIDENCE",
+        "retrievedOperations": [
+          "orders",
+          "productBundleCreate",
+          "customer",
+          "customers",
+          "draftOrderCreate",
+          "metaobject",
+          "metaobjects",
+          "order",
+          "taxonomy",
+          "channel",
+          "channels",
+          "collection",
+          "collections",
+          "product",
+          "products",
+          "publication",
+          "customerSegmentMembersQueryCreate",
+          "segment",
+          "segments",
+          "customerSegmentMembers",
+          "customerSegmentMembership",
+          "segmentCreate",
+          "inventoryAdjustQuantities",
+          "inventoryMoveQuantities",
+          "inventorySetOnHandQuantities",
+          "inventoryActivate",
+          "inventoryProperties",
+          "inventorySetQuantities"
+        ]
+      }
+    ],
+    "rejectionFunnel": {
+      "total": 6,
+      "rejected": 6,
+      "recommended": 0,
+      "byDisposition": {
+        "INSUFFICIENT_EVIDENCE": 5,
+        "DUPLICATE_EXISTING_ACTION": 1
+      }
+    }
+  },
+  "retryOfRunId": null,
+  "attemptNumber": null,
+  "attemptReason": null,
+  "onboardingEpoch": null,
+  "baseSnapshotHash": null
+}
