@@ -10,7 +10,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runCandidateDrivenRecommendation, CANDIDATE_STATUS } from "../app/lib/shopify/agentic-runtime/candidate-pipeline.server.js";
-import { CANDIDATE_DISPOSITION_DETAIL } from "../app/lib/shopify/agentic-runtime/candidate-disposition-taxonomy.server.js";
 import {
   scriptedProvider,
   fakeShopifyClient,
@@ -411,16 +410,17 @@ test("Domain fixture D (inventory): unactivated stock at a second location wins,
 });
 
 // ---------------------------------------------------------------------------
-// E. Fulfillment — real, audited fact: the fulfillment domain currently has ZERO attemptable
-//    mutations (fulfillmentCreate and friends are all UNSUPPORTED_SEMANTICS). This fixture
-//    proves the pipeline correctly discovers and reads real fulfillment operations, then lands
-//    on EXECUTION_SEMANTICS_MISSING rather than a false CAPABILITY_RETRIEVAL_FAILURE — the
-//    important assertion is that the taxonomy distinguishes "genuinely found the operation but
-//    it can't be safely attempted" from "couldn't even find the operation."
+// E. Fulfillment — as of the 2026-08-25 execution-safety architecture change (CLAUDE.md),
+//    fulfillmentCreate is EXECUTABLE_WITH_CONFIRMATION (a reviewed override — HIGH_RISK,
+//    irreversible, explicit confirmation required), not a dead end. This fixture proves the
+//    pipeline discovers and reads real fulfillment operations AND carries a genuinely-found,
+//    attemptable candidate through to RECOMMEND_ACTION — the previous version of this fixture
+//    proved the opposite (a correct EXECUTION_SEMANTICS_MISSING dead end), which was the exact
+//    "Jefe's own missing support" gap this change eliminated.
 // ---------------------------------------------------------------------------
 
-test("Domain fixture E (fulfillment): stalled fulfillment orders investigated for real, correctly lands on EXECUTION_SEMANTICS_MISSING", async () => {
-  assert.equal(catalogOp("fulfillmentCreate")?.execution?.status, "UNSUPPORTED_SEMANTICS", "fulfillmentCreate must remain UNSUPPORTED_SEMANTICS for this fixture to prove the intended point");
+test("Domain fixture E (fulfillment): stalled fulfillment orders investigated for real, reaches RECOMMEND_ACTION via fulfillmentCreate", async () => {
+  assert.equal(catalogOp("fulfillmentCreate")?.execution?.status, "EXECUTABLE_WITH_CONFIRMATION", "fulfillmentCreate must be attemptable for this fixture to prove the intended point");
 
   const snapshot = {
     beliefs: [
@@ -462,10 +462,19 @@ test("Domain fixture E (fulfillment): stalled fulfillment orders investigated fo
     }
     return investigate(
       {
-        status: "BLOCKED",
-        blocker:
-          "fulfillmentOrders confirms 11 orders open beyond the 5-day threshold, but the current catalog has no attemptable Shopify mutation to intervene on stalled fulfillment — fulfillmentCreate and related fulfillment mutations are UNSUPPORTED_SEMANTICS. Jefe can surface this to the merchant but cannot safely act on it yet.",
-        candidateDisposition: "NON_EXECUTABLE",
+        status: "RECOMMEND_ACTION",
+        recommendation: validRec({
+          title: "Create a fulfillment for the stalled fulfillment order",
+          diagnosedProblem: "11 fulfillment orders have sat OPEN for more than 5 days with no fulfillment created against them.",
+          mechanism: "fulfillmentCreate creates a fulfillment against the open, unsubmitted fulfillment order so the shipment actually moves.",
+          whyThisAction: "fulfillmentOrders confirms the order is OPEN and UNSUBMITTED — nothing is blocking fulfillment except that it hasn't been created yet.",
+          supportingBeliefIds: ["b-fulfillment-stalled"],
+          feasibleWriteOperations: ["fulfillmentCreate"],
+          eligibilityCriteria: [
+            { resourceType: "FulfillmentOrder", field: "id", operator: "eq", value: "gid://shopify/FulfillmentOrder/1" },
+          ],
+          materialExpectedEffects: ["The stalled order is fulfilled and moves toward shipment."],
+        }),
       },
       { toolCalls: [retrieveCall("list all fulfillment orders"), readCall("fulfillmentOrders")] },
     )(payload);
@@ -483,7 +492,8 @@ test("Domain fixture E (fulfillment): stalled fulfillment orders investigated fo
 
   const result = await runCandidateDrivenRecommendation(baseInput({ provider, snapshot, client, grantedScopes: ALL_GRANTED_SCOPES }));
 
-  assert.equal(result.status, "NO_ACTIONABLE_OPPORTUNITY");
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.equal(result.recommendation.feasibleWriteOperations[0], "fulfillmentCreate");
   const queue = result.diagnostics.candidateQueue;
   const candidate = queue.find((c) => c.candidateId === "stalled-fulfillment-orders");
   assert.equal(candidate.domain, "fulfillment");
@@ -491,24 +501,19 @@ test("Domain fixture E (fulfillment): stalled fulfillment orders investigated fo
     candidate.retrievedOperations.includes("fulfillmentOrders"),
     `expected a real fulfillment operation in retrievedOperations, got ${JSON.stringify(candidate.retrievedOperations)}`,
   );
-  assert.equal(
-    candidate.finalDisposition,
-    CANDIDATE_DISPOSITION_DETAIL.executionSemanticsMissing,
-    "a genuinely-found operation with no attemptable execution path must classify as EXECUTION_SEMANTICS_MISSING, not a false CAPABILITY_RETRIEVAL_FAILURE",
-  );
+  assert.equal(candidate.finalDisposition, "RECOMMENDED");
 });
 
 // ---------------------------------------------------------------------------
-// F. Returns — same real, audited fact as fulfillment: returns mutations (returnCreate and
-//    friends) are all UNSUPPORTED_SEMANTICS today. This naturally resolves to the same
-//    discover-but-can't-execute shape. Notably, this is the SAFE outcome: the pipeline never
-//    attempts a financial mutation (refund/decline) here — it correctly reports that no
-//    attemptable write exists rather than reaching for one anyway. A lower-risk "no mutation at
-//    all" result is preferable to inventing an unsafe one.
+// F. Returns — as of the 2026-08-25 execution-safety architecture change, returnApproveRequest
+//    is EXECUTABLE_WITH_CONFIRMATION (structural classification: money/order-state domain,
+//    compensatable, explicit confirmation required — not autonomous, not a dead end). This
+//    fixture proves a genuinely-found return candidate now reaches RECOMMEND_ACTION rather than
+//    stopping at "discovered but can't execute."
 // ---------------------------------------------------------------------------
 
-test("Domain fixture F (returns): pending return backlog investigated for real, no financial mutation attempted, lands on EXECUTION_SEMANTICS_MISSING", async () => {
-  assert.equal(catalogOp("returnCreate")?.execution?.status, "UNSUPPORTED_SEMANTICS", "returnCreate must remain UNSUPPORTED_SEMANTICS for this fixture to prove the intended point");
+test("Domain fixture F (returns): pending return backlog investigated for real, reaches RECOMMEND_ACTION via returnApproveRequest", async () => {
+  assert.equal(catalogOp("returnApproveRequest")?.execution?.status, "EXECUTABLE_WITH_CONFIRMATION", "returnApproveRequest must be attemptable for this fixture to prove the intended point");
 
   const snapshot = {
     beliefs: [
@@ -549,10 +554,19 @@ test("Domain fixture F (returns): pending return backlog investigated for real, 
     }
     return investigate(
       {
-        status: "BLOCKED",
-        blocker:
-          "return confirms an open return pending review, but no attemptable Shopify mutation exists in the current catalog to resolve it — returnCreate and related return/refund mutations are UNSUPPORTED_SEMANTICS. No financial mutation (refund, decline) is attempted here since none is safely executable yet; this stays a manual, merchant-handled step for now.",
-        candidateDisposition: "NON_EXECUTABLE",
+        status: "RECOMMEND_ACTION",
+        recommendation: validRec({
+          title: "Approve the pending return request",
+          diagnosedProblem: "A customer return has sat OPEN and pending review for 6 days with no resolution.",
+          mechanism: "returnApproveRequest approves the pending return request so it moves out of the backlog toward resolution.",
+          whyThisAction: "return confirms the return is OPEN and awaiting a decision — nothing else is blocking approval.",
+          supportingBeliefIds: ["b-returns-backlog"],
+          feasibleWriteOperations: ["returnApproveRequest"],
+          eligibilityCriteria: [
+            { resourceType: "Return", field: "id", operator: "eq", value: "gid://shopify/Return/9001" },
+          ],
+          materialExpectedEffects: ["The pending return moves out of the review backlog."],
+        }),
       },
       { toolCalls: [retrieveCall("get the return for this order"), readCall("return", { id: "gid://shopify/Return/9001" })] },
     )(payload);
@@ -567,12 +581,13 @@ test("Domain fixture F (returns): pending return backlog investigated for real, 
 
   const result = await runCandidateDrivenRecommendation(baseInput({ provider, snapshot, client, grantedScopes: ALL_GRANTED_SCOPES }));
 
-  assert.equal(result.status, "NO_ACTIONABLE_OPPORTUNITY");
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.equal(result.recommendation.feasibleWriteOperations[0], "returnApproveRequest");
   const queue = result.diagnostics.candidateQueue;
   const candidate = queue.find((c) => c.candidateId === "returns-backlog-pending-review");
   assert.equal(candidate.domain, "returns");
   assert.ok(candidate.retrievedOperations.some((op) => op === "return" || op === "reverseFulfillmentOrder" || op === "reverseFulfillmentOrderDispose"));
-  assert.equal(candidate.finalDisposition, CANDIDATE_DISPOSITION_DETAIL.executionSemanticsMissing);
+  assert.equal(candidate.finalDisposition, "RECOMMENDED");
 });
 
 // ---------------------------------------------------------------------------

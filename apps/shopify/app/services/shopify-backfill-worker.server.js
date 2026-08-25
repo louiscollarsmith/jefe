@@ -49,6 +49,7 @@ import {
   runAgenticRecommendationInvestigation,
 } from "../lib/shopify/agentic-runtime/recommendation-service.server.js";
 import { AGENTIC_RECOMMENDATION_JOB_TYPE } from "../lib/shopify/agentic-runtime/constants.server.js";
+import { PLAN_RUN_STATUS } from "../lib/merchant-plan/constants.js";
 import {
   AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
   AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX,
@@ -436,6 +437,11 @@ export async function processNextBackfillJob(prisma, options = {}) {
     logger: options.logger,
     shopId: options.shopId,
   });
+  await recoverOrphanedAgenticRecommendationRuns(prisma, {
+    now,
+    logger: options.logger,
+    shopId: options.shopId,
+  });
   const where = {
     status: "queued",
     shopId: options.shopId,
@@ -662,6 +668,72 @@ export async function recoverStaleRunningBackfillJobs(prisma, options = {}) {
 }
 
 /**
+ * Deterministic recovery for MerchantPlanRun rows left non-terminal (queued/running) with no
+ * BackfillJob able to pick them back up. The historical cause (see
+ * docs/proposal-generation-failure-2026-08-25-followup.md): a job-level retry whose sourceMode
+ * was not threaded through could silently create a *new* MerchantPlanRun (defaulting to
+ * sourceMode="agentic") and re-point the single (shopId, jobType) BackfillJob row at it — leaving
+ * the original run's id referenced by nothing, running forever, invisible to
+ * isHomeProposalGenerationInFlight's sourceMode filter. The upstream fix (threading sourceMode
+ * through runAgenticRecommendationInvestigation) stops new orphans; this sweeps up any that
+ * already exist, or that a future bug re-introduces, regardless of sourceMode — "no ownerless
+ * running MerchantPlanRun" has to hold for every sourceMode, not just "home".
+ * @param {import("@prisma/client").PrismaClient} prisma
+ * @param {{ now?: Date; timeoutMs?: number; logger?: Pick<Console, "info" | "warn" | "error">; shopId?: string }} [options]
+ */
+export async function recoverOrphanedAgenticRecommendationRuns(prisma, options = {}) {
+  const now = options.now ?? new Date();
+  const timeoutMs = options.timeoutMs ?? STALE_RUNNING_JOB_TIMEOUT_MS;
+  const staleBefore = new Date(now.getTime() - timeoutMs);
+  const candidates = await prisma.merchantPlanRun.findMany({
+    where: {
+      status: { in: [PLAN_RUN_STATUS.queued, PLAN_RUN_STATUS.running] },
+      updatedAt: { lt: staleBefore },
+      ...(options.shopId ? { shopId: options.shopId } : {}),
+    },
+    select: { id: true, merchantId: true, shopId: true, sourceMode: true, updatedAt: true },
+  });
+  if (!candidates.length) return { recovered: 0 };
+
+  const shopIds = [...new Set(candidates.map((run) => run.shopId))];
+  const owningJobs = await prisma.backfillJob.findMany({
+    where: { shopId: { in: shopIds }, jobType: AGENTIC_RECOMMENDATION_JOB_TYPE },
+    select: { shopId: true, status: true, payloadJson: true },
+  });
+  const ownedRunIdsByShop = new Map();
+  for (const job of owningJobs) {
+    if (["succeeded", "failed", "cancelled"].includes(job.status)) continue;
+    const runId = stringValue(jsonObject(job.payloadJson).runId);
+    if (!runId) continue;
+    if (!ownedRunIdsByShop.has(job.shopId)) ownedRunIdsByShop.set(job.shopId, new Set());
+    ownedRunIdsByShop.get(job.shopId).add(runId);
+  }
+
+  let recovered = 0;
+  for (const run of candidates) {
+    if (ownedRunIdsByShop.get(run.shopId)?.has(run.id)) continue; // a live job still owns this run
+    await prisma.merchantPlanRun.update({
+      where: { id: run.id },
+      data: {
+        status: PLAN_RUN_STATUS.failed,
+        failedAt: now,
+        safeErrorCode: "orphaned_run_recovered",
+        lastError: "Recovered: no BackfillJob referenced this run after the stale-run threshold elapsed.",
+      },
+    });
+    recovered += 1;
+    options.logger?.warn("Recovered ownerless MerchantPlanRun", {
+      runId: run.id,
+      merchantId: run.merchantId,
+      shopId: run.shopId,
+      sourceMode: run.sourceMode,
+      staleForMs: now.getTime() - new Date(run.updatedAt).getTime(),
+    });
+  }
+  return { recovered };
+}
+
+/**
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {import("@prisma/client").BackfillJob & { shop: import("@prisma/client").Shop; merchant: import("@prisma/client").Merchant }} job
  * @param {{ logger?: Pick<Console, "info" | "warn" | "error">; fetchImpl?: typeof fetch; loadOfflineToken?: (shop: string) => Promise<string> }} options
@@ -773,6 +845,12 @@ async function runBackfillJob(prisma, job, options) {
         logger: context.logger,
       });
     case AGENTIC_RECOMMENDATION_JOB_TYPE:
+      // sourceMode (and retry lineage) must be threaded from the job payload through to the
+      // investigation, not left to default — a job-level retry of a "home"-triggered run whose
+      // snapshot changed while queued would otherwise fall through to prepareAgenticRecommendationRun
+      // with no sourceMode, silently create a new run defaulting to sourceMode="agentic", and
+      // leave the original "home" run invisible to Home's polling (isHomeProposalGenerationInFlight
+      // filters on sourceMode). See docs/proposal-generation-failure-2026-08-25-followup.md.
       return runAgenticRecommendationInvestigation(prisma, {
         merchantId: context.merchantId,
         shopId: context.shopId,
@@ -780,6 +858,10 @@ async function runBackfillJob(prisma, job, options) {
         accessToken: requireAccessToken(context),
         scopes: scopes.length ? scopes : undefined,
         runId: stringValue(payload.runId),
+        sourceMode: stringValue(payload.sourceMode) ?? undefined,
+        retryOfRunId: stringValue(payload.retryOfRunId),
+        onboardingEpoch: stringValue(payload.onboardingEpoch),
+        attemptNumber: typeof payload.attemptNumber === "number" ? payload.attemptNumber : null,
         fetchImpl: context.fetchImpl,
         logger: context.logger,
       });

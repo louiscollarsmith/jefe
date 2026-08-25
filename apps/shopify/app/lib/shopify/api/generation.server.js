@@ -6,6 +6,33 @@ import { classifyShopifyOperationDomain, inferShopifyOperationScopes } from "./d
 import { classifyShopifyOperationSafety } from "./mutation-safety.server.js";
 
 /**
+ * Re-runs classifyShopifyOperationSafety over an already-generated catalog's operations without
+ * needing a fresh Shopify introspection call — every input classification needs (operation,
+ * operationKind, domain, scopeConfidence) is already baked into each stub. Used to pick up
+ * mutation-safety.server.js changes (e.g. the 2026-08-25 execution-safety architecture change)
+ * against the shipped catalog snapshot, and by the full-surface reconciliation report.
+ * @param {import("./catalog.server.js").ShopifyApiCatalog} catalog
+ * @returns {import("./catalog.server.js").ShopifyApiCatalog}
+ */
+export function reclassifyShopifyApiCatalog(catalog) {
+  const operations = catalog.operations.map((op) => {
+    const { safety, execution } = classifyShopifyOperationSafety({
+      operation: op.operation,
+      operationKind: op.operationKind,
+      domain: op.domain,
+      scopeConfidence: op.scopeConfidence,
+    });
+    return { ...op, safety, execution };
+  });
+  const next = { ...catalog, operations, generatedAt: new Date().toISOString() };
+  const validation = validateShopifyApiCatalog(next);
+  if (!validation.ok) {
+    throw new Error(`Reclassified Shopify API catalog is invalid: ${validation.errors.join("; ")}`);
+  }
+  return next;
+}
+
+/**
  * @param {any} introspection
  * @param {{ apiVersion: string; generatedAt?: string }} options
  */

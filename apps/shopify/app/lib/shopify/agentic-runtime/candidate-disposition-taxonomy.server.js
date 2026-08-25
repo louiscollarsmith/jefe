@@ -71,25 +71,6 @@ export function resolveCandidateFamily(candidate, opportunitySurface) {
 }
 
 /**
- * Mirrors buildOpportunitySurface's nonExecutableReason split (recommendation-agent.server.js),
- * but returns an enum instead of prose, for a family already known to be non-attemptable.
- * @param {{ executable: number; executableWithConfirmation: number; unsupportedSemantics: number; prohibited: number }} [summary]
- */
-function classifyNonAttemptableFamily(summary) {
-  if (!summary) return CANDIDATE_DISPOSITION_DETAIL.executionSemanticsMissing;
-  if (summary.executable + summary.executableWithConfirmation > 0) {
-    // Some op in the family IS attemptable — a non-executable disposition here means the
-    // *specific* intervention isn't implemented by any attemptable op, not that scope is
-    // missing (scope-missing is handled by the caller before this is reached).
-    return CANDIDATE_DISPOSITION_DETAIL.executionSemanticsMissing;
-  }
-  if (summary.prohibited > 0 && summary.unsupportedSemantics === 0) {
-    return CANDIDATE_DISPOSITION_DETAIL.safetyProhibited;
-  }
-  return CANDIDATE_DISPOSITION_DETAIL.executionSemanticsMissing;
-}
-
-/**
  * Deterministically classify a terminal candidate into the fine-grained root-cause taxonomy.
  *
  * @param {{
@@ -128,11 +109,12 @@ export function classifyDispositionDetail({ candidateStatus, resultStatus = null
         return CANDIDATE_DISPOSITION_DETAIL.capabilityRetrievalFailure;
       }
       if (family.capabilityState === "scope_missing") {
-        const summary = family.executionSummary;
-        if (summary && summary.executable + summary.executableWithConfirmation > 0) {
-          return CANDIDATE_DISPOSITION_DETAIL.scopeNotGranted;
-        }
-        return classifyNonAttemptableFamily(summary);
+        // Since the 2026-08-25 execution-safety architecture change (mutation-safety.server.js),
+        // every mutation in a family with at least one write op resolves to EXECUTABLE or
+        // EXECUTABLE_WITH_CONFIRMATION — "scope_missing" can now only mean the merchant's real
+        // Shopify authorization doesn't (yet, or confidently) cover it, never that no attemptable
+        // op exists. See mutation-safety-classifier-audit.test.mjs's real-catalog invariant test.
+        return CANDIDATE_DISPOSITION_DETAIL.scopeNotGranted;
       }
       // capabilityState === "available": some op in the family is attemptable, but the
       // specific diagnosed intervention wasn't implementable by any of them.

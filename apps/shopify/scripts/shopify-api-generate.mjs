@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { loadShopifyApiCatalog } from "../app/lib/shopify/api/catalog.server.js";
 import {
   buildShopifyApiCatalogFromIntrospection,
+  reclassifyShopifyApiCatalog,
   renderShopifyApiGenerationReport,
 } from "../app/lib/shopify/api/generation.server.js";
 import { ShopifyAdminGraphqlClient } from "../app/lib/shopify/admin-graphql.server.js";
@@ -74,7 +75,16 @@ const reportPath = resolve(args.report || `docs/ops/shopify-admin-api-${apiVersi
 
 const previous = safeLoadCatalog(outputPath);
 let next = previous;
-if (args.introspection) {
+if (args.reclassify) {
+  // Read raw, bypassing validateShopifyApiCatalog: reclassification exists precisely to fix
+  // safety/execution data a classifier change may have made stale (e.g. a removed
+  // classificationSource value), so the pre-reclassification catalog is not required to pass
+  // the current validator — only the reclassified result is (reclassifyShopifyApiCatalog itself
+  // validates before returning).
+  const rawPrevious = safeReadRawCatalog(outputPath);
+  if (!rawPrevious) throw new Error(`No existing generated catalog found at ${outputPath} to reclassify.`);
+  next = reclassifyShopifyApiCatalog(rawPrevious);
+} else if (args.introspection) {
   const introspection = JSON.parse(readFileSync(resolve(args.introspection), "utf8"));
   next = buildShopifyApiCatalogFromIntrospection(introspection, { apiVersion });
 } else if (args.shop && args.tokenEnv) {
@@ -90,7 +100,7 @@ if (args.introspection) {
   next = buildShopifyApiCatalogFromIntrospection(introspection, { apiVersion });
 } else if (!next) {
   throw new Error(
-    "No existing generated catalog found. Pass --introspection=path/to/schema.json or --shop=<dev.myshopify.com> --token-env=ENV_NAME.",
+    "No existing generated catalog found. Pass --reclassify (recompute safety/execution only), --introspection=path/to/schema.json, or --shop=<dev.myshopify.com> --token-env=ENV_NAME.",
   );
 }
 
@@ -116,11 +126,24 @@ function safeLoadCatalog(path) {
   }
 }
 
+function safeReadRawCatalog(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function parseArgs(values) {
   const parsed = {};
   for (const value of values) {
-    const match = value.match(/^--([^=]+)=(.*)$/);
-    if (match) parsed[toCamel(match[1])] = match[2];
+    const withValue = value.match(/^--([^=]+)=(.*)$/);
+    if (withValue) {
+      parsed[toCamel(withValue[1])] = withValue[2];
+      continue;
+    }
+    const bareFlag = value.match(/^--([^=]+)$/);
+    if (bareFlag) parsed[toCamel(bareFlag[1])] = true;
   }
   return parsed;
 }

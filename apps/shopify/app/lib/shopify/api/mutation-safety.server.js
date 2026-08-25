@@ -1,44 +1,71 @@
 // @ts-check
 //
 // Generic, structural mutation-safety classification for the full Shopify Admin API surface.
-// Deliberately NOT 523 hand-written adapters — but also, as of this audit pass, deliberately
-// NOT "operation name looks like a simple write, so trust it": an earlier version of this
-// module promoted any mutation matching /update|create$|add|set|activate$/i straight to
-// EXECUTABLE_WITH_CONFIRMATION whenever its domain had a confident scope. Audited: that path
-// alone accounted for 47 of 56 attemptable mutations (84%) — including things like
-// giftCardCreate, giftCardDeactivate, and marketCreate — none of them reviewed by a human.
-// That is exactly the anti-pattern the safety invariant below forbids, so it is gone.
 //
-// Four layers now, checked in priority order, and every EXECUTABLE / EXECUTABLE_WITH_CONFIRMATION
-// result carries a `classificationSource` naming which layer produced it — auditable by
-// construction, not by convention:
+// SUPERSEDED DESIGN NOTE (2026-08-25, see CLAUDE.md "Execution-safety architecture authorization
+// record" for the founder authorization behind this change): an earlier version of this module
+// treated "has a human reviewed this exact operation" as a *permanent* precondition for
+// execution — anything not individually known-good, family-reviewed, or a plain read resolved
+// to UNSUPPORTED_SEMANTICS forever, and a short named list (PROHIBITED_OPERATIONS) was denied
+// outright regardless of merchant authorization. That produced a real architectural bug: the
+// majority of the 523-mutation Shopify surface was permanently unexecutable not because it was
+// unsafe in a specific invocation, but because nobody had gotten around to writing a policy for
+// it — and every future Shopify API release would need the same manual triage before Jefe could
+// touch it. The founder explicitly authorized removing that assumption. Lack of a hand-written
+// policy for an operation is no longer, by itself, a reason execution is impossible.
 //
-//   1. PROHIBITED_OPERATIONS (source: n/a — always denies) — a short, human-curated list of
-//      operations Jefe must never dynamically invoke, regardless of scope, evidence, or
-//      merchant approval. Visible to reasoning, permanently denied at execution.
-//   2. KNOWN_GOOD_OVERRIDES (source: EXPLICIT_KNOWN_GOOD | EXPLICIT_OPERATION_OVERRIDE) —
+// SECOND SUPERSEDED DESIGN NOTE (same day, same authorization thread): the first fix replaced the
+// deny-list with a *named allow/deny-shaped list* mapped to an extra "system-critical" confirmation
+// tier above ordinary explicit confirmation, plus a second, separate confirmation gate/route for
+// it. The founder asked for that removed too: it was still a distinct per-operation classification
+// list (just no longer denying), still a bespoke extra mechanism layered on top of the generic
+// safeguards, and not "keeping the architecture generic." There is now exactly one non-frictionless
+// interaction tier (EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED) and no named operation list at all —
+// every mutation, including the operations formerly on that list (appUninstall,
+// appRevokeAccessScopes, customerCancelDataErasure, etc.), is classified purely by the same
+// domain/name-shape structural rules everything else uses. Their risk is real and is still
+// reflected — structurally, via the destructive-name pattern and the always-sensitive domain set,
+// which is exactly where they land — not via a bespoke list or a bespoke confirmation mechanism.
+//
+// What did NOT change: this module still refuses to let operation-name pattern-matching alone
+// grant *frictionless* execution. The safety invariant is now expressed differently — every
+// mutation this module classifies gets SOME execution path (never a dead end for a schema-valid
+// operation), but an unreviewed one can only ever reach EXECUTABLE_WITH_CONFIRMATION at
+// EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED (never AUTONOMOUS_ELIGIBLE, never plain
+// APPROVAL_REQUIRED for a destructive/unknown shape) — risk changes the conditions under which an
+// operation executes, not whether Jefe has an execution path for it at all. See EXECUTION_STATUS
+// below: UNSUPPORTED_SEMANTICS still exists as a value (kept for schema/type continuity and any
+// genuinely malformed catalog entry) but this classifier no longer produces it for any
+// schema-valid MUTATION.
+//
+// Four layers now, checked in priority order, and every result carries a `classificationSource`
+// naming which layer produced it — auditable by construction, not by convention:
+//
+//   1. KNOWN_GOOD_OVERRIDES (source: EXPLICIT_KNOWN_GOOD | EXPLICIT_OPERATION_OVERRIDE) —
 //      individual operations a human has actually reviewed, seeded from the live
 //      ACTION_REGISTRY (EXPLICIT_KNOWN_GOOD — has a real typed adapter, live in production)
 //      and the curated 14-operation capability manifest (EXPLICIT_OPERATION_OVERRIDE —
 //      reviewed and risk-understood, no adapter yet).
-//   3. REVIEWED_FAMILY_POLICIES (source: REVIEWED_OPERATION_FAMILY_POLICY) — a small,
+//   2. REVIEWED_FAMILY_POLICIES (source: REVIEWED_OPERATION_FAMILY_POLICY) — a small,
 //      human-curated table of (domain, name-shape) → policy, each with its own written
-//      justification (why the whole family is trusted, not just why one operation is). This
-//      is the "operation 300 cheaper than operation 20" mechanism the brief asks for — it is
-//      NOT the same thing as trusting any name that merely looks benign: a family only lands
-//      here after someone reviewed that specific domain and shape and wrote down why it's
-//      safe as a class (see the table below for the actual reasoning per family).
-//   4. Structural defaults (source: STRUCTURAL_NAME_INFERENCE, but this path can only ever
-//      produce risk/domain *metadata* — it cannot by itself result in EXECUTABLE or
-//      EXECUTABLE_WITH_CONFIRMATION; the safety invariant is enforced by construction: the
-//      only two `executionStatus` values this layer can return are UNSUPPORTED_SEMANTICS or,
-//      for reads, EXECUTABLE). Anything not confidently classified by layers 1-3 resolves to
-//      UNSUPPORTED_SEMANTICS — visible to Luna's reasoning, denied at the gateway.
+//      justification (why the whole family is trusted, not just why one operation is).
+//   3. Structural defaults (source: STRUCTURAL_NAME_INFERENCE) — the generic path every
+//      unreviewed, schema-valid MUTATION now falls through to, including operations that would
+//      once have been on a bespoke high-risk list. It infers risk tier, reversibility, and
+//      required confirmation from operation-name shape and domain, and always returns
+//      EXECUTABLE_WITH_CONFIRMATION — never UNSUPPORTED_SEMANTICS — but can never assign
+//      AUTONOMOUS_ELIGIBLE or plain APPROVAL_REQUIRED to anything destructive-shaped, identity/
+//      financial/platform-domain-shaped, or of genuinely unknown shape.
 //
-// Production-execution invariant (enforced here, not just at the gateway): any result that
-// would be EXECUTABLE or EXECUTABLE_WITH_CONFIRMATION is downgraded to UNSUPPORTED_SEMANTICS
-// unless scopeConfidence === "high" — "inferred" is not enough to grant write authority,
-// only to power discovery/reasoning/evaluation (task Part 2.3).
+// Scope confidence (how sure we are which Shopify scope an operation needs) is a second,
+// independent axis from operation review, and stays that way: it can never promote a mutation to
+// less confirmation than the branch above computed, and less-than-"high" confidence always
+// requires at least explicit confirmation. It never blocks a mutation outright, because doing so
+// silently re-creates the old "operation review is a precondition for execution" assumption
+// through a side door — live Shopify scope authorization (gateway.server.js) and Shopify's own
+// operation-failure semantics (a real ACCESS_DENIED response, surfaced as SCOPE_NOT_GRANTED,
+// never fabricated) are what actually keeps unauthorized calls from succeeding; this module
+// governs confirmation friction, not authorization itself.
 
 export const RISK_TIER = Object.freeze({
   normal: "NORMAL",
@@ -58,38 +85,40 @@ export const INTERACTION = Object.freeze({
   autonomousEligible: "AUTONOMOUS_ELIGIBLE",
   approvalRequired: "APPROVAL_REQUIRED",
   explicitHighRiskConfirmation: "EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED",
+  // Retained for type continuity; this classifier no longer produces it (see module note above).
   prohibited: "PROHIBITED",
 });
+
+// Ordered weakest → strongest. Used to only ever raise the required confirmation tier (for
+// scope-confidence penalties, or when combining signals), never lower one a branch computed.
+const INTERACTION_STRENGTH = Object.freeze({
+  [INTERACTION.autonomousEligible]: 0,
+  [INTERACTION.approvalRequired]: 1,
+  [INTERACTION.explicitHighRiskConfirmation]: 2,
+  [INTERACTION.prohibited]: 3,
+});
+
+function strongerInteraction(a, b) {
+  return INTERACTION_STRENGTH[a] >= INTERACTION_STRENGTH[b] ? a : b;
+}
 
 export const EXECUTION_STATUS = Object.freeze({
   executable: "EXECUTABLE",
   executableWithConfirmation: "EXECUTABLE_WITH_CONFIRMATION",
+  // Retained for type/schema continuity (older catalog snapshots, malformed entries); this
+  // classifier itself never returns it for a schema-valid operation as of 2026-08-25.
   unsupportedSemantics: "UNSUPPORTED_SEMANTICS",
   prohibited: "PROHIBITED",
 });
 
 // Only meaningful on EXECUTABLE / EXECUTABLE_WITH_CONFIRMATION results — which layer granted
-// execution authority. Task Part 1.2's exact audit taxonomy.
+// execution authority. Auditable by construction, not by convention.
 export const CLASSIFICATION_SOURCE = Object.freeze({
   explicitKnownGood: "EXPLICIT_KNOWN_GOOD",
   explicitOperationOverride: "EXPLICIT_OPERATION_OVERRIDE",
   reviewedFamilyPolicy: "REVIEWED_OPERATION_FAMILY_POLICY",
   structuralNameInference: "STRUCTURAL_NAME_INFERENCE",
 });
-
-// Task §11's "likely classes," resolved to real Shopify Admin API operation names. Exact-name
-// match only — deliberately not a regex, so this list stays a small, auditable, human decision
-// rather than growing into pattern sprawl. Extend by adding a name, with a reason, not a rule.
-const PROHIBITED_OPERATIONS = new Map([
-  ["appUninstall", "Removes Jefe's own installation — never a dynamically-triggerable action."],
-  ["appRevokeAccessScopes", "Alters Jefe's own authorization; a self-inflicted permission cut."],
-  ["customerCancelDataErasure", "GDPR/customer-erasure primitive — compliance-sensitive, merchant-initiated only."],
-  ["customerRequestDataErasure", "GDPR/customer-erasure primitive — compliance-sensitive, merchant-initiated only."],
-  ["bulkOperationRunMutation", "Runs an arbitrary mutation from a JSONL file — incompatible with a per-operation safety contract."],
-  ["themeFilesUpsert", "Theme code write; requires a special Shopify exemption and is out of scope (context/13_action_capability_registry.md NO-PATH)."],
-  ["disputeEvidenceUpdate", "Unsupported financial/payment primitive; dispute evidence requires special Shopify approval to even read, and is a one-shot compliance-relevant submission."],
-  ["transactionVoid", "Reverses real payment capture — a financial primitive outside any typed adapter."],
-]);
 
 /**
  * Seeded from the live ACTION_REGISTRY (app/lib/actions/action-intent.server.js) and the
@@ -217,7 +246,7 @@ const REVIEWED_FAMILY_POLICIES = [
     reversibility: REVERSIBILITY.reversible,
     interaction: INTERACTION.approvalRequired,
     justification:
-      "Collections are merchandising groupings, not money or identity data. Membership/order changes are fully reversible (re-add, reorder, or recreate), bounded by the gateway's existing blast-radius cap, and share the exact risk shape already reviewed for collectionCreate/collectionAddProducts (both EXPLICIT_OPERATION_OVERRIDE). Delete-shaped members of this family (collectionDelete) are excluded by the match pattern and fall through to the destructive-name path instead.",
+      "Collections are merchandising groupings, not money or identity data. Membership/order changes are fully reversible (re-add, reorder, or recreate), bounded by the gateway's existing blast-radius cap, and share the exact risk shape already reviewed for collectionCreate/collectionAddProducts (both EXPLICIT_OPERATION_OVERRIDE). Delete-shaped members of this family (collectionDelete) are excluded by the match pattern and fall through to the structural destructive-name path instead.",
   },
   {
     id: "metaobjects-data-v1",
@@ -237,11 +266,11 @@ const REVIEWED_FAMILY_POLICIES = [
     reversibility: REVERSIBILITY.reversible,
     interaction: INTERACTION.approvalRequired,
     justification:
-      "Site navigation structure — no financial or customer data, fully reversible by editing the menu again. menuDelete is excluded by the match pattern and falls through to the destructive-name path.",
+      "Site navigation structure — no financial or customer data, fully reversible by editing the menu again. menuDelete is excluded by the match pattern and falls through to the structural destructive-name path.",
   },
 ];
 
-const DESTRUCTIVE_NAME_PATTERN = /delete|erase|revoke|uninstall|merge/i;
+const DESTRUCTIVE_NAME_PATTERN = /delete|erase|revoke|uninstall|merge|cancel|close|disable/i;
 const BULK_DESTRUCTIVE_NAME_PATTERN = /bulkdelete|bulkremove/i;
 const SENSITIVE_READ_PATTERN = /dispute|paymentmandate|creditcard|taxexemption/i;
 
@@ -271,16 +300,6 @@ const COMPENSATABLE_MUTATION_DOMAINS = new Set([
  */
 export function classifyShopifyOperationSafety(input) {
   const { operation, operationKind, domain, scopeConfidence } = input;
-
-  if (PROHIBITED_OPERATIONS.has(operation)) {
-    return result(scopeConfidence, {
-      riskTier: RISK_TIER.platformCritical,
-      reversibility: REVERSIBILITY.irreversible,
-      interaction: INTERACTION.prohibited,
-      executionStatus: EXECUTION_STATUS.prohibited,
-      reason: PROHIBITED_OPERATIONS.get(operation) ?? "Explicitly prohibited operation.",
-    });
-  }
 
   const override = KNOWN_GOOD_OVERRIDES[operation];
   if (override) return result(scopeConfidence, override);
@@ -316,24 +335,29 @@ export function classifyShopifyOperationSafety(input) {
       interaction: INTERACTION.autonomousEligible,
       executionStatus: EXECUTION_STATUS.executable,
       classificationSource: CLASSIFICATION_SOURCE.reviewedFamilyPolicy,
-      reason: "Reviewed family policy \"reads-broadly-available-v1\": a read cannot mutate merchant state, so every query is trusted by default except the specially-restricted carve-out above (task §12).",
+      reason: "Reviewed family policy \"reads-broadly-available-v1\": a read cannot mutate merchant state, so every query is trusted by default except the specially-restricted carve-out above.",
       skipScopeGate: true, // reads are not gated on scopeConfidence — see result()
     });
   }
 
-  // MUTATION, not overridden, not covered by a reviewed family policy — structural
-  // classification only from here down. By construction this branch can only ever return
-  // UNSUPPORTED_SEMANTICS: no combination of domain/name-pattern checks below sets
-  // executionStatus to EXECUTABLE or EXECUTABLE_WITH_CONFIRMATION. Operation-name similarity
-  // alone must not grant production write authority (task Part 1.3) — these checks may only
-  // sharpen risk/reversibility *metadata* for an operation that stays non-executable.
+  // MUTATION, not covered by a known-good/reviewed-family entry — generic structural
+  // classification from here down. Every path in this branch returns EXECUTABLE_WITH_
+  // CONFIRMATION: an unreviewed mutation still gets an execution path, just never at more than
+  // EXPLICIT_HIGH_RISK_CONFIRMATION_REQUIRED, and never AUTONOMOUS_ELIGIBLE. Operation-name
+  // similarity alone must not grant *frictionless* production write authority, but it may no
+  // longer be used as a reason execution is impossible at all, and there is no named list here
+  // that treats some operations differently by name — everything, including operations that
+  // would once have been individually named as especially dangerous (self-deauthorization, GDPR
+  // erasure, payment reversal, ...), goes through these same structural rules and lands wherever
+  // its real shape and domain put it.
   if (BULK_DESTRUCTIVE_NAME_PATTERN.test(operation)) {
     return result(scopeConfidence, {
       riskTier: RISK_TIER.platformCritical,
       reversibility: REVERSIBILITY.irreversible,
       interaction: INTERACTION.explicitHighRiskConfirmation,
-      executionStatus: EXECUTION_STATUS.unsupportedSemantics,
-      reason: "Bulk-delete-shaped name; unreviewed — structural classification only, never auto-executable.",
+      executionStatus: EXECUTION_STATUS.executableWithConfirmation,
+      classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
+      reason: "Bulk-delete-shaped name; unreviewed — explicit confirmation required, never autonomous.",
     });
   }
   if (DESTRUCTIVE_NAME_PATTERN.test(operation)) {
@@ -341,8 +365,9 @@ export function classifyShopifyOperationSafety(input) {
       riskTier: RISK_TIER.destructive,
       reversibility: REVERSIBILITY.irreversible,
       interaction: INTERACTION.explicitHighRiskConfirmation,
-      executionStatus: EXECUTION_STATUS.unsupportedSemantics,
-      reason: "Delete/erase/revoke/merge-shaped name; unreviewed — structural classification only.",
+      executionStatus: EXECUTION_STATUS.executableWithConfirmation,
+      classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
+      reason: "Delete/erase/revoke/uninstall/cancel/close-shaped name; unreviewed — explicit confirmation required.",
     });
   }
 
@@ -351,39 +376,43 @@ export function classifyShopifyOperationSafety(input) {
       riskTier: RISK_TIER.sensitive,
       reversibility: REVERSIBILITY.unknown,
       interaction: INTERACTION.explicitHighRiskConfirmation,
-      executionStatus: EXECUTION_STATUS.unsupportedSemantics,
-      reason: `${domain} mutation touches identity, financial, or platform state; unreviewed.`,
+      executionStatus: EXECUTION_STATUS.executableWithConfirmation,
+      classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
+      reason: `${domain} mutation touches identity, financial, or platform state; unreviewed — explicit confirmation required.`,
     });
   }
   if (COMPENSATABLE_MUTATION_DOMAINS.has(domain)) {
     return result(scopeConfidence, {
       riskTier: RISK_TIER.sensitive,
       reversibility: REVERSIBILITY.compensatable,
-      interaction: INTERACTION.approvalRequired,
-      executionStatus: EXECUTION_STATUS.unsupportedSemantics,
-      reason: `${domain} mutation touches money/order state; unreviewed.`,
+      interaction: INTERACTION.explicitHighRiskConfirmation,
+      executionStatus: EXECUTION_STATUS.executableWithConfirmation,
+      classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
+      reason: `${domain} mutation touches money/order state; unreviewed — explicit confirmation required even though the effect is compensatable rather than irreversible.`,
     });
   }
 
+  // Genuinely unknown shape: no destructive name, no known-sensitive/compensatable domain, no
+  // reviewed policy. Still requires explicit confirmation rather than refusing to understand the
+  // operation — "unknown future operations default to conservative explicit confirmation, not
+  // unsupported."
   return result(scopeConfidence, {
-    riskTier: RISK_TIER.sensitive,
+    riskTier: RISK_TIER.platformCritical,
     reversibility: REVERSIBILITY.unknown,
-    interaction: INTERACTION.approvalRequired,
-    executionStatus: EXECUTION_STATUS.unsupportedSemantics,
+    interaction: INTERACTION.explicitHighRiskConfirmation,
+    executionStatus: EXECUTION_STATUS.executableWithConfirmation,
     classificationSource: CLASSIFICATION_SOURCE.structuralNameInference,
-    reason: scopeConfidence !== "high"
-      ? "Scope requirement not confidently known — never let unknown mean safe."
-      : "No reviewed family policy or override covers this operation; name pattern alone is never sufficient to grant execution authority.",
+    reason: "No reviewed family policy, override, or recognizable risk shape covers this operation; defaulting to explicit confirmation rather than treating it as unsupported.",
   });
 }
 
 /**
- * Production-execution invariant, enforced here rather than trusted to callers: any result
- * carrying EXECUTABLE or EXECUTABLE_WITH_CONFIRMATION is downgraded to UNSUPPORTED_SEMANTICS
- * unless scopeConfidence is "high" (task Part 2.3) — "inferred" is real signal for discovery
- * and evaluation, never enough on its own to grant write authority. Reads are exempt: a query
- * cannot mutate merchant state, so scope confidence there only affects the live gateway scope
- * check (§2), never this safety gate.
+ * Scope confidence can only ever push the required interaction tier UP, never grant execution
+ * status it wouldn't otherwise have and never lower a tier a classification branch already
+ * computed. "high" leaves the branch's result untouched; anything less than "high" requires at
+ * least explicit confirmation — because Shopify authorization itself (never fabricated) is
+ * enforced live by the gateway, not by this module, scope confidence here is about confirmation
+ * friction, not a second authorization gate.
  * @param {"high" | "inferred" | "unknown"} scopeConfidence
  * @param {{ riskTier: string; reversibility: string; interaction: string; executionStatus: string; classificationSource?: string; reason: string; skipScopeGate?: boolean }} classification
  */
@@ -391,21 +420,43 @@ function result(scopeConfidence, classification) {
   const isExecutableResult =
     classification.executionStatus === EXECUTION_STATUS.executable ||
     classification.executionStatus === EXECUTION_STATUS.executableWithConfirmation;
-  const scopeGated = isExecutableResult && !classification.skipScopeGate && scopeConfidence !== "high";
+
+  if (!isExecutableResult || classification.skipScopeGate) {
+    return {
+      safety: {
+        riskTier: classification.riskTier,
+        reversibility: classification.reversibility,
+        interaction: classification.interaction,
+      },
+      execution: {
+        status: classification.executionStatus,
+        classificationSource: classification.classificationSource,
+        reason: classification.reason,
+      },
+    };
+  }
+
+  let interaction = classification.interaction;
+  let reason = classification.reason;
+  if (scopeConfidence !== "high") {
+    interaction = strongerInteraction(interaction, INTERACTION.explicitHighRiskConfirmation);
+  }
+  if (interaction !== classification.interaction) {
+    reason = `${reason} Required Shopify scope is not confidently known (scopeConfidence="${scopeConfidence}"), so confirmation is raised to ${interaction} — live scope authorization is still enforced separately at execution time and never fabricated.`;
+  }
+
   return {
     safety: {
       riskTier: classification.riskTier,
       reversibility: classification.reversibility,
-      interaction: classification.interaction,
+      interaction,
     },
     execution: {
-      status: scopeGated ? EXECUTION_STATUS.unsupportedSemantics : classification.executionStatus,
-      classificationSource: scopeGated ? undefined : classification.classificationSource,
-      reason: scopeGated
-        ? `Would otherwise be ${classification.executionStatus}, but scopeConfidence is "${scopeConfidence}", not "high" — never let unknown mean safe (task Part 2.3). ${classification.reason}`
-        : classification.reason,
+      status: classification.executionStatus,
+      classificationSource: classification.classificationSource,
+      reason,
     },
   };
 }
 
-export { PROHIBITED_OPERATIONS, KNOWN_GOOD_OVERRIDES, REVIEWED_FAMILY_POLICIES };
+export { KNOWN_GOOD_OVERRIDES, REVIEWED_FAMILY_POLICIES };
