@@ -39,8 +39,8 @@ import {
   ONBOARDING_LEARNING_JOB_TYPES,
 } from "../app/lib/onboarding/learning-progress.server.js";
 import {
-  BOOTSTRAP_BACKFILL_DOMAIN,
-  MERCHANT_BOOTSTRAP_JOB_TYPE,
+  FULL_BACKFILL_JOB_TYPES,
+  INITIAL_COMMERCE_BACKFILL_DOMAINS,
 } from "../app/services/shopify-backfill-status.server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -74,7 +74,7 @@ test("context answers resume learning through one idempotent orchestrator", () =
   assert.deepEqual(
     [...ONBOARDING_LEARNING_JOB_TYPES],
     [
-      MERCHANT_BOOTSTRAP_JOB_TYPE,
+      ...FULL_BACKFILL_JOB_TYPES,
       MEMORY_REFRESH_JOB_TYPE,
       MERCHANT_INSIGHTS_JOB_TYPE,
       MERCHANT_GOALS_JOB_TYPE,
@@ -89,13 +89,10 @@ test("Still working requires a queued or running learning job", () => {
   assert.match(componentSource, /showWaitingCopy/);
   assert.match(progressSource, /learningPipelinePending/);
   const unscheduled = classifyFailure(
-    { status: "complete", metadata: { phase: "awaiting_context" } },
-    { status: "succeeded" },
+    { state: "learning" },
     {
-      bootstrapPhase: "awaiting_context",
       contextAnswered: true,
       hasSurfaceableRecommendation: false,
-      fullLearningState: "learning",
       learningPipelinePending: false,
     },
   );
@@ -103,18 +100,102 @@ test("Still working requires a queued or running learning job", () => {
   assert.match(unscheduled.message, /next learning step has not started/);
   assert.equal(
     classifyFailure(
-      { status: "complete", metadata: { phase: "awaiting_context" } },
-      { status: "succeeded" },
+      { state: "learning" },
       {
-        bootstrapPhase: "awaiting_context",
         contextAnswered: true,
         hasSurfaceableRecommendation: false,
-        fullLearningState: "learning",
         learningPipelinePending: true,
       },
     ),
     null,
   );
+});
+
+test("context answered but full backfill not yet complete: pipeline stays gated, no memory refresh queued", async (t) => {
+  // This is the actual bug docs/ops/remove-bootstrap-full-onboarding/ exists to fix: before
+  // bootstrap removal, answering context (once the now-removed bootstrap job succeeded) could
+  // queue a full Memory refresh — and therefore the whole insights/goals/recommendation chain —
+  // well before full backfill had genuinely finished, against incomplete raw Shopify data.
+  if (!databaseUrl) {
+    t.skip("DATABASE_URL is required for onboarding learning progress tests");
+    return;
+  }
+
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const suffix = uniqueSuffix();
+  try {
+    // Deliberately no fullBackfillComplete: true — full backfill is still "in progress".
+    const { merchant, shop } = await createLearningFixture(prisma, suffix, {});
+
+    const answered = await answerOnboardingContext(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: shop.shopDomain,
+      value: "revenue",
+    });
+    const progress = await inspectOnboardingLearningProgress(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+    });
+    const jobs = await learningJobs(prisma, shop.id);
+
+    assert.equal(answered.ok, true);
+    assert.equal(progress.contextAnswered, true);
+    assert.equal(progress.fullBackfill.state, "pending");
+    assert.equal(progress.nextStage, "full_backfill");
+    assert.equal(progress.storeUnderstanding.state, "missing");
+    // The load-bearing assertion: no memory refresh (and therefore nothing downstream) is queued
+    // while full backfill is still pending.
+    assert.equal(jobs[MEMORY_REFRESH_JOB_TYPE], undefined);
+    assert.equal(jobs[MERCHANT_INSIGHTS_JOB_TYPE], undefined);
+    assert.equal(jobs[MERCHANT_GOALS_JOB_TYPE], undefined);
+    assert.equal(jobs[AGENTIC_RECOMMENDATION_JOB_TYPE], undefined);
+
+    // Full backfill now completes (its own handleFinalize would call enqueueMerchantMemoryRefresh
+    // automatically in production; simulate that here to prove the pipeline unblocks once it's
+    // genuinely ready, not before).
+    await Promise.all(
+      INITIAL_COMMERCE_BACKFILL_DOMAINS.map((domain) =>
+        prisma.shopBackfillStatus.create({
+          data: {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            domain,
+            status: "complete",
+            startedAt: new Date(),
+            completedAt: new Date(),
+            metadata: {},
+          },
+        }),
+      ),
+    );
+    await prisma.backfillJob.create({
+      data: {
+        merchantId: merchant.id,
+        shopId: shop.id,
+        jobType: "backfill_finalize",
+        status: "succeeded",
+        startedAt: new Date(),
+        completedAt: new Date(),
+        payloadJson: { fullBackfillEpoch: `epoch-${suffix}` },
+        resultJson: {},
+      },
+    });
+
+    const afterBackfill = await ensureOnboardingLearningProgress(prisma, {
+      merchantId: merchant.id,
+      shopId: shop.id,
+      shopDomain: shop.shopDomain,
+    });
+    const jobsAfterBackfill = await learningJobs(prisma, shop.id);
+    assert.equal(afterBackfill.queuedStage, "store_understanding");
+    assert.equal(jobsAfterBackfill[MEMORY_REFRESH_JOB_TYPE], "queued");
+  } finally {
+    await prisma.merchant.deleteMany({
+      where: { name: `Onboarding Learning Test ${suffix}` },
+    });
+    await prisma.$disconnect();
+  }
 });
 
 test("context answer queues the missing first-value pipeline", async (t) => {
@@ -127,7 +208,7 @@ test("context answer queues the missing first-value pipeline", async (t) => {
   const suffix = uniqueSuffix();
   try {
     const { merchant, shop } = await createLearningFixture(prisma, suffix, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
     });
 
     const answered = await answerOnboardingContext(prisma, {
@@ -187,7 +268,7 @@ test("orchestration queues exactly the next missing learning stage", async (t) =
   const suffix = uniqueSuffix();
   try {
     const understandingReady = await createLearningFixture(prisma, `${suffix}-u`, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
       contextAnswered: true,
       storeUnderstandingComplete: true,
     });
@@ -198,7 +279,7 @@ test("orchestration queues exactly the next missing learning stage", async (t) =
     const understandingJobs = await learningJobs(prisma, understandingReady.shop.id);
 
     const insightsReady = await createLearningFixture(prisma, `${suffix}-i`, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
       contextAnswered: true,
       storeUnderstandingComplete: true,
       insightsComplete: true,
@@ -210,7 +291,7 @@ test("orchestration queues exactly the next missing learning stage", async (t) =
     const insightsJobs = await learningJobs(prisma, insightsReady.shop.id);
 
     const goalsReady = await createLearningFixture(prisma, `${suffix}-g`, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
       contextAnswered: true,
       storeUnderstandingComplete: true,
       insightsComplete: true,
@@ -254,7 +335,7 @@ test("repeated orchestration reuses one job per stage", async (t) => {
   const suffix = uniqueSuffix();
   try {
     const { merchant, shop } = await createLearningFixture(prisma, suffix, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
       contextAnswered: true,
       storeUnderstandingComplete: true,
     });
@@ -303,7 +384,7 @@ test("getFastOnboardingExperience self-heals an unscheduled pipeline", async (t)
   const suffix = uniqueSuffix();
   try {
     const { merchant, shop } = await createLearningFixture(prisma, suffix, {
-      bootstrapComplete: true,
+      fullBackfillComplete: true,
       contextAnswered: true,
     });
     const before = await inspectOnboardingLearningProgress(prisma, {
@@ -395,31 +476,36 @@ async function createLearningFixture(prisma, suffix, options = {}) {
     });
   }
 
-  if (options.bootstrapComplete) {
+  if (options.fullBackfillComplete) {
+    // Replaces the removed bootstrap-complete fixture (docs/ops/remove-bootstrap-full-onboarding/):
+    // the pipeline now gates store_understanding on genuine full-backfill completeness —
+    // every INITIAL_COMMERCE_BACKFILL_DOMAINS status "complete" plus a succeeded
+    // "backfill_finalize" job (isFullBackfillComplete's exact definition).
+    await Promise.all(
+      INITIAL_COMMERCE_BACKFILL_DOMAINS.map((domain) =>
+        prisma.shopBackfillStatus.create({
+          data: {
+            merchantId: merchant.id,
+            shopId: shop.id,
+            domain,
+            status: "complete",
+            startedAt: new Date("2026-08-22T09:00:00Z"),
+            completedAt: new Date("2026-08-22T09:00:20Z"),
+            metadata: {},
+          },
+        }),
+      ),
+    );
     await prisma.backfillJob.create({
       data: {
         merchantId: merchant.id,
         shopId: shop.id,
-        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
+        jobType: "backfill_finalize",
         status: "succeeded",
         startedAt: new Date("2026-08-22T09:00:00Z"),
         completedAt: new Date("2026-08-22T09:00:20Z"),
-        payloadJson: { onboardingEpoch: `epoch-${suffix}` },
-        resultJson: { phase: "awaiting_context" },
-      },
-    });
-    await prisma.shopBackfillStatus.create({
-      data: {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        domain: BOOTSTRAP_BACKFILL_DOMAIN,
-        status: "complete",
-        startedAt: new Date("2026-08-22T09:00:00Z"),
-        completedAt: new Date("2026-08-22T09:00:20Z"),
-        metadata: {
-          phase: "awaiting_context",
-          onboardingEpoch: `epoch-${suffix}`,
-        },
+        payloadJson: { fullBackfillEpoch: `epoch-${suffix}` },
+        resultJson: {},
       },
     });
   }

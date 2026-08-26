@@ -5,7 +5,6 @@ import {
   shouldPageOnDependencyFailure,
   buildWorkerHealth,
   buildDependencyHealth,
-  getBootstrapJobHealth,
   isNeonPooledRuntimeUrl,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
@@ -31,9 +30,8 @@ import { getShopifyIntelligenceCoverageHealth } from "../lib/shopify/intelligenc
 import { getGatewaySchemaHealth } from "../lib/shopify/gateway/schema-index.server.js";
 
 export const loader = async () => {
-  const [database, bootstrapJobs, actionStepRuns] = await Promise.all([
+  const [database, actionStepRuns] = await Promise.all([
     checkDatabaseHealth(db),
-    getBootstrapJobHealth(db),
     getActionStepRunHealth(db),
   ]);
   const episodeIndex =
@@ -57,7 +55,6 @@ export const loader = async () => {
       worker: buildWorkerHealth(getWorkerLastTickAt(), {
         enabled: process.env.ENABLE_SHOPIFY_BACKFILL_LOOP !== "false",
       }),
-      bootstrapJobs,
       actionStepRuns,
       webhooks: getWebhookHealth(),
       inboundEmail: getInboundEmailHealth(),

@@ -217,17 +217,6 @@ test("legacy generateMerchantPlan remains duplicate-guarded while retired from t
   assert.match(serviceSource, /persistProposedRecommendationIfAllowed/);
 });
 
-test("bootstrap no longer creates background recommendation proposals", () => {
-  const bootstrapSource = readFileSync(
-    new URL("../app/lib/onboarding/bootstrap.server.js", import.meta.url),
-    "utf8",
-  );
-  assert.match(bootstrapSource, /ready_for_agentic_recommendation/);
-  assert.match(bootstrapSource, /retired_agentic_recommendation_only/);
-  assert.doesNotMatch(bootstrapSource, /shouldDeferAutonomousProposalCreation/);
-  assert.doesNotMatch(bootstrapSource, /checkProposedCreationAllowed/);
-});
-
 test("insights and goals services remain free to run after onboarding", () => {
   const workerSource = readFileSync(
     new URL("../app/services/shopify-backfill-worker.server.js", import.meta.url),

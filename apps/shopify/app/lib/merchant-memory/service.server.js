@@ -5,7 +5,6 @@ import {
   AUTHORITATIVE_BELIEF_STATUSES,
   BELIEF_PRECEDENCE,
   BELIEF_STATUS,
-  BOOTSTRAP_SAFE_BELIEF_KEYS,
   DERIVATION_LOOKUP_STATUSES,
   MEMORY_DERIVATION_VERSION,
 } from "./constants.server.js";
@@ -70,54 +69,15 @@ export async function getBelief(prisma, input) {
  * @param {DerivedBeliefInput} input
  */
 export async function upsertDerivedBelief(prisma, input) {
-  if (isBootstrapSafeBelief(input.key)) {
-    return withBootstrapBeliefPublicationLock(prisma, input, (tx) =>
-      upsertDerivedBeliefLocked(tx, input),
-    );
-  }
   return upsertDerivedBeliefLocked(prisma, input);
 }
 
 /**
- * @param {any} prisma
- * @param {{ merchantId: string; shopId?: string | null }} input
- * @param {(tx: any) => Promise<any>} callback
- */
-async function withBootstrapBeliefPublicationLock(prisma, input, callback) {
-  if (typeof prisma.$transaction !== "function") return callback(prisma);
-  return prisma.$transaction(
-    async (/** @type {any} */ tx) => {
-      if (typeof tx.$queryRawUnsafe === "function") {
-        const lockKey = [
-          input.merchantId,
-          input.shopId ?? "merchant",
-          "bootstrap_safe_beliefs",
-        ].join(":");
-        await tx.$queryRawUnsafe(
-          "SELECT 1::integer AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
-          lockKey,
-        );
-      }
-      return callback(tx);
-    },
-    // Prisma's interactive-transaction default is five seconds. Publishing the
-    // bounded safe-belief group over a remote production database can exceed
-    // that even though the work is healthy, which closes `tx` mid-history write.
-    // Keep the transaction and advisory lock bounded, but give this known group
-    // enough time for its small, sequential belief/history/evidence write set.
-    { maxWait: 10_000, timeout: 60_000 },
-  );
-}
-
-/** @param {string} key */
-function isBootstrapSafeBelief(key) {
-  return BOOTSTRAP_SAFE_BELIEF_KEYS.includes(key);
-}
-
-/**
- * The caller holds the transaction-scoped publication lock when Prisma supports
- * transactions. This prevents bootstrap and full-memory lanes from both seeing
- * no active row and publishing duplicate inferred beliefs.
+ * Named "Locked" for historical reasons: this used to run inside an advisory-lock transaction
+ * (`withBootstrapBeliefPublicationLock`) for belief keys the removed bootstrap lane and the full
+ * Memory lane could both publish concurrently. Bootstrap onboarding was removed
+ * (docs/ops/remove-bootstrap-full-onboarding/) — there is now exactly one writer of derived
+ * beliefs, so that race is categorically impossible and the lock was deleted with it.
  * @param {any} prisma
  * @param {DerivedBeliefInput} input
  */
@@ -125,10 +85,11 @@ async function upsertDerivedBeliefLocked(prisma, input) {
   const now = input.evaluatedAt ?? new Date();
   const nextDerivationVersion =
     input.derivationVersion ?? MEMORY_DERIVATION_VERSION;
-  const incomingDerivationSourceMode =
-    input.evidence?.metadata?.sourceMode === "bootstrap"
-      ? "bootstrap"
-      : "full";
+  // Always "full": the only other value this ever took, "bootstrap", was written by the
+  // now-removed bootstrap onboarding lane (docs/ops/remove-bootstrap-full-onboarding/). The
+  // column itself is left in place (legacy, no runtime branch depends on it reading anything
+  // other than "full" going forward) rather than forcing a schema migration for it.
+  const incomingDerivationSourceMode = "full";
   // DERIVATION_LOOKUP_STATUSES, not ACTIVE: a merchant-retracted belief is deliberately
   // invisible to readers, but this lookup must still find it. With an ACTIVE-only filter it
   // came back null, fell through to the create branch below, and re-derivation silently
@@ -153,30 +114,6 @@ async function upsertDerivedBeliefLocked(prisma, input) {
       previousValue: existing.value,
       newValue: existing.value,
       changeReason: "derived_recalculation_skipped_authoritative_belief",
-      changedBy: "system",
-      metadata: {
-        proposedValue: input.value,
-        proposedConfidence: input.confidence,
-      },
-    });
-    return { belief: existing, changed: false, skipped: true };
-  }
-
-  if (
-    existing?.status === BELIEF_STATUS.inferred &&
-    incomingDerivationSourceMode === "bootstrap" &&
-    existing.derivationSourceMode !== "bootstrap"
-  ) {
-    await recordHistory(prisma, {
-      merchantId: input.merchantId,
-      shopId: input.shopId ?? existing.shopId,
-      beliefId: existing.id,
-      key: input.key,
-      previousStatus: existing.status,
-      newStatus: existing.status,
-      previousValue: existing.value,
-      newValue: existing.value,
-      changeReason: "bootstrap_recalculation_skipped_stronger_full_inference",
       changedBy: "system",
       metadata: {
         proposedValue: input.value,
@@ -331,35 +268,10 @@ async function upsertDerivedBeliefLocked(prisma, input) {
         lastObservedAt: input.lastObservedAt ?? input.observedAt ?? now,
         lastEvaluatedAt: now,
       };
-    let belief;
-    if (incomingDerivationSourceMode === "bootstrap") {
-      const updated = await tx.merchantMemoryBelief.updateMany({
-        where: {
-          id: existing.id,
-          status: BELIEF_STATUS.inferred,
-          derivationSourceMode: "bootstrap",
-        },
-        data,
-      });
-      if (updated.count !== 1) {
-        const stronger = await tx.merchantMemoryBelief.findUnique({
-          where: { id: existing.id },
-        });
-        return {
-          belief: stronger ?? existing,
-          changed: false,
-          skipped: true,
-        };
-      }
-      belief = await tx.merchantMemoryBelief.findUniqueOrThrow({
-        where: { id: existing.id },
-      });
-    } else {
-      belief = await tx.merchantMemoryBelief.update({
-        where: { id: existing.id },
-        data,
-      });
-    }
+    const belief = await tx.merchantMemoryBelief.update({
+      where: { id: existing.id },
+      data,
+    });
     await recordHistory(tx, {
       merchantId: input.merchantId,
       shopId: input.shopId ?? belief.shopId,
@@ -1009,32 +921,9 @@ export async function refreshBeliefs(prisma, input) {
       : derivationResult.derivationReport;
     let createdOrUpdated = 0;
     let skipped = skippedOutcomes.length;
-    const standardDerivations = derivations.filter(
-      (derivation) => !isBootstrapSafeBelief(derivation.key),
-    );
-    const bootstrapSafeDerivations = derivations.filter((derivation) =>
-      isBootstrapSafeBelief(derivation.key),
-    );
     const results = [];
-    for (const derivation of standardDerivations) {
+    for (const derivation of derivations) {
       results.push(await upsertDerivedBeliefLocked(prisma, derivation));
-    }
-    if (bootstrapSafeDerivations.length > 0) {
-      results.push(
-        ...(await withBootstrapBeliefPublicationLock(
-          prisma,
-          bootstrapSafeDerivations[0],
-          async (tx) => {
-            const lockedResults = [];
-            for (const derivation of bootstrapSafeDerivations) {
-              lockedResults.push(
-                await upsertDerivedBeliefLocked(tx, derivation),
-              );
-            }
-            return lockedResults;
-          },
-        )),
-      );
     }
     for (const result of results) {
       if (result.skipped) skipped += 1;

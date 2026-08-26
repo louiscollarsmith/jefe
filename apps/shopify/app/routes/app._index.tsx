@@ -227,7 +227,6 @@ import { ShopifyAdminGraphqlClient } from "../lib/shopify/admin-graphql.server";
 import { authenticateAppRequest } from "../lib/auth/authenticate-app-request.server.js";
 import {
   getShopBackfillProgress,
-  ensureMerchantBootstrapQueued,
   queueInstallShopifyBackfill,
   splitScopes,
 } from "../services/shopify-backfill-status.server";
@@ -1970,13 +1969,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   if (process.env.ENABLE_FAST_ONBOARDING !== "false") {
-    await ensureMerchantBootstrapQueued(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      shopDomain: session.shop,
-      sessionId: session.id,
-      scopes,
-    });
     const [storeName, fastOnboarding] = await Promise.all([
       storeNamePromise,
       getFastOnboardingExperience(prisma, {

@@ -4,7 +4,6 @@ import {
   checkDatabaseHealth,
   readinessStatus,
   shouldPageOnDependencyFailure,
-  getBootstrapJobHealth,
 } from "../services/deployment-health.server";
 import { logger } from "../lib/observability/logger.server";
 
@@ -16,10 +15,7 @@ import { logger } from "../lib/observability/logger.server";
  * Railway's healthcheck points at.
  */
 export const loader = async () => {
-  const [database, bootstrapJobs] = await Promise.all([
-    checkDatabaseHealth(db),
-    getBootstrapJobHealth(db),
-  ]);
+  const database = await checkDatabaseHealth(db);
   const status = readinessStatus(database);
 
   const payload = {
@@ -27,7 +23,6 @@ export const loader = async () => {
     ready: status === 200,
     checks: {
       database: { status: database.status, latencyMs: database.latencyMs },
-      bootstrapJobs,
     },
   };
 

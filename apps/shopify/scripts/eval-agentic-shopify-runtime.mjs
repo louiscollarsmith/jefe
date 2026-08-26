@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { createLlmProvider } from "../app/lib/llm/provider.server.js";
-import { runMerchantMemoryBootstrap } from "../app/lib/onboarding/bootstrap.server.js";
+import { rebuildMerchantMemory } from "../app/lib/merchant-memory/service.server.js";
 import { ShopifyAdminGraphqlClient, normalizeShopDomain } from "../app/lib/shopify/admin-graphql.server.js";
 import { executeShopifyOperation, getActionRevisionState } from "../app/lib/shopify/api/gateway.server.js";
 import {
@@ -382,11 +382,13 @@ async function runRealDevMerchantOnboardingStage() {
       stages.push(blocked("actual_dev_merchant_onboarding", `No local Shop row for ${config.shopDomain}.`));
       return;
     }
-    await runMerchantMemoryBootstrap(prisma, {
+    // Bootstrap was removed (docs/ops/remove-bootstrap-full-onboarding/); the canonical onboarding
+    // path is full backfill -> full Memory refresh. This eval stage assumes a real dev store
+    // already has full-backfill data in Postgres, and just (re)computes Memory from it directly.
+    await rebuildMerchantMemory(prisma, {
       merchantId: shop.merchantId,
       shopId: shop.id,
-      shopDomain: shop.shopDomain,
-      accessToken: config.accessToken,
+      categories: [],
       logger: quietLogger(),
     });
     const result = await runAgenticRecommendationInvestigation(prisma, {

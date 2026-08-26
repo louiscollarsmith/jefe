@@ -15,10 +15,7 @@ import {
   PLAN_RUN_STATUS,
 } from "../../merchant-plan/constants.server.js";
 import { supersedeAllProposedRecommendations } from "../../merchant-plan/proposal-creation-invariant.server.js";
-import {
-  enqueueBackfillJob,
-  MERCHANT_BOOTSTRAP_JOB_TYPE,
-} from "../../../services/shopify-backfill-status.server.js";
+import { enqueueBackfillJob } from "../../../services/shopify-backfill-status.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { runCandidateDrivenRecommendation } from "./candidate-pipeline.server.js";
 import {
@@ -1048,23 +1045,27 @@ async function findLatestAgenticRecommendationRun(prisma, input) {
 }
 
 /**
+ * The general onboarding-attempt identifier, read from the `shop_backfill_start` job's
+ * `fullBackfillEpoch` payload field. Previously read `onboardingEpoch` off the bootstrap job;
+ * bootstrap was removed (docs/ops/remove-bootstrap-full-onboarding/), so this now repoints to the
+ * epoch that actually spans the new canonical lifecycle rather than silently degrading to null.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ shopId: string }} input
  */
 async function loadOnboardingEpoch(prisma, input) {
   if (typeof prisma.backfillJob?.findUnique !== "function") return null;
-  const bootstrap = await prisma.backfillJob.findUnique({
+  const installJob = await prisma.backfillJob.findUnique({
     where: {
       shopId_jobType: {
         shopId: input.shopId,
-        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
+        jobType: "shop_backfill_start",
       },
     },
     select: { payloadJson: true },
   });
-  const payload = jsonObject(bootstrap?.payloadJson);
-  return typeof payload.onboardingEpoch === "string"
-    ? payload.onboardingEpoch
+  const payload = jsonObject(installJob?.payloadJson);
+  return typeof payload.fullBackfillEpoch === "string"
+    ? payload.fullBackfillEpoch
     : null;
 }
 

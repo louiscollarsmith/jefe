@@ -181,6 +181,9 @@ export async function persistProposedRecommendationIfAllowed(client, input, pers
   });
 }
 
+// "bootstrap" is legacy-only (docs/ops/remove-bootstrap-full-onboarding/): no new proposal can be
+// created with this sourceMode, but existing pre-migration rows may still carry it, so the rank
+// stays here to keep them losing correctly against a full/home duplicate rather than erroring.
 /** @type {Readonly<Record<string, number>>} */
 const SOURCE_MODE_RANK = Object.freeze({ full: 2, home: 2, bootstrap: 1 });
 

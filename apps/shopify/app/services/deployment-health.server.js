@@ -167,36 +167,6 @@ export function buildWorkerHealth(lastTickAt, opts = {}) {
 }
 
 /**
- * Non-gating health for the durable fast-onboarding lane. Self-catching so a
- * diagnostic query can never turn liveness into an outage.
- * @param {{ backfillJob: { count: (args: any) => Promise<number> } }} prisma
- * @param {{ now?: Date; staleMs?: number }} [options]
- */
-export async function getBootstrapJobHealth(prisma, options = {}) {
-  const now = options.now ?? new Date();
-  const staleBefore = new Date(now.getTime() - (options.staleMs ?? 15 * 60_000));
-  try {
-    const [queued, running, failed, stale] = await Promise.all([
-      prisma.backfillJob.count({ where: { jobType: "merchant_memory_bootstrap", status: "queued" } }),
-      prisma.backfillJob.count({ where: { jobType: "merchant_memory_bootstrap", status: "running" } }),
-      prisma.backfillJob.count({ where: { jobType: "merchant_memory_bootstrap", status: "failed" } }),
-      prisma.backfillJob.count({
-        where: {
-          jobType: "merchant_memory_bootstrap",
-          OR: [
-            { status: "running", startedAt: { lt: staleBefore } },
-            { status: "queued", runAfter: { lt: staleBefore } },
-          ],
-        },
-      }),
-    ]);
-    return { status: "ok", queued, running, failed, stale };
-  } catch {
-    return { status: "unknown", queued: null, running: null, failed: null, stale: null };
-  }
-}
-
-/**
  * Cheap dependency presence flags for `/health` — env checks only, no network
  * calls (so `/health` stays fast and can't hang on a flaky external probe).
  * Non-gating: informational, never fails the check.
