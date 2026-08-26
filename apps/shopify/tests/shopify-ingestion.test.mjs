@@ -488,6 +488,8 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       where: { platform_shopDomain: { platform: "shopify", shopDomain } },
       select: { id: true },
     });
+    // Bootstrap was removed (docs/ops/remove-bootstrap-full-onboarding/): install queues full
+    // backfill only, never merchant_memory_bootstrap.
     const initialJobs = await prisma.backfillJob.findMany({
       where: {
         shopId: queuedShop.id,
@@ -497,7 +499,6 @@ test("Install evidence backfill jobs queue, run, finalise and retry failed work"
       select: { jobType: true, status: true, priority: true },
     });
     assert.deepEqual(initialJobs, [
-      { jobType: "merchant_memory_bootstrap", status: "queued", priority: 5 },
       { jobType: "shop_backfill_start", status: "queued", priority: 10 },
     ]);
 

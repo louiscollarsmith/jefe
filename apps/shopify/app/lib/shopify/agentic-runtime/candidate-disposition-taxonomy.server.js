@@ -19,6 +19,13 @@
 export const CANDIDATE_DISPOSITION_DETAIL = Object.freeze({
   weakDiagnosis: "WEAK_DIAGNOSIS",
   insufficientEvidence: "INSUFFICIENT_EVIDENCE",
+  // docs/ops/recommendation-convergence-vs-evidence-fix/: the agent exhausted its turn budget
+  // without ever attempting a terminal decision — a runtime/convergence failure. Distinct from
+  // insufficientEvidence, which means Jefe actually reached and rejected the opportunity on the
+  // evidence. Conflating the two silently converted "the model didn't converge" into "the business
+  // lacks evidence" — a candidate should only be reported/treated as substantively rejected when
+  // Jefe actually reached that judgement.
+  convergenceFailure: "CONVERGENCE_FAILURE",
   shopifyApiLimitation: "SHOPIFY_API_LIMITATION",
   capabilityRetrievalFailure: "CAPABILITY_RETRIEVAL_FAILURE",
   inputMissing: "INPUT_MISSING",
@@ -86,6 +93,16 @@ export function classifyDispositionDetail({ candidateStatus, resultStatus = null
 
   if (resultStatus === "VALIDATION_FAILED") return CANDIDATE_DISPOSITION_DETAIL.validationFailure;
   if (resultStatus === "INVESTIGATION_INCOMPLETE") return CANDIDATE_DISPOSITION_DETAIL.insufficientEvidence;
+  if (resultStatus === "ITERATION_LIMIT" || candidateStatus === "ITERATION_LIMIT") {
+    return CANDIDATE_DISPOSITION_DETAIL.convergenceFailure;
+  }
+  // classifyCandidateOutcome has no case for INVESTIGATION_FAILED (a candidate that did attempt a
+  // terminal decision and was correctly rejected for never achieving a satisfying read, then
+  // exhausted its budget without curing it) — it silently defaults to NON_EXECUTABLE, and when no
+  // capability family resolves (no read ever succeeded, so there's no coverage data to resolve one
+  // from) that reports CAPABILITY_RETRIEVAL_FAILURE: "no Shopify write operation exists", which is
+  // false — the real problem is "never got a read", i.e. an evidence gap, not a capability gap.
+  if (resultStatus === "INVESTIGATION_FAILED") return CANDIDATE_DISPOSITION_DETAIL.insufficientEvidence;
 
   switch (candidateStatus) {
     case "ALREADY_SATISFIED":

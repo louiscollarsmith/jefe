@@ -54,28 +54,3 @@ export const BELIEF_PRECEDENCE = {
 
 export const MEMORY_REFRESH_JOB_TYPE = "merchant_memory_rebuild";
 export const MEMORY_BACKFILL_DOMAIN = "merchant_memory";
-
-export const BOOTSTRAP_SAFE_BELIEF_KEYS = Object.freeze([
-  "catalog.active_product_count",
-  "catalog.total_variant_count",
-  "catalog.out_of_stock_product_count",
-  "catalog.median_variant_price",
-  "catalog.minimum_variant_price",
-  "catalog.maximum_variant_price",
-  "catalog.zero_price_variant_count",
-  "catalog.variants_per_product_average",
-  "catalog.variants_per_product_median",
-  "business.catalogue_shape",
-  "inventory.at_risk_stockout_count.trailing_30d",
-  "inventory.low_cover_products.trailing_30d",
-  "data.inventory_variant_coverage",
-  "data.inventory_freshness_hours_p90",
-  "data.line_item_product_link_coverage",
-  "data.line_item_variant_link_coverage",
-  "products.top_product_revenue_share.trailing_90d",
-  "products.bestseller_by_revenue.trailing_90d",
-  "products.bestseller_by_units.trailing_90d",
-  "business.discount_depth.trailing_90d",
-  "data.currency_consistency",
-  "data.priced_order_coverage",
-]);

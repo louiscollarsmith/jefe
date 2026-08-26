@@ -4,10 +4,19 @@ import test from "node:test";
 import {
   runCandidateDrivenRecommendation,
   CANDIDATE_STATUS,
+  classifyCandidateOutcome,
   isNovelCandidate,
 } from "../app/lib/shopify/agentic-runtime/candidate-pipeline.server.js";
 import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import { SHOPIFY_GATEWAY_TOOL } from "../app/lib/shopify/gateway/tools.server.js";
+import {
+  CANDIDATE_CONSUMPTION_STATUS,
+  persistFreshOpportunitySet,
+} from "../app/lib/shopify/agentic-runtime/opportunity-set.server.js";
+import {
+  classifyDispositionDetail,
+  CANDIDATE_DISPOSITION_DETAIL,
+} from "../app/lib/shopify/agentic-runtime/candidate-disposition-taxonomy.server.js";
 // Tests 5/6 below deliberately exercise generateAgenticShopifyRecommendation's open-ended
 // discovery branch (no focusCandidate) — the one Shopify investigation path with no production
 // caller (candidate-pipeline.server.js, the only real caller, always passes focusCandidate). It
@@ -84,6 +93,105 @@ function baseInput(provider, overrides = {}) {
     logger: { info() {}, warn() {}, error() {} },
     perCandidateIterations: 4,
     ...overrides,
+  };
+}
+
+// Minimal in-memory fake for the opportunity-set models (mirrors tests/opportunity-set.test.mjs),
+// added to baseInput's prisma so runCandidateDrivenRecommendation can exercise real persistence/
+// claim logic instead of silently no-op'ing (maybePersistFreshOpportunitySet/claimNextCandidate
+// both check for these methods before touching the opportunity set).
+function makeOpportunityPrisma() {
+  const sets = new Map();
+  const candidates = new Map();
+  let counter = 0;
+  const nextId = (prefix) => `${prefix}-${++counter}`;
+  const matches = (row, where = {}) =>
+    Object.entries(where).every(([key, cond]) => {
+      if (cond && typeof cond === "object" && !(cond instanceof Date)) {
+        if ("gt" in cond) return row[key] > cond.gt;
+        if ("in" in cond) return cond.in.includes(row[key]);
+        if ("notIn" in cond) return !cond.notIn.includes(row[key]);
+      }
+      return row[key] === cond;
+    });
+  const withCandidates = (set) =>
+    set && {
+      ...set,
+      candidates: [...candidates.values()].filter((c) => c.opportunitySetId === set.id).sort((a, b) => a.rank - b.rank),
+    };
+  const merchantOpportunitySet = {
+    async create({ data }) {
+      const id = nextId("set");
+      const row = { id, updatedAt: data.createdAt ?? new Date(), ...data };
+      sets.set(id, row);
+      return row;
+    },
+    async findFirst({ where, orderBy }) {
+      let rows = [...sets.values()].filter((r) => matches(r, where));
+      if (orderBy?.createdAt === "desc") rows.sort((a, b) => b.createdAt - a.createdAt);
+      return withCandidates(rows[0]) ?? null;
+    },
+    async findUnique({ where }) {
+      return withCandidates(sets.get(where.id)) ?? null;
+    },
+  };
+  const merchantOpportunityCandidate = {
+    async create({ data }) {
+      const id = nextId("cand");
+      const row = { id, createdAt: new Date(), updatedAt: new Date(), ...data };
+      candidates.set(id, row);
+      return row;
+    },
+    async createMany({ data }) {
+      for (const item of data) {
+        const id = nextId("cand");
+        candidates.set(id, { id, createdAt: new Date(), updatedAt: new Date(), ...item });
+      }
+      return { count: data.length };
+    },
+    async findFirst({ where }) {
+      return [...candidates.values()].find((r) => matches(r, where)) ?? null;
+    },
+    async findMany({ where, orderBy }) {
+      let rows = [...candidates.values()].filter((r) => matches(r, where));
+      if (orderBy?.rank === "asc") rows.sort((a, b) => a.rank - b.rank);
+      return rows;
+    },
+    async findUnique({ where }) {
+      if (where.id) return candidates.get(where.id) ?? null;
+      if (where.opportunitySetId_candidateId) {
+        const { opportunitySetId, candidateId } = where.opportunitySetId_candidateId;
+        return [...candidates.values()].find((r) => r.opportunitySetId === opportunitySetId && r.candidateId === candidateId) ?? null;
+      }
+      return null;
+    },
+    async update({ where, data }) {
+      const row =
+        (where.id && candidates.get(where.id)) ||
+        (where.opportunitySetId_candidateId &&
+          [...candidates.values()].find(
+            (r) =>
+              r.opportunitySetId === where.opportunitySetId_candidateId.opportunitySetId &&
+              r.candidateId === where.opportunitySetId_candidateId.candidateId,
+          ));
+      if (!row) throw new Error("MerchantOpportunityCandidate not found");
+      Object.assign(row, data);
+      return row;
+    },
+    async updateMany({ where, data }) {
+      const rows = [...candidates.values()].filter((r) => matches(r, where));
+      for (const row of rows) Object.assign(row, data);
+      return { count: rows.length };
+    },
+  };
+  const merchantPlanRun = { async findUnique() { return null; } };
+  return {
+    merchantOpportunitySet,
+    merchantOpportunityCandidate,
+    merchantPlanRun,
+    async $transaction(fn) {
+      return fn({ merchantOpportunitySet, merchantOpportunityCandidate, merchantPlanRun });
+    },
   };
 }
 
@@ -498,4 +606,257 @@ test("isNovelCandidate: near-duplicate diagnosedProblem is not novel; a distinct
   const existing = [{ diagnosedProblem: "Draft product invisible to customers" }];
   assert.equal(isNovelCandidate({ diagnosedProblem: "Draft product invisible to customers again" }, existing), false);
   assert.equal(isNovelCandidate({ diagnosedProblem: "Repeat customers are not being re-engaged" }, existing), true);
+});
+
+// ---------------------------------------------------------------------------
+// Opportunity-set persistence and reuse (docs/ops/recommendation-opportunity-set-24h/)
+// ---------------------------------------------------------------------------
+
+test("discover mode: a fresh run persists an opportunity set with the full queue in rank order", async () => {
+  const provider = scriptedProvider((payload) => {
+    if (payload.mode === "candidate_discovery") {
+      return {
+        candidates: [
+          candidateFixture("cand-a", "Problem A", 1),
+          candidateFixture("cand-b", "Problem B", 2),
+          candidateFixture("cand-c", "Problem C", 3),
+        ],
+      };
+    }
+    if (payload.focusCandidate.candidateId === "cand-a") {
+      return investigate({ status: "NO_ACTIONABLE_OPPORTUNITY", blocker: "weak", candidateDisposition: "REJECTED" })(payload);
+    }
+    if (payload.focusCandidate.candidateId === "cand-b") {
+      return investigate({ status: "RECOMMEND_ACTION", recommendation: validRec() })(payload);
+    }
+    throw new Error(`cand-c must not be investigated: ${payload.focusCandidate.candidateId}`);
+  });
+
+  const opportunityPrisma = makeOpportunityPrisma();
+  const result = await runCandidateDrivenRecommendation(
+    baseInput(provider, { prisma: { ...baseInput(provider).prisma, ...opportunityPrisma } }),
+  );
+
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.ok(result.opportunitySetId, "a fresh discovery run must persist an opportunity set");
+  assert.equal(result.discoveryReused, false);
+  assert.equal(result.startingCandidateRank, 1);
+  assert.equal(result.endingCandidateRank, 2);
+  assert.equal(result.recommendedCandidateId, "cand-b");
+
+  const persistedSet = await opportunityPrisma.merchantOpportunitySet.findUnique({ where: { id: result.opportunitySetId } });
+  assert.equal(persistedSet.candidates.length, 3);
+  assert.equal(persistedSet.candidates[0].rank, 1);
+  assert.equal(persistedSet.candidates[0].status, CANDIDATE_CONSUMPTION_STATUS.rejected);
+  assert.equal(persistedSet.candidates[1].status, CANDIDATE_CONSUMPTION_STATUS.recommended);
+  // cand-c was never investigated (budget/first-pass didn't need to reach it once B recommended)
+  // — it must persist as still-claimable QUEUED so a future "Generate another proposal" resumes here.
+  assert.equal(persistedSet.candidates[2].status, CANDIDATE_CONSUMPTION_STATUS.queued);
+});
+
+test("reuse mode: skips discovery entirely and resumes from the next QUEUED candidate", async () => {
+  const opportunityPrisma = makeOpportunityPrisma();
+  const opportunitySetId = await persistFreshOpportunitySet(opportunityPrisma, {
+    merchantId: "m-1",
+    shopId: "s-1",
+    sourceRunId: "run-1",
+    candidates: [
+      { candidateId: "cand-a", diagnosedProblem: "Problem A", status: CANDIDATE_CONSUMPTION_STATUS.rejected, investigated: true },
+      { candidateId: "cand-b", diagnosedProblem: "Problem B", status: CANDIDATE_CONSUMPTION_STATUS.queued },
+      { candidateId: "cand-c", diagnosedProblem: "Problem C", status: CANDIDATE_CONSUMPTION_STATUS.queued },
+    ],
+    discoveryLog: [],
+    llmCallCount: 2,
+  });
+
+  const provider = scriptedProvider((payload) => {
+    if (payload.mode === "candidate_discovery" || payload.mode === "rescue_discovery") {
+      throw new Error("reuse mode must never call discovery");
+    }
+    if (payload.focusCandidate.candidateId === "cand-b") {
+      return investigate({ status: "RECOMMEND_ACTION", recommendation: validRec() })(payload);
+    }
+    throw new Error(`cand-c must not be investigated: ${payload.focusCandidate.candidateId}`);
+  });
+
+  const result = await runCandidateDrivenRecommendation(
+    baseInput(provider, {
+      runId: "run-2",
+      prisma: { ...baseInput(provider).prisma, ...opportunityPrisma },
+      opportunitySet: { mode: "reuse", id: opportunitySetId },
+    }),
+  );
+
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.equal(result.discoveryReused, true);
+  assert.equal(result.opportunitySetId, opportunitySetId);
+  assert.equal(result.startingCandidateRank, 2, "must resume at rank 2 (cand-a already rejected), not rank 1");
+  assert.equal(result.recommendedCandidateId, "cand-b");
+  assert.equal(provider.calls.filter((p) => p.mode === "candidate_discovery").length, 0);
+
+  const persistedSet = await opportunityPrisma.merchantOpportunitySet.findUnique({ where: { id: opportunitySetId } });
+  assert.equal(persistedSet.candidates[1].status, CANDIDATE_CONSUMPTION_STATUS.recommended);
+  assert.equal(persistedSet.candidates[2].status, CANDIDATE_CONSUMPTION_STATUS.queued, "cand-c stays untouched for a future request");
+});
+
+test("reuse mode: an exhausted opportunity set returns OPPORTUNITY_SET_EXHAUSTED without rediscovering", async () => {
+  const opportunityPrisma = makeOpportunityPrisma();
+  const opportunitySetId = await persistFreshOpportunitySet(opportunityPrisma, {
+    merchantId: "m-1",
+    shopId: "s-1",
+    sourceRunId: "run-1",
+    candidates: [
+      { candidateId: "cand-a", diagnosedProblem: "Problem A", status: CANDIDATE_CONSUMPTION_STATUS.rejected, investigated: true },
+    ],
+    discoveryLog: [],
+    llmCallCount: 1,
+  });
+
+  const provider = scriptedProvider(() => {
+    throw new Error("an exhausted opportunity set must never call the LLM at all");
+  });
+
+  const result = await runCandidateDrivenRecommendation(
+    baseInput(provider, {
+      runId: "run-2",
+      prisma: { ...baseInput(provider).prisma, ...opportunityPrisma },
+      opportunitySet: { mode: "reuse", id: opportunitySetId },
+    }),
+  );
+
+  assert.equal(result.status, "OPPORTUNITY_SET_EXHAUSTED");
+  assert.equal(result.discoveryReused, true);
+  assert.equal(provider.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// docs/ops/recommendation-convergence-vs-evidence-fix/: ITERATION_LIMIT (the model exhausted its
+// turn budget without ever attempting a terminal decision) must never be reported or persisted as
+// though Jefe reached a substantive evidence-based judgement.
+// ---------------------------------------------------------------------------
+
+test("classifyCandidateOutcome: ITERATION_LIMIT maps to its own distinct status, not an evidence-based bucket", () => {
+  assert.equal(classifyCandidateOutcome({ status: "ITERATION_LIMIT" }), CANDIDATE_STATUS.iterationLimit);
+  assert.notEqual(CANDIDATE_STATUS.iterationLimit, CANDIDATE_STATUS.blockedByEvidence);
+  assert.notEqual(CANDIDATE_STATUS.iterationLimit, CANDIDATE_STATUS.rejected);
+});
+
+test("classifyDispositionDetail: ITERATION_LIMIT is reported as CONVERGENCE_FAILURE, never INSUFFICIENT_EVIDENCE", () => {
+  const detail = classifyDispositionDetail({
+    candidateStatus: "ITERATION_LIMIT",
+    resultStatus: "ITERATION_LIMIT",
+    reason: "ITERATION_LIMIT",
+  });
+  assert.equal(detail, CANDIDATE_DISPOSITION_DETAIL.convergenceFailure);
+  assert.notEqual(detail, CANDIDATE_DISPOSITION_DETAIL.insufficientEvidence);
+});
+
+test("a candidate that never attempts a terminal decision is classified ITERATION_LIMIT by generateAgenticShopifyRecommendation, with a runtime-failure blocker, not a business-evidence one", async () => {
+  // Always CONTINUE with a tool call — the model never once tries RECOMMEND_ACTION/BLOCKED/
+  // NO_ACTIONABLE_OPPORTUNITY, so validateInvestigation is never even consulted for this candidate.
+  const provider = scriptedProvider(() => ({ status: "CONTINUE", toolCalls: [gatewayReadCall()] }));
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: { shopifyOperationCall: { create: async () => ({}) }, session: { findFirst: async () => ({ scope: "read_products,write_products" }) } },
+    client: fakeShopifyClient(),
+    merchantId: "00000000-0000-0000-0000-000000000031",
+    shopId: "00000000-0000-0000-0000-000000000032",
+    shopDomain: "jefe-local-store.myshopify.com",
+    snapshot: SNAPSHOT,
+    grantedScopes: ["read_products", "write_products"],
+    logger: { info() {}, warn() {}, error() {} },
+    maxIterations: 4,
+    focusCandidate: { candidateId: "never-decides", diagnosedProblem: "x", businessEvidenceRefs: ["b-1"] },
+    initialToolResults: [],
+  });
+
+  assert.equal(result.status, "ITERATION_LIMIT");
+  assert.match(result.blocker, /did not converge/i);
+  assert.doesNotMatch(result.blocker, /successful Shopify read/i);
+});
+
+test("discover mode: a non-converging candidate is labeled CONVERGENCE_FAILURE (not INSUFFICIENT_EVIDENCE) in diagnostics and requeued (not permanently rejected) in the persisted opportunity set", async () => {
+  const provider = scriptedProvider((payload) => {
+    if (payload.mode === "candidate_discovery") {
+      return {
+        candidates: [
+          { candidateId: "never-converges", diagnosedProblem: "Problem A", priority: 1, possibleIntervention: "x", businessEvidenceRefs: ["b-1"] },
+          { candidateId: "converges-fine", diagnosedProblem: "Problem B", priority: 2, possibleIntervention: "y", businessEvidenceRefs: ["b-1"] },
+        ],
+      };
+    }
+    if (payload.mode === "rescue_discovery") return { candidates: [] };
+    if (payload.focusCandidate.candidateId === "never-converges") {
+      return { status: "CONTINUE", toolCalls: [gatewayReadCall()] };
+    }
+    if (payload.focusCandidate.candidateId === "converges-fine") {
+      return investigate({ status: "RECOMMEND_ACTION", recommendation: validRec() })(payload);
+    }
+    throw new Error(`unexpected candidate ${payload.focusCandidate.candidateId}`);
+  });
+
+  const opportunityPrisma = makeOpportunityPrisma();
+  const result = await runCandidateDrivenRecommendation(
+    baseInput(provider, { prisma: { ...baseInput(provider).prisma, ...opportunityPrisma } }),
+  );
+
+  assert.equal(result.status, "RECOMMEND_ACTION", `expected RECOMMEND_ACTION but got ${result.status}: ${result.blocker}`);
+  const nonConverging = result.diagnostics.candidateQueue.find((c) => c.candidateId === "never-converges");
+  assert.equal(nonConverging.resultStatus, "ITERATION_LIMIT");
+  assert.equal(nonConverging.finalDisposition, CANDIDATE_DISPOSITION_DETAIL.convergenceFailure);
+  assert.notEqual(nonConverging.finalDisposition, CANDIDATE_DISPOSITION_DETAIL.insufficientEvidence);
+
+  const persistedSet = await opportunityPrisma.merchantOpportunitySet.findUnique({ where: { id: result.opportunitySetId } });
+  const persistedNonConverging = persistedSet.candidates.find((c) => c.candidateId === "never-converges");
+  assert.equal(persistedNonConverging.status, CANDIDATE_CONSUMPTION_STATUS.queued, "requeued — retry-eligible, not permanently REJECTED");
+});
+
+test("reuse mode: a candidate that fails to converge is requeued (not rejected), and the same run still moves on to the next candidate instead of re-claiming it forever", async () => {
+  const opportunityPrisma = makeOpportunityPrisma();
+  const opportunitySetId = await persistFreshOpportunitySet(opportunityPrisma, {
+    merchantId: "m-1",
+    shopId: "s-1",
+    sourceRunId: "run-1",
+    candidates: [
+      { candidateId: "cand-a", diagnosedProblem: "Problem A", status: CANDIDATE_CONSUMPTION_STATUS.queued },
+      { candidateId: "cand-b", diagnosedProblem: "Problem B", status: CANDIDATE_CONSUMPTION_STATUS.queued },
+    ],
+    discoveryLog: [],
+    llmCallCount: 0,
+  });
+
+  const provider = scriptedProvider((payload) => {
+    if (payload.mode === "candidate_discovery" || payload.mode === "rescue_discovery") {
+      throw new Error("reuse mode must never call discovery");
+    }
+    if (payload.focusCandidate.candidateId === "cand-a") {
+      return { status: "CONTINUE", toolCalls: [gatewayReadCall()] }; // never decides
+    }
+    if (payload.focusCandidate.candidateId === "cand-b") {
+      return investigate({ status: "RECOMMEND_ACTION", recommendation: validRec() })(payload);
+    }
+    throw new Error(`unexpected candidate ${payload.focusCandidate.candidateId}`);
+  });
+
+  const result = await runCandidateDrivenRecommendation(
+    baseInput(provider, {
+      runId: "run-2",
+      prisma: { ...baseInput(provider).prisma, ...opportunityPrisma },
+      opportunitySet: { mode: "reuse", id: opportunitySetId },
+    }),
+  );
+
+  // If cand-a's requeue were re-claimable within this same run, the run would loop on it instead
+  // of ever reaching cand-b — this assertion is the actual proof the exclude-list works, not just
+  // that the DB row looks right afterward.
+  assert.equal(result.status, "RECOMMEND_ACTION", `expected RECOMMEND_ACTION but got ${result.status}: ${result.blocker}`);
+  assert.equal(result.recommendedCandidateId, "cand-b");
+
+  const persistedSet = await opportunityPrisma.merchantOpportunitySet.findUnique({ where: { id: opportunitySetId } });
+  const persistedA = persistedSet.candidates.find((c) => c.candidateId === "cand-a");
+  assert.equal(persistedA.status, CANDIDATE_CONSUMPTION_STATUS.queued, "requeued, not permanently REJECTED");
+  assert.equal(persistedA.investigatedByRunId, null, "claim reset so a future run can claim it fresh, not stuck owned by this one");
+  const persistedB = persistedSet.candidates.find((c) => c.candidateId === "cand-b");
+  assert.equal(persistedB.status, CANDIDATE_CONSUMPTION_STATUS.recommended);
 });

@@ -107,7 +107,7 @@ test("getLlmConfig routes chat and memory-grade text work to OpenAI Luna", () =>
   assert.equal(chat.fallbackProvider, "");
   assert.equal(chat.fallbackModel, "");
 
-  const memory = getLlmConfig({ feature: "onboarding_bootstrap", env });
+  const memory = getLlmConfig({ feature: "merchant_memory_refresh", env });
   assert.equal(memory.slice, "memory");
   assert.equal(memory.provider, "openai");
   assert.equal(memory.model, "gpt-5.6-luna");

@@ -401,6 +401,11 @@ export function publicShopifyToolResults(values) {
     message: row.message,
     facts: row.facts,
     error: row.error,
+    // Observability (docs/ops/recommendation-repair-loop-fairness/): preserved so a persisted
+    // trace can be attributed back to the candidate/turn that produced each row without guessing
+    // from array position, which the `.slice(-16)` above already makes unreliable.
+    candidateId: row.candidateId ?? null,
+    iteration: typeof row.iteration === "number" ? row.iteration : null,
   }));
 }
 

@@ -96,7 +96,6 @@ test("opening the recommendation shows the home loading shell while opening Jefe
 
 test("Connect starts independent durable work and shows attention rather than import progress", () => {
   assert.match(appIndexSource, /queueInstallShopifyBackfill/);
-  assert.match(appIndexSource, /ensureMerchantBootstrapQueued/);
   assert.match(fastOnboardingSource, /Shopify connected/);
   assert.match(fastOnboardingSource, /Reading your most recent orders/);
   assert.match(fastOnboardingSource, /Looking at what’s selling/);
@@ -110,16 +109,18 @@ test("Context wait state explains generation is still happening", () => {
   assert.match(fastOnboardingSource, /onboardingWaitingCopy/);
   assert.match(fastOnboardingSource, /I’m putting together your first finding/);
   assert.match(fastOnboardingSource, /this page will move on by itself/);
-  assert.match(fastOnboardingSource, /Trying again to find your first recommendation/);
   assert.doesNotMatch(fastOnboardingSource, /Let me finish the last check/);
 });
 
 test("Context wait state stops only after agentic recommendation finds no action", () => {
-  const failure = classifyFailure(null, null, {
-    contextAnswered: true,
-    hasSurfaceableRecommendation: false,
-    latestPlanRun: { status: "no_actionable_opportunity" },
-  });
+  const failure = classifyFailure(
+    { state: "complete" },
+    {
+      contextAnswered: true,
+      hasSurfaceableRecommendation: false,
+      latestPlanRun: { status: "no_actionable_opportunity" },
+    },
+  );
   assert.equal(failure.type, "insufficient");
   assert.match(failure.message, /grounded Shopify action/);
 });

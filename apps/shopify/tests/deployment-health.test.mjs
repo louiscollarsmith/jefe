@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   buildHealthPayload,
   checkDatabaseHealth,
-  getBootstrapJobHealth,
   isNeonPooledRuntimeUrl,
   readinessStatus,
 } from "../app/services/deployment-health.server.js";
@@ -120,32 +119,6 @@ test("database health probe reports error without throwing", async () => {
   const result = await checkDatabaseHealth(prisma);
   assert.equal(result.status, "error");
   assert.equal(result.error, "connection refused");
-});
-
-test("bootstrap health reports queued, running, failed and stale jobs without gating readiness", async () => {
-  const calls = [];
-  const counts = [2, 1, 3, 1];
-  const result = await getBootstrapJobHealth(
-    {
-    backfillJob: {
-      async count(args) {
-        calls.push(args);
-        return counts[calls.length - 1];
-      },
-    },
-    },
-    { now: FIXED_NOW },
-  );
-  assert.deepEqual(result, {
-    status: "ok",
-    queued: 2,
-    running: 1,
-    failed: 3,
-    stale: 1,
-  });
-  assert.equal(calls.length, 4);
-  assert.match(JSON.stringify(calls[3]), /queued/);
-  assert.match(JSON.stringify(calls[3]), /running/);
 });
 
 test("database health probe times out a hung query", async () => {

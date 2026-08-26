@@ -19,9 +19,6 @@ import { trackOnce } from "./analytics/event-log.server.js";
 
 export { DEFAULT_BACKFILL_DAYS };
 export const FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS = 60;
-export const BOOTSTRAP_BACKFILL_DOMAIN = "bootstrap";
-export const MERCHANT_BOOTSTRAP_JOB_TYPE = "merchant_memory_bootstrap";
-export const BOOTSTRAP_ALTERNATIVE_JOB_TYPE = "merchant_bootstrap_alternative";
 export const RECOMMENDATION_REVIEW_JOB_TYPE = "recommendation_review";
 export const BACKFILL_DOMAINS = [
   "shop",
@@ -31,7 +28,6 @@ export const BACKFILL_DOMAINS = [
   "customers",
   "inventory",
   "refunds",
-  BOOTSTRAP_BACKFILL_DOMAIN,
   MEMORY_BACKFILL_DOMAIN,
 ];
 export const INITIAL_COMMERCE_BACKFILL_DOMAINS = [
@@ -51,8 +47,6 @@ export const FULL_BACKFILL_JOB_TYPES = [
 ];
 
 const JOB_PRIORITIES = {
-  [MERCHANT_BOOTSTRAP_JOB_TYPE]: 5,
-  [BOOTSTRAP_ALTERNATIVE_JOB_TYPE]: 6,
   shop_backfill_start: 10,
   products_backfill: 20,
   inventory_backfill: 30,
@@ -66,6 +60,23 @@ const JOB_PRIORITIES = {
   [MERCHANT_PLAN_JOB_TYPE]: 115,
   [RECOMMENDATION_REVIEW_JOB_TYPE]: 120,
 };
+
+/**
+ * Single source of truth for "full Shopify backfill is genuinely complete" (Part 4 of
+ * docs/ops/remove-bootstrap-full-onboarding/): every INITIAL_COMMERCE_BACKFILL_DOMAINS status is
+ * `complete` AND the terminal `backfill_finalize` job has `succeeded`. Shared by
+ * fast-onboarding.server.js's UI copy (`shapeFullLearning`) and learning-progress.server.js's
+ * pipeline gate (`fullBackfill` stage) so both read the same completeness definition.
+ * @param {{ domain: string; status: string }[]} statuses
+ * @param {{ jobType: string; status: string }[]} jobs
+ */
+export function isFullBackfillComplete(statuses, jobs) {
+  return (
+    INITIAL_COMMERCE_BACKFILL_DOMAINS.every((domain) =>
+      statuses.some((status) => status.domain === domain && status.status === "complete"),
+    ) && jobs.some((job) => job.jobType === "backfill_finalize" && job.status === "succeeded")
+  );
+}
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
@@ -108,18 +119,6 @@ export async function queueInstallShopifyBackfill(prisma, input) {
         availableOrderHistoryDays,
       },
     });
-    const existingBootstrap = existingShop.backfillJobs.some(
-      (job) => job.jobType === MERCHANT_BOOTSTRAP_JOB_TYPE,
-    );
-    if (!existingShop.onboardingCompletedAt || existingBootstrap) {
-      await ensureMerchantBootstrapQueued(prisma, {
-        merchantId: merchant.id,
-        shopId: shop.id,
-        shopDomain: shop.shopDomain,
-        sessionId: input.sessionId,
-        scopes,
-      });
-    }
     return prisma.backfillJob.findUnique({
       where: {
         shopId_jobType: { shopId: shop.id, jobType: "shop_backfill_start" },
@@ -196,15 +195,6 @@ export async function queueInstallShopifyBackfill(prisma, input) {
       jobType: "shop_backfill_start",
       payload,
     }),
-    ensureMerchantBootstrapQueued(prisma, {
-      merchantId: merchant.id,
-      shopId: shop.id,
-      shopDomain: shop.shopDomain,
-      sessionId: input.sessionId,
-      scopes,
-      reset: isReinstall,
-      onboardingEpoch,
-    }),
     trackOnce(prisma, {
       type: "shopify_connected",
       topic: "onboarding",
@@ -221,111 +211,6 @@ export async function queueInstallShopifyBackfill(prisma, input) {
     }),
   ]);
   return fullJob;
-}
-
-/**
- * Ensure bootstrap exists without resetting queued/running/succeeded work.
- * Explicit retry/reinstall is the only reset path.
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; shopDomain: string; sessionId?: string | null; scopes?: string[]; reset?: boolean; onboardingEpoch?: string }} input
- */
-export async function ensureMerchantBootstrapQueued(prisma, input) {
-  const existing = await prisma.backfillJob.findUnique({
-    where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
-  });
-  const existingPayload = jsonObject(existing?.payloadJson);
-  const onboardingEpoch =
-    input.onboardingEpoch ??
-    (!input.reset && typeof existingPayload.onboardingEpoch === "string"
-      ? existingPayload.onboardingEpoch
-      : !input.reset && existing?.id
-        ? existing.id
-        : randomUUID());
-  const payload = {
-    shopDomain: input.shopDomain,
-    sessionId: input.sessionId ?? null,
-    scopes: input.scopes ?? [],
-    onboardingEpoch,
-  };
-  if (existing && !input.reset) {
-    if (typeof existingPayload.onboardingEpoch === "string") return existing;
-    return prisma.backfillJob.update({
-      where: { id: existing.id },
-      data: {
-        payloadJson: { ...existingPayload, ...payload },
-      },
-    });
-  }
-
-  await upsertBackfillStatus(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    domain: BOOTSTRAP_BACKFILL_DOMAIN,
-    status: "queued",
-    startedAt: null,
-    completedAt: null,
-    lastError: null,
-    metadata: {
-      phase: "queued",
-      queuedAt: new Date().toISOString(),
-      onboardingEpoch,
-    },
-  });
-  if (existing) {
-    return prisma.backfillJob.update({
-      where: { id: existing.id },
-      data: {
-        status: "queued",
-        priority: jobPriority(MERCHANT_BOOTSTRAP_JOB_TYPE),
-        runAfter: new Date(),
-        startedAt: null,
-        completedAt: null,
-        failedAt: null,
-        lastError: null,
-        attemptCount: 0,
-        payloadJson: payload,
-        resultJson: {},
-      },
-    });
-  }
-  try {
-    return await prisma.backfillJob.create({
-      data: {
-        merchantId: input.merchantId,
-        shopId: input.shopId,
-        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
-        status: "queued",
-        priority: jobPriority(MERCHANT_BOOTSTRAP_JOB_TYPE),
-        payloadJson: payload,
-      },
-    });
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
-      return prisma.backfillJob.findUnique({
-        where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
-      });
-    }
-    throw error;
-  }
-}
-
-/**
- * Queue one idempotent alternative-contract generation while retaining the
- * current insight. Duplicate clicks reuse the same per-shop job.
- * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; contractKey: string }} input
- */
-export async function ensureBootstrapAlternativeQueued(prisma, input) {
-  const existing = await prisma.backfillJob.findUnique({
-    where: { shopId_jobType: { shopId: input.shopId, jobType: BOOTSTRAP_ALTERNATIVE_JOB_TYPE } },
-  });
-  if (existing?.status === "queued" || existing?.status === "running") return existing;
-  return enqueueBackfillJob(prisma, {
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    jobType: BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
-    payload: { contractKey: input.contractKey },
-  });
 }
 
 /** Preserve the earliest due review and never reset a running review job. */

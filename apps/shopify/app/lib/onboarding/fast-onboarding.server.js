@@ -11,12 +11,9 @@ import { startFocusedActionChat } from "../merchant-memory/focused-action-chat.s
 import { upsertMerchantSuppliedBelief } from "../merchant-memory/service.server.js";
 import { trackOnce } from "../../services/analytics/event-log.server.js";
 import {
-  BOOTSTRAP_BACKFILL_DOMAIN,
-  ensureMerchantBootstrapQueued,
   ensureRecommendationReviewQueued,
   FULL_BACKFILL_JOB_TYPES,
   INITIAL_COMMERCE_BACKFILL_DOMAINS,
-  MERCHANT_BOOTSTRAP_JOB_TYPE,
   retryFailedBackfillJobs,
 } from "../../services/shopify-backfill-status.server.js";
 import { ensureAgenticRecommendationQueued } from "../shopify/agentic-runtime/recommendation-service.server.js";
@@ -52,13 +49,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     ? await ensureOnboardingLearningProgress(prisma, input)
     : null;
 
-  const [bootstrapStatus, bootstrapJob, priority, recommendations, latestPlanRun, fullStatuses, fullJobs] = await Promise.all([
-    prisma.shopBackfillStatus.findUnique({
-      where: { shopId_domain: { shopId: input.shopId, domain: BOOTSTRAP_BACKFILL_DOMAIN } },
-    }),
-    prisma.backfillJob.findUnique({
-      where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
-    }),
+  const [priority, recommendations, latestPlanRun, fullStatuses, fullJobs] = await Promise.all([
     prisma.merchantMemoryBelief.findFirst({
       where: {
         merchantId: input.merchantId,
@@ -108,7 +99,7 @@ export async function getFastOnboardingExperience(prisma, input) {
     }),
     prisma.backfillJob.findMany({
       where: { shopId: input.shopId, jobType: { in: FULL_BACKFILL_JOB_TYPES } },
-      select: { jobType: true, status: true, lastError: true },
+      select: { jobType: true, status: true, lastError: true, payloadJson: true },
     }),
   ]);
 
@@ -138,9 +129,8 @@ export async function getFastOnboardingExperience(prisma, input) {
     : [];
 
   const metadata = jsonObject(shop.onboardingMetadata);
-  const onboardingEpoch = bootstrapEpoch(bootstrapStatus, bootstrapJob);
-  const bootstrapPhase = stringValue(jsonObject(bootstrapStatus?.metadata).phase) ??
-    (bootstrapJob?.status === "queued" ? "queued" : bootstrapJob?.status === "running" ? "starting" : "not_started");
+  const installJob = fullJobs.find((job) => job.jobType === "shop_backfill_start") ?? null;
+  const onboardingEpoch = installEpoch(installJob);
   const fullLearning = shapeFullLearning(fullStatuses, fullJobs);
   const recommendationInvestigationPending =
     !selected &&
@@ -153,26 +143,19 @@ export async function getFastOnboardingExperience(prisma, input) {
       learningProgress?.learningPipelinePending === true ||
       recommendationInvestigationPending
     );
-  const failure = classifyFailure(bootstrapStatus, bootstrapJob, {
-    bootstrapPhase,
+  const failure = classifyFailure(fullLearning, {
     contextAnswered: Boolean(context),
     hasSurfaceableRecommendation: Boolean(selected),
     inAppHandoff: Boolean(handoff),
-    fullLearningState: fullLearning.state,
     latestPlanRun,
     learningPipelinePending,
   });
+  // Full backfill is queued synchronously at install (queueInstallShopifyBackfill), so by the
+  // time this loader ever runs post-install, backfill has already at least started — "connect"
+  // is a brief scene, not a bootstrap-gated wait (docs/ops/remove-bootstrap-full-onboarding/).
   let stage = "connect";
   if (handoff) stage = "app";
-  else if (
-    context ||
-    bootstrapStatus?.startedAt ||
-    !["not_started", "queued"].includes(bootstrapPhase) ||
-    bootstrapJob?.status === "running" ||
-    bootstrapJob?.status === "succeeded" ||
-    bootstrapStatus?.status === "complete" ||
-    bootstrapStatus?.status === "failed"
-  ) {
+  else if (context || fullJobs.length > 0 || fullLearning.state !== "learning") {
     if (!context) stage = "context";
     else if (selected) stage = metadata.fastOnboardingStage === "action" ? "action" : "insight";
     else stage = "context";
@@ -188,7 +171,7 @@ export async function getFastOnboardingExperience(prisma, input) {
       dedupeKey: `context_question_shown:${input.shopId}:${onboardingEpoch}`,
       summary: `Onboarding context question shown for ${input.shopDomain}`,
       properties: {
-        bootstrapJobId: bootstrapJob?.id ?? null,
+        installJobId: installJob?.id ?? null,
         onboardingEpoch,
       },
     });
@@ -216,7 +199,7 @@ export async function getFastOnboardingExperience(prisma, input) {
 
   return {
     stage,
-    bootstrapPhase,
+    nextStage: learningProgress?.nextStage ?? null,
     context,
     insight,
     presentation,
@@ -247,10 +230,10 @@ export async function answerOnboardingContext(prisma, input) {
     evidenceSourceReference: "fast_onboarding_context",
     metadata: { suppliedLabel: option.label, acknowledgementEcho: option.echo },
   });
-  const bootstrap = await prisma.backfillJob.findUnique({
-    where: { shopId_jobType: { shopId: input.shopId, jobType: MERCHANT_BOOTSTRAP_JOB_TYPE } },
+  const installJob = await prisma.backfillJob.findUnique({
+    where: { shopId_jobType: { shopId: input.shopId, jobType: "shop_backfill_start" } },
   });
-  const onboardingEpoch = bootstrapEpoch(null, bootstrap);
+  const onboardingEpoch = installEpoch(installJob);
   await ensureOnboardingLearningProgress(prisma, {
     merchantId: input.merchantId,
     shopId: input.shopId,
@@ -266,7 +249,7 @@ export async function answerOnboardingContext(prisma, input) {
     summary: `Onboarding context answered for ${input.shopDomain}`,
     properties: {
       priority: option.value,
-      bootstrapJobId: bootstrap?.id ?? null,
+      installJobId: installJob?.id ?? null,
       onboardingEpoch,
     },
   });
@@ -533,22 +516,29 @@ export async function retryFastOnboarding(prisma, input) {
     await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
     return { ok: true };
   }
-  await ensureMerchantBootstrapQueued(prisma, { ...input, reset: true });
+  // Default target: classifyFailure only omits retryTarget for a genuine full-backfill
+  // failure/access_failure (docs/ops/remove-bootstrap-full-onboarding/ — there is no bootstrap
+  // fallback to retry anymore), so retrying full backfill's own failed jobs is the correct
+  // default action here, same as the explicit "full_learning" target above.
+  const retried = await retryFailedBackfillJobs(prisma, {
+    shopId: input.shopId,
+    jobTypes: FULL_BACKFILL_JOB_TYPES,
+  });
   await mergeOnboardingMetadata(prisma, input.shopId, { fastOnboardingStage: "context" });
-  return { ok: true };
+  return { ok: true, retried: retried.retried };
 }
 
 export async function recordFastOnboardingMilestone(prisma, input) {
-  const bootstrap = await prisma.backfillJob.findUnique({
+  const installJob = await prisma.backfillJob.findUnique({
     where: {
       shopId_jobType: {
         shopId: input.shopId,
-        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
+        jobType: "shop_backfill_start",
       },
     },
     select: { payloadJson: true },
   });
-  const onboardingEpoch = bootstrapEpoch(null, bootstrap);
+  const onboardingEpoch = installEpoch(installJob);
   if (input.type === "entered_app") {
     const handoff = await findValidHandoff(prisma, { shopId: input.shopId, token: input.token });
     if (!handoff) return { ok: false };
@@ -583,16 +573,16 @@ export async function recordFastOnboardingMilestone(prisma, input) {
 }
 
 async function completeRecommendationHandoff(prisma, input, recommendationId, reason) {
-  const bootstrap = await prisma.backfillJob.findUnique({
+  const installJob = await prisma.backfillJob.findUnique({
     where: {
       shopId_jobType: {
         shopId: input.shopId,
-        jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
+        jobType: "shop_backfill_start",
       },
     },
     select: { payloadJson: true },
   });
-  const onboardingEpoch = bootstrapEpoch(null, bootstrap);
+  const onboardingEpoch = installEpoch(installJob);
   const eventType = reason === "agentic_action_opened"
     ? "recommendation_action_opened"
     : "recommendation_approved";
@@ -904,8 +894,21 @@ export function shapeFullLearning(statuses, jobs) {
   };
 }
 
-export function classifyFailure(status, job, experience = {}) {
-  const failed = status?.status === "failed" || job?.status === "failed";
+/**
+ * Classifies why no recommendation is showing yet. Previously took the bootstrap ingestion
+ * status/job and read a rich, bootstrap-specific phase vocabulary
+ * (generation_failed/insufficient_evidence/awaiting_context/etc.) off it. Bootstrap was removed
+ * (docs/ops/remove-bootstrap-full-onboarding/); `fullLearning` (shapeFullLearning's coarser
+ * complete/learning/failed/access_failure shape) is now the only ingestion-health signal, and
+ * `experience.learningPipelinePending`/`latestPlanRun` (already gated on genuine full-backfill +
+ * full-Memory-refresh readiness — see learning-progress.server.js) already fully cover "is the
+ * pipeline still legitimately working," so the old phase-string heuristics are redundant with it
+ * and have been dropped rather than reimplemented against a signal that no longer exists.
+ * @param {{ state: string; label: string; detail: string }} fullLearning
+ * @param {object} experience
+ */
+export function classifyFailure(fullLearning, experience = {}) {
+  const failed = fullLearning?.state === "failed" || fullLearning?.state === "access_failure";
   if (!failed) {
     const activePlanGeneration = [
       PLAN_RUN_STATUS.queued,
@@ -961,67 +964,9 @@ export function classifyFailure(status, job, experience = {}) {
           "I couldn’t safely turn the store evidence into a recommendation. I can retry the generation from the same durable evidence.",
       };
     }
-    const phase =
-      stringValue(experience.bootstrapPhase) ??
-      stringValue(jsonObject(status?.metadata).phase);
     if (experience.hasSurfaceableRecommendation === true) return null;
-    if (phase === "generation_failed") {
-      return {
-        type: "retryable",
-        message: "I couldn’t safely turn the store evidence into a recommendation. I can retry the generation from the same durable evidence.",
-      };
-    }
-    if (["insufficient_evidence", "model_disabled"].includes(phase)) {
-      if (phase === "model_disabled") {
-        return {
-          type: "retryable",
-          message: "I can’t generate the first recommendation while AI generation is disabled. Turn AI generation back on and I can retry from the same durable evidence.",
-        };
-      }
-      // Recommendation rows can land just after the bootstrap phase flips. Treat
-      // thin evidence as "keep checking" while learning or plan generation is
-      // active. Once the read is terminal, stop polling and show the honest
-      // no-grounded-action fallback.
-      if (shouldKeepWaitingForRecommendation) return null;
-      return {
-        type: "insufficient",
-        message:
-          "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
-      };
-    }
-    if (
-      phase === "ready" &&
-      experience.contextAnswered === true &&
-      experience.hasSurfaceableRecommendation === false &&
-      experience.inAppHandoff !== true
-    ) {
-      if (shouldKeepWaitingForRecommendation) return null;
-      return {
-        type: "insufficient",
-        message:
-          "I’ve finished the check, but I don’t yet have a grounded Shopify action I can safely recommend as your first move. I’ll keep learning from new store activity and surface the next useful move in Jefe.",
-      };
-    }
-    if (
-      ["awaiting_context", "ready_for_agentic_recommendation"].includes(phase ?? "") &&
-      experience.contextAnswered === true &&
-      experience.hasSurfaceableRecommendation === false &&
-      experience.inAppHandoff !== true
-    ) {
-      if (shouldKeepWaitingForRecommendation) return null;
-      return {
-        type: "retryable",
-        retryTarget: "merchant_plan",
-        message:
-          "I saved your priority, but the next learning step has not started. I can continue from the same store evidence.",
-      };
-    }
-    if (
-      experience.contextAnswered === true &&
-      experience.hasSurfaceableRecommendation !== true &&
-      experience.inAppHandoff !== true
-    ) {
-      if (shouldKeepWaitingForRecommendation) return null;
+    if (shouldKeepWaitingForRecommendation) return null;
+    if (experience.contextAnswered === true && experience.inAppHandoff !== true) {
       return {
         type: "retryable",
         retryTarget: "merchant_plan",
@@ -1031,8 +976,7 @@ export function classifyFailure(status, job, experience = {}) {
     }
     return null;
   }
-  const message = `${status?.lastError ?? ""} ${job?.lastError ?? ""}`;
-  if (/access|permission|scope|unauth|403/i.test(message)) {
+  if (fullLearning.state === "access_failure") {
     return { type: "access", message: "I need Shopify access again before I can finish this read." };
   }
   return { type: "retryable", message: "I hit a snag reading the recent store evidence. I can safely retry from here." };
@@ -1151,12 +1095,15 @@ async function acceptRecommendationWorkflow(prisma, input) {
   return prisma.$transaction ? prisma.$transaction(run) : run(prisma);
 }
 
-function bootstrapEpoch(status, job) {
-  return (
-    stringValue(jsonObject(job?.payloadJson).onboardingEpoch) ??
-    stringValue(jsonObject(status?.metadata).onboardingEpoch) ??
-    "legacy"
-  );
+/**
+ * The general onboarding-attempt identifier, read from the `shop_backfill_start` job's
+ * `fullBackfillEpoch` payload field (docs/ops/remove-bootstrap-full-onboarding/ — the previous
+ * `onboardingEpoch`, read off the removed bootstrap job, would otherwise silently become
+ * "legacy" forever).
+ * @param {{ payloadJson?: unknown } | null} job
+ */
+function installEpoch(job) {
+  return stringValue(jsonObject(job?.payloadJson).fullBackfillEpoch) ?? "legacy";
 }
 
 function queueStatus(row) {

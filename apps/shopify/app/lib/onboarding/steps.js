@@ -46,7 +46,7 @@ export function readFurthestStep(metadata) {
  * - Legacy Insights/Goals/Plan requests map into Context so unfinished merchants
  *   resume in the new flow without losing their existing records.
  * - Explicit fast-flow scenes are honored; the normal path uses persisted
- *   bootstrap state to select what is actually ready to show.
+ *   onboarding progress state to select what is actually ready to show.
  *
  * @param {{
  *   requestedStep?: string | null;
@@ -66,7 +66,7 @@ export function resolveOnboardingStep(input) {
   if (requested === "action") return "action";
   if (requested === "app") return "app";
   if (requested === "connect") return "connect";
-  // Retained for rollback callers; the fast loader resolves from bootstrap state.
+  // Retained for rollback callers; the fast loader resolves from live onboarding progress state.
   if (!input.memoryReady || !input.backfillComplete) return "connect";
   return furthest;
 }

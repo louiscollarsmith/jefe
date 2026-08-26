@@ -79,6 +79,7 @@ model Merchant {
   channelMessageDeliveries        ChannelMessageDelivery[]
   notificationPreferences         NotificationPreference[]
   shopifyOperationCalls           ShopifyOperationCall[]
+  merchantOpportunitySets         MerchantOpportunitySet[]
 
   @@map("merchants")
 }
@@ -159,6 +160,7 @@ model Shop {
   emailPreferences                EmailPreference[]
   emailIdentities                 EmailIdentity[]
   shopifyOperationCalls           ShopifyOperationCall[]
+  merchantOpportunitySets         MerchantOpportunitySet[]
 
   @@unique([platform, shopDomain])
   @@index([merchantId])
@@ -1283,6 +1285,63 @@ model MerchantPlanRecommendation {
   @@index([shopId, reviewStatus, createdAt])
   @@index([primaryGoalId])
   @@map("merchant_plan_recommendations")
+}
+
+/// One ranked candidate-discovery result, valid for 24h from createdAt. Discovery
+/// (the ~70k-token LLM call in candidate-pipeline.server.js) runs at most once per
+/// merchant per 24h window; every "Generate another proposal" within that window
+/// resumes from the next unconsumed MerchantOpportunityCandidate instead of
+/// rerunning discovery. See docs/ops/recommendation-opportunity-set-24h/.
+model MerchantOpportunitySet {
+  id           String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchantId   String                         @map("merchant_id") @db.Uuid
+  shopId       String                         @map("shop_id") @db.Uuid
+  createdAt    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt    DateTime                       @map("expires_at") @db.Timestamptz(6)
+  sourceRunId  String?                        @map("source_run_id") @db.Uuid
+  sourceMode   String?                        @map("source_mode")
+  discoveryLog Json                           @default("[]") @map("discovery_log_json")
+  llmCallCount Int?                           @map("llm_call_count")
+  updatedAt    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  merchant     Merchant                       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  shop         Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  candidates   MerchantOpportunityCandidate[]
+
+  @@index([merchantId, shopId, expiresAt])
+  @@map("merchant_opportunity_sets")
+}
+
+/// A single immutable discovered candidate (rank, diagnosis, mechanism, evidence) plus
+/// mutable consumption state (status/investigatedByRunId/recommendationId). Rank and the
+/// discovery fields are written once at insert and never updated — only the consumption
+/// columns mutate as candidates are claimed and investigated across runs.
+model MerchantOpportunityCandidate {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  opportunitySetId     String                 @map("opportunity_set_id") @db.Uuid
+  rank                 Int
+  candidateId          String                 @map("candidate_id")
+  diagnosedProblem     String                 @map("diagnosed_problem")
+  businessEvidenceRefs String[]               @default([]) @map("business_evidence_refs")
+  mechanismHypothesis  String?                @map("mechanism_hypothesis")
+  possibleIntervention String?                @map("possible_intervention")
+  relevantFamilyId     String?                @map("relevant_family_id")
+  confidence           Float?
+  rescue               Boolean                @default(false)
+  status               String                 @default("QUEUED")
+  finalDisposition     String?                @map("final_disposition")
+  reason               String?
+  investigatedByRunId  String?                @map("investigated_by_run_id") @db.Uuid
+  recommendationId     String?                @map("recommendation_id") @db.Uuid
+  claimedAt            DateTime?              @map("claimed_at") @db.Timestamptz(6)
+  resolvedAt           DateTime?              @map("resolved_at") @db.Timestamptz(6)
+  createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  opportunitySet       MerchantOpportunitySet @relation(fields: [opportunitySetId], references: [id], onDelete: Cascade)
+
+  @@unique([opportunitySetId, candidateId])
+  @@unique([opportunitySetId, rank])
+  @@index([opportunitySetId, status, rank])
+  @@map("merchant_opportunity_candidates")
 }
 
 model MerchantRecommendationWorkflow {

@@ -23,10 +23,14 @@ import {
   AGENTIC_RECOMMENDATION_SOURCE_MODE,
 } from "../shopify/agentic-runtime/constants.server.js";
 import { PLAN_RUN_STATUS } from "../merchant-plan/constants.server.js";
-import { MERCHANT_BOOTSTRAP_JOB_TYPE } from "../../services/shopify-backfill-status.server.js";
+import {
+  FULL_BACKFILL_JOB_TYPES,
+  INITIAL_COMMERCE_BACKFILL_DOMAINS,
+  isFullBackfillComplete,
+} from "../../services/shopify-backfill-status.server.js";
 
 export const ONBOARDING_LEARNING_JOB_TYPES = Object.freeze([
-  MERCHANT_BOOTSTRAP_JOB_TYPE,
+  ...FULL_BACKFILL_JOB_TYPES,
   MEMORY_REFRESH_JOB_TYPE,
   MERCHANT_INSIGHTS_JOB_TYPE,
   MERCHANT_GOALS_JOB_TYPE,
@@ -130,7 +134,7 @@ export async function ensureOnboardingLearningProgress(prisma, input) {
 export async function inspectOnboardingLearningProgress(prisma, input) {
   const [
     contextBelief,
-    bootstrapJob,
+    backfillStatuses,
     storeUnderstandingRun,
     insightRun,
     goalRun,
@@ -147,14 +151,9 @@ export async function inspectOnboardingLearningProgress(prisma, input) {
       orderBy: { updatedAt: "desc" },
       select: { id: true },
     }),
-    prisma.backfillJob.findUnique({
-      where: {
-        shopId_jobType: {
-          shopId: input.shopId,
-          jobType: MERCHANT_BOOTSTRAP_JOB_TYPE,
-        },
-      },
-      select: { id: true, jobType: true, status: true },
+    prisma.shopBackfillStatus.findMany({
+      where: { shopId: input.shopId, domain: { in: INITIAL_COMMERCE_BACKFILL_DOMAINS } },
+      select: { domain: true, status: true },
     }),
     prisma.storeUnderstandingRun.findFirst({
       where: { merchantId: input.merchantId, shopId: input.shopId },
@@ -206,11 +205,16 @@ export async function inspectOnboardingLearningProgress(prisma, input) {
 
   const jobByType = new Map(jobs.map((job) => [job.jobType, job]));
   const contextAnswered = Boolean(contextBelief);
-  const bootstrap = stageFromJobAndRun({
-    job: bootstrapJob ?? jobByType.get(MERCHANT_BOOTSTRAP_JOB_TYPE) ?? null,
-    run: null,
-    readyWhenJobSucceeded: true,
-  });
+  // Replaces the removed `bootstrap` stage (docs/ops/remove-bootstrap-full-onboarding/): the
+  // pipeline can no longer advance toward store_understanding/insights/goals/recommendation until
+  // full Shopify backfill has genuinely completed — the single source of truth shared with
+  // fast-onboarding.server.js's UI copy (isFullBackfillComplete).
+  const fullBackfillJobs = jobs.filter((job) => FULL_BACKFILL_JOB_TYPES.includes(job.jobType));
+  const fullBackfill = isFullBackfillComplete(backfillStatuses, fullBackfillJobs)
+    ? { state: "ready" }
+    : fullBackfillJobs.some((job) => job.status === "failed")
+      ? { state: "blocked" }
+      : { state: "pending" };
   const storeUnderstanding = stageFromJobAndRun({
     job: jobByType.get(MEMORY_REFRESH_JOB_TYPE) ?? null,
     run: storeUnderstandingRun,
@@ -244,7 +248,7 @@ export async function inspectOnboardingLearningProgress(prisma, input) {
 
   const nextStage = resolveNextStage({
     contextAnswered,
-    bootstrap,
+    fullBackfill,
     storeUnderstanding,
     insights,
     goals,
@@ -252,7 +256,7 @@ export async function inspectOnboardingLearningProgress(prisma, input) {
   });
   const learningPipelinePending = isLearningPipelinePending({
     contextAnswered,
-    bootstrap,
+    fullBackfill,
     storeUnderstanding,
     insights,
     goals,
@@ -262,7 +266,7 @@ export async function inspectOnboardingLearningProgress(prisma, input) {
 
   return {
     contextAnswered,
-    bootstrap,
+    fullBackfill,
     storeUnderstanding,
     insights,
     goals,
@@ -284,6 +288,12 @@ function progressStatus(snapshot, queued) {
 }
 
 /**
+ * Only ever reachable once `fullBackfill.state === "ready"` (see resolveNextStage) — full
+ * backfill's own `handleFinalize` already enqueues this same full Memory refresh automatically
+ * the moment backfill completes (docs/ops/remove-bootstrap-full-onboarding/). This call is a
+ * safe, idempotent fallback re-trigger (protects against polling racing ahead of that automatic
+ * enqueue, a worker restart, or route revalidation) — `enqueueMerchantMemoryRefresh`'s
+ * `shopId_jobType` upsert makes a redundant call here a no-op-equivalent, never a duplicate.
  * @param {import("@prisma/client").PrismaClient} prisma
  * @param {{ merchantId: string; shopId: string; shopDomain?: string | null }} input
  * @param {{ storeUnderstanding: { state: string } }} snapshot
@@ -297,7 +307,7 @@ async function queueStoreUnderstanding(prisma, input, snapshot) {
     shopId: input.shopId,
     shopDomain: input.shopDomain ?? null,
     categories: [],
-    reason: "onboarding_context_answered",
+    reason: "full_backfill_complete_fallback",
     resetAttempts: false,
   });
   return { status: "queued", job };
@@ -362,7 +372,7 @@ function recommendationStage(input) {
   return { state: "missing", runId: input.planRun?.id ?? null, jobId: input.job?.id ?? null };
 }
 
-/** @param {{ contextAnswered: boolean; bootstrap: { state: string }; storeUnderstanding: { state: string }; insights: { state: string }; goals: { state: string }; recommendation: { state: string } }} snapshot */
+/** @param {{ contextAnswered: boolean; fullBackfill: { state: string }; storeUnderstanding: { state: string }; insights: { state: string }; goals: { state: string }; recommendation: { state: string } }} snapshot */
 function resolveNextStage(snapshot) {
   if (!snapshot.contextAnswered) return "context";
   if (snapshot.recommendation.state === "ready") return "complete";
@@ -379,8 +389,8 @@ function resolveNextStage(snapshot) {
     return snapshot.insights.state === "missing" ? "insights" : "blocked";
   }
   if (snapshot.storeUnderstanding.state === "pending") return "store_understanding";
-  if (snapshot.bootstrap.state === "pending") return "bootstrap";
-  if (snapshot.bootstrap.state === "blocked") return "blocked";
+  if (snapshot.fullBackfill.state === "pending") return "full_backfill";
+  if (snapshot.fullBackfill.state === "blocked") return "blocked";
   if (snapshot.storeUnderstanding.state === "missing") return "store_understanding";
   if (snapshot.insights.state === "missing") return "insights";
   if (snapshot.goals.state === "missing") return "goals";
@@ -388,11 +398,11 @@ function resolveNextStage(snapshot) {
   return "blocked";
 }
 
-/** @param {{ contextAnswered: boolean; bootstrap: { state: string }; storeUnderstanding: { state: string }; insights: { state: string }; goals: { state: string }; recommendation: { state: string }; nextStage: string }} snapshot */
+/** @param {{ contextAnswered: boolean; fullBackfill: { state: string }; storeUnderstanding: { state: string }; insights: { state: string }; goals: { state: string }; recommendation: { state: string }; nextStage: string }} snapshot */
 function isLearningPipelinePending(snapshot) {
   if (!snapshot.contextAnswered) return false;
   return [
-    snapshot.bootstrap,
+    snapshot.fullBackfill,
     snapshot.storeUnderstanding,
     snapshot.insights,
     snapshot.goals,

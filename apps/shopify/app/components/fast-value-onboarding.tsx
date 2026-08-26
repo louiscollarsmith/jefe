@@ -57,7 +57,7 @@ type RecommendationView = {
 };
 type FastExperience = {
   stage: string;
-  bootstrapPhase: string;
+  nextStage: string | null;
   context: { value: string; label: string; echo: string } | null;
   insight: InsightView | null;
   presentation: RecommendationPresentationView | null;
@@ -252,14 +252,13 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
       <Box as="section" paddingInlineStart="800" paddingInlineEnd="800" paddingBlockEnd="800">
         <div className="jf-content" aria-live="polite">
           {stage === "connect" ? (
-            <ConnectScene storeName={storeName} phase={experience.bootstrapPhase} />
+            <ConnectScene storeName={storeName} fullLearning={experience.fullLearning} />
           ) : stage === "context" ? (
             <ContextScene
               context={context}
               answer={answer}
               failure={experience.failure}
               retrying={answerFetcher.state !== "idle"}
-              bootstrapPhase={experience.bootstrapPhase}
               fullLearning={experience.fullLearning}
               learningPipelinePending={
                 experience.learningPipelinePending ||
@@ -272,7 +271,11 @@ export function FastValueOnboarding({ storeName, experience }: FastOnboardingPro
               investigationPending={experience.recommendationInvestigationPending}
               continueToAction={continueToAction}
               showAlternative={showAlternative}
-              allowAlternative={experience.recommendation?.sourceMode === "bootstrap"}
+              // Bootstrap (a quick, lower-confidence early recommendation path) was removed
+              // (docs/ops/remove-bootstrap-full-onboarding/) — every recommendation is now the
+              // same full-pipeline one, so "show me something else" is always offered rather than
+              // gated on a since-retired sourceMode distinction.
+              allowAlternative
               alternativeMessage={visibleAlternativeMessage}
               alternativeBusy={alternativeFetcher.state !== "idle"}
             />
@@ -337,8 +340,14 @@ function JefeMark() {
   return <span className="jf-mark" aria-hidden="true"><span>J</span><i /></span>;
 }
 
-function ConnectScene({ storeName, phase }: { storeName: string; phase: string }) {
-  const active = phaseIndex(phase);
+function ConnectScene({
+  storeName,
+  fullLearning,
+}: {
+  storeName: string;
+  fullLearning: FastExperience["fullLearning"];
+}) {
+  const active = phaseIndex(fullLearning);
   const rows = [
     "Shopify connected",
     "Reading your most recent orders",
@@ -367,7 +376,6 @@ function ContextScene({
   answer,
   failure,
   retrying,
-  bootstrapPhase,
   fullLearning,
   learningPipelinePending,
 }: {
@@ -375,11 +383,10 @@ function ContextScene({
   answer: (option: ContextOption) => void;
   failure: FastExperience["failure"];
   retrying: boolean;
-  bootstrapPhase: string;
   fullLearning: FastExperience["fullLearning"];
   learningPipelinePending: boolean;
 }) {
-  const waiting = onboardingWaitingCopy(bootstrapPhase, fullLearning);
+  const waiting = onboardingWaitingCopy(fullLearning);
   const showWaitingCopy = Boolean(context) && !failure && learningPipelinePending;
   const readState = failure
     ? failure.type === "insufficient"
@@ -442,20 +449,7 @@ function ContextScene({
   );
 }
 
-function onboardingWaitingCopy(
-  bootstrapPhase: string,
-  fullLearning: FastExperience["fullLearning"],
-) {
-  if (bootstrapPhase === "retrying") {
-    return {
-      kicker: "Still working",
-      title: "Trying again to find your first recommendation.",
-      detail:
-        "Your store data is saved. I’m giving this another go so the first suggestion is solid enough to show you.",
-      reassurance:
-        "This can take another minute — nothing else for you to do.",
-    };
-  }
+function onboardingWaitingCopy(fullLearning: FastExperience["fullLearning"]) {
   if (fullLearning.state === "complete") {
     return {
       kicker: "Choosing the first move",
@@ -625,11 +619,12 @@ function Kicker({ children, pulse = false }: { children: ReactNode; pulse?: bool
   return <div className={`jf-kicker ${pulse ? "is-pulse" : ""}`}><span aria-hidden="true" />{children}</div>;
 }
 
-function phaseIndex(phase: string) {
-  if (["ready", "awaiting_context", "insufficient_evidence", "model_disabled"].includes(phase)) return 4;
-  if (["checking_more_evidence", "evidence_ready", "choosing_first_move"].includes(phase)) return 3;
-  if (phase === "checking_current_products") return 2;
-  return 1;
+// Bootstrap's richer phase vocabulary (queued/checking_current_products/evidence_ready/...) was
+// removed with bootstrap itself (docs/ops/remove-bootstrap-full-onboarding/) — full backfill only
+// exposes a coarse learning/complete/failed/access_failure state, so this checklist necessarily
+// has less granularity than before (a disclosed, intentional loss, not a bug).
+function phaseIndex(fullLearning: FastExperience["fullLearning"]) {
+  return fullLearning.state === "complete" ? 4 : 1;
 }
 
 function trackedStatus(recommendation: RecommendationView) {

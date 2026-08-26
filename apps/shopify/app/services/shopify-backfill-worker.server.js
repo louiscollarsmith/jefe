@@ -12,15 +12,12 @@ import {
 } from "../lib/shopify/queries.server.js";
 import {
   DEFAULT_BACKFILL_DAYS,
-  BOOTSTRAP_BACKFILL_DOMAIN,
-  BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
   enqueueBackfillJob,
   FALLBACK_WITHOUT_READ_ALL_ORDERS_DAYS,
   hasReadAllOrders,
   INITIAL_COMMERCE_BACKFILL_DOMAINS,
   splitScopes,
   upsertBackfillStatus,
-  MERCHANT_BOOTSTRAP_JOB_TYPE,
   RECOMMENDATION_REVIEW_JOB_TYPE,
 } from "./shopify-backfill-status.server.js";
 import {
@@ -73,7 +70,6 @@ import {
   runWithContext,
 } from "../lib/observability/context.server.js";
 import { track, trackOnce } from "./analytics/event-log.server.js";
-import { generateBootstrapAlternative, runMerchantMemoryBootstrap } from "../lib/onboarding/bootstrap.server.js";
 import { runActivityDigest } from "./analytics/digest.server.js";
 import { measureAndRecordClearanceOutcomes } from "../lib/actions/clearance-outcome.server.js";
 import { processReadyActionStepRuns } from "../lib/actions/action-step-lifecycle.server.js";
@@ -179,7 +175,6 @@ function trackJobFailure(prisma, job, message) {
 
 let loopStarted = false;
 let generalLoopRunning = false;
-let bootstrapLoopRunning = false;
 /** Consecutive failed ticks — a single failure WARNs, a sustained streak pages. */
 let loopFailureStreak = 0;
 /** @type {PrismaClient[]} */
@@ -288,18 +283,11 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     options.logger ?? baseLogger.child({ component: "backfill-worker" });
   const intervalMs = options.intervalMs ?? LOOP_INTERVAL_MS;
   const workerPrisma = createWorkerPrismaClient() ?? prisma;
-  const bootstrapPrisma = createWorkerPrismaClient() ?? prisma;
-  loopPrisma = [...new Set([workerPrisma, bootstrapPrisma])];
+  loopPrisma = [workerPrisma];
   // Warm the Prisma engine during the initial delay so the first tick doesn't
   // race a still-connecting engine after a deploy ("Engine is not yet connected").
   if (typeof workerPrisma.$connect === "function") {
     void workerPrisma.$connect().catch(() => {});
-  }
-  if (
-    bootstrapPrisma !== workerPrisma &&
-    typeof bootstrapPrisma.$connect === "function"
-  ) {
-    void bootstrapPrisma.$connect().catch(() => {});
   }
   const initialDelayMs =
     options.initialDelayMs ??
@@ -312,13 +300,7 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     generalLoopRunning = true;
     recordWorkerTick();
     try {
-      await processReadyBackfillJobs(workerPrisma, {
-        logger,
-        excludeJobTypes: [
-          MERCHANT_BOOTSTRAP_JOB_TYPE,
-          BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
-        ],
-      });
+      await processReadyBackfillJobs(workerPrisma, { logger });
       await maybePostDailyDigest(workerPrisma, logger);
       await maybePruneOldEvents(workerPrisma, { logger });
       await maybePostChangelog(workerPrisma, { logger });
@@ -370,33 +352,11 @@ export function startShopifyBackfillLoop(prisma, options = {}) {
     }
   };
 
-  const bootstrapTick = async () => {
-    if (bootstrapLoopRunning) return;
-    bootstrapLoopRunning = true;
-    try {
-      await processReadyBackfillJobs(bootstrapPrisma, {
-        logger,
-        jobTypes: [
-          MERCHANT_BOOTSTRAP_JOB_TYPE,
-          BOOTSTRAP_ALTERNATIVE_JOB_TYPE,
-        ],
-      });
-    } catch (error) {
-      logger.warn("Bootstrap worker lane tick failed; will retry next tick", {
-        err: error,
-      });
-    } finally {
-      bootstrapLoopRunning = false;
-    }
-  };
-
   setTimeout(() => {
     void generalTick();
-    void bootstrapTick();
   }, initialDelayMs).unref?.();
   setInterval(() => {
     void generalTick();
-    void bootstrapTick();
   }, intervalMs).unref?.();
   registerWorkerPrismaShutdown();
 }
@@ -559,9 +519,7 @@ async function runClaimedBackfillJob(prisma, job, options) {
     if (failedPermanently) {
       trackJobFailure(prisma, job, message);
     }
-    if (job.jobType === MERCHANT_BOOTSTRAP_JOB_TYPE) {
-      await markBootstrapFailed(prisma, job, failure, failedPermanently);
-    } else if (job.jobType === RECOMMENDATION_REVIEW_JOB_TYPE || job.jobType === BOOTSTRAP_ALTERNATIVE_JOB_TYPE) {
+    if (job.jobType === RECOMMENDATION_REVIEW_JOB_TYPE) {
       // A tracked review is independent of store ingestion readiness. The job's
       // own durable error state is the health signal; never downgrade setup.
     } else if (job.jobType === MEMORY_REFRESH_JOB_TYPE) {
@@ -753,7 +711,6 @@ async function runBackfillJob(prisma, job, options) {
     job.jobType !== MERCHANT_PLAN_JOB_TYPE &&
     job.jobType !== EPISODE_PROCESS_JOB_TYPE &&
     job.jobType !== EPISODE_BACKFILL_JOB_TYPE &&
-    job.jobType !== BOOTSTRAP_ALTERNATIVE_JOB_TYPE &&
     job.jobType !== RECOMMENDATION_REVIEW_JOB_TYPE;
   const context = {
     merchantId: job.merchantId,
@@ -789,25 +746,6 @@ async function runBackfillJob(prisma, job, options) {
   }
 
   switch (job.jobType) {
-    case MERCHANT_BOOTSTRAP_JOB_TYPE:
-      return runMerchantMemoryBootstrap(prisma, {
-        merchantId: context.merchantId,
-        shopId: context.shopId,
-        shopDomain: context.shopDomain,
-        sessionId: context.sessionId,
-        onboardingEpoch: stringValue(payload.onboardingEpoch),
-        accessToken: requireAccessToken(context),
-        fetchImpl: context.fetchImpl,
-        logger: context.logger,
-      });
-    case BOOTSTRAP_ALTERNATIVE_JOB_TYPE:
-      return generateBootstrapAlternative(prisma, {
-        merchantId: context.merchantId,
-        shopId: context.shopId,
-        shopDomain: context.shopDomain,
-        contractKey: stringValue(payload.contractKey),
-        logger: context.logger,
-      });
     case "shop_backfill_start":
       return handleBackfillStart(prisma, context);
     case "products_backfill":
@@ -1462,39 +1400,6 @@ function isMerchantMemoryMaintenanceJob(jobType) {
 
 /**
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {import("@prisma/client").BackfillJob} job
- * @param {{ message: string; metadata?: unknown }} failure
- * @param {boolean} failedPermanently
- */
-async function markBootstrapFailed(prisma, job, failure, failedPermanently) {
-  const previous = await prisma.shopBackfillStatus.findUnique({
-    where: { shopId_domain: { shopId: job.shopId, domain: BOOTSTRAP_BACKFILL_DOMAIN } },
-    select: { metadata: true },
-  });
-  await upsertBackfillStatus(prisma, {
-    merchantId: job.merchantId,
-    shopId: job.shopId,
-    domain: BOOTSTRAP_BACKFILL_DOMAIN,
-    status: failedPermanently ? "failed" : "queued",
-    completedAt: failedPermanently ? new Date() : undefined,
-    lastError: failure.message.slice(0, 1000),
-    metadata: {
-      ...jsonObject(previous?.metadata),
-      phase: failedPermanently ? "failed" : "retrying",
-      safeErrorCode: safeBootstrapFailureCode(failure.message),
-    },
-  });
-}
-
-/** @param {string} message */
-function safeBootstrapFailureCode(message) {
-  if (/access|permission|scope|unauth|403/i.test(message)) return "shopify_access";
-  if (/timeout|timed out/i.test(message)) return "temporary_timeout";
-  return "bootstrap_failed";
-}
-
-/**
- * @param {import("@prisma/client").PrismaClient} prisma
  * @param {BackfillContext} context
  */
 async function handleBackfillStart(prisma, context) {
@@ -1824,9 +1729,11 @@ async function handleMerchantMemoryRebuild(prisma, context, payload) {
  * chain by queueing Insights. Completed Insights queue Goals, and completed
  * Goals queue the agentic Shopify recommendation investigation.
  *
- * Gated strictly on shop.onboardingCompletedAt: during onboarding the funnel
- * (app._index) already drives Goals and recommendation step by step, so this must never
- * fire mid-onboarding. It only takes over once the merchant has finished.
+ * Gated strictly on shop.onboardingCompletedAt, for use *after* onboarding (e.g. a
+ * post-onboarding re-learning pass). It is currently unused in production — the onboarding chain
+ * itself is driven unconditionally by handleMerchantMemoryRebuild (see below), which since the
+ * bootstrap-onboarding-path removal (docs/ops/remove-bootstrap-full-onboarding/) only ever fires
+ * after genuine full-backfill completion, so it's already safe to fire mid-onboarding too.
  *
  * The ensure*Queued helpers key each run on the relevant snapshot hash and reuse
  * existing runs when the snapshot is unchanged (status "reused" -> no job
