@@ -22,6 +22,7 @@ import {
 } from "../merchant-plan/step-capabilities.server.js";
 import { getMerchantAction } from "./merchant-action.server.js";
 import { resolveActionState } from "./action-state.server.js";
+import { recordActionEvent } from "./action-display-state.server.js";
 
 const log = baseLogger.child({ component: "action-replanner" });
 
@@ -336,6 +337,15 @@ export async function replanAction(prisma, input) {
     removed: changes.filter((row) => row.field === "plan_step_removed").length,
     changed: changes.filter((row) => row.field === "plan_step_changed").length,
   });
+
+  if (changes.length) {
+    await recordActionEvent(
+      prisma,
+      { actionId: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+      "action_plan_revised",
+      { detail: describeWorkflowChanges(changes) },
+    );
+  }
 
   return {
     ok: true,

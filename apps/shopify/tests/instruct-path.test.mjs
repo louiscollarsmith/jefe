@@ -35,7 +35,10 @@ test("the internal 'advisory until a typed action preview' line is no longer ren
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join("\n");
   assert.doesNotMatch(code, /typed action preview/);
-  assert.match(code, /FocusedActionDecisionRow/);
+  // The raise/instruct-path note moved from the old FocusedActionDecisionRow
+  // (removed in the conversation-first Action Chat redesign) into
+  // ActionChatHeader, but the underlying no-dead-ends guarantee is unchanged.
+  assert.match(code, /function ActionChatHeader/);
   assert.match(code, /action\.raise\.reason/);
 });
 

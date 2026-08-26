@@ -190,6 +190,112 @@ test("scenario 3: no writes succeed → BLOCKED, action not falsely completed, n
 });
 
 // ---------------------------------------------------------------------------
+// Scenario 3b — Merchant stops mid-flight (cooperative cancellation)
+// ---------------------------------------------------------------------------
+test("scenario 3b: cancellationRequested set after a write is honored before the next turn, not mid-write", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+
+  const result = await runAgenticShopifyExecution({
+    provider: stopAfterFirstWriteProvider(prisma),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+  });
+
+  // Honored, not a failure — the merchant asked, Jefe complied.
+  assert.equal(result.status, "STOPPED");
+  assert.equal(result.wroteToShopify, true);
+
+  const finalAction = prisma.actions[0];
+  assert.equal(finalAction.status, "stopped");
+  assert.equal(finalAction.progress.agentic.executionJob.phase, "stopped");
+  assert.equal(finalAction.outcome.stoppedAfterWrites, true);
+  assert.ok(finalAction.outcome.stoppedAt);
+
+  // The one write that was already in flight completed — it was never aborted.
+  assert.equal(
+    prisma.operationCalls.filter((r) => r.operationKind === "MUTATION" && r.status === "OK").length,
+    1,
+  );
+});
+
+test("scenario 3c: cancellationRequested set before any turn runs stops before any write", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: hideProductsRecommendation(),
+  });
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+  const row = prisma.actions.find((a) => a.id === action.id);
+  row.progress = { ...row.progress, agentic: { ...row.progress.agentic, cancellationRequested: true } };
+
+  const result = await runAgenticShopifyExecution({
+    provider: mutationPhaseProvider(),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    actionId: action.id,
+    grantedScopes: ["read_products", "write_products"],
+    logger: quietLogger,
+  });
+
+  assert.equal(result.status, "STOPPED");
+  assert.equal(result.wroteToShopify, false);
+  assert.equal(prisma.actions[0].outcome.stoppedAfterWrites, false);
+  assert.equal(prisma.operationCalls.length, 0, "no Shopify call should have been made");
+});
+
+/** Issues one write, then flips cancellationRequested as a side effect (simulating a merchant click mid-run). */
+function stopAfterFirstWriteProvider(prisma) {
+  let calls = 0;
+  return {
+    enabled: true,
+    provider: "test",
+    model: "scripted",
+    async generateStructuredJson() {
+      calls += 1;
+      if (calls === 1) {
+        const row = prisma.actions[0];
+        row.progress = { ...row.progress, agentic: { ...row.progress.agentic, cancellationRequested: true } };
+        return {
+          json: {
+            status: "CONTINUE",
+            toolCalls: [
+              {
+                tool: SHOPIFY_GATEWAY_TOOL.executeMutation,
+                arguments: {
+                  document:
+                    'mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id status } userErrors { field message } } }',
+                  variables: { product: { id: "gid://shopify/Product/1", status: "DRAFT" } },
+                  purpose: "Hide the out-of-stock product.",
+                  expectedEffect: "Set product status to DRAFT.",
+                  idempotencyKey: "hide-product-1",
+                },
+              },
+            ],
+          },
+        };
+      }
+      throw new Error("must not be called again after cancellation is honored");
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Scenario 4 — Worker currently running (executionJob.phase = "executing")
 // ---------------------------------------------------------------------------
 test("scenario 4: executionJob.phase=executing → workspace shows jefe_working, not on_track", () => {

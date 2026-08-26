@@ -7,6 +7,7 @@ import {
   AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
   AGENTIC_SHOPIFY_VERIFICATION_JOB_TYPE_PREFIX,
 } from "./constants.server.js";
+import { recordActionEvent } from "../../actions/action-display-state.server.js";
 
 export {
   AGENTIC_SHOPIFY_EXECUTION_JOB_TYPE_PREFIX,
@@ -295,6 +296,7 @@ export async function markAgenticExecutionStarted(prisma, input) {
     jobStatus: "running",
     startedAt: new Date().toISOString(),
   });
+  await recordActionEvent(prisma, input, "action_execution_started");
 }
 
 // ---------------------------------------------------------------------------

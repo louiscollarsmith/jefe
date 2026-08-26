@@ -90,6 +90,7 @@ import {
   isAgenticShopifyAction,
 } from "../shopify/agentic-runtime/execution-service.server.js";
 import { semanticActionRevision } from "../shopify/agentic-runtime/semantic-action.server.js";
+import { recordActionEvent } from "./action-display-state.server.js";
 
 const log = baseLogger.child({ component: "action-command" });
 
@@ -117,6 +118,7 @@ export const ACTION_COMMAND = Object.freeze({
   ACHIEVE_OUTCOME: "ACHIEVE_OUTCOME",
   ADD_PLAN_STEP: "ADD_PLAN_STEP",
   REPLAN_ACTION: "REPLAN_ACTION",
+  STOP_ACTION: "STOP_ACTION",
 });
 
 /** @type {Set<string>} */
@@ -139,6 +141,7 @@ const MUTATION_COMMANDS = new Set([
   ACTION_COMMAND.ACHIEVE_OUTCOME,
   ACTION_COMMAND.ADD_PLAN_STEP,
   ACTION_COMMAND.REPLAN_ACTION,
+  ACTION_COMMAND.STOP_ACTION,
 ]);
 
 const COMMAND_ALIASES = Object.freeze(
@@ -308,6 +311,8 @@ export async function executeActionCommand(prisma, input) {
       return runAddPlanStep(prisma, { ...input, action, params, logger });
     case ACTION_COMMAND.REPLAN_ACTION:
       return runReplanAction(prisma, { ...input, action, params, logger });
+    case ACTION_COMMAND.STOP_ACTION:
+      return runStopAction(prisma, { ...input, action, logger });
     default:
       return runAnswer(prisma, { ...input, action, params, logger });
   }
@@ -1211,6 +1216,33 @@ async function runStopStep(prisma, input) {
   };
 }
 
+/**
+ * Interrupt the whole Action, not just the current step — the merchant-scoped
+ * "Stop now" / "Stop after this page" chips both land here. See
+ * stopMerchantAction for the per-runtime mechanics.
+ * @param {any} prisma @param {any} input
+ */
+async function runStopAction(prisma, input) {
+  const result = await stopMerchantAction(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    actionId: input.action.id,
+    actor: input.actor ?? input.merchantId,
+    logger: input.logger,
+  });
+  const fresh = await refreshAction(prisma, input);
+  return {
+    ok: Boolean(result.ok),
+    command: ACTION_COMMAND.STOP_ACTION,
+    reason: result.ok ? null : result.reason,
+    result,
+    reply: result.ok
+      ? "Stopping now. I won't make any more changes for this action."
+      : "I couldn't stop this action just now.",
+    action: fresh ?? input.action,
+  };
+}
+
 /** @param {any} prisma @param {any} input */
 async function runAdvanceStep(prisma, input) {
   if (input.action.status === "proposed") {
@@ -2013,6 +2045,69 @@ export async function deferMerchantAction(prisma, input) {
 }
 
 /**
+ * Interrupt a whole Action, mid-flight or otherwise — the durable backing for
+ * ActionDisplayState "stopped" (see action-display-state.server.js).
+ *
+ * Agentic runtime: cooperative cancellation. Sets a flag the mutation loop
+ * checks between turns (execution-agent.server.js's runAgenticShopifyExecution)
+ * — never aborts a write already in flight, only skips starting the next one.
+ * `MerchantAction.status` is NOT flipped here; the loop itself marks the
+ * action "stopped" once it actually honors the flag, avoiding a race where
+ * the UI claims "stopped" while a write is still landing.
+ *
+ * Legacy runtime: stopActionStep's cancellation of any running step is
+ * synchronous, so the action can be marked stopped immediately afterward.
+ *
+ * @param {any} prisma
+ * @param {{ merchantId: string; shopId: string; actionId: string; actor?: string|null; logger?: any }} input
+ */
+export async function stopMerchantAction(prisma, input) {
+  const action = await prisma.merchantAction?.findFirst?.({
+    where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+  });
+  if (!action) return { ok: false, reason: "not_found" };
+
+  if (isAgenticShopifyAction(action)) {
+    const progress = action.progress && typeof action.progress === "object" ? action.progress : {};
+    const agentic = progress.agentic && typeof progress.agentic === "object" ? progress.agentic : {};
+    await prisma.merchantAction.updateMany({
+      where: { id: action.id, merchantId: input.merchantId, shopId: input.shopId },
+      data: {
+        progress: {
+          ...progress,
+          agentic: {
+            ...agentic,
+            cancellationRequested: true,
+            cancellationRequestedAt: new Date().toISOString(),
+          },
+        },
+      },
+    });
+  } else {
+    await stopActionStep(prisma, {
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      actionId: action.id,
+      actor: input.actor ?? input.merchantId,
+      logger: input.logger,
+    });
+    await prisma.merchantAction.updateMany({
+      where: { id: action.id, merchantId: input.merchantId, shopId: input.shopId },
+      data: { status: "stopped" },
+    });
+  }
+
+  await recordActionEvent(
+    prisma,
+    { actionId: action.id, merchantId: input.merchantId, shopId: input.shopId },
+    "action_execution_stopped",
+    { detail: "Stopped by the merchant." },
+  );
+
+  return { ok: true, status: "stopped" };
+}
+
+/**
  * @param {any} prisma
  * @param {{ merchantId: string; shopId: string; actionId: string }} input
  */
@@ -2369,6 +2464,11 @@ async function updateAgenticSemanticConstraints(prisma, input, constraints) {
       },
     },
   });
+  await recordActionEvent(
+    prisma,
+    { actionId: input.action.id, merchantId: input.merchantId, shopId: input.shopId },
+    "action_plan_revised",
+  );
   return revision;
 }
 

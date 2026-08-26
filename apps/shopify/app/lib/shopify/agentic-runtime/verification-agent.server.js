@@ -15,6 +15,7 @@ import {
   markActionExecutionOutcome,
   markExecutionPhase,
 } from "./execution-agent.server.js";
+import { recordActionEvent } from "../../actions/action-display-state.server.js";
 
 const log = baseLogger.child({ component: "agentic-shopify-verification" });
 
@@ -189,6 +190,9 @@ export async function runAgenticShopifyVerification(input) {
           verification: turn.verification,
           progressSummary: turn.progressSummary ?? null,
         },
+      });
+      await recordActionEvent(input.prisma, input, "action_execution_completed", {
+        detail: turn.progressSummary ?? null,
       });
       logger.info("agentic Shopify verification: outcome achieved", {
         merchantId: input.merchantId,

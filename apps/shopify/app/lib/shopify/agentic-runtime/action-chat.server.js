@@ -23,6 +23,7 @@ import {
   acceptAndEnqueueAgenticShopifyAction,
 } from "./execution-service.server.js";
 import { deferMerchantAction } from "../../actions/action-command.server.js";
+import { recordActionEvent } from "../../actions/action-display-state.server.js";
 import {
   getAgenticExecutionJobState,
   cancelAgenticExecutionJobForStaleRevision,
@@ -970,6 +971,12 @@ async function updateSemanticActionDraft(prisma, input, patch) {
       },
     },
   });
+  await recordActionEvent(
+    prisma,
+    { actionId: row.id, merchantId: input.merchantId, shopId: input.shopId },
+    "action_plan_revised",
+    { detail: patch.reason ?? null },
+  );
   return {
     currentActionRevision: revision,
     semanticAction,

@@ -149,9 +149,11 @@ test("the clock starts when the merchant acts — enter or yes", () => {
 
   const home = read("app/components/daily-home.tsx");
   assert.match(home, /onSubmit=\{markApprovalSent\}/, "Lifecycle starts must start the clock");
-  assert.match(home, /value="action\.accept_plan"/);
-  assert.match(home, /value=\{intent\}/);
-  assert.match(home, /return "action\.step\.start"/);
+  // Command chips (Run changes → action.accept_plan, Stop now/after this page →
+  // action.stop_action) carry the intent value from the server-computed
+  // action.display.chips contract now, not a component-local literal/ternary —
+  // see composerChipsFor in action-display-state.server.js for the source of truth.
+  assert.match(home, /value=\{chip\.intent\}/);
 
   // The beacon does not take the client's word for the category.
   const beacon = read("app/routes/api.chat-turn.tsx");

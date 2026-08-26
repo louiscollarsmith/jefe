@@ -15,6 +15,11 @@ import {
   buildActionWorkspace,
   workspacePlanItems,
 } from "./action-workspace.server.js";
+import {
+  deriveActionDisplayState,
+  listActionLifecycleEvents,
+  normalizeLifecycleEvents,
+} from "./action-display-state.server.js";
 
 const log = baseLogger.child({ component: "merchant-action" });
 
@@ -494,6 +499,7 @@ export async function listMerchantActions(prisma, input) {
   }
   if (!unlocked) {
     const serialized = rows.map(serializeMerchantAction);
+    await mergeLifecycleEvents(prisma, serialized);
     return Promise.all(
       serialized.map((/** @type {any} */ row) =>
         attachWorkProjection(prisma, input, row),
@@ -520,6 +526,7 @@ export async function listMerchantActions(prisma, input) {
     take: 40,
   });
   const serialized = refreshed.map(serializeMerchantAction);
+  await mergeLifecycleEvents(prisma, serialized);
   return Promise.all(
     serialized.map((/** @type {any} */ row) =>
       attachWorkProjection(prisma, input, row),
@@ -576,6 +583,7 @@ export async function getMerchantActionFocus(prisma, input) {
  */
 async function finishMerchantActionLoad(prisma, input, row) {
   const serialized = serializeMerchantAction(row);
+  await mergeLifecycleEvents(prisma, [serialized]);
   if (input.skipWorkProjection) return serialized;
   return attachWorkProjection(prisma, input, serialized);
 }
@@ -683,6 +691,32 @@ export async function getMerchantAction(prisma, input) {
 }
 
 /**
+ * Batch-attaches chat-visible lifecycle events onto already-serialized rows'
+ * `display.lifecycleEvents`, avoiding one query per row.
+ * @param {any} prisma
+ * @param {any[]} rows
+ */
+async function mergeLifecycleEvents(prisma, rows) {
+  const ids = rows.map((row) => row?.id).filter(Boolean);
+  if (!ids.length) return rows;
+  /** @type {Record<string, any[]>} */
+  let grouped = {};
+  try {
+    grouped = await listActionLifecycleEvents(prisma, { merchantActionIds: ids });
+  } catch {
+    // Best-effort — lifecycle events must not fail the page load.
+    return rows;
+  }
+  for (const row of rows) {
+    const events = grouped[row.id];
+    if (events?.length && row.display) {
+      row.display = { ...row.display, lifecycleEvents: normalizeLifecycleEvents(events) };
+    }
+  }
+  return rows;
+}
+
+/**
  * @param {any} prisma
  * @param {{ merchantId: string; shopId: string; actionId?: string | null; conversationId?: string | null }} input
  * @param {any} serialized
@@ -734,6 +768,12 @@ export function serializeMerchantAction(row) {
     ? workspacePlanItems(workspace)
     : displaySteps(progress, source);
   const currentStep = currentDisplayWorkflowStep(display);
+  const merchantFacingDisplay = deriveActionDisplayState({
+    action: row,
+    recommendation: source,
+    execution,
+    workflow,
+  });
   return {
     id: row.id,
     title:
@@ -771,6 +811,7 @@ export function serializeMerchantAction(row) {
     workspace,
     currentFocus: workspace?.currentFocus ?? null,
     actionState: workspace?.actionState ?? null,
+    display: merchantFacingDisplay,
     constraints: Array.isArray(row.constraints)
       ? row.constraints.map((/** @type {any} */ item) => ({
           id: item.id,

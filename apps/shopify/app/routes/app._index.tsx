@@ -650,7 +650,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     intent === "action.step.start" ||
     intent === "action.step.stop" ||
     intent === "action.step.complete" ||
-    intent === "action.step.skip"
+    intent === "action.step.skip" ||
+    intent === "action.stop_action"
   ) {
     const actionId = String(formData.get("actionId") ?? "");
     const stepId = String(formData.get("stepId") ?? "") || null;
@@ -665,7 +666,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             ? ACTION_COMMAND.STOP_STEP
             : intent === "action.step.complete"
               ? ACTION_COMMAND.CONFIRM_MERCHANT_STEP
-              : ACTION_COMMAND.SKIP_STEP;
+              : intent === "action.stop_action"
+                ? ACTION_COMMAND.STOP_ACTION
+                : ACTION_COMMAND.SKIP_STEP;
     const params = { stepId };
     const result = await executeActionCommand(prisma, {
       command,
@@ -696,7 +699,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         error:
           intent === "action.accept_plan"
             ? "That plan could not be accepted safely. Nothing was started."
-            : "That step could not be updated. Nothing was changed.",
+            : intent === "action.stop_action"
+              ? "That action could not be stopped just now."
+              : "That step could not be updated. Nothing was changed.",
         intent,
       };
     }

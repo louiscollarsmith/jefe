@@ -15,6 +15,7 @@ import {
   formatEligibilityForPrompt,
   revalidateWriteTargets,
 } from "./eligibility.server.js";
+import { recordActionEvent } from "../../actions/action-display-state.server.js";
 
 const log = baseLogger.child({ component: "agentic-shopify-execution" });
 
@@ -53,6 +54,10 @@ export const AGENTIC_EXECUTION_SCHEMA = {
     },
     blocker: { type: Type.STRING, nullable: true },
     merchantMessage: { type: Type.STRING, nullable: true },
+    // Concrete, mutually-exclusive answers for a NEEDS_MERCHANT_INPUT question,
+    // when the question has enumerable answers (e.g. "homepage or a collection?").
+    // Omit/leave empty for open-ended questions.
+    answerOptions: { type: Type.ARRAY, nullable: true, items: { type: Type.STRING } },
   },
 };
 
@@ -117,6 +122,33 @@ export async function runAgenticShopifyExecution(input) {
   ];
 
   for (let iteration = 0; iteration < (input.maxIterations ?? MAX_EXECUTION_ITERATIONS); iteration += 1) {
+    // Cooperative cancellation checkpoint: checked between turns only, so a
+    // mutation already in flight always finishes — this never aborts a write,
+    // it only skips starting the next one. "Stop now" and "Stop after this
+    // page" both set the same flag; they differ only in how soon the merchant
+    // asked, not in how the loop honors it.
+    if (await isCancellationRequested(input.prisma, input)) {
+      await markActionExecutionOutcome(input.prisma, input, {
+        status: "stopped",
+        executionPhase: "stopped",
+        outcome: {
+          stoppedAt: new Date().toISOString(),
+          stoppedAfterWrites: wroteToShopify,
+        },
+      });
+      logger.info("agentic Shopify execution: stopped at merchant request", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: input.actionId,
+        wroteToShopify,
+      });
+      return {
+        ok: false,
+        status: "STOPPED",
+        wroteToShopify,
+        trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
+      };
+    }
     const llmResult = await provider.generateStructuredJson({
       systemPrompt: buildGatewayExecutionSystemPrompt(),
       prompt: JSON.stringify({
@@ -266,11 +298,27 @@ export async function runAgenticShopifyExecution(input) {
       };
     }
     if (turn.status !== "CONTINUE") {
+      const isMerchantQuestion = turn.status === "NEEDS_MERCHANT_INPUT";
       await markActionExecutionOutcome(input.prisma, input, {
-        status: turn.status === "NEEDS_ACTION_REPLAN" ? "needs_attention" : "in_progress",
-        executionPhase: "needs_attention",
-        outcome: { blocker: turn.blocker, status: turn.status },
+        // Every non-CONTINUE, non-WRITES_COMPLETE stop is merchant-facing —
+        // "in_progress" here previously hid genuine blockers (including a real
+        // merchant question) from the merchant entirely.
+        status: "needs_attention",
+        executionPhase: isMerchantQuestion ? "needs_merchant_input" : "needs_attention",
+        outcome: {
+          blocker: turn.blocker,
+          status: turn.status,
+          ...(isMerchantQuestion
+            ? { merchantMessage: turn.merchantMessage ?? null, answerOptions: turn.answerOptions ?? null }
+            : {}),
+        },
       });
+      if (isMerchantQuestion) {
+        await recordActionEvent(input.prisma, input, "action_needs_merchant_input", {
+          detail: turn.merchantMessage ?? null,
+          options: turn.answerOptions ?? null,
+        });
+      }
       return {
         ok: false,
         status: turn.status,
@@ -314,7 +362,9 @@ You must not expand the Action scope, change prices unless authorized, perform u
 
 Before mutating, re-read current resource state against the ACCEPTED ELIGIBILITY CRITERIA. Skip resources that no longer qualify. If too many fail and the outcome cannot be achieved, return NEEDS_ACTION_REPLAN.
 
-When all required mutations have been successfully issued, signal WRITES_COMPLETE (preferred) or OUTCOME_ACHIEVED. Do not attempt to verify the outcome here — verification runs as a separate read-only phase after your signal. You do not need to read Shopify state back; the verifier does that. If you cannot issue the mutations, return BLOCKED, NEEDS_ACTION_REPLAN, NEEDS_MERCHANT_INPUT, or PROVIDER_ERROR as appropriate.`;
+When all required mutations have been successfully issued, signal WRITES_COMPLETE (preferred) or OUTCOME_ACHIEVED. Do not attempt to verify the outcome here — verification runs as a separate read-only phase after your signal. You do not need to read Shopify state back; the verifier does that. If you cannot issue the mutations, return BLOCKED, NEEDS_ACTION_REPLAN, NEEDS_MERCHANT_INPUT, or PROVIDER_ERROR as appropriate.
+
+When returning NEEDS_MERCHANT_INPUT, put the actual question in merchantMessage, written as if speaking directly to the merchant. If the question has a small number of concrete, mutually exclusive answers (e.g. "homepage feature, a specific collection, or both?"), list them in answerOptions so the merchant can pick one with a single tap — do not invent options for genuinely open-ended questions.`;
 }
 
 /**
@@ -378,6 +428,9 @@ function normalizeExecutionTurn(raw, allowedToolNames) {
         : null,
     blocker: typeof object.blocker === "string" ? object.blocker : null,
     merchantMessage: typeof object.merchantMessage === "string" ? object.merchantMessage : null,
+    answerOptions: Array.isArray(object.answerOptions)
+      ? object.answerOptions.filter((option) => typeof option === "string" && option.trim()).slice(0, 6)
+      : null,
   };
 }
 
@@ -417,6 +470,17 @@ function readVariablesFromResult(result) {
 }
 
 /** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input */
+async function isCancellationRequested(prisma, input) {
+  if (!prisma?.merchantAction?.findFirst) return false;
+  const action = await prisma.merchantAction.findFirst({
+    where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+    select: { progress: true },
+  });
+  const agentic = jsonObject(jsonObject(action?.progress).agentic);
+  return agentic.cancellationRequested === true;
+}
+
+/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input */
 async function loadAction(prisma, input) {
   if (!prisma?.merchantAction?.findFirst) return null;
   return prisma.merchantAction.findFirst({
@@ -424,14 +488,25 @@ async function loadAction(prisma, input) {
   });
 }
 
-/** @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {{ status: string; executionPhase?: string; outcome: any }} data */
+/**
+ * Merges `data.outcome` onto the action's existing `outcome` JSON rather than
+ * overwriting it — other code may already have written other outcome keys
+ * this run (e.g. a prior turn's blocker), and a later NEEDS_MERCHANT_INPUT/
+ * verification outcome must not silently erase them.
+ * @param {any} prisma @param {{ actionId: string; merchantId: string; shopId: string }} input @param {{ status: string; executionPhase?: string; outcome: any }} data
+ */
 export async function markActionExecutionOutcome(prisma, input, data) {
-  if (!prisma?.merchantAction?.updateMany) return;
+  if (!prisma?.merchantAction?.findFirst || !prisma?.merchantAction?.updateMany) return;
+  const existing = await prisma.merchantAction.findFirst({
+    where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
+    select: { outcome: true },
+  });
+  const mergedOutcome = { ...jsonObject(existing?.outcome), ...jsonObject(data.outcome) };
   await prisma.merchantAction.updateMany({
     where: { id: input.actionId, merchantId: input.merchantId, shopId: input.shopId },
     data: {
       status: data.status,
-      outcome: data.outcome,
+      outcome: mergedOutcome,
     },
   });
   if (data.executionPhase) {

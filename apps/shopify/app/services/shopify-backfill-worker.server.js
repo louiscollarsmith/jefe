@@ -57,6 +57,7 @@ import {
 } from "../lib/shopify/agentic-runtime/execution-job.server.js";
 import { runAgenticShopifyExecution } from "../lib/shopify/agentic-runtime/execution-agent.server.js";
 import { runAgenticShopifyVerification } from "../lib/shopify/agentic-runtime/verification-agent.server.js";
+import { recordActionEvent } from "../lib/actions/action-display-state.server.js";
 import {
   markActionExecutionOutcome,
   markExecutionPhase,
@@ -984,6 +985,14 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
     logger,
   });
 
+  // Merchant-requested stop, already fully persisted (status/phase/outcome) by
+  // runAgenticShopifyExecution itself. Do not run verification (it could flip
+  // the action back to "completed"/"needs_attention", overwriting "stopped")
+  // and do not fall into the failure-handling branch below.
+  if (mutationResult.status === "STOPPED") {
+    return mutationResult;
+  }
+
   // If writes occurred (WRITES_COMPLETE or ITERATION_LIMIT_AFTER_WRITES), run
   // verification inline. Phase is already "verifying" or "verification_incomplete"
   // from the mutation agent, so a crash here is safe to recover via phase check above.
@@ -1056,6 +1065,9 @@ async function runAgenticExecutionBackfillJob(prisma, job, options) {
       error: error instanceof Error ? error.message : "UnknownError",
     });
   }
+  await recordActionEvent(prisma, { actionId, merchantId, shopId }, "action_execution_failed", {
+    detail: mutationResult.blocker ?? mutationResult.status ?? null,
+  });
 
   // Check pending revision re-queue even on mutation failure.
   try {
@@ -1192,6 +1204,9 @@ async function runInlineVerification(prisma, job, ctx) {
       error: error instanceof Error ? error.message : "UnknownError",
     });
   }
+  await recordActionEvent(prisma, { actionId, merchantId, shopId }, "action_execution_failed", {
+    detail: "Shopify changes were applied. Verification could not complete within the retry budget.",
+  });
   // Also set verificationExhausted in executionJob progress so the workspace can
   // distinguish "still retrying" from "merchant action required".
   try {

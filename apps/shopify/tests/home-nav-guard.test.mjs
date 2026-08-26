@@ -123,7 +123,10 @@ test("chat replies preserve the reader's scroll position instead of jumping to t
 
 test("the home uses action-centric navigation into focused chats", () => {
   assert.match(dailyHomeSource, /function FocusedActionsHome/);
-  assert.match(dailyHomeSource, /function AttentionSpotlight/);
+  // AttentionSpotlight (the single-item carousel hero) was replaced by the
+  // conversation-first redesign's ordered ActionCard list — Home now shows
+  // every needs_you/ready/working action at once rather than spotlighting one.
+  assert.match(dailyHomeSource, /function ActionCard/);
   assert.match(dailyHomeSource, /function TalkActionChooser/);
   assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
   assert.match(dailyHomeSource, /action: "\/api\/app-home\/action-chats"/);

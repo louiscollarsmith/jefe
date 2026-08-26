@@ -150,36 +150,32 @@ test("the non-interactive branch keeps the exact visible-but-inert controls (wir
 });
 
 test("the live DailyHome is the focused-action home and chat surface", () => {
-  // The home is action-centric: attention, proposed work, in-progress work,
-  // chats and action history. Opening a conversation renders the focused chat surface.
+  // The home is action-centric: needs_you/ready/working actions ordered by
+  // action.display.displayState, a Recent shelf for done/stopped, chats and
+  // action history. Opening a conversation renders the focused chat surface.
+  // (Conversation-first redesign, 2026-08-26: the old attention-carousel
+  // hero (AttentionSpotlight) and the three separately-fetched
+  // proposed/inProgress/completed arrays are gone from the render path —
+  // Home now buckets the single merchantActions list itself by
+  // action.display.displayState, the one canonical state contract. See
+  // app/lib/actions/action-display-state.server.js.)
   assert.match(dailyHomeSource, /function FocusedActionsHome/);
   assert.match(dailyHomeSource, /function FocusedConversation/);
-  assert.match(dailyHomeSource, /attentionItems/);
-  assert.match(dailyHomeSource, /proposedActions/);
-  assert.match(dailyHomeSource, /inProgressActions/);
-  assert.match(dailyHomeSource, /completedActions/);
-  assert.match(dailyHomeSource, /function AttentionSpotlight/);
-  assert.match(dailyHomeSource, /Attention queue/);
-  assert.match(dailyHomeSource, /Needs your attention/);
-  assert.match(dailyHomeSource, /Proposed ·/);
-  assert.match(dailyHomeSource, /proposedCardStyle/);
-  assert.match(dailyHomeSource, /proposedBadgeStyle/);
+  assert.match(dailyHomeSource, /function ActionCard/);
+  assert.match(dailyHomeSource, /function RecentActionRow/);
+  assert.match(dailyHomeSource, /function ActionStatePill/);
+  assert.match(dailyHomeSource, /displayState === "needs_you"/);
+  assert.match(dailyHomeSource, /displayState === "working"/);
+  assert.doesNotMatch(dailyHomeSource, /function AttentionSpotlight/);
+  assert.doesNotMatch(dailyHomeSource, /function NextMoveSpotlight/);
+  assert.match(dailyHomeSource, /function homeSummarySentence/);
   assert.match(dailyHomeSource, /title="Chats"/);
-  assert.match(dailyHomeSource, /In progress ·/);
-  assert.match(dailyHomeSource, /Completed ·/);
-  assert.match(dailyHomeSource, /function actionProgressState/);
-  assert.match(dailyHomeSource, /function InProgressStepRow/);
-  assert.match(dailyHomeSource, /function progressBadgeLabel/);
-  assert.match(dailyHomeSource, /function progressFooterText/);
-  assert.match(dailyHomeSource, /function currentStepStatusLabel/);
-  assert.match(dailyHomeSource, /function workflowStepOwnerBadge/);
-  assert.match(dailyHomeSource, /function workflowOwnerBadgeStyle/);
-  assert.match(dailyHomeSource, /function currentStepOwnerLabel/);
-  assert.match(dailyHomeSource, /Jefe can do this/);
-  assert.doesNotMatch(dailyHomeSource, /Needs merchant action/);
-  assert.match(dailyHomeSource, /focusStripLabelStyle/);
-  assert.match(dailyHomeSource, /focusStripTextStyle/);
-  assert.match(dailyHomeSource, /WORKING ON/);
+  assert.match(dailyHomeSource, /title="Recent"/);
+  // The permanent five-step plan / in-progress step rows are gone from Home
+  // cards — internal workflow steps never drive merchant-facing display state.
+  assert.doesNotMatch(dailyHomeSource, /function InProgressStepRow/);
+  assert.doesNotMatch(dailyHomeSource, /function progressBadgeLabel/);
+  assert.doesNotMatch(dailyHomeSource, /function workflowStepOwnerBadge/);
   assert.match(dailyHomeSource, /value="chat\.message"/);
   assert.match(dailyHomeSource, /formData\.set\("intent", "chat\.focus\.start"\)/);
   assert.match(dailyHomeSource, /startActionChatFetcher\.submit/);
@@ -189,9 +185,12 @@ test("the live DailyHome is the focused-action home and chat surface", () => {
   assert.match(dailyHomeSource, /value="chat\.focus\.change"/);
   assert.match(dailyHomeSource, /value="chat\.action\.reference"/);
   assert.match(dailyHomeSource, /name="focusedActionId"/);
-  assert.match(dailyHomeSource, /Talk this through/);
-  assert.match(dailyHomeSource, /const resolvedActionId = actionId \|\| action\.id/);
-  assert.match(dailyHomeSource, /const resolvedActionId = item\.actionId \|\| action\.id/);
+  // "Talk this through" (the old generic CTA on every card regardless of
+  // state) is gone — each card's CTA now comes from action.display.ctaLabel
+  // ("Review & run →" / "See progress →" / "Answer Jefe →" / "See what
+  // changed →"), per the task brief's explicit instruction to remove it.
+  assert.doesNotMatch(dailyHomeSource, /Talk this through/);
+  assert.match(dailyHomeSource, /display\?\.ctaLabel/);
   assert.match(dailyHomeSource, /useNavigation/);
   assert.match(dailyHomeSource, /Thinking/);
   // Watching, Goals, changelog and the metrics dashboard all left the home for their
@@ -287,21 +286,25 @@ test("focused chat title can be renamed inline from the header", () => {
   assert.doesNotMatch(dailyHomeSource, /chatTitleEditTriggerStyle/);
 });
 
-test("focused action context is connected to the title row and system focus events use dividers", () => {
-  assert.match(dailyHomeSource, /const focusPanelStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /const \[focusExpanded, setFocusExpanded\] = useState\(true\)/);
-  assert.match(dailyHomeSource, /<FocusedActionLifecyclePanel[\s\S]*action=\{focusedAction\}/);
-  assert.match(dailyHomeSource, /conversationId=\{activeConversation.id\}/);
-  assert.match(dailyHomeSource, /function FocusedActionLifecyclePanel/);
-  assert.match(dailyHomeSource, /function FocusedActionPlanBlock/);
-  assert.match(dailyHomeSource, /const chatPlanHeaderStyle: CSSProperties = \{/);
-  assert.doesNotMatch(
-    dailyHomeSource,
-    /gridTemplateColumns: "56px minmax\(0, 1fr\)"/,
-  );
-  assert.match(dailyHomeSource, /background: active \? "#e9f2ff" : "transparent"/);
-  assert.match(dailyHomeSource, /aria-expanded=\{focusExpanded\}/);
-  assert.match(dailyHomeSource, /focusExpanded \? "▲" : "▼"/);
+test("focused action context drives the status/title/subtitle header and lifecycle events use dividers", () => {
+  // Conversation-first redesign: the collapsible "WORKING ON" strip +
+  // permanent five-step plan panel (FocusedActionLifecyclePanel/
+  // FocusedActionPlanBlock, focusExpanded toggle state) are gone entirely —
+  // Action Chat now shows exactly status/title/subtitle via ActionChatHeader,
+  // sourced from action.display.* (the one canonical projection), with no
+  // separate expand/collapse affordance and no permanent plan panel.
+  assert.match(dailyHomeSource, /function ActionChatHeader/);
+  assert.match(dailyHomeSource, /const state = display\?\.displayState/);
+  assert.match(dailyHomeSource, /<h1 style=\{actionChatTitleStyle\}>\{action\.title\}<\/h1>/);
+  assert.doesNotMatch(dailyHomeSource, /function FocusedActionLifecyclePanel/);
+  assert.doesNotMatch(dailyHomeSource, /function FocusedActionPlanBlock/);
+  assert.doesNotMatch(dailyHomeSource, /focusExpanded/);
+  // Lifecycle events (PLAN UPDATED / JEFE STARTED MAKING THE CHANGES / CHANGES
+  // VERIFIED, from action.display.lifecycleEvents) interleave into the
+  // transcript by timestamp via the same subtle divider treatment already
+  // used for system messages.
+  assert.match(dailyHomeSource, /function LifecycleDivider/);
+  assert.match(dailyHomeSource, /function interleaveLifecycleEvents/);
   assert.match(dailyHomeSource, /style=\{inlineFormStyle\} onSubmit=\{onCancel\}/);
   assert.match(dailyHomeSource, /function visibleTranscriptMessages/);
   assert.match(dailyHomeSource, /const systemEventLineStyle: CSSProperties = \{/);
@@ -317,18 +320,38 @@ test("approval and step lifecycle remain wired through governed action forms", (
   const chatSource = dailyHomeSource.slice(
     dailyHomeSource.indexOf("function FocusedConversation"),
   );
-  assert.match(beforeChat, /function AttentionCta/);
-  assert.match(beforeChat, /value="action\.approve"/);
+  // Post-redesign: Home cards (ActionCard) no longer offer a one-click
+  // "action.approve" submit — every card's CTA (Review & run / See progress
+  // / Answer Jefe / See what changed, from action.display.ctaLabel) opens
+  // the Action Chat, matching the supplied mockups exactly. AttentionCta and
+  // its direct-submit form were removed with AttentionSpotlight.
+  assert.doesNotMatch(beforeChat, /function AttentionCta/);
+  assert.doesNotMatch(beforeChat, /value="action\.approve"/);
+  assert.match(beforeChat, /function ActionCard/);
+  assert.match(beforeChat, /onStartFocusedChat\(action\.id\)/);
   assert.doesNotMatch(beforeChat, /value="action\.accept_plan"/);
   assert.doesNotMatch(beforeChat, /value="action\.step\.start"/);
   assert.doesNotMatch(beforeChat, /value="action\.reject"/);
-  assert.match(chatSource, /value="action\.accept_plan"/);
-  assert.match(chatSource, /value=\{intent\}/);
-  assert.match(chatSource, /return "action\.step\.start"/);
-  assert.match(chatSource, /return "action\.step\.stop"/);
-  assert.match(chatSource, /return "action\.step\.complete"/);
-  assert.match(chatSource, /value="action\.defer"/);
-  assert.match(chatSource, /action\.status !== "proposed"/);
+  // Post-redesign: the focused-chat side no longer resolves step-level
+  // start/stop/complete intents or a separate defer/"Not right now" chip
+  // client-side — those are exactly the internal workflow-step concepts the
+  // conversation-first redesign removed from the merchant-facing surface.
+  // ActionChatChips instead renders server-computed action.display.chips
+  // (composerChipsFor in action-display-state.server.js), whose only two
+  // command intents are ACCEPT_PLAN ("Run changes") and STOP_ACTION ("Stop
+  // now"/"Stop after this page") — both carried dynamically via chip.intent,
+  // not a client-side literal or step-name ternary. Declining a proposal and
+  // per-step control are conversational now (the focused-action agent still
+  // resolves REJECT_ACTION/STOP_STEP from natural language), not buttons.
+  assert.match(chatSource, /function ActionChatChips/);
+  assert.match(chatSource, /value=\{chip\.intent\}/);
+  // The literal "action.stop_action" string lives server-side
+  // (composerChipsFor) and in the route's intent dispatch (app._index.tsx),
+  // not in daily-home.tsx — the chip component only ever carries chip.intent
+  // through generically.
+  assert.match(appIndexSource, /"action\.stop_action"/);
+  assert.doesNotMatch(chatSource, /value="action\.step\.start"/);
+  assert.doesNotMatch(chatSource, /value="action\.defer"/);
   assert.match(chatSource, /name="focusedActionId"/);
   assert.match(chatSource, /value=\{focusedAction\.id\}/);
 });

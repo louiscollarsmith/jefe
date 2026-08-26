@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import {
   Button,
+  Spinner,
   Text,
 } from "@shopify/polaris";
 import type { HorizonItem, HorizonWatch } from "./app-home/sections";
@@ -93,6 +94,7 @@ type ChatThread = {
     id: string;
     role: string;
     content: string;
+    createdAt?: string | null;
     metadata?: Record<string, unknown> | null;
   }>;
 };
@@ -192,8 +194,6 @@ type WorkflowStepDisplay =
       isMilestone?: boolean | null;
     };
 
-type StepTreatment = "completed" | "current" | "future";
-
 type MerchantActionView = {
   id: string;
   title: string;
@@ -236,6 +236,7 @@ type MerchantActionView = {
   currentSignal?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+  display?: ActionDisplayContract | null;
 };
 
 type ActionWorkspaceFocus = {
@@ -245,6 +246,58 @@ type ActionWorkspaceFocus = {
   reason?: string | null;
   stepId?: string | null;
   itemKind?: string | null;
+};
+
+// The one canonical merchant-facing Action state projection, from
+// app/lib/actions/action-display-state.server.js. Home and Action Chat read
+// this exclusively — never action.status/workspace/currentFocus/currentStep
+// directly. See that module for the derivation and the full contract shape.
+type ActionDisplayState =
+  | "proposed"
+  | "ready"
+  | "working"
+  | "needs_you"
+  | "done"
+  | "stopped"
+  | "couldnt_complete";
+
+type LifecycleEvent = {
+  id: string | null;
+  type: string | null;
+  label: string;
+  occurredAt: string | null;
+  detail?: string | null;
+};
+
+type RealWorldProgressStage = {
+  id: string;
+  label: string;
+  status: "done" | "current" | "upcoming";
+  occurredAt?: string | null;
+};
+
+type ComposerChip = {
+  id: string;
+  label: string;
+  kind: "command" | "prefill" | "answer";
+  intent?: string | null;
+  prefillText?: string | null;
+};
+
+type ActionDisplayContract = {
+  displayState: ActionDisplayState;
+  title: string;
+  subtitle: string;
+  requiresMerchantInput: boolean;
+  canExecute: boolean;
+  canStop: boolean;
+  startedAt: string | null;
+  completedAt: string | null;
+  lifecycleEvents: LifecycleEvent[];
+  realWorldProgress: RealWorldProgressStage[];
+  chips: ComposerChip[];
+  ctaLabel: string | null;
+  ctaIntent: string | null;
 };
 
 type MerchantAttentionItem = {
@@ -629,7 +682,6 @@ export function DailyHome(props: {
           brandLogoUrl={props.brandLogoUrl}
         />
         <FocusedActionsHome
-          conversations={props.conversation?.conversations ?? []}
           merchantActions={merchantActions}
           attentionItems={props.attentionItems ?? []}
           proposedActions={props.proposedActions ?? []}
@@ -692,12 +744,7 @@ function conversationPayloadFromResource(data: ConversationResourceData | undefi
 }
 
 function FocusedActionsHome({
-  conversations,
   merchantActions,
-  attentionItems,
-  proposedActions,
-  inProgressActions,
-  completedActions,
   talkActionId,
   focusedActionChats,
   focusedActionChatsLoading,
@@ -709,12 +756,17 @@ function FocusedActionsHome({
   storeTimeZone,
   homeProposalGeneration,
 }: {
-  conversations: ChatConversation[];
   merchantActions: MerchantActionView[];
-  attentionItems: MerchantAttentionItem[];
-  proposedActions: MerchantActionView[];
-  inProgressActions: MerchantActionView[];
-  completedActions: MerchantActionView[];
+  // Still accepted for backward compatibility with the loader, which still
+  // computes them — Home no longer reads them. action.display.displayState
+  // (app/lib/actions/action-display-state.server.js) is the sole frontend
+  // state contract now; see that module for how it derives from the
+  // underlying recommendation/execution/workflow state these arrays used to
+  // approximate.
+  attentionItems?: MerchantAttentionItem[];
+  proposedActions?: MerchantActionView[];
+  inProgressActions?: MerchantActionView[];
+  completedActions?: MerchantActionView[];
   talkActionId: string | null;
   focusedActionChats: FocusedActionChatChoice[];
   focusedActionChatsLoading?: boolean;
@@ -730,175 +782,81 @@ function FocusedActionsHome({
   const isSubmittingGeneration =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "home.generate_proposal";
-  const attentionQueue = normalizeAttentionItems(attentionItems, merchantActions);
-  const [selectedAttentionKey, setSelectedAttentionKey] = useState<string | null>(null);
-  const matchedAttentionIndex = selectedAttentionKey
-    ? attentionQueue.findIndex((candidate) => attentionIdentity(candidate) === selectedAttentionKey)
-    : -1;
-  const selectedAttentionIndex =
-    matchedAttentionIndex >= 0 ? matchedAttentionIndex : 0;
-  const attentionItem = attentionQueue[selectedAttentionIndex] ?? null;
-  const proposed =
-    proposedActions.length > 0
-      ? proposedActions
-      : merchantActions.filter((action) => action.status === "proposed");
-  const inProgress =
-    inProgressActions.length > 0
-      ? inProgressActions
-      : merchantActions.filter(isWorkingAction);
-  const completed =
-    completedActions.length > 0
-      ? completedActions
-      : merchantActions.filter(isCompletedAction);
+
+  const needsYou = merchantActions
+    .filter((action) => action.display?.displayState === "needs_you")
+    .sort(byRecentlyUpdated);
+  // Home has no separate "Proposed" shelf per the supplied mockups — a
+  // never-reviewed proposal and an accepted-but-not-started action sit in
+  // the same "come look and run it" position. Each card still shows its own
+  // true state as its pill (see ActionStatePill).
+  const readyOrProposed = merchantActions
+    .filter((action) =>
+      action.display?.displayState === "ready" || action.display?.displayState === "proposed",
+    )
+    .sort(byRecentlyUpdated);
+  const working = merchantActions
+    .filter((action) => action.display?.displayState === "working")
+    .sort(byRecentlyUpdated);
+  const recent = merchantActions
+    .filter((action) =>
+      ["done", "stopped", "couldnt_complete"].includes(action.display?.displayState ?? ""),
+    )
+    .sort(byRecentlyUpdated);
+  const activeActions = [...needsYou, ...readyOrProposed, ...working];
   const talkAction = talkActionId
     ? merchantActions.find((action) => action.id === talkActionId) ?? null
     : null;
-  const primaryProposedAction = !attentionItem ? proposed[0] ?? null : null;
-  const remainingProposedActions = primaryProposedAction
-    ? proposed.slice(1)
-    : proposed;
 
   return (
     <>
-      {attentionItem ? (
-        <section style={homeHeroStyle} aria-label="Needs your attention">
-          <h1 style={headlineStyle}>
-            Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
-          </h1>
-          <AttentionSpotlight
-            item={attentionItem}
-            attentionCount={attentionQueue.length}
-            attentionIndex={selectedAttentionIndex}
-            onStartFocusedChat={onStartFocusedChat}
-            onPreviousAttention={() =>
-              setSelectedAttentionKey(
-                attentionIdentity(
-                  attentionQueue[
-                    (selectedAttentionIndex - 1 + attentionQueue.length) %
-                      attentionQueue.length
-                  ] ?? attentionItem,
-                ),
-              )
-            }
-            onNextAttention={() =>
-              setSelectedAttentionKey(
-                attentionIdentity(
-                  attentionQueue[
-                    (selectedAttentionIndex + 1) % attentionQueue.length
-                  ] ?? attentionItem,
-                ),
-              )
-            }
-          />
-        </section>
-      ) : null}
+      <section style={homeHeroStyle} aria-label="Next actions">
+        <h1 style={headlineStyle}>
+          Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
+        </h1>
+        <p style={homeSummaryStyle}>
+          {homeSummarySentence({
+            needsYouCount: needsYou.length,
+            readyCount: readyOrProposed.length,
+            workingCount: working.length,
+          })}
+        </p>
+        {activeActions.length > 0 ? (
+          <div style={actionListStyle}>
+            {activeActions.slice(0, 8).map((action) => (
+              <ActionCard
+                key={action.id || action.title}
+                action={action}
+                onStartFocusedChat={onStartFocusedChat}
+              />
+            ))}
+          </div>
+        ) : null}
+      </section>
 
-      {!attentionItem ? (
-        <section style={homeHeroStyle} aria-label="Next move">
-          <h1 style={headlineStyle}>
-            Here&apos;s what I&apos;d do <em style={headlineEmStyle}>next.</em>
-          </h1>
-          {primaryProposedAction ? (
-            <NextMoveSpotlight
-              action={primaryProposedAction}
-              onStartFocusedChat={onStartFocusedChat}
-            />
-          ) : (
-            <ReadingYourStoreCard
-              generation={homeProposalGeneration}
-              isSubmitting={isSubmittingGeneration}
-            />
-          )}
-        </section>
-      ) : null}
-
-      {remainingProposedActions.length > 0 ? (
-        <ActionShelf
-          title={`Proposed · ${remainingProposedActions.length}`}
-          emptyTitle=""
-          emptyBody=""
-          actions={remainingProposedActions}
-          currentSearch={currentSearch}
-          variant="proposed"
-          onStartFocusedChat={onStartFocusedChat}
-        />
-      ) : null}
-
-      {inProgress.length > 0 ? (
-        <ActionShelf
-          title={`In progress · ${inProgress.length}`}
-          emptyTitle=""
-          emptyBody=""
-          actions={inProgress}
-          currentSearch={currentSearch}
-          variant="progress"
-          onStartFocusedChat={onStartFocusedChat}
-        />
-      ) : null}
-
-      <HomeSection
-        title="Chats"
-        action={
-          <Form method="post" style={inlineFormStyle}>
-            <input type="hidden" name="intent" value="chat.new" />
-            <button type="submit" style={pillButtonStyle}>
-              + New chat
-            </button>
-          </Form>
-        }
-      >
-        {conversations.length > 0 ? (
-          <div style={chatListStyle}>
-            {conversations.slice(0, 8).map((conversation) => (
-              <Link
-                key={conversation.id}
-                to={searchWith(currentSearch, {
-                  conversation: conversation.id,
-                  talkAction: null,
-                })}
-                style={chatListItemStyle}
-              >
-                <span style={chatListBodyStyle}>
-                  <span style={chatListTitleStyle}>
-                    {conversationTitle(conversation)}
-                  </span>
-                  <span style={chatListMetaLineStyle}>
-                    {conversation.focusedAction ? (
-                      <span style={chatFocusMetaStyle}>
-                        <span style={boltStyle}>⚡</span>
-                        <strong style={chatFocusLeadStyle}>Working on</strong>
-                        {conversation.focusedAction.title}
-                      </span>
-                    ) : null}
-                    <span>{messageCountLabel(conversation.messageCount)}</span>
-                  </span>
-                </span>
-                <span style={chatListDateStyle}>
-                  {formatConversationDate(
-                    conversation.lastMessageAt,
-                    storeTimeZone,
-                  )}
-                </span>
-              </Link>
+      <section aria-label="Recent">
+        <div style={recentSectionHeaderStyle}>
+          <Mono>RECENT</Mono>
+          <span style={recentSectionRuleStyle} />
+        </div>
+        {recent.length > 0 ? (
+          <div style={actionListStyle}>
+            {recent.slice(0, 6).map((action) => (
+              <ActionCard
+                key={action.id || action.title}
+                action={action}
+                onStartFocusedChat={onStartFocusedChat}
+                active={false}
+              />
             ))}
           </div>
         ) : (
           <EmptySection
-            title="No chats yet"
-            body="Start with a blank chat, or talk through the next action when Jefe has one."
+            title="Nothing recent yet"
+            body="Completed and stopped actions will appear here."
           />
         )}
-      </HomeSection>
-
-      <ActionShelf
-        title={`Completed · ${completed.length}`}
-        emptyTitle="No completed actions yet"
-        emptyBody="Finished actions will appear here."
-        actions={completed}
-        currentSearch={currentSearch}
-        variant="history"
-        onStartFocusedChat={onStartFocusedChat}
-      />
+      </section>
 
       <TalkActionChooser
         action={talkAction}
@@ -911,423 +869,176 @@ function FocusedActionsHome({
         currentSearch={currentSearch}
         storeTimeZone={storeTimeZone}
       />
+      <FloatingGenerateProposalButton
+        generation={homeProposalGeneration}
+        isSubmitting={isSubmittingGeneration}
+      />
     </>
   );
 }
 
-function ReadingYourStoreCard({
+function byRecentlyUpdated(a: MerchantActionView, b: MerchantActionView) {
+  return (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? "");
+}
+
+// Generated from real counts, never hard-coded — matches the supplied
+// mockup's "One action needs a decision from you. One is ready to run."
+// exactly for that case, and degrades sensibly for every other mix.
+function homeSummarySentence(counts: {
+  needsYouCount: number;
+  readyCount: number;
+  workingCount: number;
+}): string {
+  const parts: string[] = [];
+  if (counts.needsYouCount === 1) parts.push("One action needs a decision from you.");
+  else if (counts.needsYouCount > 1)
+    parts.push(`${counts.needsYouCount} actions need a decision from you.`);
+  if (counts.readyCount === 1) parts.push("One is ready to run.");
+  else if (counts.readyCount > 1) parts.push(`${counts.readyCount} are ready to run.`);
+  if (parts.length === 0 && counts.workingCount === 1) parts.push("One action is in progress.");
+  else if (parts.length === 0 && counts.workingCount > 1)
+    parts.push(`${counts.workingCount} actions are in progress.`);
+  if (parts.length === 0) parts.push("Nothing needs you right now.");
+  return parts.join(" ");
+}
+
+// Persistent floating control, bottom-right — same fixed-position/pill
+// visual language as the top-right Settings cog / "Open the app ↗" chrome
+// in app.tsx. Proposal generation is available from anywhere on Home now,
+// not just an empty-state hero card; the request/handler (intent
+// "home.generate_proposal") and daily-limit gating are unchanged.
+function FloatingGenerateProposalButton({
   generation,
   isSubmitting,
 }: {
   generation: HomeProposalGenerationState | null | undefined;
   isSubmitting: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
   const isGenerating = isSubmitting || generation?.isGenerating === true;
-  const atDailyCap = generation?.reason === "daily_cap_reached";
   const canGenerate = generation?.canGenerate === true && !isGenerating;
   const buttonLabel = generation?.hasPriorProposal
     ? "Generate another proposal"
     : "Generate a proposal";
-  const allowanceLabel =
-    generation && generation.generatedToday > 0
-      ? `${generation.generatedToday} of ${generation.cap} proposals generated today`
-      : generation && generation.remaining < generation.cap
-        ? `${generation.remaining} of ${generation.cap} remaining today`
-        : null;
-
-  let bodyCopy =
-    "Jefe reads your store continuously. When you're ready, ask for the next move worth ten minutes.";
-  if (generation?.terminalStatus === "no_actionable_opportunity") {
-    bodyCopy =
-      "Jefe couldn't find another action it can safely execute from the store's current state. Store state will change — try again later.";
-  } else if (
-    generation?.terminalStatus === "failed" ||
-    generation?.terminalStatus === "insufficient_data" ||
-    generation?.terminalStatus === "model_disabled"
-  ) {
-    bodyCopy = "Jefe couldn't generate a proposal. Try again.";
-  } else if (generation?.reason === "nothing_new") {
-    bodyCopy =
-      "Nothing worth your time right now. Jefe will only suggest moves that are genuinely worth ten minutes.";
-  } else if (atDailyCap) {
-    bodyCopy =
-      "You've generated 5 proposals today. You can generate more tomorrow.";
-  } else if (isGenerating) {
-    bodyCopy = "Looking through what Jefe knows about your store…";
-  }
-
+  // Kept visible for the duration of a generation in flight even after the
+  // pointer leaves — hiding a button mid-submit while its own request is
+  // still running would be confusing, not minimal.
+  const revealed = hovered || isGenerating;
   return (
-    <section style={nextMoveCardStyle} aria-label="Reading your store">
-      <div style={nextMoveTopStyle}>
-        <Mono>READING YOUR STORE</Mono>
-        {allowanceLabel && !atDailyCap ? (
-          <span style={nextMoveMetaStyle}>{allowanceLabel}</span>
-        ) : null}
-      </div>
-      <p style={nextRecommendationBodyStyle}>{bodyCopy}</p>
-      <div style={nextMoveActionRowStyle}>
-        <Form method="post" style={inlineFormStyle}>
-          <input type="hidden" name="intent" value="home.generate_proposal" />
-          <button
-            type="submit"
-            style={{
-              ...nextMoveButtonStyle,
-              opacity: canGenerate ? 1 : 0.55,
-              cursor: canGenerate ? "pointer" : "not-allowed",
-            }}
-            disabled={!canGenerate}
-          >
-            {isGenerating ? "Finding your next move…" : buttonLabel}
-          </button>
-        </Form>
-      </div>
-    </section>
-  );
-}
-
-function NextMoveSpotlight({
-  action,
-  onStartFocusedChat,
-}: {
-  action: MerchantActionView;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  const steps = action.displaySteps ?? [];
-  const stepCountLabel = actionPlanItemCountLabel(action, milestonesCount(steps));
-  return (
-    <section style={nextMoveCardStyle} aria-label="Your next move">
-      <div style={nextMoveTopStyle}>
-        <Mono>YOUR NEXT MOVE</Mono>
-        <span style={nextMoveMetaStyle}>
-          {actionStatusLabel(action)}
-          {stepCountLabel ? ` · ${stepCountLabel}` : ""}
-        </span>
-      </div>
-      <h2 style={nextMoveTitleStyle}>{action.title}</h2>
-      {action.summary ? (
-        <p style={nextMoveSummaryStyle}>{compactText(action.summary, 360)}</p>
-      ) : null}
-      {steps.length > 0 ? (
-        <WorkflowStepList
-          steps={steps}
-          heading="HOW IT WOULD WORK"
-          variant="nextMove"
-        />
-      ) : null}
-      <div style={nextMoveActionRowStyle}>
+    <div
+      style={floatingGenerateWrapStyle}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <Form method="post" style={floatingGenerateFormStyle(revealed)}>
+        <input type="hidden" name="intent" value="home.generate_proposal" />
         <button
-          type="button"
-          style={nextMoveButtonStyle}
-          disabled={!action.id}
-          onClick={() => onStartFocusedChat(action.id)}
+          type="submit"
+          style={floatingGenerateButtonStyle(canGenerate)}
+          disabled={!canGenerate}
+          aria-busy={isGenerating}
         >
-          Talk this through →
+          {isGenerating ? (
+            <>
+              <Spinner size="small" accessibilityLabel="Generating proposal" hasFocusableParent />
+              <span>Generating…</span>
+            </>
+          ) : (
+            <span>{buttonLabel}</span>
+          )}
         </button>
-      </div>
-    </section>
-  );
-}
-
-function AttentionSpotlight({
-  item,
-  attentionCount,
-  attentionIndex,
-  onStartFocusedChat,
-  onPreviousAttention,
-  onNextAttention,
-}: {
-  item: MerchantAttentionItem;
-  attentionCount: number;
-  attentionIndex: number;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-  onPreviousAttention: () => void;
-  onNextAttention: () => void;
-}) {
-  const controls =
-    attentionCount > 1 ? (
-      <div style={focusCarouselStyle} aria-label="Attention queue">
-        <button
-          type="button"
-          aria-label="Previous attention item"
-          onClick={onPreviousAttention}
-          style={focusArrowButtonStyle}
-        >
-          ‹
-        </button>
-        <span style={focusCounterStyle}>
-          {attentionIndex + 1} of {attentionCount}
-        </span>
-        <button
-          type="button"
-          aria-label="Next attention item"
-          onClick={onNextAttention}
-          style={focusArrowButtonStyle}
-        >
-          ›
-        </button>
-      </div>
-    ) : null;
-  const action = item.action;
-  if (!action) {
-    return (
-      <section style={nextMoveCardStyle}>
-        <div style={nextMoveTopStyle}>
-          <Mono>YOUR NEXT MOVE</Mono>
-          {controls}
-        </div>
-        <h2 style={nextMoveTitleStyle}>{item.title}</h2>
-        <p style={nextMoveSummaryStyle}>{item.explanation}</p>
-      </section>
-    );
-  }
-
-  const steps = action.displaySteps ?? [];
-  const stepCountLabel = actionPlanItemCountLabel(action, milestonesCount(steps));
-
-  return (
-    <section style={nextMoveCardStyle}>
-      <div style={nextMoveTopStyle}>
-        <Mono>YOUR NEXT MOVE</Mono>
-        <div style={nextMoveMetaGroupStyle}>
-          {stepCountLabel ? (
-            <span style={nextMoveMetaStyle}>{stepCountLabel}</span>
-          ) : null}
-          {controls}
-        </div>
-      </div>
-      <h2 style={nextMoveTitleStyle}>{action.title}</h2>
-      <p style={nextMoveSummaryStyle}>{item.explanation || action.summary}</p>
-      {steps.length > 0 ? (
-        <WorkflowStepList
-          steps={steps}
-          heading="HOW IT WOULD WORK"
-          variant="nextMove"
-        />
-      ) : null}
-      <div style={actionButtonRowStyle}>
-        <AttentionCta
-          item={item}
-          action={action}
-          onStartFocusedChat={onStartFocusedChat}
-        />
-      </div>
-    </section>
-  );
-}
-
-function ActionShelf({
-  title,
-  emptyTitle,
-  emptyBody,
-  actions,
-  currentSearch,
-  variant,
-  onStartFocusedChat,
-}: {
-  title: string;
-  emptyTitle: string;
-  emptyBody: string;
-  actions: MerchantActionView[];
-  currentSearch: string;
-  variant: "proposed" | "progress" | "history";
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  return (
-    <HomeSection title={title}>
-      {actions.length > 0 ? (
-        <div style={actionListStyle}>
-          {actions.slice(0, 6).map((action) => (
-            variant === "history" ? (
-              <ActionHistoryRow
-                key={action.id || action.title}
-                action={action}
-                currentSearch={currentSearch}
-              />
-            ) : variant === "proposed" ? (
-              <ActionProposedRow
-                key={action.id || action.title}
-                action={action}
-                onStartFocusedChat={onStartFocusedChat}
-              />
-            ) : (
-              <ActionProgressRow
-                key={action.id || action.title}
-                action={action}
-                onStartFocusedChat={onStartFocusedChat}
-              />
-            )
-          ))}
-        </div>
-      ) : (
-        <EmptySection title={emptyTitle} body={emptyBody} />
-      )}
-    </HomeSection>
-  );
-}
-
-function ActionProposedRow({
-  action,
-  onStartFocusedChat,
-}: {
-  action: MerchantActionView;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  return (
-    <article style={proposedCardStyle}>
-      <div style={inProgressHeaderStyle}>
-        <h3 style={inProgressTitleStyle}>{action.title}</h3>
-        <span style={proposedBadgeStyle}>
-          <span style={proposedBadgeDotStyle} />
-          Proposed
-        </span>
-      </div>
-      {action.summary ? (
-        <p style={proposedSummaryStyle}>{compactText(action.summary, 260)}</p>
-      ) : null}
-      <div style={proposedFooterStyle}>
-        <div style={proposedSignalLineStyle}>
-          {action.baselineSignal ? <span>{action.baselineSignal}</span> : null}
-          {action.currentSignal ? <strong>{action.currentSignal}</strong> : null}
-        </div>
-        <TalkThisThroughButton
-          action={action}
-          linkLike
-          onStartFocusedChat={onStartFocusedChat}
-        />
-      </div>
-    </article>
-  );
-}
-
-function ActionProgressRow({
-  action,
-  onStartFocusedChat,
-}: {
-  action: MerchantActionView;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  const progressState = actionProgressState(action);
-  const displaySteps = action.displaySteps ?? [];
-  const progressBadge = progressBadgeLabel(action, displaySteps);
-  const footerText = progressFooterText(action, progressState.currentStepIndex);
-  return (
-    <article style={inProgressCardStyle}>
-      <div style={inProgressHeaderStyle}>
-        <h3 style={inProgressTitleStyle}>{action.title}</h3>
-        <span style={inProgressBadgeStyle}>
-          <span style={inProgressBadgeDotStyle} />
-          {progressBadge}
-        </span>
-      </div>
-      {displaySteps.length > 0 ? (
-        <div style={inProgressStepsStyle}>
-          {displaySteps.map((step, index) => {
-            const treatment = stepTreatment(
-              step,
-              index,
-              progressState.currentStepIndex,
-            );
-            return (
-              <InProgressStepRow
-                key={`${displayStepLabel(step, index)}-${index}`}
-                step={step}
-                index={index}
-                treatment={treatment}
-              />
-            );
-          })}
-        </div>
-      ) : null}
-      <div style={inProgressFooterStyle}>
-        <span style={inProgressFooterTextStyle}>{footerText}</span>
-        <TalkThisThroughButton
-          action={action}
-          linkLike
-          onStartFocusedChat={onStartFocusedChat}
-        />
-      </div>
-    </article>
-  );
-}
-
-function InProgressStepRow({
-  step,
-  index,
-  treatment,
-}: {
-  step: WorkflowStepDisplay;
-  index: number;
-  treatment: StepTreatment;
-}) {
-  const ownerBadge = workflowStepOwnerBadge(step);
-  return (
-    <div style={inProgressStepRowStyle(treatment)}>
-      <span style={inProgressStepNumberStyle}>{index + 1}.</span>
-      {ownerBadge ? (
-        <span style={inProgressOwnerBadgeStyle(ownerBadge, treatment)}>
-          {ownerBadge}
-        </span>
-      ) : (
-        <span />
-      )}
-      <span style={inProgressStepTitleStyle(treatment)}>
-        {displayStepLabel(step, index)}
-      </span>
-      <span style={inProgressStepStatusStyle(treatment, step)}>
-        {inProgressStepStatusLabel(treatment, step)}
-      </span>
+      </Form>
     </div>
   );
 }
 
-function ActionHistoryRow({
+// One card shape for both active and Recent actions — title top-left,
+// status pill top-right, subtitle below, contextual CTA bottom-right below
+// a hairline divider. Recent cards are the exact same card, just less
+// opaque (active=false), not a different row/link treatment — they still
+// open into Action Chat the same way.
+function ActionCard({
   action,
-  currentSearch,
+  onStartFocusedChat,
+  active = true,
 }: {
   action: MerchantActionView;
-  currentSearch: string;
+  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
+  active?: boolean;
 }) {
+  const display = action.display;
+  const state = display?.displayState ?? "proposed";
   return (
-    <Link
-      to={searchWith(currentSearch, {
-        talkAction: action.id || null,
-      })}
-      style={historyRowStyle}
-    >
-      <span style={chatListBodyStyle}>
-        <span style={chatListTitleStyle}>{action.title}</span>
-        <span style={historyOutcomeStyle}>
-          {action.summary || statusLabelForAction(action.status)}
-        </span>
-      </span>
-      <span style={historyStatusGroupStyle}>
-        <span style={chatListDateStyle}>
-          {formatConversationDate(action.updatedAt ?? action.createdAt ?? "")}
-        </span>
-        <span style={historyStatusStyle}>
-          {statusLabelForAction(action.status)}
-        </span>
-      </span>
-    </Link>
+    <article style={actionCardStyle(active)} aria-label={action.title}>
+      <div style={inProgressHeaderStyle}>
+        <h3 style={inProgressTitleStyle}>{action.title}</h3>
+        <ActionStatePill state={state} />
+      </div>
+      {display?.subtitle ? (
+        <p style={proposedSummaryStyle}>{display.subtitle}</p>
+      ) : action.summary ? (
+        <p style={proposedSummaryStyle}>{compactText(action.summary, 260)}</p>
+      ) : (
+        <p style={proposedSummaryStyle}>{statusLabelForAction(action.status)}</p>
+      )}
+      {display?.realWorldProgress && display.realWorldProgress.length > 0 ? (
+        <RealWorldProgressTimeline stages={display.realWorldProgress} />
+      ) : null}
+      <div style={actionCardFooterStyle}>
+        <button
+          type="button"
+          style={textButtonStyle}
+          disabled={!action.id}
+          onClick={() => onStartFocusedChat(action.id)}
+        >
+          {display?.ctaLabel ?? "Open →"}
+        </button>
+      </div>
+    </article>
   );
 }
-function HomeSection({
-  title,
-  action,
-  children,
+
+const ACTION_STATE_PILL_META: Record<
+  ActionDisplayState,
+  { label: string; tone: "amber" | "navy" | "green" | "neutral" }
+> = {
+  proposed: { label: "Proposed", tone: "amber" },
+  ready: { label: "Ready", tone: "navy" },
+  working: { label: "Working", tone: "green" },
+  needs_you: { label: "Needs you", tone: "amber" },
+  done: { label: "Done", tone: "neutral" },
+  stopped: { label: "Stopped", tone: "neutral" },
+  couldnt_complete: { label: "Couldn't complete", tone: "neutral" },
+};
+
+function ActionStatePill({ state }: { state: ActionDisplayState }) {
+  const meta = ACTION_STATE_PILL_META[state] ?? ACTION_STATE_PILL_META.proposed;
+  return (
+    <span style={actionStatePillStyle(meta.tone)}>
+      <span style={actionStatePillDotStyle} />
+      {meta.label}
+    </span>
+  );
+}
+
+// Compact horizontal timeline for genuine business stages (e.g. "Transfer
+// raised · Stock arrives 2 Sep · Received · Back on sale"). Internal
+// planning/milestone steps must never be sourced into this — it is populated
+// only from real-world data the backend contract explicitly opts into.
+function RealWorldProgressTimeline({
+  stages,
 }: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
+  stages: RealWorldProgressStage[];
 }) {
   return (
-    <section style={homeSectionStyle}>
-      <div style={homeSectionHeaderStyle}>
-        <h2 style={sectionTitleStyle}>{title}</h2>
-        {action}
-      </div>
-      {children}
-    </section>
+    <div style={realWorldProgressStyle} aria-label="Progress">
+      {stages.map((stage, index) => (
+        <span key={stage.id} style={realWorldProgressStageStyle(stage.status)}>
+          {index > 0 ? <span style={realWorldProgressDividerStyle} aria-hidden="true" /> : null}
+          {stage.label}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -1341,68 +1052,6 @@ function EmptySection({ title, body }: { title: string; body: string }) {
         {body}
       </Text>
     </div>
-  );
-}
-
-function TalkThisThroughButton({
-  action,
-  actionId,
-  primary = false,
-  linkLike = false,
-  label = "Talk this through",
-  onStartFocusedChat,
-}: {
-  action: MerchantActionView;
-  actionId?: string | null;
-  primary?: boolean;
-  linkLike?: boolean;
-  label?: string;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  const resolvedActionId = actionId || action.id;
-  return (
-    <button
-      type="button"
-      style={linkLike ? textButtonStyle : primary ? primaryButtonStyle : quietPillButtonStyle}
-      disabled={!resolvedActionId}
-      onClick={() => {
-        if (resolvedActionId) onStartFocusedChat(resolvedActionId);
-      }}
-    >
-      {label}{primary || linkLike ? " →" : ""}
-    </button>
-  );
-}
-
-function AttentionCta({
-  item,
-  action,
-  onStartFocusedChat,
-}: {
-  item: MerchantAttentionItem;
-  action: MerchantActionView;
-  onStartFocusedChat: (actionId: string, forceNew?: boolean) => void;
-}) {
-  const resolvedActionId = item.actionId || action.id;
-  if (item.ctaIntent === "action.approve" && item.actionRunId) {
-    return (
-      <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
-        <input type="hidden" name="intent" value="action.approve" />
-        <input type="hidden" name="actionRunId" value={item.actionRunId} />
-        <button type="submit" style={primaryButtonStyle}>
-          {item.ctaLabel ?? "Start next step"} →
-        </button>
-      </Form>
-    );
-  }
-  return (
-    <TalkThisThroughButton
-      action={action}
-      actionId={resolvedActionId}
-      primary
-      label={item.ctaLabel ?? "Review"}
-      onStartFocusedChat={onStartFocusedChat}
-    />
   );
 }
 
@@ -1574,7 +1223,6 @@ function FocusedConversation({
       : null;
   const [composerMessage, setComposerMessage] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [focusExpanded, setFocusExpanded] = useState(true);
   const [pendingFocus, setPendingFocus] = useState<MerchantActionView | null>(
     null,
   );
@@ -1698,32 +1346,25 @@ function FocusedConversation({
           <DateLabel>{todayLabel ?? ""}</DateLabel>
         </div>
 
-        <ChatTitleBlock
-          conversation={activeConversation}
-          messages={messages}
-        />
-
         {focusedAction ? (
-          <>
-            <FocusedActionStrip
-              focusedAction={focusedAction}
-              focusExpanded={focusExpanded}
-              onToggle={() => setFocusExpanded(!focusExpanded)}
-            />
-            {focusExpanded ? (
-              <FocusedActionLifecyclePanel
-                action={focusedAction}
-                conversationId={activeConversation.id}
-              />
-            ) : null}
-          </>
-        ) : null}
+          <ActionChatHeader action={focusedAction} />
+        ) : (
+          <ChatTitleBlock
+            conversation={activeConversation}
+            messages={messages}
+          />
+        )}
 
         <div ref={transcriptRef} style={messagesStyle}>
           {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
-          {messages.map((message) => (
-            <FocusedMessageRow key={message.id} message={message} />
-          ))}
+          {interleaveLifecycleEvents(messages, focusedAction?.display?.lifecycleEvents ?? []).map(
+            (row) =>
+              row.kind === "lifecycle" ? (
+                <LifecycleDivider key={`event:${row.event.id ?? row.event.occurredAt}`} event={row.event} />
+              ) : (
+                <FocusedMessageRow key={row.message.id} message={row.message} />
+              ),
+          )}
           {pendingMessage ? (
             <MessageRow from="merchant">{pendingMessage}</MessageRow>
           ) : null}
@@ -1789,11 +1430,10 @@ function FocusedConversation({
             </div>
           ) : null}
           {focusedAction ? (
-            <SuggestedPromptRow
+            <ActionChatChips
               action={focusedAction}
               conversationId={activeConversation.id}
               disabled={isThinking}
-              onPick={setComposerMessage}
             />
           ) : null}
           {composerError ? (
@@ -1918,7 +1558,7 @@ function FocusedConversation({
                 attachedFile
                   ? "Say something about this file, or just send it..."
                   : focusedAction
-                    ? "Ask about this action, or tell me what to change..."
+                    ? composerPlaceholderForAction(focusedAction)
                     : "Ask Jefe anything, or pick an action to work on..."
               }
               value={composerMessage}
@@ -1934,7 +1574,6 @@ function FocusedConversation({
               Send
             </button>
           </Form>
-          <FocusedActionDecisionRow action={focusedAction} />
         </div>
 
         <FocusChangeConfirm
@@ -2067,787 +1706,153 @@ function ChatTitleInlineEditor({
   );
 }
 
-function FocusedActionStrip({
-  focusedAction,
-  focusExpanded,
-  onToggle,
-}: {
-  focusedAction: MerchantActionView;
-  focusExpanded: boolean;
-  onToggle: () => void;
-}) {
-  const allSteps = focusedAction.displaySteps ?? [];
+// Status label / title / subtitle only — no surrounding status card, no
+// permanent plan panel. "How does this plan work?" and "Change something in
+// the plan" stay 100% conversational; see ActionChatChips + the existing
+// replanning machinery (ACTION_COMMAND.REPLAN_ACTION) for that.
+function ActionChatHeader({ action }: { action: MerchantActionView }) {
+  const display = action.display;
+  const state = display?.displayState ?? "proposed";
+  const meta = ACTION_STATE_PILL_META[state] ?? ACTION_STATE_PILL_META.proposed;
   return (
-    <section style={focusStripWrapStyle} aria-label="Working on">
-      <div style={focusPanelStyle}>
-        <button
-          type="button"
-          style={focusStripButtonStyle}
-          onClick={onToggle}
-          aria-expanded={focusExpanded}
-        >
-          <span style={focusStripLeftStyle}>
-            <span style={boltStyle}>⚡</span>
-            <span style={focusStripTextStyle}>
-              <span style={focusStripLabelStyle}>WORKING ON</span>
-              <span style={focusStripTitleStyle}>{focusedAction.title}</span>
-            </span>
+    <section style={actionChatHeaderStyle} aria-label="Action status">
+      <span style={actionChatStatusLabelStyle(meta.tone)}>{meta.label.toUpperCase()}</span>
+      <h1 style={actionChatTitleStyle}>{action.title}</h1>
+      {display?.subtitle ? <p style={actionChatSubtitleStyle}>{display.subtitle}</p> : null}
+      {/* No-dead-ends invariant: Jefe can propose anything, but only executes where a
+          typed adapter exists. When it doesn't, say so and say what accepting even
+          means here — never a silent "unavailable". */}
+      {!action.executable && action.raise ? (
+        <div style={instructPathStyle}>
+          <span style={instructLeadStyle}>
+            {action.raise.reason ?? "This one needs your go-ahead before any step can start."}
           </span>
-          <span style={focusStripRightStyle}>
-            <WorkflowStatusSummary
-              action={focusedAction}
-              stepCount={milestonesCount(allSteps)}
-            />
-            <span style={focusStripChevronStyle}>
-              {focusExpanded ? "▲" : "▼"}
-            </span>
+          <span style={instructDetailStyle}>
+            {action.raise.detail ?? "Accepting the plan does not write to Shopify."}
           </span>
-        </button>
-      </div>
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function FocusedActionLifecyclePanel({
+// A subtle horizontal divider for a chat-visible lifecycle event (e.g. "PLAN
+// UPDATED · 14:22"), reusing the same treatment already used for system
+// messages. Only significant, merchant-relevant events reach here — see
+// LIFECYCLE_EVENT_LABELS in action-display-state.server.js for the full set;
+// implementation-noise (execution-loop iterations, verification turns,
+// internal tool calls) never becomes a MerchantActionEvent in the first place.
+function LifecycleDivider({ event }: { event: LifecycleEvent }) {
+  return (
+    <div style={systemEventStyle}>
+      <span style={systemEventLineStyle} />
+      <span style={systemEventTextStyle}>
+        {event.label}
+        {event.occurredAt ? ` · ${formatEventTime(event.occurredAt)}` : ""}
+      </span>
+      <span style={systemEventLineStyle} />
+    </div>
+  );
+}
+
+function formatEventTime(value: string) {
+  try {
+    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+type TranscriptRow =
+  | { kind: "message"; message: ChatThread["messages"][number] }
+  | { kind: "lifecycle"; event: LifecycleEvent };
+
+// Interleaves lifecycle events into the message transcript by timestamp, so
+// e.g. "JEFE STARTED MAKING THE CHANGES" lands at the point it actually
+// happened relative to the conversation, not just appended at the end.
+function interleaveLifecycleEvents(
+  messages: ChatThread["messages"],
+  events: LifecycleEvent[],
+): TranscriptRow[] {
+  if (events.length === 0) return messages.map((message) => ({ kind: "message", message }));
+  const sortedEvents = [...events]
+    .filter((event) => event.occurredAt)
+    .sort((a, b) => (a.occurredAt ?? "").localeCompare(b.occurredAt ?? ""));
+  const rows: TranscriptRow[] = [];
+  let eventIndex = 0;
+  for (const message of messages) {
+    const messageAt = message.createdAt;
+    while (
+      eventIndex < sortedEvents.length &&
+      messageAt &&
+      (sortedEvents[eventIndex].occurredAt ?? "") <= messageAt
+    ) {
+      rows.push({ kind: "lifecycle", event: sortedEvents[eventIndex] });
+      eventIndex += 1;
+    }
+    rows.push({ kind: "message", message });
+  }
+  while (eventIndex < sortedEvents.length) {
+    rows.push({ kind: "lifecycle", event: sortedEvents[eventIndex] });
+    eventIndex += 1;
+  }
+  return rows;
+}
+
+// Contextual conversation chips, sourced entirely from action.display.chips
+// (composerChipsFor in action-display-state.server.js) — a function of
+// (current display state, latest conversation context), not a static
+// per-state table. "command" chips submit a structured intent through the
+// existing action-command pathway (accept_plan/stop_action); "prefill" and
+// "answer" chips send directly as a chat message through the existing
+// conversational path — one click, no separate control surface.
+function ActionChatChips({
   action,
   conversationId,
+  disabled,
 }: {
   action: MerchantActionView;
   conversationId?: string | null;
+  disabled: boolean;
 }) {
-  const currentStep = normalizedCurrentStep(action);
-  const workspaceFocus = action.currentFocus ?? action.workspace?.currentFocus ?? null;
-  const proposed = action.status === "proposed";
-  const completionWork = Array.isArray(action.workProjection?.work)
-    ? action.workProjection?.work
-    : null;
-  // "Complete" at the action level should reflect canonical current work state
-  // (including staleness), not just the persisted step statuses.
-  const derivedCompleted =
-    completionWork && completionWork.length > 0
-      ? completionWork.every((row) => ["complete", "skipped"].includes(normalizeDisplayToken(row.state)))
-      : null;
-  const completed = action.status === "completed" && (derivedCompleted ?? true);
-  const steps = actionSteps(action);
-  if (proposed) {
-    return (
-      <>
-        <FocusedActionPlanBlock
-          action={action}
-          steps={steps}
-          heading="THE PLAN"
-          summary={action.summary ?? null}
-        />
-      </>
-    );
-  }
-
-  if (completed) {
-    return (
-      <>
-        <section style={currentStepPanelStyle("completed")} aria-label="Completed action">
-          <div style={currentStepTopStyle}>
-            <Mono>COMPLETED</Mono>
-            <span style={currentStepBadgeGroupStyle}>
-              <StatusPill tone="green">done</StatusPill>
-            </span>
-          </div>
-          <h2 style={currentStepTitleStyle}>{action.title}</h2>
-          <p style={currentStepDetailStyle}>
-            {action.successText || action.currentSignal || "Jefe has finished this action."}
-          </p>
-        </section>
-        <FocusedActionPlanBlock
-          action={action}
-          steps={steps}
-          heading="THE PLAN"
-          summary={action.currentSignal ?? action.successText ?? null}
-        />
-      </>
-    );
-  }
-
-  if (!currentStep || typeof currentStep === "string") {
-    return (
-      <>
-        <CurrentArtifactsPanel action={action} steps={steps} />
-        <FocusedActionPlanBlock
-          action={action}
-          steps={steps}
-          heading="THE PLAN"
-          summary={action.currentSignal ?? action.summary ?? null}
-        />
-      </>
-    );
-  }
-
-  const workState = String(currentStep.workState ?? "");
-  const derivedWorkState = normalizeDisplayToken(workState);
-  const mode = currentStep.mode || "";
-  const attention = currentStep.attention && Object.keys(currentStep.attention).length
-    ? currentStep.attention
-    : null;
-  const eyebrow = workspaceFocus?.eyebrow
-    ? workspaceFocus.eyebrow.toUpperCase()
-    : derivedWorkState === "running"
-      ? mode === "execute"
-        ? "JEFE IS WORKING"
-        : "CURRENT FOCUS"
-      : derivedWorkState === "needs_input"
-        ? "YOUR NEXT STEP"
-        : derivedWorkState === "needs_attention"
-          ? "NEEDS ATTENTION"
-          : derivedWorkState === "needs_updating"
-            ? "NEEDS UPDATING"
-          : "CURRENT FOCUS";
-  const tone =
-    derivedWorkState === "needs_attention"
-      ? "attention"
-      : derivedWorkState === "running" || derivedWorkState === "available"
-        ? "ready"
-        : "merchant";
+  const chips = action.display?.chips ?? [];
+  if (chips.length === 0) return null;
   return (
-    <>
-      <section style={currentStepPanelStyle(tone)} aria-label="Current action step">
-        <div style={currentStepTopStyle}>
-          <Mono>{eyebrow}</Mono>
-          <span style={currentStepBadgeGroupStyle}>
-            <StatusPill tone={["running", "complete", "skipped"].includes(derivedWorkState) ? "green" : "yellow"}>
-              {displayStepStatus(currentStep)}
-            </StatusPill>
-            <span style={ownerBadgeStyle(mode)}>
-              {currentStepOwnerLabel(currentStep)}
-            </span>
-          </span>
-        </div>
-        <h2 style={currentStepTitleStyle}>{workspaceFocus?.headline || displayStepLabel(currentStep, 0)}</h2>
-        <p style={currentStepDetailStyle}>
-          {workspaceFocus?.reason || stepDetail(currentStep)}
-        </p>
-        {currentStep.statusReason ? (
-          <p style={currentStepReasonStyle}>{currentStep.statusReason}</p>
-        ) : null}
-        {currentStep.workStale ? (
-          <p style={currentStepReasonStyle}>
-            Earlier results are out of date — I&apos;ll re-run this when you continue.
-          </p>
-        ) : null}
-        {Array.isArray(currentStep.blockers) && currentStep.blockers.length > 0 ? (
-          <p style={currentStepReasonStyle}>
-            {currentStep.blockers
-              .map((blocker) => blocker.reason)
-              .filter(Boolean)
-              .join(" ")}
-          </p>
-        ) : null}
-        {attention ? (
-          <p style={currentStepAttentionStyle}>
-            {attentionDetail(attention)}
-          </p>
-        ) : null}
-        {currentStepProgressLine(currentStep, action) ? (
-          <p style={currentStepProgressStyle}>
-            <span style={currentStepDotStyle} />
-            {currentStepProgressLine(currentStep, action)}
-          </p>
-        ) : null}
-        {canStartCurrentStep(currentStep) ? (
-          <div style={currentStepActionRowStyle}>
-            <Form method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
-              <input
-                type="hidden"
-                name="intent"
-                value={currentStepStartIntent(currentStep, action)}
-              />
-              <input type="hidden" name="actionId" value={action.id} />
-              {currentStepStartIntent(currentStep, action) === "action.approve" &&
-              action.actionRunId ? (
-                <input type="hidden" name="actionRunId" value={action.actionRunId} />
-              ) : null}
-              {conversationId ? (
-                <input type="hidden" name="conversationId" value={conversationId} />
-              ) : null}
-              {currentStep.id ? (
-                <input type="hidden" name="stepId" value={currentStep.id} />
-              ) : null}
-              <button type="submit" style={primaryButtonStyle}>
-                {stepCta(currentStep)}
-              </button>
-            </Form>
-            <span style={currentStepNoteStyle}>
-              Or just tell me to go ahead in the chat.
-            </span>
-          </div>
-        ) : derivedWorkState === "running" ? (
-          <div style={currentStepActionRowStyle}>
-            <Form method="post" style={inlineFormStyle}>
-              <input type="hidden" name="intent" value="action.step.stop" />
-              <input type="hidden" name="actionId" value={action.id} />
-              {conversationId ? (
-                <input type="hidden" name="conversationId" value={conversationId} />
-              ) : null}
-              <button type="submit" style={pauseButtonStyle}>
-                Pause
-              </button>
-            </Form>
-            <span style={currentStepNoteStyle}>
-              Or say “stop” in the chat.
-            </span>
-          </div>
-        ) : derivedWorkState === "needs_input" && canCompleteCurrentStep(currentStep) ? (
-          <div style={currentStepActionRowStyle}>
-            <Form method="post" style={inlineFormStyle}>
-              <input type="hidden" name="intent" value="action.step.complete" />
-              <input type="hidden" name="actionId" value={action.id} />
-              {conversationId ? (
-                <input type="hidden" name="conversationId" value={conversationId} />
-              ) : null}
-              <button type="submit" style={primaryButtonStyle}>
-                Mark done
-              </button>
-            </Form>
-            <span style={currentStepNoteStyle}>
-              Or tell me you&apos;ve done it in the chat.
-            </span>
-          </div>
-        ) : null}
-      </section>
-      <CurrentArtifactsPanel action={action} steps={steps} />
-      <FocusedActionPlanBlock
-        action={action}
-        steps={steps}
-        heading="THE PLAN"
-        summary={action.currentSignal ?? action.summary ?? null}
-      />
-    </>
-  );
-}
-
-function FocusedActionPlanBlock({
-  action,
-  steps,
-  heading,
-  summary,
-}: {
-  action: MerchantActionView;
-  steps: WorkflowStepDisplay[];
-  heading: string;
-  summary?: string | null;
-}) {
-  if (steps.length === 0 && !summary) return null;
-  const displaySteps = steps;
-  const inProgressPlan = action.status !== "proposed";
-  return (
-    <section style={chatPlanBlockStyle} aria-label="Action plan">
-      <div style={chatPlanHeaderStyle}>
-        <Mono>{heading}</Mono>
-        {summary ? (
-          <p style={chatPlanSummaryStyle}>{compactText(summary, 220)}</p>
-        ) : null}
-      </div>
-      {displaySteps.length > 0 ? (
-        <WorkflowStepList
-          steps={displaySteps}
-          variant={inProgressPlan ? "focus" : "nextMove"}
-          highlightedStepId={
-            inProgressPlan ? currentWorkflowStepId(action) : null
-          }
-        />
-      ) : null}
-    </section>
-  );
-}
-
-function WorkflowStatusSummary({
-  action,
-  stepCount,
-}: {
-  action: MerchantActionView;
-  stepCount: number;
-}) {
-  const label = actionStatusLabel(action);
-  const steps = actionSteps(action);
-  const completed = completedStepCount(steps);
-  const countLabel = isAgenticActionView(action)
-    ? actionPlanItemCountLabel(action, stepCount)
-    : action.status === "in_progress" && completed > 0 && steps.length > 0
-      ? `${completed} of ${steps.length} done`
-      : stepCount > 0
-        ? `${stepCount} ${stepCount === 1 ? "step" : "steps"}`
-        : null;
-  return (
-    <span style={workflowStatusSummaryStyle(action.status)}>
-      <span>{label}</span>
-      {countLabel ? <span>·</span> : null}
-      {countLabel ? <span>{countLabel}</span> : null}
-    </span>
-  );
-}
-
-function actionStatusLabel(action: MerchantActionView) {
-  if (action.actionState) {
-    const labels: Record<string, string> = {
-      needs_attention: "Needs attention",
-      needs_merchant: "Needs your input",
-      jefe_working: "Jefe is working",
-      waiting_external: "Waiting externally",
-      on_track: "On track",
-      completed: "Completed",
-    };
-    return labels[action.actionState] ?? (action.statusLabel || statusLabelForAction(action.status));
-  }
-  if (action.status === "accepted") {
-    const current = normalizedCurrentStep(action);
-    if (current && typeof current !== "string") {
-      const workState = String(current.workState ?? current.status ?? "");
-      if (normalizeDisplayToken(workState) === "available") {
-        // Only true write/execute actions have a Shopify "apply" step.
-        if (action.executable) return "Ready to apply";
-        return "Ready to review";
-      }
-    }
-  }
-  return action.statusLabel || statusLabelForAction(action.status);
-}
-
-function actionSteps(action: MerchantActionView) {
-  return action.displaySteps ?? action.workflow?.steps ?? [];
-}
-
-function isAgenticActionView(action: MerchantActionView) {
-  const progress = action.progress as
-    | { agentic?: { runtime?: string | null } }
-    | null
-    | undefined;
-  return (
-    action.workspace?.kind === "agentic_shopify" ||
-    progress?.agentic?.runtime === "shopify_admin_api"
-  );
-}
-
-function milestonesCount(steps: WorkflowStepDisplay[]): number {
-  return steps.filter(
-    (s) => typeof s !== "string" && s.isMilestone !== false,
-  ).length;
-}
-
-function actionPlanItemCountLabel(
-  action: MerchantActionView,
-  count: number,
-) {
-  if (count <= 0) return null;
-  if (!isAgenticActionView(action)) {
-    return `${count} ${count === 1 ? "step" : "steps"}`;
-  }
-  if (action.status === "completed" || action.actionState === "completed") {
-    return null;
-  }
-  return `${count} ${count === 1 ? "milestone" : "milestones"}`;
-}
-
-function completedStepCount(steps: WorkflowStepDisplay[]) {
-  return steps.filter((step) => {
-    if (typeof step === "string") return false;
-    return stepIsDone(step);
-  }).length;
-}
-
-function currentWorkflowStep(action: MerchantActionView) {
-  const projected = action.workProjection?.nextUsefulWork?.step;
-  if (projected?.id) {
-    const steps = actionSteps(action);
-    const match = steps.find(
-      (step) => typeof step !== "string" && step.id === projected.id,
-    );
-    if (match && typeof match !== "string") return match;
-  }
-  const steps = actionSteps(action);
-  return (
-    steps.find((step) => {
-      if (typeof step === "string") return false;
-      if (step.workState === "available" || step.workState === "needs_updating") return true;
-      return ["ready", "running", "needs_merchant", "needs_attention"].includes(
-        String(step.status ?? ""),
-      );
-    }) ??
-    steps.find((step) => {
-      if (typeof step === "string") return false;
-      return !step.done && step.status !== "completed";
-    }) ??
-    null
-  );
-}
-
-function currentWorkflowStepId(action: MerchantActionView) {
-  const current = normalizedCurrentStep(action);
-  return current && typeof current !== "string" ? current.id ?? null : null;
-}
-
-function normalizedCurrentStep(action: MerchantActionView) {
-  return action.currentStep ?? currentWorkflowStep(action);
-}
-
-function stepDetail(step: Exclude<WorkflowStepDisplay, string>) {
-  return (
-    step.description ||
-    step.completionCriteria ||
-    "Jefe will use the approved plan and current store state for this step."
-  );
-}
-
-function stepCta(step: Exclude<WorkflowStepDisplay, string>) {
-  const title = displayStepLabel(step, 0).toLowerCase();
-  if (isApprovalRequiredJefeExecution(step)) {
-    if (/inventory transfer|transfer/.test(title)) return "Approve & create transfer";
-    return "Approve";
-  }
-  if (stepAssistArtifact(step)) return "Review proposals";
-  if (/apply|write|update/.test(title)) return "Apply changes";
-  if (/review|approve/.test(title)) return "Review proposals";
-  if (/measure|watch/.test(title)) return "Start watching";
-  return "Do this step";
-}
-
-function canStartCurrentStep(step: WorkflowStepDisplay | null | undefined) {
-  if (!step || typeof step === "string") return false;
-  const workState = String(step.workState ?? "");
-  if (normalizeDisplayToken(workState) === "approval_required") {
-    return isApprovalRequiredJefeExecution(step);
-  }
-  if (workState === "available" || workState === "needs_updating") return true;
-  const status = String(step.status ?? "");
-  const mode = String(step.mode ?? "");
-  if (status === "ready" || status === "needs_updating") return true;
-  return status === "needs_merchant" && mode === "assist";
-}
-
-function canCompleteCurrentStep(step: WorkflowStepDisplay | null | undefined) {
-  if (!step || typeof step === "string") return false;
-  if (isApprovalRequiredJefeExecution(step)) return false;
-  const mode = String(step.mode ?? "");
-  const workState = String(step.workState ?? "");
-  const normalizedWorkState = normalizeDisplayToken(workState);
-  if (normalizedWorkState === "needs_input") {
-    return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
-  }
-  // Back-compat fallback when workProjection isn't present on older rows.
-  const status = String(step.status ?? "");
-  if (status !== "needs_merchant") return false;
-  return mode === "merchant_action" || mode === "merchant" || mode === "evidence_required";
-}
-
-function currentStepStartIntent(
-  step: Exclude<WorkflowStepDisplay, string>,
-  action: MerchantActionView,
-) {
-  return isApprovalRequiredJefeExecution(step) && action.actionRunId
-    ? "action.approve"
-    : "action.step.start";
-}
-
-function isApprovalRequiredJefeExecution(step: WorkflowStepDisplay | null | undefined) {
-  if (!step || typeof step === "string") return false;
-  const intendedActor = String(step.intendedActor ?? "").toUpperCase();
-  return (
-    step.approvalRequired === true &&
-    (workflowStepMode(step) === "execute" || intendedActor === "JEFE")
-  );
-}
-
-function stepAssistArtifact(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return null;
-  const progress = step.progress;
-  if (!progress || typeof progress !== "object") return null;
-  const artifactType = String(progress.artifactType ?? "").trim();
-  const summary = String(progress.summary ?? "").trim();
-  return artifactType && summary ? progress : null;
-}
-
-function AssistStepArtifactPanel({
-  step,
-  artifact,
-  stale,
-  current,
-}: {
-  step: Exclude<WorkflowStepDisplay, string>;
-  artifact: Record<string, unknown>;
-  stale?: boolean;
-  current?: boolean;
-}) {
-  const items = Array.isArray(artifact.items) ? artifact.items : [];
-  const body = typeof artifact.body === "string" ? artifact.body.trim() : "";
-  const artifactType = String(artifact.artifactType ?? "").trim();
-  const titleByType =
-    artifactType === "replenishment_proposal"
-      ? "Replenishment proposal"
-      : artifactType === "supplier_email_draft"
-        ? "Supplier email draft"
-        : artifactType === "inventory_review"
-          ? "Review low-cover inventory"
-          : String(artifact.title ?? displayStepLabel(step, 0));
-  return (
-    <section style={assistArtifactPanelStyle} aria-label="Current artifact">
-      <div style={assistArtifactHeaderStyle}>
-        <Mono>{current ? "CURRENT" : stale ? "Needs updating" : "ARTIFACT"}</Mono>
-        <span style={assistArtifactTitleStyle}>
-          {titleByType}
-        </span>
-      </div>
-      {artifact.summary ? (
-        <p style={assistArtifactSummaryStyle}>{String(artifact.summary)}</p>
-      ) : null}
-      {artifact.detail ? (
-        <p style={assistArtifactDetailStyle}>{String(artifact.detail)}</p>
-      ) : null}
-      {items.length > 0 ? (
-        <ul style={assistArtifactListStyle}>
-          {items.slice(0, 6).map((item, index) => (
-            <li key={`${String(item?.title ?? "item")}-${index}`} style={assistArtifactListItemStyle}>
-              <strong>{String(item?.title ?? "Item")}</strong>
-              {formatAssistArtifactItemMeta(item, artifact)}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {body ? <pre style={assistArtifactBodyStyle}>{body}</pre> : null}
-      {artifact.nextPrompt ? (
-        <p style={assistArtifactPromptStyle}>{String(artifact.nextPrompt)}</p>
-      ) : null}
-    </section>
-  );
-}
-
-function CurrentArtifactsPanel({
-  action,
-  steps,
-}: {
-  action: MerchantActionView;
-  steps: WorkflowStepDisplay[];
-}) {
-  const currentStep = normalizedCurrentStep(action);
-  const currentStepId =
-    currentStep && typeof currentStep !== "string" ? String(currentStep.id ?? "") : null;
-
-  const artifacts = Array.isArray(action.workProjection?.artifacts)
-    ? action.workProjection?.artifacts.filter(Boolean)
-    : [];
-
-  const stepById = new Map<string, Exclude<WorkflowStepDisplay, string>>();
-  const stepIndex = new Map<string, number>();
-  steps.forEach((s, i) => {
-    if (typeof s === "string") return;
-    if (!s?.id) return;
-    stepById.set(String(s.id), s);
-    stepIndex.set(String(s.id), i);
-  });
-
-  const cards: Array<{
-    entry: NonNullable<(typeof artifacts)[number]>;
-    step: Exclude<WorkflowStepDisplay, string>;
-    artifact: Record<string, unknown>;
-  }> = [];
-
-  const pushCardForStep = (
-    step: Exclude<WorkflowStepDisplay, string>,
-    entry: Record<string, unknown>,
-  ) => {
-    const artifact = stepAssistArtifact(step);
-    if (!artifact) return;
-    const artifactType = String(entry?.artifactType ?? artifact.artifactType ?? "");
-    // The "current artifacts" area is for the merchant handoff; hide upstream
-    // inventory review unless it's the current work card.
-    if (artifactType === "inventory_review" && currentStepId && step.id !== currentStepId) return;
-    cards.push({ entry, step, artifact });
-  };
-
-  if (artifacts.length > 0) {
-    for (const entry of artifacts) {
-      const stepId = entry?.stepId ? String(entry.stepId) : "";
-      const step = stepById.get(stepId);
-      if (!step) continue;
-      pushCardForStep(step, entry);
-    }
-  } else {
-    // Fallback: show any assist artifacts on steps (older payloads).
-    for (const step of steps) {
-      if (typeof step === "string") continue;
-      const artifact = stepAssistArtifact(step);
-      if (!artifact) continue;
-      pushCardForStep(step, { artifactType: artifact.artifactType ?? null, stale: step.workStale, current: step.workState === "complete" });
-    }
-  }
-
-  if (cards.length === 0) return null;
-
-  const sorted = cards.sort((a, b) => {
-    const ac = Boolean(a.entry.current);
-    const bc = Boolean(b.entry.current);
-    if (ac !== bc) return ac ? -1 : 1;
-    const ai = stepIndex.get(String(a.step.id ?? "")) ?? 0;
-    const bi = stepIndex.get(String(b.step.id ?? "")) ?? 0;
-    return ai - bi;
-  });
-
-  return (
-    <section
-      style={{
-        borderTop: `1px solid ${COLORS.hairline}`,
-        marginTop: 16,
-        paddingTop: 16,
-      }}
-      aria-label="Current artifacts"
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Mono>CURRENT ARTIFACTS</Mono>
-        {sorted.map(({ entry, step, artifact }) => (
-          <AssistStepArtifactPanel
-            key={String(entry?.stepId ?? step.id ?? "")}
-            step={step}
-            artifact={artifact}
-            stale={Boolean(entry?.stale)}
-            current={Boolean(entry?.current)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function formatAssistArtifactItemMeta(
-  item: Record<string, unknown>,
-  artifact: Record<string, unknown>,
-) {
-  const parts = [];
-  if (item.daysOfCover !== null && item.daysOfCover !== undefined) {
-    parts.push(`${item.daysOfCover} days cover`);
-  }
-  if (item.available !== null && item.available !== undefined) {
-    parts.push(`${item.available} in stock`);
-  }
-  if (
-    item.recommendedUnitsAtDefaultCover !== null &&
-    item.recommendedUnitsAtDefaultCover !== undefined
-  ) {
-    const days = artifact.targetCoverDays ?? 120;
-    parts.push(`${item.recommendedUnitsAtDefaultCover} units (${days}-day cover)`);
-  }
-  return parts.length ? ` — ${parts.join(" · ")}` : "";
-}
-
-function attentionDetail(attention: Record<string, unknown>) {
-  const skipped = Number(attention.skippedCount ?? 0);
-  const refused = Number(attention.refusedCount ?? 0);
-  if (skipped || refused) {
-    return `${skipped + refused} item${skipped + refused === 1 ? "" : "s"} need review before Jefe can continue.`;
-  }
-  return String(attention.detail ?? "This step needs review before Jefe can continue.");
-}
-
-function currentStepProgressLine(
-  step: Exclude<WorkflowStepDisplay, string>,
-  action: MerchantActionView,
-) {
-  const artifact = stepAssistArtifact(step);
-  if (artifact?.summary && typeof artifact.summary === "string") {
-    return artifact.summary;
-  }
-  const progress = step.progress && typeof step.progress === "object" ? step.progress : {};
-  for (const key of ["summary", "detail", "line", "message"]) {
-    const value = progress[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return action.currentSignal ?? null;
-}
-
-function WorkflowStepList({
-  steps,
-  heading,
-  variant,
-  highlightedStepId,
-}: {
-  steps: WorkflowStepDisplay[];
-  heading?: string;
-  variant: "spotlight" | "focus" | "nextMove";
-  highlightedStepId?: string | null;
-}) {
-  return (
-    <div style={workflowBlockStyle(variant, Boolean(heading))}>
-      {heading ? <Mono>{heading}</Mono> : null}
-      <div style={workflowRowsStyle(variant)}>
-        {steps.map((step, index) => (
-          <WorkflowStepRow
-            key={`${displayStepLabel(step, index)}-${index}`}
-            step={step}
-            index={index}
-            variant={variant}
-            highlighted={
-              Boolean(highlightedStepId) &&
-              typeof step !== "string" &&
-              step.id === highlightedStepId
-            }
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WorkflowStepRow({
-  step,
-  index,
-  variant,
-  highlighted,
-}: {
-  step: WorkflowStepDisplay;
-  index: number;
-  variant: "spotlight" | "focus" | "nextMove";
-  highlighted?: boolean;
-}) {
-  const ownerBadge = workflowStepOwnerBadge(step);
-  const description = displayStepDescription(step);
-  const status = displayStepStatus(step);
-  const workState = typeof step === "string" ? "" : String(step.workState ?? "");
-  const normalizedWorkState = normalizeDisplayToken(workState);
-  const isActive =
-    highlighted ||
-    ["available", "running", "needs_input", "needs_attention", "needs_updating"].includes(normalizedWorkState);
-  const compact = variant === "focus";
-  return (
-    <div style={workflowStepRowStyle(isActive, variant)}>
-      <span style={workflowStepNumberStyle}>{index + 1}.</span>
-      {compact ? (
-        <>
-          {ownerBadge ? (
-            <span style={workflowOwnerBadgeStyle(ownerBadge)}>
-              {ownerBadge}
-            </span>
-          ) : (
-            <span />
-          )}
-          <span style={workflowPlanTitleStyle(isActive)}>
-            {displayStepLabel(step, index)}
-          </span>
-          <span style={workflowStepStatusStyle(status)}>{status}</span>
-        </>
-      ) : (
-        <span style={workflowStepBodyStyle}>
-          <span style={workflowStepTitleLineStyle}>
-            {ownerBadge ? (
-              <span style={workflowOwnerBadgeStyle(ownerBadge)}>
-                {ownerBadge}
-              </span>
+    <div style={suggestedPromptRowStyle} aria-label="Suggested actions">
+      {chips.map((chip) =>
+        chip.kind === "command" && chip.intent ? (
+          <Form key={chip.id} method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
+            <input type="hidden" name="intent" value={chip.intent} />
+            <input type="hidden" name="actionId" value={action.id} />
+            {conversationId ? (
+              <input type="hidden" name="conversationId" value={conversationId} />
             ) : null}
-            <strong style={workflowStepTitleStyle}>
-              {displayStepLabel(step, index)}
-            </strong>
-          </span>
-          {description ? (
-            <span style={workflowStepDescriptionStyle}>{description}</span>
-          ) : null}
-        </span>
+            <button type="submit" style={suggestedPromptButtonStyle} disabled={disabled}>
+              {chip.label}
+            </button>
+          </Form>
+        ) : (
+          <Form key={chip.id} method="post" style={inlineFormStyle}>
+            <input type="hidden" name="intent" value="chat.message" />
+            {conversationId ? (
+              <input type="hidden" name="conversationId" value={conversationId} />
+            ) : null}
+            <input type="hidden" name="focusedActionId" value={action.id} />
+            <input type="hidden" name="message" value={chip.prefillText ?? chip.label} />
+            <button type="submit" style={suggestedPromptButtonStyle} disabled={disabled}>
+              {chip.label}
+            </button>
+          </Form>
+        ),
       )}
     </div>
   );
+}
+
+function composerPlaceholderForAction(action: MerchantActionView) {
+  return action.display?.displayState === "needs_you"
+    ? "Answer Jefe, or type your own answer..."
+    : "Ask Jefe about this action...";
 }
 
 function ActionAttachmentMenu({
@@ -3118,153 +2123,6 @@ function FocusedMessageRow({
   );
 }
 
-function SuggestedPromptRow({
-  action,
-  conversationId,
-  disabled,
-  onPick,
-}: {
-  action: MerchantActionView;
-  conversationId?: string | null;
-  disabled: boolean;
-  onPick: (prompt: string) => void;
-}) {
-  const prompts = suggestedPromptsForAction(action);
-  const current = action.currentStep ?? currentWorkflowStep(action);
-  const stepId =
-    current && typeof current !== "string" ? String(current.id ?? "") : "";
-  if (prompts.length === 0) return null;
-  return (
-    <div style={suggestedPromptRowStyle} aria-label="Suggested prompts">
-      {prompts.map((prompt) => {
-        const intent = suggestedPromptIntent(prompt);
-        if (intent) {
-          return (
-            <Form key={prompt} method="post" style={inlineFormStyle} onSubmit={markApprovalSent}>
-              <input type="hidden" name="intent" value={intent} />
-              <input type="hidden" name="actionId" value={action.id} />
-              {conversationId ? (
-                <input type="hidden" name="conversationId" value={conversationId} />
-              ) : null}
-              {stepId ? <input type="hidden" name="stepId" value={stepId} /> : null}
-              <button type="submit" style={suggestedPromptButtonStyle} disabled={disabled}>
-                {prompt}
-              </button>
-            </Form>
-          );
-        }
-        return (
-          <button
-            key={prompt}
-            type="button"
-            style={suggestedPromptButtonStyle}
-            onClick={() => onPick(prompt)}
-            disabled={disabled}
-          >
-            {prompt}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function suggestedPromptIntent(prompt: string) {
-  switch (prompt) {
-    case "Accept this plan":
-      return "action.accept_plan";
-    case "Start this":
-      return "action.step.start";
-    case "Stop this":
-      return "action.step.stop";
-    case "That's done":
-      return "action.step.complete";
-    default:
-      return null;
-  }
-}
-
-function suggestedPromptsForAction(action: MerchantActionView) {
-  const current = action.currentStep ?? currentWorkflowStep(action);
-  const workState =
-    current && typeof current !== "string" ? String(current.workState ?? "") : "";
-  const currentStatus =
-    current && typeof current !== "string" ? String(current.status ?? "") : "";
-  if (action.status === "proposed") {
-    return ["Accept this plan", "What will you change?", "Don't do this"];
-  }
-  if (workState === "running" || currentStatus === "running") {
-    return ["How's it going?", "Stop this"];
-  }
-  if (workState === "needs_input" || currentStatus === "needs_merchant") {
-    return ["That's done", "What do you need from me?"];
-  }
-  if (
-    workState === "available" ||
-    workState === "needs_updating" ||
-    currentStatus === "ready"
-  ) {
-    return ["Start this", "What will you change?", "How's it going?"];
-  }
-  if (
-    workState === "needs_attention" ||
-    currentStatus === "needs_attention" ||
-    action.status === "needs_attention"
-  ) {
-    return ["Try again", "What needs attention?"];
-  }
-  if (action.status === "in_progress") {
-    return ["How's it going?", "Start this", "Stop this"];
-  }
-  if (action.status === "completed") {
-    return ["What changed?", "What did it achieve?"];
-  }
-  return ["Show me the plan"];
-}
-
-function FocusedActionDecisionRow({
-  action,
-}: {
-  action: MerchantActionView | null;
-}) {
-  if (!action || action.status !== "proposed") return null;
-  return (
-    <div style={decisionRowStyle}>
-      <Form method="post" onSubmit={markApprovalSent}>
-        <input type="hidden" name="intent" value="action.accept_plan" />
-        <input type="hidden" name="actionId" value={action.id} />
-        <button type="submit" style={approveButtonStyle}>
-          Accept plan
-        </button>
-      </Form>
-      {action.actionRunId ? (
-        <Form method="post">
-          <input type="hidden" name="intent" value="action.defer" />
-          <input type="hidden" name="actionRunId" value={action.actionRunId} />
-          <input type="hidden" name="reason" value="defer" />
-          <button type="submit" style={quietDecisionButtonStyle}>
-            Not right now
-          </button>
-        </Form>
-      ) : null}
-      {!action.executable && action.raise ? (
-        <div style={instructPathStyle}>
-          <span style={instructLeadStyle}>
-            {action.raise.reason ??
-              "This one needs your go-ahead before any step can start."}
-          </span>
-          <span style={instructDetailStyle}>
-            {action.raise.detail ?? "Accepting the plan does not write to Shopify."}
-          </span>
-        </div>
-      ) : null}
-      <span style={decisionNoteStyle}>
-        Accepting unlocks the steps. Nothing runs until you say so.
-      </span>
-    </div>
-  );
-}
-
 function actionForConversation(
   conversation: ChatConversation | null,
   actions: MerchantActionView[],
@@ -3287,50 +2145,6 @@ function actionForConversation(
   );
 }
 
-function normalizeAttentionItems(
-  items: MerchantAttentionItem[],
-  actions: MerchantActionView[],
-): MerchantAttentionItem[] {
-  const normalized = items.map((candidate) => {
-    const action =
-      candidate.action ??
-      actions.find((actionCandidate) => actionCandidate.id === candidate.actionId) ??
-      null;
-    return { ...candidate, action };
-  });
-  const deduped: MerchantAttentionItem[] = [];
-  const seen = new Set<string>();
-  for (const candidate of normalized) {
-    const key = attentionIdentity(candidate);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(candidate);
-  }
-  return deduped;
-}
-
-function attentionIdentity(item: MerchantAttentionItem) {
-  return (
-    item.actionId ??
-    item.actionRunId ??
-    item.action?.title ??
-    item.title ??
-    item.attentionType
-  );
-}
-
-function isWorkingAction(action: MerchantActionView) {
-  return (
-    action.status === "accepted" ||
-    action.status === "in_progress" ||
-    action.status === "needs_attention"
-  );
-}
-
-function isCompletedAction(action: MerchantActionView) {
-  return action.status === "completed";
-}
-
 function statusLabelForAction(status: string) {
   if (status === "needs_attention") return "Needs attention";
   if (status === "in_progress") return "In progress";
@@ -3345,245 +2159,6 @@ function compactText(value: string, max: number) {
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, Math.max(0, max - 1)).trim()}…`;
 }
-
-function displayStepLabel(step: WorkflowStepDisplay, index: number) {
-  if (typeof step === "string" && step.trim()) return step.trim();
-  if (typeof step === "object" && step?.title) return String(step.title);
-  if (typeof step === "object" && step?.label) return String(step.label);
-  return `Step ${index + 1}`;
-}
-
-function displayStepDescription(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return "";
-  return step.description || step.completionCriteria || "";
-}
-
-function actionProgressState(action: MerchantActionView) {
-  const steps = action.displaySteps ?? [];
-  const currentStepIndex = currentStepIndexForAction(action);
-  if (isMeasuringAction(action, currentStepIndex)) {
-    return { label: "Measuring result", currentStepIndex };
-  }
-  if (currentStepIndex >= 0 && steps.length > 0) {
-    const step = steps[currentStepIndex];
-    const position = `Step ${currentStepIndex + 1} of ${steps.length}`;
-    const state = currentStepStatusLabel(step);
-    if (
-      state === "Needs you" ||
-      state === "Needs attention" ||
-      state === "Jefe is working"
-    ) {
-      return { label: `${state} · ${position}`, currentStepIndex };
-    }
-    return { label: `${position} · ${state}`, currentStepIndex };
-  }
-  if (steps.length > 0 && steps.every(stepIsDone)) {
-    return { label: "Completed", currentStepIndex };
-  }
-  if (action.status === "accepted") {
-    return { label: "Ready to start", currentStepIndex };
-  }
-  return {
-    label: action.statusLabel || statusLabelForAction(action.status),
-    currentStepIndex,
-  };
-}
-
-function progressBadgeLabel(
-  action: MerchantActionView,
-  visibleSteps: WorkflowStepDisplay[],
-) {
-  const steps = action.displaySteps ?? visibleSteps;
-  if (steps.length === 0) {
-    return action.statusLabel || statusLabelForAction(action.status);
-  }
-  const doneCount = steps.filter(stepIsDone).length;
-  return `In progress · ${doneCount} of ${steps.length} done`;
-}
-
-function progressFooterText(action: MerchantActionView, currentStepIndex: number) {
-  if (isMeasuringAction(action, currentStepIndex)) {
-    return "Jefe is measuring the result";
-  }
-  const steps = action.displaySteps ?? [];
-  const step = steps[currentStepIndex];
-  if (step) {
-    const label = displayStepLabel(step, currentStepIndex);
-    const state = currentStepStatusLabel(step);
-    if (state === "Needs you") return `Next: ${label} — needs you`;
-    if (state === "Needs attention") return `Needs attention: ${label}`;
-    if (state === "Jefe is working") return `Jefe is working on: ${label}`;
-    return `Next: ${label}`;
-  }
-  if (action.summary) return compactText(action.summary, 140);
-  return action.statusLabel || statusLabelForAction(action.status);
-}
-
-function currentStepIndexForAction(action: MerchantActionView) {
-  const steps = action.displaySteps ?? [];
-  return steps.findIndex((step) => !stepIsTerminal(step));
-}
-
-function isMeasuringAction(action: MerchantActionView, currentStepIndex: number) {
-  const executionStatus = normalizeDisplayToken(action.executionStatus);
-  const outcomeStatus = normalizeDisplayToken(action.outcomeStatus);
-  return (
-    currentStepIndex < 0 &&
-    ["applied", "partially_applied"].includes(executionStatus) &&
-    outcomeStatus !== "measured"
-  );
-}
-
-function stepTreatment(
-  step: WorkflowStepDisplay,
-  index: number,
-  currentStepIndex: number,
-): StepTreatment {
-  if (stepIsDone(step)) return "completed";
-  if (index === currentStepIndex) return "current";
-  return "future";
-}
-
-function stepIsTerminal(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return false;
-  const workState = normalizeDisplayToken(String(step.workState ?? ""));
-  if (["complete", "skipped"].includes(workState)) return true;
-  const status = normalizeDisplayToken(String(step.status ?? ""));
-  return ["completed", "skipped", "superseded"].includes(status) || stepIsDone(step);
-}
-
-function stepIsDone(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return false;
-  const workState = normalizeDisplayToken(String(step.workState ?? ""));
-  if (["complete", "skipped"].includes(workState)) return true;
-  return Boolean(step.done) || normalizeDisplayToken(step.status) === "completed";
-}
-
-function currentStepStatusLabel(step: WorkflowStepDisplay) {
-  const workState = normalizeDisplayToken(
-    typeof step === "string" ? "" : String(step.workState ?? step.status ?? "")
-  );
-  const mode = normalizeDisplayToken(workflowStepMode(step));
-  if (["needs_attention", "blocked", "failed"].includes(workState)) {
-    return "Needs attention";
-  }
-  if (workState === "approval_required") {
-    return "Approval required";
-  }
-  if (
-    workState === "needs_input" ||
-    ["merchant_action", "evidence_required"].includes(mode)
-  ) {
-    return "Needs you";
-  }
-  if (["running", "in_progress"].includes(workState)) {
-    return "Jefe is working";
-  }
-  if (["", "draft", "pending", "proposed", "available", "ready"].includes(workState)) {
-    return "Ready";
-  }
-  if (workState === "needs_updating") return "Needs updating";
-  if (workState === "complete") return "Done";
-  if (workState === "skipped") return "Skipped";
-  return statusLabelForAction(workState);
-}
-
-function inProgressStepStatusLabel(
-  treatment: StepTreatment,
-  step: WorkflowStepDisplay,
-) {
-  if (treatment === "completed") return "done";
-  if (treatment === "future") return "waiting";
-  const state = currentStepStatusLabel(step);
-  if (state === "Needs you") return "needs you";
-  if (state === "Needs attention") return "needs attention";
-  if (state === "Jefe is working") return "working";
-  return state.toLowerCase();
-}
-
-function normalizeDisplayToken(value: unknown) {
-  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
-}
-
-function displayStepStatus(step: WorkflowStepDisplay) {
-  if (typeof step === "string") return "proposed";
-  if (step.suppressStatus) return "";
-  if (step.statusLabel) return step.statusLabel;
-  const workState = String(step.workState ?? "").trim();
-  if (workState) {
-    switch (normalizeDisplayToken(workState)) {
-      case "available":
-        return "ready";
-      case "running":
-        return "working";
-      case "needs_input":
-        return "needs you";
-      case "needs_attention":
-        return "needs attention";
-      case "needs_updating":
-        return "needs updating";
-      case "blocked":
-        return "waiting";
-      case "complete":
-        return "done";
-      case "skipped":
-        return "skipped";
-      default:
-        return workState.replace(/_/g, " ");
-    }
-  }
-
-  // Back-compat fallback when workProjection isn't attached yet.
-  const persisted = step.status || (step.done ? "completed" : "proposed");
-  if (persisted === "draft" || persisted === "proposed") return "starts after acceptance";
-  if (persisted === "waiting") return "waiting";
-  if (persisted === "completed") return "done";
-  if (persisted === "needs_merchant") return "needs you";
-  if (persisted === "needs_attention") return "needs attention";
-  if (persisted === "running") return "working";
-  return String(persisted).replace(/_/g, " ");
-}
-
-function workflowStepMode(step: WorkflowStepDisplay) {
-  return typeof step === "string" ? "" : step.mode || "";
-}
-
-function workflowStepOwnerBadge(step: WorkflowStepDisplay) {
-  if (typeof step !== "string") {
-    const intendedActor = String(step.intendedActor ?? "").toUpperCase();
-    if (intendedActor === "JEFE") return "JEFE";
-    if (intendedActor === "MERCHANT") return "MERCHANT";
-  }
-  switch (workflowStepMode(step)) {
-    case "execute":
-    case "assist":
-      return "JEFE";
-    case "evidence_required":
-    case "merchant_action":
-    case "merchant":
-      return "MERCHANT";
-    default:
-      return "";
-  }
-}
-
-function currentStepOwnerLabel(step: Exclude<WorkflowStepDisplay, string>) {
-  const intendedActor = String(step.intendedActor ?? "").toUpperCase();
-  if (intendedActor === "JEFE") return "Jefe can do this";
-  if (intendedActor === "MERCHANT") return "Needs you";
-  switch (workflowStepMode(step)) {
-    case "execute":
-    case "assist":
-    case "evidence_required":
-      return "Jefe can do this";
-    case "merchant_action":
-    case "merchant":
-      return "Needs you";
-    default:
-      return "Jefe can do this";
-  }
-}
-
 
 function merchantActionFromPrimaryMove(
   move: PrimaryMove,
@@ -3691,7 +2266,6 @@ function ReplyFailedRow({ conversationId }: { conversationId: string | null }) {
     </div>
   );
 }
-
 
 /**
  * A chart Jefe drew, inside the reply that explains it.
@@ -4030,16 +2604,6 @@ function Mono({ children }: { children: ReactNode }) {
   return <span style={monoStyle}>{children}</span>;
 }
 
-function StatusPill({
-  tone,
-  children,
-}: {
-  tone: "green" | "yellow";
-  children: ReactNode;
-}) {
-  return <span style={statusPillStyle(tone)}>{children}</span>;
-}
-
 function DateLabel({ children }: { children: ReactNode }) {
   return <span style={dateStyle}>{children}</span>;
 }
@@ -4252,8 +2816,8 @@ const chatPageStyle: CSSProperties = {
 const shellStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 42,
-  maxWidth: 760,
+  gap: 32,
+  maxWidth: 640,
   margin: "0 auto",
   width: "100%",
 };
@@ -4309,22 +2873,6 @@ const monoStyle: CSSProperties = {
   letterSpacing: 0,
   textTransform: "uppercase",
 };
-function statusPillStyle(tone: "green" | "yellow"): CSSProperties {
-  const green = tone === "green";
-  return {
-    background: green ? COLORS.greenWash : "#fff7cc",
-    border: `1px solid ${green ? COLORS.greenBorder : "#ead273"}`,
-    borderRadius: 999,
-    color: green ? COLORS.green : "#806900",
-    display: "inline-flex",
-    fontFamily: FONT.mono,
-    fontSize: 12,
-    fontWeight: 700,
-    lineHeight: 1,
-    padding: "6px 9px",
-    whiteSpace: "nowrap",
-  };
-}
 const dateStyle: CSSProperties = {
   color: COLORS.meta,
   fontFamily: FONT.mono,
@@ -4358,198 +2906,72 @@ const cardStyle: CSSProperties = {
 const homeHeroStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 48,
-};
-const nextMoveCardStyle: CSSProperties = {
-  ...cardStyle,
-  background: "#fff",
-  boxShadow: "0 18px 54px rgba(39,55,77,0.10)",
-  gap: 24,
-  padding: "46px 46px 42px",
-};
-const nextMoveTopStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  gap: 18,
-  justifyContent: "space-between",
-};
-const nextMoveMetaStyle: CSSProperties = {
-  color: "#a47a10",
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 800,
-  letterSpacing: 0,
-  lineHeight: 1.25,
-  whiteSpace: "nowrap",
-};
-const nextMoveMetaGroupStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 10,
-  justifyContent: "flex-end",
-};
-const nextMoveTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontFamily: FONT.serif,
-  fontSize: 34,
-  fontWeight: 500,
-  lineHeight: 1.16,
-  margin: "8px 0 0",
-};
-const nextMoveSummaryStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 18,
-  lineHeight: 1.5,
-  margin: 0,
-  maxWidth: 700,
-};
-const nextRecommendationBodyStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 15,
-  lineHeight: 1.55,
-  margin: 0,
-  maxWidth: 620,
-};
-const nextMoveActionRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 12,
-  paddingTop: 4,
-};
-const nextMoveButtonStyle: CSSProperties = {
-  background: COLORS.navy,
-  border: 0,
-  borderRadius: 8,
-  color: "#fff",
-  cursor: "pointer",
-  fontFamily: FONT.sans,
-  fontSize: 16,
-  fontWeight: 800,
-  lineHeight: 1.2,
-  padding: "17px 30px",
-};
-const focusCarouselStyle: CSSProperties = {
-  alignItems: "center",
-  display: "inline-flex",
-  gap: 6,
-};
-const focusArrowButtonStyle: CSSProperties = {
-  alignItems: "center",
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  color: COLORS.navy,
-  cursor: "pointer",
-  display: "inline-flex",
-  fontFamily: FONT.sans,
-  fontSize: 18,
-  fontWeight: 750,
-  height: 30,
-  justifyContent: "center",
-  lineHeight: 1,
-  padding: 0,
-  width: 30,
-};
-const focusCounterStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 11,
-  fontWeight: 650,
-  letterSpacing: 0,
-  lineHeight: 1,
-  minWidth: 36,
-  textAlign: "center",
-};
-const actionButtonRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 10,
-};
-const homeSectionStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
   gap: 14,
 };
-const homeSectionHeaderStyle: CSSProperties = {
+const homeSummaryStyle: CSSProperties = {
+  color: COLORS.meta,
+  fontSize: 17,
+  lineHeight: 1.5,
+  margin: "0 0 8px",
+  maxWidth: 620,
+};
+const recentSectionHeaderStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
-  justifyContent: "space-between",
-  gap: 12,
+  gap: 14,
+  marginBottom: 14,
 };
-const sectionTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontFamily: FONT.serif,
-  fontSize: 24,
-  fontWeight: 500,
-  lineHeight: 1.25,
-  margin: 0,
-};
-const chatListStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 0,
-};
-const chatListItemStyle: CSSProperties = {
-  alignItems: "flex-start",
-  borderBottom: `1px solid ${COLORS.hairline}`,
-  color: COLORS.ink,
-  display: "flex",
-  gap: 16,
-  justifyContent: "space-between",
-  padding: "14px 0",
-  textDecoration: "none",
-};
-const chatListBodyStyle: CSSProperties = {
-  display: "flex",
+const recentSectionRuleStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
   flex: "1 1 auto",
-  flexDirection: "column",
-  gap: 5,
-  minWidth: 0,
 };
-const chatListTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 14.5,
-  fontWeight: 750,
-  lineHeight: 1.3,
+// Same fixed bottom-right dock as the top-right Settings/Open-the-app
+// chrome in app.tsx, but hidden until hovered — a docked corner control,
+// not a persistent card competing with the Action list.
+const floatingGenerateWrapStyle: CSSProperties = {
+  bottom: 16,
+  position: "fixed",
+  right: 16,
+  zIndex: 40,
 };
-const chatListMetaLineStyle: CSSProperties = {
-  alignItems: "center",
-  color: COLORS.muted,
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: 12.5,
-  gap: "6px 12px",
-  lineHeight: 1.35,
-};
-const chatFocusMetaStyle: CSSProperties = {
-  alignItems: "center",
-  color: COLORS.meta,
-  display: "inline-flex",
-  gap: 5,
-  minWidth: 0,
-};
-const chatFocusLeadStyle: CSSProperties = {
-  color: COLORS.body,
-  fontWeight: 700,
-};
-const boltStyle: CSSProperties = {
-  color: "#c49a1a",
-  fontWeight: 800,
-};
-const chatListDateStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 11,
-  lineHeight: 1.4,
-  whiteSpace: "nowrap",
-};
+function floatingGenerateFormStyle(revealed: boolean): CSSProperties {
+  return {
+    opacity: revealed ? 1 : 0,
+    pointerEvents: revealed ? "auto" : "none",
+    transition: "opacity 160ms ease",
+  };
+}
+// Matches openAppButtonStyle/chromeBase in app.tsx exactly (same pill:
+// #fffdfa fill, #d8d0c8 border, #1f3a63 text, 999px radius, 34px height) so
+// the two floating controls read as one visual family, top-right and
+// bottom-right.
+function floatingGenerateButtonStyle(canGenerate: boolean): CSSProperties {
+  return {
+    alignItems: "center",
+    background: COLORS.card,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: 999,
+    boxShadow: "0 1px 2px rgba(31,41,51,0.06)",
+    boxSizing: "border-box",
+    color: COLORS.navy,
+    cursor: canGenerate ? "pointer" : "not-allowed",
+    display: "inline-flex",
+    fontFamily: FONT.sans,
+    fontSize: 13,
+    fontWeight: 600,
+    gap: 8,
+    height: 34,
+    justifyContent: "center",
+    minWidth: 190,
+    opacity: canGenerate ? 1 : 0.6,
+    padding: "0 16px",
+    whiteSpace: "nowrap",
+  };
+}
 const actionListStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  gap: 12,
+  gap: 10,
 };
 const inProgressCardStyle: CSSProperties = {
   background: COLORS.card,
@@ -4559,10 +2981,6 @@ const inProgressCardStyle: CSSProperties = {
   flexDirection: "column",
   gap: 22,
   padding: "24px 24px 18px",
-};
-const proposedCardStyle: CSSProperties = {
-  ...inProgressCardStyle,
-  gap: 20,
 };
 const inProgressHeaderStyle: CSSProperties = {
   alignItems: "flex-start",
@@ -4578,174 +2996,88 @@ const inProgressTitleStyle: CSSProperties = {
   margin: 0,
   minWidth: 0,
 };
-const inProgressBadgeStyle: CSSProperties = {
-  alignItems: "center",
-  background: COLORS.greenWash,
-  border: `1px solid ${COLORS.greenBorder}`,
-  borderRadius: 10,
-  color: COLORS.green,
-  display: "inline-flex",
-  flex: "0 0 auto",
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 700,
-  gap: 8,
-  lineHeight: 1.2,
-  padding: "7px 12px",
-  whiteSpace: "nowrap",
-};
-const inProgressBadgeDotStyle: CSSProperties = {
-  background: "currentColor",
-  borderRadius: 999,
-  height: 7,
-  width: 7,
-};
-const proposedBadgeStyle: CSSProperties = {
-  alignItems: "center",
-  background: COLORS.yellow,
-  border: `1px solid ${COLORS.yellow}`,
-  borderRadius: 10,
-  color: "#0f1f36",
-  display: "inline-flex",
-  flex: "0 0 auto",
-  fontSize: 15,
-  fontWeight: 800,
-  gap: 10,
-  lineHeight: 1.2,
-  padding: "10px 16px",
-  whiteSpace: "nowrap",
-};
-const proposedBadgeDotStyle: CSSProperties = {
-  background: "currentColor",
-  borderRadius: 999,
-  height: 7,
-  width: 7,
-};
 const proposedSummaryStyle: CSSProperties = {
   color: COLORS.body,
   fontSize: 17,
   lineHeight: 1.45,
   margin: 0,
 };
-const inProgressStepsStyle: CSSProperties = {
+function actionCardStyle(active: boolean): CSSProperties {
+  return {
+    ...inProgressCardStyle,
+    gap: 12,
+    // Same white card either way — Recent is just less opaque, not a
+    // different treatment.
+    opacity: active ? 1 : 0.72,
+    padding: "22px 22px 16px",
+  };
+}
+const actionCardFooterStyle: CSSProperties = {
+  borderTop: `1px solid ${COLORS.hairline}`,
   display: "flex",
-  flexDirection: "column",
-  gap: 14,
+  justifyContent: "flex-end",
+  paddingTop: 12,
 };
-function inProgressStepRowStyle(treatment: StepTreatment): CSSProperties {
-  const current = treatment === "current";
+const ACTION_STATE_PILL_PALETTE: Record<
+  "amber" | "navy" | "green" | "neutral",
+  { bg: string; border: string; color: string }
+> = {
+  amber: { bg: COLORS.yellow, border: COLORS.yellow, color: "#0f1f36" },
+  navy: { bg: "#eaf0fa", border: "#b9cbe6", color: COLORS.navy },
+  green: { bg: COLORS.greenWash, border: COLORS.greenBorder, color: COLORS.green },
+  neutral: { bg: "transparent", border: COLORS.border, color: COLORS.meta },
+};
+function actionStatePillStyle(tone: "amber" | "navy" | "green" | "neutral"): CSSProperties {
+  const palette = ACTION_STATE_PILL_PALETTE[tone] ?? ACTION_STATE_PILL_PALETTE.neutral;
   return {
     alignItems: "center",
-    color: current ? COLORS.ink : COLORS.meta,
-    display: "grid",
-    gap: "10px 14px",
-    gridTemplateColumns: "38px max-content minmax(0, 1fr) max-content",
-    lineHeight: 1.25,
-    opacity: treatment === "future" ? 0.82 : 1,
-  };
-}
-const inProgressStepNumberStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 14,
-  fontWeight: 700,
-  lineHeight: "24px",
-};
-function inProgressOwnerBadgeStyle(
-  owner: string,
-  treatment: StepTreatment,
-): CSSProperties {
-  if (treatment === "completed") {
-    return {
-      ...workflowOwnerBadgeStyle(owner),
-      background: COLORS.card,
-      borderColor: COLORS.hairline,
-      color: COLORS.meta,
-    };
-  }
-  return workflowOwnerBadgeStyle(owner);
-}
-function inProgressStepTitleStyle(treatment: StepTreatment): CSSProperties {
-  return {
-    color: treatment === "current" ? COLORS.ink : "inherit",
-    fontSize: 17,
-    fontWeight: treatment === "current" ? 750 : 500,
-    minWidth: 0,
-  };
-}
-function inProgressStepStatusStyle(
-  treatment: StepTreatment,
-  step: WorkflowStepDisplay,
-): CSSProperties {
-  const state = inProgressStepStatusLabel(treatment, step);
-  const color =
-    state === "done"
-      ? COLORS.greenBorder
-      : state === "needs you"
-        ? "#7a5a08"
-        : state === "working"
-          ? COLORS.navy
-          : COLORS.meta;
-  return {
-    color,
+    background: palette.bg,
+    border: `1px solid ${palette.border}`,
+    borderRadius: 10,
+    color: palette.color,
+    display: "inline-flex",
+    flex: "0 0 auto",
     fontFamily: FONT.mono,
     fontSize: 12,
     fontWeight: 700,
-    letterSpacing: 0,
-    lineHeight: 1.25,
-    textAlign: "right",
+    gap: 7,
+    letterSpacing: 0.2,
+    lineHeight: 1.2,
+    padding: "7px 12px",
+    textTransform: "uppercase",
     whiteSpace: "nowrap",
   };
 }
-const inProgressFooterStyle: CSSProperties = {
+const actionStatePillDotStyle: CSSProperties = {
+  background: "currentColor",
+  borderRadius: 999,
+  height: 7,
+  width: 7,
+};
+const realWorldProgressStyle: CSSProperties = {
   alignItems: "center",
-  borderTop: `1px solid ${COLORS.hairline}`,
   display: "flex",
   flexWrap: "wrap",
-  gap: 14,
-  justifyContent: "space-between",
-  paddingTop: 18,
-};
-const proposedFooterStyle: CSSProperties = {
-  ...inProgressFooterStyle,
-  minHeight: 38,
-};
-const proposedSignalLineStyle: CSSProperties = {
-  alignItems: "center",
-  color: COLORS.meta,
-  display: "flex",
-  flexWrap: "wrap",
-  fontSize: 14,
   gap: 8,
 };
-const inProgressFooterTextStyle: CSSProperties = {
-  color: COLORS.muted,
-  fontSize: 16,
-  lineHeight: 1.35,
-  minWidth: 0,
-};
-const historyRowStyle: CSSProperties = {
-  ...chatListItemStyle,
-};
-const historyOutcomeStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 13,
-  lineHeight: 1.45,
-};
-const historyStatusGroupStyle: CSSProperties = {
-  alignItems: "flex-end",
-  display: "flex",
-  flexDirection: "column",
-  flex: "0 0 auto",
-  gap: 5,
-};
-const historyStatusStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 11,
-  fontWeight: 700,
-  lineHeight: 1.25,
-  textTransform: "uppercase",
+function realWorldProgressStageStyle(status: "done" | "current" | "upcoming"): CSSProperties {
+  return {
+    alignItems: "center",
+    color: status === "upcoming" ? COLORS.meta : status === "current" ? COLORS.navy : COLORS.body,
+    display: "inline-flex",
+    fontFamily: FONT.mono,
+    fontSize: 11,
+    fontWeight: status === "current" ? 800 : 650,
+    gap: 8,
+    letterSpacing: 0.2,
+    lineHeight: 1.3,
+    textTransform: "uppercase",
+  };
+}
+const realWorldProgressDividerStyle: CSSProperties = {
+  background: COLORS.border,
+  height: 1,
+  width: 14,
 };
 const emptySectionStyle: CSSProperties = {
   background: "rgba(255, 253, 250, 0.64)",
@@ -4759,19 +3091,6 @@ const emptySectionStyle: CSSProperties = {
 const inlineFormStyle: CSSProperties = {
   display: "inline-flex",
 };
-const pillButtonStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 999,
-  color: COLORS.navy,
-  cursor: "pointer",
-  fontFamily: FONT.sans,
-  fontSize: 13,
-  fontWeight: 750,
-  lineHeight: 1.2,
-  padding: "8px 16px",
-  whiteSpace: "nowrap",
-};
 const primaryButtonStyle: CSSProperties = {
   background: COLORS.navy,
   border: 0,
@@ -4783,9 +3102,6 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 750,
   lineHeight: 1.2,
   padding: "12px 20px",
-};
-const quietPillButtonStyle: CSSProperties = {
-  ...pillButtonStyle,
 };
 const textButtonStyle: CSSProperties = {
   background: "transparent",
@@ -5064,6 +3380,55 @@ const chatTitleBlockStyle: CSSProperties = {
   gap: 8,
   padding: "26px 0 10px",
 };
+const actionChatHeaderStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: "26px 0 10px",
+};
+function actionChatStatusLabelStyle(tone: "amber" | "navy" | "green" | "neutral"): CSSProperties {
+  const palette = ACTION_STATE_PILL_PALETTE[tone] ?? ACTION_STATE_PILL_PALETTE.neutral;
+  return {
+    color: tone === "neutral" ? COLORS.meta : palette.color,
+    fontFamily: FONT.mono,
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: 1.2,
+    lineHeight: 1.2,
+    textTransform: "uppercase",
+  };
+}
+const actionChatTitleStyle: CSSProperties = {
+  color: COLORS.ink,
+  fontFamily: FONT.serif,
+  fontSize: 34,
+  fontWeight: 500,
+  lineHeight: 1.16,
+  margin: 0,
+};
+const actionChatSubtitleStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 17,
+  lineHeight: 1.5,
+  margin: 0,
+  maxWidth: 620,
+};
+const instructPathStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  maxWidth: "86%",
+};
+const instructLeadStyle: CSSProperties = {
+  color: COLORS.body,
+  fontSize: 15,
+  lineHeight: 1.6,
+};
+const instructDetailStyle: CSSProperties = {
+  color: COLORS.muted,
+  fontSize: 13.5,
+  lineHeight: 1.5,
+};
 const chatTitleHeaderRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
@@ -5089,434 +3454,7 @@ function downloadTranscriptButtonStyle(visible: boolean): CSSProperties {
     whiteSpace: "nowrap",
   };
 }
-const focusStripWrapStyle: CSSProperties = {
-  background: COLORS.page,
-  display: "flex",
-  flexDirection: "column",
-  flex: "0 0 auto",
-  padding: "12px 0",
-  zIndex: 12,
-};
-const focusPanelStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 10,
-  display: "flex",
-  flexDirection: "column",
-  overflow: "hidden",
-};
-const focusStripButtonStyle: CSSProperties = {
-  alignItems: "center",
-  background: "transparent",
-  border: 0,
-  borderRadius: 0,
-  color: COLORS.ink,
-  cursor: "pointer",
-  display: "flex",
-  fontFamily: FONT.sans,
-  gap: 16,
-  justifyContent: "space-between",
-  outline: "none",
-  padding: "18px 20px",
-  textAlign: "left",
-  width: "100%",
-};
-const focusStripLeftStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flex: "1 1 auto",
-  gap: 12,
-  minWidth: 0,
-};
-const focusStripTextStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flex: "1 1 auto",
-  flexWrap: "wrap",
-  gap: "4px 16px",
-  minWidth: 0,
-};
-const focusStripRightStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flex: "0 0 auto",
-  gap: 14,
-};
-const focusStripLabelStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  fontWeight: 700,
-  lineHeight: 1.25,
-  textTransform: "uppercase",
-  whiteSpace: "nowrap",
-};
-const focusStripTitleStyle: CSSProperties = {
-  flex: "1 1 auto",
-  fontSize: 16,
-  fontWeight: 750,
-  lineHeight: 1.25,
-  minWidth: 0,
-};
-const focusStripChevronStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 12,
-  lineHeight: 1,
-};
 
-function currentStepPanelStyle(
-  tone: "ready" | "merchant" | "attention" | "completed",
-): CSSProperties {
-  const border =
-    tone === "attention"
-      ? "#eccfc2"
-      : tone === "completed"
-        ? COLORS.greenBorder
-        : COLORS.border;
-  const accent =
-    tone === "attention"
-      ? "#a2532c"
-      : tone === "merchant"
-        ? "#d4a51c"
-        : tone === "completed"
-          ? COLORS.green
-          : COLORS.navy;
-  return {
-    background: COLORS.card,
-    border: `1px solid ${border}`,
-    borderLeft: `4px solid ${accent}`,
-    borderRadius: 12,
-    boxShadow: "0 16px 42px rgba(39,55,77,0.08), 0 1px 2px rgba(39,55,77,0.06)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
-    margin: "0 0 22px",
-    padding: "clamp(24px, 3.5vw, 34px)",
-  };
-}
-const currentStepTopStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  gap: 12,
-  justifyContent: "space-between",
-};
-const currentStepBadgeGroupStyle: CSSProperties = {
-  alignItems: "center",
-  display: "inline-flex",
-  flexWrap: "wrap",
-  gap: 8,
-  justifyContent: "flex-end",
-};
-const currentStepTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontFamily: FONT.serif,
-  fontSize: 28,
-  fontWeight: 500,
-  lineHeight: 1.22,
-  margin: 0,
-};
-const currentStepDetailStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 16,
-  lineHeight: 1.55,
-  margin: 0,
-  maxWidth: "62ch",
-};
-const currentStepReasonStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 14,
-  lineHeight: 1.45,
-  margin: "-4px 0 0",
-};
-const currentStepAttentionStyle: CSSProperties = {
-  background: "#fdf4f0",
-  border: "1px solid #eccfc2",
-  borderRadius: 8,
-  color: "#8a3f22",
-  fontSize: 14,
-  fontWeight: 650,
-  lineHeight: 1.45,
-  margin: 0,
-  padding: "10px 12px",
-};
-const currentStepProgressStyle: CSSProperties = {
-  alignItems: "center",
-  color: COLORS.navy,
-  display: "inline-flex",
-  fontFamily: FONT.mono,
-  fontSize: 14,
-  fontWeight: 700,
-  gap: 12,
-  lineHeight: 1.4,
-  margin: 0,
-};
-const assistArtifactPanelStyle: CSSProperties = {
-  background: "#f7f9fc",
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 10,
-  display: "flex",
-  flexDirection: "column",
-  gap: 10,
-  padding: "14px 16px",
-};
-const assistArtifactHeaderStyle: CSSProperties = {
-  alignItems: "baseline",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "8px 12px",
-};
-const assistArtifactTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontFamily: FONT.serif,
-  fontSize: 18,
-  fontWeight: 500,
-};
-const assistArtifactSummaryStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 15,
-  fontWeight: 650,
-  lineHeight: 1.45,
-  margin: 0,
-};
-const assistArtifactDetailStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 14,
-  lineHeight: 1.5,
-  margin: 0,
-};
-const assistArtifactListStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 14,
-  lineHeight: 1.55,
-  margin: 0,
-  paddingLeft: 18,
-};
-const assistArtifactListItemStyle: CSSProperties = {
-  marginBottom: 6,
-};
-const assistArtifactBodyStyle: CSSProperties = {
-  background: COLORS.card,
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  color: COLORS.ink,
-  fontFamily: FONT.mono,
-  fontSize: 13,
-  lineHeight: 1.5,
-  margin: 0,
-  overflowX: "auto",
-  padding: "12px 14px",
-  whiteSpace: "pre-wrap",
-};
-const assistArtifactPromptStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 13,
-  lineHeight: 1.45,
-  margin: 0,
-};
-const currentStepDotStyle: CSSProperties = {
-  background: "#b8c2cf",
-  borderRadius: 999,
-  display: "inline-block",
-  height: 8,
-  width: 8,
-};
-const currentStepActionRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 12,
-};
-const currentStepNoteStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 13,
-  lineHeight: 1.4,
-  margin: 0,
-};
-const pauseButtonStyle: CSSProperties = {
-  background: "transparent",
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  color: COLORS.ink,
-  cursor: "pointer",
-  fontFamily: FONT.sans,
-  fontSize: 14,
-  fontWeight: 750,
-  padding: "12px 22px",
-};
-const chatPlanBlockStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 14,
-  margin: "0 0 26px",
-};
-const chatPlanHeaderStyle: CSSProperties = {
-  alignItems: "baseline",
-  display: "flex",
-  gap: 24,
-  justifyContent: "space-between",
-};
-const chatPlanSummaryStyle: CSSProperties = {
-  color: "#9a9085",
-  flex: "1 1 auto",
-  fontSize: 15,
-  fontWeight: 600,
-  lineHeight: 1.45,
-  margin: 0,
-  maxWidth: "46ch",
-  textAlign: "right",
-};
-
-function workflowStatusSummaryStyle(status: string): CSSProperties {
-  const active = status === "in_progress" || status === "completed" || status === "accepted";
-  const attention = status === "needs_attention";
-  return {
-    alignItems: "center",
-    color: attention ? "#a2532c" : active ? COLORS.green : "#9b7411",
-    display: "inline-flex",
-    fontFamily: FONT.mono,
-    fontSize: 13,
-    gap: 8,
-    fontWeight: 700,
-    lineHeight: 1.25,
-    whiteSpace: "nowrap",
-  };
-}
-function workflowBlockStyle(
-  variant: "spotlight" | "focus" | "nextMove",
-  hasHeading = false,
-): CSSProperties {
-  const hero = variant === "nextMove";
-  const section = (variant === "spotlight" || hero) && hasHeading;
-  return {
-    borderTop: section ? `1px solid ${COLORS.hairline}` : 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: section ? 18 : variant === "focus" ? 4 : 0,
-    paddingTop: section ? 22 : 0,
-  };
-}
-function workflowRowsStyle(
-  variant: "spotlight" | "focus" | "nextMove",
-): CSSProperties {
-  return {
-    display: "flex",
-    flexDirection: "column",
-    gap: variant === "focus" ? 2 : 16,
-  };
-}
-function workflowPlanTitleStyle(active: boolean): CSSProperties {
-  return {
-    color: COLORS.ink,
-    fontSize: 15,
-    fontWeight: active ? 800 : 650,
-    lineHeight: 1.25,
-    minWidth: 0,
-  };
-}
-function workflowStepRowStyle(
-  highlighted: boolean,
-  variant: "spotlight" | "focus" | "nextMove",
-): CSSProperties {
-  const hero = variant === "nextMove";
-  const plan = variant === "focus";
-  const active = highlighted && plan;
-  return {
-    alignItems: plan ? "center" : "start",
-    background: active ? "#e9f2ff" : "transparent",
-    borderRadius: 8,
-    columnGap: hero ? 10 : 12,
-    display: "grid",
-    gridTemplateColumns: plan
-      ? "28px max-content minmax(0, 1fr) max-content"
-      : "42px minmax(0, 1fr)",
-    margin: 0,
-    padding: plan ? (active ? "10px 12px" : "6px 12px") : hero ? 0 : 0,
-  };
-}
-const workflowStepNumberStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontFamily: FONT.mono,
-  fontSize: 11,
-  fontWeight: 600,
-  lineHeight: "24px",
-};
-const workflowStepBodyStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 7,
-  minWidth: 0,
-};
-const workflowStepTitleLineStyle: CSSProperties = {
-  alignItems: "baseline",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "7px 12px",
-  minWidth: 0,
-};
-const workflowStepTitleStyle: CSSProperties = {
-  color: COLORS.ink,
-  fontSize: 15,
-  fontWeight: 800,
-  lineHeight: 1.25,
-};
-function workflowOwnerBadgeStyle(owner: string): CSSProperties {
-  const merchant = owner === "MERCHANT";
-  return {
-    background: merchant ? "#fff4cf" : "#e9f2ff",
-    border: `1px solid ${merchant ? "#f3cf6b" : "#bdd4f2"}`,
-    borderRadius: 6,
-    color: merchant ? "#7b5a07" : COLORS.navy,
-    fontFamily: FONT.mono,
-    fontSize: 12,
-    fontWeight: 800,
-    letterSpacing: 0,
-    lineHeight: 1,
-    padding: "5px 8px 4px",
-    whiteSpace: "nowrap",
-  };
-}
-function ownerBadgeStyle(mode: string): CSSProperties {
-  const merchant = mode === "merchant_action" || mode === "merchant";
-  return {
-    background: merchant ? "#fff8df" : "#eef5ff",
-    border: `1px solid ${merchant ? "#edd58b" : "#bfd3ec"}`,
-    borderRadius: 6,
-    color: merchant ? "#7b5a07" : COLORS.navy,
-    display: "inline-flex",
-    fontSize: 12,
-    fontWeight: 800,
-    justifyContent: "center",
-    lineHeight: 1.2,
-    minWidth: 86,
-    padding: "5px 9px",
-    textAlign: "center",
-    whiteSpace: "nowrap",
-  };
-}
-const workflowStepDescriptionStyle: CSSProperties = {
-  color: COLORS.meta,
-  fontSize: 13,
-  lineHeight: 1.35,
-};
-function workflowStepStatusStyle(status: string): CSSProperties {
-  const normalized = status.toLowerCase();
-  const green = normalized === "done" || normalized === "completed";
-  const active = normalized === "working" || normalized === "ready";
-  return {
-    color: green
-      ? COLORS.greenBorder
-      : active
-        ? COLORS.navy
-        : "#9a9085",
-    fontFamily: FONT.mono,
-    fontSize: 12,
-    fontWeight: 700,
-    lineHeight: "26px",
-    textAlign: "right",
-    textTransform: "lowercase",
-    whiteSpace: "nowrap",
-  };
-}
 const messagesStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -5571,22 +3509,6 @@ const replyRetryButtonStyle: CSSProperties = {
 };
 // Deliberately reads as a considered position, not a greyed-out control. Same weight and
 // colour as anything else Jefe says — an instruction is the product working, not degraded.
-const instructPathStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  maxWidth: "86%",
-};
-const instructLeadStyle: CSSProperties = {
-  color: COLORS.body,
-  fontSize: 15,
-  lineHeight: 1.6,
-};
-const instructDetailStyle: CSSProperties = {
-  color: COLORS.muted,
-  fontSize: 13.5,
-  lineHeight: 1.5,
-};
 const thinkingStyle: CSSProperties = {
   color: COLORS.meta,
   fontSize: 15,
@@ -5794,32 +3716,3 @@ function sendButtonStateStyle(disabled: boolean): CSSProperties {
     opacity: disabled ? 0.5 : 1,
   };
 }
-const decisionRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 18,
-  marginTop: 16,
-};
-const approveButtonStyle: CSSProperties = {
-  ...sendButtonStyle,
-  borderRadius: 8,
-  padding: "12px 22px",
-};
-const quietDecisionButtonStyle: CSSProperties = {
-  background: "transparent",
-  border: 0,
-  color: COLORS.muted,
-  cursor: "pointer",
-  fontFamily: FONT.sans,
-  fontSize: 14,
-  fontWeight: 700,
-  padding: "12px 0",
-};
-const decisionNoteStyle: CSSProperties = {
-  color: "#9a9085",
-  flex: "1 1 280px",
-  fontSize: 14,
-  fontWeight: 650,
-  lineHeight: 1.35,
-};
