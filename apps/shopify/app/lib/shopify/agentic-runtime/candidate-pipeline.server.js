@@ -54,6 +54,11 @@ export const CANDIDATE_STATUS = Object.freeze({
   alreadySatisfied: "ALREADY_SATISFIED",
   alreadyCovered: "ALREADY_COVERED",
   recommended: "RECOMMENDED",
+  // docs/ops/recommendation-convergence-vs-evidence-fix/: distinct from every disposition above —
+  // those are Jefe's own substantive judgement about the opportunity. This one means Jefe never
+  // reached a judgement at all (the model exhausted its turn budget without ever attempting a
+  // terminal decision). Must never be reported or persisted as though the business lacks evidence.
+  iterationLimit: "ITERATION_LIMIT",
 });
 
 // Observability states threaded through progressLog (Part 16). VERIFYING_CURRENT_STATE and
@@ -308,6 +313,10 @@ export async function discoverCandidates(input) {
  */
 export function classifyCandidateOutcome(result) {
   if (result?.status === "RECOMMEND_ACTION") return CANDIDATE_STATUS.recommended;
+  // Checked before candidateDisposition/status pattern-matching: ITERATION_LIMIT comes from the
+  // iteration-budget fallback, never from a model-declared terminal turn, so there is no
+  // candidateDisposition to honor and no evidence-based bucket to fall into.
+  if (result?.status === "ITERATION_LIMIT") return CANDIDATE_STATUS.iterationLimit;
   if (result?.candidateDisposition && Object.values(CANDIDATE_DISPOSITION).includes(result.candidateDisposition)) {
     return result.candidateDisposition;
   }
@@ -691,12 +700,20 @@ async function finalizeRecommendation(
  */
 function mapCandidateForPersistence(candidate, opportunitySurface) {
   const family = resolveCandidateFamily(candidate, opportunitySurface);
+  // docs/ops/recommendation-convergence-vs-evidence-fix/: a candidate whose own investigation
+  // never converged (ITERATION_LIMIT) is not a substantive rejection — it never reached one.
+  // Persisting it QUEUED (rather than REJECTED) keeps it eligible for a future run's investigation
+  // instead of permanently burning a potentially valid opportunity for this set's 24h lifetime.
+  // Safe here specifically because discover mode's investigateCandidates loop only ever visits
+  // each candidate once per run — unlike reuse mode's claim loop, there is no same-run re-claim
+  // risk from leaving it QUEUED.
   const status =
     candidate.status === CANDIDATE_STATUS.recommended
       ? CANDIDATE_CONSUMPTION_STATUS.recommended
-      : candidate.status === CANDIDATE_STATUS.queued
+      : candidate.status === CANDIDATE_STATUS.queued || candidate.status === CANDIDATE_STATUS.iterationLimit
         ? CANDIDATE_CONSUMPTION_STATUS.queued
         : CANDIDATE_CONSUMPTION_STATUS.rejected;
+  const investigated = candidate.status !== CANDIDATE_STATUS.queued && candidate.status !== CANDIDATE_STATUS.iterationLimit;
   return {
     candidateId: candidate.candidateId,
     diagnosedProblem: candidate.diagnosedProblem,
@@ -707,9 +724,9 @@ function mapCandidateForPersistence(candidate, opportunitySurface) {
     confidence: candidate.confidence ?? null,
     rescue: Boolean(candidate.rescue),
     status,
-    finalDisposition: computeFinalDisposition(candidate, family),
-    reason: candidate.reason ?? null,
-    investigated: candidate.status !== CANDIDATE_STATUS.queued,
+    finalDisposition: status === CANDIDATE_CONSUMPTION_STATUS.queued ? null : computeFinalDisposition(candidate, family),
+    reason: status === CANDIDATE_CONSUMPTION_STATUS.queued ? null : (candidate.reason ?? null),
+    investigated,
   };
 }
 
@@ -766,11 +783,22 @@ async function investigateReusedOpportunitySet(input, { provider, context, progr
   let startingCandidateRank = null;
   /** @type {number | null} */
   let endingCandidateRank = null;
+  // docs/ops/recommendation-convergence-vs-evidence-fix/: a candidate requeued (not rejected)
+  // after ITERATION_LIMIT is claimable again immediately — claimNextCandidate has no notion of
+  // "already tried this run". Excluding it from further claims *within this run* is what actually
+  // makes the requeue safe: without this, the very next claim would re-select the same candidate
+  // and burn another full iteration budget on it, increasing latency instead of reducing it.
+  /** @type {string[]} */
+  const convergenceFailedIdsThisRun = [];
 
   pushProgress(PROGRESS_STATE.discoveryReused, { opportunitySetId });
 
   while (llmCallCount < maxTotalLlmCalls) {
-    const claimed = await claimNextCandidate(input.prisma, { opportunitySetId, runId: input.runId });
+    const claimed = await claimNextCandidate(input.prisma, {
+      opportunitySetId,
+      runId: input.runId,
+      excludeCandidateIds: convergenceFailedIdsThisRun,
+    });
     if (!claimed) {
       pushProgress(PROGRESS_STATE.opportunitySetExhausted, { opportunitySetId });
       return {
@@ -845,6 +873,28 @@ async function investigateReusedOpportunitySet(input, { provider, context, progr
     }
 
     const candidateStatus = classifyCandidateOutcome(result);
+
+    if (candidateStatus === CANDIDATE_STATUS.iterationLimit) {
+      // Runtime/convergence failure, not a substantive rejection — requeue rather than burn this
+      // opportunity for the rest of this set's 24h lifetime (see the exclude-list comment above
+      // for why this doesn't cause an immediate same-run re-claim).
+      convergenceFailedIdsThisRun.push(claimed.id);
+      await resolveOpportunityCandidate(input.prisma, { id: claimed.id, status: CANDIDATE_CONSUMPTION_STATUS.queued });
+      logger.warn("candidate investigation did not converge within its iteration budget; requeued rather than rejected", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        opportunitySetId,
+        candidateId: claimed.candidateId,
+        rank: claimed.rank,
+      });
+      pushProgress(PROGRESS_STATE.tryingNextCandidate, {
+        candidateId: claimed.candidateId,
+        disposition: candidateStatus,
+        reason: "ITERATION_LIMIT",
+      });
+      continue;
+    }
+
     const reason = result.blocker ?? candidateStatus;
     const family = resolveCandidateFamily(
       { relevantFamilyId: claimed.relevantFamilyId, investigation: { diagnostics: result.diagnostics ?? null } },

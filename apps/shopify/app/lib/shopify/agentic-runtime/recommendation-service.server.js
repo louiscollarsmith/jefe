@@ -1225,6 +1225,12 @@ export function safeTrace(value) {
             gatewayDecision: row.facts?.gatewayDecision ?? null,
           },
           error: row.error ?? null,
+          // Observability (docs/ops/recommendation-repair-loop-fairness/): mirrors
+          // publicShopifyToolResults so candidate/iteration attribution survives this
+          // second, independent trace reconstruction on the way into result_json —
+          // this was the whitelist that silently dropped both fields before.
+          candidateId: row.candidateId ?? null,
+          iteration: typeof row.iteration === "number" ? row.iteration : null,
         }))
       : [],
     progressLog: Array.isArray(trace.progressLog) ? trace.progressLog : [],

@@ -100,6 +100,23 @@ test("resultStatus overrides map VALIDATION_FAILED and INVESTIGATION_INCOMPLETE 
   );
 });
 
+// Regression for a live run (25008faa-3138-4479-8ee9-133d07ea1b06, candidate
+// reactivate-high-value-customers): a candidate that genuinely attempted a terminal decision, was
+// correctly rejected for never achieving a satisfying read, and exhausted its budget without
+// curing it (resultStatus: "INVESTIGATION_FAILED") was defaulting to NON_EXECUTABLE ->
+// CAPABILITY_RETRIEVAL_FAILURE — "no Shopify write operation exists" — which is false; the real
+// gap is "never got a read". Must be reported as an evidence gap, not a capability gap.
+test("INVESTIGATION_FAILED is reported as INSUFFICIENT_EVIDENCE, never CAPABILITY_RETRIEVAL_FAILURE, even with no resolvable family", () => {
+  const detail = classifyDispositionDetail({
+    candidateStatus: "NON_EXECUTABLE", // classifyCandidateOutcome's default fallback for this status
+    resultStatus: "INVESTIGATION_FAILED",
+    reason: "Recommendation decisions require at least one successful Shopify read (shopify_query).",
+    family: null,
+  });
+  assert.equal(detail, CANDIDATE_DISPOSITION_DETAIL.insufficientEvidence);
+  assert.notEqual(detail, CANDIDATE_DISPOSITION_DETAIL.capabilityRetrievalFailure);
+});
+
 test("resolveCandidateFamily prefers relevantFamilyId, falls back to a resolved opportunityCoverage entry", () => {
   const surface = { families: [family({ id: "customers" }), family({ id: "discounts_promotions" })] };
   assert.equal(resolveCandidateFamily({ relevantFamilyId: "discounts_promotions" }, surface).id, "discounts_promotions");

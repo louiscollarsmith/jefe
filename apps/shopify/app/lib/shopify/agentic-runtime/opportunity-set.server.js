@@ -146,9 +146,14 @@ export async function persistFreshOpportunitySet(
  *
  * Returns the claimed row, or null if nothing is claimable (the set is exhausted).
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ opportunitySetId: string; runId: string; now?: Date }} input
+ * @param {{ opportunitySetId: string; runId: string; now?: Date; excludeCandidateIds?: string[] }} input
+ *   `excludeCandidateIds` (docs/ops/recommendation-convergence-vs-evidence-fix/): a candidate
+ *   requeued to QUEUED after ITERATION_LIMIT is otherwise immediately reclaimable — without this,
+ *   the very next claim in the same run's loop would re-select it and burn another full iteration
+ *   budget on it. Callers track their own already-tried-this-run ids and pass them here so the
+ *   requeue is genuinely deferred to a *future* run, not retried within this one.
  */
-export async function claimNextCandidate(prisma, { opportunitySetId, runId, now = new Date() }) {
+export async function claimNextCandidate(prisma, { opportunitySetId, runId, now = new Date(), excludeCandidateIds = [] }) {
   const resumed = await prisma.merchantOpportunityCandidate.findFirst({
     where: {
       opportunitySetId,
@@ -162,6 +167,7 @@ export async function claimNextCandidate(prisma, { opportunitySetId, runId, now 
     where: {
       opportunitySetId,
       status: { in: [CANDIDATE_CONSUMPTION_STATUS.queued, CANDIDATE_CONSUMPTION_STATUS.inProgress] },
+      ...(excludeCandidateIds.length ? { id: { notIn: excludeCandidateIds } } : {}),
     },
     orderBy: { rank: "asc" },
   });
@@ -199,6 +205,16 @@ export async function resolveCandidate(
   prisma,
   { id, status, finalDisposition = null, reason = null, recommendationId = null, now = new Date() },
 ) {
+  // docs/ops/recommendation-convergence-vs-evidence-fix/: requeuing after ITERATION_LIMIT (a
+  // convergence/runtime failure, not a substantive judgement) must reset the claim itself — not
+  // just the status string — or the candidate stays permanently owned by this run's runId/claimedAt
+  // even though it was never actually decided. resolvedAt stays null: it hasn't been resolved.
+  if (status === CANDIDATE_CONSUMPTION_STATUS.queued) {
+    return prisma.merchantOpportunityCandidate.update({
+      where: { id },
+      data: { status, finalDisposition: null, reason: null, investigatedByRunId: null, claimedAt: null, resolvedAt: null },
+    });
+  }
   return prisma.merchantOpportunityCandidate.update({
     where: { id },
     data: { status, finalDisposition, reason, recommendationId, resolvedAt: now },
