@@ -63,6 +63,25 @@ const LIFECYCLE_TOOLS = Object.freeze([
   "defer_action",
 ]);
 
+/**
+ * Tools that mint a new semantic Action revision (via updateSemanticActionDraft). Structural
+ * counterpart to "scope revision must not imply acceptance": merchant wording that reads like
+ * approval ("let's go for X, only feature that one") is not trusted to distinguish "revise the
+ * plan" from "execute the plan" — instead, accept_action is refused whenever one of these already
+ * succeeded earlier in the SAME merchant message's tool-call loop (the shared `ledger` spans one
+ * runAgenticActionChat invocation, i.e. one merchant message, across all its iterations). A
+ * revision minted this turn has never been shown to the merchant, so it cannot also be the thing
+ * they just approved — acceptance always needs its own, later, explicit confirmation turn.
+ */
+const REVISION_PRODUCING_TOOLS = Object.freeze([
+  "update_action_scope",
+  "update_action_constraints",
+  "update_action_eligibility",
+  "restore_action_revision",
+  "update_action_parameters",
+  "replan_action",
+]);
+
 const TOOL_EFFECT = Object.freeze({
   read: "read",
   stateChange: "state_change",
@@ -450,6 +469,8 @@ export function buildAgenticActionChatSystemPrompt() {
 
 The Action has NOT been accepted unless action.lifecycle.accepted is true. Before acceptance you may inspect the semantic Action and investigate Shopify using read operations. You may update the semantic Action draft when the merchant asks you to resolve or change details such as scope, eligibility, parameters or write protections.
 
+Revising the plan is never itself acceptance, even when the merchant's wording sounds approval-flavored ("let's go for X, only feature that one" is a scope change, not a go-ahead). If the merchant's message narrows or changes the plan, call the matching update/replan tool for that and stop there — do not also call accept_action in the same reply. This is enforced structurally (accept_action fails if you revise the plan first in the same reply), so attempting both wastes a turn; describe the revised plan and wait for the merchant's next message to actually accept it.
+
 CURRENT ELIGIBILITY CRITERIA and WRITE PROTECTIONS are provided separately in the Action state. Eligibility decides which resources qualify. Write protections decide what must not be mutated. Do not infer that "do not change inventory" means inventory cannot be used for eligibility. Do not reconstruct an "original rule" from conversation; if the merchant asks to forget a change and restore the original rule, call restore_action_revision with which=original.
 
 When the merchant adds a selection rule such as a minimum available quantity, persist it with update_action_eligibility. When working out candidate products, apply the current eligibility criteria to Shopify reads and record which criteria each product passed or failed.
@@ -595,15 +616,40 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
     return shopifyToolResult(annotateShopifyReadWithEligibility(result, state));
   }
   if (tool === "accept_action") {
-    // Check whether execution is already running for the current revision
+    // Structural gate: a revision minted earlier in this SAME merchant message cannot also be
+    // accepted in that message. This is what makes "scope revision must not imply acceptance"
+    // true regardless of how the merchant's wording reads — even if the model (mis)reads "let's
+    // go for Borderlands, only feature that one" as approval-flavored, the revision it just
+    // produced has not yet been shown to the merchant, so acceptance always needs its own,
+    // separate, later confirmation turn.
+    const revisedThisMessage = ledger.some(
+      (row) => row.ok && REVISION_PRODUCING_TOOLS.includes(row.tool),
+    );
+    if (revisedThisMessage) {
+      return toolFail(
+        tool,
+        "REVISION_JUST_CHANGED",
+        "I've updated the plan — let me know if this looks right, then say the word and I'll execute it.",
+      );
+    }
+    // Check whether execution is already running/complete for the CURRENT semantic
+    // Action revision. A job keyed only by actionId can outlive the revision it was
+    // accepted for — the merchant can revise scope/eligibility after acceptance, which
+    // mints a new revision (updateSemanticActionDraft) without retroactively cancelling
+    // a job that already finished. Comparing acceptedRevision here is what stops a
+    // long-superseded "succeeded" job from permanently telling every later revision
+    // "already completed" (see the false-completion bug this guards against).
+    const currentRevision = state?.semanticAction?.revision ?? null;
     const existingJobState = await getAgenticExecutionJobState(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: input.actionId,
     });
+    const jobIsForCurrentRevision =
+      Boolean(currentRevision) && existingJobState.acceptedRevision === currentRevision;
     if (
-      existingJobState.status === "queued" ||
-      existingJobState.status === "running"
+      jobIsForCurrentRevision &&
+      (existingJobState.status === "queued" || existingJobState.status === "running")
     ) {
       return toolOk(tool, {
         effect: TOOL_EFFECT.externalWrite,
@@ -611,7 +657,7 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
         facts: { accepted: true, alreadyRunning: true, jobStatus: existingJobState.status },
       });
     }
-    if (existingJobState.status === "succeeded") {
+    if (jobIsForCurrentRevision && existingJobState.status === "succeeded") {
       return toolOk(tool, {
         effect: TOOL_EFFECT.externalWrite,
         message: "This Action has already been completed.",
@@ -637,19 +683,26 @@ async function runAgenticActionChatTool(prisma, input, state, ledger, call, logg
   }
   if (tool === "reject_action" || tool === "defer_action") {
     const declining = tool === "reject_action";
+    // Same revision-scoping as accept_action above: only a job accepted for the
+    // action's CURRENT revision can block reject/defer. A stale job from a
+    // superseded revision must not stop the merchant from declining or holding
+    // the revision actually on the table now.
+    const currentRevision = state?.semanticAction?.revision ?? null;
     const existingJobState = await getAgenticExecutionJobState(prisma, {
       merchantId: input.merchantId,
       shopId: input.shopId,
       actionId: input.actionId,
     });
-    if (existingJobState.status === "queued" || existingJobState.status === "running") {
+    const jobIsForCurrentRevision =
+      Boolean(currentRevision) && existingJobState.acceptedRevision === currentRevision;
+    if (jobIsForCurrentRevision && (existingJobState.status === "queued" || existingJobState.status === "running")) {
       return toolFail(
         tool,
         "EXECUTION_IN_PROGRESS",
         "Jefe is already carrying this Action out, so it can't be cancelled from here.",
       );
     }
-    if (existingJobState.status === "succeeded") {
+    if (jobIsForCurrentRevision && existingJobState.status === "succeeded") {
       return toolFail(
         tool,
         "ALREADY_COMPLETED",

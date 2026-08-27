@@ -60,6 +60,7 @@ function makeRec(overrides = {}) {
     supportingInsightIds: overrides.supportingInsightIds ?? [],
     feasibleWriteOperations: overrides.feasibleWriteOperations ?? ["collectionCreate"],
     verificationPlan: "Verify after execution.",
+    reversalStrategy: "Fixture reversal strategy.",
     confidence: "reasonable",
     assumption: null,
     caveat: null,
@@ -490,6 +491,7 @@ function validLoopRec(overrides = {}) {
     supportingInsightIds: [],
     feasibleWriteOperations: ["collectionCreate"],
     verificationPlan: "Read the collection back.",
+    reversalStrategy: "Fixture reversal strategy.",
     confidence: "reasonable",
     ...overrides,
   };

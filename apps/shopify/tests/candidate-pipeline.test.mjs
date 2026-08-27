@@ -239,6 +239,7 @@ function validRec(overrides = {}) {
     supportingInsightIds: [],
     feasibleWriteOperations: ["productUpdate"],
     verificationPlan: "Read the product back and confirm status ACTIVE.",
+    reversalStrategy: "Fixture reversal strategy.",
     confidence: "strong",
     ...overrides,
   };

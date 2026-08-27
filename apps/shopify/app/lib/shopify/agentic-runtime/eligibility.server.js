@@ -201,6 +201,92 @@ export function validatePromiseConsistency(recommendation, criteria) {
 }
 
 /**
+ * Merchant-facing performance/ranking descriptors ("proven seller", "slow mover", ...) that make
+ * a comparative or superlative claim about specific candidates. Generic by construction — no
+ * product/collection names, no fixed metric — any descriptor of this shape must be backed by a
+ * structured performanceClaims entry citing a real measured metric and evidence, the same way
+ * QUALIFIER_DETECTORS forces "in-stock"/"high-margin" wording into structured eligibilityCriteria.
+ */
+const PERFORMANCE_CLAIM_PATTERN =
+  /\b(top[-\s]?sell(?:er|ing)|best[-\s]?sell(?:er|ing)|proven seller|strongest seller|weakest seller|slow[-\s]?mov(?:er|ing)|fast[-\s]?mov(?:er|ing)|fastest[-\s]?(?:moving|selling)|slowest[-\s]?(?:moving|selling)|best[-\s]?performing|worst[-\s]?performing|under[-\s]?perform(?:ing|s)?|out[-\s]?perform(?:ing|s)?|declining sales|revenue opportunity|highest[-\s]?(?:revenue|margin|selling|converting)|lowest[-\s]?(?:revenue|margin|selling|converting)|most popular|least popular|highest[-\s]?demand|repeat[-\s]?purchase (?:leader|champion)|best[-\s]?margin)\b/i;
+
+/**
+ * Hedge/example language ("such as a featured collection", "for example", "could be", "one option
+ * would be") that presents the intervention as an unresolved example among alternatives rather
+ * than the one concrete, resolved Shopify mechanism actually being proposed. Generic — matches
+ * the shape of hedging, not any specific intervention or resource type.
+ */
+const HEDGE_LANGUAGE_PATTERN =
+  /\b(such as(?: a| an)?\b|for example|e\.g\.|for instance|something like|or similar|one (?:way|option)(?: to| would be)?|options? (?:include|such as)|could be (?:a|an)|might be (?:a|an)|possibly (?:a|an))\b/i;
+
+/**
+ * @param {{ title?: string; summary?: string; outcome?: string; scope?: unknown; mechanism?: string; materialExpectedEffects?: string[] }} recommendation
+ */
+export function detectPerformanceClaimLanguage(recommendation) {
+  const prose = [
+    recommendation?.title,
+    recommendation?.summary,
+    recommendation?.outcome,
+    recommendation?.whyThisAction,
+    recommendation?.whyNow,
+    recommendation?.diagnosedProblem,
+    recommendation?.mechanism,
+    scopeText(recommendation?.scope),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return PERFORMANCE_CLAIM_PATTERN.test(prose);
+}
+
+/**
+ * @param {{ mechanism?: string; outcome?: string; summary?: string; materialExpectedEffects?: string[] }} recommendation
+ */
+export function detectHedgeLanguage(recommendation) {
+  const prose = [
+    recommendation?.mechanism,
+    recommendation?.outcome,
+    recommendation?.summary,
+    ...(Array.isArray(recommendation?.materialExpectedEffects) ? recommendation.materialExpectedEffects : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return HEDGE_LANGUAGE_PATTERN.test(prose);
+}
+
+/**
+ * @param {any} recommendation
+ * @param {string[]} knownMeasures
+ */
+export function validatePerformanceClaims(recommendation, knownMeasures = []) {
+  const claims = Array.isArray(recommendation?.performanceClaims) ? recommendation.performanceClaims : [];
+  if (!claims.length) return { ok: true };
+  const measures = new Set(knownMeasures);
+  const unknownMetric = claims.find((claim) => measures.size && !measures.has(String(claim?.metric ?? "")));
+  if (unknownMetric) {
+    return {
+      ok: false,
+      errorCode: "PERFORMANCE_CLAIM_UNKNOWN_METRIC",
+      field: "performanceClaims",
+      invalidValues: [unknownMetric.metric],
+      allowedValues: [...measures],
+      error: `performanceClaims metric "${unknownMetric.metric}" is not a measurable commerce metric.`,
+      repairInstruction: "Use one of allowedValues as the metric, or run a commerce_calculation to determine which measure actually supports this claim.",
+    };
+  }
+  const unsupported = claims.find((claim) => !Array.isArray(claim?.evidence) || !claim.evidence.length);
+  if (unsupported) {
+    return {
+      ok: false,
+      errorCode: "PERFORMANCE_CLAIM_MISSING_EVIDENCE",
+      field: "performanceClaims",
+      error: `performanceClaims entry for "${unsupported?.descriptor ?? "unknown descriptor"}" has no evidence rows.`,
+      repairInstruction: "Add at least one evidence row (candidate + measured value) from a commerce_calculation result for this claim.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * @param {any} resource
  * @param {any} criterion
  */

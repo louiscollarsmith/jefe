@@ -105,7 +105,7 @@ function rec(title, diagnosedProblem) {
     eligibilityCriteria: [{ resourceType: "Order", field: "id", operator: "eq", value: "1" }],
     materialExpectedEffects: ["e"], diagnosedProblem, mechanism: "m", whyThisAction: "w", whyNow: "n",
     supportingBeliefIds: ["b-1"], supportingInsightIds: [], feasibleWriteOperations: ["orderUpdate"],
-    verificationPlan: "v", confidence: "strong",
+    verificationPlan: "v", reversalStrategy: "Fixture reversal strategy.", confidence: "strong",
   };
 }
 
