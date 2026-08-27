@@ -40,6 +40,7 @@ function acceptedActionFixture() {
           revision: "rev-1",
           outcome: "Product gid://shopify/Product/1 is DRAFT.",
           verificationPlan: "Read the product back and confirm status is DRAFT.",
+          reversalStrategy: "Fixture reversal strategy.",
           eligibilityCriteria: [],
         },
       },

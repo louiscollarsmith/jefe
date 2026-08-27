@@ -11,14 +11,132 @@ import {
   publicShopifyToolResults,
   runShopifyGatewayTool,
 } from "../gateway/tools.server.js";
+import { loadGatewaySchemaIndex } from "../gateway/schema-index.server.js";
 import {
   eligibilityEncodingForPrompt,
   normalizeEligibilityCriteria,
   normalizeWriteProtections,
   validateEligibilityCriteria,
   validatePromiseConsistency,
+  validatePerformanceClaims,
+  detectPerformanceClaimLanguage,
+  detectHedgeLanguage,
   AGENTIC_ELIGIBILITY_CONSISTENCY_VERSION,
 } from "./eligibility.server.js";
+import {
+  executeCommerceCalculations,
+  commerceCalculationCatalogForPrompt,
+} from "../../merchant-memory/commerce-calculations.server.js";
+
+/** A recommendation-investigation-only tool: deterministic, tenant-scoped commerce measurement
+ * (ranking/aggregate/comparison) so a "proven seller"/"slow mover"-style claim can be grounded in
+ * real computed evidence instead of the model's own arithmetic over raw Shopify reads. Reuses the
+ * same engine (app/lib/merchant-memory/commerce-calculations.server.js) the Merchant Memory chat
+ * analyst already uses — not a parallel calculation system. */
+export const COMMERCE_CALCULATION_TOOL = "commerce_calculation";
+
+/** Extends the shared Gateway tool-call schema (used unchanged by chat/execution/verification)
+ * with commerce_calculation's own arguments, scoped to recommendation-agent.server.js only —
+ * deliberately not merged into SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA itself, which is Shopify-specific
+ * shared infrastructure. `calculationKind` (not `kind`) avoids colliding with shopify_schema's
+ * existing QUERY/MUTATION-enum `kind` argument in the same shared arguments object. */
+const RECOMMENDATION_TOOL_CALL_SCHEMA = {
+  ...SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA,
+  items: {
+    ...SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA.items,
+    properties: {
+      ...SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA.items.properties,
+      arguments: {
+        ...SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA.items.properties.arguments,
+        properties: {
+          ...SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA.items.properties.arguments.properties,
+          calculationKind: {
+            type: Type.STRING,
+            enum: ["ranking", "aggregate", "comparison", "timeseries", "impact_estimate"],
+            nullable: true,
+          },
+          measure: { type: Type.STRING, nullable: true },
+          dimensions: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
+          calculationFilters: { type: Type.OBJECT, nullable: true },
+          calculationWindow: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              days: { type: Type.NUMBER, nullable: true },
+              label: { type: Type.STRING, nullable: true },
+            },
+          },
+          topN: { type: Type.NUMBER, nullable: true },
+        },
+      },
+    },
+  },
+};
+
+/**
+ * Executes one commerce_calculation tool call via the same deterministic, tenant-scoped
+ * calculation engine the Merchant Memory chat analyst uses — recommendation-generation gets real
+ * measured evidence for a "proven seller"/"slow mover"-style claim instead of the model doing its
+ * own arithmetic over raw Shopify reads.
+ * @param {any} prisma @param {string} merchantId @param {string} shopId
+ * @param {{ tool: string; arguments?: Record<string, any> }} toolCall
+ * @param {Pick<Console, "info" | "warn" | "error">} logger
+ */
+async function runCommerceCalculationTool(prisma, merchantId, shopId, toolCall, logger) {
+  const args = toolCall.arguments ?? {};
+  const measure = String(args.measure ?? "");
+  if (!measure) {
+    return {
+      tool: COMMERCE_CALCULATION_TOOL,
+      ok: false,
+      message: "commerce_calculation requires a measure.",
+      facts: {},
+      error: { code: "MISSING_MEASURE", message: "Provide a measure, e.g. units_sold or revenue." },
+    };
+  }
+  const request = {
+    id: `perf_${measure}_${Date.now()}`,
+    kind: String(args.calculationKind ?? "ranking"),
+    measure,
+    dimensions: Array.isArray(args.dimensions) ? args.dimensions : ["product"],
+    filters: args.calculationFilters ?? {},
+    window: args.calculationWindow ?? { days: 30, label: "trailing_30d" },
+    topN: Number.isFinite(Number(args.topN)) ? Number(args.topN) : 10,
+  };
+  const batch = await executeCommerceCalculations(prisma, {
+    merchantId,
+    shopId,
+    requests: [request],
+    source: "recommendation_generation",
+    logger,
+  });
+  const result = batch.results[0];
+  if (!result?.ok) {
+    return {
+      tool: COMMERCE_CALCULATION_TOOL,
+      ok: false,
+      message: result?.error ?? "commerce_calculation failed.",
+      facts: { measure, kind: request.kind },
+      error: { code: "CALCULATION_FAILED", message: result?.error ?? "commerce_calculation failed." },
+    };
+  }
+  return {
+    tool: COMMERCE_CALCULATION_TOOL,
+    ok: true,
+    message: `Computed ${measure} (${request.kind}) over ${result.rows?.length ?? 0} row(s).`,
+    facts: {
+      measure: result.measure,
+      kind: result.kind,
+      window: result.window,
+      rows: (result.rows ?? []).slice(0, 20),
+      totals: result.totals ?? null,
+      currency: result.currency ?? null,
+      caveats: result.caveats ?? [],
+      dataQuality: result.dataQuality ?? null,
+    },
+    error: null,
+  };
+}
 
 const log = baseLogger.child({ component: "agentic-shopify-recommendation" });
 
@@ -171,12 +289,45 @@ const SEMANTIC_RECOMMENDATION_PROPERTIES = {
   supportingInsightIds: { type: Type.ARRAY, items: { type: Type.STRING } },
   feasibleWriteOperations: { type: Type.ARRAY, items: { type: Type.STRING } },
   verificationPlan: { type: Type.STRING },
+  // Invariant: "concrete execution semantics before executable recommendation" (see
+  // eligibility.server.js detectHedgeLanguage). Required alongside verificationPlan rather than
+  // optional — a resolved intervention with no stated way back is not a resolved intervention.
+  reversalStrategy: { type: Type.STRING },
   confidence: {
     type: Type.STRING,
     enum: ["strong", "reasonable", "emerging"],
   },
   assumption: { type: Type.STRING, nullable: true },
   caveat: { type: Type.STRING, nullable: true },
+  // Structured substantiation for any performance/ranking descriptor used in the recommendation
+  // wording ("proven seller", "slow mover", ...) — see eligibility.server.js
+  // detectPerformanceClaimLanguage/validatePerformanceClaims. Empty when no such descriptor is used.
+  performanceClaims: {
+    type: Type.ARRAY,
+    nullable: true,
+    description:
+      "Required whenever the recommendation wording uses a performance/ranking descriptor about specific candidates (e.g. \"proven seller\", \"slow mover\", \"top performer\"). One entry per descriptor: the metric you measured (from a commerce_calculation tool result), the window, and per-candidate evidence values. Do not assert a comparative or superlative claim without this.",
+    items: {
+      type: Type.OBJECT,
+      required: ["descriptor", "metric", "evidence"],
+      properties: {
+        descriptor: { type: Type.STRING, description: "The merchant-facing term used, e.g. \"proven seller\"." },
+        metric: { type: Type.STRING, description: "The measured commerce metric that supports this descriptor, e.g. units_sold, revenue, order_count. Must match a metric you actually computed via commerce_calculation." },
+        window: { type: Type.STRING, nullable: true },
+        evidence: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              productId: { type: Type.STRING, nullable: true },
+              title: { type: Type.STRING, nullable: true },
+              value: { type: Type.NUMBER, nullable: true },
+            },
+          },
+        },
+      },
+    },
+  },
 };
 
 const SEMANTIC_RECOMMENDATION_REQUIRED = [
@@ -194,6 +345,7 @@ const SEMANTIC_RECOMMENDATION_REQUIRED = [
   "supportingInsightIds",
   "feasibleWriteOperations",
   "verificationPlan",
+  "reversalStrategy",
   "confidence",
   "eligibilityCriteria",
   "writeProtections",
@@ -370,7 +522,7 @@ export async function generateAgenticShopifyRecommendation(input) {
 
   const recommendationSchema = {
     ...AGENTIC_RECOMMENDATION_SCHEMA,
-    properties: { ...AGENTIC_RECOMMENDATION_SCHEMA.properties, toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA },
+    properties: { ...AGENTIC_RECOMMENDATION_SCHEMA.properties, toolCalls: RECOMMENDATION_TOOL_CALL_SCHEMA },
   };
 
   // Structural fix for a traced regression (docs/ops/recommendation-candidate-turn-waste-fix/,
@@ -448,6 +600,7 @@ export async function generateAgenticShopifyRecommendation(input) {
       SHOPIFY_GATEWAY_TOOL.query,
       SHOPIFY_GATEWAY_TOOL.prepareMutation,
       SHOPIFY_GATEWAY_TOOL.executeMutation,
+      COMMERCE_CALCULATION_TOOL,
     ]);
     mergeCoverageUpdates(coverageLedger, turn.opportunityCoverage);
     turns.push({ ...turn, usage: llmResult.usage ?? null, durationMs: llmResult.durationMs ?? null });
@@ -498,6 +651,13 @@ export async function generateAgenticShopifyRecommendation(input) {
           },
         }, iteration));
         newWorkThisTurn += 1;
+        continue;
+      }
+      if (toolCall.tool === COMMERCE_CALCULATION_TOOL) {
+        toolResults.push(tagToolResult(
+          await runCommerceCalculationTool(input.prisma, input.merchantId, input.shopId, toolCall, logger),
+          iteration,
+        ));
         continue;
       }
       const existing = findExistingGatewayQuery(toolResults, toolCall);
@@ -591,7 +751,10 @@ export async function generateAgenticShopifyRecommendation(input) {
       }
       const recommendation = turn.recommendation;
       const validation = /** @type {any} */ (
-        validateSemanticRecommendation(recommendation, context, turn.rawRecommendation)
+        validateSemanticRecommendation(recommendation, context, turn.rawRecommendation, {
+          toolResults,
+          ownResultsStartIndex,
+        })
       );
       if (!validation.ok && isFocusedSemanticRepairError(validation)) {
         let repair;
@@ -603,6 +766,7 @@ export async function generateAgenticShopifyRecommendation(input) {
             validation,
             investigationState: postToolInvestigationState,
             toolResults,
+            ownResultsStartIndex,
             context,
             runId: input.runId ?? null,
             candidateId: focusCandidate?.candidateId ?? null,
@@ -894,6 +1058,12 @@ To justify a merchandising action, you must read current Shopify collections/nav
 
 Tool availability is a feasibility condition, not a justification. A Shopify mutation being executable is not a reason to select it.
 
+## Resolved intervention and evidenced claims
+
+A recommendation must commit to ONE concrete, resolved intervention — the exact real Shopify mutation(s) in \`feasibleWriteOperations\`, a stated \`reversalStrategy\`, and a stated \`verificationPlan\`. Never describe the intervention as an example among options ("such as...", "for example...", "could be a featured collection..."); if you have not yet resolved to one specific mechanism, you are not ready to recommend.
+
+If the recommendation's wording makes a comparative or superlative performance claim about specific candidates ("proven seller", "slow mover", "top performer", "declining", ...), you must have actually measured it: use \`commerce_calculation\` to compute the appropriate metric (units sold, revenue, order count, margin, ... — pick whichever fits the claim, there is no single fixed definition) and record the metric, window and per-candidate evidence in \`performanceClaims\`. Do not present two candidates as equally qualifying under the same superlative without a computed reason for preferring one.
+
 ## Reasoning sequence
 
 Reason in this order:
@@ -1019,15 +1189,17 @@ export function buildGatewayCandidateInvestigationSystemPrompt() {
 
 You receive \`focusCandidate\`: a diagnosed problem, its supporting Merchant Memory evidence, a hypothesised mechanism, and a possible intervention. A prior discovery pass already ranked this above other candidates — do not reconsider whether it is the best opportunity, and do not invent a different one.
 
-You have two tools:
+You have three tools:
 - shopify_schema — look up real Shopify Admin GraphQL fields (search by concept, inspect a root field, list fields, inspect an enum/input type). Use it when you are not confident a field or argument exists. You do NOT need to call it before every query — if you already know the correct GraphQL, write it directly.
 - shopify_query — run a read-only GraphQL document you write yourself, with variables. It is validated deterministically before it reaches Shopify: if you got a field or argument wrong, you get back a specific, compact error (not a vague failure) — read it and repair your document in your next tool call. It can never execute a mutation, no matter what the document contains.
+- commerce_calculation — run a deterministic, tenant-scoped commerce measurement (measure such as units_sold, revenue, order_count, average_order_value, gross_margin, stock_cover_days, ...; calculationKind ranking/aggregate/comparison; dimensions e.g. ["product"]; optional calculationFilters/calculationWindow/topN). Use this — not your own arithmetic over shopify_query rows — whenever the recommendation's thesis depends on a comparative or superlative claim about specific candidates ("proven seller", "slow mover", "top performer", "declining", ...). It returns real computed rows with a value per candidate.
 
 Your job this turn:
 1. Read \`focusCandidate.businessEvidenceRefs\`.
 2. Use shopify_query (optionally preceded by shopify_schema if you need to confirm a field) to read current Shopify state and confirm or disprove the candidate's factual predicates (e.g. "product X is DRAFT with available inventory > 0").
-3. Decide:
-   - **RECOMMEND_ACTION** — Shopify state confirms the predicates and a safe, reversible mutation implements the intervention. Return a full semantic recommendation.
+3. If the intervention or its justification names specific candidates as stronger/weaker/proven/declining/etc, call commerce_calculation to measure them with an appropriate metric before deciding — do not assert a ranking you have not actually computed, and do not present two candidates as equally strong when your job is to recommend a specific, resolved one. Pick whichever metric (units sold, revenue, order count, margin, ...) is actually appropriate to the claim and the intervention; there is no single fixed "top seller" definition. Record the metric, window, and per-candidate evidence in \`performanceClaims\` and keep the metric consistent with the wording you use.
+4. Decide:
+   - **RECOMMEND_ACTION** — Shopify state confirms the predicates and a safe, reversible mutation implements the intervention. Return a full semantic recommendation that commits to ONE concrete, resolved intervention: the exact operation(s) in \`feasibleWriteOperations\` (real Shopify mutation names — you will be corrected if one is not real), the exact resource type and target it acts on, a stated \`reversalStrategy\`, and a stated \`verificationPlan\`. Never describe the intervention as one example among options ("such as...", "for example...", "could be...") — if you are still choosing between mechanisms, that is not yet a resolved recommendation; keep investigating or return BLOCKED instead.
    - **NO_ACTIONABLE_OPPORTUNITY** or **BLOCKED** — the candidate does not hold up. Set \`candidateDisposition\` to exactly one of: REJECTED (Shopify state disproves the premise), BLOCKED_BY_EVIDENCE (a specific required input, such as cost data, is missing and cannot be read from Shopify), NON_EXECUTABLE (no safe Shopify write operation implements this intervention even though the diagnosis may be correct), ALREADY_SATISFIED (current Shopify state already achieves the outcome), or ALREADY_COVERED (an existing active Action already addresses this). Explain in \`blocker\` which Shopify state you checked.
 
 Every turn you receive \`investigationState\`, a server-computed, authoritative summary of what you have already established for this candidate — do not infer completeness from your own memory of the conversation, trust this field. When \`investigationState.investigationComplete\` is true, \`investigationState.doNotRepeat\` tells you to stop investigating and return a terminal decision this turn. Treat that as a hard instruction, not a suggestion: do not call shopify_schema or shopify_query again "to be more sure" once it is set — decide now with the evidence you have.
@@ -1096,7 +1268,13 @@ function terminalFailureStatus(toolResults, options = {}) {
       code === "MISSING_RECOMMENDATION" ||
       code === "PROMISE_CRITERIA_MISMATCH" ||
       code === "INVALID_ELIGIBILITY_CRITERIA" ||
-      code === "DUPLICATE_ELIGIBILITY_ID"
+      code === "DUPLICATE_ELIGIBILITY_ID" ||
+      code === "UNKNOWN_WRITE_OPERATION" ||
+      code === "UNRESOLVED_INTERVENTION" ||
+      code === "PERFORMANCE_CLAIM_UNSUBSTANTIATED" ||
+      code === "PERFORMANCE_CLAIM_UNKNOWN_METRIC" ||
+      code === "PERFORMANCE_CLAIM_MISSING_EVIDENCE" ||
+      code === "PERFORMANCE_CLAIM_UNGROUNDED"
     );
   });
   if (payloadFailed) return "VALIDATION_FAILED";
@@ -1399,10 +1577,32 @@ export function normalizeSemanticRecommendation(value) {
     supportingInsightIds: uniqueStrings(value.supportingInsightIds),
     feasibleWriteOperations: uniqueStrings(value.feasibleWriteOperations).slice(0, 12),
     verificationPlan: clean(value.verificationPlan, 420),
+    reversalStrategy: clean(value.reversalStrategy, 420),
     confidence: ["strong", "reasonable", "emerging"].includes(value.confidence) ? value.confidence : "emerging",
     assumption: clean(value.assumption, 240, true),
     caveat: clean(value.caveat, 240, true),
+    performanceClaims: normalizePerformanceClaims(value.performanceClaims),
   };
+}
+
+/** @param {unknown} rows */
+function normalizePerformanceClaims(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      descriptor: clean(row?.descriptor, 80),
+      metric: clean(row?.metric, 60),
+      window: clean(row?.window, 40, true),
+      evidence: (Array.isArray(row?.evidence) ? row.evidence : [])
+        .map((item) => ({
+          productId: clean(item?.productId, 200, true),
+          title: clean(item?.title, 160, true),
+          value: Number.isFinite(Number(item?.value)) ? Number(item.value) : null,
+        }))
+        .filter((item) => item.productId || item.title)
+        .slice(0, 20),
+    }))
+    .filter((row) => row.descriptor && row.metric)
+    .slice(0, 10);
 }
 
 /**
@@ -1410,9 +1610,9 @@ export function normalizeSemanticRecommendation(value) {
  * @param {any} context
  * @param {any} [rawRecommendation] Unnormalized model payload so invalid criteria are not silently dropped before validation.
  */
-export function validateSemanticRecommendation(recommendation, context, rawRecommendation = null) {
+export function validateSemanticRecommendation(recommendation, context, rawRecommendation = null, investigationEvidence = null) {
   if (!recommendation) return { ok: false, errorCode: "MISSING_RECOMMENDATION", error: "Recommendation is required." };
-  for (const field of ["title", "summary", "outcome", "scope", "diagnosedProblem", "mechanism", "whyThisAction", "whyNow", "verificationPlan"]) {
+  for (const field of ["title", "summary", "outcome", "scope", "diagnosedProblem", "mechanism", "whyThisAction", "whyNow", "verificationPlan", "reversalStrategy"]) {
     if (!recommendation[field]) {
       return {
         ok: false,
@@ -1440,6 +1640,81 @@ export function validateSemanticRecommendation(recommendation, context, rawRecom
       error: "Recommendation needs at least one plausible Shopify write operation. Do not repeat investigation.",
       repairInstruction: "Add at least one feasible write operation from your investigation and resubmit.",
     };
+  }
+  // Invariant 1 — concrete execution semantics before executable recommendation. Two independent,
+  // generic (non-collection-specific) structural checks, neither trusting the model's self-report:
+  // (a) every claimed write operation must be a real Shopify Admin API mutation, not an invented or
+  // approximate name; (b) the mechanism/outcome may not hedge with example/alternative language
+  // ("such as a featured collection") — a recommendation must commit to the one intervention it
+  // actually investigated, not present unresolved options.
+  const schemaIndex = loadGatewaySchemaIndex();
+  const unknownOperation = recommendation.feasibleWriteOperations.find((/** @type {string} */ name) => {
+    const entry = schemaIndex.byOperation.get(name);
+    return !entry || entry.operationKind !== "MUTATION";
+  });
+  if (unknownOperation) {
+    return {
+      ok: false,
+      errorCode: "UNKNOWN_WRITE_OPERATION",
+      field: "feasibleWriteOperations",
+      invalidValues: [unknownOperation],
+      error: `feasibleWriteOperations names "${unknownOperation}", which is not a real Shopify Admin API mutation. An executable recommendation must resolve to a real operation, not an approximate or invented name.`,
+      repairInstruction: "Use shopify_schema to find the real mutation that implements this intervention, and replace the invalid name with it. Do not repeat broader investigation.",
+    };
+  }
+  if (detectHedgeLanguage(recommendation)) {
+    return {
+      ok: false,
+      errorCode: "UNRESOLVED_INTERVENTION",
+      field: "mechanism",
+      error: "The recommendation describes the intervention with example/hedge language (\"such as\", \"for example\", \"could be\", ...) instead of committing to the one concrete Shopify mechanism it investigated.",
+      repairInstruction: "Rewrite mechanism, outcome, summary and materialExpectedEffects to state the single resolved intervention directly — the exact operation(s) in feasibleWriteOperations — with no example/alternative wording. Do not repeat Shopify investigation.",
+    };
+  }
+  // Invariant 2 — claims central to the recommendation thesis must be evidenced. Generic: no fixed
+  // "top seller = revenue" definition. A performance/ranking descriptor in the wording ("proven
+  // seller", "slow mover", ...) must be grounded in something real — either a performanceClaims
+  // entry naming the metric actually measured (traced to a real commerce_calculation this
+  // investigation ran, not asserted numbers), or a cited supportingBeliefId whose Merchant Memory
+  // value already carries numeric evidence (e.g. unitsSold30d, discountSharePercent — a
+  // deterministic fact, not model prose). Only bare, ungrounded assertion is rejected — a claim
+  // already backed by a real number from Merchant Memory does not also need a fresh calculation.
+  const claimShapeValidation = validatePerformanceClaims(recommendation, commerceCalculationCatalogForPrompt().measures);
+  if (!claimShapeValidation.ok) return claimShapeValidation;
+  if (detectPerformanceClaimLanguage(recommendation)) {
+    const hasPerformanceClaims = Boolean(recommendation.performanceClaims?.length);
+    const citedBeliefs = (context.merchantMemory.beliefs ?? []).filter((/** @type {any} */ b) =>
+      recommendation.supportingBeliefIds.includes(b.id),
+    );
+    const hasNumericBeliefEvidence = citedBeliefs.some((/** @type {any} */ b) => containsNumericValue(b.value));
+    if (!hasPerformanceClaims && !hasNumericBeliefEvidence) {
+      return {
+        ok: false,
+        errorCode: "PERFORMANCE_CLAIM_UNSUBSTANTIATED",
+        field: "performanceClaims",
+        error:
+          "The recommendation uses a performance/ranking descriptor (e.g. \"proven seller\", \"slow mover\") that is not backed by either a performanceClaims entry or a cited belief with numeric evidence.",
+        repairInstruction:
+          "Either add a performanceClaims entry (metric, window, per-candidate evidence) grounded in a commerce_calculation tool result, or cite the supportingBeliefId whose Merchant Memory value already contains the number that supports this claim. If the descriptor was not actually intended as a factual claim, remove it from the wording instead. Do not repeat Shopify investigation beyond what is needed for this.",
+      };
+    }
+    if (hasPerformanceClaims) {
+      const ownResults = investigationEvidence?.ownResultsStartIndex != null
+        ? (investigationEvidence.toolResults ?? []).slice(investigationEvidence.ownResultsStartIndex)
+        : (investigationEvidence?.toolResults ?? []);
+      const hasGroundedCalculation = ownResults.some(
+        (/** @type {any} */ row) => row.tool === COMMERCE_CALCULATION_TOOL && row.ok,
+      );
+      if (!hasGroundedCalculation) {
+        return {
+          ok: false,
+          errorCode: "PERFORMANCE_CLAIM_UNGROUNDED",
+          field: "performanceClaims",
+          error: "performanceClaims cites evidence, but this investigation never ran a successful commerce_calculation tool call — evidence must come from an actual measurement, not asserted numbers.",
+          repairInstruction: "Call commerce_calculation with the appropriate measure and dimensions to actually compute the values in performanceClaims, then resubmit.",
+        };
+      }
+    }
   }
   const allowedBeliefIds = (context.merchantMemory.beliefs ?? []).map((/** @type {any} */ b) => b.id);
   const allowedBeliefs = new Set(allowedBeliefIds);
@@ -1520,6 +1795,7 @@ Return the full repaired recommendation. Keep every field that is not required f
  *   validation: any;
  *   investigationState: any;
  *   toolResults: any[];
+ *   ownResultsStartIndex?: number;
  *   context: any;
  *   runId?: string | null;
  *   candidateId?: string | null;
@@ -1576,7 +1852,10 @@ export async function runFocusedSemanticRepair(input) {
       : null;
   const recommendation = rawRecommendation ? normalizeSemanticRecommendation(rawRecommendation) : null;
   const validation = /** @type {any} */ (
-    validateSemanticRecommendation(recommendation, input.context, rawRecommendation)
+    validateSemanticRecommendation(recommendation, input.context, rawRecommendation, {
+      toolResults: input.toolResults,
+      ownResultsStartIndex: input.ownResultsStartIndex,
+    })
   );
   return {
     recommendation,
@@ -1903,4 +2182,19 @@ function clean(value, max, nullable = false) {
 /** @param {unknown} value */
 function uniqueStrings(value) {
   return [...new Set((Array.isArray(value) ? value : []).map((/** @type {unknown} */ item) => clean(item, 220)).filter(Boolean))];
+}
+
+/**
+ * Bounded-depth check for at least one real numeric leaf value — deterministic Merchant Memory
+ * beliefs are already number-shaped by convention (unitsSold30d, discountSharePercent, ...), so
+ * this is a generic, no-fixed-field way to tell "a real measured fact backs this claim" from
+ * "purely descriptive prose with no number behind it" without hardcoding which belief keys count.
+ * @param {unknown} value @param {number} [depth]
+ */
+function containsNumericValue(value, depth = 0) {
+  if (depth > 4 || value == null) return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.some((item) => containsNumericValue(item, depth + 1));
+  if (typeof value === "object") return Object.values(value).some((item) => containsNumericValue(item, depth + 1));
+  return false;
 }

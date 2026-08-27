@@ -30,6 +30,8 @@ export function semanticActionFromRecommendation(recommendation) {
     materialExpectedEffects: recommendation.materialExpectedEffects ?? [],
     feasibleWriteOperations: recommendation.feasibleWriteOperations ?? [],
     verificationPlan: recommendation.verificationPlan,
+    reversalStrategy: recommendation.reversalStrategy ?? null,
+    performanceClaims: recommendation.performanceClaims ?? [],
     whyThisAction: recommendation.whyThisAction,
     whyNow: recommendation.whyNow,
     supportingBeliefIds: recommendation.supportingBeliefIds ?? [],
@@ -173,6 +175,7 @@ export function semanticActionRevision(semanticAction) {
     materialExpectedEffects: semanticAction.materialExpectedEffects ?? [],
     feasibleWriteOperations: semanticAction.feasibleWriteOperations ?? [],
     verificationPlan: semanticAction.verificationPlan,
+    reversalStrategy: semanticAction.reversalStrategy ?? null,
   });
   return `sar_${createHash("sha256").update(stable).digest("hex").slice(0, 16)}`;
 }

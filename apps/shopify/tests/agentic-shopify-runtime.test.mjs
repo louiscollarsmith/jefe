@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateAgenticShopifyRecommendation } from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
+import {
+  generateAgenticShopifyRecommendation,
+  COMMERCE_CALCULATION_TOOL,
+} from "../app/lib/shopify/agentic-runtime/recommendation-agent.server.js";
 import {
   AGENTIC_ACTION_CHAT_PROMPT_VERSION,
   agenticActionChatToolCatalogue,
@@ -307,6 +310,173 @@ test("agentic chat acceptance creates accepted revision and enqueues background 
   assert.ok(prisma.jobs[0].jobType.startsWith("agentic_shopify_execute:"));
 });
 
+test("a stale succeeded execution job for a superseded revision cannot false-claim a revised Action is already completed", async () => {
+  // Regression for the false-completion bug: getAgenticExecutionJobState is keyed only by
+  // actionId (one BackfillJob row per action, not per revision). Before the fix, accept_action
+  // treated ANY historical "succeeded" job as proof the *current* revision was done, so once one
+  // execution ran for an earlier scope, every later revision permanently read back as "already
+  // completed" — even a revision that was never accepted or executed.
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const originalRevision = action.progress.agentic.currentActionRevision;
+
+  // Simulate a prior turn that accepted and fully executed the ORIGINAL revision — without
+  // running the real background worker, since only the job/action bookkeeping matters here.
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+  await prisma.backfillJob.upsert({
+    where: { shopId_jobType: { shopId, jobType: `agentic_shopify_execute:${action.id}` } },
+    create: {
+      merchantId,
+      shopId,
+      jobType: `agentic_shopify_execute:${action.id}`,
+      status: "succeeded",
+      priority: 15,
+      runAfter: new Date(),
+      payloadJson: { actionId: action.id, acceptedRevision: originalRevision },
+      attemptCount: 1,
+      completedAt: new Date(),
+    },
+    update: {},
+  });
+
+  // Merchant now narrows scope — this mints a NEW semantic Action revision that has never been
+  // accepted or executed, distinct from the one the stale "succeeded" job ran for.
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I updated the Action draft to just London Jacket. Nothing has been changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Only London Jacket.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Only feature London Jacket.",
+    logger: quietLogger,
+  });
+  const revisedRevision = prisma.actions[0].progress.agentic.currentActionRevision;
+  assert.notEqual(revisedRevision, originalRevision);
+
+  // Merchant explicitly asks Jefe to go ahead with the (revised, never-executed) current plan.
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Going ahead with the current plan.",
+      toolCalls: [{ tool: "accept_action", arguments: {} }],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    loadOfflineToken: async () => "test-token",
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Okay. Do it.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(result.reply, /already.*completed/i);
+  // A fresh job should exist for the revised revision, not left parked on the stale "succeeded" one.
+  const job = prisma.jobs.find((row) => row.jobType === `agentic_shopify_execute:${action.id}`);
+  assert.equal(job.payloadJson.acceptedRevision, revisedRevision);
+  assert.equal(job.status, "queued");
+  assert.equal(prisma.actions[0].progress.agentic.acceptedActionRevision, revisedRevision);
+});
+
+test("a stale succeeded execution job for a superseded revision cannot block rejecting the current revision", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const originalRevision = action.progress.agentic.currentActionRevision;
+  await acceptAgenticShopifyAction(prisma, { merchantId, shopId, actionId: action.id });
+  await prisma.backfillJob.upsert({
+    where: { shopId_jobType: { shopId, jobType: `agentic_shopify_execute:${action.id}` } },
+    create: {
+      merchantId,
+      shopId,
+      jobType: `agentic_shopify_execute:${action.id}`,
+      status: "succeeded",
+      priority: 15,
+      runAfter: new Date(),
+      payloadJson: { actionId: action.id, acceptedRevision: originalRevision },
+      attemptCount: 1,
+      completedAt: new Date(),
+    },
+    update: {},
+  });
+  // Revising the draft resets status back to "proposed" (see updateSemanticActionDraft), which is
+  // what makes the row visible to acceptAgenticShopifyAction's own status filter again — but the
+  // reject/defer bug under test is independent of that: it's the job-status short-circuit inside
+  // action-chat.server.js's reject_action/defer_action handler.
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I updated the Action draft to just London Jacket. Nothing has been changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Only London Jacket.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Only feature London Jacket.",
+    logger: quietLogger,
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I've rejected this Action. Nothing was written to Shopify.",
+      toolCalls: [{ tool: "reject_action", arguments: {} }],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Actually, don't do this at all. Forget it.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(result.reply, /already.*completed/i);
+  assert.equal(prisma.actions[0].status, "declined");
+});
+
 test("agentic chat reject_action durably declines the Action and writes no Shopify mutation", async () => {
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
@@ -586,6 +756,7 @@ test("Luna can recommend an unseen collection Action using generated Shopify API
         supportingInsightIds: [],
         feasibleWriteOperations: ["collectionCreate", "collectionAddProducts"],
         verificationPlan: "Read the collection back and confirm qualifying products are members.",
+        reversalStrategy: "Remove the created collection or its product memberships via collectionDelete/collectionRemoveProducts.",
         confidence: "reasonable",
       },
     };
@@ -733,6 +904,253 @@ test("recommendation loop reports validation failure instead of generic blocked 
   assert.equal(result.ok, false);
   assert.equal(result.status, "VALIDATION_FAILED");
   assert.match(result.blocker, /unsupported belief id/i);
+});
+
+// ---------------------------------------------------------------------------
+// Invariant 1 — concrete execution semantics before an executable recommendation.
+// A recommendation like "such as a featured collection" must never reach RECOMMEND_ACTION: the
+// mechanism must commit to one resolved intervention, and feasibleWriteOperations must be real
+// Shopify mutations, not invented or approximate names.
+// ---------------------------------------------------------------------------
+
+/** Iteration 0: one Shopify read (validateInvestigation requires it before any terminal status is
+ * honored, regardless of what the semantic-recommendation validators below separately check).
+ * Iteration 1+: the scripted recommendation under test. */
+function readThenRecommend(recommendationOrFn) {
+  return scriptedProvider((payload) => {
+    if (payload.iteration === 0) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document: "query { products(first: 5) { edges { node { id title } } } }" } },
+        ],
+      };
+    }
+    return {
+      status: "RECOMMEND_ACTION",
+      recommendation: typeof recommendationOrFn === "function" ? recommendationOrFn(payload) : recommendationOrFn,
+    };
+  });
+}
+
+test("a recommendation that hedges the intervention with example/alternative wording cannot become executable", async () => {
+  const provider = readThenRecommend({
+    ...semanticCollectionRecommendation(),
+    mechanism:
+      "A temporary, reversible merchandising placement — such as a featured collection — would give this product a discoverable path.",
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.match(result.blocker, /example|hedge|resolved/i);
+});
+
+test("a recommendation naming a non-real Shopify mutation cannot become executable", async () => {
+  const provider = readThenRecommend({
+    ...semanticCollectionRecommendation(),
+    feasibleWriteOperations: ["collectionFeatureProduct"], // not a real Shopify Admin API mutation
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.match(result.blocker, /not a real Shopify Admin API mutation/i);
+});
+
+test("a recommendation with a resolved, real intervention and no hedge language becomes executable", async () => {
+  // Sanity check that the two invariant-1 gates above are precise, not merely "reject everything":
+  // a properly resolved recommendation using the SAME base fixture still succeeds.
+  const provider = readThenRecommend(semanticCollectionRecommendation());
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "RECOMMEND_ACTION");
+});
+
+// ---------------------------------------------------------------------------
+// Invariant 2 — claims central to the recommendation thesis must be evidenced. No fixed "top
+// seller = revenue" definition: a performance/ranking descriptor must be backed by either a
+// performanceClaims entry grounded in a real commerce_calculation call, or a cited belief that
+// already carries numeric evidence — never bare assertion.
+// ---------------------------------------------------------------------------
+
+test("a 'proven seller' recommendation with no evidence at all cannot become executable", async () => {
+  const provider = readThenRecommend({
+    ...semanticCollectionRecommendation(),
+    whyThisAction: "This is a proven seller and deserves more visibility.",
+    supportingBeliefIds: [],
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.match(result.blocker, /performance.*ranking descriptor/i);
+});
+
+test("a 'proven seller' recommendation grounded in a real commerce_calculation becomes executable", async () => {
+  const provider = scriptedProvider((payload) => {
+    if (payload.iteration === 0) {
+      return {
+        status: "CONTINUE",
+        toolCalls: [
+          { tool: SHOPIFY_GATEWAY_TOOL.query, arguments: { document: "query { products(first: 5) { edges { node { id title } } } }" } },
+          {
+            tool: COMMERCE_CALCULATION_TOOL,
+            arguments: { measure: "units_sold", calculationKind: "ranking", dimensions: ["product"] },
+          },
+        ],
+      };
+    }
+    return {
+      status: "RECOMMEND_ACTION",
+      recommendation: {
+        ...semanticCollectionRecommendation(),
+        whyThisAction: "This is a proven seller, measured by trailing units sold.",
+        performanceClaims: [
+          {
+            descriptor: "proven seller",
+            metric: "units_sold",
+            window: "trailing_30d",
+            evidence: [{ productId: "gid://shopify/Product/1", title: "London Jacket", value: 42 }],
+          },
+        ],
+      },
+    };
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "RECOMMEND_ACTION");
+  assert.equal(result.recommendation.performanceClaims[0].metric, "units_sold");
+  assert.equal(result.recommendation.performanceClaims[0].evidence[0].value, 42);
+});
+
+test("performanceClaims asserted without ever running commerce_calculation is rejected as ungrounded", async () => {
+  const provider = readThenRecommend({
+    ...semanticCollectionRecommendation(),
+    whyThisAction: "This is a proven seller.",
+    performanceClaims: [
+      {
+        descriptor: "proven seller",
+        metric: "units_sold",
+        evidence: [{ productId: "gid://shopify/Product/1", title: "London Jacket", value: 42 }],
+      },
+    ],
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: recommendationSnapshot(),
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 3,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "VALIDATION_FAILED");
+  assert.match(result.blocker, /never ran a successful commerce_calculation/i);
+});
+
+test("a 'proven seller' recommendation grounded only in a cited belief's numeric evidence becomes executable without a commerce_calculation call", async () => {
+  const provider = readThenRecommend({
+    ...semanticCollectionRecommendation(),
+    whyThisAction: "This is a proven seller.",
+    supportingBeliefIds: ["belief_units_sold"],
+  });
+
+  const result = await generateAgenticShopifyRecommendation({
+    provider,
+    prisma: fakePrisma(),
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    snapshot: {
+      ...recommendationSnapshot(),
+      beliefs: [
+        ...recommendationSnapshot().beliefs,
+        {
+          id: "belief_units_sold",
+          key: "products.units_sold.trailing_30d",
+          label: "Units sold",
+          value: { unitsSold30d: 180 },
+          status: "active",
+        },
+      ],
+    },
+    grantedScopes: ["read_products", "write_products"],
+    maxIterations: 2,
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "RECOMMEND_ACTION");
 });
 
 test("accepted semantic Action authorizes Luna to execute multiple generated Shopify operations and verify read-back", async () => {
@@ -1080,6 +1498,180 @@ test("mutation phase accepts OUTCOME_ACHIEVED without a read-back; completion re
   assert.equal(prisma.actions[0].progress.agentic.executionJob.phase, "verifying");
 });
 
+// ---------------------------------------------------------------------------
+// Invariant 3 — scope revision must not imply acceptance. Merchant wording that narrows scope
+// ("let's go for Borderlands, only feature that one") must update the semantic Action draft but
+// must never itself enqueue execution merely because the wording also reads as approval-flavored.
+// ---------------------------------------------------------------------------
+
+test("a message that both narrows scope and reads as approval does not execute — acceptance requires a separate later turn", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  // Simulates the model (mis)reading "let's go for London Jacket, only feature that one" as both
+  // a scope narrowing AND an approval, and calling both tools in the same reply.
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Updated the plan to just London Jacket and accepted it.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Only London Jacket.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+        { tool: "accept_action", arguments: {} },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    loadOfflineToken: async () => "test-token",
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Let's go for London Jacket, only feature that one.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  // The revision was persisted...
+  const semantic = prisma.actions[0].progress.agentic.semanticAction;
+  assert.deepEqual(semantic.scope.items.map((item) => item.title), ["London Jacket"]);
+  // ...but nothing was accepted or executed for it.
+  assert.equal(prisma.actions[0].status, "proposed");
+  assert.equal(Boolean(prisma.actions[0].progress.agentic.acceptedActionRevision), false);
+  assert.equal(prisma.jobs.length, 0);
+  assert.doesNotMatch(result.reply, /accepted|executed|completed/i);
+});
+
+test("explicit acceptance in a later, separate message executes the revision normally", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  // Turn 1: narrow scope only — no acceptance attempted.
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Updated the plan to just London Jacket. Nothing has been changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Only London Jacket.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Only feature London Jacket.",
+    logger: quietLogger,
+  });
+  const revisedRevision = prisma.actions[0].progress.agentic.currentActionRevision;
+
+  // Turn 2: a separate message, unambiguous acceptance, no scope change this turn.
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Going ahead.",
+      toolCalls: [{ tool: "accept_action", arguments: {} }],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    loadOfflineToken: async () => "test-token",
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Okay. Do it.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(prisma.actions[0].progress.agentic.acceptedActionRevision, revisedRevision);
+  const job = prisma.jobs.find((row) => row.jobType === `agentic_shopify_execute:${action.id}`);
+  assert.equal(job.status, "queued");
+  assert.equal(job.payloadJson.acceptedRevision, revisedRevision);
+});
+
+test("subsequent questions after a scope narrowing reflect only the new scope, never the original", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Updated the plan to just London Jacket. Nothing has been changed in Shopify.",
+      toolCalls: [
+        {
+          tool: "update_action_scope",
+          arguments: {
+            scopeSummary: "Only London Jacket.",
+            includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+            excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Only feature London Jacket.",
+    logger: quietLogger,
+  });
+
+  let capturedState = null;
+  await runAgenticActionChat(prisma, {
+    provider: scriptedProvider((payload) => {
+      capturedState = payload.action;
+      return { status: "ANSWER", finalReply: "Only London Jacket is in scope.", toolCalls: [{ tool: "get_action", arguments: {} }] };
+    }),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "What exactly would you change in Shopify? Don't change anything yet.",
+    logger: quietLogger,
+  });
+
+  const items = capturedState.semanticAction.scope.items.map((item) => item.title);
+  assert.deepEqual(items, ["London Jacket"]);
+  assert.equal(items.includes("London Tote"), false);
+  assert.equal(capturedState.lifecycle.accepted, false);
+});
+
 function recommendationSnapshot() {
   return {
     privacy: { excludesCredentialsAndTokens: true },
@@ -1115,6 +1707,7 @@ function semanticCollectionRecommendation() {
     supportingInsightIds: [],
     feasibleWriteOperations: ["collectionCreate", "collectionAddProducts"],
     verificationPlan: "Read the collection back and confirm qualifying products are members.",
+    reversalStrategy: "Remove the created collection or its product memberships via collectionDelete/collectionRemoveProducts.",
     confidence: "reasonable",
   };
 }

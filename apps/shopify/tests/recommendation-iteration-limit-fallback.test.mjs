@@ -93,6 +93,7 @@ function rec(overrides = {}) {
     supportingInsightIds: [],
     feasibleWriteOperations: ["productUpdate"],
     verificationPlan: "v",
+    reversalStrategy: "Fixture reversal strategy.",
     confidence: "strong",
     ...overrides,
   };
