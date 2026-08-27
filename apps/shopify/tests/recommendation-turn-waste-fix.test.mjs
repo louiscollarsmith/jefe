@@ -94,6 +94,7 @@ function validRec(overrides = {}) {
     supportingInsightIds: [],
     feasibleWriteOperations: ["productUpdate"],
     verificationPlan: "Re-read the product description after the update.",
+    reversalStrategy: "Revert the description to its prior saved value.",
     confidence: "reasonable",
     ...overrides,
   };
