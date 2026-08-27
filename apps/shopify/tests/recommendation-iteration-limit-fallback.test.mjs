@@ -200,11 +200,18 @@ test("iteration-budget fallback: a candidate's own successful read is not shadow
 // ---------------------------------------------------------------------------
 
 function ownReadThenSeveralAlreadyAvailable(terminalTurn) {
-  return (payload) => {
-    if (payload.iteration === 0) return { status: "CONTINUE", toolCalls: [readCall()] }; // own FULL_SUCCESS
-    if (payload.iteration === 1) return { status: "CONTINUE", toolCalls: [readCall()] }; // own ALREADY_AVAILABLE #1
-    if (payload.iteration === 2) return { status: "CONTINUE", toolCalls: [readCall()] }; // own ALREADY_AVAILABLE #2
-    return terminalTurn; // iteration 3: concludes
+  // Branches on a call counter, not payload.iteration: the wasted-turn refund mechanism
+  // (docs/ops/recommendation-candidate-turn-waste-fix/) pins the loop's iteration counter across a
+  // duplicate-read turn that produces zero new evidence, so payload.iteration can repeat the same
+  // value across several real LLM calls. Keying this fixture off a plain call count keeps it correct
+  // regardless of how many of those calls get refunded.
+  let call = 0;
+  return () => {
+    call += 1;
+    if (call === 1) return { status: "CONTINUE", toolCalls: [readCall()] }; // own FULL_SUCCESS
+    if (call === 2) return { status: "CONTINUE", toolCalls: [readCall()] }; // own ALREADY_AVAILABLE #1
+    if (call === 3) return { status: "CONTINUE", toolCalls: [readCall()] }; // own ALREADY_AVAILABLE #2
+    return terminalTurn; // 4th call: concludes
   };
 }
 

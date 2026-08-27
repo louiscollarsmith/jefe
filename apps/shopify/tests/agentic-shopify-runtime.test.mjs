@@ -613,14 +613,22 @@ test("Luna can recommend an unseen collection Action using generated Shopify API
 });
 
 test("recommendation loop requires Shopify retrieval and read evidence before surfacing an Action", async () => {
+  // Branches on a call counter, not payload.iteration: attempting RECOMMEND_ACTION before any read
+  // is refunded (docs/ops/recommendation-candidate-turn-waste-fix/) up to a small cap, so the
+  // iteration counter can repeat the same value across several real LLM calls before the failing
+  // attempt finally consumes ordinary budget. Keying this fixture off a plain call count keeps the
+  // test's intent (a premature RECOMMEND_ACTION must be told INSUFFICIENT_INVESTIGATION, then a real
+  // read must satisfy it) correct regardless of how many attempts get refunded.
+  let call = 0;
   const provider = scriptedProvider((payload) => {
-    if (payload.iteration === 0) {
+    call += 1;
+    if (call === 1) {
       return {
         status: "RECOMMEND_ACTION",
         recommendation: semanticCollectionRecommendation(),
       };
     }
-    if (payload.iteration === 1) {
+    if (call === 2) {
       assert.ok(payload.toolResults.some((row) => row.error?.code === "INSUFFICIENT_INVESTIGATION"));
       return {
         status: "CONTINUE",
@@ -680,7 +688,11 @@ test("recommendation retry prompt includes previous validation diagnostics", asy
     logger: quietLogger,
   });
 
-  assert.equal(provider.calls.length, 1);
+  // maxIterations bounds the iteration *counter*, not the raw call count: a terminal status
+  // attempted with zero reads is refunded (docs/ops/recommendation-candidate-turn-waste-fix/) up to
+  // a small hard cap (3) before it consumes real budget, so even a maxIterations:1 run can still see
+  // a few extra do-over calls — each one re-asserting previousAttemptDiagnostics above.
+  assert.equal(provider.calls.length, 4);
 });
 
 test("recommendation loop reports validation failure instead of generic blocked after bounded repair attempts", async () => {

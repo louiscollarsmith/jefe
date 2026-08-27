@@ -373,6 +373,30 @@ export async function generateAgenticShopifyRecommendation(input) {
     properties: { ...AGENTIC_RECOMMENDATION_SCHEMA.properties, toolCalls: SHOPIFY_GATEWAY_TOOL_CALL_SCHEMA },
   };
 
+  // Structural fix for a traced regression (docs/ops/recommendation-candidate-turn-waste-fix/,
+  // 2026-08-26): two turn shapes were confirmed, from a real run's persisted trace, to burn a
+  // candidate's scarce iteration budget without producing any new evidence or a valid terminal
+  // decision — (1) declaring a terminal status before any successful read, which
+  // validateInvestigation deterministically rejects every time, and (2) re-issuing an
+  // already-satisfied read after investigationState.investigationComplete already told the model
+  // to stop (the system prompt already frames this as "a hard instruction, not a suggestion" —
+  // this is not a prompt-wording gap, the model just doesn't reliably comply). Both are refunded
+  // (the iteration counter is not advanced) up to a small, hard-capped number of times, so a model
+  // that stumbles into either pattern gets a genuine do-over instead of losing real budget to it.
+  // The cap is what keeps the loop bounded even if the model never converges — after refunds are
+  // exhausted, a repeat of either pattern consumes ordinary budget exactly as before this fix.
+  //
+  // Raised from 2 to 3 after a live post-fix replay against jefe-local-store
+  // (docs/ops/shopify-real-dev-store-recommendation-2026-08-25.json, run 2ac8561b, candidate
+  // recover-out-of-stock-variants) showed the refund mechanism working exactly as designed — a
+  // duplicate read got pinned at the same iteration and freely retried — but the model repeated
+  // the identical duplicate 5 times in that one case, 2 more than the cap absorbed, so it still
+  // lost the candidate to ITERATION_LIMIT with real evidence already in hand and no room left for a
+  // terminal decision. 3 covers that observed case; the loop remains bounded either way — a model
+  // that keeps repeating past the cap still exhausts ordinary budget and terminates safely.
+  const MAX_WASTED_TURN_REFUNDS = 3;
+  let wastedTurnRefundsRemaining = MAX_WASTED_TURN_REFUNDS;
+
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const lastCandidate = turns.map((turn) => turn.recommendation).filter(Boolean).at(-1) ?? null;
     const investigationState = buildInvestigationState(toolResults, {
@@ -451,6 +475,10 @@ export async function generateAgenticShopifyRecommendation(input) {
     let hasSuccessfulReadSoFar = toolResults.some(
       (row) => row.tool === readToolName && row.ok && row.facts?.status !== "ALREADY_AVAILABLE",
     );
+    // Counts calls that actually dispatched to Shopify or a rejected-as-excess discovery lookup —
+    // i.e. everything except a pure ALREADY_AVAILABLE duplicate. Used below to detect a turn whose
+    // only toolCalls were duplicates of already-known evidence.
+    let newWorkThisTurn = 0;
 
     for (const toolCall of turn.toolCalls) {
       if (
@@ -469,6 +497,7 @@ export async function generateAgenticShopifyRecommendation(input) {
             message: "Call shopify_query to read current Shopify state before requesting more schema lookups.",
           },
         }, iteration));
+        newWorkThisTurn += 1;
         continue;
       }
       const existing = findExistingGatewayQuery(toolResults, toolCall);
@@ -497,6 +526,7 @@ export async function generateAgenticShopifyRecommendation(input) {
           toolCall,
         );
         toolResults.push(tagToolResult(executed, iteration));
+        newWorkThisTurn += 1;
         if (toolCall.tool === discoveryToolName && executed.ok) retrievalCountSoFar += 1;
         if (toolCall.tool === readToolName && executed.ok) hasSuccessfulReadSoFar = true;
       }
@@ -509,7 +539,17 @@ export async function generateAgenticShopifyRecommendation(input) {
     // see docs/ops/gateway-bad-graphql-root-cause-2026-08-25/12-root-cause-and-fix.md). Always loop
     // back with the fresh tool results before honoring any terminal status the model paired with a
     // pending call; maxIterations still bounds this the same way it bounds ordinary CONTINUE turns.
-    if (turn.toolCalls.length > 0) continue;
+    if (turn.toolCalls.length > 0) {
+      // Wasted-turn refund, pattern (2): the model already had investigationState.investigationComplete
+      // === true going into this turn (computed above, before the LLM call) and every single toolCall
+      // it made anyway resolved as a pure duplicate — zero new evidence. Give it back one turn rather
+      // than let a re-confirmation of already-known state cost real budget.
+      if (investigationState.investigationComplete && newWorkThisTurn === 0 && wastedTurnRefundsRemaining > 0) {
+        wastedTurnRefundsRemaining -= 1;
+        iteration -= 1;
+      }
+      continue;
+    }
     if (turn.status === "RECOMMEND_ACTION") {
       const postToolInvestigationState = buildInvestigationState(toolResults, {
         lastCandidate: turn.recommendation ?? lastCandidate,
@@ -538,6 +578,15 @@ export async function generateAgenticShopifyRecommendation(input) {
           },
           error: { code: "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         }, iteration));
+        // Wasted-turn refund, pattern (1): a terminal status attempted before any read is a
+        // deterministic rejection every time (validateInvestigation never passes a coverage
+        // surface/ledger on this branch, so this is always the "no read yet" case, never an
+        // unresolved-family one) — give back one turn rather than let a guess-before-looking
+        // mistake cost real investigation budget.
+        if (wastedTurnRefundsRemaining > 0) {
+          wastedTurnRefundsRemaining -= 1;
+          iteration -= 1;
+        }
         continue;
       }
       const recommendation = turn.recommendation;
@@ -570,6 +619,7 @@ export async function generateAgenticShopifyRecommendation(input) {
               coverageLedger,
               discoveryToolName,
               readToolName,
+              ownResultsStartIndex,
               semanticRepair: {
                 attempted: true,
                 choice: null,
@@ -594,6 +644,9 @@ export async function generateAgenticShopifyRecommendation(input) {
         if (repair.validation.ok) {
           const diagnostics = buildRecommendationDiagnostics(turns, toolResults, {
             coverageLedger,
+            discoveryToolName,
+            readToolName,
+            ownResultsStartIndex,
             semanticRepair: {
               attempted: true,
               choice: repair.repairChoice,
@@ -638,6 +691,9 @@ export async function generateAgenticShopifyRecommendation(input) {
           blocker: repair.validation.error ?? validation.error,
           diagnostics: buildRecommendationDiagnostics(turns, toolResults, {
             coverageLedger,
+            discoveryToolName,
+            readToolName,
+            ownResultsStartIndex,
             semanticRepair: {
               attempted: true,
               choice: repair.repairChoice,
@@ -664,7 +720,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         }, iteration));
         continue;
       }
-      const diagnostics = buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName });
+      const diagnostics = buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName, ownResultsStartIndex });
       logger.info("agentic Shopify recommendation selected", {
         merchantId: input.merchantId,
         shopId: input.shopId,
@@ -701,6 +757,13 @@ export async function generateAgenticShopifyRecommendation(input) {
           },
           error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         }, iteration));
+        // Wasted-turn refund, pattern (1): only refund the "no read yet" precondition miss
+        // (investigation.unresolved unset) — an unresolved-coverage-family rejection reflects
+        // genuinely incomplete work and must still cost a turn.
+        if (!investigation.unresolved && wastedTurnRefundsRemaining > 0) {
+          wastedTurnRefundsRemaining -= 1;
+          iteration -= 1;
+        }
         continue;
       }
       return {
@@ -708,7 +771,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         status: turn.status,
         blocker: turn.blocker ?? null,
         candidateDisposition: turn.candidateDisposition ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName, ownResultsStartIndex }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
@@ -733,6 +796,12 @@ export async function generateAgenticShopifyRecommendation(input) {
           },
           error: { code: investigation.unresolved ? "INSUFFICIENT_COVERAGE" : "INSUFFICIENT_INVESTIGATION", message: investigation.error },
         }, iteration));
+        // Wasted-turn refund, pattern (1): see the NO_ACTIONABLE_OPPORTUNITY branch above —
+        // same rule, only refund the "no read yet" case, never an unresolved-family one.
+        if (!investigation.unresolved && wastedTurnRefundsRemaining > 0) {
+          wastedTurnRefundsRemaining -= 1;
+          iteration -= 1;
+        }
         continue;
       }
       return {
@@ -740,7 +809,7 @@ export async function generateAgenticShopifyRecommendation(input) {
         status: turn.status,
         blocker: turn.blocker ?? null,
         candidateDisposition: turn.candidateDisposition ?? null,
-        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
+        diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName, ownResultsStartIndex }),
         trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
       };
     }
@@ -757,8 +826,15 @@ export async function generateAgenticShopifyRecommendation(input) {
     status: unresolvedAtEnd.length > 0 ? "INVESTIGATION_INCOMPLETE" : terminalFailureStatus(toolResults, fallbackScope),
     blocker: unresolvedAtEnd.length > 0
       ? `Investigation budget exhausted with ${unresolvedAtEnd.length} unresolved ${unresolvedAtEnd.length === 1 ? "family" : "families"}: ${unresolvedAtEnd.map((e) => e.label).join(", ")}`
-      : terminalFailureBlocker(toolResults, fallbackScope) ?? "ITERATION_LIMIT",
-    diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName }),
+      // Regression fix: this fallback string previously read "ITERATION_LIMIT", byte-identical
+      // to the real CANDIDATE_STATUS.iterationLimit value/terminalFailureStatus's own distinct
+      // "no attempt to decide" status — so a candidate whose terminalFailureStatus was actually
+      // "BLOCKED" (a validation attempt happened and every reason for it was cured, leaving
+      // terminalFailureBlocker with nothing to report) rendered a blocker message that looked
+      // exactly like the unrelated true iteration-limit disposition. Distinct wording here keeps
+      // status and blocker independently readable.
+      : terminalFailureBlocker(toolResults, fallbackScope) ?? "Investigation reached a terminal decision but no specific blocking reason was recorded.",
+    diagnostics: buildRecommendationDiagnostics(turns, toolResults, { coverageLedger, discoveryToolName, readToolName, ownResultsStartIndex }),
     trace: { turns, toolResults: publicShopifyToolResults(toolResults) },
   };
 }
@@ -1641,7 +1717,17 @@ export function buildInvestigationState(toolResults, extras = {}) {
       operation: r.facts?.operation ?? null,
       variables: r.facts?.variables ?? {},
     })),
-    failedReads: failedReads.map((/** @type {any} */ r) => ({ operation: r.facts?.operation ?? null })),
+    // Regression fix: previously only `operation` (frequently null for exactly the case that
+    // matters — a malformed/invalid-field document fails before a root field is even resolved),
+    // so a failed read gave the model no structured reason to act on and it had to reconstruct
+    // "what went wrong" from the raw transcript. Now carries the same error detail the gateway
+    // already returns, so "invalid read -> schema discovery -> corrected read" doesn't depend on
+    // the model re-reading its own prior turns.
+    failedReads: failedReads.map((/** @type {any} */ r) => ({
+      operation: r.facts?.operation ?? null,
+      errorCode: r.error?.code ?? r.facts?.errorCode ?? null,
+      message: r.error?.message ?? r.message ?? null,
+    })),
     satisfiedRequirements: satisfied,
     opportunityCoverage: coverageLedger,
     investigationComplete,
@@ -1757,15 +1843,27 @@ function stableJsonValue(value) {
   return value ?? null;
 }
 
-/** @param {any[]} turns @param {any[]} toolResults @param {{ semanticRepair?: any; coverageLedger?: any[] | null }} [extras] */
+/**
+ * @param {any[]} turns @param {any[]} toolResults
+ * @param {{ semanticRepair?: any; coverageLedger?: any[] | null; discoveryToolName?: string; readToolName?: string; ownResultsStartIndex?: number }} [extras]
+ *   `ownResultsStartIndex` (regression: candidate-pipeline diagnostics leak, 2026-08-26) — every
+ *   other consumer of a candidate-scoped toolResults array in this file (validateInvestigation,
+ *   buildInvestigationState, terminalFailureStatus/Blocker) slices to this boundary; this function
+ *   was the one place that didn't, so a later candidate's PERSISTED diagnostics.retrievedOperations
+ *   silently included every earlier, unrelated candidate's schema/discovery calls inherited via
+ *   initialToolResults — confirmed from a real run where three unrelated candidates' diagnostics
+ *   carried byte-identical retrievedOperations lists. `turns` is already candidate-scoped (declared
+ *   fresh per generateAgenticShopifyRecommendation call) and needs no slicing.
+ */
 function buildRecommendationDiagnostics(turns, toolResults, extras = {}) {
   const discoveryToolName = extras.discoveryToolName ?? "retrieve_shopify_operations";
   const readToolName = extras.readToolName ?? "call_shopify_operation";
-  const retrievedOperations = toolResults
+  const ownResults = extras.ownResultsStartIndex ? toolResults.slice(extras.ownResultsStartIndex) : toolResults;
+  const retrievedOperations = ownResults
     .filter((/** @type {any} */ row) => row.tool === discoveryToolName && row.ok)
     .flatMap((/** @type {any} */ row) => row.facts?.results ?? [])
     .map((/** @type {any} */ row) => row.operation);
-  const shopifyReads = toolResults
+  const shopifyReads = ownResults
     .filter((/** @type {any} */ row) => row.tool === readToolName)
     .map((/** @type {any} */ row) => ({
       operation: row.facts?.operation,

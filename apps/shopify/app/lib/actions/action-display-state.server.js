@@ -89,7 +89,7 @@ export function deriveActionDisplayState(input) {
   return {
     displayState,
     title: safeText(action?.title || recommendation?.title, 180) || "Review Jefe's next move",
-    subtitle: subtitleFor({ displayState, action, execution, outcome, steps, latestBlockingQuestion }),
+    subtitle: subtitleFor({ displayState, action, recommendation, execution, outcome, steps, latestBlockingQuestion }),
     requiresMerchantInput: displayState === ACTION_DISPLAY_STATE.needsYou,
     canExecute: displayState === ACTION_DISPLAY_STATE.ready,
     canStop: displayState === ACTION_DISPLAY_STATE.working,
@@ -322,10 +322,10 @@ function ctaLabelFor(displayState) {
 }
 
 /**
- * @param {{ displayState: string; action: any; execution: any; outcome: Record<string, any>; steps: any[]; latestBlockingQuestion: { text: string } | null }} input
+ * @param {{ displayState: string; action: any; recommendation: any; execution: any; outcome: Record<string, any>; steps: any[]; latestBlockingQuestion: { text: string } | null }} input
  */
 function subtitleFor(input) {
-  const { displayState, execution, outcome, latestBlockingQuestion } = input;
+  const { displayState, recommendation, execution, outcome, latestBlockingQuestion } = input;
   const summary = jsonObject(execution?.proposalSummary);
   const itemCount = Number.isFinite(Number(summary.itemCount ?? summary.count))
     ? Number(summary.itemCount ?? summary.count)
@@ -350,7 +350,11 @@ function subtitleFor(input) {
     case ACTION_DISPLAY_STATE.couldntComplete:
       return "Jefe couldn't complete this. Take a look when you get a chance.";
     default:
-      return "Jefe has a suggestion ready to review.";
+      // `proposed` — a merchant deciding whether to even open this needs to know what it's for,
+      // not just that something exists. recommendation.summary is a required, model-written
+      // one-line description of the actual Action (MerchantPlanRecommendation.summary) — use it
+      // instead of a content-free placeholder.
+      return safeText(recommendation?.summary, 200) || "Jefe has a suggestion ready to review.";
   }
 }
 

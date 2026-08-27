@@ -30,6 +30,20 @@ test("proposed: shares the ready CTA (Home has no separate Proposed shelf)", () 
   assert.equal(result.ctaLabel, "Review & run →");
 });
 
+test("proposed: subtitle uses the recommendation's own summary, not a content-free placeholder", () => {
+  const result = derive({
+    recommendation: { title: "Improve expectation-setting for return-prone products", summary: "Add clearer sizing and fit details to the description of 4 high-return products." },
+  });
+  assert.equal(result.displayState, ACTION_DISPLAY_STATE.proposed);
+  assert.equal(result.subtitle, "Add clearer sizing and fit details to the description of 4 high-return products.");
+});
+
+test("proposed: falls back to a generic subtitle only when no recommendation summary exists", () => {
+  const result = derive({ recommendation: null });
+  assert.equal(result.displayState, ACTION_DISPLAY_STATE.proposed);
+  assert.equal(result.subtitle, "Jefe has a suggestion ready to review.");
+});
+
 test("ready: legacy runtime accepted, no step started", () => {
   const result = derive({
     action: { status: "accepted" },

@@ -201,7 +201,11 @@ test("a candidate that never complies with the repair instruction fails honestly
   const result = await runCandidateDrivenRecommendation(baseRunInput(provider, { perCandidateIterations: 4 }));
 
   assert.equal(result.status, "NO_ACTIONABLE_OPPORTUNITY");
-  assert.equal(iterationsSeen.length, 4, "the model gets its full iteration budget — the loop does not give up early");
+  // perCandidateIterations=4 real turns, plus the 3 refunded do-overs a premature (zero-read)
+  // terminal attempt earns before it starts consuming real budget
+  // (docs/ops/recommendation-candidate-turn-waste-fix/) — the model is asked 7 times total, not
+  // given up on after 4, and still gets its full 4-iteration real budget on top of the refunds.
+  assert.equal(iterationsSeen.length, 7, "the model gets its full iteration budget plus its refunded do-overs — the loop does not give up early");
   // No contradiction on any turn: doNotRepeat is never set for a candidate that hasn't itself read.
   for (const turn of iterationsSeen) assert.equal(turn.doNotRepeat, null);
   // From turn 1 onward, every turn carries the same, single, unambiguous repair instruction.
