@@ -95,6 +95,7 @@ function bundleRecommendation(overrides = {}) {
     supportingInsightIds: [],
     feasibleWriteOperations: ["collectionAddProducts"],
     verificationPlan: "Read the collection back and confirm membership.",
+    reversalStrategy: "Remove the added products via collectionRemoveProducts.",
     confidence: "reasonable",
   });
 }
@@ -126,6 +127,7 @@ function inStockCollectionCandidate() {
     supportingInsightIds: [],
     feasibleWriteOperations: ["collectionCreate", "collectionAddProducts"],
     verificationPlan: "Read the collection back and confirm membership matches current availability.",
+    reversalStrategy: "Delete the collection via collectionDelete.",
     confidence: "reasonable",
   };
 }

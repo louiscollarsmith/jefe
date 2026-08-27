@@ -38,6 +38,7 @@ function hideProductsRecommendation() {
     materialExpectedEffects: ["Set product status to DRAFT."],
     feasibleWriteOperations: ["productUpdate"],
     verificationPlan: "Read the product back and confirm status is DRAFT.",
+    reversalStrategy: "Fixture reversal strategy.",
     whyThisAction: "Out-of-stock product visible on storefront.",
     whyNow: "Product found with zero inventory.",
     supportingBeliefIds: [],

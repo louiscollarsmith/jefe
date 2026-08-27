@@ -100,7 +100,7 @@ const ROUNDS = [
   },
   {
     candidateId: "round-4-activate-second-location-stock",
-    diagnosedProblem: "A low-cover bestseller has unactivated on-hand stock at a second location.",
+    diagnosedProblem: "A low-cover product has unactivated on-hand stock at a second location.",
     relevantFamilyId: "inventory",
     businessEvidenceRefs: ["b-inventory"],
     readOp: "locations",
@@ -109,7 +109,7 @@ const ROUNDS = [
   },
   {
     candidateId: "round-5-add-collection-to-nav",
-    diagnosedProblem: "The bestseller's collection has no link in the primary navigation menu.",
+    diagnosedProblem: "The flagship product's collection has no link in the primary navigation menu.",
     relevantFamilyId: "navigation",
     businessEvidenceRefs: ["b-navigation"],
     readOp: "menus",

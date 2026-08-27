@@ -145,6 +145,7 @@ function returnExposureRec() {
     supportingInsightIds: [],
     feasibleWriteOperations: ["productUpdate"],
     verificationPlan: "v",
+    reversalStrategy: "Fixture reversal strategy.",
     confidence: "strong",
   };
 }

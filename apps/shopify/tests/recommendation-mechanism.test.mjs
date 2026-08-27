@@ -44,6 +44,7 @@ function buildRec(overrides = {}) {
     supportingInsightIds: overrides.supportingInsightIds ?? [],
     feasibleWriteOperations: overrides.feasibleWriteOperations ?? ["collectionCreate"],
     verificationPlan: overrides.verificationPlan ?? "Check result after execution.",
+    reversalStrategy: overrides.reversalStrategy ?? "Fixture reversal strategy.",
     confidence: overrides.confidence ?? "reasonable",
     assumption: overrides.assumption ?? null,
     caveat: overrides.caveat ?? null,
