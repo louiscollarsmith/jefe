@@ -50,7 +50,6 @@ test("getHomeProposalGenerationState: eligible when under cap and no proposed ac
     now: new Date("2026-08-12T09:00:00Z"),
     deps: {
       count: async () => 2,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
   });
@@ -59,7 +58,7 @@ test("getHomeProposalGenerationState: eligible when under cap and no proposed ac
   assert.equal(state?.remaining, 3);
 });
 
-test("getHomeProposalGenerationState: blocked when a proposed recommendation exists", async () => {
+test("getHomeProposalGenerationState: a pending proposed recommendation does not block generating another", async () => {
   const prisma = {
     merchantPlanRun: { count: async () => 0 },
   };
@@ -69,12 +68,11 @@ test("getHomeProposalGenerationState: blocked when a proposed recommendation exi
     now: new Date("2026-08-12T09:00:00Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => true,
       inFlight: async () => false,
     },
   });
-  assert.equal(state?.canGenerate, false);
-  assert.equal(state?.reason, "proposed_exists");
+  assert.equal(state?.canGenerate, true);
+  assert.equal(state?.reason, null);
 });
 
 test("getHomeProposalGenerationState: blocked at daily cap even without a proposed action", async () => {
@@ -87,7 +85,6 @@ test("getHomeProposalGenerationState: blocked at daily cap even without a propos
     now: new Date("2026-08-12T09:00:00Z"),
     deps: {
       count: async () => 5,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
   });
@@ -109,7 +106,6 @@ test("getHomeProposalGenerationState: generating blocks another request", async 
     now: new Date("2026-08-12T09:00:00Z"),
     deps: {
       count: async () => 1,
-      hasProposed: async () => false,
       inFlight: async () => true,
     },
   });
@@ -126,7 +122,6 @@ test("requestHomeProposalGeneration: enqueues a home run when eligible", async (
     now: new Date("2026-08-12T09:00:00Z"),
     deps: {
       count: async () => 1,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
     ensureQueued: async (_p, input) => {
@@ -140,14 +135,13 @@ test("requestHomeProposalGeneration: enqueues a home run when eligible", async (
   assert.equal(calls[0].resetAttempts, true);
 });
 
-test("requestHomeProposalGeneration: refuses when proposed action exists", async () => {
+test("requestHomeProposalGeneration: a pending proposed action does not refuse another generation", async () => {
   let called = false;
   const result = await requestHomeProposalGeneration(/** @type {any} */ ({ $transaction: (fn) => fn({}) }), {
     merchantId: "m1",
     shopId: "s1",
     deps: {
       count: async () => 0,
-      hasProposed: async () => true,
       inFlight: async () => false,
     },
     ensureQueued: async () => {
@@ -155,9 +149,9 @@ test("requestHomeProposalGeneration: refuses when proposed action exists", async
       return { status: "queued" };
     },
   });
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, "proposed_exists");
-  assert.equal(called, false);
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, null);
+  assert.equal(called, true);
 });
 
 test("requestHomeProposalGeneration: sixth generation is rejected server-side", async () => {
@@ -167,7 +161,6 @@ test("requestHomeProposalGeneration: sixth generation is rejected server-side", 
     shopId: "s1",
     deps: {
       count: async () => DEFAULT_HOME_PROPOSAL_DAILY_CAP,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
     ensureQueued: async () => {
@@ -186,7 +179,6 @@ test("requestHomeProposalGeneration: reused snapshot does not count as ok enqueu
     shopId: "s1",
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
     ensureQueued: async () => ({ status: "reused" }),
@@ -202,7 +194,6 @@ test("requestHomeProposalGeneration: concurrent in-flight request is blocked", a
     shopId: "s1",
     deps: {
       count: async () => 1,
-      hasProposed: async () => false,
       inFlight: async () => true,
     },
     ensureQueued: async () => {
@@ -315,7 +306,6 @@ test("getHomeProposalGenerationState: surfaces no_actionable_opportunity termina
     now: new Date("2026-08-23T09:00:00Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
   });
@@ -337,31 +327,11 @@ test("getHomeProposalGenerationState: surfaces failed terminal state", async () 
     now: new Date("2026-08-23T09:00:00Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
   });
   assert.equal(state?.canGenerate, true);
   assert.equal(state?.terminalStatus, "failed");
-});
-
-test("getHomeProposalGenerationState: no terminal status when proposed action exists", async () => {
-  const prisma = {
-    merchantPlanRun: { count: async () => 0 },
-  };
-  const state = await getHomeProposalGenerationState(/** @type {any} */ (prisma), {
-    merchantId: "m1",
-    shopId: "s1",
-    now: new Date("2026-08-23T09:00:00Z"),
-    deps: {
-      count: async () => 0,
-      hasProposed: async () => true,
-      inFlight: async () => false,
-    },
-  });
-  assert.equal(state?.canGenerate, false);
-  assert.equal(state?.reason, "proposed_exists");
-  assert.equal(state?.terminalStatus, null);
 });
 
 test("getHomeProposalGenerationState: no terminal status when generating (run is recent)", async () => {
@@ -378,7 +348,6 @@ test("getHomeProposalGenerationState: no terminal status when generating (run is
     now: new Date("2026-08-23T09:00:00Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => true,
     },
   });
@@ -408,7 +377,6 @@ test("getHomeProposalGenerationState: stuck run treated as failed and allows ret
     stuckRunThresholdMs: 10 * 60 * 1000, // 10 min threshold for test
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => true,
     },
   });
@@ -432,7 +400,6 @@ test("getHomeProposalGenerationState: run within threshold is not considered stu
     stuckRunThresholdMs: 10 * 60 * 1000, // 10 min threshold for test
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => true,
     },
   });
@@ -471,7 +438,6 @@ test("requestHomeProposalGeneration: passes sourceMode: home to ensureQueued", a
     now: new Date("2026-08-23T09:00:00Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => false,
       inFlight: async () => false,
     },
     ensureQueued: async (_p, input) => {

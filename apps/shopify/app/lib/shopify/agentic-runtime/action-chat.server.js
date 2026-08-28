@@ -35,6 +35,20 @@ export const AGENTIC_ACTION_CHAT_VERSION = "1";
 export const AGENTIC_ACTION_CHAT_PROMPT_VERSION = "agentic-action-chat-v3";
 const MAX_AGENTIC_ACTION_CHAT_ITERATIONS = 6;
 const MAX_TOOL_CALLS_PER_TURN = 5;
+// Regression (2026-08-27, 524 reported at admin.shopify.com/.../app?conversation=de466cdd-...):
+// this loop runs fully synchronously inside one HTTP request/response, unlike recommendation
+// generation (which enqueues a job and the client polls). Each generateStructuredJson call below
+// carries its own 90s timeoutMs, and a real multi-turn conversation routinely fires 2+ model calls
+// per merchant message (confirmed from the reported conversation's actual llm_usage_event rows —
+// every individual call there was fast, 1-11s, but that headroom does not hold under retries/a
+// slow provider response) — up to MAX_AGENTIC_ACTION_CHAT_ITERATIONS turns can compound well past a
+// reverse-proxy's ~100s gateway timeout (Cloudflare 524) with no defined outcome once that happens;
+// the merchant's message was already persisted before any of this runs, and a stalled request that
+// the model process keeps running to completion server-side explains why a page refresh recovered a
+// real reply. This wall-clock budget stops the loop from ever legitimately running that long: once
+// exceeded, it exits the loop exactly the way it already does when maxIterations is exhausted
+// (falls through to the existing reply-construction/fallbackReply below), not as an error.
+const AGENTIC_ACTION_CHAT_WALL_CLOCK_BUDGET_MS = 75_000;
 
 export const AGENTIC_ACTION_CHAT_TOOLS = Object.freeze([
   "get_action",
@@ -212,6 +226,18 @@ const AGENTIC_ACTION_CHAT_SCHEMA = {
                 nullable: true,
                 items: { type: Type.STRING },
               },
+              contentDrafts: {
+                type: Type.ARRAY,
+                nullable: true,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    target: { type: Type.STRING, nullable: true },
+                    field: { type: Type.STRING, nullable: true },
+                    text: { type: Type.STRING, nullable: true },
+                  },
+                },
+              },
               reason: { type: Type.STRING, nullable: true },
             },
           },
@@ -242,6 +268,8 @@ const AGENTIC_ACTION_CHAT_SCHEMA = {
  *   pendingClarification?: any;
  *   logger?: Pick<Console, "info" | "warn" | "error">;
  *   maxIterations?: number;
+ *   wallClockBudgetMs?: number;
+ *   nowFn?: () => number;
  * }} input
  */
 export async function runAgenticActionChat(prisma, input) {
@@ -274,27 +302,66 @@ export async function runAgenticActionChat(prisma, input) {
   /** @type {any[]} */
   const turns = [];
   const maxIterations = input.maxIterations ?? MAX_AGENTIC_ACTION_CHAT_ITERATIONS;
+  const now = input.nowFn ?? Date.now;
+  const wallClockBudgetMs = input.wallClockBudgetMs ?? AGENTIC_ACTION_CHAT_WALL_CLOCK_BUDGET_MS;
+  const loopDeadline = now() + wallClockBudgetMs;
   let finalReply = "";
   let clarificationQuestion = "";
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-    const generated = await provider.generateStructuredJson({
-      systemPrompt: buildAgenticActionChatSystemPrompt(),
-      prompt: JSON.stringify({
-        promptVersion: AGENTIC_ACTION_CHAT_PROMPT_VERSION,
+    // Never skip the merchant's own first turn — only a later iteration (a follow-up tool call
+    // or repair round) can be cut short by the wall-clock budget.
+    if (iteration > 0 && now() >= loopDeadline) {
+      logger.warn("agentic action chat wall-clock budget exceeded; returning best-effort reply", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: input.actionId,
         iteration,
-        merchantMessage: input.message,
-        recentMessages: (input.recentMessages ?? []).slice(-8),
-        pendingClarification: input.pendingClarification ?? null,
-        action: publicActionState(state),
-        tools: agenticActionChatToolCatalogue(),
-        toolResults: publicAgenticActionToolResults(ledger),
-      }),
-      schema: AGENTIC_ACTION_CHAT_SCHEMA,
-      maxInputTokens: 28000,
-      maxOutputTokens: 2400,
-      timeoutMs: 90_000,
-    });
+        toolCount: ledger.length,
+      });
+      break;
+    }
+    // Regression (2026-08-27, real conversation f4ef300a-9fe1-42bb-ad0a-d65aac1c638f): a long
+    // agentic thread's accumulated ledger/tool-results pushed the prompt past maxInputTokens
+    // (a real LlmInputLimitError, 31684 vs 28000) with no try/catch anywhere in this loop or its
+    // callers — the exception propagated all the way out through handleFocusedActionMessage and
+    // sendGeneralChatMessage into the route action, which React Router treated as a genuinely
+    // unhandled error and rendered the whole route's ErrorBoundary in place of the entire app,
+    // not just this one chat turn. Treated the same as the wall-clock-budget-exceeded case just
+    // above: log and break rather than throw, so the existing post-loop fallbackReply
+    // construction (built for exactly this "stop mid-loop, still say something sensible" case)
+    // produces a real, gracefully-degraded reply from whatever ledger exists so far.
+    let generated;
+    try {
+      generated = await provider.generateStructuredJson({
+        systemPrompt: buildAgenticActionChatSystemPrompt(),
+        prompt: JSON.stringify({
+          promptVersion: AGENTIC_ACTION_CHAT_PROMPT_VERSION,
+          iteration,
+          merchantMessage: input.message,
+          recentMessages: (input.recentMessages ?? []).slice(-8),
+          pendingClarification: input.pendingClarification ?? null,
+          action: publicActionState(state),
+          tools: agenticActionChatToolCatalogue(),
+          toolResults: publicAgenticActionToolResults(ledger),
+        }),
+        schema: AGENTIC_ACTION_CHAT_SCHEMA,
+        maxInputTokens: 28000,
+        maxOutputTokens: 2400,
+        timeoutMs: 90_000,
+      });
+    } catch (error) {
+      logger.warn("agentic action chat generation failed; returning best-effort reply", {
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        actionId: input.actionId,
+        iteration,
+        toolCount: ledger.length,
+        error: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      break;
+    }
     const turn = normalizeTurn(generated.json);
     turns.push({
       status: turn.status,
@@ -309,9 +376,37 @@ export async function runAgenticActionChat(prisma, input) {
     }
     if (turn.toolCalls.length === 0) break;
 
+    // Regression (2026-08-27, real conversation f4ef300a-9fe1-42bb-ad0a-d65aac1c638f): a single
+    // turn's own structured output listed update_action_scope six times in a row, identical
+    // arguments each time — the merchant saw the lifecycle-event timeline visibly stutter (several
+    // "AGENTIC SHOPIFY ACTION REVISED"/"PLAN UPDATED" dividers for what was semantically one plan
+    // change), because each repeat genuinely re-ran updateSemanticActionDraft and minted its own
+    // new revision + event pair. Nothing structural stopped a revision-producing tool call from
+    // being re-executed against arguments it had already just applied earlier in the SAME turn —
+    // unlike the Shopify read path (findExistingGatewayQuery/ALREADY_AVAILABLE) or the
+    // recommendation loop (its own wasted-turn refund), which both already guard the analogous
+    // repeat-within-a-bounded-loop pattern. Same fix shape here: a call whose (tool, arguments)
+    // exactly repeats one already executed this turn is answered from that turn's own ledger
+    // instead of re-applied — real state changes happen at most once per turn per distinct call.
+    const appliedThisTurn = new Map();
     for (const call of turn.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN)) {
+      if (REVISION_PRODUCING_TOOLS.includes(call.tool)) {
+        const signature = `${call.tool}:${JSON.stringify(call.arguments ?? {})}`;
+        const priorResult = appliedThisTurn.get(signature);
+        if (priorResult) {
+          ledger.push({
+            ...priorResult,
+            message: `Already applied earlier in this turn — ${priorResult.message}`,
+          });
+          continue;
+        }
+      }
       try {
-        ledger.push(await runAgenticActionChatTool(prisma, input, state, ledger, call, logger));
+        const result = await runAgenticActionChatTool(prisma, input, state, ledger, call, logger);
+        ledger.push(result);
+        if (REVISION_PRODUCING_TOOLS.includes(call.tool)) {
+          appliedThisTurn.set(`${call.tool}:${JSON.stringify(call.arguments ?? {})}`, result);
+        }
       } catch (error) {
         logger.warn("agentic action chat tool failed", {
           merchantId: input.merchantId,
@@ -423,14 +518,14 @@ export function agenticActionChatToolCatalogue() {
     {
       name: "update_action_parameters",
       effect: TOOL_EFFECT.stateChange,
-      description: "Persist semantic changes to title, summary, outcome, expected effects or verification plan without pre-authoring Shopify API steps.",
-      arguments: ["title", "summary", "outcome", "materialExpectedEffects", "verificationPlan", "reason"],
+      description: "Persist semantic changes to title, summary, outcome, expected effects, verification plan, or drafted field content — without pre-authoring Shopify API steps. Call this with contentDrafts whenever you show the merchant the literal text you would write for a specific field (a description, a title, any copy) — execution can only use content that is captured here; text that only ever appeared in your chat reply is invisible to it and execution will correctly refuse to invent replacement wording rather than guess what you meant.",
+      arguments: ["title", "summary", "outcome", "materialExpectedEffects", "verificationPlan", "contentDrafts", "reason"],
     },
     {
       name: "replan_action",
       effect: TOOL_EFFECT.stateChange,
       description: "Rewrite the proposed semantic Action when the merchant changes the intended outcome or approach. Do not create technical workflow steps.",
-      arguments: ["title", "summary", "outcome", "scopeSummary", "includedItems", "excludedItems", "constraints", "eligibilityCriteria", "writeProtections", "materialExpectedEffects", "verificationPlan", "reason"],
+      arguments: ["title", "summary", "outcome", "scopeSummary", "includedItems", "excludedItems", "constraints", "eligibilityCriteria", "writeProtections", "materialExpectedEffects", "verificationPlan", "contentDrafts", "reason"],
     },
     {
       name: SHOPIFY_GATEWAY_TOOL.schema,
@@ -475,6 +570,8 @@ Revising the plan is never itself acceptance, even when the merchant's wording s
 CURRENT ELIGIBILITY CRITERIA and WRITE PROTECTIONS are provided separately in the Action state. Eligibility decides which resources qualify. Write protections decide what must not be mutated. Do not infer that "do not change inventory" means inventory cannot be used for eligibility. Do not reconstruct an "original rule" from conversation; if the merchant asks to forget a change and restore the original rule, call restore_action_revision with which=original.
 
 When the merchant adds a selection rule such as a minimum available quantity, persist it with update_action_eligibility. When working out candidate products, apply the current eligibility criteria to Shopify reads and record which criteria each product passed or failed.
+
+Whenever you show the merchant the literal text you would write for a specific field — a product description, a title, any copy, current-version-vs-proposed-version content — you MUST also call update_action_parameters with contentDrafts capturing that exact text (target, field, text), in the SAME reply. Execution only ever writes content it can read from contentDrafts or that it can independently verify from Shopify state; it has no memory of this conversation and cannot see what you said in prose. If the merchant then accepts without contentDrafts holding real content for every field you are proposing to change, execution will correctly refuse to invent wording and the Action will fail — so capture the content at the moment you show it, not only if the merchant separately asks you to save it.
 
 You must not perform Shopify writes before the Action is accepted. If the merchant says "go ahead" or otherwise clearly accepts the current Action, call accept_action; the application will create acceptedActionRevision and enqueue background execution.
 
@@ -819,6 +916,7 @@ function patchFromTool(tool, args) {
       outcome: stringOrNull(args.outcome),
       materialExpectedEffects: materialEffects(args.materialExpectedEffects),
       verificationPlan: stringOrNull(args.verificationPlan),
+      contentDrafts: contentDrafts(args.contentDrafts),
     };
   }
   if (tool === "replan_action") {
@@ -841,6 +939,7 @@ function patchFromTool(tool, args) {
         : null,
       materialExpectedEffects: materialEffects(args.materialExpectedEffects),
       verificationPlan: stringOrNull(args.verificationPlan),
+      contentDrafts: contentDrafts(args.contentDrafts),
     };
   }
   return null;
@@ -894,6 +993,31 @@ function materialEffects(rows) {
   return rows.map((row) => String(row ?? "").trim()).filter(Boolean);
 }
 
+/**
+ * Regression (2026-08-27, real conversation ending in a NEEDS_MERCHANT_INPUT/couldn't-complete
+ * execution failure on Action e000737f-e517-42cd-9745-024285881971): the merchant asked "Show me
+ * exactly what you'd change... Give me the current version and your proposed version," Jefe
+ * answered with real, specific proposed description text — three separate turns, confirmed from
+ * the persisted ledger to have used only read tools (shopify_query) or no tool at all — and the
+ * merchant accepted. Execution then genuinely had no approved content to write and correctly
+ * refused to invent product description text rather than fabricate a claim (the right call, given
+ * what it had) — but the semantic Action schema had nowhere to durably hold "the literal content
+ * the merchant already reviewed and approved" in the first place, so there was no way for that
+ * turn's specific text to ever reach execution, no matter how clearly the model captured it in
+ * prose. contentDrafts is that field, and the tools/prompts below are what actually populate it.
+ * @param {unknown} rows
+ */
+function contentDrafts(rows) {
+  if (!Array.isArray(rows)) return null;
+  return rows
+    .map((row) => ({
+      target: stringOrNull(/** @type {any} */ (row)?.target),
+      field: stringOrNull(/** @type {any} */ (row)?.field),
+      text: stringOrNull(/** @type {any} */ (row)?.text),
+    }))
+    .filter((row) => row.field && row.text);
+}
+
 /** @param {any} prisma @param {any} input @param {Record<string, any>} patch */
 async function updateSemanticActionDraft(prisma, input, patch) {
   const row = await prisma.merchantAction.findFirst?.({
@@ -931,6 +1055,10 @@ async function updateSemanticActionDraft(prisma, input, patch) {
     ...(patch.outcome ? { outcome: patch.outcome } : {}),
     ...(patch.verificationPlan ? { verificationPlan: patch.verificationPlan } : {}),
     ...(patch.materialExpectedEffects ? { materialExpectedEffects: patch.materialExpectedEffects } : {}),
+    // Full replace, not merge: a redrafted description supersedes the prior draft outright — an
+    // accumulating list of stale drafts for the same field would be exactly the kind of ambiguity
+    // (which version did the merchant actually approve?) this field exists to eliminate.
+    ...(patch.contentDrafts ? { contentDrafts: patch.contentDrafts } : {}),
     ...(nextScope ? { scope: nextScope } : {}),
     eligibilityCriteria: nextEligibility,
     eligibilityStatus: Array.isArray(nextEligibility) && nextEligibility.length ? "structured" : current.eligibilityStatus ?? "unstructured",
@@ -1144,6 +1272,10 @@ function publicActionState(state) {
       candidateEligibility: candidateEligibilityRows(semanticAction),
       materialExpectedEffects: semanticAction.materialExpectedEffects ?? [],
       verificationPlan: semanticAction.verificationPlan ?? null,
+      // What execution will actually write for a field, if that field's content is drafted here
+      // at all — see update_action_parameters. Empty means execution has no approved wording and
+      // will refuse to invent any if it needs one.
+      contentDrafts: semanticAction.contentDrafts ?? [],
       whyThisAction: semanticAction.whyThisAction ?? null,
       whyNow: semanticAction.whyNow ?? null,
       revision: semanticAction.revision ?? null,
@@ -1386,12 +1518,16 @@ function summarizeSemanticAction(semanticAction) {
   const protections = Array.isArray(semanticAction?.writeProtections)
     ? semanticAction.writeProtections.map((/** @type {any} */ row) => row.label).filter(Boolean)
     : [];
+  const drafts = Array.isArray(semanticAction?.contentDrafts) ? semanticAction.contentDrafts : [];
   return [
     semanticAction?.outcome ? `Outcome: ${semanticAction.outcome}.` : null,
     eligibility.length ? `Who qualifies: ${eligibility.join("; ")}.` : null,
     protections.length ? `Write protections: ${protections.join("; ")}.` : null,
     items.length ? `Scope currently has ${items.length} product${items.length === 1 ? "" : "s"}.` : null,
     constraints.length ? `Constraints: ${constraints.map((/** @type {any} */ row) => row.label ?? row).join("; ")}.` : null,
+    drafts.length
+      ? `Drafted content approved for: ${drafts.map((/** @type {any} */ row) => `${row.field}${row.target ? ` (${row.target})` : ""}`).join("; ")}.`
+      : "No specific field content has been drafted and approved yet — execution has nothing concrete to write for any content change.",
   ].filter(Boolean).join(" ") || "This Action draft is ready to discuss.";
 }
 
@@ -1439,13 +1575,62 @@ function semanticDraftSummary(semanticAction) {
  * Wording that asserts a lifecycle transition happened. This gates what the
  * model's own prose may claim about — not merchant intent, which is always
  * expressed through typed tool calls, never regex.
+ *
+ * Regression (2026-08-27, real conversation 46525a9a-9e55-41f1-a3e4-56fec9a01c71): the merchant
+ * asked "Is that enough evidence to know it's commercially ready, or are you making an
+ * assumption?" — a legitimate evidentiary question with no lifecycle claim in it at all. The
+ * model gave a real, substantive answer (confirmed from llm_usage_event: a single ~286-token
+ * general_chat completion, with zero tool calls that turn), but the merchant only ever saw a
+ * generic "Outcome: ... Who qualifies: ... Constraints: ..." plan dump — the same dump, verbatim,
+ * on a second identical question a few seconds later. Root cause: the *previous* bare-word
+ * pattern matched ordinary English uses of these verbs having nothing to do with a lifecycle
+ * claim — "that's not complete evidence" or "not fully complete" both matched `complet(?:e|ed)`
+ * even though nobody was claiming the Action executed. Once matched, and with no lifecycle tool
+ * having run this turn (a plain Q&A turn never calls one), the model's real answer was discarded
+ * outright and replaced by summarizeSemanticAction() via fallbackReply() — with nothing telling
+ * the merchant an answer had been suppressed. Honest answers to exactly this kind of "how sure
+ * are you" question are unusually likely to use "complete"/"incomplete" in the evidentiary sense,
+ * making this a high-frequency trap, not an edge case.
+ *
+ * Second regression, same day (real conversation 7d314dbc-9b08-4de1-b09c-809f026d75b0, merchant
+ * asking "Why did you pick these two products specifically? Show me the store data behind this
+ * recommendation."): the first fix above (requiring "complete" specifically to be predicated of
+ * "I") stopped that exact trap, but the same *category* of false positive existed on the other six
+ * verbs too and this turn hit it — the merchant only saw a garbled join of raw tool-result
+ * messages (fallbackReply()'s *other* branch: a non-empty ledger with no survivable finalReply).
+ * llm_usage_event shows two real model calls that turn (243 + 466 output tokens), so a substantive
+ * answer existed and was discarded; it wasn't persisted anywhere to inspect directly, but passive
+ * constructions ("No mutation was executed"), past-participle noun modifiers ("the completed
+ * Shopify state"), and ordinary hedging ("I accept that...", "I'd defer to...", "reject the
+ * possibility that...") all matched the old bare-word/first-verb-only pattern and are exactly the
+ * shape of language a "why did you do this, justify it" question invites.
+ *
+ * Redesigned with two general rules instead of one per-word patch:
+ * 1. A bare/present-tense form with no suffix never matches, for any of the seven verbs — this is
+ *    both the original bug ("complete evidence") and unreliable for the other six ("I accept
+ *    that...", "I'd defer to...", "reject the possibility").
+ * 2. Every remaining form (past tense or "I am/I'm ...-ing") must sit at an explicit
+ *    first-person-agent position: right after "I" (with its common contractions/auxiliaries),
+ *    right after "and" (an elided-subject compound predicate, e.g. "Updated the plan ... and
+ *    accepted it" — load-bearing: an existing regression test requires catching exactly this shape
+ *    with no literal "I" in the sentence), or at the very start of a sentence ("Cancelled." /
+ *    "Done. Accepted." — also load-bearing: an existing regression test covers exactly this
+ *    one-word confirmatory shape, common assistant shorthand with no subject at all). This is what
+ *    excludes passive voice ("was executed" — no agent marker at all) and adjectival
+ *    past-participles ("the completed state" — modifying a noun mid-sentence, not asserted as a
+ *    sentence-opening claim).
+ * Verified against 12 real and constructed false-positive sentences (zero matches) and all 10
+ * true-positive claim shapes from both regressions plus the two pre-existing tests (all still
+ * match) — see tests/agentic-shopify-runtime.test.mjs. This does not weaken the actual safety
+ * property (the model still cannot claim a transition it didn't perform via a successful tool
+ * call); it only stops matching language that was never a transition claim to begin with.
  * @type {RegExp}
  */
 const LIFECYCLE_CLAIM_PATTERN =
-  /\b(?:cancel(?:led|ed)?|reject(?:ed|ing)?|declin(?:ed|e|ing)|defer(?:red|ring)?|accept(?:ed|ing)?|execut(?:ed|ing)|complet(?:ed|e|ing))\b/i;
+  /(?:^|[.!?]\s+|\bI(?:'ve|'d| have| had| am|'m)?\s+(?:just\s+)?|\band\s+(?:just\s+)?)(?:cancel(?:led|ed|ling)|reject(?:ed|ing)|declin(?:ed|ing)|defer(?:red|ring)|accept(?:ed|ing)|execut(?:ed|ing)|complet(?:ed|ing))\b/i;
 
 /** @param {string | null | undefined} text */
-function assertsLifecycleClaim(text) {
+export function assertsLifecycleClaim(text) {
   return LIFECYCLE_CLAIM_PATTERN.test(String(text ?? ""));
 }
 

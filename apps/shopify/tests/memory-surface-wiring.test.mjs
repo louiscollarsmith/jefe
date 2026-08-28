@@ -240,22 +240,56 @@ test("talk-this-through chooser matches the chat reuse flow", () => {
   assert.doesNotMatch(chooserSource, /aria-label="Close"/);
 });
 
-test("focused chat keeps the composer sticky while the page can scroll", () => {
+test("focused chat is a fixed viewport where only the conversation scrolls", () => {
+  // Redesigned 2026-08-27 (ChatGPT-style fixed layout): the page itself no longer scrolls —
+  // messagesStyle is the sole scroll container, with the header and composer pinned via
+  // flex-shrink:0 rather than the old sticky-composer-on-a-scrolling-page model.
   assert.match(dailyHomeSource, /const chatPageStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /minHeight: "100vh"/);
-  assert.match(dailyHomeSource, /overflowX: "hidden"/);
-  assert.doesNotMatch(dailyHomeSource, /height: "100dvh"/);
-  assert.doesNotMatch(dailyHomeSource, /maxHeight: "100dvh"/);
+  const chatPageStyleSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const chatPageStyle: CSSProperties = {"),
+    dailyHomeSource.indexOf("const shellStyle: CSSProperties = {"),
+  );
+  assert.match(chatPageStyleSource, /position: "fixed"/);
+  assert.match(chatPageStyleSource, /inset: 0/);
+  assert.match(chatPageStyleSource, /overflow: "hidden"/);
+  assert.doesNotMatch(chatPageStyleSource, /height: "100dvh"/);
+  assert.doesNotMatch(chatPageStyleSource, /maxHeight: "100dvh"/);
+
+  const chatShellStyleSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const chatShellStyle: CSSProperties = {"),
+    dailyHomeSource.indexOf("const headerStyle: CSSProperties = {"),
+  );
+  assert.match(chatShellStyleSource, /height: "100%"/);
+  assert.match(chatShellStyleSource, /minHeight: 0/);
+
   assert.match(dailyHomeSource, /const messagesStyle: CSSProperties = \{/);
+  const messagesStyleSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const messagesStyle: CSSProperties = {"),
+    dailyHomeSource.indexOf("const messageRowStyle: CSSProperties = {"),
+  );
+  assert.match(messagesStyleSource, /flex: "1 1 auto"/);
+  assert.match(messagesStyleSource, /minHeight: 0/);
+  assert.match(messagesStyleSource, /overflowY: "auto"/);
+  assert.match(messagesStyleSource, /padding: "48px 4px 56px 0"/);
+
   assert.match(dailyHomeSource, /useScrollTranscriptToLatest/);
   assert.match(dailyHomeSource, /ref=\{transcriptRef\}/);
-  assert.match(dailyHomeSource, /window\.scrollTo\(\{ top: document\.documentElement\.scrollHeight \}\)/);
-  assert.doesNotMatch(dailyHomeSource, /overscrollBehavior: "contain"/);
-  assert.match(dailyHomeSource, /padding: "34px 4px 42px 0"/);
-  assert.match(dailyHomeSource, /const chatComposerWrapStyle: CSSProperties = \{/);
-  assert.match(dailyHomeSource, /position: "sticky"/);
-  assert.match(dailyHomeSource, /bottom: 0/);
-  assert.match(dailyHomeSource, /padding: "0 0 28px"/);
+  // Scrolls the transcript container itself (the only scrollable element), not the window.
+  assert.match(dailyHomeSource, /transcript\.scrollTop = transcript\.scrollHeight/);
+
+  const chatComposerWrapStyleSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const chatComposerWrapStyle: CSSProperties = {"),
+    dailyHomeSource.indexOf("const emptyChatStyle: CSSProperties = {"),
+  );
+  assert.match(chatComposerWrapStyleSource, /flexShrink: 0/);
+  assert.match(chatComposerWrapStyleSource, /padding: "18px 0 28px"/);
+
+  assert.match(dailyHomeSource, /const chatTopStyle: CSSProperties = \{/);
+  const chatTopStyleSource = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const chatTopStyle: CSSProperties = {"),
+    dailyHomeSource.indexOf("const backLinkStyle: CSSProperties = {"),
+  );
+  assert.match(chatTopStyleSource, /flexShrink: 0/);
 });
 
 test("focused chat title can be renamed inline from the header", () => {
@@ -357,7 +391,9 @@ test("approval and step lifecycle remain wired through governed action forms", (
 });
 
 test("focused chat submits identifiers only and rebuilds factual context server-side", () => {
-  assert.match(appIndexSource, /sendGeneralChatMessage\(prisma, \{/);
+  // startGeneralChatTurn since 2026-08-27: persists the merchant's message and returns straight
+  // away, generating the reply in the background (it re-enters sendGeneralChatMessage itself).
+  assert.match(appIndexSource, /startGeneralChatTurn\(prisma, \{/);
   assert.match(appIndexSource, /focusedActionId: String\(formData\.get\("focusedActionId"\)/);
   assert.doesNotMatch(dailyHomeSource, /value="action\.chat\.message"/);
   assert.doesNotMatch(appIndexSource, /formData\.get\("actionTitle"\)/);
@@ -394,10 +430,18 @@ test("chat composers clear immediately while Send keeps a disabled state", () =>
   // The active focused-chat composer clears the box and starts the felt-latency clock
   // (chat_turn, vantage "client"). Pinned as a pair because a composer that clears
   // without marking silently drops its turns out of the latency numbers.
-  assert.equal(
-    [...dailyHomeSource.matchAll(/markChatTurnSent\(\);\n {4}setComposerMessage\(""\);/g)].length,
-    1,
+  // markChatTurnSent + the optimistic render + clearing the box all happen in the one submit
+  // handler. Pinned together because a composer that clears without marking silently drops its
+  // turns out of the latency numbers, and one that clears without rendering the message
+  // optimistically is the "my message doesn't appear until the server replies" bug.
+  const submitHandler = dailyHomeSource.slice(
+    dailyHomeSource.indexOf("const handleComposerSubmit = () => {"),
+    dailyHomeSource.indexOf("if (!activeConversation) {"),
   );
+  assert.ok(submitHandler.length > 0, "could not locate the composer submit handler");
+  assert.match(submitHandler, /markChatTurnSent\(\);/);
+  assert.match(submitHandler, /setOptimisticSend\(composerMessage\.trim\(\)\);/);
+  assert.match(submitHandler, /setComposerMessage\(""\);/);
   assert.equal(
     [...dailyHomeSource.matchAll(/onSubmit=\{handleComposerSubmit\}/g)].length,
     1,

@@ -362,6 +362,8 @@ You must not expand the Action scope, change prices unless authorized, perform u
 
 Before mutating, re-read current resource state against the ACCEPTED ELIGIBILITY CRITERIA. Skip resources that no longer qualify. If too many fail and the outcome cannot be achieved, return NEEDS_ACTION_REPLAN.
 
+If the outcome requires writing specific field content (a description, a title, any copy) rather than a structural/status/numeric change, you may ONLY use text that is present in acceptedAction.contentDrafts for that exact target and field, or content you can construct entirely from data you have independently verified via shopify_query this run (e.g. copying a value between two fields). You have no memory of the chat conversation that led to acceptance and must not reconstruct or improvise wording for what the merchant "probably" approved — contentDrafts is the only record of what they actually saw and accepted. If the outcome needs content for a target+field that contentDrafts does not cover, do not invent replacement text: return NEEDS_MERCHANT_INPUT explaining specifically what content is missing, or BLOCKED if the merchant is not reachable for that answer in this context.
+
 When all required mutations have been successfully issued, signal WRITES_COMPLETE (preferred) or OUTCOME_ACHIEVED. Do not attempt to verify the outcome here — verification runs as a separate read-only phase after your signal. You do not need to read Shopify state back; the verifier does that. If you cannot issue the mutations, return BLOCKED, NEEDS_ACTION_REPLAN, NEEDS_MERCHANT_INPUT, or PROVIDER_ERROR as appropriate.
 
 When returning NEEDS_MERCHANT_INPUT, put the actual question in merchantMessage, written as if speaking directly to the merchant. If the question has a small number of concrete, mutually exclusive answers (e.g. "homepage feature, a specific collection, or both?"), list them in answerOptions so the merchant can pick one with a single tap — do not invent options for genuinely open-ended questions.`;
@@ -387,6 +389,13 @@ export function buildExecutionSemanticAction(action, revision) {
       contract.materialEffects ??
       [],
     verificationPlan: contract.verificationPlan ?? "",
+    // The only content execution may write verbatim for a matching target+field — captured in
+    // Action Chat (update_action_parameters) when the merchant reviewed and approved specific
+    // literal text (docs/ops regression: a merchant reviewed exact proposed description text in
+    // chat, accepted, and execution had no record of it anywhere, so it correctly refused to
+    // invent replacement copy rather than guess). Empty means no field content was ever captured
+    // and approved — execution must not compose new copy for a content-type change in that case.
+    contentDrafts: Array.isArray(contract.contentDrafts) ? contract.contentDrafts : [],
   };
 }
 

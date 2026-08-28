@@ -300,18 +300,20 @@ test("post-onboarding background chain cannot manufacture proposal #2 (original 
   assert.equal(store.countProposed(), 1);
 
   store.mutations.length = 0;
+  // A pending, unaccepted proposal no longer blocks Home from generating another —
+  // multiple simultaneous proposed Actions are allowed. This is a merchant-triggered
+  // path, distinct from the background-chain defer asserted above, which is unchanged.
   const homeStateBeforeGenerate = await getHomeProposalGenerationState(store.prisma, {
     merchantId: store.merchantId,
     shopId: store.shopId,
     now: new Date("2026-08-19T15:45:00.000Z"),
     deps: {
       count: async () => 0,
-      hasProposed: async () => store.countProposed() > 0,
       inFlight: async () => false,
     },
   });
-  assert.equal(homeStateBeforeGenerate?.canGenerate, false);
-  assert.equal(homeStateBeforeGenerate?.reason, "proposed_exists");
+  assert.equal(homeStateBeforeGenerate?.canGenerate, true);
+  assert.equal(homeStateBeforeGenerate?.reason, null);
   assert.equal(store.mutations.length, 0);
 
   const accepted = await acceptMerchantActionPlan(store.prisma, {

@@ -26,6 +26,7 @@ import {
 } from "../lib/attachments/attachment-limits.js";
 import { layoutChart } from "../lib/charts/chart-layout.js";
 import { formatDateInZone } from "../lib/home/home-dates.js";
+import { freshestConversationPayload } from "../lib/home/conversation-payload-freshness.js";
 import type {
   ExecutedAction,
   Goal,
@@ -77,6 +78,12 @@ type ChatConversation = {
   lastMessageAt: string;
   createdAt: string;
   messageCount?: number | null;
+  /**
+   * Set while Jefe is generating a reply for this thread in the background (see
+   * startGeneralChatTurn). Durable and server-owned, so "still thinking" survives a reload and is
+   * never inferred from client-side timing.
+   */
+  pendingReply?: { messageId: string | null; startedAt: string | null } | null;
   focusedActionId?: string | null;
   focusedAction?: {
     id: string;
@@ -392,6 +399,10 @@ export function DailyHome(props: {
   const [startActionChatError, setStartActionChatError] = useState<string | null>(null);
   const handledStartActionChatDataRef = useRef<ActionChatsResourceData | undefined>(undefined);
   const pendingThreadRefreshRef = useRef<string | null>(null);
+  // Render-visible twin of pendingThreadRefreshRef: true from the moment a thread-mutating
+  // submission starts until its follow-up refresh has actually landed. Gates the reply-failed
+  // row, which must never appear while the transcript on screen might not be the newest one.
+  const [threadRefreshPending, setThreadRefreshPending] = useState(false);
   const suggestedAction = props.suggestedAction ?? null;
   const executedActions = props.executedActions ?? [];
   const goals = props.goals ?? [];
@@ -418,12 +429,23 @@ export function DailyHome(props: {
     openConversationId && props.conversation?.conversation?.id === openConversationId
       ? { conversation: props.conversation, libraryFiles: props.libraryFiles ?? [] }
       : null;
-  const openConversationPayload =
-    (fetchedConversation?.conversation.conversation?.id === openConversationId
+  // fetchedConversation used to win unconditionally whenever its id matched, ahead of the
+  // freshest(cache, loader) comparison below — but it's only refreshed once, at conversation-open
+  // time, and again later via an explicit post-idle refetch (a real network round-trip). In the
+  // window between navigation going idle with a fresh reply already in props.conversation and
+  // that refetch actually resolving, this stale open-time snapshot (still ending on the
+  // merchant's message) would outrank the already-fresh loaderConversation, reading as
+  // awaitingReply and flashing "Try Again" on a turn that never failed. Folding it into the same
+  // freshest-by-message-count comparison as the other two sources closes that second, independent
+  // path into the false-failure state.
+  const matchedFetchedConversation =
+    fetchedConversation?.conversation.conversation?.id === openConversationId
       ? fetchedConversation
-      : null) ??
-    cachedConversation ??
-    loaderConversation;
+      : null;
+  const openConversationPayload = freshestConversationPayload(
+    matchedFetchedConversation,
+    freshestConversationPayload(cachedConversation, loaderConversation),
+  );
   const activeConversation = openConversationPayload?.conversation.conversation ?? null;
   const focusedAction = actionForConversation(activeConversation, merchantActions);
   const homeConversations = props.conversation?.conversations ?? [];
@@ -543,8 +565,28 @@ export function DailyHome(props: {
     if (!openConversationId) return;
     const intent = String(navigation.formData?.get("intent") ?? "");
     if (navigation.state !== "idle" && isThreadMutationIntent(intent)) {
+      // Regression (2026-08-27, first pass): a merchant briefly saw "I couldn't get to that
+      // one, try again" right before the real reply appeared, even though nothing had actually
+      // failed — a stale pre-send cache entry outranked the already-fresh, just-revalidated
+      // loader data in openConversationPayload's fallback chain for one render after navigation
+      // went idle. The first fix deleted the cache entry the moment a send STARTED instead of
+      // only once it finished — but that destroyed the only known-good pre-send snapshot for
+      // any conversation reached via client-side navigation (one that doesn't match the SSR
+      // loader's own props.conversation), which made openConversationPayload resolve to null
+      // and swapped the whole chat view to FocusedConversationLoading for the full duration of
+      // every send — no pending message, no thinking indicator, nothing, until the submission
+      // completed. Second pass (2026-08-27): don't touch the cache here at all — see
+      // freshestConversationPayload, which picks the fresher of cache vs. loader by message
+      // count instead, so a stale cache entry can never outrank a fresher loader regardless of
+      // timing, without ever needing to delete anything mid-send.
       pendingThreadRefreshRef.current = openConversationId;
-      return;
+      // Mirrored into state, not just the ref, because the reply-failed row's suppression is a
+      // RENDER-time decision: a ref changing never re-renders anything, and reading one during
+      // render is exactly the stale-value bug react-hooks/refs exists to catch. Deferred through
+      // a 0ms timeout to match the established pattern in the sibling effects here — a direct
+      // setState in an effect body trips react-hooks/set-state-in-effect.
+      const pendingHandle = window.setTimeout(() => setThreadRefreshPending(true), 0);
+      return () => window.clearTimeout(pendingHandle);
     }
     if (navigation.state !== "idle") return;
     const refreshId = pendingThreadRefreshRef.current;
@@ -562,6 +604,63 @@ export function DailyHome(props: {
     );
     return () => window.clearTimeout(handle);
   }, [openConversationId, navigation.state, navigation.formData, conversationFetcher]);
+
+  // Everything has settled — the submission finished AND any follow-up refresh has come back
+  // (successfully or not). What's on screen is now the current thread, so the reply-failed row is
+  // allowed to speak again, and will if the turn genuinely did fail. Keyed on both machines going
+  // idle rather than on a payload landing, so a refresh that errors can't strand the flag on and
+  // permanently mute a real failure.
+  useEffect(() => {
+    if (navigation.state !== "idle") return;
+    if (conversationFetcher.state !== "idle") return;
+    if (pendingThreadRefreshRef.current !== null) return;
+    const handle = window.setTimeout(() => setThreadRefreshPending(false), 0);
+    return () => window.clearTimeout(handle);
+  }, [navigation.state, conversationFetcher.state]);
+
+  // Regression (2026-08-27): a chat.message/chat.retry submission can appear to "freeze" — the
+  // browser's connection to a stalled or dropped tunnel/proxy hop never resolves client-side, so
+  // navigation.state never returns to "idle" and the existing post-idle refresh above never fires
+  // — even though the backend keeps running and completes the reply regardless (confirmed
+  // repeatedly: a manual page refresh always shows the completed reply already there). Poll for it
+  // in the background instead of only refreshing once the stuck submission resolves on its own.
+  // A single interval for the component's lifetime, reading current state via refs, avoids
+  // tearing down and rebuilding a timer on every navigation-object identity change.
+  //
+  // As of the persist-and-return split (startGeneralChatTurn) this is the PRIMARY way a reply
+  // arrives, not just a stuck-connection safety net: the request that starts a turn now returns
+  // immediately and generation finishes long after it, so the surface has to come back and ask.
+  // It polls whenever the thread is marked as having a reply in progress — the server's own
+  // durable pendingReply marker — as well as while a submission is genuinely in flight.
+  const watchdogNavigationRef = useRef(navigation);
+  const watchdogConversationIdRef = useRef(openConversationId);
+  const watchdogFetcherRef = useRef(conversationFetcher);
+  const watchdogReplyPendingRef = useRef(false);
+  useEffect(() => {
+    watchdogNavigationRef.current = navigation;
+    watchdogConversationIdRef.current = openConversationId;
+    watchdogFetcherRef.current = conversationFetcher;
+    watchdogReplyPendingRef.current = Boolean(activeConversation?.pendingReply);
+  }, [navigation, openConversationId, conversationFetcher, activeConversation]);
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const nav = watchdogNavigationRef.current;
+      const conversationId = watchdogConversationIdRef.current;
+      const fetcher = watchdogFetcherRef.current;
+      if (!conversationId) return;
+      if (fetcher.state !== "idle") return;
+      const replyPending = watchdogReplyPendingRef.current;
+      if (!replyPending) {
+        if (nav.state === "idle") return;
+        const intent = String(nav.formData?.get("intent") ?? "");
+        if (!isThreadMutationIntent(intent)) return;
+      }
+      fetcher.load(
+        `/api/app-home/conversation?conversationId=${encodeURIComponent(conversationId)}`,
+      );
+    }, CHAT_WATCHDOG_POLL_MS);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!talkActionId) return;
@@ -669,6 +768,9 @@ export function DailyHome(props: {
         libraryFiles={openConversationPayload.libraryFiles}
         currentSearch={location.search}
         todayLabel={props.todayLabel}
+        threadRefreshPending={
+          threadRefreshPending || conversationFetcher.state !== "idle"
+        }
       />
     );
   }
@@ -723,6 +825,15 @@ function chatsFocusedOnActionFromHome(
     }));
   return matches.length > 0 ? matches : null;
 }
+
+// How often the chat-freeze watchdog (see the effect that reads this) checks in the background
+// while a submission is stuck — generous relative to a normal ~10-20s turn so it doesn't compete
+// with the ordinary post-idle refresh, frequent enough to meaningfully shorten a real freeze.
+// 2s: this is now how EVERY reply reaches the merchant (see startGeneralChatTurn), not a rare
+// stuck-connection fallback, so it has to feel like a chat rather than a background sync. The
+// poll only runs while a turn is actually in progress on the open thread, so it is a handful of
+// cheap reads per turn, not a permanent heartbeat.
+const CHAT_WATCHDOG_POLL_MS = 2_000;
 
 function isThreadMutationIntent(intent: string) {
   return [
@@ -1194,6 +1305,7 @@ function FocusedConversation({
   libraryFiles,
   currentSearch,
   todayLabel,
+  threadRefreshPending = false,
 }: {
   conversation: ChatThread | null;
   focusedAction: MerchantActionView | null;
@@ -1201,22 +1313,124 @@ function FocusedConversation({
   libraryFiles: LibraryPick[];
   currentSearch: string;
   todayLabel?: string;
+  /**
+   * A background refresh of this thread is in flight or queued, so the transcript on screen may
+   * not be the newest one that exists yet. The reply-failed row must never render during that
+   * window: "the thread ends on the merchant's message" only means a failed turn once we are
+   * actually looking at the current thread.
+   */
+  threadRefreshPending?: boolean;
 }) {
   const navigation = useNavigation();
   usePreserveChatScrollDuringIntent(navigation, "chat.message");
   usePreserveChatScrollDuringIntent(navigation, "chat.retry");
+  const activeConversation = conversation?.conversation ?? null;
+  const messages = useMemo(
+    () => visibleTranscriptMessages(conversation?.messages ?? []),
+    [conversation?.messages],
+  );
   const pendingIntent = navigation.formData?.get("intent");
-  const isSending =
+  // The merchant's message goes on screen the instant they press Send — set synchronously in the
+  // submit handler, as ordinary React state, never inferred from navigation timing.
+  //
+  // Regression (2026-08-27): the optimistic bubble used to be derived purely from
+  // navigation.formData, so "is their message visible?" depended on React Router having already
+  // transitioned this route into a submitting state with the form body attached. When that lagged
+  // the click — which it does here, on a POST navigation that also revalidates — nothing rendered
+  // at all until the server came back, and the merchant's own message appeared only alongside
+  // Jefe's reply. Local state can't lag: it's set in the click handler itself, one render later
+  // it's on screen, exactly like iMessage. navigation.formData is still read below, but only as a
+  // secondary source, because the suggestion chips submit their own Forms without going through
+  // this component's composer handler.
+  const [optimisticSend, setOptimisticSend] = useState("");
+  const isSendingRaw =
     navigation.state !== "idle" && pendingIntent === "chat.message";
-  const isRetrying =
-    navigation.state !== "idle" && pendingIntent === "chat.retry";
-  const isThinking = isSending || isRetrying;
-  const pendingMessage =
-    isSending && typeof navigation.formData?.get("message") === "string"
+  const navPendingMessage =
+    isSendingRaw && typeof navigation.formData?.get("message") === "string"
       ? String(navigation.formData.get("message")).trim()
       : "";
+  const rawPendingMessage = optimisticSend || navPendingMessage;
+  const lastRealMessage = messages[messages.length - 1];
+  const secondLastRealMessage = messages[messages.length - 2];
+  // A turn is finished ONLY when Jefe's reply is actually in the transcript.
+  //
+  // Regression (2026-08-27): this used to also treat "the merchant's own message is now in the
+  // transcript" as the turn being done. That is never true — sendGeneralChatMessage persists the
+  // merchant's message BEFORE it calls the LLM, deliberately, so a failure leaves their words in
+  // the thread. So when the chat-freeze watchdog's 20s background poll landed mid-send (against a
+  // ~40s turn), it saw the merchant's own just-persisted message, declared the round trip
+  // complete, and killed both the optimistic bubble and the "Thinking" indicator while the LLM
+  // was still running — which then satisfied every condition for awaitingReply and rendered
+  // "I couldn't get to that one, try again" over a turn that was still perfectly healthy, until
+  // the real reply landed ~20s later and replaced it. Only an assistant reply sitting after this
+  // exact merchant message ends the turn.
+  const replyLandedForPendingMessage =
+    rawPendingMessage.length > 0 &&
+    lastRealMessage?.role === "assistant" &&
+    secondLastRealMessage?.role === "merchant" &&
+    secondLastRealMessage.content?.trim() === rawPendingMessage;
+  // In flight from the merchant's point of view: they have said something and Jefe has not
+  // answered it yet. Deliberately NOT gated on navigation.state — the optimistic message is what
+  // makes this true, and it is cleared (below) once the turn settles, which is what makes it
+  // false again. Gating on navigation here is what previously let the indicator disappear while
+  // the turn was still genuinely running.
+  // isSendingRaw is kept in the union so a file-only send (no typed text, so nothing optimistic
+  // to draw) still shows "Reading your file" while it runs.
+  const isSending =
+    (rawPendingMessage.length > 0 || isSendingRaw) &&
+    !replyLandedForPendingMessage;
+  const isRetrying =
+    navigation.state !== "idle" && pendingIntent === "chat.retry";
+  // The authoritative answer to "is Jefe working on this right now?", owned by the server and
+  // stored on the thread rather than inferred from client-side timing — so it is still correct
+  // after a reload, in a second tab, or when the request that started the turn is long gone.
+  const replyInProgress = Boolean(activeConversation?.pendingReply);
+  const isThinking = isSending || isRetrying || replyInProgress;
+  // Two separate questions, deliberately not fused (fusing them is what broke this before):
+  // "is the turn still running?" (isThinking, above — keeps the Thinking indicator up until the
+  // reply genuinely lands) and "do I still need to draw the merchant's message myself?" (here).
+  // Once a background refresh has landed their real, persisted message, the optimistic copy would
+  // be a visible duplicate — so it stops rendering, while the turn correctly stays in flight.
+  const pendingMessageAlreadyVisible =
+    rawPendingMessage.length > 0 &&
+    lastRealMessage?.role === "merchant" &&
+    lastRealMessage.content?.trim() === rawPendingMessage;
+  const pendingMessage =
+    isSending && !pendingMessageAlreadyVisible ? rawPendingMessage : "";
   // An upload is slow enough that the merchant needs to see their file was taken.
   const pendingUpload = isSending ? navigation.formData?.get("attachment") : null;
+  // The turn is over — the submission finished and any follow-up refresh has landed, so the
+  // durable transcript on screen is authoritative and speaks for itself (either Jefe's reply, or
+  // the merchant's message with the reply-failed row under it). Drop the optimistic copy so it
+  // can never outlive the real thing. Deferred through a 0ms timeout to match the established
+  // pattern for setState-from-an-effect in this file.
+  //
+  // Cleared on EVIDENCE, never on timing. Two things must both be true: the submission this
+  // message belongs to has actually been observed starting (sendObserved — otherwise the very
+  // first render after the click, where navigation may not have flipped to "submitting" yet,
+  // would look identical to "all finished" and wipe the message straight back off the screen),
+  // and everything has since gone quiet. Waiting on a content signal instead — "their message is
+  // in the durable transcript now" — additionally covers a send that never made it out at all.
+  const [sendObserved, setSendObserved] = useState(false);
+  useEffect(() => {
+    if (!optimisticSend || sendObserved || !isSendingRaw) return undefined;
+    const handle = window.setTimeout(() => setSendObserved(true), 0);
+    return () => window.clearTimeout(handle);
+  }, [optimisticSend, sendObserved, isSendingRaw]);
+  const optimisticSendLandedInTranscript =
+    pendingMessageAlreadyVisible || replyLandedForPendingMessage;
+  const turnSettled =
+    navigation.state === "idle" &&
+    !threadRefreshPending &&
+    (sendObserved || optimisticSendLandedInTranscript);
+  useEffect(() => {
+    if (!turnSettled || !optimisticSend) return undefined;
+    const handle = window.setTimeout(() => {
+      setOptimisticSend("");
+      setSendObserved(false);
+    }, 0);
+    return () => window.clearTimeout(handle);
+  }, [turnSettled, optimisticSend]);
   const pendingAttachmentName =
     pendingUpload && typeof pendingUpload !== "string" && pendingUpload.size
       ? pendingUpload.name
@@ -1226,20 +1440,21 @@ function FocusedConversation({
   const [pendingFocus, setPendingFocus] = useState<MerchantActionView | null>(
     null,
   );
-  const activeConversation = conversation?.conversation ?? null;
-  const messages = useMemo(
-    () => visibleTranscriptMessages(conversation?.messages ?? []),
-    [conversation?.messages],
-  );
   const lastMessage = messages[messages.length - 1];
+  // A genuinely failed turn: the thread ends on the merchant, and nothing anywhere is still
+  // working on it. Derived from the durable thread (not from an action result) so it survives a
+  // reload — but gated on nothing being in flight, so an in-progress turn or an unlanded refresh
+  // can never be mistaken for a failure.
   const awaitingReply =
     !isThinking &&
     !pendingMessage &&
+    !threadRefreshPending &&
     (lastMessage?.role === "merchant" || lastMessage?.role === "user");
+
   const isBlankThread = messages.length === 0;
   const transcriptRef = useScrollTranscriptToLatest(
     activeConversation?.id ?? null,
-    messages.length,
+    `${messages.length}:${pendingMessage ? "1" : "0"}:${isThinking ? "1" : "0"}`,
   );
   // A merchant sending Jefe a photo of a shelf or a supplier invoice. The file is read and
   // dropped (derive-and-discard, per the voice-note precedent) — nothing is stored, so this is a
@@ -1294,6 +1509,10 @@ function FocusedConversation({
 
   const handleComposerSubmit = () => {
     markChatTurnSent();
+    // Straight to the transcript, in the same event that submits the form — this is the whole
+    // reason the merchant's message appears the moment they press Send rather than whenever the
+    // server gets back. Read from composerMessage before it is cleared on the next line.
+    setOptimisticSend(composerMessage.trim());
     setComposerMessage("");
     setAttachedFile(null);
     setAttachmentError(null);
@@ -1355,7 +1574,7 @@ function FocusedConversation({
           />
         )}
 
-        <div ref={transcriptRef} style={messagesStyle}>
+        <div ref={transcriptRef} className="JefeChatScroll" style={messagesStyle}>
           {isBlankThread && !pendingMessage ? <EmptyChat /> : null}
           {interleaveLifecycleEvents(messages, focusedAction?.display?.lifecycleEvents ?? []).map(
             (row) =>
@@ -2540,26 +2759,52 @@ function usePreserveChatScrollDuringIntent(
 
 function useScrollTranscriptToLatest(
   conversationId: string | null,
-  messageCount: number,
+  stickToBottomKey: string,
 ) {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const lastConversationIdRef = useRef<string | null>(null);
+  const lastStickKeyRef = useRef<string | null>(null);
+  // The fixed-viewport redesign made messagesStyle an independently scrolling container: when
+  // a new row (the merchant's own optimistic bubble, "Thinking", a real reply) is appended,
+  // scrollHeight grows but scrollTop does not follow, so the new content lands below the
+  // visible fold and is invisible until something explicitly scrolls down. This tracks whether
+  // the merchant was at/near the bottom BEFORE that new content landed — captured continuously
+  // from scroll events, not recomputed afterward, because by then scrollHeight has already
+  // grown and would always read as "not at the bottom" even if nobody scrolled a muscle.
+  const nearBottomRef = useRef(true);
+
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) return undefined;
+    const handleScroll = () => {
+      nearBottomRef.current =
+        transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 160;
+    };
+    transcript.addEventListener("scroll", handleScroll, { passive: true });
+    return () => transcript.removeEventListener("scroll", handleScroll);
+  }, []);
 
   useEffect(() => {
     if (!conversationId) return undefined;
+    const transcript = transcriptRef.current;
+    if (!transcript) return undefined;
     const isOpeningConversation =
       lastConversationIdRef.current !== conversationId;
     lastConversationIdRef.current = conversationId;
-    if (!isOpeningConversation) return undefined;
-    const transcript = transcriptRef.current;
-    if (!transcript) return undefined;
+    const stickKeyChanged = lastStickKeyRef.current !== stickToBottomKey;
+    lastStickKeyRef.current = stickToBottomKey;
+    if (!isOpeningConversation && !stickKeyChanged) return undefined;
+    // Opening a conversation always jumps to the latest message. Otherwise, only follow new
+    // content if the merchant was already at/near the bottom — someone scrolled up rereading
+    // earlier messages shouldn't get yanked back down by a reply landing in the background.
+    if (!isOpeningConversation && !nearBottomRef.current) return undefined;
 
+    // The page itself is a fixed, non-scrolling viewport (chatPageStyle) — messagesStyle is
+    // the only scrollable element, so "open near the latest messages" means scrolling this
+    // container, not the window.
     const scrollToLatest = () => {
-      if (typeof window === "undefined" || typeof document === "undefined") {
-        transcript.scrollTop = transcript.scrollHeight;
-        return;
-      }
-      window.scrollTo({ top: document.documentElement.scrollHeight });
+      transcript.scrollTop = transcript.scrollHeight;
+      nearBottomRef.current = true;
     };
     scrollToLatest();
     if (typeof window === "undefined") return undefined;
@@ -2569,7 +2814,7 @@ function useScrollTranscriptToLatest(
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [conversationId, messageCount]);
+  }, [conversationId, stickToBottomKey]);
 
   return transcriptRef;
 }
@@ -2806,11 +3051,19 @@ const pageStyle: CSSProperties = {
   fontFamily: FONT.sans,
   padding: "38px 24px 96px",
 };
+// Fixed viewport, ChatGPT-style: this page never scrolls itself. It pins to the
+// visible viewport (escaping the parent Frame/Box's own block flow and bottom padding
+// entirely, rather than trying to size against them) and hands scrolling to exactly one
+// child — messagesStyle. chatTopStyle/the title block/chatComposerWrapStyle stay
+// flex-shrink:0 so they never get squeezed by that child's growth.
 const chatPageStyle: CSSProperties = {
   ...pageStyle,
   boxSizing: "border-box",
-  minHeight: "100vh",
-  overflowX: "hidden",
+  position: "fixed",
+  inset: 0,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
   padding: "48px 24px 0",
 };
 const shellStyle: CSSProperties = {
@@ -2827,7 +3080,8 @@ const chatShellStyle: CSSProperties = {
   gap: 0,
   maxWidth: 760,
   margin: "0 auto",
-  minHeight: "calc(100vh - 48px)",
+  height: "100%",
+  minHeight: 0,
   width: "100%",
 };
 const headerStyle: CSSProperties = {
@@ -3348,6 +3602,7 @@ const chatTopStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
+  flexShrink: 0,
 };
 const backLinkStyle: CSSProperties = {
   color: COLORS.body,
@@ -3378,13 +3633,17 @@ const chatTitleBlockStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 8,
-  padding: "26px 0 10px",
+  padding: "26px 0 18px",
+  flexShrink: 0,
+  borderBottom: `1px solid ${COLORS.border}`,
 };
 const actionChatHeaderStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 10,
-  padding: "26px 0 10px",
+  padding: "26px 0 18px",
+  flexShrink: 0,
+  borderBottom: `1px solid ${COLORS.border}`,
 };
 function actionChatStatusLabelStyle(tone: "amber" | "navy" | "green" | "neutral"): CSSProperties {
   const palette = ACTION_STATE_PILL_PALETTE[tone] ?? ACTION_STATE_PILL_PALETTE.neutral;
@@ -3459,7 +3718,10 @@ const messagesStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 14,
-  padding: "34px 4px 42px 0",
+  padding: "48px 4px 56px 0",
+  flex: "1 1 auto",
+  minHeight: 0,
+  overflowY: "auto",
 };
 const messageRowStyle: CSSProperties = {
   display: "flex",
@@ -3517,10 +3779,8 @@ const thinkingStyle: CSSProperties = {
 };
 const chatComposerWrapStyle: CSSProperties = {
   background: COLORS.page,
-  bottom: 0,
-  marginTop: "auto",
-  padding: "0 0 28px",
-  position: "sticky",
+  padding: "18px 0 28px",
+  flexShrink: 0,
   zIndex: 14,
 };
 const emptyChatStyle: CSSProperties = {

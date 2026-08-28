@@ -184,6 +184,17 @@ export async function retryLastGeneralChatReply(prisma, input) {
   // Nothing to retry — an empty thread, or Jefe has already answered. Idempotent by
   // construction: a double-tapped Retry, or one clicked in a stale tab, is a no-op rather
   // than a second reply to a message that already has one.
+  //
+  // This check alone is NOT race-safe (2026-08-27 regression, real conversation
+  // 5dd1a4e5-67c9-44b8-bb43-58cf67ad53a6): it only protects against retrying an attempt that has
+  // ALREADY finished. A merchant who retries because the UI looked frozen or showed an error can
+  // retry WHILE the original attempt is still silently running server-side (this session traced
+  // several real cases where a stalled client connection never resolves even though the backend
+  // completes the turn regardless) — `latest.role` still reads "merchant" at that moment, so this
+  // check waves the retry through, and both the original and the retry go on to generate and
+  // persist their own reply: two real assistant messages answering the same question. Closed at
+  // the actual write (see persistAssistantReplyOnce below), not here — this check stays as a cheap
+  // early exit for the common case, not the safety boundary.
   if (!latest || latest.role !== "merchant") {
     return { ok: true, retried: false, conversationId: conversation.id };
   }
@@ -194,6 +205,228 @@ export async function retryLastGeneralChatReply(prisma, input) {
     reuseMessageId: latest.id,
   });
   return { ...result, retried: true };
+}
+
+/** @param {any} prisma @param {{ conversationId: string; sinceCreatedAt: Date | string }} scope */
+async function findReplySince(prisma, { conversationId, sinceCreatedAt }) {
+  return prisma.merchantMemoryConversationMessage.findFirst({
+    where: {
+      conversationId,
+      role: "assistant",
+      createdAt: { gt: new Date(sinceCreatedAt) },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+}
+
+/**
+ * Persists the assistant's reply to `sinceMessage`, but only if nobody else already did.
+ *
+ * The slow work (retrieval, the LLM call) happens before this is called and is not covered by
+ * this at all — only this final check-then-write is, so no transaction is ever held open for the
+ * ~10-90s a turn can take. Run at SERIALIZABLE isolation (a standard Postgres mechanism, no raw
+ * SQL) so two concurrent callers (the original request finishing after the client believed it had
+ * failed and the merchant retried, or a genuine double-submit) can never both commit a reply for
+ * the same merchant turn: Postgres detects the read-write conflict between "check for an existing
+ * reply" and "insert one" and aborts one side with a serialization failure (error code 40001).
+ * That side re-reads outside the aborted transaction — which now sees the winner's committed
+ * row — and returns the real reply instead of persisting a duplicate.
+ * @param {any} prisma
+ * @param {{ conversation: any; sinceMessage: { createdAt: Date | string } }} scoped
+ * @param {Parameters<typeof appendConversationMessage>[1]} appendInput
+ */
+export async function persistAssistantReplyOnce(prisma, { conversation, sinceMessage }, appendInput) {
+  if (typeof prisma.$transaction !== "function") {
+    return appendConversationMessage(prisma, appendInput);
+  }
+  const sinceCreatedAt = sinceMessage.createdAt;
+  try {
+    return await prisma.$transaction(
+      async (/** @type {any} */ tx) => {
+        const alreadyReplied = await findReplySince(tx, { conversationId: conversation.id, sinceCreatedAt });
+        if (alreadyReplied) return { message: alreadyReplied, duplicate: true };
+        return appendConversationMessage(tx, appendInput);
+      },
+      { maxWait: 10_000, timeout: 30_000, isolationLevel: "Serializable" },
+    );
+  } catch (error) {
+    const code = /** @type {any} */ (error)?.code ?? /** @type {any} */ (error)?.meta?.code;
+    const isSerializationFailure =
+      code === "40001" || /could not serialize access/i.test(String(/** @type {any} */ (error)?.message ?? ""));
+    if (!isSerializationFailure) throw error;
+    const winner = await findReplySince(prisma, { conversationId: conversation.id, sinceCreatedAt });
+    if (winner) return { message: winner, duplicate: true };
+    throw error; // Lost the race but no winner is visible yet — genuinely unexpected; surface it.
+  }
+}
+
+/**
+ * Persist the merchant's message and return IMMEDIATELY, generating Jefe's reply in the
+ * background.
+ *
+ * Regression (2026-08-27): the chat POST used to persist the message, run the LLM, persist the
+ * reply and only then return — one blocking HTTP lifecycle that routinely took 30-40s. Nothing
+ * the merchant said could appear until that whole round trip finished, because the transcript is
+ * server-rendered and the response WAS the render. Every attempt to paper over that gap purely on
+ * the client (drawing the message optimistically from navigation state) was fighting the fact
+ * that the authoritative transcript simply did not contain their message yet, and each one broke
+ * differently. So the turn is split where it should always have been split: persisting what the
+ * merchant said is fast and certain, generating a reply is slow and fallible, and only the first
+ * of those belongs in the request the merchant is waiting on.
+ *
+ * The reply is produced by the ordinary `sendGeneralChatMessage` path, re-entered in the
+ * background against the already-stored message via `reuseMessageId` — the same mechanism a retry
+ * already uses — so generation, grounding, persistence and the duplicate-reply guard are all
+ * unchanged and there is no second code path to keep in step.
+ *
+ * `context.pendingReply` marks the turn as in flight, durably, so the surface can tell "Jefe is
+ * still thinking" apart from "this turn failed" after a reload, without guessing from elapsed
+ * time. It is cleared however generation ends, including by throwing.
+ *
+ * @param {any} prisma
+ * @param {Parameters<typeof sendGeneralChatMessage>[1]} input
+ */
+export async function startGeneralChatTurn(prisma, input) {
+  const content = String(input.message ?? "").trim();
+  if (!content) return { ok: false, error: "Message is required." };
+  const surface = input.surface ?? "app";
+  const conversation = await getOrCreateMerchantConversation(prisma, {
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    conversationId: input.conversationId,
+    conversationType:
+      input.actionRunId || input.recommendationId ? "action" : "general",
+    surface,
+    externalThreadId: input.externalThreadId,
+    topic:
+      input.actionRunId || input.recommendationId
+        ? `action:${input.recommendationId ?? input.actionRunId}`
+        : "general",
+  });
+  const persisted = await appendConversationMessage(prisma, {
+    conversation,
+    conversationId: conversation.id,
+    merchantId: input.merchantId,
+    shopId: input.shopId,
+    role: "merchant",
+    content,
+    surface,
+    externalMessageId: input.externalMessageId,
+    metadata: input.metadata ?? {},
+    safeSummary: content.length > 240 ? `${content.slice(0, 237)}...` : content,
+    enqueue: false,
+  });
+  if (!persisted) {
+    return { ok: false, error: REPLY_FAILED_MESSAGE, kind: REPLY_FAILED_KIND };
+  }
+  // A duplicate submission of the same external message already has a turn in flight or done —
+  // don't start a second generation for it.
+  if (persisted.duplicate) {
+    return {
+      ok: true,
+      duplicate: true,
+      conversationId: conversation.id,
+      merchantMessageId: persisted.message.id,
+    };
+  }
+  await setPendingReplyMarker(prisma, {
+    conversation,
+    messageId: persisted.message.id,
+    logger: input.logger ?? log,
+  });
+  void sendGeneralChatMessage(prisma, {
+    ...input,
+    conversationId: conversation.id,
+    reuseMessageId: persisted.message.id,
+  })
+    .catch((error) => {
+      (input.logger ?? log).error("Background chat reply failed", {
+        error: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+        merchantId: input.merchantId,
+        shopId: input.shopId,
+        conversationId: conversation.id,
+        messageId: persisted.message.id,
+      });
+    })
+    .finally(() => {
+      void clearPendingReplyMarker(prisma, {
+        conversationId: conversation.id,
+        messageId: persisted.message.id,
+        logger: input.logger ?? log,
+      });
+    });
+  return {
+    ok: true,
+    duplicate: false,
+    conversationId: conversation.id,
+    merchantMessageId: persisted.message.id,
+    pending: true,
+  };
+}
+
+/** @param {any} prisma @param {{ conversation: any; messageId: string; logger: any }} input */
+async function setPendingReplyMarker(prisma, { conversation, messageId, logger }) {
+  try {
+    await prisma.merchantMemoryConversation.update({
+      where: { id: conversation.id },
+      data: {
+        context: {
+          ...(conversation.context ?? {}),
+          pendingReply: { messageId, startedAt: new Date().toISOString() },
+        },
+      },
+    });
+  } catch (error) {
+    // Never block the merchant's message on the progress marker — worst case the surface falls
+    // back to treating an unanswered turn as failed, which is recoverable with Try again.
+    logger.warn("Could not mark the chat turn as in progress", {
+      error: error instanceof Error ? error.name : "UnknownError",
+      conversationId: conversation.id,
+      messageId,
+    });
+  }
+}
+
+/** @param {any} prisma @param {{ conversationId: string; messageId: string; logger: any }} input */
+async function clearPendingReplyMarker(prisma, { conversationId, messageId, logger }) {
+  try {
+    const row = await prisma.merchantMemoryConversation.findFirst({
+      where: { id: conversationId },
+    });
+    const context = asPlainRecord(row?.context);
+    // Only clear OUR marker: a newer turn may already have started and must keep its own.
+    if (context?.pendingReply?.messageId !== messageId) return;
+    const rest = { ...context };
+    delete rest.pendingReply;
+    await prisma.merchantMemoryConversation.update({
+      where: { id: conversationId },
+      data: { context: rest },
+    });
+  } catch (error) {
+    logger.warn("Could not clear the chat turn progress marker", {
+      error: error instanceof Error ? error.name : "UnknownError",
+      conversationId,
+      messageId,
+    });
+  }
+}
+
+/** @param {unknown} context @returns {{ messageId: string | null; startedAt: string | null } | null} */
+function pendingReplyFromContext(context) {
+  const pending = asPlainRecord(asPlainRecord(context)?.pendingReply);
+  if (!pending) return null;
+  return {
+    messageId: typeof pending.messageId === "string" ? pending.messageId : null,
+    startedAt: typeof pending.startedAt === "string" ? pending.startedAt : null,
+  };
+}
+
+/** @param {unknown} value */
+function asPlainRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? /** @type {Record<string, any>} */ (value)
+    : null;
 }
 
 /**
@@ -367,6 +600,16 @@ export async function sendGeneralChatMessage(prisma, input) {
   let context;
   /** @type {any} */
   let actionEvidence = null;
+  // Regression (2026-08-27): an LLM call anywhere in this generation phase (focused-action
+  // agent, grounded reply, commerce analysis — any of it) throwing was left completely
+  // unhandled, all the way up through the route action. React Router then rendered the whole
+  // route's ErrorBoundary in place of the entire app, not just this chat turn — observed live
+  // with a real LlmInputLimitError ("Estimated 31684 input tokens exceeds 28000") from a
+  // conversation whose context had grown past the model's limit. The merchant's own message is
+  // already durably persisted by this point (appendConversationMessage, above) — a failure here
+  // should leave it in the thread with no reply, exactly the existing ReplyFailedRow/chat.retry
+  // path already handles, not take down the whole page.
+  try {
   const focusedInterpretation = focusedAction
     ? await handleFocusedActionMessage(prisma, {
         message: content,
@@ -543,6 +786,17 @@ export async function sendGeneralChatMessage(prisma, input) {
     }
     turn.mark("generationMs");
   }
+  } catch (error) {
+    (input.logger ?? log).error("Chat reply generation failed; leaving the merchant's message in the thread with no reply", {
+      error: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error),
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      conversationId: conversation.id,
+      messageId: persisted.message.id,
+    });
+    return { ok: false, error: REPLY_FAILED_MESSAGE, kind: REPLY_FAILED_KIND };
+  }
   const workflowStepUpdateResult = await applyWorkflowStepUpdatesFromReply(
     prisma,
     {
@@ -553,38 +807,59 @@ export async function sendGeneralChatMessage(prisma, input) {
       logger: input.logger ?? log,
     },
   );
-  const assistant = await appendConversationMessage(prisma, {
-    conversation,
-    conversationId: conversation.id,
-    merchantId: input.merchantId,
-    shopId: input.shopId,
-    role: "assistant",
-    content: generated.reply,
-    surface,
-    recommendationId,
-    actionRunId,
-    metadata: {
-      citedContextIds: generated.citedContextIds,
-      // Rides in metadata rather than in a column: it is presentation for one message, and the
-      // reply text is the answer with or without it.
-      ...(generated.chart ? { chart: generated.chart } : {}),
-      retrievalRunId: context?.diagnosticId ?? null,
-      focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
-      actionCommand: generated.command ?? null,
-      workflowStepUpdates: workflowStepUpdateResult.applied,
-      // The wait this reply cost, stored beside the reply it describes. Durations
-      // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
-      // stops short of this write because a row cannot time its own insert — the
-      // `chat_turn` event carries the total that includes it.
-      latency: {
-        vantage: "server",
-        ...turn.phases(),
-        totalMsAtReply: turn.totalMs(),
+  const assistant = await persistAssistantReplyOnce(
+    prisma,
+    { conversation, sinceMessage: persisted.message },
+    {
+      conversation,
+      conversationId: conversation.id,
+      merchantId: input.merchantId,
+      shopId: input.shopId,
+      role: "assistant",
+      content: generated.reply,
+      surface,
+      recommendationId,
+      actionRunId,
+      metadata: {
+        citedContextIds: generated.citedContextIds,
+        // Rides in metadata rather than in a column: it is presentation for one message, and the
+        // reply text is the answer with or without it.
+        ...(generated.chart ? { chart: generated.chart } : {}),
+        retrievalRunId: context?.diagnosticId ?? null,
+        focusedActionId: focusedAction?.id ?? conversation.focusedActionId ?? null,
+        actionCommand: generated.command ?? null,
+        workflowStepUpdates: workflowStepUpdateResult.applied,
+        // The wait this reply cost, stored beside the reply it describes. Durations
+        // only, so it stays PII-free and safe to read back anywhere. `totalMsAtReply`
+        // stops short of this write because a row cannot time its own insert — the
+        // `chat_turn` event carries the total that includes it.
+        latency: {
+          vantage: "server",
+          ...turn.phases(),
+          totalMsAtReply: turn.totalMs(),
+        },
       },
+      safeSummary: "Jefe answered from bounded Merchant Memory context.",
     },
-    safeSummary: "Jefe answered from bounded Merchant Memory context.",
-  });
+  );
   turn.mark("persistMs");
+  if (assistant.duplicate) {
+    // Another concurrent attempt (the original request after a client-perceived failure, or a
+    // genuine double-submit) already answered this exact merchant turn — return its real reply
+    // rather than a second one. Not an error: the merchant still gets a valid answer.
+    return {
+      ok: true,
+      duplicate: false,
+      conversationId: conversation.id,
+      merchantMessageId: persisted.message.id,
+      assistantMessage: {
+        id: assistant.message.id,
+        content: assistant.message.content,
+        metadata: assistant.message.metadata ?? {},
+      },
+      citedContextIds: assistant.message.metadata?.citedContextIds ?? [],
+    };
+  }
   // Fire-and-forget: the merchant's reply is ready and must not wait on telemetry.
   void recordChatTurn(prisma, {
     vantage: "server",
@@ -1546,6 +1821,11 @@ function serializeConversation(row) {
         }
       : null,
     messageCount: row._count?.messages ?? null,
+    // Jefe is mid-turn on this thread: the merchant's message is stored and the reply is being
+    // generated in the background. Durable rather than inferred, so the surface can tell
+    // "still thinking" from "this one failed" even across a reload, instead of guessing from
+    // elapsed time. See startGeneralChatTurn.
+    pendingReply: pendingReplyFromContext(row.context),
     lastMessageAt: (row.lastMessageAt ?? row.updatedAt).toISOString(),
     createdAt: row.createdAt.toISOString(),
   };

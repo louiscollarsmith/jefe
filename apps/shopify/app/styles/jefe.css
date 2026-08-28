@@ -2711,3 +2711,14 @@ body:has(.JefeOnboardingShell.is-cinematic) {
     font-size: 32px;
   }
 }
+
+/* ---- Action Chat transcript: scrolls, but the scrollbar itself stays invisible
+   (still fully scrollable via wheel/trackpad/keyboard — this only hides the track/thumb).
+   Inline style objects can't express ::-webkit-scrollbar, hence a global class here. ---- */
+.JefeChatScroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.JefeChatScroll::-webkit-scrollbar {
+  display: none;
+}

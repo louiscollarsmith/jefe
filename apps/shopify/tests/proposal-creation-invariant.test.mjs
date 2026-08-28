@@ -152,6 +152,14 @@ test("daily home loader does not repair duplicate proposed actions", () => {
   assert.match(routeSource, /const merchantActionsPromise = listMerchantActions\(prisma,/);
 });
 
+test("agentic recommendation persistence no longer supersedes an earlier pending proposal (multiple simultaneous proposals allowed, Louis 2026-08-27)", () => {
+  const serviceSource = readFileSync(
+    new URL("../app/lib/shopify/agentic-runtime/recommendation-service.server.js", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(serviceSource, /supersedeAllProposedRecommendations/);
+});
+
 test("supersedeDuplicateProposedActions retains full over bootstrap", async () => {
   const updates = [];
   const prisma = {

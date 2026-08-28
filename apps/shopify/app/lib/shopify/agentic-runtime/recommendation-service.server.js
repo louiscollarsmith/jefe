@@ -14,7 +14,6 @@ import {
   PLAN_REVIEW_STATUS,
   PLAN_RUN_STATUS,
 } from "../../merchant-plan/constants.server.js";
-import { supersedeAllProposedRecommendations } from "../../merchant-plan/proposal-creation-invariant.server.js";
 import { enqueueBackfillJob } from "../../../services/shopify-backfill-status.server.js";
 import { ShopifyAdminGraphqlClient } from "../admin-graphql.server.js";
 import { runCandidateDrivenRecommendation } from "./candidate-pipeline.server.js";
@@ -844,10 +843,10 @@ export async function buildAgenticRecommendationSnapshot(prisma, input) {
 /** @param {import("@prisma/client").PrismaClient} prisma @param {{ merchantId: string; shopId: string; run: any; recommendation: any; diagnostics?: any; trace?: any; opportunitySetId?: string | null; recommendedCandidateId?: string | null; opportunityMetadata?: Record<string, any> }} input */
 async function persistAgenticRecommendation(prisma, input) {
   return prisma.$transaction(async (/** @type {any} */ tx) => {
-    await supersedeAllProposedRecommendations(tx, {
-      merchantId: input.merchantId,
-      shopId: input.shopId,
-    });
+    // Previously superseded every other unresolved PROPOSED action here, enforcing "at
+    // most one pending proposal per shop". Louis, 2026-08-27, in conversation: multiple
+    // simultaneous proposed Actions are now allowed — the merchant can generate another
+    // proposal without resolving the current one first, and both stay visible on Home.
     const recommendation = input.recommendation;
     const runMetadata = agenticRunMetadata(input.run);
     const semanticAction = semanticActionFromRecommendation(recommendation);

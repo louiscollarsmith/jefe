@@ -191,7 +191,7 @@ import {
   getDailyChatExperience,
   renameGeneralChat,
   retryLastGeneralChatReply,
-  sendGeneralChatMessage,
+  startGeneralChatTurn,
   startNewGeneralChat,
 } from "../lib/merchant-memory/general-chat.server.js";
 import {
@@ -946,7 +946,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             extract: libraryFile.extractedText,
           })
         : typed;
-    const result = await sendGeneralChatMessage(prisma, {
+    // Persist-and-return, NOT persist-generate-return: the merchant's message is written and the
+    // response comes straight back (~tens of ms), with Jefe's reply generated in the background
+    // and picked up by the surface's own polling. Blocking this request on a 30-40s LLM turn is
+    // what made a merchant's own message invisible until Jefe had finished answering it.
+    const result = await startGeneralChatTurn(prisma, {
       merchantId: merchant.id,
       shopId: shop.id,
       message,
@@ -1324,8 +1328,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (!result.ok) {
       const reasonMessages: Record<string, string> = {
-        proposed_exists:
-          "Accept or reject the current proposal before generating another.",
         daily_cap_reached:
           "You've generated 5 proposals today. You can generate more tomorrow.",
         generating: "Jefe is already finding your next move.",
@@ -1823,10 +1825,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const brandLogoUrl = brandLogoFromPayload(
         (shop as { rawPayload?: unknown }).rawPayload,
       );
+      // Regression (2026-08-27): this was called WITHOUT conversationId, so for any open chat
+      // `getDailyChatExperience` returned `{ conversation: null, messages: [] }` — the loader
+      // never loaded the conversation the merchant was actually chatting in. That broke the one
+      // mechanism react-router gives us for free: a POST's automatic revalidation, which should
+      // return the fresh transcript (merchant message + Jefe's reply) as part of the same
+      // submission that produced it. Instead the surface had to discover every reply through a
+      // separate client-side refetch round-trip, leaving a multi-second window after each send
+      // where the newest transcript it could see still ended on the merchant's own message —
+      // which reads as a failed turn, and is exactly why a successful reply flashed
+      // "I couldn't get to that one, try again" for ~10s before appearing. Passing the open
+      // conversation id makes revalidation carry the reply, so the normal path needs no refetch.
       const conversationPromise = getDailyChatExperience(prisma, {
         merchantId: merchant.id,
         shopId: shop.id,
         historyTake: 8,
+        conversationId: url.searchParams.get("conversation"),
       });
       const [
         goals,

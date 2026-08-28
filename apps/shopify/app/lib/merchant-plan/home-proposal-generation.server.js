@@ -119,7 +119,7 @@ const TERMINAL_NON_PROPOSAL_STATUSES = [
 /**
  * Loader-facing state for the Reading your store card.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; stuckRunThresholdMs?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
+ * @param {{ merchantId: string; shopId: string; now: Date; timeZone?: string | null; cap?: number; stuckRunThresholdMs?: number; deps?: { count?: typeof countHomeProposalGenerationsSince; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
  * @returns {Promise<{ canGenerate: boolean; reason: string | null; generatedToday: number; remaining: number; cap: number; isGenerating: boolean; hasPriorProposal: boolean; terminalStatus: string | null } | null>}
  */
 export async function getHomeProposalGenerationState(
@@ -135,18 +135,15 @@ export async function getHomeProposalGenerationState(
   },
 ) {
   const count = deps.count ?? countHomeProposalGenerationsSince;
-  const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
   const inFlight = deps.inFlight ?? isHomeProposalGenerationInFlight;
   const since = startOfMerchantDay(now, timeZone);
 
   let generatedToday;
-  let proposedExists;
   let generating;
   let priorCount;
   try {
-    [generatedToday, proposedExists, generating, priorCount] = await Promise.all([
+    [generatedToday, generating, priorCount] = await Promise.all([
       count(prisma, { merchantId, since }),
-      hasProposed(prisma, { merchantId, shopId }),
       inFlight(prisma, { merchantId, shopId }),
       prisma.merchantPlanRun.count({
         where: {
@@ -164,10 +161,10 @@ export async function getHomeProposalGenerationState(
   let reason = budget.reason;
   let canGenerate = budget.allowed;
 
-  if (proposedExists) {
-    canGenerate = false;
-    reason = "proposed_exists";
-  } else if (generating) {
+  // A pending, unaccepted proposal no longer blocks generating another — multiple
+  // simultaneous proposed Actions are allowed (Louis, 2026-08-27, in conversation).
+  // Still block a second generation while one is actively running.
+  if (generating) {
     canGenerate = false;
     reason = "generating";
   }
@@ -204,10 +201,10 @@ export async function getHomeProposalGenerationState(
     }
   }
 
-  // When idle (no proposed action, not generating, under the cap), surface the
-  // most recent run's terminal status so the UI can explain why the last attempt
-  // produced no proposal instead of silently resetting to the default copy.
-  if (canGenerate && !generating && !proposedExists && !terminalStatus) {
+  // When idle (not generating, under the cap), surface the most recent run's
+  // terminal status so the UI can explain why the last attempt produced no
+  // proposal instead of silently resetting to the default copy.
+  if (canGenerate && !generating && !terminalStatus) {
     try {
       const lastRun = await prisma.merchantPlanRun.findFirst({
         where: { merchantId, shopId, sourceMode: HOME_PROPOSAL_SOURCE_MODE },
@@ -261,7 +258,7 @@ async function withHomeProposalGenerationLock(prisma, input, callback) {
 /**
  * Merchant clicked Generate — enqueue a recommendation run through the canonical pipeline.
  * @param {import("@prisma/client").PrismaClient} prisma
- * @param {{ merchantId: string; shopId: string; now?: Date; timeZone?: string | null; cap?: number; ensureQueued?: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countHomeProposalGenerationsSince; hasProposed?: typeof merchantHasProposedAction; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
+ * @param {{ merchantId: string; shopId: string; now?: Date; timeZone?: string | null; cap?: number; ensureQueued?: (prisma: any, input: any) => Promise<{ status: string }>; deps?: { count?: typeof countHomeProposalGenerationsSince; inFlight?: typeof isHomeProposalGenerationInFlight } }} input
  * @returns {Promise<{ ok: boolean; status?: string; reason?: string | null; remaining?: number }>}
  */
 export async function requestHomeProposalGeneration(
@@ -277,7 +274,6 @@ export async function requestHomeProposalGeneration(
   },
 ) {
   const count = deps.count ?? countHomeProposalGenerationsSince;
-  const hasProposed = deps.hasProposed ?? merchantHasProposedAction;
   const inFlight = deps.inFlight ?? isHomeProposalGenerationInFlight;
   const queuePlan =
     ensureQueued ??
@@ -302,9 +298,8 @@ export async function requestHomeProposalGeneration(
     }
 
     try {
-      if (await hasProposed(tx, { merchantId, shopId })) {
-        return { ok: false, reason: "proposed_exists" };
-      }
+      // A pending, unaccepted proposal no longer blocks generating another — multiple
+      // simultaneous proposed Actions are allowed (Louis, 2026-08-27, in conversation).
       if (await inFlight(tx, { merchantId, shopId })) {
         return { ok: false, reason: "generating" };
       }

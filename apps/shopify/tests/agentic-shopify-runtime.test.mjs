@@ -7,9 +7,13 @@ import {
 import {
   AGENTIC_ACTION_CHAT_PROMPT_VERSION,
   agenticActionChatToolCatalogue,
+  assertsLifecycleClaim,
   runAgenticActionChat,
 } from "../app/lib/shopify/agentic-runtime/action-chat.server.js";
-import { runAgenticShopifyExecution } from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
+import {
+  buildExecutionSemanticAction,
+  runAgenticShopifyExecution,
+} from "../app/lib/shopify/agentic-runtime/execution-agent.server.js";
 import {
   acceptAgenticShopifyAction,
   materializeAgenticShopifyAction,
@@ -34,6 +38,285 @@ test("agentic pre-acceptance chat has no legacy focused-action tools", () => {
   assert.equal(names.includes("accept_plan"), false);
 });
 
+test("agentic action chat: a wall-clock budget stops a slow multi-turn conversation before it can trigger a reverse-proxy timeout (524 regression, 2026-08-27)", async () => {
+  // Root cause: runAgenticActionChat runs fully synchronously inside one HTTP request, unlike
+  // recommendation generation (which enqueues a job and the client polls). A merchant conversation
+  // that keeps fetching more tool calls could, before this fix, run up to
+  // MAX_AGENTIC_ACTION_CHAT_ITERATIONS turns with no overall time ceiling — this proves a slow
+  // multi-turn conversation is cut off well before that, returning a usable reply instead of
+  // hanging long enough for a reverse-proxy (Cloudflare) to kill the connection with a 524.
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  let elapsedMs = 0;
+  const provider = scriptedProvider(() => {
+    elapsedMs += 40_000; // simulate a slow ~40s model call every turn
+    return { status: "CONTINUE", toolCalls: [{ tool: "get_action" }] };
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Keep going.",
+    logger: quietLogger,
+    maxIterations: 6,
+    wallClockBudgetMs: 75_000,
+    nowFn: () => elapsedMs,
+  });
+
+  assert.equal(result.ok, true, "a budget-exhausted turn must still return a usable reply, not an error");
+  assert.ok(result.reply.length > 0);
+  // Deadline is set once at 0 + 75_000 = 75_000. Iteration 0 always runs (elapsed 0). Iteration 1's
+  // pre-check sees elapsed=40_000 < 75_000, so it also runs (elapsed becomes 80_000). Iteration 2's
+  // pre-check sees 80_000 >= 75_000 and breaks — 2 real model calls, nowhere near the 6-iteration
+  // ceiling that would otherwise let this compound past a ~100s gateway timeout.
+  assert.equal(provider.calls.length, 2, `expected the wall-clock budget to cut the loop short, got ${provider.calls.length} calls`);
+});
+
+test("agentic action chat: a generation error (e.g. LlmInputLimitError) inside the loop degrades to a best-effort reply instead of throwing out of the whole request", async () => {
+  // Regression (2026-08-27, real conversation f4ef300a-9fe1-42bb-ad0a-d65aac1c638f): a long
+  // thread's accumulated ledger/tool-results pushed the prompt past maxInputTokens — a genuine
+  // LlmInputLimitError ("Estimated 31684 input tokens exceeds 28000") — with nothing catching it
+  // anywhere in this loop or its callers. It propagated all the way out through
+  // handleFocusedActionMessage and sendGeneralChatMessage into the route action, which React
+  // Router treated as a genuinely unhandled error and rendered the whole route's ErrorBoundary
+  // ("Jefe is still getting set up") in place of the entire app, not just this one chat turn —
+  // wiping the merchant's optimistic message and Thinking indicator along with it. Fixed the same
+  // way the wall-clock-budget case just above already handles a mid-loop stop: log and break so
+  // the existing post-loop fallbackReply construction produces a real reply from whatever ledger
+  // exists, instead of letting the exception escape.
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  const provider = {
+    enabled: true,
+    provider: "test",
+    model: "throws-luna",
+    calls: 0,
+    async generateStructuredJson() {
+      provider.calls += 1;
+      const error = new Error("Estimated 31684 input tokens exceeds 28000.");
+      error.name = "LlmInputLimitError";
+      throw error;
+    },
+  };
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Keep going.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true, "a generation failure must still return a usable reply, not throw");
+  assert.equal(typeof result.reply, "string");
+  assert.ok(result.reply.length > 0, "the merchant must see something, not a blank/crashed turn");
+  assert.equal(provider.calls, 1, "must not retry in a loop against the same over-budget prompt");
+});
+
+// Regression coverage for the real 2026-08-27 conversation (46525a9a-9e55-41f1-a3e4-56fec9a01c71):
+// a merchant asked a legitimate evidentiary question ("Is that enough evidence... or are you
+// making an assumption?") with no lifecycle claim in it, and got a generic plan-summary dump
+// instead of the model's real answer. Root cause: LIFECYCLE_CLAIM_PATTERN matched bare uses of
+// "complete"/"accept"/etc. anywhere in the sentence, not just as a first-person claim of having
+// performed a transition — "that's not complete evidence" was enough to trigger it. See the
+// pattern's own doc comment in action-chat.server.js for the full trace.
+test("assertsLifecycleClaim: ordinary evidentiary language ('complete', 'accept') does not false-match", () => {
+  assert.equal(
+    assertsLifecycleClaim(
+      "That is not complete evidence on its own — I inferred readiness from status, inventory, and price, but I have not confirmed demand.",
+    ),
+    false,
+  );
+  assert.equal(
+    assertsLifecycleClaim(
+      "It is reasonable evidence, but not fully complete: I am assuming commercial readiness rather than confirming it with a sales signal.",
+    ),
+    false,
+  );
+  assert.equal(
+    assertsLifecycleClaim("This gives me a reasonable but incomplete picture; I am making a partial assumption."),
+    false,
+  );
+  assert.equal(assertsLifecycleClaim("I do not have complete confidence in that; it is a partial picture."), false);
+});
+
+// Second regression, same day (real conversation 7d314dbc-9b08-4de1-b09c-809f026d75b0): the first
+// fix above (requiring "complete" to be predicated of "I") stopped that exact trap, but the same
+// category of false positive existed on the other six verbs — passive voice, adjectival
+// past-participles, and ordinary hedging all matched the old bare-word pattern.
+test("assertsLifecycleClaim: passive voice, adjectival past-participles, and hedging on the other six verbs do not false-match", () => {
+  assert.equal(assertsLifecycleClaim("I accept that there is some uncertainty here, but the checks are a reasonable basis."), false);
+  assert.equal(assertsLifecycleClaim("I wouldn't reject the possibility that other factors matter too."), false);
+  assert.equal(assertsLifecycleClaim("I'd defer to the live Shopify read on that specific point."), false);
+  assert.equal(assertsLifecycleClaim("No mutation was executed in this turn — only reads."), false);
+  assert.equal(assertsLifecycleClaim("The completed Shopify state confirms the issue remains actionable."), false);
+  assert.equal(
+    assertsLifecycleClaim(
+      "Both were selected because they are the two identified return-risk product pages, and the Shopify data confirms that both are active.",
+    ),
+    false,
+  );
+  assert.equal(assertsLifecycleClaim("Reasonable evidence supports it. Complete confidence isn't there yet though."), false);
+});
+
+test("assertsLifecycleClaim: a genuine first-person transition claim still matches", () => {
+  assert.equal(assertsLifecycleClaim("I have accepted this action and executed the price change."), true);
+  assert.equal(assertsLifecycleClaim("I've executed the change already, nothing more to do."), true);
+  assert.equal(assertsLifecycleClaim("I rejected it because the evidence was too thin."), true);
+  assert.equal(assertsLifecycleClaim("I deferred that for now until you confirm the scope."), true);
+  assert.equal(assertsLifecycleClaim("I cancelled the plan as you asked."), true);
+  assert.equal(assertsLifecycleClaim("I'm executing the price change now."), true);
+  assert.equal(assertsLifecycleClaim("I am completing the update as we speak."), true);
+  // Sentence-initial one-word confirmations — common assistant shorthand with no subject at all;
+  // this is the exact shape the pre-existing "cannot claim a cancellation" test below depends on.
+  assert.equal(assertsLifecycleClaim("Cancelled."), true);
+  assert.equal(assertsLifecycleClaim("Done. Accepted."), true);
+});
+
+test("agentic action chat: a real answer to an evidentiary question is not discarded for a generic plan dump (524... er, evidence-question regression, 2026-08-27)", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  const realAnswer =
+    "I consider it commercially ready based on a narrow set of Shopify checks, but that is not complete evidence — I have not confirmed real customer demand, so there is some assumption involved.";
+  const provider = scriptedProvider(() => ({
+    status: "ANSWER",
+    finalReply: realAnswer,
+    toolCalls: [],
+  }));
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Is that enough evidence to know it's commercially ready, or are you making an assumption?",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.reply, realAnswer, "the model's genuine answer must reach the merchant, not a generic plan-summary fallback");
+  assert.doesNotMatch(result.reply, /^Outcome: /, "must not silently fall back to summarizeSemanticAction");
+});
+
+test("agentic action chat: a real answer that also called a read tool is not discarded for a garbled join of raw tool messages (second evidence-question regression, 2026-08-27)", async () => {
+  // Real conversation 7d314dbc-9b08-4de1-b09c-809f026d75b0: the model called get_action (a real
+  // tool, producing a real ledger message) before answering "why did you pick these products" —
+  // this reproduces that shape and proves the model's own finalReply, not the raw ledger message,
+  // reaches the merchant.
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+
+  const realAnswer =
+    "Both were selected because they are the two identified return-risk product pages, and the Shopify data confirms that both are active with sellable inventory.";
+  let call = 0;
+  const provider = scriptedProvider(() => {
+    call += 1;
+    if (call === 1) return { status: "CONTINUE", toolCalls: [{ tool: "get_action" }] };
+    return { status: "ANSWER", finalReply: realAnswer, toolCalls: [] };
+  });
+
+  const result = await runAgenticActionChat(prisma, {
+    provider,
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Why did you pick these two products specifically? Show me the store data behind this recommendation.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.reply, realAnswer, "the model's genuine answer must reach the merchant, not a raw ledger-message join");
+});
+
+test("a turn that repeats the same revision-producing tool call does not re-mint the revision or duplicate lifecycle events (2026-08-27 'stuttering' regression, real conversation f4ef300a-9fe1-42bb-ad0a-d65aac1c638f)", async () => {
+  // Real trace: one turn's own structured output listed update_action_scope six times in a row
+  // with identical arguments. The merchant watched the lifecycle-event timeline visibly stutter —
+  // several "AGENTIC SHOPIFY ACTION REVISED"/"PLAN UPDATED" dividers for what was semantically one
+  // plan change — because each repeat genuinely re-ran the draft update and minted its own
+  // revision + event pair.
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const scopeArgs = {
+    scopeSummary: "Only London Jacket.",
+    includedItems: [{ title: "London Jacket", productId: "gid://shopify/Product/1" }],
+    excludedItems: [{ title: "London Tote", productId: "gid://shopify/Product/2" }],
+    reason: "Merchant asked to narrow to one product.",
+  };
+
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "I've narrowed the plan to London Jacket only.",
+      toolCalls: Array.from({ length: 6 }, () => ({ tool: "update_action_scope", arguments: scopeArgs })),
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Let's go for just London Jacket.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  const semantic = prisma.actions[0].progress.agentic.semanticAction;
+  assert.deepEqual(semantic.scope.items.map((item) => item.title), ["London Jacket"]);
+  // Exactly one real revision was minted for this turn, not six.
+  assert.equal(prisma.actions[0].progress.agentic.revisionHistory.length, 1);
+  assert.equal(
+    prisma.events.filter((event) => event.eventType === "agentic_shopify_action_revised").length,
+    1,
+    "must record exactly one agentic_shopify_action_revised event for this turn, not one per repeated call",
+  );
+  assert.equal(
+    prisma.events.filter((event) => event.eventType === "action_plan_revised").length,
+    1,
+    "must record exactly one action_plan_revised event for this turn, not one per repeated call",
+  );
+});
+
 test("semantic milestones stay display-only for agentic Actions", async () => {
   const prisma = fakePrisma();
   const { action } = await materializeAgenticShopifyAction(prisma, {
@@ -51,6 +334,79 @@ test("semantic milestones stay display-only for agentic Actions", async () => {
   assert.equal(state.action.kind, "agentic_shopify");
   assert.equal(state.workspace.items.some((item) => item.title === "Review what Jefe found"), true);
   assert.deepEqual(state.work, []);
+});
+
+// Regression (2026-08-27, real Action e000737f-e517-42cd-9745-024285881971): the merchant asked
+// "Show me exactly what you'd change... Give me the current version and your proposed version,"
+// Jefe answered with real proposed text using only read tools, the merchant accepted, and
+// execution genuinely had no approved content to write — correctly refusing to invent product
+// description text rather than fabricate a claim, but with no structural way for the content the
+// merchant had already reviewed to ever have reached it. contentDrafts closes that gap.
+test("update_action_parameters with contentDrafts persists the literal reviewed text onto the semantic Action, minting a new revision", async () => {
+  const prisma = fakePrisma();
+  const { action } = await materializeAgenticShopifyAction(prisma, {
+    merchantId,
+    shopId,
+    recommendation: semanticCollectionRecommendation(),
+  });
+  const originalRevision = action.progress.agentic.currentActionRevision;
+  const proposedText = "<p><strong>Bora Line Rebula</strong> is a 2023 Rebula from Kamen Drift, Vipava, Slovenia.</p>";
+
+  const result = await runAgenticActionChat(prisma, {
+    provider: scriptedProvider(() => ({
+      status: "ANSWER",
+      finalReply: "Here's the current version and my proposed version. Nothing has been changed in Shopify yet.",
+      toolCalls: [
+        {
+          tool: "update_action_parameters",
+          arguments: {
+            contentDrafts: [{ target: "Bora Line Rebula", field: "description", text: proposedText }],
+            reason: "Merchant asked to see the exact proposed content.",
+          },
+        },
+      ],
+    })),
+    prisma,
+    client: fakeShopifyClient(),
+    merchantId,
+    shopId,
+    shopDomain,
+    scopes: ["read_products", "write_products"],
+    actionId: action.id,
+    message: "Show me exactly what you'd change. Give me the current version and your proposed version.",
+    logger: quietLogger,
+  });
+
+  assert.equal(result.ok, true);
+  const semantic = prisma.actions[0].progress.agentic.semanticAction;
+  assert.deepEqual(semantic.contentDrafts, [
+    { target: "Bora Line Rebula", field: "description", text: proposedText },
+  ]);
+  // Drafting approved content is a real plan change — it must mint a new revision like any other
+  // field, so a stale acceptance made before the content existed gets correctly invalidated.
+  assert.notEqual(prisma.actions[0].progress.agentic.currentActionRevision, originalRevision);
+});
+
+test("buildExecutionSemanticAction surfaces contentDrafts from the accepted revision's contract to the execution agent", () => {
+  const action = { title: "Update Bora Line Rebula description", summary: "s" };
+  const revision = {
+    acceptedActionRevision: "sar_test",
+    semanticContract: {
+      outcome: "Clearer expectation-setting description.",
+      contentDrafts: [{ target: "Bora Line Rebula", field: "description", text: "<p>New copy.</p>" }],
+    },
+  };
+  const semanticAction = buildExecutionSemanticAction(action, revision);
+  assert.deepEqual(semanticAction.contentDrafts, [
+    { target: "Bora Line Rebula", field: "description", text: "<p>New copy.</p>" },
+  ]);
+});
+
+test("buildExecutionSemanticAction defaults contentDrafts to empty when the accepted revision never captured any", () => {
+  const action = { title: "Activate a draft product", summary: "s" };
+  const revision = { acceptedActionRevision: "sar_test", semanticContract: { outcome: "Activate it." } };
+  const semanticAction = buildExecutionSemanticAction(action, revision);
+  assert.deepEqual(semanticAction.contentDrafts, []);
 });
 
 test("agentic pre-acceptance chat retrieves Shopify reads and persists concrete semantic scope", async () => {

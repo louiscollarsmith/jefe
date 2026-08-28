@@ -30,6 +30,12 @@ export function semanticActionFromRecommendation(recommendation) {
     materialExpectedEffects: recommendation.materialExpectedEffects ?? [],
     feasibleWriteOperations: recommendation.feasibleWriteOperations ?? [],
     verificationPlan: recommendation.verificationPlan,
+    // Literal field content (a description, a title, any copy) the merchant has explicitly
+    // reviewed and approved in chat, keyed by target+field — the only content execution is
+    // permitted to write verbatim. Never populated at recommendation-generation time (a
+    // recommendation proposes an outcome, not pre-drafted copy); only update_action_parameters in
+    // action-chat.server.js writes to this, once the merchant has actually seen the exact text.
+    contentDrafts: Array.isArray(recommendation.contentDrafts) ? recommendation.contentDrafts : [],
     reversalStrategy: recommendation.reversalStrategy ?? null,
     performanceClaims: recommendation.performanceClaims ?? [],
     whyThisAction: recommendation.whyThisAction,
@@ -176,6 +182,12 @@ export function semanticActionRevision(semanticAction) {
     feasibleWriteOperations: semanticAction.feasibleWriteOperations ?? [],
     verificationPlan: semanticAction.verificationPlan,
     reversalStrategy: semanticAction.reversalStrategy ?? null,
+    // Must participate in the revision hash: drafting or changing approved content after
+    // acceptance has to mint a new revision and invalidate the stale acceptance (the same
+    // acceptedActionRevisionStale mechanism every other field here already relies on) — otherwise
+    // a content-only change after accept_action could leave an already-queued execution job
+    // running against the pre-draft contract.
+    contentDrafts: semanticAction.contentDrafts ?? [],
   });
   return `sar_${createHash("sha256").update(stable).digest("hex").slice(0, 16)}`;
 }
@@ -197,6 +209,7 @@ export function revisionSnapshot(semanticAction, reason = null) {
     writeProtections: semanticAction?.writeProtections ?? [],
     materialExpectedEffects: semanticAction?.materialExpectedEffects ?? [],
     verificationPlan: semanticAction?.verificationPlan ?? null,
+    contentDrafts: semanticAction?.contentDrafts ?? [],
   };
 }
 
